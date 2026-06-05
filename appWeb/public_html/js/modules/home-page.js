@@ -36,6 +36,16 @@ export function initHomePage() {
     loadPopularSongs();
     loadRecentlyViewed();
     loadTags();
+
+    /* #448 — hydrate the signed-in viewer's saved home layout (reorder +
+       hide) client-side, since the home fragment is served shared-cache
+       and can't carry a per-user order. No-op for logged-out visitors. */
+    const grid = document.getElementById('home-section-grid');
+    if (grid) {
+        import('./card-layout.js')
+            .then(m => m.applyCardLayout(grid))
+            .catch(() => { /* module load blip — default order stands */ });
+    }
 }
 
 /* ==================================================================
@@ -67,7 +77,10 @@ async function loadPopularSongs() {
     }
 
     if (!songs.length) {
-        document.getElementById('popular-songs-section')?.remove();
+        /* Remove the whole card-layout-item wrapper (#448), not just the
+           inner section, so no empty draggable shell is left behind. */
+        const sec = document.getElementById('popular-songs-section');
+        (sec?.closest('.card-layout-item') || sec)?.remove();
         return;
     }
 
@@ -245,7 +258,9 @@ async function loadTags() {
     }
 
     if (!tags.length) {
-        el.closest('#tags-section')?.remove();
+        /* Remove the card-layout-item wrapper (#448) so no empty shell stays. */
+        const sec = el.closest('#tags-section');
+        (sec?.closest('.card-layout-item') || sec)?.remove();
         return;
     }
 

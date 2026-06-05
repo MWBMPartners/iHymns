@@ -91,12 +91,21 @@ function debounce(fn, wait) {
  */
 export function initCardLayout(root) {
     if (!root || root.dataset.layoutInitialised === '1') return;
-    root.dataset.layoutInitialised = '1';
 
     const surface      = root.dataset.layoutSurface || '';
     const canCustomise = root.dataset.canCustomise === '1';
     const canDefault   = root.dataset.canSetDefault === '1';
     if (!surface || (!canCustomise && !canDefault)) return;
+    /* Mark initialised only once we're actually wiring — so a premature
+       call before the surface's permissions are known (e.g. bootCardLayout
+       firing before applyCardLayout hydrates data-can-* onto the cached
+       home grid) doesn't consume the guard and block the real wiring. */
+    root.dataset.layoutInitialised = '1';
+
+    /* Drag handle / hide-button host. Admin cards use their `.card-admin`
+       header; the public home opts into a dedicated `.card-layout-handle`
+       strip via data-layout-handle. */
+    const handleSel = root.dataset.layoutHandle || '.card-admin';
 
     const toolbar    = document.getElementById('card-layout-toolbar');
     const btnEdit    = document.getElementById('btn-card-layout-edit');
@@ -136,7 +145,7 @@ export function initCardLayout(root) {
                     item.classList.add('d-none');
                     save();
                 });
-                qs(item, '.card-admin')?.appendChild(hideBtn);
+                qs(item, handleSel)?.appendChild(hideBtn);
             }
         }
 
@@ -145,7 +154,7 @@ export function initCardLayout(root) {
             sortable = new S(root, {
                 animation: 160,
                 ghostClass: 'card-layout-ghost',
-                handle: '.card-admin',
+                handle: handleSel,
                 onEnd: () => save(),
             });
         }).catch(err => console.error('[card-layout] sortable load failed', err));
@@ -181,6 +190,106 @@ export function initCardLayout(root) {
             alert('Site default saved.');
         } catch (e) { console.error('[card-layout] save-default failed', e); }
     });
+}
+
+/**
+ * Client-side mirror of cardLayoutMerge() (includes/card_layout.php):
+ * saved.order filtered to the baseline (in saved order), then any
+ * baseline IDs not yet placed appended; hidden filtered to the baseline.
+ */
+function mergeLayout(baseline, saved) {
+    const baseSet = new Set(baseline);
+    const order = [];
+    const seen = new Set();
+    for (const id of (saved.order || [])) {
+        if (baseSet.has(id) && !seen.has(id)) { order.push(id); seen.add(id); }
+    }
+    for (const id of baseline) {
+        if (!seen.has(id)) { order.push(id); seen.add(id); }
+    }
+    const hidden = [];
+    for (const id of (saved.hidden || [])) {
+        if (baseSet.has(id)) hidden.push(id);
+    }
+    return { order, hidden };
+}
+
+/**
+ * Hydrate a card grid from the viewer's saved layout and apply it to the
+ * DOM (reorder + hide), then wire edit-mode. For surfaces served as a
+ * SHARED-CACHE fragment (the public home, #448) the server cannot emit a
+ * per-user order without breaking the shared ETag, so personalisation is
+ * applied client-side here instead. Idempotent per grid.
+ *
+ * Auth rides the same-origin `ihymns_auth` cookie (getAuthBearerToken's
+ * cookie fallback), so a signed-in PWA user is resolved without the page
+ * having to attach a bearer header. Signed-out / offline → the request
+ * fails or returns empty and the server-rendered default order stands.
+ *
+ * @param {HTMLElement} root The `[data-layout-surface]` container.
+ */
+export async function applyCardLayout(root) {
+    if (!root || root.dataset.layoutHydrated === '1') return;
+    root.dataset.layoutHydrated = '1';
+
+    const surface = root.dataset.layoutSurface || '';
+    if (!surface) return;
+
+    /* Baseline = the server-rendered DOM order (the template default). */
+    const items = qsa(root, '.card-layout-item');
+    const baseline = items.map(i => i.dataset.cardId).filter(Boolean);
+    if (!baseline.length) return;
+
+    let data = null;
+    try {
+        const res = await fetch(
+            `/api?action=card_layout_get&surface=${encodeURIComponent(surface)}`,
+            { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }
+        );
+        if (res.ok) data = await res.json();
+    } catch {
+        /* Offline / signed-out — leave the default order untouched. */
+    }
+
+    if (data) {
+        const def = data.default  || { order: [], hidden: [] };
+        const ovr = data.override || { order: [], hidden: [] };
+        /* Override fully replaces the default when present (mirrors the
+           server resolver), else fall back to the system default. */
+        const saved = ((ovr.order && ovr.order.length) || (ovr.hidden && ovr.hidden.length))
+            ? ovr : def;
+        const eff = mergeLayout(baseline, saved);
+
+        /* Reorder: re-append each item in the resolved order (moves the
+           existing nodes; the grid holds only card-layout-items). */
+        const byId = new Map(items.map(i => [i.dataset.cardId, i]));
+        for (const id of eff.order) {
+            const node = byId.get(id);
+            if (node) root.appendChild(node);
+        }
+
+        /* Hide via Bootstrap's .d-none — its display:none!important beats a
+           loader that later reveals a section with an inline display, so a
+           user-hidden section stays hidden. */
+        const hideSet = new Set(eff.hidden);
+        for (const i of items) {
+            if (hideSet.has(i.dataset.cardId)) {
+                i.dataset.hidden = '1';
+                i.classList.add('d-none');
+            }
+        }
+
+        root.dataset.canCustomise  = data.canCustomiseOwn ? '1' : '0';
+        root.dataset.canSetDefault = data.canSetDefault   ? '1' : '0';
+
+        /* Reveal the toolbar only when the viewer may actually edit — no
+           dead "Customise" button for the logged-out majority. */
+        if (data.canCustomiseOwn || data.canSetDefault) {
+            document.getElementById('card-layout-toolbar')?.classList.remove('d-none');
+        }
+    }
+
+    initCardLayout(root);
 }
 
 /** Auto-init on DOMContentLoaded if the page already has a grid. */

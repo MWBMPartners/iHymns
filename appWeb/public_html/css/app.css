@@ -3484,3 +3484,46 @@ body.reduce-motion .theme-chip {
 body.reduce-motion .theme-chip:hover {
     transform: none;
 }
+
+/* ==========================================================================
+ * CUSTOMISABLE HOME SECTIONS — edit-mode chrome (#448)
+ * Public-home counterpart of the admin dashboard's card-layout styling
+ * (admin.css doesn't load here). Each top-level section is a full-width
+ * .card-layout-item; the .card-layout-handle strip is hidden until edit
+ * mode. Colours from Bootstrap theme tokens for dark / CVD / high-contrast.
+ * ========================================================================== */
+.card-layout-handle {
+    display: none;  /* shown only in edit mode */
+}
+.card-layout-editing .card-layout-item {
+    position: relative;
+    outline: 1px solid var(--bs-border-color-translucent, rgba(127, 127, 127, 0.25));
+    outline-offset: 6px;
+    border-radius: var(--radius-sm, 0.375rem);
+}
+.card-layout-editing .card-layout-handle {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: grab;
+    padding: 0.3rem 0.6rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--bs-secondary-color, #6c757d);
+    background-color: var(--bs-tertiary-bg, rgba(127, 127, 127, 0.08));
+    border: 1px dashed var(--bs-border-color, rgba(127, 127, 127, 0.4));
+    border-radius: var(--radius-sm, 0.375rem);
+}
+.card-layout-editing .card-layout-handle:active {
+    cursor: grabbing;
+}
+.card-layout-ghost {
+    opacity: 0.4;
+}
+/* The module injects the hide (×) button into the handle strip; push it
+   to the right end so the strip reads "≡ Drag to reorder … ×". */
+.card-layout-handle .card-layout-hide-btn {
+    margin-left: auto;
+    padding: 0 0.4rem;
+    line-height: 1.4;
+}
