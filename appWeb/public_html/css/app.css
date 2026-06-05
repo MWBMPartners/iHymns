@@ -3380,3 +3380,72 @@ body.offline-unsupported .offline-only {
     height: 1rem;
     border-width: 0.15em;
 }
+
+/* ==========================================================================
+ * LANGUAGE FILTER PICKER (#1149)
+ * Compact, searchable, multi-select dropdown that replaced the flat wall
+ * of bare ISO codes. Colours come from Bootstrap theme tokens (--bs-*)
+ * so dark / CVD / high-contrast parity is automatic — never hard-code hex.
+ * ========================================================================== */
+.songbook-language-filter .js-lang-filter-trigger {
+    max-width: 100%;
+}
+.songbook-language-filter .js-lang-filter-trigger-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+    max-width: 14rem;
+    display: inline-block;
+}
+.lang-filter-panel {
+    min-width: 17rem;
+    max-width: min(22rem, calc(100vw - 1.5rem));
+}
+.lang-filter-scroll {
+    max-height: 18rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+/* Each row is a full-width label wrapping its checkbox — the whole row
+   is the tap target (≥44px tall via the py-2 + line height). */
+.lang-filter-row {
+    cursor: pointer;
+    color: var(--bs-body-color);
+    transition: background-color 0.12s ease;
+}
+.lang-filter-row:hover,
+.lang-filter-row:focus-within {
+    background-color: var(--bs-tertiary-bg, rgba(127, 127, 127, 0.12));
+}
+.lang-filter-row--all {
+    border-bottom: 1px solid var(--bs-border-color-translucent, rgba(127, 127, 127, 0.2));
+}
+.lang-filter-name {
+    line-height: 1.2;
+}
+.lang-filter-meta {
+    font-size: 0.78rem;
+}
+.lang-filter-foot {
+    line-height: 1.35;
+}
+/* Below the sm breakpoint the dropdown panel goes near-full-width so
+   the search box + name rows stay comfortably tappable on phones. */
+@media (max-width: 575.98px) {
+    .lang-filter-panel {
+        min-width: min(20rem, calc(100vw - 1rem));
+        max-width: calc(100vw - 1rem);
+    }
+    .lang-filter-scroll {
+        max-height: 50vh;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .lang-filter-row {
+        transition: none;
+    }
+}
+body.reduce-motion .lang-filter-row {
+    transition: none;
+}

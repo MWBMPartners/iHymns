@@ -1,8 +1,8 @@
 /**
- * Songbook + song language filter (#679, extended in #736)
+ * Songbook + song language filter (#679, extended in #736, picker #1149)
  *
- * Wires the multi-select chip group rendered by the
- * /includes/partials/songbook-language-filter.php partial to:
+ * Wires the compact, searchable multi-select dropdown picker rendered by
+ * the /includes/partials/songbook-language-filter.php partial to:
  *
  *   1. A pure client-side hide/show pass over the songbook tiles
  *      currently rendered on the surrounding page.
@@ -244,6 +244,62 @@ export function bootSongbookLanguageFilter(root) {
     const optionCheckboxes = Array.from(wrapper.querySelectorAll('.js-songbook-language-filter-option'));
     if (!allCheckbox || optionCheckboxes.length === 0) return;
 
+    /* #1149 picker chrome — all optional (older cached markup may lack
+       them), so every reference is null-guarded. */
+    const triggerLabel = wrapper.querySelector('.js-lang-filter-trigger-label');
+    const countBadge   = wrapper.querySelector('.js-lang-filter-count');
+    const searchInput  = wrapper.querySelector('.js-lang-filter-search');
+    const emptyState   = wrapper.querySelector('.js-lang-filter-empty');
+    const statusRegion = wrapper.querySelector('[data-lang-filter-status]');
+    const optionRows   = Array.from(wrapper.querySelectorAll('.lang-filter-row[data-search]'));
+
+    /* Update the dropdown trigger's label + count badge to reflect the
+       current selection ("Languages: All" / "Languages: English,
+       Afrikaans +2"). #1149. */
+    function refreshTrigger(subtags) {
+        if (triggerLabel) {
+            if (subtags.length === 0) {
+                triggerLabel.textContent = 'Languages: All';
+            } else {
+                const names = subtags.map(sub => {
+                    const cb = optionCheckboxes.find(c => c.value === sub);
+                    return cb ? (cb.dataset.langName || sub.toUpperCase()) : sub.toUpperCase();
+                });
+                const shown = names.slice(0, 2).join(', ');
+                const extra = names.length > 2 ? ' +' + (names.length - 2) : '';
+                triggerLabel.textContent = 'Languages: ' + shown + extra;
+            }
+        }
+        if (countBadge) {
+            if (subtags.length > 0) {
+                countBadge.textContent = String(subtags.length);
+                countBadge.classList.remove('d-none');
+            } else {
+                countBadge.classList.add('d-none');
+            }
+        }
+    }
+
+    /* Filter the panel's language rows from the search box. The "All"
+       row is pinned (never filtered). Announces the match count to a
+       polite live region. #1149. */
+    function applySearch(term) {
+        const q = term.trim().toLowerCase();
+        let visible = 0;
+        optionRows.forEach(row => {
+            const hay = row.dataset.search || '';
+            const match = q === '' || hay.indexOf(q) !== -1;
+            row.classList.toggle('d-none', !match);
+            if (match) visible++;
+        });
+        if (emptyState) emptyState.classList.toggle('d-none', visible !== 0 || q === '');
+        if (statusRegion && q !== '') {
+            statusRegion.textContent = visible + (visible === 1 ? ' language' : ' languages') + ' match';
+        } else if (statusRegion) {
+            statusRegion.textContent = '';
+        }
+    }
+
     /* Sync UI state from saved subtag list. */
     function syncUiFromSubtags(subtags) {
         if (subtags.length === 0) {
@@ -254,6 +310,7 @@ export function bootSongbookLanguageFilter(root) {
             const set = new Set(subtags);
             optionCheckboxes.forEach(cb => { cb.checked = set.has(cb.value); });
         }
+        refreshTrigger(subtags);
     }
 
     /* Read current subtag list from UI state. */
@@ -281,6 +338,15 @@ export function bootSongbookLanguageFilter(root) {
         applyFilter(scope, subtags);
         applyHeaderToFetch(subtags);
         saveSubtagsToAccount(subtags);
+        refreshTrigger(subtags);
+    }
+
+    /* Wire the panel search box (#1149). Pure DOM filter over the
+       already-rendered rows — no fetch. */
+    if (searchInput) {
+        searchInput.addEventListener('input', () => applySearch(searchInput.value));
+        /* Clearing via the native search "✕" fires 'search'. */
+        searchInput.addEventListener('search', () => applySearch(searchInput.value));
     }
 
     allCheckbox.addEventListener('change', () => {
