@@ -92,6 +92,18 @@ function enforceChannelGate(?string $devStatus): void
     $entitlement = ($devStatus === 'Alpha') ? 'access_alpha' : 'access_beta';
     $role        = _channelGateCurrentRole();
 
+    /* Global Admin ALWAYS passes the gate — independent of the role→entitlement
+       map. Rationale: global_admin is the role that configures invite-only
+       gating + the access_alpha/access_beta mapping (it's the only role that can
+       reach /manage/entitlements), so it must never be possible to lock the
+       top-level admin OUT of the very channels they administer via a mis-set
+       entitlement. This is the safety hatch the gating UI's "you'll lock
+       yourself out" warning is really about. Keep this check BEFORE the
+       entitlement lookup so no map state can override it. */
+    if ($role === 'global_admin') {
+        return;
+    }
+
     if (userHasEntitlement($entitlement, $role)) {
         return; /* Pass-through for entitled users. */
     }

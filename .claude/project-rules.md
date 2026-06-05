@@ -260,7 +260,9 @@ iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihym
 - **Client-side bearer token in localStorage** is per-origin by W3C spec — each subdomain has its own. The frontend reads `localStorage.getItem('ihymns_auth_token')` and attaches it as `Authorization: Bearer …`. If main's localStorage is empty, the JS sets no Authorization header, but the browser still sends the `ihymns_auth` cookie automatically (default `credentials: 'same-origin'`), so the server still authenticates via the cookie fallback in `getAuthBearerToken()`.
 - **Cross-subdomain settings sync** (theme, font size, default songbook, etc.) goes via the `ihymns_sync` cookie at `.ihymns.app` scope — see `js/modules/subdomain-sync.js`. This is the ONLY lightweight-settings sharing mechanism; large data (setlists, favourites) is excluded by design.
 - **Service-worker caches** are per-origin too. A stale `?action=user_setlists` GET response on main can persist after the alpha-side sync wrote the new row to the shared DB. **Per-origin SW cache is the most common cause of "alpha data not appearing on main" symptoms** when the underlying DB row is verified-present.
-- **localStorage data** (setlists, favourites, history) is per-origin; sharing across subdomains requires explicit DB sync via the auth flow, not magic.
+- **localStorage data** (setlists, favourites, history) is per-origin; for **signed-in** users it is now a mirror of DB-first auto-sync (see Section 15), not the source of truth. For anonymous users it remains local-only.
+
+> **Update (2026-06, epic #1010):** The structural root cause behind most "subdomain X has the data but Y doesn't" reports was that **song reads served a per-environment `songs.json` file cache, never live MySQL** — so a write on alpha was invisible on main until that env's file regenerated. The DB-direct rewrite (Section 15) removed that cache entirely; song reads are now live on every subdomain. The diagnostic below still applies to *signed-in user data* (setlists/favourites) where a stale per-origin SW GET response can briefly lag the shared DB.
 
 **Diagnostic sequence when "subdomain X has the data but Y doesn't":**
 
@@ -268,3 +270,30 @@ iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihym
 2. On Y, DevTools → Application → check `ihymns_auth` cookie (Domain should be `.ihymns.app`, not the subdomain).
 3. On Y, run `fetch('/api?action=user_setlists').then(r=>r.json())` in the console — if it returns the data fresh, the SW cache is the culprit; unregister via DevTools → Application → Service Workers → Unregister, reload.
 4. Only after steps 1–3 rule everything out, suspect a server-side bug.
+
+## 15. DB-direct data layer (epic #1010 / WS-A–WS-K, 2026-06)
+
+The defining architecture rule post-rewrite: **every runtime read hits live MySQL; nothing materialises the whole corpus; a DB outage is a graceful 503, never stale data.**
+
+### 15.1 Reads are scoped — never whole-corpus
+
+`SongData::exportAsJson()`, `includes/songs_cache.php` / `songsCacheServe()`, the `?action=songs_json` endpoint and the editor `?action=load` corpus serve were **all removed in WS-J #1020**. Use the scoped readers instead:
+
+- `SongData::getSongsSlimIndex()` — lightweight id/number/title/songbook index (served by `/api?action=songs_index` to the PWA for offline + search).
+- `SongData::getSongs($abbr)` — one songbook (served by the editor's `?action=songbook_export`).
+- `SongData::getSongById()` — one full record (`?action=song_detail`, editor `load_song`).
+
+`SongData`'s constructor **throws** if there is no DB connection — there is no JSON fallback to silently fall back to. Reintroducing a whole-corpus loader (~140 MB PHP-array memory, the #929 OOM) or a server-side `songs.json` cache is a regression CLAUDE.md red-flags.
+
+### 15.2 Signed-in user data is DB-first auto-sync
+
+Setlists, favourites (+ their `Tags`), custom tags, and view-history sync to MySQL on every edit (WS-F/G, #1011/#1012):
+
+- **Authoritative-replace per edit** — the client sends its full current set; the server replaces and deletes-absent so deletions propagate (last-writer-wins).
+- **First-login MERGE backfill** — on a new device the client sends `mode=merge`; the server unions (no loss) and, for favourites, server-side `array_unique(array_merge(serverTags, incoming))` so cross-device tags survive.
+- The client `_syncReady` gate arms the destructive replace **only after** the merge has hydrated the local cache, so a fresh device can't clobber the server with its empty set.
+- localStorage is the **offline mirror**, not the source of truth. Anonymous users stay local-only.
+
+### 15.3 Maintenance mode + DB-down = themed 503 (never stale)
+
+`includes/maintenance.php` gates `index.php` + `api.php`. The `/manage/*` entry point, `app_status`, and `auth_*` are **structurally exempt** so an admin can never lock themselves out. `isDbConnectionFailure()` (in `db_mysql.php`) converts an unreachable DB into the same themed 503. The service worker caches only 2xx, so a 503 page is never cached → clean recovery once the DB/maintenance flag clears. Error surfaces render through `includes/error_page.php` (theme-aware, PWA-offline-capable).

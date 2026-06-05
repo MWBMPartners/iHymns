@@ -11,9 +11,12 @@ declare(strict_types=1);
  * Protected by session-based authentication — only authenticated
  * admin users can access this endpoint.
  *
- * ENDPOINTS:
- *   GET  api.php?action=load  — Read all song data from MySQL, returns JSON
- *   POST api.php?action=save  — Write song data to MySQL from POST body
+ * ENDPOINTS (all DB-direct — no songs.json file cache as of WS-J #1020):
+ *   GET  ?action=load_index       — slim song index for the sidebar
+ *   GET  ?action=load_song&id=…   — one full editable record
+ *   GET  ?action=load_songs       — batch full records for bulk ops
+ *   GET  ?action=songbook_export&abbr=…  — one songbook's songs as a bundle
+ *   POST ?action=save_song        — write one song's edits to MySQL
  *
  * SECURITY:
  *   - Requires authenticated session (via /manage/ auth system)
@@ -275,413 +278,176 @@ $action = $_GET['action'] ?? '';
 switch ($action) {
 
     /* -----------------------------------------------------------------
-     * LOAD — Read all song data from MySQL and return as JSON
+     * SONGBOOK_EXPORT — full song bundle for ONE songbook (WS-J #1020)
+     *
+     * Replaces the old whole-corpus 'load' case that /manage/songbooks.php
+     * downloaded and filtered client-side (~140 MB via the songs.json file
+     * cache). Now a DB-direct per-songbook query: SongData::getSongs($abbr)
+     * returns exactly the same rich per-song shape exportAsJson() produced,
+     * scoped to one songbook, so the export bundle is byte-equivalent without
+     * materialising the corpus. The songbook record (for the canonical export
+     * filename) is returned alongside.
+     *
+     * GET ?action=songbook_export&abbr=CP
      * ----------------------------------------------------------------- */
-    case 'load':
-        /* #932 — serve the precomputed corpus cache instead of
-           rebuilding from MySQL on every editor open.
-           SongData::exportAsJson() costs ~140 MB of PHP-array memory
-           on the ~12,370-song corpus (#929 OOM); reading the static
-           cache via readfile() costs <2 MB and is ~50× faster end-to-end.
-           Cache is regenerated on each save_song / bulk-import write,
-           plus from the admin dashboard regenerate button. The 512 MB
-           ini_set lives inside songsCacheRegenerate() so it only
-           applies when actually rebuilding. */
-        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-            . DIRECTORY_SEPARATOR . 'songs_cache.php';
+    case 'songbook_export':
+        $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
+        if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'A valid songbook abbreviation is required.']);
+            break;
+        }
         try {
             header('X-Content-Type-Options: nosniff');
-            songsCacheServe();
+            $songData = new SongData();
+            $songs = $songData->getSongs($abbr);
+            $songbook = null;
+            foreach ($songData->getSongbooks() as $b) {
+                $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
+                if ($bid === $abbr) { $songbook = $b; break; }
+            }
+            echo json_encode(['songs' => $songs, 'songbook' => $songbook]);
         } catch (\Throwable $e) {
-            /* \Throwable (not \Exception) so PHP \Error subclasses —
-               TypeError, ValueError, mysqli_sql_exception edge cases
-               etc. — also land in the JSON 500 path instead of
-               escaping into an HTML fatal-error response that the
-               editor's toast can't read. */
             http_response_code(500);
-            $logLine = sprintf(
-                '[iHymns Editor] Failed to load song data: %s: %s @ %s:%d',
-                get_class($e),
-                $e->getMessage(),
-                $e->getFile(),
-                $e->getLine()
-            );
-            error_log($logLine);
-
-            /* Persist the failure to tblActivityLog so the curator who
-               hit the 500 (and the curator triaging from the activity
-               log later) sees the same exception class + message +
-               file:line that the toast surfaces. Best-effort —
-               logActivityError swallows its own failures so a logging
-               outage can't compound the original 500. */
-            $stack = $e->getTraceAsString();
-            logActivityError(
-                'editor.load_failed',
-                'song_corpus',
-                '',
-                $e,
-                [
-                    /* Truncate the trace defensively — tblActivityLog.Details
-                       is JSON, so MySQL imposes its own size limit and a
-                       full PHP backtrace can blow past 64 KB on a deep
-                       call stack. 4 KB is plenty to identify the failing
-                       frame without flooding the table. */
-                    'trace' => mb_substr($stack, 0, 4096),
-                ]
-            );
-
-            /* Endpoint is editor+ gated (auth check at the top of this
-               file), so returning the real exception class + message
-               is safe and gives the toast something actionable. */
+            error_log('[iHymns Editor] songbook_export failed: ' . $e->getMessage());
+            logActivityError('editor.songbook_export_failed', 'songbook', $abbr, $e, [
+                'trace' => mb_substr($e->getTraceAsString(), 0, 4096),
+            ]);
             echo json_encode([
-                'error'   => 'Failed to load song data from database.',
-                'detail'  => get_class($e) . ': ' . $e->getMessage(),
-                'file'    => basename($e->getFile()) . ':' . $e->getLine(),
+                'error'  => 'Failed to export songbook.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
             ]);
         }
         break;
 
     /* -----------------------------------------------------------------
-     * SAVE — Write song data to MySQL from the POST body
+     * LOAD_INDEX — lightweight slim index for the editor sidebar (#1016)
+     *
+     * id/number/title/songbook/songbookName per song, NO lyrics or
+     * components. Replaces the whole-corpus 'load' on editor open so the
+     * editor stops downloading the ~140 MB corpus; the full per-song
+     * record is fetched on demand via 'load_song'. Returns the same
+     * { meta, songbooks, songs } envelope the client already consumes,
+     * just with lightweight song rows.
      * ----------------------------------------------------------------- */
-    case 'save':
+    case 'load_index':
+        try {
+            $songData = new SongData();
+            echo json_encode([
+                'meta'      => $songData->getMeta(),
+                'songbooks' => $songData->getSongbooks(),
+                'songs'     => $songData->getSongsSlimIndex(),
+            ]);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] load_index failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load song index.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * LOAD_SONG — full editable record for ONE song (#1016)
+     *
+     * Per-record live fetch used when the curator opens a song from the
+     * sidebar. Returns the same rich shape the corpus used to carry
+     * (components + every credit type + tags + translations + alt titles
+     * + external links + works + media), via SongData::getSongById().
+     * ----------------------------------------------------------------- */
+    case 'load_song':
+        $songId = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Song id is required.']);
+            break;
+        }
+        try {
+            $songData = new SongData();
+            $song = $songData->getSongById($songId);
+            if ($song === null) {
+                http_response_code(404);
+                echo json_encode(['error' => 'Song not found: ' . $songId]);
+            } else {
+                echo json_encode(['song' => $song]);
+            }
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[iHymns Editor] load_song failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load song.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * LOAD_SONGS — batch full-record fetch (#1016)
+     *
+     * POST { ids: [...] }. Returns the full editable record for each id,
+     * so the multi-select bulk operations (verify / move / export) work
+     * on COMPLETE songs. Without this, a bulk edit would mutate a slim
+     * sidebar stub and save_song would then DELETE-then-INSERT empty
+     * credits/components — wiping the song's lyrics + credits. Bounded so
+     * a pathological request can't fan out unboundedly.
+     * ----------------------------------------------------------------- */
+    case 'load_songs':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
-
-        /* Read and validate the POST body */
-        $rawBody = file_get_contents('php://input');
-        if (empty($rawBody)) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Empty request body.']);
+        $body = json_decode((string)file_get_contents('php://input'), true);
+        $ids  = (is_array($body) && isset($body['ids']) && is_array($body['ids'])) ? $body['ids'] : [];
+        if (empty($ids)) {
+            echo json_encode(['songs' => []]);
             break;
         }
-
-        /* Validate JSON structure */
-        $data = json_decode($rawBody, true);
-        if ($data === null) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Invalid JSON format.']);
-            break;
+        if (count($ids) > 2000) {
+            $ids = array_slice($ids, 0, 2000);
         }
-
-        /* Validate required top-level keys */
-        if (!isset($data['meta']) || !isset($data['songbooks']) || !isset($data['songs'])) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Invalid songs data structure. Required keys: meta, songbooks, songs.']);
-            break;
-        }
-
-        /* Save to MySQL using transaction */
         try {
-            $db = getDbMysqli();
-            $db->query("SET FOREIGN_KEY_CHECKS = 0");
-            $db->begin_transaction();
-
-            /* Clear existing data. New credit tables (#497) are TRUNCATEd
-               alongside the originals so a bulk import yields a clean
-               slate; the migration must have been run first or the query
-               will fail with a clear "Table … doesn't exist" error that
-               points the admin at /manage/setup-database. */
-            $db->query("TRUNCATE TABLE tblSongComponents");
-            $db->query("TRUNCATE TABLE tblSongComposers");
-            $db->query("TRUNCATE TABLE tblSongWriters");
-            $db->query("TRUNCATE TABLE tblSongArrangers");
-            $db->query("TRUNCATE TABLE tblSongAdaptors");
-            $db->query("TRUNCATE TABLE tblSongTranslators");
-            $db->query("TRUNCATE TABLE tblSongs");
-            $db->query("TRUNCATE TABLE tblSongbooks");
-
-            $db->query("SET FOREIGN_KEY_CHECKS = 1");
-
-            /* Insert songbooks */
-            $stmtSongbook = $db->prepare(
-                "INSERT INTO tblSongbooks (Abbreviation, Name, SongCount) VALUES (?, ?, ?)"
-            );
-            /* Build an IsOfficial lookup keyed by abbreviation so the
-               per-song INSERT below can null out Number for any song
-               whose songbook is unofficial (Misc and any custom
-               collection). #392. The payload's `isOfficial` is sourced
-               from SongData::getSongbooks() and is always boolean. */
-            $officialByAbbr = [];
-            foreach ($data['songbooks'] as $book) {
-                $abbr  = $book['id'];
-                $name  = $book['name'];
-                $count = (int)($book['songCount'] ?? 0);
-                $officialByAbbr[$abbr] = !empty($book['isOfficial']);
-                $stmtSongbook->bind_param('ssi', $abbr, $name, $count);
-                $stmtSongbook->execute();
-            }
-            $stmtSongbook->close();
-
-            /* #892 — schema-probe for tblSongs.ArrangementJson once
-               per bulk save so the per-song INSERT loop binds the
-               right column shape. Pre-migration deploys keep the
-               legacy 16-column INSERT. */
-            $hasArrangementCol = false;
-            try {
-                $arrProbe = $db->prepare(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME   = 'tblSongs'
-                        AND COLUMN_NAME  = 'ArrangementJson' LIMIT 1"
-                );
-                $arrProbe->execute();
-                $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
-                $arrProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
-
-            /* Prepare song statements. tblSongs INSERT now carries the
-               #497 TuneName + Iswc columns; both are nullable and bind
-               as the string types below (mysqli emits NULL when the
-               bound PHP value is null). */
-            if ($hasArrangementCol) {
-                $stmtSong = $db->prepare(
-                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText, ArrangementJson)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-            } else {
-                $stmtSong = $db->prepare(
-                    "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
-                     Language, Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-                );
-            }
-            $stmtWriter     = $db->prepare("INSERT INTO tblSongWriters     (SongId, Name) VALUES (?, ?)");
-            $stmtComposer   = $db->prepare("INSERT INTO tblSongComposers   (SongId, Name) VALUES (?, ?)");
-            $stmtArranger   = $db->prepare("INSERT INTO tblSongArrangers   (SongId, Name) VALUES (?, ?)");
-            $stmtAdaptor    = $db->prepare("INSERT INTO tblSongAdaptors    (SongId, Name) VALUES (?, ?)");
-            $stmtTranslator = $db->prepare("INSERT INTO tblSongTranslators (SongId, Name) VALUES (?, ?)");
-            /* Silently keep the credit-people registry in sync with every
-               name that lands in the five song-credit tables (#545).
-               Route through the shared helper so the new row carries
-               a Slug — direct `INSERT IGNORE (Name)` would default
-               Slug='' and silently no-op on every new credit once an
-               orphan empty-Slug row exists. The helper does its own
-               existence check so concurrent saves stay idempotent. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-            $stmtComponent  = $db->prepare(
-                "INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson)
-                 VALUES (?, ?, ?, ?, ?)"
-            );
-
-            /* Insert songs */
-            foreach ($data['songs'] as $song) {
-                $songId       = $song['id'];
-                $songbookAbbr = $song['songbook'];
-
-                /* Songs in non-official songbooks (Misc, custom
-                   collections) persist Number as NULL — and so does
-                   anything missing/zero/negative. The internal SongId
-                   ties the record together. #392. */
-                $rawNumber  = $song['number'] ?? null;
-                $isOfficial = !empty($officialByAbbr[$songbookAbbr]);
-                $number     = (!$isOfficial || $rawNumber === null || $rawNumber === '' || (int)$rawNumber <= 0)
-                    ? null
-                    : (int)$rawNumber;
-
-                $title        = $song['title'];
-                $songbookName = $song['songbookName'] ?? '';
-                /* Legacy bulk-save path. Soft-fallback on a malformed
-                   IETF tag rather than aborting the whole corpus save —
-                   the action 'save' rewrites every song and refusing
-                   one malformed entry would lose the curator's other
-                   work. The save_song single-song path 400s instead,
-                   which is the right behaviour there since the user is
-                   editing one row. (#681) */
-                $rawLang  = $song['language'] ?? 'en';
-                $validLang = _ietfBcp47Validate((string)$rawLang);
-                $language  = $validLang ?? 'en';
-                $copyright    = $song['copyright'] ?? '';
-                /* TuneName / Iswc: empty strings normalise to NULL so
-                   the indexed TuneName column groups "unknown" rows
-                   together and doesn't fragment on empty values. */
-                $tuneRaw      = trim((string)($song['tuneName'] ?? ''));
-                $tuneName     = $tuneRaw === '' ? null : $tuneRaw;
-                $ccli         = $song['ccli'] ?? '';
-                $iswcRaw      = trim((string)($song['iswc'] ?? ''));
-                $iswc         = $iswcRaw === '' ? null : $iswcRaw;
-                $verified     = (int)($song['verified'] ?? false);
-                $lyricsPD     = (int)($song['lyricsPublicDomain'] ?? false);
-                $musicPD      = (int)($song['musicPublicDomain'] ?? false);
-                $hasAudio     = (int)($song['hasAudio'] ?? false);
-                $hasSheet     = (int)($song['hasSheetMusic'] ?? false);
-
-                /* Build lyrics_text */
-                $lyricsLines = [];
-                foreach ($song['components'] ?? [] as $comp) {
-                    foreach ($comp['lines'] ?? [] as $line) {
-                        $lyricsLines[] = $line;
-                    }
+            $songData = new SongData();
+            $out = [];
+            foreach ($ids as $rawId) {
+                $id = trim((string)$rawId);
+                if ($id === '') {
+                    continue;
                 }
-                $lyricsText = implode("\n", $lyricsLines);
-
-                if ($hasArrangementCol) {
-                    /* #892 — round-trip the per-song arrangement when
-                       the column is present. The bulk-save path is
-                       used by the legacy "save the entire songs.json"
-                       flow, which already carries `arrangement` per
-                       song in the JSON shape. */
-                    $arrangementJson = _sanitiseArrangement(
-                        $song['arrangement'] ?? null,
-                        is_array($song['components'] ?? null) ? count($song['components']) : 0
-                    );
-                    $stmtSong->bind_param(
-                        'sissssssssiiiiiss',
-                        $songId, $number, $title, $songbookAbbr, $songbookName,
-                        $language, $copyright, $tuneName, $ccli, $iswc,
-                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
-                        $arrangementJson
-                    );
-                } else {
-                    $stmtSong->bind_param(
-                        'sissssssssiiiiis',
-                        $songId, $number, $title, $songbookAbbr, $songbookName,
-                        $language, $copyright, $tuneName, $ccli, $iswc,
-                        $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-                    );
-                }
-                $stmtSong->execute();
-
-                /* Credit collections — one table each. The registry sync
-                   (INSERT IGNORE into tblCreditPeople) runs once per
-                   credited name across all five collections, deduped
-                   per song so we don't fire identical INSERTs five
-                   times for someone credited in multiple roles on the
-                   same song. (#545) */
-                $regNames = [];
-                foreach ($song['writers']     ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtWriter->bind_param('ss', $songId, $v);     $stmtWriter->execute();     $regNames[$v] = true; } }
-                foreach ($song['composers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtComposer->bind_param('ss', $songId, $v);   $stmtComposer->execute();   $regNames[$v] = true; } }
-                foreach ($song['arrangers']   ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtArranger->bind_param('ss', $songId, $v);   $stmtArranger->execute();   $regNames[$v] = true; } }
-                foreach ($song['adaptors']    ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtAdaptor->bind_param('ss', $songId, $v);    $stmtAdaptor->execute();    $regNames[$v] = true; } }
-                foreach ($song['translators'] ?? [] as $v) { if (is_string($v) && $v !== '') { $stmtTranslator->bind_param('ss', $songId, $v); $stmtTranslator->execute(); $regNames[$v] = true; } }
-                foreach (array_keys($regNames) as $regName) {
-                    /* AKA / alias auto-detection. parseCreditPersonAliasHints
-                       only fires on conservative patterns (explicit
-                       a.k.a. / aka / "also known as" markers, or a
-                       slash-separated A / B with both halves looking
-                       like person names). Bare parentheticals like
-                       "(b. 1850)" are deliberately NOT matched —
-                       biographical content stays attached to the
-                       primary name. When no marker is detected,
-                       parseCreditPersonAliasHints returns
-                       ['name' => $regName, 'aliases' => []] so the
-                       legacy path runs unchanged.
-
-                       Registers the PRIMARY name as the registry row
-                       (so later edits land on the canonical form) and
-                       fires replaceCreditPersonAliases() to attach
-                       the discovered aliases. The 'other' Type marks
-                       them as auto-detected so a curator can re-classify
-                       (legal / artist / etc.) in the chip-list editor. */
-                    $hint    = parseCreditPersonAliasHints($regName);
-                    $primary = $hint['name'] !== '' ? $hint['name'] : $regName;
-                    $cpId    = registerCreditPersonByName($db, $primary);
-                    if (!empty($hint['aliases']) && $cpId > 0 && creditPeopleAliasesTableExists($db)) {
-                        $existing = loadCreditPersonAliases($db, $cpId);
-                        $merged   = $existing;
-                        $byName   = [];
-                        foreach ($merged as $a) { $byName[mb_strtolower($a['Name'])] = true; }
-                        $idx = count($merged);
-                        foreach ($hint['aliases'] as $aliasName) {
-                            if (isset($byName[mb_strtolower($aliasName)])) continue;
-                            $merged[] = [
-                                'Name'      => $aliasName,
-                                'SortName'  => null,
-                                'Type'      => 'other',
-                                'Locale'    => null,
-                                'IsPrimary' => 0,
-                                'SortOrder' => $idx++,
-                                'Note'      => 'auto-detected from bulk-import',
-                            ];
-                            $byName[mb_strtolower($aliasName)] = true;
-                        }
-                        /* Re-shape into the normaliser-friendly form
-                           (lower-case keys). replaceCreditPersonAliases
-                           deletes the existing set + re-inserts; passing
-                           the union keeps every prior alias intact
-                           alongside the new auto-detected ones. */
-                        $shaped = array_map(static function (array $a): array {
-                            return [
-                                'name'       => $a['Name'],
-                                'sort_name'  => $a['SortName']  ?? null,
-                                'type'       => $a['Type']      ?? 'other',
-                                'locale'     => $a['Locale']    ?? null,
-                                'is_primary' => (int)($a['IsPrimary'] ?? 0),
-                                'sort_order' => (int)($a['SortOrder'] ?? 0),
-                                'note'       => $a['Note']      ?? null,
-                            ];
-                        }, $merged);
-                        replaceCreditPersonAliases($db, $cpId, $shaped);
-                    }
-                }
-
-                /* Components */
-                $sortOrder = 0;
-                foreach ($song['components'] ?? [] as $comp) {
-                    $compType   = $comp['type'];
-                    $compNumber = (int)$comp['number'];
-                    $linesJson  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
-                    $stmtComponent->bind_param('ssiis', $songId, $compType, $compNumber, $sortOrder, $linesJson);
-                    $stmtComponent->execute();
-                    $sortOrder++;
+                $song = $songData->getSongById($id);
+                if ($song !== null) {
+                    $out[] = $song;
                 }
             }
-
-            $stmtSong->close();
-            $stmtWriter->close();
-            $stmtComposer->close();
-            $stmtArranger->close();
-            $stmtAdaptor->close();
-            $stmtTranslator->close();
-            $stmtComponent->close();
-            $stmtRegistry->close();
-
-            /*
-             * Import translation links from songs.json (#352).
-             * Each song may have a "translations" array with {songId, language} entries.
-             * Clear and re-import so translations stay in sync with the data file.
-             */
-            $db->query("DELETE FROM tblSongTranslations");
-            $stmtTrans = $db->prepare(
-                "INSERT IGNORE INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage)
-                 VALUES (?, ?, ?)"
-            );
-            foreach ($data['songs'] as $song) {
-                if (!empty($song['translations']) && is_array($song['translations'])) {
-                    $srcId = $song['id'];
-                    foreach ($song['translations'] as $tr) {
-                        $tgtId = $tr['songId'] ?? '';
-                        $lang  = $tr['language'] ?? '';
-                        if ($tgtId !== '' && $lang !== '') {
-                            $stmtTrans->bind_param('sss', $srcId, $tgtId, $lang);
-                            $stmtTrans->execute();
-                        }
-                    }
-                }
-            }
-            $stmtTrans->close();
-
-            $db->commit();
-
-            echo json_encode([
-                'success'   => true,
-                'songs'     => count($data['songs']),
-                'songbooks' => count($data['songbooks']),
-            ]);
-
-        } catch (\Exception $e) {
-            $db->rollback();
-            $db->query("SET FOREIGN_KEY_CHECKS = 1");
+            echo json_encode(['songs' => $out]);
+        } catch (\Throwable $e) {
             http_response_code(500);
-            error_log('[iHymns Editor] Save failed: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to save song data. Check server logs for details.']);
+            error_log('[iHymns Editor] load_songs failed: ' . $e->getMessage());
+            echo json_encode([
+                'error'  => 'Failed to load songs.',
+                'detail' => get_class($e) . ': ' . $e->getMessage(),
+            ]);
         }
+        break;
+
+    /* -----------------------------------------------------------------
+     * SAVE — RETIRED (#1016)
+     *
+     * The whole-corpus save (TRUNCATE-all + re-INSERT-all) was dead code
+     * — the editor saves per record via save_song — and a data-loss
+     * footgun: a malformed or partial POST body would wipe every song,
+     * songbook, credit, and component row. Per-record save_song is the
+     * only write path now. Kept as a guarded 410 so any stray caller
+     * gets a clear, safe error instead of silently destroying data.
+     * ----------------------------------------------------------------- */
+    case 'save':
+        http_response_code(410);
+        echo json_encode([
+            'error'  => 'The whole-corpus save endpoint has been retired (#1016). '
+                      . 'Use save_song for per-record writes.',
+            'action' => 'save_song',
+        ]);
         break;
 
     /* -----------------------------------------------------------------
@@ -1268,7 +1034,17 @@ switch ($action) {
         }
 
         $songId       = (string)$song['id'];
-        $songbookAbbr = (string)($song['songbook'] ?? '');
+        $songbookAbbr = trim((string)($song['songbook'] ?? ''));
+        /* Every song MUST belong to a songbook — tblSongs.SongbookAbbr is
+           NOT NULL with an FK to tblSongbooks. When a save arrives with no
+           songbook, default to the canonical generic "Misc" collection
+           rather than failing the INSERT on the constraint (or, on a
+           pre-FK install, silently creating an orphan with a blank
+           songbook). Misc is a seeded songbook whose Number is nullable,
+           so an unnumbered Misc song is valid. */
+        if ($songbookAbbr === '') {
+            $songbookAbbr = 'Misc';
+        }
 
         /* Probe tblSongbooks for IsOfficial so songs in unofficial
            songbooks (Misc, custom collections) can persist Number as
@@ -1392,14 +1168,14 @@ switch ($action) {
             if ($hasArrangementCol) {
                 $upsert = $db->prepare(
                     'INSERT INTO tblSongs
-                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                        (SongId, Number, Title, SongbookAbbr, Language,
                          Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
                          ArrangementJson)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
-                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        SongbookAbbr = VALUES(SongbookAbbr),
                         Language = VALUES(Language), Copyright = VALUES(Copyright),
                         TuneName = VALUES(TuneName),
                         Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
@@ -1410,9 +1186,11 @@ switch ($action) {
                         LyricsText = VALUES(LyricsText),
                         ArrangementJson = VALUES(ArrangementJson)'
                 );
+                /* SongbookName denorm column dropped (WS-E #1013 ph2) —
+                   16 cols / 16 placeholders / 16 bind types. */
                 $upsert->bind_param(
-                    'sissssssssiiiiiss',
-                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    'sisssssssiiiiiss',
+                    $songId, $number, $title, $songbookAbbr,
                     $language, $copyright, $tuneName, $ccli, $iswc,
                     $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
                     $arrangementJson
@@ -1420,13 +1198,13 @@ switch ($action) {
             } else {
                 $upsert = $db->prepare(
                     'INSERT INTO tblSongs
-                        (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                        (SongId, Number, Title, SongbookAbbr, Language,
                          Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                      ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
-                        SongbookAbbr = VALUES(SongbookAbbr), SongbookName = VALUES(SongbookName),
+                        SongbookAbbr = VALUES(SongbookAbbr),
                         Language = VALUES(Language), Copyright = VALUES(Copyright),
                         TuneName = VALUES(TuneName),
                         Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
@@ -1436,9 +1214,11 @@ switch ($action) {
                         HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
                         LyricsText = VALUES(LyricsText)'
                 );
+                /* SongbookName denorm column dropped (WS-E #1013 ph2) —
+                   15 cols / 15 placeholders / 15 bind types. */
                 $upsert->bind_param(
-                    'sissssssssiiiiis',
-                    $songId, $number, $title, $songbookAbbr, $songbookName,
+                    'sisssssssiiiiis',
+                    $songId, $number, $title, $songbookAbbr,
                     $language, $copyright, $tuneName, $ccli, $iswc,
                     $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
                 );
@@ -1628,6 +1408,26 @@ switch ($action) {
                 $colProbe->close();
             } catch (\Throwable $_e) { /* default false */ }
 
+            /* #1094 — schema-probe for the optional ChordsJson column (#1066).
+               When present, manual per-line chords are persisted via a guarded
+               UPDATE after each component INSERT (leaving the proven INSERT shape
+               untouched); pre-migration deploys simply skip it. */
+            $hasComponentChords = false;
+            try {
+                $chProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongComponents'
+                        AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+                );
+                $chProbe->execute();
+                $hasComponentChords = $chProbe->get_result()->fetch_row() !== null;
+                $chProbe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+            $updChords = $hasComponentChords
+                ? $db->prepare('UPDATE tblSongComponents SET ChordsJson = ? WHERE Id = ?')
+                : null;
+
             if ($hasComponentLanguage) {
                 $insComp = $db->prepare(
                     'INSERT INTO tblSongComponents
@@ -1661,9 +1461,38 @@ switch ($action) {
                     $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
                 }
                 $insComp->execute();
+
+                /* #1094 — persist manual per-line chords (parallel to LinesJson).
+                   comp['chords'][i] may be a space-separated string or an array
+                   of chord symbols; null-padded to the line count. Stored only
+                   when at least one line has chords. */
+                if ($updChords !== null && isset($comp['chords']) && is_array($comp['chords'])) {
+                    $lineCount = is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0;
+                    $chordsArr = [];
+                    $anyChords = false;
+                    for ($ci = 0; $ci < $lineCount; $ci++) {
+                        $cell = $comp['chords'][$ci] ?? null;
+                        if (is_array($cell)) {
+                            $clean = array_values(array_filter(array_map(static fn($c) => trim((string)$c), $cell), static fn($c) => $c !== ''));
+                        } elseif (is_string($cell) && trim($cell) !== '') {
+                            $clean = array_values(array_filter(preg_split('/\s+/', trim($cell)) ?: [], static fn($c) => $c !== ''));
+                        } else {
+                            $clean = null;
+                        }
+                        if ($clean !== null && $clean !== []) { $chordsArr[] = $clean; $anyChords = true; }
+                        else { $chordsArr[] = null; }
+                    }
+                    if ($anyChords) {
+                        $chordsJson = json_encode($chordsArr, JSON_UNESCAPED_UNICODE);
+                        $newCompId  = (int)$db->insert_id;
+                        $updChords->bind_param('si', $chordsJson, $newCompId);
+                        $updChords->execute();
+                    }
+                }
                 $order++;
             }
             $insComp->close();
+            if ($updChords !== null) { $updChords->close(); }
 
             /* Revision audit log (#400) — authenticated editors only.
                Silent no-op if the user isn't authenticated via the /manage
@@ -1939,14 +1768,10 @@ switch ($action) {
 
             $db->commit();
 
-            /* Refresh the on-disk songs cache so the editor's next
-               load (and the public PWA's next songs_json fetch) sees
-               the saved changes (#932). Best-effort — the user's save
-               has already committed; cache regen failure must not
-               undo it or surface as a save error. */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
-                . DIRECTORY_SEPARATOR . 'songs_cache.php';
-            songsCacheRegenerateBestEffort('editor.save_song');
+            /* WS-J #1020: no songs.json cache to refresh — all reads are now
+               live MySQL (editor sidebar via load_index, songbook export via
+               songbook_export, the PWA via the slim songs_index). The corpus
+               file cache + its regeneration hooks were removed. */
 
             echo json_encode(['ok' => true, 'songId' => $songId, 'action' => $action]);
         } catch (\Throwable $e) {
@@ -2763,6 +2588,9 @@ switch ($action) {
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
+        /* #1051 — opt-in title dedupe (default off = INSERT-only, backward
+           compatible for direct API callers that don't send the field). */
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));
         if (!class_exists('ZipArchive')) {
             http_response_code(500);
             echo json_encode(['error' => 'Server is missing the PHP zip extension.']);
@@ -2805,6 +2633,42 @@ switch ($action) {
         $tmpPath = (string)$_FILES['zip']['tmp_name'];
         $origName = (string)($_FILES['zip']['name'] ?? 'upload.zip');
         $userId   = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+
+        /* EasyWorship (#1058): an EW export zip carries a Songs.db (+ maybe
+           SongWords.db) rather than the .SourceSongData / OpenSong / OpenLyrics
+           song-file layout. Detect it and hand the whole archive to the
+           EasyWorship SQLite reader instead of the per-entry loop, so an EW
+           two-file export "just works" through this same Import button. */
+        try {
+            $ewProbe = new \ZipArchive();
+            if ($ewProbe->open($tmpPath) === true) {
+                $hasSongsDb = false;
+                for ($zi = 0; $zi < $ewProbe->numFiles; $zi++) {
+                    if (strtolower(basename((string)$ewProbe->getNameIndex($zi))) === 'songs.db') {
+                        $hasSongsDb = true;
+                        break;
+                    }
+                }
+                $ewProbe->close();
+                if ($hasSongsDb) {
+                    $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+                    if (!($summary['ok'] ?? false)) {
+                        http_response_code(400);
+                    } elseif (($summary['songs_created'] ?? 0) > 0) {
+                        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                            . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                        $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_zip_easyworship');
+                        if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                            $summary['maintenance'] = $_maint;
+                        }
+                    }
+                    echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+                    break;
+                }
+            }
+        } catch (\Throwable $ewE) {
+            error_log('[bulk_import_zip] EasyWorship probe failed: ' . $ewE->getMessage());
+        }
 
         /* Pre-flight: tblBulkImportJobs must exist. If migrate-bulk-
            import-jobs.php hasn't run yet we fall back to the
@@ -3094,6 +2958,7 @@ switch ($action) {
             echo json_encode(['error' => 'POST method required.']);
             break;
         }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
         if (!isset($_FILES['videopsalm']) || ($_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
             $err = $_FILES['videopsalm']['error'] ?? UPLOAD_ERR_NO_FILE;
             $msg = 'Upload failed.';
@@ -3131,12 +2996,15 @@ switch ($action) {
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {
-                /* Songs were actually written — refresh the on-disk
-                   songs cache (#932) plus run the stale-prefix
-                   probe as a belt-and-braces sweep. Best-effort. */
+                /* Songs were actually written — run the stale-prefix probe as a
+                   belt-and-braces sweep (the songs.json cache was removed in
+                   WS-J #1020, so there's nothing to regenerate). Best-effort.
+                   FIX: this case never assigned $db, so the previous
+                   songbookMaintenanceRun($db, …) threw a TypeError on a
+                   successful import (undefined → non-nullable \mysqli param). */
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
                     . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
-                $_maint = songbookMaintenanceRun($db, 'bulk_import_videopsalm');
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_videopsalm');
                 if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
                     $summary['maintenance'] = $_maint;
                 }
@@ -3146,6 +3014,453 @@ switch ($action) {
             http_response_code(500);
             error_log('[bulk_import_videopsalm] ' . $e->getMessage());
             echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_PPTX — PowerPoint worship deck import (#1095).
+     *   multipart field "pptx" = one .pptx deck.
+     * Parses slide text + segments into songs (PptxImporter); resolves each
+     * song's songbook from its "# <num>-<Songbook>" ref (existing songs dedup
+     * automatically). Decks not using that layout return ok:false + a warning
+     * so the frontend can offer submit-for-analysis (#1109). Same summary shape
+     * as the other importers. Legacy binary .ppt is rejected with guidance.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_pptx':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));
+        if (!isset($_FILES['pptx']) || ($_FILES['pptx']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['pptx']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE)
+                 ? 'Uploaded file is larger than the server limit.'
+                 : ($err === UPLOAD_ERR_NO_FILE ? 'No file received — expected a multipart upload with a "pptx" field.' : 'Upload failed.');
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+        if ((int)($_FILES['pptx']['size'] ?? 0) > 20 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded PowerPoint file exceeds the 20 MiB import limit.']);
+            break;
+        }
+        try {
+            $tmpPath  = (string)$_FILES['pptx']['tmp_name'];
+            $origName = (string)($_FILES['pptx']['name'] ?? 'deck.pptx');
+            /* Legacy binary .ppt is a different (OLE) format — guide the user. */
+            if (preg_match('/\.ppt$/i', $origName)) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Legacy .ppt is not supported. Please re-save the deck as .pptx (PowerPoint / Keynote / Google Slides → export as .pptx) and upload again.']);
+                break;
+            }
+            $summary = _bulkImport_processPptx($tmpPath, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_pptx] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_OPENLP — single OpenLyrics (.xml) song import (#1052).
+     *
+     * POST /manage/editor/api?action=bulk_import_openlp
+     *   multipart field "openlp" = one OpenLyrics .xml document.
+     *
+     * OpenLP "Export songs" writes one OpenLyrics .xml per song, each
+     * carrying its own <songbook name="…" entry="N"/> — so the songbook
+     * is derived from the file, not a folder convention. A whole FOLDER
+     * of OpenLyrics files exported as a .zip goes through the normal
+     * bulk_import_zip endpoint, which now content-sniffs .xml entries and
+     * routes OpenLyrics ones to the same parser (no folder convention).
+     *
+     * Insert-only — existing rows report as "skipped (existing)". Honours
+     * the #1051 dedupeMode flag. Returns the same summary shape as
+     * bulk_import_videopsalm so the frontend stays format-agnostic.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_openlp':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['openlp']) || ($_FILES['openlp']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['openlp']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with an "openlp" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A single OpenLyrics song is a few KiB; cap at the same 5 MiB
+           ceiling the other single-file path uses. */
+        $sizeBytes = (int)($_FILES['openlp']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded OpenLyrics file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['openlp']['tmp_name'];
+            $origName = (string)($_FILES['openlp']['name'] ?? 'song.xml');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processOpenLp($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_openlp');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_openlp] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_PRO6 — single ProPresenter 6 (.pro6) song import (#1057).
+     *
+     * POST /manage/editor/api?action=bulk_import_pro6
+     *   multipart field "pro6" = one .pro6 XML document.
+     *
+     * A .pro6 presentation is one song; it carries no songbook, so the
+     * song is filed under a single "ProPresenter Import" (PP6) songbook.
+     * Slide text is base64 RTF — decoded + flattened by the parser. A ZIP
+     * of .pro6 files goes through bulk_import_zip (handled inline there).
+     *
+     * Insert-only; honours the #1051 dedupeMode flag. Same summary shape
+     * as the other single-file import endpoints.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_pro6':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['pro6']) || ($_FILES['pro6']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['pro6']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "pro6" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A .pro6 can embed media references but the text doc itself is
+           small; cap at the same 5 MiB ceiling as the other single-file
+           paths. */
+        $sizeBytes = (int)($_FILES['pro6']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .pro6 file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['pro6']['tmp_name'];
+            $origName = (string)($_FILES['pro6']['name'] ?? 'song.pro6');
+            $body     = (string)file_get_contents($tmpPath);
+            if ($body === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processPro6($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_pro6');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_pro6] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_EASYWORSHIP — EasyWorship 6/7 SQLite import (#1058).
+     *
+     * POST /manage/editor/api?action=bulk_import_easyworship
+     *   multipart field "easyworship" = a Songs.db, OR a .zip containing
+     *   Songs.db (+ optional SongWords.db).
+     *
+     * Lyrics are RTF inside a SQLite `word` table; songs file under an
+     * "EasyWorship Import" (EW) songbook. Insert-only; honours #1051
+     * dedupeMode. Unlike the XML/JSON paths this passes the temp-file PATH
+     * to the processor (SQLite3 opens a file, not a string).
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_easyworship':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['easyworship']) || ($_FILES['easyworship']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['easyworship']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with an "easyworship" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        /* A full EasyWorship library can be larger than a single song file;
+           allow up to 64 MiB for the SQLite db / zip. */
+        $sizeBytes = (int)($_FILES['easyworship']['size'] ?? 0);
+        if ($sizeBytes > 64 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded EasyWorship file exceeds the 64 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['easyworship']['tmp_name'];
+            $origName = (string)($_FILES['easyworship']['name'] ?? 'Songs.db');
+            if (!is_uploaded_file($tmpPath)) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Invalid upload.']);
+                break;
+            }
+            $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_easyworship');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_easyworship] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_PROCLAIM — single Proclaim text/RTF song import (#1062).
+     *
+     * POST /manage/editor/api?action=bulk_import_proclaim
+     *   multipart field "proclaim" = one .txt or .rtf song export.
+     *
+     * Proclaim has no rich structured export, so one file = one song. Files
+     * under a "Proclaim Import" (PC) songbook. Insert-only; honours #1051.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_proclaim':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['proclaim']) || ($_FILES['proclaim']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['proclaim']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "proclaim" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        $sizeBytes = (int)($_FILES['proclaim']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded Proclaim file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['proclaim']['tmp_name'];
+            $origName = (string)($_FILES['proclaim']['name'] ?? 'song.txt');
+            $body     = (string)file_get_contents($tmpPath);
+            if (trim($body) === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processProclaim($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_proclaim');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_proclaim] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_FREESHOW — single FreeShow (.show) song import (#884).
+     *
+     * POST /manage/editor/api?action=bulk_import_freeshow
+     *   multipart field "freeshow" = one .show JSON document.
+     *
+     * One .show is one song; it carries no songbook, so it files under a
+     * "FreeShow Import" (FS) songbook. Round-trips with the FreeShow exporter
+     * (#1056). A ZIP of .show files goes through bulk_import_zip (inline).
+     * Insert-only; honours #1051.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_freeshow':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['freeshow']) || ($_FILES['freeshow']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['freeshow']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "freeshow" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+
+        $sizeBytes = (int)($_FILES['freeshow']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded .show file exceeds the 5 MiB import limit.']);
+            break;
+        }
+
+        try {
+            $tmpPath  = (string)$_FILES['freeshow']['tmp_name'];
+            $origName = (string)($_FILES['freeshow']['name'] ?? 'song.show');
+            $body     = (string)file_get_contents($tmpPath);
+            if (trim($body) === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processFreeShow($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_freeshow');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_freeshow] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
+     * EASYWORSHIP_EXPORT — build + stream an EasyWorship Songs.db (#1059).
+     *
+     * GET /manage/editor/api?action=easyworship_export&abbr=XX[&maxLinesPerSlide=N]
+     *   or &id=<SongId> for a single song. Streams a SQLite Songs.db
+     *   (song + word[RTF] tables) as a download.
+     *
+     * BETA / unverified: produces the core two-table schema the iHymns
+     * EasyWorship importer (#1058) round-trips; whether a live EasyWorship
+     * install reads it has not been confirmed.
+     * ----------------------------------------------------------------- */
+    case 'easyworship_export':
+        $abbr     = strtoupper(trim((string)($_GET['abbr'] ?? '')));
+        $oneId    = trim((string)($_GET['id'] ?? ''));
+        $maxLines = max(0, (int)($_GET['maxLinesPerSlide'] ?? 0));
+        try {
+            $songData = new SongData();
+            $songs    = [];
+            $stem     = 'EasyWorship';
+            if ($oneId !== '') {
+                $one = $songData->getSongById($oneId);
+                if ($one !== null) { $songs = [$one]; $stem = (string)($one['title'] ?? $oneId); }
+            } elseif ($abbr !== '') {
+                $songs = $songData->getSongs($abbr);
+                $stem  = $abbr;
+            }
+            if (empty($songs)) {
+                http_response_code(404);
+                echo json_encode(['error' => 'No songs found to export (pass ?abbr=<songbook> or ?id=<SongId>).']);
+                break;
+            }
+            $tmp = tempnam(sys_get_temp_dir(), 'ewexp_');
+            $n   = _ewExport_writeDb($tmp, $songs, $maxLines);
+            $fname = trim((string)preg_replace('/[^A-Za-z0-9 _\-]/', '', $stem));
+            if ($fname === '') { $fname = 'EasyWorship'; }
+            $fname .= ' Songs.db';
+            header('Content-Type: application/x-sqlite3');
+            header('Content-Disposition: attachment; filename="' . $fname . '"');
+            header('Content-Length: ' . filesize($tmp));
+            header('Cache-Control: no-store, no-cache, must-revalidate');
+            header('X-Song-Count: ' . $n);
+            readfile($tmp);
+            @unlink($tmp);
+            /* Streamed a binary file — don't fall through to the JSON default. */
+            return;
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[easyworship_export] ' . $e->getMessage());
+            echo json_encode(['error' => 'Export failed: ' . $e->getMessage()]);
         }
         break;
 
@@ -3405,8 +3720,10 @@ switch ($action) {
             $placeholders = implode(',', array_fill(0, count($skipped), '?'));
             $types        = str_repeat('s', count($skipped));
             $look = $db->prepare(
-                "SELECT SongId, Title, SongbookAbbr, SongbookName
-                   FROM tblSongs WHERE SongId IN ({$placeholders})"
+                "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
+                   FROM tblSongs s
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                  WHERE s.SongId IN ({$placeholders})"
             );
             $look->bind_param($types, ...$skipped);
             $look->execute();
@@ -4178,6 +4495,21 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             return ['skipped', null];
         }
 
+        /* #1051 — title-level dedupe. When the importer opted in, a
+           normalised-title match within the same songbook counts as an
+           existing song and is skipped — the SongId check above only
+           catches the SAME numbering scheme, so a song imported under a
+           different number would otherwise duplicate. Excludes the same
+           SongId (already handled above). Centralised here so EVERY
+           importer (OpenSong / VideoPsalm / OpenLP / …) inherits it. */
+        if (_bulkImport_dedupeMode() === 'skip-title') {
+            foreach (_bulkImport_findDuplicateCandidates($db, $songbookAbbr, $title) as $cand) {
+                if ($cand['SongId'] !== $songId) {
+                    return ['skipped', null];
+                }
+            }
+        }
+
         $db->begin_transaction();
 
         /* Plain INSERT — no ON DUPLICATE KEY clause, because we
@@ -4215,15 +4547,16 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             );
             $insert = $db->prepare(
                 'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                    (SongId, Number, Title, SongbookAbbr, Language,
                      Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                      MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
                      ArrangementJson)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
+            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
             $insert->bind_param(
-                'sissssssssiiiiiss',
-                $songId, $number, $title, $songbookAbbr, $songbookName,
+                'sisssssssiiiiiss',
+                $songId, $number, $title, $songbookAbbr,
                 $language, $copyright, $tuneName, $ccli, $iswc,
                 $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
                 $arrangementJson
@@ -4231,14 +4564,15 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         } else {
             $insert = $db->prepare(
                 'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, SongbookName, Language,
+                    (SongId, Number, Title, SongbookAbbr, Language,
                      Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                      MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
             );
+            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
             $insert->bind_param(
-                'sissssssssiiiiis',
-                $songId, $number, $title, $songbookAbbr, $songbookName,
+                'sisssssssiiiiis',
+                $songId, $number, $title, $songbookAbbr,
                 $language, $copyright, $tuneName, $ccli, $iswc,
                 $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
             );
@@ -4294,6 +4628,103 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         try { $db->rollback(); } catch (\Throwable $_e) {}
         return ['fail', $e->getMessage()];
     }
+}
+
+/**
+ * Dedupe-on-import matcher (#1051) — shared by every importer.
+ *
+ * Today bulk-import dedupes only on SongId (<ABBR>-<NNNN>); a song imported
+ * under a different numbering scheme slips past it and creates a true
+ * duplicate. These two PURE helpers add matching on songbook + NORMALISED
+ * title so importers can detect existing songs before insert and offer
+ * skip / merge / replace. No DB writes; reused by the preview endpoint and
+ * (next) the processZip main flow.
+ */
+
+/**
+ * Normalise a title for fuzzy comparison: ASCII-fold accents, lowercase,
+ * drop all punctuation, collapse whitespace. "O God, Our Help in Ages Past"
+ * and "O God Our Help in Ages Past" normalise to the same string.
+ */
+function _bulkImport_normalizeTitle(string $title): string
+{
+    /* Delegate to the shared normaliser (#1064) so the bulk-import matcher,
+       the lyrics-ingest song resolver and the duplicate-songs page all fold
+       titles identically. require_once is idempotent + cheap. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
+    return ihymns_normalize_title($title);
+}
+
+/**
+ * Find existing songs in the same songbook whose NORMALISED title matches
+ * (exactly, or within `levThreshold` edits). Bound param on the songbook —
+ * no string-interpolated SQL (per the repo SQL rules); fuzzy matching is
+ * done in PHP via levenshtein() on the normalised strings.
+ *
+ * @return array<int,array{SongId:string,Title:string,Number:?int,matchType:string,distance:int}>
+ */
+function _bulkImport_findDuplicateCandidates(\mysqli $db, string $songbookAbbr, string $title, int $levThreshold = 2): array
+{
+    $norm = _bulkImport_normalizeTitle($title);
+    if ($norm === '' || $songbookAbbr === '') {
+        return [];
+    }
+    $stmt = $db->prepare(
+        "SELECT SongId, Title, Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
+    );
+    $stmt->bind_param('s', $songbookAbbr);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    $matches = [];
+    foreach ($rows as $r) {
+        $cn = _bulkImport_normalizeTitle((string)$r['Title']);
+        if ($cn === '') {
+            continue;
+        }
+        if ($cn === $norm) {
+            $matches[] = [
+                'SongId'    => (string)$r['SongId'],
+                'Title'     => (string)$r['Title'],
+                'Number'    => $r['Number'] !== null ? (int)$r['Number'] : null,
+                'matchType' => 'exact-normalized',
+                'distance'  => 0,
+            ];
+            continue;
+        }
+        /* PHP levenshtein() caps inputs at 255 bytes — skip pathologically long titles. */
+        if (strlen($cn) <= 255 && strlen($norm) <= 255) {
+            $d = levenshtein($cn, $norm);
+            if ($d <= $levThreshold) {
+                $matches[] = [
+                    'SongId'    => (string)$r['SongId'],
+                    'Title'     => (string)$r['Title'],
+                    'Number'    => $r['Number'] !== null ? (int)$r['Number'] : null,
+                    'matchType' => 'fuzzy',
+                    'distance'  => $d,
+                ];
+            }
+        }
+    }
+    return $matches;
+}
+
+/**
+ * Per-request dedupe mode for the current import (#1051). Set once by the
+ * import action handler from the posted `dedupeMode`, read by
+ * _bulkImport_saveSong() so every importer honours it without threading the
+ * value through each parse loop. Values: 'off' (default — INSERT-only) |
+ * 'skip-title' (skip a normalised-title match in the same songbook).
+ * (Future: 'replace-title' / interactive merge.)
+ */
+function _bulkImport_dedupeMode(?string $set = null): string
+{
+    static $mode = 'off';
+    if ($set !== null) {
+        $mode = in_array($set, ['off', 'skip-title'], true) ? $set : 'off';
+    }
+    return $mode;
 }
 
 /**
@@ -4653,7 +5084,7 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        the songbook on first encounter, then parse + save the song. */
     $songbookSeen      = [];   // abbrev → (created|existing) — caches the songbook upsert per archive
     $songbookCounters  = [];   // abbrev → next auto-assigned number (OpenSong fallback, #882)
-    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0];
+    $songsParsedByKind = ['txt' => 0, 'opensong' => 0, 'videopsalm' => 0, 'openlyrics' => 0, 'propresenter6' => 0, 'freeshow' => 0];
 
     for ($i = 0; $i < $entryCount; $i++) {
         /* Periodic progress flush every $PROGRESS_BATCH iterations so
@@ -4701,6 +5132,10 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             $kind = 'opensong';
         } elseif ($ext === 'json') {
             $kind = 'videopsalm';
+        } elseif ($ext === 'pro6') {
+            $kind = 'pro6';
+        } elseif ($ext === 'show') {
+            $kind = 'freeshow';
         } else {
             continue;
         }
@@ -4766,6 +5201,167 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
                     $songsFailed++;
                     $_perBookBump($vpAbbr, $vpName, 'failed', 'save failed: ' . $saveErr, $name . ': ' . ($song['id'] ?? '?'), null, 'save');
                 }
+            }
+            continue;
+        }
+
+        /* OpenLyrics / OpenLP (#1052): per-song .xml files that carry their
+           own songbook metadata inside <songbooks><songbook name="…"
+           entry="N"/></songbooks>, so — like VideoPsalm — they don't follow
+           the "<Title> [<ABBR>]/" folder convention. Content-sniff the .xml
+           (an OpenSong .xml has neither the namespace nor <verse name>) and,
+           when it's OpenLyrics, handle it inline (songbook from the XML, or
+           the file's own basename) and continue; otherwise fall through to
+           the OpenSong path below. */
+        if ($kind === 'opensong') {
+            $peek = $zip->getFromIndex($i);
+            if ($peek !== false && _bulkImport_looksLikeOpenLyrics($peek)) {
+                [$olParsed, $olReason] = _bulkImport_parseOpenLyrics($peek);
+                if ($olParsed === null) {
+                    $errors[] = ['entry' => $name, 'error' => 'OpenLyrics parse failed: ' . $olReason];
+                    $songsFailed++;
+                    continue;
+                }
+                $olName = (string)$olParsed['songbookName'] !== ''
+                    ? (string)$olParsed['songbookName']
+                    : pathinfo($name, PATHINFO_FILENAME);
+                $olAbbr = _bulkImport_videopsalmAbbrevFromHint($name, $olName);
+                if (!isset($songbookSeen[$olAbbr])) {
+                    $state = _bulkImport_upsertSongbook($db, $olAbbr, $olName, ($olParsed['language'] ?? '') ?: null);
+                    $songbookSeen[$olAbbr] = $state;
+                    if ($state === 'created') { $songbooksCreated[] = $olAbbr; }
+                    else                       { $songbooksExisting[] = $olAbbr; }
+                }
+                if (!isset($songbookCounters[$olAbbr])) {
+                    $songbookCounters[$olAbbr] = _bulkImport_nextSongNumberFor($db, $olAbbr);
+                }
+                $olNumber = (int)$olParsed['entry'] > 0 ? (int)$olParsed['entry'] : $songbookCounters[$olAbbr];
+                $songbookCounters[$olAbbr] = max($songbookCounters[$olAbbr], $olNumber) + 1;
+                $olSong = _bulkImport_assembleSong($olParsed, $olAbbr, $olName, $olNumber);
+                [$olAction, $olErr] = _bulkImport_saveSong($db, $olSong);
+                if ($olAction === 'create') {
+                    $songsCreated++;
+                    $songsParsedByKind['openlyrics']++;
+                    $_perBookBump($olAbbr, $olName, 'created');
+                } elseif ($olAction === 'skipped') {
+                    $songsSkippedExisting++;
+                    $_perBookBump($olAbbr, $olName, 'skipped');
+                    if (isset($olSong['id']) && $olSong['id'] !== '') {
+                        $skippedSongIds[] = (string)$olSong['id'];
+                    }
+                } else {
+                    $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $olErr];
+                    $songsFailed++;
+                    $_perBookBump($olAbbr, $olName, 'failed', 'save failed: ' . $olErr, $name, $olNumber ?: null, 'save');
+                }
+                continue;
+            }
+        }
+
+        /* ProPresenter 6 (#1057): each .pro6 is one song and carries no
+           songbook. Handle inline (no folder convention): the song is filed
+           under the immediate parent folder's name when present (so a
+           curator can group .pro6 files into per-songbook folders), else a
+           default "ProPresenter Import" (PP6) songbook. Slide text is base64
+           RTF, decoded by the parser. */
+        if ($kind === 'pro6') {
+            $p6body = $zip->getFromIndex($i);
+            if ($p6body === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$p6Parsed, $p6Reason] = _bulkImport_parsePro6($p6body);
+            if ($p6Parsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'ProPresenter 6 parse failed: ' . $p6Reason];
+                $songsFailed++;
+                continue;
+            }
+            $p6Segments = explode('/', $name);
+            $p6Folder   = count($p6Segments) >= 2 ? $p6Segments[count($p6Segments) - 2] : '';
+            $p6Name     = $p6Folder !== '' ? $p6Folder : 'ProPresenter Import';
+            $p6Abbr     = $p6Folder !== '' ? _bulkImport_videopsalmAbbrevFromHint($p6Folder, $p6Name) : 'PP6';
+            if ($p6Abbr === 'VP' || $p6Abbr === '') { $p6Abbr = 'PP6'; }
+            if (!isset($songbookSeen[$p6Abbr])) {
+                $state = _bulkImport_upsertSongbook($db, $p6Abbr, $p6Name, null);
+                $songbookSeen[$p6Abbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $p6Abbr; }
+                else                       { $songbooksExisting[] = $p6Abbr; }
+            }
+            if (!isset($songbookCounters[$p6Abbr])) {
+                $songbookCounters[$p6Abbr] = _bulkImport_nextSongNumberFor($db, $p6Abbr);
+            }
+            $p6Number = $songbookCounters[$p6Abbr];
+            $songbookCounters[$p6Abbr] = $p6Number + 1;
+            $p6Song = _bulkImport_assembleSong($p6Parsed, $p6Abbr, $p6Name, $p6Number);
+            [$p6Action, $p6Err] = _bulkImport_saveSong($db, $p6Song);
+            if ($p6Action === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['propresenter6']++;
+                $_perBookBump($p6Abbr, $p6Name, 'created');
+            } elseif ($p6Action === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($p6Abbr, $p6Name, 'skipped');
+                if (isset($p6Song['id']) && $p6Song['id'] !== '') {
+                    $skippedSongIds[] = (string)$p6Song['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $p6Err];
+                $songsFailed++;
+                $_perBookBump($p6Abbr, $p6Name, 'failed', 'save failed: ' . $p6Err, $name, $p6Number ?: null, 'save');
+            }
+            continue;
+        }
+
+        /* FreeShow (#884): each .show is one song and carries no songbook.
+           Handle inline (no folder convention): file under the parent folder
+           name when present (so curators can group .show files into
+           per-songbook folders), else a default "FreeShow Import" (FS). */
+        if ($kind === 'freeshow') {
+            $fsBody = $zip->getFromIndex($i);
+            if ($fsBody === false) {
+                $errors[] = ['entry' => $name, 'error' => 'could not read entry'];
+                $songsFailed++;
+                continue;
+            }
+            [$fsParsed, $fsReason] = _bulkImport_parseFreeShow($fsBody);
+            if ($fsParsed === null) {
+                $errors[] = ['entry' => $name, 'error' => 'FreeShow parse failed: ' . $fsReason];
+                $songsFailed++;
+                continue;
+            }
+            $fsSegments = explode('/', $name);
+            $fsFolder   = count($fsSegments) >= 2 ? $fsSegments[count($fsSegments) - 2] : '';
+            $fsName     = $fsFolder !== '' ? $fsFolder : 'FreeShow Import';
+            $fsAbbr     = $fsFolder !== '' ? _bulkImport_videopsalmAbbrevFromHint($fsFolder, $fsName) : 'FS';
+            if ($fsAbbr === 'VP' || $fsAbbr === '') { $fsAbbr = 'FS'; }
+            if (!isset($songbookSeen[$fsAbbr])) {
+                $state = _bulkImport_upsertSongbook($db, $fsAbbr, $fsName, null);
+                $songbookSeen[$fsAbbr] = $state;
+                if ($state === 'created') { $songbooksCreated[] = $fsAbbr; }
+                else                       { $songbooksExisting[] = $fsAbbr; }
+            }
+            if (!isset($songbookCounters[$fsAbbr])) {
+                $songbookCounters[$fsAbbr] = _bulkImport_nextSongNumberFor($db, $fsAbbr);
+            }
+            $fsNumber = $songbookCounters[$fsAbbr];
+            $songbookCounters[$fsAbbr] = $fsNumber + 1;
+            $fsSong = _bulkImport_assembleSong($fsParsed, $fsAbbr, $fsName, $fsNumber);
+            [$fsAction, $fsErr] = _bulkImport_saveSong($db, $fsSong);
+            if ($fsAction === 'create') {
+                $songsCreated++;
+                $songsParsedByKind['freeshow']++;
+                $_perBookBump($fsAbbr, $fsName, 'created');
+            } elseif ($fsAction === 'skipped') {
+                $songsSkippedExisting++;
+                $_perBookBump($fsAbbr, $fsName, 'skipped');
+                if (isset($fsSong['id']) && $fsSong['id'] !== '') {
+                    $skippedSongIds[] = (string)$fsSong['id'];
+                }
+            } else {
+                $errors[] = ['entry' => $name, 'error' => 'save failed: ' . $fsErr];
+                $songsFailed++;
+                $_perBookBump($fsAbbr, $fsName, 'failed', 'save failed: ' . $fsErr, $name, $fsNumber ?: null, 'save');
             }
             continue;
         }
@@ -5521,4 +6117,1541 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
         'parsed_by_format'       => ['videopsalm' => $songsCreated + $songsSkippedExisting],
         'errors'                 => $errors,
     ];
+}
+
+/* ===========================================================================
+ *  OpenLP / OpenLyrics import (#1052)
+ * ---------------------------------------------------------------------------
+ * OpenLP exports each song as a standalone OpenLyrics XML file
+ * (http://openlyrics.info). Unlike the .SourceSongData / OpenSong ZIP
+ * layout, OpenLyrics carries its OWN songbook metadata inside
+ * <properties><songbooks><songbook name="…" entry="N"/> — so, like the
+ * VideoPsalm path, these files do NOT follow the "<Title> [<ABBR>]/" folder
+ * convention. The functions below parse one OpenLyrics document into the
+ * shared song shape that _bulkImport_saveSong() consumes (inheriting the
+ * #1051 title-dedupe), and a single-file processor mirrors
+ * _bulkImport_processVideoPsalm() for the bulk_import_openlp action.
+ *
+ * A ZIP of OpenLyrics files is handled inline by _bulkImport_processZip()
+ * (it content-sniffs .xml entries via _bulkImport_looksLikeOpenLyrics() and
+ * routes OpenLyrics ones here instead of the OpenSong parser).
+ * =========================================================================== */
+
+/**
+ * Cheap content sniff: is this XML body an OpenLyrics document?
+ * Avoids a full parse — used to disambiguate OpenLyrics .xml from OpenSong
+ * .xml inside the generic ZIP import loop.
+ */
+function _bulkImport_looksLikeOpenLyrics(string $body): bool
+{
+    $head = substr($body, 0, 4096);
+    if (stripos($head, 'openlyrics.info') !== false) {
+        return true;
+    }
+    /* Namespace may be absent on some exports; fall back to the structural
+       fingerprint OpenSong never has: a <verse name="…"> with a <lines>
+       child. */
+    return (bool)preg_match('/<verse\b[^>]*\bname=/i', $body)
+        && stripos($body, '<lines') !== false;
+}
+
+/**
+ * Map an OpenLyrics verse `name` (v1, c, c2, b, p, e, i, o, …) to an
+ * [iHymns component type, number] pair.
+ */
+function _bulkImport_openLyricsVerseType(string $name): array
+{
+    $letter = 'v';
+    $num    = 0;
+    if (preg_match('/^([A-Za-z]+)\s*(\d*)$/', trim($name), $m)) {
+        $letter = strtolower($m[1]);
+        $num    = $m[2] !== '' ? (int)$m[2] : 0;
+    }
+    $map = [
+        'v' => 'verse', 'c' => 'chorus', 'b' => 'bridge', 'p' => 'pre-chorus',
+        'r' => 'refrain', 'e' => 'outro', 'i' => 'intro', 'o' => 'outro',
+        't' => 'outro',
+    ];
+    return [$map[$letter] ?? 'refrain', $num];
+}
+
+/**
+ * Flatten one OpenLyrics <lines> element into an array of plain-text lines.
+ * <br/> separates lines; <comment>/<chord>/<tag> and any other inline markup
+ * is stripped (iHymns is lyrics-only).
+ */
+function _bulkImport_openLyricsLinesToArray(\SimpleXMLElement $linesNode): array
+{
+    $inner = (string)$linesNode->asXML();
+    $inner = (string)preg_replace('#^<lines\b[^>]*>#i', '', $inner);
+    $inner = (string)preg_replace('#</lines>\s*$#i', '', $inner);
+    /* Self-closing or paired <br> → newline. */
+    $inner = (string)preg_replace('#<br\s*/?>#i', "\n", $inner);
+    /* Drop comments wholesale (including their text), then any remaining
+       inline markup (chords, tags) leaving the bare lyric text. */
+    $inner = (string)preg_replace('#<comment\b[^>]*>.*?</comment>#is', '', $inner);
+    $inner = (string)preg_replace('#<[^>]+>#', '', $inner);
+    $text  = html_entity_decode($inner, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    $lines = array_map('rtrim', explode("\n", $text));
+    /* Trim leading / trailing blank lines but preserve internal spacing. */
+    while (!empty($lines) && trim($lines[0]) === '')          array_shift($lines);
+    while (!empty($lines) && trim((string)end($lines)) === '') array_pop($lines);
+    return $lines;
+}
+
+/**
+ * Parse one OpenLyrics XML document into a neutral structure (no songbook
+ * abbreviation / number / SongId resolution — the caller does that, since it
+ * depends on the live DB auto-increment).
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ *   parsed = { title, songbookName, entry, language, ccli, copyright,
+ *              writers[], components[] }
+ */
+function _bulkImport_parseOpenLyrics(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    /* Strip namespace declarations so plain SimpleXML traversal works
+       regardless of the OpenLyrics namespace year (2009/…). We only read
+       local element/attribute names, so dropping namespaces is safe. */
+    $clean = (string)preg_replace('/\sxmlns(:\w+)?\s*=\s*("|\').*?\2/i', '', $body);
+
+    $prevInternal = libxml_use_internal_errors(true);
+    libxml_clear_errors();
+    $xml = simplexml_load_string($clean, \SimpleXMLElement::class, LIBXML_NONET);
+    if ($xml === false) {
+        $err = libxml_get_last_error();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevInternal);
+        return [null, 'invalid XML' . ($err ? ': ' . trim($err->message) : '')];
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($prevInternal);
+
+    if (strtolower($xml->getName()) !== 'song') {
+        return [null, 'XML root is <' . $xml->getName() . '>, expected <song>'];
+    }
+
+    $props = $xml->properties ?? null;
+    $title = $props ? trim((string)($props->titles->title ?? '')) : '';
+    if ($title === '') {
+        return [null, 'no <title> element'];
+    }
+
+    /* Authors — OpenLyrics lists one <author> per credit. */
+    $writers = [];
+    if ($props && isset($props->authors->author)) {
+        foreach ($props->authors->author as $a) {
+            $w = trim((string)$a);
+            if ($w !== '') {
+                $writers[] = $w;
+            }
+        }
+    }
+
+    $copyright = $props ? trim((string)($props->copyright ?? '')) : '';
+    $ccli      = $props ? trim((string)($props->ccliNo ?? '')) : '';
+
+    /* Songbook name + entry number (the first <songbook> wins). */
+    $songbookName = '';
+    $entry        = 0;
+    if ($props && isset($props->songbooks->songbook)) {
+        $sb           = $props->songbooks->songbook[0];
+        $songbookName = trim((string)($sb['name'] ?? ''));
+        $entryRaw     = trim((string)($sb['entry'] ?? ''));
+        if ($entryRaw !== '' && ctype_digit($entryRaw)) {
+            $entry = (int)$entryRaw;
+        }
+    }
+
+    /* Song-level language: OpenLyrics may set xml:lang on <verse> or on a
+       <title lang>; we read the first verse's lang as a best-effort hint. */
+    $language = '';
+
+    $components = [];
+    if (isset($xml->lyrics->verse)) {
+        foreach ($xml->lyrics->verse as $verse) {
+            [$type, $num] = _bulkImport_openLyricsVerseType((string)($verse['name'] ?? 'v'));
+            if ($language === '' && isset($verse['lang'])) {
+                $language = trim((string)$verse['lang']);
+            }
+            $lines = [];
+            foreach (($verse->lines ?? []) as $linesNode) {
+                foreach (_bulkImport_openLyricsLinesToArray($linesNode) as $ln) {
+                    $lines[] = $ln;
+                }
+            }
+            if (!empty($lines)) {
+                $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+            }
+        }
+    }
+    if (empty($components)) {
+        return [null, 'no <verse>/<lines> content found'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => $songbookName,
+        'entry'        => $entry,
+        'language'     => $language,
+        'ccli'         => $ccli,
+        'copyright'    => $copyright,
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Assemble a neutral parsed structure into the song shape that
+ * _bulkImport_saveSong() consumes (mirrors _bulkImport_parseOpenSong()).
+ * Format-agnostic: any importer whose parser returns the
+ * { title, language, ccli, copyright, writers[], components[] } keys can
+ * reuse this (OpenLyrics #1052, ProPresenter 6 #1057, …).
+ */
+function _bulkImport_assembleSong(array $parsed, string $abbr, string $songbookName, int $number): array
+{
+    return [
+        'id'                 => sprintf('%s-%04d', strtoupper($abbr), $number),
+        'title'              => (string)$parsed['title'],
+        'number'             => $number,
+        'songbook'           => strtoupper($abbr),
+        'songbookName'       => $songbookName,
+        'language'           => ($parsed['language'] ?? '') !== '' ? (string)$parsed['language'] : 'en',
+        'ccli'               => (string)($parsed['ccli'] ?? ''),
+        'iswc'               => '',
+        'tuneName'           => '',
+        'copyright'          => (string)($parsed['copyright'] ?? ''),
+        'verified'           => 0,
+        'lyricsPublicDomain' => 0,
+        'musicPublicDomain'  => 0,
+        'hasAudio'           => 0,
+        'hasSheetMusic'      => 0,
+        'writers'            => (array)($parsed['writers'] ?? []),
+        'composers'          => [],
+        'arrangers'          => [],
+        'adaptors'           => [],
+        'translators'        => [],
+        'components'         => (array)($parsed['components'] ?? []),
+    ];
+}
+
+/**
+ * Synchronous single-file OpenLyrics import — invoked from the
+ * bulk_import_openlp dispatcher case. Returns the same summary shape as
+ * _bulkImport_processVideoPsalm() / _bulkImport_processZip().
+ */
+function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseOpenLyrics($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'OpenLyrics parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['openlyrics' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $bookName = (string)$parsed['songbookName'] !== ''
+        ? (string)$parsed['songbookName']
+        : (pathinfo((string)$filenameHint, PATHINFO_FILENAME) ?: 'OpenLP Import');
+    $abbr  = _bulkImport_videopsalmAbbrevFromHint($filenameHint, $bookName);
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, ($parsed['language'] ?? '') ?: null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = (int)$parsed['entry'] > 0
+        ? (int)$parsed['entry']
+        : _bulkImport_nextSongNumberFor($db, $abbr);
+    $song = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create') {
+        $songsCreated = 1;
+    } elseif ($action === 'skipped') {
+        $songsSkipped = 1;
+    } else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'openlp') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['openlyrics' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  ProPresenter 6 import (#1057)
+ * ---------------------------------------------------------------------------
+ * A ProPresenter 6 ".pro6" file is an XML <RVPresentationDocument>. Slides
+ * are organised into <RVSlideGrouping name="Verse 1"> groups; each slide's
+ * lyric text lives inside an <RVTextElement> as base64-encoded RTF (either an
+ * RTFData="…" attribute on older builds, or a <NSString rvXMLIvarName="RTFData">
+ * child on newer ones). Song metadata (title / author / CCLI / copyright)
+ * rides on the root element's CCLI* attributes.
+ *
+ * Each .pro6 is one song. A single file imports via the bulk_import_pro6
+ * action; a ZIP of .pro6 files is handled inline by _bulkImport_processZip().
+ * Both feed the shared _bulkImport_assembleSong() + dedupe-aware
+ * _bulkImport_saveSong() path.
+ * =========================================================================== */
+
+/**
+ * Minimal RTF → plain-text converter, sufficient for the simple RTF
+ * ProPresenter stores (lyric runs with \par / \line breaks, \uN unicode,
+ * \'XX hex bytes; \fonttbl / \colortbl / \*-destinations discarded).
+ *
+ * Implemented as a single-pass tokeniser tracking group depth so nested
+ * destination groups (font/colour/style tables, \* groups) are skipped
+ * wholesale rather than leaking control text into the lyrics.
+ */
+function _bulkImport_rtfToText(string $rtf): string
+{
+    $out = '';
+    $i   = 0;
+    $n   = strlen($rtf);
+    $depth          = 0;
+    $ucStack        = [1];   // \uc skip-count per group level
+    $unicodeSkip    = 0;     // literal chars still to swallow after a \uN
+    $skipUntilDepth = -1;    // when >=0, suppress output until depth drops below it
+
+    while ($i < $n) {
+        $c = $rtf[$i];
+
+        if ($c === '\\') {
+            $next = $i + 1 < $n ? $rtf[$i + 1] : '';
+
+            /* Escaped literal brace / backslash. */
+            if ($next === '\\' || $next === '{' || $next === '}') {
+                if ($skipUntilDepth < 0) {
+                    if ($unicodeSkip > 0) { $unicodeSkip--; }
+                    else                  { $out .= $next; }
+                }
+                $i += 2;
+                continue;
+            }
+
+            /* \'XX — one hex-encoded byte. */
+            if ($next === "'") {
+                $hex = substr($rtf, $i + 2, 2);
+                $i  += 4;
+                if ($skipUntilDepth < 0) {
+                    if ($unicodeSkip > 0) { $unicodeSkip--; }
+                    elseif (ctype_xdigit($hex)) { $out .= chr(hexdec($hex)); }
+                }
+                continue;
+            }
+
+            /* Control word: \word, optional signed number, optional single
+               trailing space delimiter. */
+            if (ctype_alpha($next)) {
+                $j = $i + 1;
+                while ($j < $n && ctype_alpha($rtf[$j])) { $j++; }
+                $word = substr($rtf, $i + 1, $j - ($i + 1));
+                $num  = '';
+                if ($j < $n && ($rtf[$j] === '-' || ctype_digit($rtf[$j]))) {
+                    $k = $j;
+                    if ($rtf[$k] === '-') { $k++; }
+                    while ($k < $n && ctype_digit($rtf[$k])) { $k++; }
+                    $num = substr($rtf, $j, $k - $j);
+                    $j   = $k;
+                }
+                if ($j < $n && $rtf[$j] === ' ') { $j++; }
+                $i = $j;
+
+                switch ($word) {
+                    case 'u':
+                        $code = (int)$num;
+                        if ($code < 0) { $code += 65536; }
+                        if ($skipUntilDepth < 0) {
+                            $ch = function_exists('mb_chr') ? mb_chr($code, 'UTF-8') : null;
+                            if ($ch !== null && $ch !== false) { $out .= $ch; }
+                        }
+                        $unicodeSkip = $ucStack[count($ucStack) - 1];
+                        break;
+                    case 'uc':
+                        $ucStack[count($ucStack) - 1] = max(0, (int)$num);
+                        break;
+                    case 'par':
+                    case 'line':
+                        if ($skipUntilDepth < 0) { $out .= "\n"; }
+                        break;
+                    case 'tab':
+                        if ($skipUntilDepth < 0) { $out .= "\t"; }
+                        break;
+                    case 'fonttbl':
+                    case 'colortbl':
+                    case 'stylesheet':
+                    case 'info':
+                    case 'pict':
+                    case 'object':
+                    case 'themedata':
+                    case 'datastore':
+                        /* Destination group we never want as text — skip the
+                           rest of the current group. */
+                        if ($skipUntilDepth < 0) { $skipUntilDepth = $depth; }
+                        break;
+                    default:
+                        /* Formatting control word with no textual output. */
+                        break;
+                }
+                continue;
+            }
+
+            /* \* — ignorable destination: skip the enclosing group. */
+            if ($next === '*') {
+                if ($skipUntilDepth < 0) { $skipUntilDepth = $depth; }
+                $i += 2;
+                continue;
+            }
+
+            /* Other control symbol (e.g. \~, \-) — drop it. */
+            $i += 2;
+            continue;
+        }
+
+        if ($c === '{') {
+            $depth++;
+            $ucStack[] = $ucStack[count($ucStack) - 1];
+            $i++;
+            continue;
+        }
+        if ($c === '}') {
+            if ($skipUntilDepth >= 0 && $depth <= $skipUntilDepth) {
+                $skipUntilDepth = -1;
+            }
+            if ($depth > 0) { $depth--; }
+            if (count($ucStack) > 1) { array_pop($ucStack); }
+            $i++;
+            continue;
+        }
+
+        /* Raw CR/LF inside RTF source are not text. */
+        if ($c === "\r" || $c === "\n") { $i++; continue; }
+
+        if ($skipUntilDepth < 0) {
+            if ($unicodeSkip > 0) { $unicodeSkip--; }
+            else                  { $out .= $c; }
+        }
+        $i++;
+    }
+
+    return $out;
+}
+
+/**
+ * Split a ProPresenter group label ("Verse 1", "Chorus", "Pre-Chorus 2")
+ * into [iHymns component type, number]. Reuses _bulkImport_componentTypeFor()
+ * for the word → type mapping (non-English / unknown labels → refrain).
+ */
+function _bulkImport_pro6GroupType(string $label): array
+{
+    $label = trim($label);
+    $num   = 0;
+    if (preg_match('/^(.*?)[\s_-]*(\d+)\s*$/u', $label, $m)) {
+        $word = trim($m[1]);
+        $num  = (int)$m[2];
+    } else {
+        $word = $label;
+    }
+    /* Normalise a few common ProPresenter labels to the marker words
+       _bulkImport_componentTypeFor() understands. */
+    $word  = strtolower($word);
+    $alias = [
+        'pre chorus' => 'pre-chorus',
+        'prechorus'  => 'pre-chorus',
+        'ending'     => 'outro',
+        'tag'        => 'outro',
+        'coda'       => 'outro',
+        'intro'      => 'intro',
+        'interlude'  => 'refrain',
+        'vamp'       => 'refrain',
+    ];
+    $word = $alias[$word] ?? $word;
+    return [_bulkImport_componentTypeFor($word), $num];
+}
+
+/**
+ * Extract the base64 RTF text from one <RVTextElement>, tolerating both the
+ * RTFData="…" attribute form and the <NSString rvXMLIvarName="RTFData"> child
+ * form. Returns the decoded plain text (may be '').
+ */
+function _bulkImport_pro6TextElementToText(\SimpleXMLElement $textEl): string
+{
+    $b64 = trim((string)($textEl['RTFData'] ?? ''));
+    if ($b64 === '') {
+        foreach ($textEl->xpath('.//*[@rvXMLIvarName="RTFData"]') ?: [] as $child) {
+            $b64 = trim((string)$child);
+            if ($b64 !== '') { break; }
+        }
+    }
+    if ($b64 === '') {
+        return '';
+    }
+    $rtf = base64_decode($b64, true);
+    if ($rtf === false || $rtf === '') {
+        return '';
+    }
+    return _bulkImport_rtfToText($rtf);
+}
+
+/**
+ * Parse one ProPresenter 6 ".pro6" XML body into the neutral parsed
+ * structure (no abbrev / number / SongId resolution — caller does that).
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parsePro6(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    $prevInternal = libxml_use_internal_errors(true);
+    libxml_clear_errors();
+    $xml = simplexml_load_string($body, \SimpleXMLElement::class, LIBXML_NONET);
+    if ($xml === false) {
+        $err = libxml_get_last_error();
+        libxml_clear_errors();
+        libxml_use_internal_errors($prevInternal);
+        return [null, 'invalid XML' . ($err ? ': ' . trim($err->message) : '')];
+    }
+    libxml_clear_errors();
+    libxml_use_internal_errors($prevInternal);
+
+    if (strtolower($xml->getName()) !== 'rvpresentationdocument') {
+        return [null, 'XML root is <' . $xml->getName() . '>, expected <RVPresentationDocument>'];
+    }
+
+    /* Metadata from the root CCLI* attributes. */
+    $title     = trim((string)($xml['CCLISongTitle'] ?? ''));
+    $author    = trim((string)($xml['CCLIAuthor'] ?? ''));
+    $publisher = trim((string)($xml['CCLIPublisher'] ?? ''));
+    $ccli      = trim((string)($xml['CCLISongNumber'] ?? ''));
+    $year      = trim((string)($xml['CCLICopyrightYear'] ?? ''));
+    $copyright = trim(($publisher !== '' ? $publisher : '') . ($year !== '' ? ($publisher !== '' ? ' ' : '') . $year : ''));
+
+    $writers = [];
+    if ($author !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') { $writers[] = $w; }
+        }
+    }
+
+    /* Walk slide groupings. Each grouping → one component; its slides'
+       text-element lines concatenate into that component's lines. */
+    $components = [];
+    foreach ($xml->xpath('//RVSlideGrouping') ?: [] as $group) {
+        [$type, $num] = _bulkImport_pro6GroupType((string)($group['name'] ?? ''));
+        $lines = [];
+        foreach ($group->xpath('.//RVTextElement') ?: [] as $textEl) {
+            $text = _bulkImport_pro6TextElementToText($textEl);
+            if ($text === '') { continue; }
+            foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
+                $ln = rtrim($ln);
+                if ($ln !== '' || !empty($lines)) { $lines[] = $ln; }
+            }
+        }
+        while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+        if (!empty($lines)) {
+            $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+        }
+    }
+
+    /* Fallback: some .pro6 files have no groupings — collect every slide's
+       text as sequential verses. */
+    if (empty($components)) {
+        $vnum = 0;
+        foreach ($xml->xpath('//RVDisplaySlide') ?: [] as $slide) {
+            $lines = [];
+            foreach ($slide->xpath('.//RVTextElement') ?: [] as $textEl) {
+                $text = _bulkImport_pro6TextElementToText($textEl);
+                if ($text === '') { continue; }
+                foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $text)) as $ln) {
+                    $ln = rtrim($ln);
+                    if ($ln !== '' || !empty($lines)) { $lines[] = $ln; }
+                }
+            }
+            while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+            if (!empty($lines)) {
+                $components[] = ['type' => 'verse', 'number' => ++$vnum, 'lines' => $lines];
+            }
+        }
+    }
+
+    if (empty($components)) {
+        return [null, 'no slide text found in .pro6'];
+    }
+
+    /* Title fallback: first line of the first component (caller may further
+       fall back to the filename). */
+    if ($title === '') {
+        $title = trim((string)($components[0]['lines'][0] ?? ''));
+    }
+    if ($title === '') {
+        return [null, 'no song title (no CCLISongTitle and no slide text)'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',   // .pro6 carries no songbook; caller supplies one
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => $ccli,
+        'copyright'    => $copyright,
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file ProPresenter 6 import — invoked from the
+ * bulk_import_pro6 dispatcher case. Same summary shape as the other
+ * single-file processors. The songbook is supplied by the caller (filename
+ * hint), since .pro6 carries none.
+ */
+function _bulkImport_processPro6(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parsePro6($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'ProPresenter 6 parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['propresenter6' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    /* .pro6 has no songbook — file them under a single "ProPresenter Import"
+       songbook (abbr "PP6", or a bracketed token from the upload filename). */
+    $db       = getDbMysqli();
+    $bookName = 'ProPresenter Import';
+    $abbr     = _bulkImport_videopsalmAbbrevFromHint($filenameHint, '');
+    if ($abbr === 'VP' || $abbr === '') { $abbr = 'PP6'; }
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')       { $songsCreated = 1; }
+    elseif ($action === 'skipped')  { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'pro6') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['propresenter6' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  EasyWorship import (#1058)
+ * ---------------------------------------------------------------------------
+ * EasyWorship 6/7 stores its library in SQLite. The song metadata lives in
+ * `Songs.db` (table `song`: title / author / copyright / reference_number)
+ * and the lyrics in a `word` table — inline in Songs.db on some builds, or in
+ * a sibling `SongWords.db` (table `word`: song_id, words) on others. The
+ * `words` column is RTF, decoded with the shared _bulkImport_rtfToText().
+ *
+ * Upload either a single Songs.db, or a .zip containing Songs.db (+ optional
+ * SongWords.db). We read with the SQLite3 class (NOT PDO — this is an upload
+ * parser, not the app's MySQL data layer). EasyWorship has no songbook, so
+ * songs are filed under an "EasyWorship Import" (EW) songbook.
+ * =========================================================================== */
+
+/**
+ * Split decoded EasyWorship lyric text into components. EW separates slides
+ * with a blank line; a leading "Verse 1"/"Chorus" label line (when present)
+ * sets the component type/number, otherwise blocks become sequential verses.
+ */
+function _bulkImport_easyWorshipSplitComponents(string $text): array
+{
+    $text   = str_replace(["\r\n", "\r"], "\n", $text);
+    $blocks = preg_split('/\n[ \t]*\n+/', trim($text)) ?: [];
+    $components = [];
+    $vnum = 0;
+    foreach ($blocks as $block) {
+        $lines = array_map('rtrim', explode("\n", $block));
+        while (!empty($lines) && trim($lines[0]) === '')          { array_shift($lines); }
+        while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+        if (empty($lines)) { continue; }
+
+        $type = 'verse';
+        $num  = ++$vnum;
+        if (preg_match('/^(verse|chorus|refrain|bridge|pre[- ]?chorus|intro|outro|ending|tag)\s*(\d*)\s*$/i', trim($lines[0]), $m)) {
+            $word = strtolower($m[1]);
+            $word = ($word === 'prechorus' || $word === 'pre chorus') ? 'pre-chorus' : $word;
+            $word = ($word === 'ending' || $word === 'tag') ? 'outro' : $word;
+            $type = _bulkImport_componentTypeFor($word);
+            $num  = $m[2] !== '' ? (int)$m[2] : 0;
+            array_shift($lines);
+            if (empty($lines)) { continue; }
+        }
+        $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+    }
+    return $components;
+}
+
+/**
+ * Return the subset of $wanted columns that actually exist on $table, so a
+ * SELECT survives EasyWorship's schema drift across versions.
+ */
+function _bulkImport_sqliteColumns(\SQLite3 $db, string $table): array
+{
+    $cols = [];
+    $safeTable = preg_replace('/[^A-Za-z0-9_]/', '', $table);
+    $res = @$db->query('PRAGMA table_info("' . $safeTable . '")');
+    if ($res === false) { return $cols; }
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $name = (string)$row['name'];
+        /* SECURITY: these column names come from an UNTRUSTED uploaded SQLite
+           schema and are later interpolated (double-quoted) into SELECTs
+           (e.g. '"' . $titleC . '"'). A name containing a double-quote would
+           break out of the "<col>" identifier quoting and inject SQL. Reject
+           anything that isn't a plain identifier — EasyWorship's real columns
+           are all [A-Za-z0-9_], so this drops only hostile names. */
+        if ($name === '' || !preg_match('/^[A-Za-z0-9_]+$/', $name)) {
+            continue;
+        }
+        $cols[strtolower($name)] = $name;
+    }
+    return $cols;
+}
+
+/**
+ * Read an EasyWorship Songs.db (+ optional SongWords.db) into the neutral
+ * parsed-song structures _bulkImport_assembleSong() consumes.
+ *
+ * @return array{0: array, 1: ?string}  [parsedSongs[], errorReason]
+ */
+function _bulkImport_easyWorshipReadDb(string $songsDbPath, ?string $songWordsDbPath = null): array
+{
+    if (!class_exists('SQLite3')) {
+        return [[], 'the SQLite3 PHP extension is not available on this server'];
+    }
+    try {
+        $songsDb = new \SQLite3($songsDbPath, SQLITE3_OPEN_READONLY);
+    } catch (\Throwable $e) {
+        return [[], 'could not open Songs.db: ' . $e->getMessage()];
+    }
+    $songsDb->busyTimeout(2000);
+
+    $songCols = _bulkImport_sqliteColumns($songsDb, 'song');
+    if (empty($songCols)) {
+        $songsDb->close();
+        return [[], 'no `song` table found (is this an EasyWorship Songs.db?)'];
+    }
+
+    /* Words may live in this db (table `word`) or in SongWords.db. */
+    $wordsDb     = $songsDb;
+    $wordsClose  = false;
+    $wordCols    = _bulkImport_sqliteColumns($songsDb, 'word');
+    if (empty($wordCols) && $songWordsDbPath !== null) {
+        try {
+            $wordsDb    = new \SQLite3($songWordsDbPath, SQLITE3_OPEN_READONLY);
+            $wordsClose = true;
+            $wordsDb->busyTimeout(2000);
+            $wordCols   = _bulkImport_sqliteColumns($wordsDb, 'word');
+        } catch (\Throwable $e) {
+            /* No words db — titles still import, just without lyrics. */
+            $wordCols = [];
+        }
+    }
+
+    /* Build a song_id → words map once. */
+    $wordsBySong = [];
+    if (!empty($wordCols) && isset($wordCols['words'])) {
+        $idCol = $wordCols['song_id'] ?? ($wordCols['songid'] ?? null);
+        if ($idCol !== null) {
+            $res = @$wordsDb->query('SELECT "' . $idCol . '" AS sid, "' . $wordCols['words'] . '" AS w FROM "word"');
+            if ($res !== false) {
+                while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+                    $wordsBySong[(string)$row['sid']] = (string)$row['w'];
+                }
+            }
+        }
+    }
+
+    /* Select the song rows. rowid is always available; the rest are guarded. */
+    $titleC = $songCols['title']            ?? null;
+    $authC  = $songCols['author']           ?? null;
+    $copyC  = $songCols['copyright']         ?? null;
+    $refC   = $songCols['reference_number']  ?? ($songCols['song_number'] ?? null);
+    if ($titleC === null) {
+        $songsDb->close();
+        if ($wordsClose) { $wordsDb->close(); }
+        return [[], '`song` table has no `title` column'];
+    }
+
+    $sel = ['rowid AS rid', '"' . $titleC . '" AS title'];
+    $sel[] = $authC !== null ? '"' . $authC . '" AS author' : "'' AS author";
+    $sel[] = $copyC !== null ? '"' . $copyC . '" AS copyright' : "'' AS copyright";
+    $sel[] = $refC  !== null ? '"' . $refC  . '" AS refnum' : "'' AS refnum";
+    $sql = 'SELECT ' . implode(', ', $sel) . ' FROM "song"';
+
+    $songs = [];
+    $res = @$songsDb->query($sql);
+    if ($res === false) {
+        $songsDb->close();
+        if ($wordsClose) { $wordsDb->close(); }
+        return [[], 'failed to read the `song` table'];
+    }
+    while ($row = $res->fetchArray(SQLITE3_ASSOC)) {
+        $title = trim((string)$row['title']);
+        if ($title === '') { continue; }
+        $rid     = (string)$row['rid'];
+        $rtf     = $wordsBySong[$rid] ?? '';
+        $text    = $rtf !== '' ? _bulkImport_rtfToText($rtf) : '';
+        $components = $text !== '' ? _bulkImport_easyWorshipSplitComponents($text) : [];
+        if (empty($components)) {
+            /* Title-only row (no lyrics) — skip rather than write an empty song. */
+            continue;
+        }
+        $writers = [];
+        $author  = trim((string)$row['author']);
+        if ($author !== '') {
+            foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+                $w = trim((string)$w);
+                if ($w !== '') { $writers[] = $w; }
+            }
+        }
+        $songs[] = [
+            'title'        => $title,
+            'songbookName' => '',
+            'entry'        => ctype_digit(trim((string)$row['refnum'])) ? (int)trim((string)$row['refnum']) : 0,
+            'language'     => '',
+            'ccli'         => '',
+            'copyright'    => trim((string)$row['copyright']),
+            'writers'      => $writers,
+            'components'   => $components,
+        ];
+    }
+
+    $songsDb->close();
+    if ($wordsClose) { $wordsDb->close(); }
+    return [$songs, null];
+}
+
+/**
+ * Synchronous EasyWorship import. Accepts either a single Songs.db file or a
+ * .zip containing Songs.db (+ optional SongWords.db). Writes uploaded SQLite
+ * to temp files (SQLite3 needs a path), reads them, and imports each song
+ * under an "EasyWorship Import" (EW) songbook. Same summary shape as the
+ * other single-file processors.
+ */
+function _bulkImport_processEasyWorship(string $tmpPath, string $origName): array
+{
+    $fail = function (string $msg): array {
+        return [
+            'ok'                     => false,
+            'error'                  => $msg,
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['easyworship' => 0],
+            'errors'                 => [],
+        ];
+    };
+
+    $isZip   = strtolower(pathinfo($origName, PATHINFO_EXTENSION)) === 'zip';
+    $tempFiles = [];
+    $songsDbPath = null;
+    $songWordsDbPath = null;
+
+    if ($isZip) {
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpPath) !== true) {
+            return $fail('could not open the uploaded .zip');
+        }
+        for ($i = 0; $i < $zip->numFiles; $i++) {
+            $name = (string)$zip->getNameIndex($i);
+            $leaf = strtolower(basename($name));
+            if ($leaf === 'songs.db' || $leaf === 'songwords.db') {
+                $bytes = $zip->getFromIndex($i);
+                if ($bytes === false) { continue; }
+                $t = tempnam(sys_get_temp_dir(), 'ew_');
+                file_put_contents($t, $bytes);
+                $tempFiles[] = $t;
+                if ($leaf === 'songs.db')     { $songsDbPath = $t; }
+                if ($leaf === 'songwords.db') { $songWordsDbPath = $t; }
+            }
+        }
+        $zip->close();
+        if ($songsDbPath === null) {
+            foreach ($tempFiles as $t) { @unlink($t); }
+            return $fail('the .zip does not contain a Songs.db');
+        }
+    } else {
+        /* A single uploaded .db — SQLite3 can open the upload temp file
+           directly (read-only). */
+        $songsDbPath = $tmpPath;
+    }
+
+    [$parsedSongs, $err] = _bulkImport_easyWorshipReadDb($songsDbPath, $songWordsDbPath);
+    foreach ($tempFiles as $t) { @unlink($t); }
+
+    if ($err !== null) {
+        return $fail('EasyWorship read failed: ' . $err);
+    }
+    if (empty($parsedSongs)) {
+        return $fail('no songs with lyrics found in the EasyWorship database');
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'EW';
+    $bookName = 'EasyWorship Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $counter = _bulkImport_nextSongNumberFor($db, $abbr);
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    foreach ($parsedSongs as $parsed) {
+        $number = (int)$parsed['entry'] > 0 ? (int)$parsed['entry'] : $counter;
+        $counter = max($counter, $number) + 1;
+        $song = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+        [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+        if ($action === 'create')      { $songsCreated++; }
+        elseif ($action === 'skipped') { $songsSkipped++; }
+        else {
+            $songsFailed++;
+            $errors[] = ['entry' => $origName . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+        }
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['easyworship' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  Proclaim import (#1062)
+ * ---------------------------------------------------------------------------
+ * Faithlife Proclaim exports a song as plain text or RTF. There's no rich
+ * structured export to rely on, so this imports a single song from a .txt or
+ * .rtf body: RTF is decoded with the shared _bulkImport_rtfToText(); the
+ * first non-marker line is taken as the title; the rest is split into
+ * components (blank-line slides / "Verse 1"/"Chorus" labels) by the shared
+ * _bulkImport_easyWorshipSplitComponents(). Songs file under a "Proclaim
+ * Import" (PC) songbook.
+ * =========================================================================== */
+
+/**
+ * Parse a Proclaim text/RTF body into the neutral parsed-song structure.
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parseProclaimText(string $body, ?string $filenameHint = null): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    /* RTF? Decode to plain text first. */
+    if (preg_match('/^\s*\{\\\\rtf/', $body)) {
+        $body = _bulkImport_rtfToText($body);
+    }
+    $body = str_replace(["\r\n", "\r"], "\n", $body);
+
+    /* Title: the first non-empty line, unless it's a section marker (in which
+       case fall back to the filename). */
+    $lines = explode("\n", $body);
+    $titleLineIdx = -1;
+    $title = '';
+    foreach ($lines as $idx => $ln) {
+        if (trim($ln) === '') { continue; }
+        if (!preg_match('/^(verse|chorus|refrain|bridge|pre[- ]?chorus|intro|outro|ending|tag)\s*\d*\s*$/i', trim($ln))) {
+            $title        = trim($ln);
+            $titleLineIdx = $idx;
+        }
+        break;
+    }
+
+    /* Body for component splitting = everything after the title line (or the
+       whole body if the first content line was a section marker). */
+    if ($titleLineIdx >= 0) {
+        $rest = implode("\n", array_slice($lines, $titleLineIdx + 1));
+    } else {
+        $rest = $body;
+    }
+
+    $components = _bulkImport_easyWorshipSplitComponents($rest);
+
+    /* If there was no separable title line but we did parse lyrics, fall back
+       to the filename stem for the title. */
+    if ($title === '') {
+        $title = trim((string)pathinfo((string)$filenameHint, PATHINFO_FILENAME));
+    }
+    if ($title === '') {
+        return [null, 'could not determine a song title'];
+    }
+    if (empty($components)) {
+        return [null, 'no lyric content found'];
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => '',
+        'copyright'    => '',
+        'writers'      => [],
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file Proclaim import — invoked from the
+ * bulk_import_proclaim dispatcher case. Same summary shape as the other
+ * single-file processors.
+ */
+function _bulkImport_processProclaim(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseProclaimText($body, $filenameHint);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'Proclaim parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['proclaim' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'PC';
+    $bookName = 'Proclaim Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')      { $songsCreated = 1; }
+    elseif ($action === 'skipped') { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = ['entry' => ($filenameHint ?? 'proclaim') . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['proclaim' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  FreeShow import (#884)
+ * ---------------------------------------------------------------------------
+ * A FreeShow ".show" file is JSON: [ "<id>", { show } ]. The show holds a
+ * `slides` map (each slide: group label + items[].lines[].text[].value runs)
+ * and a `layouts` map whose active layout lists slide order. `meta` carries
+ * title / author / copyright / CCLI. One .show is one song. Round-trips with
+ * the iHymns FreeShow exporter (#1056). The group label → component type uses
+ * the shared _bulkImport_pro6GroupType().
+ * =========================================================================== */
+
+/**
+ * Flatten one FreeShow slide's items → an array of plain-text lines.
+ * Each item has lines[], each line has text[] runs with a `value`.
+ */
+function _bulkImport_freeShowSlideLines(array $slide): array
+{
+    $lines = [];
+    foreach (($slide['items'] ?? []) as $item) {
+        if (!is_array($item)) { continue; }
+        foreach (($item['lines'] ?? []) as $line) {
+            if (!is_array($line)) { continue; }
+            $buf = '';
+            foreach (($line['text'] ?? []) as $run) {
+                if (is_array($run) && isset($run['value'])) {
+                    $buf .= (string)$run['value'];
+                }
+            }
+            /* A run value may itself contain newlines. */
+            foreach (explode("\n", str_replace(["\r\n", "\r"], "\n", $buf)) as $ln) {
+                $lines[] = rtrim($ln);
+            }
+        }
+    }
+    while (!empty($lines) && trim((string)end($lines)) === '') { array_pop($lines); }
+    return $lines;
+}
+
+/**
+ * Parse one FreeShow .show document into the neutral parsed-song structure.
+ *
+ * @return array{0: ?array, 1: ?string}  [parsed, errorReason]
+ */
+function _bulkImport_parseFreeShow(string $body): array
+{
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+    $data = json_decode($body, true);
+    if ($data === null && json_last_error() !== JSON_ERROR_NONE) {
+        return [null, 'invalid JSON: ' . json_last_error_msg()];
+    }
+
+    /* FreeShow stores [ "<id>", { show } ]; tolerate a bare show object too. */
+    $show = null;
+    if (is_array($data)) {
+        if (isset($data[1]) && is_array($data[1])) {
+            $show = $data[1];
+        } elseif (isset($data['slides']) || isset($data['name'])) {
+            $show = $data;
+        }
+    }
+    if (!is_array($show) || empty($show['slides']) || !is_array($show['slides'])) {
+        return [null, 'not a FreeShow .show document (no slides)'];
+    }
+
+    $meta  = is_array($show['meta'] ?? null) ? $show['meta'] : [];
+    $title = trim((string)($meta['title'] ?? ($show['name'] ?? '')));
+
+    /* Slide order from the active layout; fall back to the slides-map order. */
+    $order = [];
+    $layoutId = (string)($show['settings']['activeLayout'] ?? '');
+    $layouts  = is_array($show['layouts'] ?? null) ? $show['layouts'] : [];
+    if ($layoutId !== '' && isset($layouts[$layoutId]['slides']) && is_array($layouts[$layoutId]['slides'])) {
+        foreach ($layouts[$layoutId]['slides'] as $ref) {
+            if (is_array($ref) && isset($ref['id'])) { $order[] = (string)$ref['id']; }
+        }
+    } elseif (!empty($layouts)) {
+        /* No active layout pointer — take the first layout's order. */
+        $first = reset($layouts);
+        foreach (($first['slides'] ?? []) as $ref) {
+            if (is_array($ref) && isset($ref['id'])) { $order[] = (string)$ref['id']; }
+        }
+    }
+    if (empty($order)) {
+        $order = array_keys($show['slides']);
+    }
+
+    $components = [];
+    foreach ($order as $sid) {
+        $slide = $show['slides'][$sid] ?? null;
+        if (!is_array($slide)) { continue; }
+        $lines = _bulkImport_freeShowSlideLines($slide);
+        if (empty($lines)) { continue; }
+        [$type, $num] = _bulkImport_pro6GroupType((string)($slide['group'] ?? 'Verse'));
+        $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+    }
+    if (empty($components)) {
+        return [null, 'no slide text found'];
+    }
+
+    if ($title === '') {
+        $title = trim((string)($components[0]['lines'][0] ?? ''));
+    }
+    if ($title === '') {
+        return [null, 'no song title'];
+    }
+
+    $writers = [];
+    $author  = trim((string)($meta['author'] ?? ''));
+    if ($author !== '') {
+        foreach (preg_split('/\s*[\/&,;]\s*/u', $author) as $w) {
+            $w = trim((string)$w);
+            if ($w !== '') { $writers[] = $w; }
+        }
+    }
+
+    return [[
+        'title'        => $title,
+        'songbookName' => '',
+        'entry'        => 0,
+        'language'     => '',
+        'ccli'         => trim((string)($meta['CCLI'] ?? ($meta['ccli'] ?? ''))),
+        'copyright'    => trim((string)($meta['copyright'] ?? '')),
+        'writers'      => $writers,
+        'components'   => $components,
+    ], null];
+}
+
+/**
+ * Synchronous single-file FreeShow import — invoked from the
+ * bulk_import_freeshow dispatcher case. Files songs under a "FreeShow Import"
+ * (FS) songbook (.show carries none). Same summary shape as the other
+ * single-file processors.
+ */
+function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null): array
+{
+    [$parsed, $reason] = _bulkImport_parseFreeShow($body);
+    if ($parsed === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'FreeShow parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['freeshow' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db       = getDbMysqli();
+    $abbr     = 'FS';
+    $bookName = 'FreeShow Import';
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $number = _bulkImport_nextSongNumberFor($db, $abbr);
+    $song   = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create')      { $songsCreated = 1; }
+    elseif ($action === 'skipped') { $songsSkipped = 1; }
+    else {
+        $songsFailed = 1;
+        $errors[]    = ['entry' => ($filenameHint ?? 'freeshow') . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['freeshow' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
+ *  PowerPoint (.pptx) worship deck import (#1095)
+ * ---------------------------------------------------------------------------
+ * Parses a .pptx via PptxImporter (slide text + song segmentation), resolves
+ * each song's songbook by the deck's "# <num>-<Songbook>" reference, and
+ * creates songs through the shared importer helpers. Dedup is automatic:
+ * _bulkImport_saveSong returns 'skipped' when the SongId already exists, so a
+ * deck that references existing catalogue songs (e.g. Mission Praise #599) does
+ * not create duplicates. Decks that do not use the expected layout return zero
+ * songs + a warning (the caller routes them to submit-for-analysis, #1109).
+ * Returns the same summary shape as the other _bulkImport_process* functions.
+ * =========================================================================== */
+function _bulkImport_processPptx(string $path, ?string $filenameHint = null): array
+{
+    require_once dirname(__DIR__, 2) . '/includes/PptxImporter.php';
+
+    $empty = [
+        'songbooks_created' => [], 'songbooks_existing' => [],
+        'songs_created' => 0, 'songs_skipped_existing' => 0, 'songs_failed' => 0,
+        'parsed_by_format' => ['pptx' => 0], 'errors' => [],
+    ];
+
+    $result = PptxImporter::parseFile($path);
+    if (!($result['ok'] ?? false)) {
+        return array_merge(['ok' => false, 'error' => $result['error'] ?? 'No songs found in the deck.', 'warnings' => $result['warnings'] ?? []], $empty);
+    }
+
+    $db = getDbMysqli();
+    $created = 0; $skipped = 0; $failed = 0; $errors = [];
+    $booksCreated = []; $booksExisting = [];
+
+    foreach ($result['songs'] as $song) {
+        [$abbr, $bookName, $state] = _bulkImport_resolvePptxSongbook($db, (string)($song['songbookName'] ?? ''));
+        if ($state === 'created' && !in_array($abbr, $booksCreated, true))   { $booksCreated[]  = $abbr; }
+        if ($state === 'existing' && !in_array($abbr, $booksExisting, true)) { $booksExisting[] = $abbr; }
+
+        $number = (int)($song['songNumber'] ?? 0);
+        if ($number <= 0) {
+            $number = _bulkImport_nextSongNumberFor($db, $abbr);
+        }
+
+        /* PPT verses arrive as a flat line list; create one verse component the
+           curator can re-split in the editor (the normal workflow for imports). */
+        $parsed = [
+            'title'      => (string)($song['title'] ?? '(untitled)'),
+            'components'  => [['type' => 'verse', 'number' => 1, 'lines' => array_values((array)($song['lines'] ?? []))]],
+        ];
+        $assembled = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+        [$action, $saveErr] = _bulkImport_saveSong($db, $assembled);
+        if ($action === 'create')       { $created++; }
+        elseif ($action === 'skipped')  { $skipped++; }
+        else {
+            $failed++;
+            $errors[] = ['entry' => ($filenameHint ?? 'pptx') . ': ' . ($assembled['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+        }
+    }
+
+    foreach (array_unique($booksCreated) as $a) {
+        $cnt = $db->prepare('UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?');
+        $cnt->bind_param('ss', $a, $a);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $booksCreated,
+        'songbooks_existing'     => $booksExisting,
+        'songs_created'          => $created,
+        'songs_skipped_existing' => $skipped,
+        'songs_failed'           => $failed,
+        'parsed_by_format'       => ['pptx' => $created + $skipped],
+        'errors'                 => $errors,
+        'warnings'               => $result['warnings'] ?? [],
+    ];
+}
+
+/**
+ * Resolve a PPT deck's referenced songbook NAME to a catalogue songbook.
+ * An exact (case-insensitive) name match reuses the existing book (so e.g.
+ * "Mission Praise" maps onto the existing MP book and its songs dedup); an
+ * unmatched name falls back to a generic "PowerPoint Import" book (PPTX).
+ *
+ * @return array{0:string,1:string,2:string} [abbr, bookName, state(created|existing)]
+ */
+function _bulkImport_resolvePptxSongbook(\mysqli $db, string $name): array
+{
+    $name = trim($name);
+    if ($name !== '') {
+        $stmt = $db->prepare('SELECT Abbreviation, Name FROM tblSongbooks WHERE LOWER(Name) = LOWER(?) LIMIT 1');
+        $stmt->bind_param('s', $name);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row) {
+            return [(string)$row['Abbreviation'], (string)$row['Name'], 'existing'];
+        }
+    }
+    $state = _bulkImport_upsertSongbook($db, 'PPTX', 'PowerPoint Import', null);
+    return ['PPTX', 'PowerPoint Import', $state];
+}
+
+/* ===========================================================================
+ *  EasyWorship export (#1059)
+ * ---------------------------------------------------------------------------
+ * Builds an EasyWorship-style SQLite Songs.db: a `song` table (title /
+ * author / copyright / reference_number) + a `word` table (song_id, words)
+ * whose `words` column is RTF (slides separated by \par\par, lines by \par).
+ * Written with the SQLite3 class (not PDO). NOTE: this produces the core
+ * two-table schema the iHymns EasyWorship importer (#1058) round-trips; real
+ * EasyWorship may expect additional index/FTS tables, so "does EW itself read
+ * it" should be confirmed against a live EasyWorship install.
+ * =========================================================================== */
+
+/**
+ * Escape one string for RTF: \ { } literals, non-ASCII → \uN (signed 16-bit,
+ * with a '?' fallback char). Mirrors the JS exporter's rtfEscape.
+ */
+function _ewExport_rtfEscape(string $text): string
+{
+    $out = '';
+    $len = mb_strlen($text, 'UTF-8');
+    for ($i = 0; $i < $len; $i++) {
+        $ch   = mb_substr($text, $i, 1, 'UTF-8');
+        $code = mb_ord($ch, 'UTF-8');
+        if ($ch === '\\')                  { $out .= '\\\\'; }
+        elseif ($ch === '{')               { $out .= '\\{'; }
+        elseif ($ch === '}')               { $out .= '\\}'; }
+        elseif ($code !== false && $code < 128) { $out .= $ch; }
+        else {
+            $rtfCode = ($code !== false && $code > 32767) ? $code - 65536 : (int)$code;
+            $out    .= '\\u' . $rtfCode . '?';
+        }
+    }
+    return $out;
+}
+
+/**
+ * Build the EasyWorship `words` RTF for one song. Slides (chunks of <=
+ * $maxLines lines, or whole components when $maxLines <= 0) are separated by
+ * \par\par; lines within a slide by \par.
+ */
+function _ewExport_buildRtf(array $components, int $maxLines): string
+{
+    $slides = [];
+    foreach ($components as $comp) {
+        $lines  = array_map('strval', (array)($comp['lines'] ?? []));
+        $chunks = ($maxLines > 0) ? array_chunk($lines, $maxLines) : [$lines];
+        foreach ($chunks as $chunk) {
+            $esc = array_map('_ewExport_rtfEscape', $chunk);
+            $slides[] = implode('\\par ', $esc);
+        }
+    }
+    if (empty($slides)) { $slides[] = ''; }
+    $body = implode('\\par\\par ', $slides);
+    return '{\\rtf1\\ansi\\ansicpg1252{\\fonttbl\\f0\\fswiss Arial;}\\pard\\f0\\fs40 ' . $body . '}';
+}
+
+/**
+ * Write an EasyWorship Songs.db (song + word tables) at $path for the given
+ * iHymns song records (the SongData::getSongs() shape). Returns the song
+ * count written.
+ */
+function _ewExport_writeDb(string $path, array $songs, int $maxLines): int
+{
+    if (!class_exists('SQLite3')) {
+        throw new \RuntimeException('the SQLite3 PHP extension is not available');
+    }
+    @unlink($path);
+    $db = new \SQLite3($path);
+    $db->exec('CREATE TABLE song (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
+            . 'title TEXT, author TEXT, copyright TEXT, reference_number TEXT)');
+    $db->exec('CREATE TABLE word (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
+            . 'song_id INTEGER, words TEXT)');
+
+    $songStmt = $db->prepare('INSERT INTO song (title, author, copyright, reference_number) VALUES (?,?,?,?)');
+    $wordStmt = $db->prepare('INSERT INTO word (song_id, words) VALUES (?,?)');
+
+    $count = 0;
+    $db->exec('BEGIN');
+    foreach ($songs as $song) {
+        $title = trim((string)($song['title'] ?? ''));
+        if ($title === '') { continue; }
+        $author = trim(implode(', ', array_filter(array_merge(
+            (array)($song['writers'] ?? []),
+            (array)($song['composers'] ?? [])
+        ))));
+        $copyright = (string)($song['copyright'] ?? '');
+        $refnum    = (string)($song['number'] ?? '');
+        $rtf       = _ewExport_buildRtf((array)($song['components'] ?? []), $maxLines);
+
+        $songStmt->bindValue(1, $title, SQLITE3_TEXT);
+        $songStmt->bindValue(2, $author, SQLITE3_TEXT);
+        $songStmt->bindValue(3, $copyright, SQLITE3_TEXT);
+        $songStmt->bindValue(4, $refnum, SQLITE3_TEXT);
+        $songStmt->execute();
+        $songStmt->reset();
+        $songId = $db->lastInsertRowID();
+
+        $wordStmt->bindValue(1, $songId, SQLITE3_INTEGER);
+        $wordStmt->bindValue(2, $rtf, SQLITE3_TEXT);
+        $wordStmt->execute();
+        $wordStmt->reset();
+        $count++;
+    }
+    $db->exec('COMMIT');
+    $db->close();
+    return $count;
 }

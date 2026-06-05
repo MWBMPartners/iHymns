@@ -183,8 +183,28 @@ try {
                     <tr>
                         <td class="text-muted"><?= (int)$r['Id'] ?></td>
                         <td>
+                            <?php $isCorrection = (($r['RequestType'] ?? 'missing_song') === 'correction'); ?>
+                            <?php if ($isCorrection): ?>
+                                <span class="badge bg-info text-dark me-1">Correction</span>
+                            <?php endif; ?>
                             <strong><?= htmlspecialchars($r['Title']) ?></strong>
-                            <?php if (!empty($r['Details'])): ?>
+                            <?php if ($isCorrection): ?>
+                                <div class="small mt-1">
+                                    <div class="text-muted">
+                                        Field: <code><?= htmlspecialchars($r['FieldName'] ?? '') ?: '—' ?></code>
+                                        <?php if (!empty($r['SongId'])): ?>
+                                            · Song <code><?= htmlspecialchars($r['SongId']) ?></code>
+                                        <?php endif; ?>
+                                    </div>
+                                    <?php if (($r['OriginalValue'] ?? '') !== '' || ($r['ProposedValue'] ?? '') !== ''): ?>
+                                        <div class="mt-1">
+                                            <span class="text-danger text-decoration-line-through"><?= htmlspecialchars(mb_substr((string)($r['OriginalValue'] ?? ''), 0, 200)) ?></span>
+                                            <span class="text-muted mx-1">&rarr;</span>
+                                            <span class="text-success"><?= htmlspecialchars(mb_substr((string)($r['ProposedValue'] ?? ''), 0, 200)) ?></span>
+                                        </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php elseif (!empty($r['Details'])): ?>
                                 <div class="small text-muted"><?= nl2br(htmlspecialchars(mb_substr($r['Details'], 0, 160))) ?></div>
                             <?php endif; ?>
                         </td>

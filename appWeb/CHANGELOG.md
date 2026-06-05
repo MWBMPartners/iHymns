@@ -1,5 +1,71 @@
 # iHymns Web/PWA — Changelog
 
+## [0.550.0] — 2026-06-04
+
+Minor-version jump for the multi-format interchange + lyrics-ingest program. (iLyricsDB follows this version numbering until the backends merge.)
+
+### Worship-software import / export (editor)
+
+- **Imports** (single file or ZIP, dedupe-aware, INSERT-only): OpenLyrics/OpenLP `.xml` (#1052), ProPresenter 6 `.pro6` (#1057, base64-RTF decode), FreeShow `.show` (#884), EasyWorship 6/7 SQLite `Songs.db`+`SongWords.db` (#1058, **beta**), Proclaim `.txt`/`.rtf` (#1062). Each round-trips with its exporter.
+- **Exports** (single song + whole songbook): OpenSong (#1054), VideoPsalm (#1055), FreeShow (#1056), OpenLP/OpenLyrics `.osz` (#1053), Proclaim (#1063), ProPresenter 6 `.pro6` (#889), EasyWorship `Songs.db` (#1059, **beta**) — all via the shared `format-export.js` module + the stored-ZIP writer.
+- **Max lines per slide** (#1065) — cap lyric lines per slide on presentation exports (PP6 / FreeShow / OpenLP / OpenSong / VideoPsalm) for lower-third use; per-export + remembered as a default.
+- **Dedupe on import** (#1051) — opt-in skip of songs whose title already exists in the songbook (accent/punctuation/case-insensitive).
+- EasyWorship import/export is flagged **beta/unverified** in the UI + help (round-trips internally; not yet confirmed against a live EasyWorship install).
+- MediaShout (#1060/#1061) + ProPresenter 7 (#885/#887) are documented as blocked (proprietary sample needed / protobuf) with ready-to-execute plans.
+
+### Lyrics ingest — timed lyrics from Apple Music (#1064)
+
+- **`lyrics_ingest` API** (`POST /api?action=lyrics_ingest`) — accepts Apple-Music **TTML** with word + syllable timing and writes it into the normalised `tblLyrics → tblLyricLines → tblLyricWords → tblLyricSyllables` model (lossless `MetaJson`). Lyrics default to `pending_review`.
+- **Per-client API keys** — new `tblApiKeys` (SHA-256-hashed, scoped, revocable) + `/manage/api-keys` admin page; machine-to-machine auth for external pushers (e.g. MeedyaDL).
+- **Song resolution + enrichment** — when no `songId` is given, the endpoint matches by ISRC → **normalized title** (artist tiebreak) → else creates a provisional song in **Misc** (`Verified=0`). It stores the payload's IDs/URLs (new `tblSongs.Isrc`/`Upc` columns; artists; MusicBrainz/Spotify/Genius/Apple links) so matching strengthens over time.
+- **Duplicate-songs review** (`/manage/duplicate-songs`, `manage_duplicate_songs`) — surfaces potential duplicates (shared normalised title / ISRC / provider URL) and merges them, re-pointing every `tblSongs.SongId` reference (22 FK tables + soft refs) to the survivor in one audited transaction.
+
+### Cross-repo (companion)
+
+- **iLyricsDB #146** — syllable-level TTML in the shared lyrics model (`tblLyricSyllables` + parser + commit pipeline).
+- **MeedyaDL #907** — pushes downloaded Apple-Music TTML + metadata to the ingest endpoint (opt-in; Rust client + download hook).
+
+## [0.400.0] — 2026-06-03
+
+Minor-version jump reflecting the growing pre-release feature set on top of the DB-direct rewrite.
+
+### Editor
+
+- **ProPresenter 7+ export (#887)** — export the open song as a `.pro` file, or a whole songbook as a `.probundle` (a ProPresenter bundle: `Documents/<n>.pro` + `manifest.json`). Pure client-side via a vendored protobufjs runtime + the reverse-engineered Proto 7.16 schema; no server dependency. Verified by a 54-test suite (valid `.pro` round-trip, `.probundle`, RTF/CCLI/artist mapping, per-songbook number padding). _Setlist → `.probundle` is a tracked follow-up (PWA surface)._
+
+### Catalogue integrity
+
+- Every song must belong to a songbook: the editor defaults a songless save to the generic **Misc** collection, and **Misc** is now seeded in `schema.sql` so a bare install always has it (no language).
+- Scoped the last whole-corpus loads (`/writer/<slug>` matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param) — closes the #929 OOM path.
+- Search rows never emit a null `songbookName`; `app_status` exposes `contentGatingEnabled`.
+
+## [0.200.0] — 2026-06-03
+
+### DB-direct data layer (epic #1010, WS-A → WS-K)
+
+Major architectural change: **every runtime read now hits live MySQL**; the whole-corpus `songs.json` file cache is gone; nothing materialises the full catalogue; a DB outage returns a graceful themed 503 instead of stale data.
+
+- Live MySQL fuzzy search replaces the client-side Fuse.js corpus download (#1014)
+- Song of the Day resolves via a live server endpoint, not a client corpus scan (#1015)
+- Song Editor is DB-direct — lightweight song index + per-record load/save; whole-corpus load/export removed (#1016)
+- De-normalised `tblSongs.SongbookName` dropped; readers resolve the live name via JOIN (#1013)
+- PWA offline uses a slim id/number/title/songbook index; the corpus is precached nowhere (#1017)
+- Setlists, favourites, tags, and view-history are DB-first with authoritative auto-sync + first-login merge backfill (#1018, #1019)
+- Decommissioned the file caches (`songs_cache.php`, `exportAsJson`, the SQLite mirror) and the DB-down JSON fallbacks (#1020)
+- System maintenance mode + global DB-down 503 intercept; `/manage/*` structurally exempt so admins can't be locked out (#1021)
+- Lightweight DB-direct paginated song index endpoint (`?action=songs_index`, #1012)
+
+### Error handling
+
+- Theme-aware custom error-page system (app-function + HTTP-standard 400/401/403/404/429/500/502/503), PWA-offline-capable; forward-looking gated-lyrics fragment behind `content_gating_enabled`
+
+### Security & hardening
+
+- Validate `postMessage` origin + source on the cross-domain storage bridge (CWE-346)
+- Same-site redirect guard on the admin login (CWE-601)
+- Scope the surviving whole-corpus loads: `/writer/<slug>` now matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param (closes the #929 OOM path)
+- `app_status` exposes `contentGatingEnabled`; search rows never emit a null `songbookName`
+
 ## [0.25.1] — 2026-04-28
 - Add Song of the Day with Christian calendar theming (#108)
 - Add configurable page transition animations (#106)

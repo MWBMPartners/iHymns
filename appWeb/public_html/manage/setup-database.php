@@ -387,6 +387,10 @@ $bulkFirstFailFile    = '';
 $bulkFirstFailLine    = 0;
 $bulkTotalRan         = 0;
 $bulkTotalFailed      = 0;
+/* Set when the automatic pre-migration backup failed and the bulk run was
+   aborted before any migration ran (so no schema change happened without a
+   recovery point). Surfaced as its own banner below the panel. */
+$bulkBackupFailed     = false;
 
 /* Page-render sentinel + emergency chrome closer (#817).
    "Apply all" was reported as rendering "in its own raw HTML page,
@@ -708,6 +712,59 @@ if ($action !== '') {
             echo "ERROR: Database credentials not configured.\n";
             echo "Configure appWeb/.auth/db_credentials.php first, or run Install.\n";
         } else {
+            /* AUTOMATIC PRE-MIGRATION BACKUP (#322 backup.php, on the bulk
+               path). Some migrations are destructive (e.g.
+               migrate-drop-songbook-name DROPs a column), and the bulk run
+               is the deploy-time "push the new schema" action — so snapshot
+               the whole DB to data_share/backups/ BEFORE running anything,
+               giving a restore.php recovery point if a run fails or
+               half-applies. Two guards keep it sane:
+                 - only back up when something is actually PENDING (a no-op
+                   "Apply all" must not churn a full dump every click), and
+                 - ABORT the whole run if the backup didn't complete — never
+                   migrate without a recovery point. */
+            $proceedBulk = true;
+            $_anyPending = true;   /* default-pending = safe (back up) if we can't check */
+            try {
+                $_probeConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                $_probeConn->set_charset('utf8mb4');
+                $_anyPending = false;
+                foreach ($migrationOrder as $_mig) {
+                    $_p = $migrationProbes[$_mig] ?? null;
+                    if (!is_callable($_p)) { $_anyPending = true; break; }  /* unknown → pending */
+                    try {
+                        if ($_p($_probeConn) === true) { $_anyPending = true; break; }
+                    } catch (\Throwable $_e) {
+                        $_anyPending = true; break;  /* probe threw → assume pending */
+                    }
+                }
+                $_probeConn->close();
+            } catch (\Throwable $_e) {
+                $_anyPending = true;  /* couldn't connect to check → back up to be safe */
+            }
+
+            if ($_anyPending) {
+                echo "═══════════════════════════════════════════════════════\n";
+                echo "▶ Automatic pre-migration backup\n";
+                echo "═══════════════════════════════════════════════════════\n";
+                $finalFile = null;  /* backup.php sets this to the .sql.gz path on success */
+                try {
+                    require $scriptDir . 'backup.php';
+                } catch (\Throwable $_e) {
+                    echo "\n  ✗ Backup script threw: " . htmlspecialchars($_e->getMessage()) . "\n";
+                }
+                $_backupOk = is_string($finalFile ?? null) && $finalFile !== '' && is_file($finalFile);
+                if (!$_backupOk) {
+                    echo "\n  ✗ Pre-migration backup did NOT complete — ABORTING the run.\n";
+                    echo "    No migrations were applied. Run a manual Backup (or fix the\n";
+                    echo "    cause — disk space / DB connection), then retry.\n\n";
+                    $proceedBulk      = false;
+                    $bulkBackupFailed = true;  /* surfaced as a banner below */
+                } else {
+                    echo "\n  ✓ Backup written: " . htmlspecialchars(basename((string)$finalFile)) . " — proceeding.\n\n";
+                }
+            }
+
             $totalRan = 0;
             $totalFailed = 0;
             $startedAt = microtime(true);
@@ -741,7 +798,10 @@ if ($action !== '') {
                 echo "══════════════════════════════════════════════════════\n";
             });
 
-            foreach ($migrationOrder as $migAction) {
+            /* $proceedBulk is false only when the auto pre-migration backup
+               above failed — in that case iterate nothing so no migration
+               runs without a recovery point. */
+            foreach (($proceedBulk ? $migrationOrder : []) as $migAction) {
                 /* #862 — reset the execution-time alarm before EACH
                    migration in case the host enforces a per-script
                    limit that survives the require() boundary. Cheap
@@ -855,6 +915,24 @@ if ($action !== '') {
             badge.className   = <?= $actionSuccess ? "'badge bg-success'" : "'badge bg-danger'" ?>;
         })();
     </script>
+
+    <?php if ($action === 'apply-all-migrations' && $bulkBackupFailed): ?>
+        <!-- Auto pre-migration backup failed → the run was aborted before
+             any migration executed, so the schema is untouched. -->
+        <div class="alert alert-danger mt-3" role="alert">
+            <h5 class="alert-heading mb-2">
+                <i class="bi bi-shield-exclamation me-1"></i>
+                Aborted — automatic pre-migration backup did not complete
+            </h5>
+            <p class="mb-0">
+                No migrations were applied; your database is unchanged. The bulk
+                run refuses to alter the schema without a recovery point. Run a
+                manual <strong>Backup Database</strong> (or fix the cause — disk
+                space / DB connection), then click <em>Apply all pending
+                migrations</em> again.
+            </p>
+        </div>
+    <?php endif; ?>
 
     <?php if ($action === 'apply-all-migrations' && $bulkFirstFailStep !== null): ?>
         <!-- Failure summary BELOW the panel (#817 round 2 — moved from

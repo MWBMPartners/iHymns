@@ -28,12 +28,20 @@ $work = method_exists($songData, 'getWork') ? $songData->getWork($workSlug ?? ''
 
 if ($work === null) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Work not found: <strong>' . htmlspecialchars((string)($workSlug ?? '')) . '</strong>';
-    echo '</div>';
-    echo '<a href="/" class="btn btn-primary" data-navigate="home">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Home</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Work not found',
+            'message' => 'We couldn\'t find a work matching "' . (string)($workSlug ?? '') . '". It may have been removed or the link is out of date.',
+            'fa'      => 'fa-layer-group',
+            'actions' => [
+                ['label' => 'Go Home',   'href' => '/',          'navigate' => 'home',      'primary' => true, 'fa' => 'fa-house'],
+                ['label' => 'Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'fa' => 'fa-book-open'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Work not found: <strong>'
+           . htmlspecialchars((string)($workSlug ?? '')) . '</strong></div>';
+    }
     return;
 }
 

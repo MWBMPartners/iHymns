@@ -96,6 +96,31 @@ function getDbMysqli(): mysqli
 }
 
 /**
+ * Is this Throwable a MySQL CONNECTION / availability failure — server down,
+ * unreachable, too many connections, handshake/auth, unknown DB, or missing
+ * credentials — as opposed to an ordinary query error (which should stay a
+ * 500)? The public entry points map a true result to a transient 503 +
+ * Retry-After so a DB outage degrades gracefully (WS-K #1021).
+ *
+ * @param \Throwable $e
+ * @return bool
+ */
+function isDbConnectionFailure(\Throwable $e): bool
+{
+    if ($e instanceof \mysqli_sql_exception) {
+        /* Client-side connect/lost errors (20xx) + server-side availability
+           errors (10xx). Ordinary query errors — ER_DUP_ENTRY 1062 etc. —
+           are deliberately excluded so genuine app bugs still surface as 500. */
+        return in_array($e->getCode(), [
+            2002, 2003, 2004, 2005, 2006, 2012, 2013,  /* can't connect / lost / handshake */
+            1040, 1045, 1049, 1129, 1203,              /* too many conns / access denied / unknown DB / host blocked / per-user limit */
+        ], true);
+    }
+    return $e instanceof \RuntimeException
+        && str_contains($e->getMessage(), 'MySQL credentials not configured');
+}
+
+/**
  * Defensive `bind_param` wrapper. Asserts that the type-string length
  * matches the number of bound variables BEFORE calling
  * `$stmt->bind_param`, so a typo throws a clear error naming the

@@ -19,15 +19,23 @@ declare(strict_types=1);
 $book = $songData->getSongbook($bookId);
 $songs = $songData->getSongs($bookId);
 
-/* Handle invalid songbook ID */
+/* Handle invalid songbook ID — themed error card (unified renderer). */
 if ($book === null) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Songbook not found: <strong>' . htmlspecialchars($bookId) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Songbook not found',
+            'message' => 'We couldn\'t find a songbook matching "' . $bookId . '". It may have been renamed or removed.',
+            'fa'      => 'fa-book-open',
+            'actions' => [
+                ['label' => 'All Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',        'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Songbook not found: <strong>'
+           . htmlspecialchars($bookId) . '</strong></div>';
+    }
     return;
 }
 

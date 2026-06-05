@@ -45,6 +45,7 @@ $_adminLinks = [
     ['revisions',            '/manage/revisions',              'bi-clock-history',   'Revisions Audit',       'verify_songs',                'Songs'      ],
     ['missing-numbers',      '/manage/missing-numbers',        'bi-binoculars',      'Missing Numbers',       'edit_songs',                  'Songs'      ],
     ['song-link-suggestions','/manage/song-link-suggestions',  'bi-link-45deg',      'Song Link Suggestions', 'edit_songs',                  'Songs'      ],
+    ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicate Songs',       'manage_duplicate_songs',      'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
@@ -81,6 +82,7 @@ $_adminLinks = [
     ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
     ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
+    ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'manage_api_keys',             'Operations' ],
 
     ['help',                 '/manage/help',                   'bi-life-preserver',  'Help / Guides',         null,                          'Help'       ],
     ['api-docs',             '/manage/api-docs',               'bi-file-earmark-code', 'API Docs (Swagger UI)', 'view_api_docs',             'Help'       ],

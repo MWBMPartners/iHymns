@@ -186,10 +186,10 @@ try {
 
     /* --- Prepare song-related statements --- */
     $stmtSong = $mysqli->prepare(
-        "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, SongbookName,
+        "INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr,
          Language, Copyright, Ccli, Verified, LyricsPublicDomain,
          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     $stmtWriter = $mysqli->prepare(
@@ -244,9 +244,11 @@ try {
         }
         $lyricsText = implode("\n", $lyricsLines);
 
+        /* SongbookName denorm column dropped (WS-E #1013 ph2) —
+           13 cols / 13 placeholders / 13 bind types. */
         $stmtSong->bind_param(
-            'sissssssiiiiis',
-            $songId, $number, $title, $songbookAbbr, $songbookName,
+            'sisssssiiiiis',
+            $songId, $number, $title, $songbookAbbr,
             $language, $copyright, $ccli, $verified, $lyricsPD,
             $musicPD, $hasAudio, $hasSheet, $lyricsText
         );

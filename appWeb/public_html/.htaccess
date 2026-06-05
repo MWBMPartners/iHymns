@@ -262,7 +262,15 @@ RewriteRule ^ index.php [QSA,L]
 </IfModule>
 
 # ==========================================================================
-# ERROR HANDLING — Custom 404 redirects to the SPA shell
+# ERROR HANDLING
+#   404 → the SPA shell (the JS router renders the themed "page not found").
+#   403 / 500 / 503 → the standalone themed error page (error.php), which
+#   matches the user's light / dark / high-contrast theme. App-generated 503s
+#   (maintenance, DB-down) already send their own themed body, so this only
+#   fires for body-less server-level errors.
 # ==========================================================================
 
 ErrorDocument 404 /index.php
+ErrorDocument 403 /error.php
+ErrorDocument 500 /error.php
+ErrorDocument 503 /error.php

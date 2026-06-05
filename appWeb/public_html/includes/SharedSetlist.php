@@ -5,20 +5,16 @@ declare(strict_types=1);
 /**
  * iHymns — Shared Setlist Storage Helper
  *
- * Encapsulates the storage of public link-shared setlists. Prefers
- * MySQL (`tblSharedSetlists`); transparently falls back to the legacy
- * file-based store under APP_SETLIST_SHARE_DIR when the table is
- * missing — so a deployment that hasn't run migrate-account-sync.php
- * yet keeps working unchanged until the admin opts in.
+ * Encapsulates the storage of public link-shared setlists in MySQL
+ * (`tblSharedSetlists`).
  *
- * Once migration has run, every read/write flows through MySQL and
- * the file path becomes dead code. The original JSON files are left
- * on disk by the migration so admins can verify the import before
- * deleting them.
- *
- * Each helper returns null/false on a clean miss so callers don't have
- * to differentiate "not found" from "DB unavailable" — that's
- * intentional, since the fallback handles the latter.
+ * WS-J #1020: the legacy file-based store under APP_SETLIST_SHARE_DIR was
+ * removed — every read/write is DB-direct now (governing rule: no JSON file
+ * stores, DB-down = graceful error never stale). Any legacy setlist_json
+ * files still on disk are imported into tblSharedSetlists by
+ * migrate-users.php; until that has run for a deployment, those file-only
+ * shares are unavailable. Each helper returns null/false on a miss or a DB
+ * error so callers surface a clean "not found" / 500.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'config.php';
@@ -30,7 +26,6 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
  */
 function sharedSetlistGet(string $shareId): ?array
 {
-    /* MySQL first */
     try {
         $db   = getDbMysqli();
         $stmt = $db->prepare('SELECT Data FROM tblSharedSetlists WHERE ShareId = ?');
@@ -44,16 +39,9 @@ function sharedSetlistGet(string $shareId): ?array
             if (is_array($decoded)) return $decoded;
         }
     } catch (\Throwable $_e) {
-        /* DB unreachable or table missing — fall through to file lookup */
+        /* DB unreachable — clean miss (WS-J: no disk fallback). */
     }
-
-    /* Legacy disk fallback */
-    $path = APP_SETLIST_SHARE_DIR . DIRECTORY_SEPARATOR . $shareId . '.json';
-    if (!is_file($path)) return null;
-    $raw = file_get_contents($path);
-    if ($raw === false) return null;
-    $decoded = json_decode($raw, true);
-    return is_array($decoded) ? $decoded : null;
+    return null;
 }
 
 /**
@@ -77,28 +65,17 @@ function sharedSetlistInsert(string $shareId, array $data): ?bool
         $stmt->close();
         return true;
     } catch (\mysqli_sql_exception $e) {
-        if ($e->getCode() === 1062) return false; /* duplicate */
-        /* Other DB error — try disk path below */
+        if ($e->getCode() === 1062) return false; /* duplicate — caller retries */
+        return null;                              /* hard DB error → 500 (WS-J: no disk fallback) */
     } catch (\Throwable $_e) {
-        /* DB unavailable — try disk path below */
+        return null;
     }
-
-    /* Disk fallback — `x` mode is atomic and fails if file exists. */
-    $path = APP_SETLIST_SHARE_DIR . DIRECTORY_SEPARATOR . $shareId . '.json';
-    $fp   = @fopen($path, 'x');
-    if ($fp === false) {
-        return is_file($path) ? false : null;
-    }
-    $written = fwrite($fp, $json);
-    fclose($fp);
-    return $written !== false ? true : null;
 }
 
 /**
- * Update an existing shared setlist. If the row doesn't exist in MySQL
- * (e.g. it was historically file-only) we INSERT it — this is the
- * gradual-migration path: the next save promotes the file's contents
- * into MySQL. Returns true on success, false otherwise.
+ * Update an existing shared setlist. If no row matches (e.g. a legacy
+ * file-only share that migrate-users.php hasn't imported yet) we INSERT it,
+ * promoting it into MySQL. Returns true on success, false on DB failure.
  */
 function sharedSetlistUpdate(string $shareId, array $data): bool
 {
@@ -119,11 +96,9 @@ function sharedSetlistUpdate(string $shareId, array $data): bool
         $stmt->close();
         return true;
     } catch (\Throwable $_e) {
-        /* Fall through to file write */
+        /* WS-J: no disk fallback — a DB failure is a clean false. */
+        return false;
     }
-
-    $path = APP_SETLIST_SHARE_DIR . DIRECTORY_SEPARATOR . $shareId . '.json';
-    return file_put_contents($path, $json, LOCK_EX) !== false;
 }
 
 /**

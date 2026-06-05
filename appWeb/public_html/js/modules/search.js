@@ -5,21 +5,29 @@
  *
  * PURPOSE:
  * Handles all search functionality including the header search bar
- * and the dedicated search page. Uses Fuse.js for client-side fuzzy
- * search with weighted field scoring and typo tolerance. Falls back
- * to the server-side PHP API if Fuse.js fails to load.
+ * and the dedicated search page.
  *
- * ARCHITECTURE (#82):
- *   1. On first search interaction, Fuse.js is dynamically loaded
- *      from CDN (with local fallback).
- *   2. The songs.json data is fetched and a Fuse.js index is built.
- *   3. Subsequent searches run entirely client-side (no network).
- *   4. If either step fails, falls back to API-based substring search.
- *   5. Offline search works when songs.json is cached by service worker.
+ * ARCHITECTURE (#1014 — DB-direct rewrite):
+ *   Search is a LIVE MySQL query. The search page, the header
+ *   typeahead, and lyrics search all hit the server API
+ *   (`?action=search` / `?action=suggest`) on every keystroke
+ *   (debounced). There is NO client-side corpus and NO Fuse.js index
+ *   anymore — staleness is impossible because every read is live.
+ *
+ *   Typo tolerance + partial-word matching is done server-side via the
+ *   FULLTEXT BOOLEAN prefix strategy (see SongData::searchSongs, D2),
+ *   so the UX that Fuse.js used to provide is preserved without
+ *   shipping the whole catalogue to the browser. As of WS-C (#1015)
+ *   neither search nor Song of the Day fetches the corpus — SoTD has
+ *   its own live endpoint. (The only remaining client corpus consumer
+ *   is the offline-download feature in settings.js, addressed by WS-I.)
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
 import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
+
+/** Results fetched per page (and per "Load more" click). */
+const PAGE_SIZE = 50;
 
 export class Search {
     /**
@@ -34,26 +42,15 @@ export class Search {
         /** @type {number|null} Debounce timer ID */
         this.debounceTimer = null;
 
-        /** @type {object|null} Fuse.js instance (null until loaded) */
-        this.fuseIndex = null;
-
-        /** @type {Array|null} Raw songs data for songbook filtering */
-        this.songsData = null;
-
-        /** @type {boolean} True if Fuse.js has been attempted and failed */
-        this.fuseFailed = false;
-
-        /** @type {boolean} True if currently loading Fuse.js/data */
-        this.fuseLoading = false;
-
-        /** @type {object|null} Fuse.js instance with lyrics (#93) */
-        this.fuseLyricsIndex = null;
-
-        /** @type {boolean} Whether lyrics search is active */
+        /** @type {boolean} Whether "search within lyrics" is active */
         this.lyricsSearchEnabled = false;
 
-        /** @type {object|null} Fuse.js constructor reference */
-        this.FuseClass = null;
+        /** @type {object|null} Current search-page pagination state */
+        this._search = null;
+
+        /** @type {number} Monotonic token so stale autocomplete responses
+         *  (out-of-order network replies) can't clobber a newer query. */
+        this._acSeq = 0;
     }
 
     /**
@@ -110,8 +107,6 @@ export class Search {
             });
         }
 
-        /* Eagerly start loading Fuse.js in the background */
-        this.loadFuseIndex();
     }
 
     /**
@@ -142,102 +137,6 @@ export class Search {
     }
 
     /* =====================================================================
-     * FUSE.JS LOADING & INDEX BUILDING (#82)
-     * ===================================================================== */
-
-    /**
-     * Load Fuse.js from CDN (with local fallback) and build the search index.
-     * This runs asynchronously; search falls back to API until ready.
-     */
-    async loadFuseIndex() {
-        /* Don't re-attempt if already loaded, loading, or permanently failed */
-        if (this.fuseIndex || this.fuseLoading || this.fuseFailed) return;
-
-        this.fuseLoading = true;
-
-        try {
-            /* Step 1: Dynamically import Fuse.js from CDN */
-            let Fuse;
-            try {
-                const fuseModule = await import(this.app.config.fuseJsCdn);
-                Fuse = fuseModule.default || fuseModule;
-            } catch {
-                /* CDN failed — try local fallback */
-                console.warn('[Search] Fuse.js CDN failed, trying local fallback');
-                try {
-                    const fuseLocal = await import('/' + this.app.config.fuseJsLocal);
-                    Fuse = fuseLocal.default || fuseLocal;
-                } catch {
-                    throw new Error('Fuse.js could not be loaded from CDN or local');
-                }
-            }
-
-            /* Step 2: Fetch the song data (may be served from SW cache) */
-            const response = await fetch(this.app.config.dataUrl);
-            if (!response.ok) throw new Error('Failed to fetch songs.json');
-            const data = await response.json();
-
-            this.songsData = data.songs || [];
-            /* Capture the songbook index alongside songs so other
-               modules (Song of the Day, language filters, …) can
-               consult per-songbook metadata — primary `language`,
-               `languages` array, `isOfficial`, etc. — without an
-               extra round-trip. */
-            this.songbooksData = Array.isArray(data.songbooks) ? data.songbooks : [];
-            this.FuseClass = Fuse;
-
-            /* Prepare lyricsText field for lyrics search (#93) */
-            this.songsData.forEach(song => {
-                const lines = [];
-                (song.components || []).forEach(c => {
-                    (c.lines || []).forEach(l => lines.push(l));
-                });
-                song.lyricsText = lines.join(' ');
-            });
-
-            /* Step 3: Build the Fuse.js index with weighted field scoring */
-            this.fuseIndex = new Fuse(this.songsData, {
-                /**
-                 * Fuse.js search configuration:
-                 *   - keys: Fields to search, weighted by importance
-                 *   - threshold: 0 = exact match, 1 = match anything (0.35 = moderate fuzzy)
-                 *   - distance: How far from the expected position a match can be
-                 *   - minMatchCharLength: Minimum characters before considering a match
-                 *   - includeScore: Return match quality score for ranking
-                 *   - shouldSort: Sort results by relevance score
-                 *   - ignoreLocation: Search across the entire string (not just start)
-                 */
-                keys: [
-                    { name: 'title',        weight: 3.0 },  /* Title matches rank highest */
-                    { name: 'songbookName', weight: 1.5 },  /* Songbook name matches */
-                    { name: 'writers',      weight: 1.2 },  /* Writer/author matches */
-                    { name: 'composers',    weight: 1.0 },  /* Composer matches */
-                ],
-                threshold: 0.35,
-                distance: 200,
-                minMatchCharLength: 2,
-                includeScore: true,
-                shouldSort: true,
-                ignoreLocation: true,
-            });
-
-            console.log(`[Search] Fuse.js index built: ${this.songsData.length} songs`);
-
-            /* Re-render Song of the Day if home page is active (#108) —
-               the home page may have rendered before song data finished loading */
-            if (document.getElementById('song-of-the-day') && this.app.songOfTheDay) {
-                this.app.songOfTheDay.renderHomeSection();
-            }
-
-        } catch (error) {
-            console.warn('[Search] Fuse.js loading failed, using API fallback:', error);
-            this.fuseFailed = true;
-        } finally {
-            this.fuseLoading = false;
-        }
-    }
-
-    /* =====================================================================
      * SEARCH PAGE INTEGRATION
      * ===================================================================== */
 
@@ -262,22 +161,13 @@ export class Search {
                 localStorage.setItem(STORAGE_SEARCH_LYRICS, String(this.lyricsSearchEnabled));
                 this.app.syncStorage(STORAGE_SEARCH_LYRICS);
 
-                /* Build lyrics index on first enable */
-                if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
-                    this.buildLyricsIndex();
-                }
-
-                /* Re-run current search with new mode */
+                /* Re-run current search with the new mode (server decides
+                   whether lyrics participate — no client index to build). */
                 const q = input.value.trim();
                 if (q.length >= 2) {
                     this.performSearch(q, filter?.value || '', results);
                 }
             });
-
-            /* Build lyrics index eagerly if toggle was previously enabled */
-            if (this.lyricsSearchEnabled && !this.fuseLyricsIndex && this.FuseClass && this.songsData) {
-                this.buildLyricsIndex();
-            }
         }
 
         /* Render search history chips (#110) */
@@ -325,69 +215,34 @@ export class Search {
         }
     }
 
-    /**
-     * Build the lyrics-inclusive Fuse.js index on demand (#93).
-     * Uses higher threshold for lyrics (lyrics text is longer and noisier).
-     */
-    buildLyricsIndex() {
-        if (!this.FuseClass || !this.songsData) return;
-
-        this.fuseLyricsIndex = new this.FuseClass(this.songsData, {
-            keys: [
-                { name: 'title',        weight: 3.0 },
-                { name: 'songbookName', weight: 1.5 },
-                { name: 'writers',      weight: 1.2 },
-                { name: 'composers',    weight: 1.0 },
-                { name: 'lyricsText',   weight: 0.8 },
-            ],
-            threshold: 0.3,
-            distance: 500,
-            minMatchCharLength: 3,
-            includeScore: true,
-            includeMatches: true,
-            shouldSort: true,
-            ignoreLocation: true,
-        });
-
-        console.log(`[Search] Lyrics Fuse.js index built: ${this.songsData.length} songs`);
-    }
-
     /* =====================================================================
-     * SEARCH EXECUTION — Fuse.js (preferred) with API fallback
+     * SEARCH EXECUTION — live MySQL API
      * ===================================================================== */
 
     /**
      * Perform a search and display results.
-     * Uses Fuse.js if available; falls back to server-side API otherwise.
      *
      * @param {string} query Search query
      * @param {string} songbook Songbook filter (empty = all)
      * @param {HTMLElement} container Results container element
+     * @param {boolean} [append] True when fetching the next page ("Load more")
      */
-    async performSearch(query, songbook, container) {
+    async performSearch(query, songbook, container, append = false) {
         try {
-            let results;
-
-            if (this.fuseIndex && !this.fuseFailed) {
-                /* --- Client-side fuzzy search via Fuse.js --- */
-                results = this.fuseSearch(query, songbook);
-            } else {
-                /* --- Fallback: server-side API search --- */
-                results = await this.apiSearch(query, songbook);
+            if (!append) {
+                /* Fresh search — reset pagination + scaffold the container. */
+                this._search = { query, songbook, offset: 0, loaded: 0 };
+                container.innerHTML = `
+                    <p class="text-muted small mb-2" id="search-count"></p>
+                    <div class="list-group" id="search-results-list"></div>
+                    <div id="search-loadmore" class="text-center mt-3"></div>`;
             }
 
-            if (results && results.length > 0) {
-                const method = this.fuseIndex && !this.fuseFailed ? 'fuzzy' : 'basic';
-                container.innerHTML = this.renderSearchResults(results, results.length, method);
-                /* Record successful search (#110) */
-                if (this.app.searchHistory) {
-                    this.app.searchHistory.record(query);
-                }
-                /* Track search analytics */
-                if (this.app.analytics) {
-                    this.app.analytics.trackSearch(query, results.length);
-                }
-            } else {
+            const state = this._search;
+            const { results, hasMore } = await this.apiSearch(state.query, state.songbook, state.offset);
+
+            /* No results on a fresh search → friendly empty state. */
+            if (!append && (!results || results.length === 0)) {
                 container.innerHTML = `
                     <div class="text-center text-muted py-4">
                         <i class="fa-solid fa-face-sad-tear fa-2x mb-2 opacity-50" aria-hidden="true"></i>
@@ -401,94 +256,88 @@ export class Search {
                             </button>
                         </div>
                     </div>`;
+                return;
+            }
+
+            const list = container.querySelector('#search-results-list');
+            const countEl = container.querySelector('#search-count');
+            const moreEl = container.querySelector('#search-loadmore');
+
+            if (results && results.length && list) {
+                list.insertAdjacentHTML('beforeend', this._renderResultItems(results));
+                state.loaded += results.length;
+                /* Advance the DB offset by the page size (not the post-
+                   filter count) so it matches the server's offset window. */
+                state.offset += PAGE_SIZE;
+            }
+
+            if (countEl) {
+                const n = state.loaded;
+                countEl.textContent = `${n}${hasMore ? '+' : ''} result${n !== 1 ? 's' : ''} found`;
+            }
+
+            /* "Load more" button when the server reports another page. */
+            if (moreEl) {
+                if (hasMore) {
+                    moreEl.innerHTML = `
+                        <button type="button" class="btn btn-outline-secondary btn-sm" id="search-loadmore-btn">
+                            <i class="fa-solid fa-chevron-down me-1" aria-hidden="true"></i>Load more
+                        </button>`;
+                    const btn = moreEl.querySelector('#search-loadmore-btn');
+                    btn?.addEventListener('click', () => {
+                        btn.disabled = true;
+                        btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" aria-hidden="true"></span>Loading…`;
+                        this.performSearch(state.query, state.songbook, container, true);
+                    }, { once: true });
+                } else {
+                    moreEl.innerHTML = '';
+                }
+            }
+
+            /* Record history + analytics on the first page only. */
+            if (!append) {
+                if (this.app.searchHistory) this.app.searchHistory.record(query);
+                if (this.app.analytics) this.app.analytics.trackSearch(query, state.loaded);
             }
         } catch (error) {
             console.error('[Search] Error:', error);
-            container.innerHTML = `
-                <div class="alert alert-danger">
-                    <i class="fa-solid fa-triangle-exclamation me-2"></i>
-                    Search failed. Please try again.
-                </div>`;
+            /* Live search failed (offline / server error). Signal the offline
+               indicator (#112) and, for a fresh search, fall back to the
+               precached slim index so the user can still find titles. */
+            try { window.dispatchEvent(new Event('ihymns:fetch-failed')); } catch (_e) {}
+            if (!append) {
+                const handled = await this._offlineSearchFallback(query, songbook, container);
+                if (!handled) {
+                    container.innerHTML = `
+                        <div class="alert alert-warning">
+                            <i class="fa-solid fa-wifi-slash me-2" aria-hidden="true"></i>
+                            Search is unavailable offline and the song index hasn't been
+                            cached yet. Reconnect to search.
+                        </div>`;
+                }
+            } else {
+                /* Keep the existing results; just reset the Load-more button. */
+                const moreEl = container.querySelector('#search-loadmore');
+                if (moreEl) moreEl.innerHTML = `<span class="text-muted small">Couldn't load more — try again.</span>`;
+            }
         }
     }
 
     /**
-     * Client-side fuzzy search using Fuse.js.
+     * Live server-side search.
      *
      * @param {string} query Search query
      * @param {string} songbook Songbook filter (empty = all)
-     * @returns {Array} Array of song summary objects
+     * @param {number} offset Pagination offset
+     * @returns {Promise<{results: Array, hasMore: boolean, total: number}>}
      */
-    fuseSearch(query, songbook) {
-        /* Use lyrics index when lyrics search is enabled (#93) */
-        const index = (this.lyricsSearchEnabled && this.fuseLyricsIndex)
-            ? this.fuseLyricsIndex
-            : this.fuseIndex;
-
-        let fuseResults = index.search(query, { limit: 50 });
-
-        /* Apply songbook filter if specified */
-        if (songbook) {
-            const bookId = songbook.toUpperCase();
-            fuseResults = fuseResults.filter(r => (r.item.songbook || '').toUpperCase() === bookId);
-        }
-
-        /* Map Fuse.js results to the same format as API results */
-        return fuseResults.map(r => {
-            const result = {
-                id:           r.item.id,
-                number:       r.item.number,
-                title:        r.item.title,
-                songbook:     r.item.songbook,
-                songbookName: r.item.songbookName,
-                writers:      r.item.writers || [],
-                hasAudio:     r.item.hasAudio || false,
-                hasSheetMusic: r.item.hasSheetMusic || false,
-            };
-
-            /* Extract lyrics snippet if match was in lyrics (#93) */
-            if (this.lyricsSearchEnabled && r.matches) {
-                const lyricsMatch = r.matches.find(m => m.key === 'lyricsText');
-                if (lyricsMatch) {
-                    result.lyricsSnippet = this.extractLyricsSnippet(r.item, query);
-                }
-            }
-
-            return result;
-        });
-    }
-
-    /**
-     * Extract a matching lyrics snippet from a song (#93).
-     * Finds the first line containing the query and returns it.
-     *
-     * @param {object} song Song object
-     * @param {string} query Search query
-     * @returns {string} Matching line or empty string
-     */
-    extractLyricsSnippet(song, query) {
-        const q = query.toLowerCase();
-        for (const comp of (song.components || [])) {
-            for (const line of (comp.lines || [])) {
-                if (line.toLowerCase().includes(q)) {
-                    return line;
-                }
-            }
-        }
-        return '';
-    }
-
-    /**
-     * Server-side API search (fallback when Fuse.js is unavailable).
-     *
-     * @param {string} query Search query
-     * @param {string} songbook Songbook filter (empty = all)
-     * @returns {Promise<Array>} Array of song summary objects
-     */
-    async apiSearch(query, songbook) {
+    async apiSearch(query, songbook, offset = 0) {
         const url = new URL(this.app.config.apiUrl, window.location.origin);
         url.searchParams.set('action', 'search');
         url.searchParams.set('q', query);
+        url.searchParams.set('limit', String(PAGE_SIZE));
+        url.searchParams.set('offset', String(offset));
+        url.searchParams.set('lyrics', this.lyricsSearchEnabled ? '1' : '0');
         if (songbook) url.searchParams.set('songbook', songbook);
 
         const response = await fetch(url, {
@@ -496,7 +345,92 @@ export class Search {
         });
         if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
-        return data.results || [];
+        /* A live response means we're online — let the offline indicator
+           clear its "you're offline" banner (#112 / WS-I). */
+        try { window.dispatchEvent(new Event('ihymns:fetch-succeeded')); } catch (_e) {}
+        return {
+            results: data.results || [],
+            hasMore: !!data.hasMore,
+            total: data.total || 0,
+        };
+    }
+
+    /* =====================================================================
+     * OFFLINE FALLBACK (WS-I #1017) — slim index, no live API
+     * ===================================================================== */
+
+    /**
+     * Fetch + memoise the slim catalogue index (id/number/title/songbook).
+     * Served live when online; served from the service-worker cache when
+     * offline (it's precached). This is the offline-only fallback for
+     * search + autocomplete now that the Fuse.js corpus is gone.
+     *
+     * @returns {Promise<Array>}
+     */
+    async _getSlimIndex() {
+        if (this._slimIndex) return this._slimIndex;
+        const url = new URL(this.app.config.dataUrl, window.location.origin);
+        const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        if (!response.ok) throw new Error(`Slim index: HTTP ${response.status}`);
+        const data = await response.json();
+        this._slimIndex = data.songs || [];
+        return this._slimIndex;
+    }
+
+    /**
+     * Filter the slim index by title / number (and songbook) — the basic
+     * client-side search used when the live API is unreachable.
+     *
+     * @param {Array} index Slim song rows
+     * @param {string} query
+     * @param {string} songbook
+     * @returns {Array} Matching rows (capped at PAGE_SIZE)
+     */
+    _filterSlimIndex(index, query, songbook) {
+        const q = query.toLowerCase();
+        const book = songbook ? songbook.toUpperCase() : '';
+        const out = [];
+        for (const s of index) {
+            if (book && (s.songbook || '').toUpperCase() !== book) continue;
+            const title = (s.title || '').toLowerCase();
+            const num = String(s.number == null ? '' : s.number);
+            if (title.indexOf(q) !== -1 || (q && num.indexOf(q) !== -1)) {
+                out.push(s);
+                if (out.length >= PAGE_SIZE) break;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Offline fallback for the search page: render results filtered from the
+     * precached slim index with a clear "you're offline" note. Returns true
+     * if it rendered (index available), false otherwise.
+     *
+     * @param {string} query
+     * @param {string} songbook
+     * @param {HTMLElement} container
+     * @returns {Promise<boolean>}
+     */
+    async _offlineSearchFallback(query, songbook, container) {
+        let index;
+        try {
+            index = await this._getSlimIndex();
+        } catch (_e) {
+            return false;
+        }
+        if (!Array.isArray(index) || index.length === 0) return false;
+
+        const results = this._filterSlimIndex(index, query, songbook);
+        container.innerHTML = `
+            <div class="alert alert-warning py-2 small mb-2" role="status">
+                <i class="fa-solid fa-wifi-slash me-1" aria-hidden="true"></i>
+                You're offline — searching cached song titles only. Songs you've
+                opened before will still open; others need a connection.
+            </div>
+            <p class="text-muted small mb-2">${results.length} match${results.length !== 1 ? 'es' : ''} in the offline index</p>
+            <div class="list-group">${this._renderResultItems(results)}</div>`;
+        return true;
     }
 
     /* =====================================================================
@@ -504,16 +438,13 @@ export class Search {
      * ===================================================================== */
 
     /**
-     * Render search results as a list group.
+     * Render a batch of result rows as list-group anchors.
      *
      * @param {Array} results Array of song summary objects
-     * @param {number} total Total number of results
      * @returns {string} HTML string
      */
-    renderSearchResults(results, total, method) {
-        let html = `<p class="text-muted small mb-2">${total} result${total !== 1 ? 's' : ''} found</p>`;
-        html += '<div class="list-group">';
-
+    _renderResultItems(results) {
+        let html = '';
         results.forEach(song => {
             /* Canonical separator is "; " (#495). Surname-first hymnal
                citations legitimately contain commas inside a single
@@ -521,6 +452,10 @@ export class Search {
             const writers = (song.writers || []).join('; ');
             const snippet = song.lyricsSnippet
                 ? `<small class="text-muted d-block fst-italic"><i class="fa-solid fa-music me-1" aria-hidden="true"></i>&ldquo;${escapeHtml(song.lyricsSnippet)}&rdquo;</small>`
+                : '';
+            /* Curator alt-title hint (#832) — "(known as: …)". */
+            const altName = song.matchedVia && song.matchedVia.alternativeTitle
+                ? `<small class="text-muted d-block"><i class="fa-solid fa-tag me-1" aria-hidden="true"></i>known as &ldquo;${escapeHtml(song.matchedVia.alternativeTitle)}&rdquo;</small>`
                 : '';
             html += `
                 <a href="/song/${escapeHtml(song.id)}"
@@ -534,18 +469,17 @@ export class Search {
                             ${songbookLabel(song.songbook, song.songbookName)}
                             ${writers ? ' &middot; ' + escapeHtml(writers) : ''}
                         </small>
+                        ${altName}
                         ${snippet}
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>`;
         });
-
-        html += '</div>';
         return html;
     }
 
     /* =====================================================================
-     * AUTOCOMPLETE / SUGGESTIONS (#307)
+     * AUTOCOMPLETE / SUGGESTIONS (#307) — live `?action=suggest`
      * ===================================================================== */
 
     /**
@@ -578,17 +512,44 @@ export class Search {
     }
 
     /**
-     * Show autocomplete suggestions below the input.
+     * Show autocomplete suggestions below the input (live MySQL query).
      *
      * @param {HTMLInputElement} input The search input
      * @param {string} query Current query
      */
-    _showAutocomplete(input, query) {
-        /* Use Fuse.js if available, otherwise skip (full search page handles it) */
-        if (!this.fuseIndex) return;
+    async _showAutocomplete(input, query) {
+        /* Stale-response guard — only the newest request may render. */
+        const seq = ++this._acSeq;
 
-        const results = this.fuseIndex.search(query, { limit: 8 });
-        if (results.length === 0) {
+        let suggestions;
+        try {
+            const url = new URL(this.app.config.apiUrl, window.location.origin);
+            url.searchParams.set('action', 'suggest');
+            url.searchParams.set('q', query);
+            const response = await fetch(url, {
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!response.ok) throw new Error(`Suggest API: HTTP ${response.status}`);
+            const data = await response.json();
+            suggestions = data.suggestions || [];
+        } catch (error) {
+            /* Offline / server error — fall back to the precached slim
+               index so the header typeahead still works offline (WS-I). */
+            try {
+                const index = await this._getSlimIndex();
+                suggestions = this._filterSlimIndex(index, query, '').slice(0, 8);
+            } catch (_e) {
+                this._closeAutocomplete(input);
+                return;
+            }
+        }
+
+        /* A newer keystroke superseded this request, or the input was
+           cleared/blurred while we were waiting — discard. */
+        if (seq !== this._acSeq) return;
+        if (input.value.trim() !== query) return;
+
+        if (!suggestions.length) {
             this._closeAutocomplete(input);
             return;
         }
@@ -603,8 +564,7 @@ export class Search {
             parent.appendChild(dropdown);
         }
 
-        dropdown.innerHTML = results.map((r, i) => {
-            const song = r.item;
+        dropdown.innerHTML = suggestions.map((song, i) => {
             return `<a href="/song/${escapeHtml(song.id)}"
                        class="search-autocomplete-item${i === 0 ? ' active' : ''}"
                        data-navigate="song"

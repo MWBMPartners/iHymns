@@ -47,6 +47,16 @@ export class StorageBridge {
 
         /** @type {Function} Bound message handler for cleanup */
         this._messageHandler = this._onMessage.bind(this);
+
+        /** @type {string|null} The bridge iframe's origin. postMessage events
+         *  are trusted ONLY from here (CWE-346): without this, a cross-origin
+         *  page that gets the victim to load the bridge (iframe/opener) could
+         *  spoof bridge replies and poison the shared cross-subdomain
+         *  localStorage — e.g. inject a forged auth token. Mirrors the
+         *  ALLOWED_ORIGINS guard already on the bridge.html receiver. */
+        this._bridgeOrigin = (() => {
+            try { return new URL(bridgeUrl).origin; } catch (_e) { return null; }
+        })();
     }
 
     /**
@@ -287,6 +297,11 @@ export class StorageBridge {
      * @param {MessageEvent} event
      */
     _onMessage(event) {
+        /* Trust only messages from the real bridge iframe's origin AND window
+           — rejects the window.open / injected-iframe spoofing vector
+           (CWE-346) before any reply is resolved. */
+        if (this._bridgeOrigin && event.origin !== this._bridgeOrigin) return;
+        if (this.iframe && event.source !== this.iframe.contentWindow) return;
         if (!event.data || event.data.ns !== 'ihymns-bridge') return;
         if (typeof event.data.id !== 'number') return;
 

@@ -19,15 +19,23 @@ declare(strict_types=1);
 /* Fetch the full song data */
 $song = $songData->getSongById($songId);
 
-/* Handle song not found */
+/* Handle song not found — themed error card (unified renderer). */
 if ($song === null) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Song not found: <strong>' . htmlspecialchars($songId) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Song not found',
+            'message' => 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
+            'fa'      => 'fa-music',
+            'actions' => [
+                ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',           'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Song not found: <strong>'
+           . htmlspecialchars($songId) . '</strong></div>';
+    }
     return;
 }
 
@@ -100,6 +108,33 @@ $components  = $song['components'] ?? [];
 $lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
 $musicPublicDomain  = !empty($song['musicPublicDomain']);
 $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
+
+/* Content gating for lyrics (forward-looking — e.g. gating copyrighted lyrics).
+   Does NOTHING unless the content_gating_enabled flag is ON, so there is zero
+   cost (no tblContentRestrictions query) on the hot song-page path by default.
+   When a restriction matches the viewer, the lyrics are replaced with the
+   themed "Lyrics protected" card (renderContentGatedFragment).
+   NOTE: ?page= renders are currently anonymous (router.loadPage doesn't send
+   the bearer token), so a signed-in ENTITLED user is treated as anonymous
+   until (a) loadPage forwards auth and (b) the song page is excluded from the
+   shared ETag cache when gated — both small follow-ups for when gating is
+   actually switched on. */
+$lyricsGated = false;
+$gateReason  = '';
+if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
+    && function_exists('checkContentAccess')) {
+    try {
+        $gateViewer = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+        $gateAccess = checkContentAccess('song', (string)$songId, isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null, 'PWA');
+        if (empty($gateAccess['allowed'])) {
+            $lyricsGated = true;
+            $gateReason  = (string)($gateAccess['reason'] ?? '');
+        }
+    } catch (\Throwable $_e) {
+        /* Gating must never break a song render — fail open (show lyrics). */
+        error_log('[song.php] content-gate check failed: ' . $_e->getMessage());
+    }
+}
 
 /* ===================================================================
  * Translations (#281) — list of other-language versions of this song
@@ -764,7 +799,12 @@ try {
                 ? array_map(fn($i) => $components[$i] ?? null, $arrangement)
                 : $components;
             $renderOrder = array_filter($renderOrder);
+            /* Gated: suppress the lyric components; the card is shown instead. */
+            if ($lyricsGated) { $renderOrder = []; }
         ?>
+        <?php if ($lyricsGated && function_exists('renderContentGatedFragment')): ?>
+            <?= renderContentGatedFragment($gateReason) ?>
+        <?php endif; ?>
         <?php
             /* #858 — collect the union of song-level + per-component
                languages so we can extend the JSON-LD MusicComposition
@@ -939,15 +979,106 @@ try {
         </footer>
     <?php endif; ?>
 
-    <!-- Report missing song link — points at the dedicated form page (#656)
-         rather than dumping the user at the bottom of the long /help
-         article where the request form used to live. URL is /request (#658)
-         with /request-a-song retained as a back-compat alias. -->
-    <div class="mt-3">
-        <a href="/request" data-navigate="request" class="text-muted small text-decoration-none">
-            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
-            Report a missing song or suggest a correction
+    <?php
+    /* "Why you can use this" rights panel (#1098 P1a) — pure surfacing of the
+       INDEPENDENT lyrics-PD vs music-PD flags + copyright + CCLI. The two PD
+       axes are reported as a combined verdict for the reader, but are never
+       AND-ed for gating (#939). Helps worship leaders judge project/print/use. */
+    $rpLyricsPd = !empty($song['lyricsPublicDomain']);
+    $rpMusicPd  = !empty($song['musicPublicDomain']);
+    $rpCcli     = trim((string)($song['ccli'] ?? ''));
+    $rpIswc     = trim((string)($song['iswc'] ?? ''));
+    $rpCopyright = trim((string)($song['copyright'] ?? ''));
+    if ($rpLyricsPd && $rpMusicPd) {
+        $rpClass = 'success'; $rpIcon = 'fa-circle-check';
+        $rpTitle = 'Public domain';
+        $rpMsg   = 'Both the words and the music are in the public domain — free to project, print, and translate.';
+    } elseif ($rpLyricsPd || $rpMusicPd) {
+        $rpClass = 'warning'; $rpIcon = 'fa-circle-half-stroke';
+        $rpTitle = 'Partly public domain';
+        $rpMsg   = $rpLyricsPd
+            ? 'The lyrics are public domain, but the music / tune may still be under copyright — check before reproducing the music.'
+            : 'The tune is public domain, but the lyrics may still be under copyright — check before reproducing the words.';
+    } else {
+        $rpClass = 'secondary'; $rpIcon = 'fa-shield-halved';
+        $rpTitle = 'Under copyright';
+        $rpMsg   = $rpCcli !== ''
+            ? 'Likely covered by your church CCLI licence — remember to report this song under CCLI #' . htmlspecialchars($rpCcli) . '.'
+            : 'Check your licence (e.g. CCLI) before projecting, printing, or translating.';
+    }
+    ?>
+    <section class="song-rights mt-4 pt-3 border-top" aria-label="Usage and rights">
+        <h2 class="h6 mb-2 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-scale-balanced text-muted" aria-hidden="true"></i>Can you use this?
+        </h2>
+        <div class="alert alert-<?= $rpClass ?> py-2 px-3 mb-2 small d-flex align-items-start gap-2" role="note">
+            <i class="fa-solid <?= $rpIcon ?> mt-1" aria-hidden="true"></i>
+            <span><strong><?= htmlspecialchars($rpTitle) ?>.</strong> <?= $rpMsg ?></span>
+        </div>
+        <ul class="list-inline small text-muted mb-0">
+            <li class="list-inline-item">Lyrics: <strong><?= $rpLyricsPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <li class="list-inline-item">·</li>
+            <li class="list-inline-item">Music: <strong><?= $rpMusicPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <?php if ($rpCcli !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">CCLI <a href="https://songselect.ccli.com/Search/Results?SongNumber=<?= rawurlencode($rpCcli) ?>" target="_blank" rel="noopener" class="song-meta-link">#<?= htmlspecialchars($rpCcli) ?></a></li>
+            <?php endif; ?>
+            <?php if ($rpIswc !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">ISWC <?= htmlspecialchars($rpIswc) ?></li>
+            <?php endif; ?>
+        </ul>
+        <p class="text-muted fst-italic mb-0 mt-1" style="font-size:.75rem">Guidance only — confirm rights with your licence provider.</p>
+    </section>
+
+    <!-- Report a missing song (→ /request page #656/#658) + suggest a structured
+         correction for THIS song (#1092 — posts {songId, field, proposed} to
+         song_correction_submit; the server reads the current value itself). -->
+    <div class="mt-3 small">
+        <a href="/request" data-navigate="request" class="text-muted text-decoration-none me-3">
+            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>Report a missing song
         </a>
+        <a class="text-muted text-decoration-none" role="button" data-bs-toggle="collapse"
+           href="#song-correction-form" aria-expanded="false" aria-controls="song-correction-form">
+            <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>Suggest a correction
+        </a>
+    </div>
+    <div class="collapse mt-2" id="song-correction-form">
+        <form id="correction-form" class="card card-body" data-song-id="<?= htmlspecialchars((string)$songId) ?>" novalidate>
+            <p class="small text-muted mb-2">Spotted an error in this song? Tell us what should change &mdash; a curator will review it.</p>
+            <div class="row g-2">
+                <div class="col-sm-4">
+                    <label class="form-label small mb-1" for="correction-field">What needs correcting?</label>
+                    <select class="form-select form-select-sm" id="correction-field" required>
+                        <option value="title">Title</option>
+                        <option value="lyrics">Lyrics</option>
+                        <option value="author">Author / writer</option>
+                        <option value="composer">Composer</option>
+                        <option value="copyright">Copyright</option>
+                        <option value="tune">Tune name</option>
+                        <option value="ccli">CCLI number</option>
+                        <option value="iswc">ISWC</option>
+                        <option value="language">Language</option>
+                        <option value="other">Something else</option>
+                    </select>
+                </div>
+                <div class="col-sm-8">
+                    <label class="form-label small mb-1" for="correction-email">Your email <span class="text-muted">(optional, for follow-up)</span></label>
+                    <input type="email" class="form-control form-control-sm" id="correction-email" autocomplete="email" maxlength="255">
+                </div>
+            </div>
+            <div class="mt-2">
+                <label class="form-label small mb-1" for="correction-proposed">What should it say?</label>
+                <textarea class="form-control form-control-sm" id="correction-proposed" rows="3" required maxlength="5000"></textarea>
+            </div>
+            <!-- honeypot: real users leave this blank -->
+            <input type="text" id="correction-website" name="website" tabindex="-1" autocomplete="off"
+                   class="position-absolute" style="left:-9999px" aria-hidden="true">
+            <div class="mt-2 d-flex align-items-center gap-2">
+                <button type="submit" class="btn btn-sm btn-primary">Submit correction</button>
+                <span id="correction-feedback" class="small" role="status" aria-live="polite"></span>
+            </div>
+        </form>
     </div>
 
     <!-- Song translations (#352) — populated client-side from API -->

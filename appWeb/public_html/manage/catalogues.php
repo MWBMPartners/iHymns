@@ -88,8 +88,9 @@ if ($hasSchema
            members), so the simple shape avoids ref-bind awkwardness
            with mysqli's variadic bind_param. */
         $sql = "SELECT s.SongId AS id, s.Title AS title, s.Number AS number,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName
                   FROM tblSongs s
+                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
                  ORDER BY s.Title ASC
                  LIMIT ?";
@@ -294,9 +295,10 @@ if ($hasSchema && !empty($catalogues)) {
         $stmt = $db->prepare(
             'SELECT cs.CatalogueId, cs.SongId, cs.SortOrder,
                     s.Title AS SongTitle, s.Number AS SongNumber,
-                    s.SongbookAbbr, s.SongbookName
+                    s.SongbookAbbr, sb.Name AS SongbookName
                FROM tblCatalogueSongs cs
                JOIN tblSongs s ON s.SongId = cs.SongId
+               LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
               ORDER BY cs.CatalogueId ASC, cs.SortOrder ASC, s.Title ASC'
         );
         $stmt->execute();
