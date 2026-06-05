@@ -218,9 +218,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
  * API consumers.
  *
  * The defence stack is therefore:
- *   1. SameSite=Strict on the auth cookie — browsers refuse to send
- *      it on cross-site POST requests, so a CSRF attempt has no
- *      authenticated identity. (Set in the auth-cookie issuance.)
+ *   1. SameSite=Lax on the auth cookie — browsers don't send it on
+ *      cross-site POST requests, so a CSRF attempt has no authenticated
+ *      identity. (Set in _authCookieOpts(); Lax — not Strict — is
+ *      deliberate so the *.ihymns.app cross-subdomain sign-in works (#390).
+ *      #1093 BUG-3: this doc was corrected to match the code.)
  *   2. Bearer token in `Authorization: Bearer <token>` header —
  *      cross-origin attackers can't read it (it's in localStorage of
  *      the legitimate origin, blocked from cross-origin reads by the

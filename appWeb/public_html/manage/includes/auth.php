@@ -1263,8 +1263,11 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
         return null; /* Rate limited */
     }
 
-    /* Check if user already exists with this email */
-    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1');
+    /* Check if user already exists with this email.
+       #1093 BUG-4 — Email has no UNIQUE (passwordless rows share ''), so a stable
+       tiebreak is required: ORDER BY Id ASC LIMIT 1 makes the same email always
+       resolve to the OLDEST account rather than a non-deterministic first match. */
+    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1 ORDER BY Id ASC LIMIT 1');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $existingUser = $stmt->get_result()->fetch_assoc();
