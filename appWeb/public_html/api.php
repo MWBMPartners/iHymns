@@ -687,7 +687,105 @@ if ($action !== null) {
             if ($song === null) {
                 sendJson(['error' => 'Song not found.'], 404);
             } else {
+                /* #1099 — opt-in enrichment for native/casting clients. Without
+                   ?include=, the response is unchanged (back-compat). The list is
+                   allow-listed in SongData; unknown blocks are ignored. Each block
+                   is scoped to this one song (never the corpus — rule #17). */
+                $includeRaw = isset($_GET['include']) ? (string)$_GET['include'] : '';
+                if ($includeRaw !== '') {
+                    $requested = array_filter(array_map('trim', explode(',', $includeRaw)));
+                    $allowed   = array_values(array_intersect($requested, SongData::songDetailIncludeBlocks()));
+                    if ($allowed !== []) {
+                        $extras = $songData->getSongDetailExtras((string)($song['id'] ?? $songId), $allowed);
+                        foreach ($extras as $blockKey => $blockVal) {
+                            $song[$blockKey] = $blockVal;
+                        }
+                    }
+                }
                 sendJson(['song' => $song]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Resolve songs by an industry identifier (#1103).
+         * Params: type (iswc|isrc|upc|ccli) + value (required).
+         * The type maps to a FIXED tblSongs column (allow-list — never user
+         * input into the column position); the value is always bound.
+         * ----------------------------------------------------------------- */
+        case 'song_by_identifier':
+            $idType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
+            $idValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
+            $songIdCols = ['iswc' => 'Iswc', 'isrc' => 'Isrc', 'upc' => 'Upc', 'ccli' => 'Ccli'];
+            if (!isset($songIdCols[$idType]) || $idValue === '') {
+                sendJson(['error' => 'type (iswc|isrc|upc|ccli) and value are required.'], 400);
+                break;
+            }
+            try {
+                $db  = getDbMysqli();
+                $col = $songIdCols[$idType];   // hardcoded constant from the map above
+                $stmt = $db->prepare(
+                    "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, "
+                  . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
+                  . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
+                  . "WHERE s.`{$col}` = ? ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
+                );
+                $stmt->bind_param('s', $idValue);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $songs = [];
+                while ($row = $res->fetch_assoc()) {
+                    $row['number']       = $row['number'] !== null ? (int)$row['number'] : null;
+                    $row['songbookName'] = $row['songbookName'] ?? '';
+                    $songs[] = $row;
+                }
+                $stmt->close();
+                sendJson(['type' => $idType, 'value' => $idValue, 'songs' => $songs]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Lookup failed.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Resolve credit-people by an industry identifier (#1103).
+         * Params: type (ipi|isni|cae|…) + value (required). Both bound.
+         * ----------------------------------------------------------------- */
+        case 'person_by_identifier':
+            $pType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
+            $pValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
+            if ($pType === '' || $pValue === '' || strlen($pType) > 20) {
+                sendJson(['error' => 'type and value are required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $probe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                  . "AND TABLE_NAME = 'tblCreditPersonIdentifiers' LIMIT 1"
+                );
+                $hasTable = $probe && $probe->fetch_row() !== null;
+                if ($probe) { $probe->close(); }
+                if (!$hasTable) { sendJson(['type' => $pType, 'value' => $pValue, 'people' => []]); break; }
+
+                $stmt = $db->prepare(
+                    "SELECT cp.Id AS id, cp.Name AS name, cp.Slug AS slug, "
+                  . "i.IdentifierType AS identifierType, i.IdentifierValue AS identifierValue "
+                  . "FROM tblCreditPersonIdentifiers i "
+                  . "JOIN tblCreditPeople cp ON cp.Id = i.CreditPersonId "
+                  . "WHERE i.IdentifierType = ? AND i.IdentifierValue = ? "
+                  . "ORDER BY cp.Name LIMIT 50"
+                );
+                $stmt->bind_param('ss', $pType, $pValue);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $people = [];
+                while ($row = $res->fetch_assoc()) {
+                    $row['id'] = (int)$row['id'];
+                    $people[] = $row;
+                }
+                $stmt->close();
+                sendJson(['type' => $pType, 'value' => $pValue, 'people' => $people]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Lookup failed.'], 500);
             }
             break;
 

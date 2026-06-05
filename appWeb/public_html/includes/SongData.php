@@ -1967,6 +1967,198 @@ class SongData
         return $this->_fetchSongRow($row['SongId']);
     }
 
+    /**
+     * The block names a song_detail `include=` request may ask for (#1099).
+     * Allow-list — anything outside this is ignored, never interpolated.
+     *
+     * @return string[]
+     */
+    public static function songDetailIncludeBlocks(): array
+    {
+        return [
+            'tune', 'media', 'arrangements', 'royaltyIds', 'scriptureRefs',
+            'vocalParts', 'translations', 'annotations',
+        ];
+    }
+
+    /**
+     * Optional, scoped enrichment blocks for the song_detail API (#1099 — the
+     * native/casting "technical gate"). Each block is computed ONLY when asked
+     * for via the include-list AND its table exists (un-migrated deployments get
+     * a clean omission, never a 500), reads one song's rows (never the corpus),
+     * and binds every value. Returns a map of present blocks; absent/empty
+     * blocks are omitted so clients tolerate partial payloads.
+     *
+     * @param string   $songId  Canonical SongId, e.g. CP-0001
+     * @param string[] $include Requested block names (already allow-list filtered)
+     * @return array<string,mixed>
+     */
+    public function getSongDetailExtras(string $songId, array $include): array
+    {
+        if ($this->jsonMode || $this->db === null || $include === []) {
+            return [];
+        }
+        $songId = strtoupper(trim($songId));
+        $want = array_intersect($include, self::songDetailIncludeBlocks());
+        if ($want === []) {
+            return [];
+        }
+
+        /* Resolve the song's primary lyrics version once (for per-line blocks). */
+        $needsLyrics = (bool)array_intersect($want, ['vocalParts', 'translations', 'annotations']);
+        $lyricsId = $needsLyrics ? $this->_primaryLyricsId($songId) : 0;
+
+        $out = [];
+        foreach ($want as $block) {
+            try {
+                switch ($block) {
+                    case 'tune':
+                        $row = $this->_extrasRow(
+                            'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug, t.MeterCode AS meter, '
+                          . 't.MusicBrainzWorkMBID AS musicBrainzWorkMbid '
+                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? LIMIT 1',
+                            's', [$songId]
+                        );
+                        if ($row !== null) { $out['tune'] = $row; }
+                        break;
+
+                    case 'media':
+                        $rows = $this->_extrasRows(
+                            'SELECT Id AS id, Kind AS kind, MimeType AS mimeType, FileName AS fileName, '
+                          . 'SizeBytes AS sizeBytes FROM tblSongMedia WHERE SongId = ? ORDER BY Id',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['media'] = $rows; }
+                        break;
+
+                    case 'arrangements':
+                        $rows = $this->_extrasRows(
+                            'SELECT Name AS name, IsDefault AS isDefault, KeySignature AS keySignature, '
+                          . 'CapoFret AS capoFret, ComponentOrderJson AS componentOrder '
+                          . 'FROM tblSongArrangements WHERE SongId = ? ORDER BY IsDefault DESC, Name',
+                            's', [$songId]
+                        );
+                        foreach ($rows as &$r) {
+                            $r['isDefault'] = (bool)$r['isDefault'];
+                            $r['componentOrder'] = $r['componentOrder'] !== null
+                                ? json_decode((string)$r['componentOrder'], true) : null;
+                        }
+                        unset($r);
+                        if ($rows) { $out['arrangements'] = $rows; }
+                        break;
+
+                    case 'royaltyIds':
+                        $rows = $this->_extrasRows(
+                            'SELECT Authority AS authority, AuthorityId AS authorityId, Note AS note '
+                          . 'FROM tblSongRoyaltyIds WHERE SongId = ? ORDER BY SortOrder, Authority',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['royaltyIds'] = $rows; }
+                        break;
+
+                    case 'scriptureRefs':
+                        $rows = $this->_extrasRows(
+                            'SELECT Book AS book, Chapter AS chapter, VerseStart AS verseStart, '
+                          . 'VerseEnd AS verseEnd, OsisRef AS osisRef FROM tblSongScriptureRefs '
+                          . 'WHERE SongId = ? ORDER BY SortOrder, Id',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['scriptureRefs'] = $rows; }
+                        break;
+
+                    case 'vocalParts':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT Id AS id, PartKind AS partKind, Label AS label, '
+                              . 'SingerName AS singerName, Gender AS gender, CreditPersonId AS creditPersonId '
+                              . 'FROM tblVocalParts WHERE LyricsId = ? ORDER BY SortOrder, Id',
+                                'i', [$lyricsId]
+                            );
+                            if ($rows) { $out['vocalParts'] = $rows; }
+                        }
+                        break;
+
+                    case 'translations':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT tr.LineId AS lineId, tr.Kind AS kind, tr.TargetLanguage AS targetLanguage, '
+                              . 'tr.Text AS text, tr.IsPrimary AS isPrimary '
+                              . 'FROM tblLyricLineTranslations tr WHERE tr.LyricsId = ? AND tr.Status = ? '
+                              . 'ORDER BY tr.LineId, tr.SortOrder',
+                                'is', [$lyricsId, 'approved']
+                            );
+                            foreach ($rows as &$r) { $r['isPrimary'] = (bool)$r['isPrimary']; }
+                            unset($r);
+                            if ($rows) { $out['translations'] = $rows; }
+                        }
+                        break;
+
+                    case 'annotations':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT a.StartLineId AS startLineId, a.EndLineId AS endLineId, '
+                              . 'a.AnnotationType AS annotationType, a.Body AS body, a.BodyFormat AS bodyFormat, '
+                              . 'a.IsVerified AS isVerified FROM tblLyricLineAnnotations a '
+                              . 'WHERE a.LyricsId = ? AND a.Status = ? ORDER BY a.StartLineId, a.SortOrder',
+                                'is', [$lyricsId, 'approved']
+                            );
+                            foreach ($rows as &$r) { $r['isVerified'] = (bool)$r['isVerified']; }
+                            unset($r);
+                            if ($rows) { $out['annotations'] = $rows; }
+                        }
+                        break;
+                }
+            } catch (\Throwable $e) {
+                /* Table missing on an un-migrated deployment (or any read error):
+                   omit the block rather than fail the whole song_detail. */
+                continue;
+            }
+        }
+        return $out;
+    }
+
+    /** Resolve a song's primary (or sole approved) lyrics version Id, or 0. */
+    private function _primaryLyricsId(string $songId): int
+    {
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT Id FROM tblLyrics WHERE SongId = ? AND Status = 'approved' "
+              . "ORDER BY IsPrimary DESC, Id ASC LIMIT 1"
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return $row ? (int)$row['Id'] : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /** Run a single-row enrichment query (bound) → assoc row or null. */
+    private function _extrasRow(string $sql, string $types, array $params): ?array
+    {
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row ?: null;
+    }
+
+    /** Run a multi-row enrichment query (bound) → list of assoc rows. */
+    private function _extrasRows(string $sql, string $types, array $params): array
+    {
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $rows = [];
+        while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+        $stmt->close();
+        return $rows;
+    }
+
     /* =====================================================================
      * SEARCH METHODS
      * ===================================================================== */
