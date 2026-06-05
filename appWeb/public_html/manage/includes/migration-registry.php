@@ -1766,4 +1766,97 @@ return [
             return !$row || strtolower((string)$row['DATA_TYPE']) !== 'varchar';
         },
     ],
+
+    /* ----------------------------------------------------------------------
+     * Schema-completeness batch (#1090 audit) — gaps the cross-repo iHymns +
+     * iLyricsDB audit found iHymns missing (vocal parts headline). Additive +
+     * dormant; anchored on shipped tables.
+     * -------------------------------------------------------------------- */
+    'vocal-parts' => [
+        'script' => 'migrate-vocal-parts.php',
+        'card' => [
+            'title'  => 'Vocal / singing parts (#1137)',
+            'body'   => 'Creates <code>tblVocalParts</code> (per-version singing-part'
+                      . ' registry — lead/backing/soloist/duet/named-singer, reusing'
+                      . ' <code>tblCreditPeople</code>) + <code>tblLyricLineVocalParts</code>'
+                      . ' + <code>tblLyricWordVocalParts</code> (many-to-many for'
+                      . ' duet/unison) — first-class queryable vocal parts vs the'
+                      . ' lossless-only MetaJson today. Additive + idempotent.',
+            'button' => 'Run Vocal Parts Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblVocalParts'),
+    ],
+
+    'song-part-types' => [
+        'script' => 'migrate-song-part-types.php',
+        'card' => [
+            'title'  => 'Song-part types (#1138)',
+            'body'   => 'Creates <code>tblSongPartTypes</code> (seeded: Intro/Verse/'
+                      . 'Chorus/Bridge/Tag/…) and adds <code>tblLyricLines.PartTypeSlug</code>'
+                      . ' so reorder-by-part / part-headers are a JOIN, not a string'
+                      . ' match. Additive + idempotent.',
+            'button' => 'Run Song-Part Types Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSongPartTypes')
+            || !_migProbe_columnExists($db, 'tblLyricLines', 'PartTypeSlug'),
+    ],
+
+    'scripture-index' => [
+        'script' => 'migrate-scripture-index.php',
+        'card' => [
+            'title'  => 'Scripture cross-reference index (#1112)',
+            'body'   => 'Creates <code>tblBibleBooks</code> (seeded with the 66-book'
+                      . ' OSIS canon) + <code>tblSongScriptureRefs</code> for'
+                      . ' browse-by-passage ("every hymn that sets Isaiah 53").'
+                      . ' Owner-confirmed; unblocks lectionary. Additive + idempotent.',
+            'button' => 'Run Scripture Index Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblBibleBooks')
+            || !_migProbe_tableExists($db, 'tblSongScriptureRefs'),
+    ],
+
+    'rights-axis' => [
+        'script' => 'migrate-rights-axis.php',
+        'card' => [
+            'title'  => 'Rights axis — availability / royalty IDs / per-action (#1090)',
+            'body'   => 'Adds <code>tblSongs.Availability</code> (available|paid_only|'
+                      . 'unavailable), <code>tblContentRestrictions.AppliesToAction</code>'
+                      . ' (display vs print/export/translate), and creates'
+                      . ' <code>tblSongRoyaltyIds</code> (per-song PRO IDs). Additive + idempotent.',
+            'button' => 'Run Rights Axis Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongs', 'Availability')
+            || !_migProbe_tableExists($db, 'tblSongRoyaltyIds')
+            || !_migProbe_columnExists($db, 'tblContentRestrictions', 'AppliesToAction'),
+    ],
+
+    'search-synonyms' => [
+        'script' => 'migrate-search-synonyms.php',
+        'card' => [
+            'title'  => 'Search synonyms + diacritic folding (#1142)',
+            'body'   => 'Creates <code>tblSearchSynonyms</code> and adds a'
+                      . ' diacritic-folded <code>tblSongs.LyricsTextFolded</code> +'
+                      . ' FULLTEXT index for accent-insensitive search'
+                      . ' (Noël↔Noel, Saviour↔Savior). Additive + idempotent.',
+            'button' => 'Run Search Synonyms Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSearchSynonyms')
+            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded'),
+    ],
+
+    'source-documents' => [
+        'script' => 'migrate-source-documents.php',
+        'card' => [
+            'title'  => 'Raw-source-document store (#1143)',
+            'body'   => 'Creates <code>tblLyricsSourceDocuments</code> — verbatim'
+                      . ' ingested carrier docs (LyricsFile YAML / .ilyrics / raw TTML)'
+                      . ' for lossless whole-document round-trip. Additive + idempotent.',
+            'button' => 'Run Source-Documents Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricsSourceDocuments'),
+    ],
 ];
