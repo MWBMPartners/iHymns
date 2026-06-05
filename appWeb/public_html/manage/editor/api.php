@@ -2969,6 +2969,57 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * BULK_IMPORT_PPTX — PowerPoint worship deck import (#1095).
+     *   multipart field "pptx" = one .pptx deck.
+     * Parses slide text + segments into songs (PptxImporter); resolves each
+     * song's songbook from its "# <num>-<Songbook>" ref (existing songs dedup
+     * automatically). Decks not using that layout return ok:false + a warning
+     * so the frontend can offer submit-for-analysis (#1109). Same summary shape
+     * as the other importers. Legacy binary .ppt is rejected with guidance.
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_pptx':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));
+        if (!isset($_FILES['pptx']) || ($_FILES['pptx']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['pptx']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE)
+                 ? 'Uploaded file is larger than the server limit.'
+                 : ($err === UPLOAD_ERR_NO_FILE ? 'No file received — expected a multipart upload with a "pptx" field.' : 'Upload failed.');
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+        if ((int)($_FILES['pptx']['size'] ?? 0) > 20 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded PowerPoint file exceeds the 20 MiB import limit.']);
+            break;
+        }
+        try {
+            $tmpPath  = (string)$_FILES['pptx']['tmp_name'];
+            $origName = (string)($_FILES['pptx']['name'] ?? 'deck.pptx');
+            /* Legacy binary .ppt is a different (OLE) format — guide the user. */
+            if (preg_match('/\.ppt$/i', $origName)) {
+                http_response_code(400);
+                echo json_encode(['error' => 'Legacy .ppt is not supported. Please re-save the deck as .pptx (PowerPoint / Keynote / Google Slides → export as .pptx) and upload again.']);
+                break;
+            }
+            $summary = _bulkImport_processPptx($tmpPath, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_pptx] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * BULK_IMPORT_OPENLP — single OpenLyrics (.xml) song import (#1052).
      *
      * POST /manage/editor/api?action=bulk_import_openlp
@@ -7334,6 +7385,108 @@ function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null)
         'parsed_by_format'       => ['freeshow' => $songsCreated + $songsSkipped],
         'errors'                 => $errors,
     ];
+}
+
+/* ===========================================================================
+ *  PowerPoint (.pptx) worship deck import (#1095)
+ * ---------------------------------------------------------------------------
+ * Parses a .pptx via PptxImporter (slide text + song segmentation), resolves
+ * each song's songbook by the deck's "# <num>-<Songbook>" reference, and
+ * creates songs through the shared importer helpers. Dedup is automatic:
+ * _bulkImport_saveSong returns 'skipped' when the SongId already exists, so a
+ * deck that references existing catalogue songs (e.g. Mission Praise #599) does
+ * not create duplicates. Decks that do not use the expected layout return zero
+ * songs + a warning (the caller routes them to submit-for-analysis, #1109).
+ * Returns the same summary shape as the other _bulkImport_process* functions.
+ * =========================================================================== */
+function _bulkImport_processPptx(string $path, ?string $filenameHint = null): array
+{
+    require_once dirname(__DIR__, 2) . '/includes/PptxImporter.php';
+
+    $empty = [
+        'songbooks_created' => [], 'songbooks_existing' => [],
+        'songs_created' => 0, 'songs_skipped_existing' => 0, 'songs_failed' => 0,
+        'parsed_by_format' => ['pptx' => 0], 'errors' => [],
+    ];
+
+    $result = PptxImporter::parseFile($path);
+    if (!($result['ok'] ?? false)) {
+        return array_merge(['ok' => false, 'error' => $result['error'] ?? 'No songs found in the deck.', 'warnings' => $result['warnings'] ?? []], $empty);
+    }
+
+    $db = getDbMysqli();
+    $created = 0; $skipped = 0; $failed = 0; $errors = [];
+    $booksCreated = []; $booksExisting = [];
+
+    foreach ($result['songs'] as $song) {
+        [$abbr, $bookName, $state] = _bulkImport_resolvePptxSongbook($db, (string)($song['songbookName'] ?? ''));
+        if ($state === 'created' && !in_array($abbr, $booksCreated, true))   { $booksCreated[]  = $abbr; }
+        if ($state === 'existing' && !in_array($abbr, $booksExisting, true)) { $booksExisting[] = $abbr; }
+
+        $number = (int)($song['songNumber'] ?? 0);
+        if ($number <= 0) {
+            $number = _bulkImport_nextSongNumberFor($db, $abbr);
+        }
+
+        /* PPT verses arrive as a flat line list; create one verse component the
+           curator can re-split in the editor (the normal workflow for imports). */
+        $parsed = [
+            'title'      => (string)($song['title'] ?? '(untitled)'),
+            'components'  => [['type' => 'verse', 'number' => 1, 'lines' => array_values((array)($song['lines'] ?? []))]],
+        ];
+        $assembled = _bulkImport_assembleSong($parsed, $abbr, $bookName, $number);
+        [$action, $saveErr] = _bulkImport_saveSong($db, $assembled);
+        if ($action === 'create')       { $created++; }
+        elseif ($action === 'skipped')  { $skipped++; }
+        else {
+            $failed++;
+            $errors[] = ['entry' => ($filenameHint ?? 'pptx') . ': ' . ($assembled['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+        }
+    }
+
+    foreach (array_unique($booksCreated) as $a) {
+        $cnt = $db->prepare('UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?');
+        $cnt->bind_param('ss', $a, $a);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $booksCreated,
+        'songbooks_existing'     => $booksExisting,
+        'songs_created'          => $created,
+        'songs_skipped_existing' => $skipped,
+        'songs_failed'           => $failed,
+        'parsed_by_format'       => ['pptx' => $created + $skipped],
+        'errors'                 => $errors,
+        'warnings'               => $result['warnings'] ?? [],
+    ];
+}
+
+/**
+ * Resolve a PPT deck's referenced songbook NAME to a catalogue songbook.
+ * An exact (case-insensitive) name match reuses the existing book (so e.g.
+ * "Mission Praise" maps onto the existing MP book and its songs dedup); an
+ * unmatched name falls back to a generic "PowerPoint Import" book (PPTX).
+ *
+ * @return array{0:string,1:string,2:string} [abbr, bookName, state(created|existing)]
+ */
+function _bulkImport_resolvePptxSongbook(\mysqli $db, string $name): array
+{
+    $name = trim($name);
+    if ($name !== '') {
+        $stmt = $db->prepare('SELECT Abbreviation, Name FROM tblSongbooks WHERE LOWER(Name) = LOWER(?) LIMIT 1');
+        $stmt->bind_param('s', $name);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row) {
+            return [(string)$row['Abbreviation'], (string)$row['Name'], 'existing'];
+        }
+    }
+    $state = _bulkImport_upsertSongbook($db, 'PPTX', 'PowerPoint Import', null);
+    return ['PPTX', 'PowerPoint Import', $state];
 }
 
 /* ===========================================================================

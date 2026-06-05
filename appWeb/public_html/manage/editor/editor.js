@@ -3506,7 +3506,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain';
+    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3537,6 +3537,17 @@ function importJSON() {
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
             /* Proclaim text/RTF single-song export (#1062). */
             importProclaim(file);
+        } else if (lower.endsWith('.pptx')) {
+            /* PowerPoint worship deck (#1095). Slides are segmented into songs
+               by their "# <num>-<Songbook>" title slides; existing songs dedup. */
+            importPptx(file);
+        } else if (lower.endsWith('.ppt')) {
+            /* Legacy binary .ppt is a different (OLE) format — guide, don't upload. */
+            showToast(
+                'Legacy .ppt files aren’t supported. Re-save the deck as .pptx ' +
+                '(PowerPoint / Keynote / Google Slides → export as .pptx) and try again.',
+                'warning'
+            );
         } else {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
@@ -3673,6 +3684,21 @@ function importVideoPsalmSongbook(file) {
         action:     'bulk_import_videopsalm',
         field:      'videopsalm',
         consoleTag: 'bulk_import_videopsalm',
+    });
+}
+
+/**
+ * importPptx(file) — PowerPoint worship-deck import (#1095). The server
+ * segments slides into songs by their "Title + # <num>-<Songbook>" title
+ * slides and resolves each song's songbook from that reference (existing
+ * catalogue songs are skipped, not duplicated). Decks that don't use that
+ * layout come back with a warning so they can be submitted for analysis (#1109).
+ */
+function importPptx(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_pptx',
+        field:      'pptx',
+        consoleTag: 'bulk_import_pptx',
     });
 }
 

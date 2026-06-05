@@ -166,7 +166,7 @@ try {
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db (BETA — unverified against live EasyWorship), or a Proclaim .txt/.rtf (whole-hymnal or single song). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db (BETA — unverified against live EasyWorship), a Proclaim .txt/.rtf (whole-hymnal or single song), or a PowerPoint .pptx worship deck (slides segmented into songs by their '# number-Songbook' title slides; existing songs are matched, not duplicated). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
