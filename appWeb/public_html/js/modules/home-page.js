@@ -201,19 +201,43 @@ async function loadRecentlyViewed() {
 }
 
 /* ==================================================================
- * BROWSE BY THEME (#305)
+ * POPULAR THEMES (#305 → rethought #1148)
  *
- * Lists every song-tag as a pill linking to /tag/<slug>. If the tag
- * registry is empty (fresh install / JSON fallback) the section is
- * removed so the empty heading doesn't linger.
+ * The old version rendered EVERY song-tag as a pill — an unbounded
+ * chip wall that didn't scale as the vocabulary grew. Now: a compact
+ * strip of the top-N themes ranked by usage (with song counts), capped
+ * so it can never become a wall, plus a "Browse all themes" affordance
+ * that reveals the full set inline (the dedicated searchable /themes
+ * index is the tracked follow-on). If the tag registry is empty
+ * (fresh install / DB-less) the section is removed so the empty
+ * heading doesn't linger.
  * ================================================================== */
+const POPULAR_TAGS_LIMIT = 8;
+
+/* Render one theme chip. With a positive count we append a pill badge
+   carrying a visually-hidden " songs" suffix so a screen reader reads
+   "Easter, 42 songs". `seen` collects slugs so the "Browse all" reveal
+   can skip the ones already shown. */
+function renderThemeChip(t, seen) {
+    const slug = escapeHtml(t.slug || '');
+    const name = escapeHtml(t.name || '');
+    if (seen) seen.add(t.slug || '');
+    const count = Number(t.useCount) || 0;
+    const badge = count > 0
+        ? ` <span class="badge rounded-pill text-bg-secondary ms-1">${count}<span class="visually-hidden"> songs</span></span>`
+        : '';
+    return `<a href="/tag/${slug}"
+               data-navigate="tag"
+               class="btn btn-sm btn-outline-secondary theme-chip">${name}${badge}</a>`;
+}
+
 async function loadTags() {
     const el = document.getElementById('tags-list');
     if (!el) return;
 
     let tags = [];
     try {
-        const res  = await fetch('/api?action=tags');
+        const res  = await fetch('/api?action=popular_tags&limit=' + POPULAR_TAGS_LIMIT);
         const data = await res.json();
         tags = Array.isArray(data.tags) ? data.tags : [];
     } catch {
@@ -225,11 +249,37 @@ async function loadTags() {
         return;
     }
 
-    el.innerHTML = tags.map(t => {
-        const slug = escapeHtml(t.slug || '');
-        const name = escapeHtml(t.name || '');
-        return `<a href="/tag/${slug}"
-                   data-navigate="tag"
-                   class="btn btn-sm btn-outline-secondary">${name}</a>`;
-    }).join('');
+    const seen = new Set();
+    el.innerHTML = tags.map(t => renderThemeChip(t, seen)).join('');
+
+    /* If we filled the popular cap there are probably more themes — offer
+       a one-click inline reveal of the remaining set. The popular chips
+       (with counts) stay; the rest append without counts. */
+    if (tags.length >= POPULAR_TAGS_LIMIT) {
+        const moreBtn = document.createElement('button');
+        moreBtn.type = 'button';
+        moreBtn.className = 'btn btn-sm btn-link theme-show-all px-1';
+        moreBtn.textContent = 'Browse all themes →';
+        el.appendChild(moreBtn);
+
+        moreBtn.addEventListener('click', async () => {
+            moreBtn.disabled = true;
+            let all = [];
+            try {
+                const res  = await fetch('/api?action=tags');
+                const data = await res.json();
+                all = Array.isArray(data.tags) ? data.tags : [];
+            } catch {
+                /* Network blip — leave the popular strip as-is. */
+            }
+            const extra = all.filter(t => !seen.has(t.slug || ''));
+            if (extra.length) {
+                moreBtn.insertAdjacentHTML(
+                    'beforebegin',
+                    extra.map(t => renderThemeChip(t, seen)).join('')
+                );
+            }
+            moreBtn.remove();
+        });
+    }
 }

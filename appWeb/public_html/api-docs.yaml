@@ -4107,6 +4107,44 @@ paths:
                         slug:     { type: string, example: easter }
                         songCount: { type: integer }
 
+  /api.php?action=popular_tags:
+    get:
+      operationId: popularTags
+      tags: [Discovery]
+      summary: Top themes ranked by usage, with song counts
+      description: >
+        Powers the compact "Popular themes" home strip (#1148). Returns
+        only tags that are actually in use, ordered by song count
+        (descending) then name. Scoped/DB-direct — never a whole-corpus
+        load.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [popular_tags] }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum tags to return (default 8, clamped 1..50).
+          schema: { type: integer, default: 8, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Popular tag list with song counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:       { type: integer }
+                        name:     { type: string, example: Easter }
+                        slug:     { type: string, example: easter }
+                        useCount: { type: integer, example: 42 }
+
   /api.php?action=songs_by_tag:
     get:
       operationId: songsByTag

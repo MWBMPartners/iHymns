@@ -5227,6 +5227,48 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Popular tags — the top-N themes ranked by usage, with song
+         * counts (#1148). Powers the compact "Popular themes" home strip
+         * that replaced the unbounded chip wall: the home page advertises
+         * the handful that matter; the full searchable index scales the
+         * long tail. Reuses the same COUNT(m.TagId) JOIN as manage/tags.php
+         * (INNER JOIN → only tags actually in use appear). DB-direct/scoped
+         * per CLAUDE.md rule #17 — never a whole-corpus load.
+         * Parameters: limit (optional, default 8, clamped 1..50).
+         * ----------------------------------------------------------------- */
+        case 'popular_tags':
+            $popularLimit = (int)($_GET['limit'] ?? 8);
+            $popularLimit = max(1, min(50, $popularLimit));
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                            COUNT(m.TagId) AS useCount
+                     FROM tblSongTags t
+                     JOIN tblSongTagMap m ON m.TagId = t.Id
+                     GROUP BY t.Id, t.Name, t.Slug
+                     ORDER BY useCount DESC, t.Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('i', $popularLimit);
+                $stmt->execute();
+                $popular = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                foreach ($popular as &$pt) {
+                    $pt['id']       = (int)$pt['id'];
+                    $pt['useCount'] = (int)$pt['useCount'];
+                }
+                unset($pt);
+
+                sendJson(['tags' => $popular]);
+            } catch (\Throwable $e) {
+                error_log('[api/popular_tags] ' . $e->getMessage());
+                sendJson(['tags' => [], 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Get songs by tag slug
          * Parameters: tag (required) — tag slug e.g. "easter"
          * ----------------------------------------------------------------- */

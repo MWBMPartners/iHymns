@@ -266,10 +266,14 @@ $songbooks = $songData->getSongbooks();
         </div>
     </div>
 
-    <!-- Browse by Theme (#305) -->
+    <!-- Popular Themes (#305 → rethought in #1148). A compact strip of
+         the top themes ranked by usage (rendered client-side with song
+         counts), capped so it can't become an unbounded chip wall as the
+         tag vocabulary grows. "Browse all themes" reveals the full set
+         inline; the dedicated searchable /themes index is the follow-on. -->
     <div class="mb-4" id="tags-section">
-        <h5><i class="fa-solid fa-tags me-2"></i>Browse by Theme</h5>
-        <div id="tags-list" class="d-flex flex-wrap gap-2">
+        <h5><i class="fa-solid fa-tags me-2"></i>Popular Themes</h5>
+        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center">
             <span class="text-muted small">Loading...</span>
         </div>
     </div>

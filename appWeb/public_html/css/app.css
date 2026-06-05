@@ -3449,3 +3449,38 @@ body.offline-unsupported .offline-only {
 body.reduce-motion .lang-filter-row {
     transition: none;
 }
+
+/* ==========================================================================
+ * POPULAR THEMES STRIP (#1148)
+ * Capped chip strip on the home page. The count badge + subtle hover lift
+ * are the only additions over a plain outline button; motion is gated on
+ * both reduced-motion predicates.
+ * ========================================================================== */
+.theme-chip {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.theme-chip:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.theme-chip .badge {
+    font-weight: 600;
+}
+.theme-show-all {
+    text-decoration: none;
+    white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+    .theme-chip {
+        transition: none;
+    }
+    .theme-chip:hover {
+        transform: none;
+    }
+}
+body.reduce-motion .theme-chip {
+    transition: none;
+}
+body.reduce-motion .theme-chip:hover {
+    transform: none;
+}
