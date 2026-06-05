@@ -1583,7 +1583,14 @@ return [
                       . ' matches ahead of fuzzy title guesses. Additive + idempotent.',
             'button' => 'Run Song-Link Confidence Migration',
         ],
-        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Confidence'),
+        /* Multi-column OR-probe (rule #19): pending until BOTH columns exist.
+           A single-column probe on 'Confidence' alone left the card green when
+           a partial apply added Confidence but not Signal — Apply-all then
+           never re-ran it to add the missing Signal (the addCol calls are each
+           idempotent, so a re-run safely adds only what's absent). */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Confidence')
+            || !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Signal'),
     ],
 
     'song-identity-map' => [

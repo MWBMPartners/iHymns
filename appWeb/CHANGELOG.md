@@ -1,5 +1,27 @@
 # iHymns Web/PWA — Changelog
 
+## [0.770.0] — 2026-06-05
+
+DB-direct data-layer rewrite (epic #1010) landed on alpha (PR #1160) alongside the home-UX rethink, importers, and the security / accessibility / W3C audit fixes.
+
+### DB-direct reads & schema
+- Every read hits live MySQL; the whole-corpus `songs.json` file cache is decommissioned (#1020); a DB outage returns a themed 503 (#1021). One-pass forward-looking schema in the #1066 / #1088 / #1090 families (31 additive, dormant, idempotent migrations).
+
+### Home UX (#1147)
+- Compact searchable **language picker** (#1149), capped **Popular-Themes** strip with counts (#1148), customisable **home sections** via client-side hydration (#448).
+
+### Importers & catalogue
+- **MusicXML** notation parser (#1096), **PowerPoint .pptx** importer (#1095), manual per-line **chords** (#1094); smart song-correction flow (#1092); "why you can use this" rights panel (#1098).
+
+### Security / accessibility / compliance
+- Fixed a critical SQL-injection in the EasyWorship importer, a `.mxl` path-traversal, and 4 role→entitlement checks; Global Admin can no longer be locked out of the invite-only channel gate. WCAG 2.2 focus / aria-live / target-size fixes (#1151); W3C validity fixes incl. per-fragment (#1150).
+
+### Fixes
+- The song-link-confidence migration probe is now a multi-column OR-probe so a partial apply (Confidence added, Signal missing) re-applies instead of showing the card green (schema-audit drift fix).
+
+### Governance
+- Standing-tasks consistency convention (`.claude/standing-tasks.md`); new `SECURITY.md` + `LICENSING.md`.
+
 ## [0.550.0] — 2026-06-04
 
 Minor-version jump for the multi-format interchange + lyrics-ingest program. (iLyricsDB follows this version numbering until the backends merge.)
