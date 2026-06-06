@@ -1,3 +1,4 @@
+- [CURRENT RESUME POINT (2026-06-06): DB-direct epic + v0.770 MERGED & LIVE on alpha](project_resume_2026-06-06_merged_to_alpha.md) — PR #1160 (merge `586b2265`); v0.770.0; future work branches from alpha. Verify-pass follow-ups #1161/#1162 merged. Full detail: `.claude/sessions/2026-06-06-HANDOFF.md`. _(The rest of this snapshot is a stale v0.10.1-era cross-device sync — refresh via `tools/sync-claude-session.sh`.)_
 - [User Profile](user_profile.md) — Lance at MWBM Partners Ltd, wants detailed annotations, modular architecture
 - [iHymns Project](project_ihymns.md) — Multiplatform Christian lyrics app, MySQL (30+ tables), 106 public API endpoints + 5 editor-API endpoints, v0.10.1 (PR #407 April 2026 alpha batch)
 - [Never touch SourceSongData](feedback_source_data.md) — .SourceSongData/ must never be deleted or modified
