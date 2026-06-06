@@ -37,6 +37,13 @@ if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
     header('Cache-Control: no-store');
 }
 
+/* The backfill walks every song; on a large catalogue that can exceed a shared
+   host's default 30s limit. Lift PHP's cap and survive a curator navigating away
+   mid-run. (The setup dashboard sets these too; belt-and-braces for a direct run.) */
+@set_time_limit(0);
+@ini_set('max_execution_time', '0');
+@ignore_user_abort(true);
+
 function _migNormTitle_output(string $msg): void {
     global $isCli;
     echo $msg . ($isCli ? "\n" : "<br>\n");
@@ -85,11 +92,18 @@ try {
     if ($hasCol && $hasCol->num_rows > 0) {
         _migNormTitle_output("  [SKIP] tblSongs.NormalizedTitle already present.");
     } else {
+        /* NO positional `AFTER Title` clause: a positional add forces a full
+           table COPY/rebuild on MySQL 5.7 / pre-8.0.29, which on a wide table
+           (tblSongs has ~22 string columns + LyricsText) can exceed the host's
+           proxy timeout mid-rebuild and roll back — leaving the column missing
+           and the migration stuck "pending". Appending the column at the end is
+           an INSTANT, metadata-only op on MySQL 8.0.12+. The column's ordinal
+           position is cosmetic (it's an internal dedup fold); the Schema Audit
+           matches columns by name, not position, so fresh-vs-migrated stay OK. */
         $mysql->query(
             "ALTER TABLE tblSongs
                 ADD COLUMN NormalizedTitle VARCHAR(500) NOT NULL DEFAULT '' COLLATE utf8mb4_unicode_ci
-                    COMMENT 'App-maintained fold of Title via ihymns_normalize_title() for a fast indexed dedup/match pre-filter; exact compare still runs in PHP (#1066 Theme D)'
-                    AFTER Title"
+                    COMMENT 'App-maintained fold of Title via ihymns_normalize_title() for a fast indexed dedup/match pre-filter; exact compare still runs in PHP (#1066 Theme D)'"
         );
         _migNormTitle_output("  [OK] Added tblSongs.NormalizedTitle.");
     }

@@ -108,22 +108,22 @@
  *   achromatopsia — Total colour blindness (monochromacy)
  * ========================================================================= */
 
-/* Protanopia: shift reds to be distinguishable */
-[data-ihymns-cvd="protanopia"] {
-    filter: url('#ihymns-cvd-protanopia');
-}
+/* Protanopia / Deuteranopia / Tritanopia: NO page-wide colour filter.
+ *
+ * The per-deficiency "correction" matrices (#ihymns-cvd-* in
+ * assets/cvd-filters.svg) were applied to the WHOLE page — but a static
+ * feColorMatrix that isn't strictly luminance-preserving DEGRADES contrast: it
+ * remapped the indigo-on-light theme to a near-unreadable yellow-on-white
+ * (reported on alpha). A page-wide hue remap is the wrong tool for *helping* a
+ * CVD user — it can't tell foreground from background. So we deliberately do
+ * NOT apply those filters. CVD distinction instead comes from non-colour cues
+ * (the songbook-badge border *patterns* below — solid / dashed / dotted /
+ * double — the robust, contrast-safe aid) on top of a base palette
+ * (indigo / teal / amber / pink) that is already reasonably CVD-distinguishable.
+ * A proper luminance-preserving daltonization is a tracked follow-up. */
 
-/* Deuteranopia: shift greens to be distinguishable */
-[data-ihymns-cvd="deuteranopia"] {
-    filter: url('#ihymns-cvd-deuteranopia');
-}
-
-/* Tritanopia: shift blues to be distinguishable */
-[data-ihymns-cvd="tritanopia"] {
-    filter: url('#ihymns-cvd-tritanopia');
-}
-
-/* Achromatopsia: full grayscale */
+/* Achromatopsia (total colour blindness): grayscale IS luminance-preserving, so
+   it keeps full contrast while dropping colour cues that could only mislead. */
 [data-ihymns-cvd="achromatopsia"] {
     filter: grayscale(100%);
 }

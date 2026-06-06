@@ -1143,6 +1143,10 @@ export class Router {
         if (recent.length < 2) return;
 
         const songbooks = this.config.songbooks || [];
+        /* Drop any recently-viewed songbooks that no longer exist (deleted) so a
+           badge never renders a 404-on-click link (e.g. a removed HAOLD). */
+        recent = recent.filter(id => songbooks.some(b => b.id === id));
+        if (recent.length === 0) return;
 
         const badges = recent.map(id => {
             const sb = songbooks.find(b => b.id === id);
@@ -1165,7 +1169,7 @@ export class Router {
             <div class="d-flex align-items-center gap-2 mb-1">
                 <small class="text-muted fw-semibold">
                     <i class="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>
-                    Recent
+                    Recently viewed songbooks
                 </small>
             </div>
             <div class="d-flex flex-wrap gap-2">${badges}</div>
