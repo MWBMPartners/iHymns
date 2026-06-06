@@ -284,7 +284,12 @@ if (!$person && $totalSongs === 0) {
 /* ---------------------------------------------------------------------- */
 $rolesForBadges = [];
 foreach ($discography as $rk => $entry) {
-    $rolesForBadges[] = ucfirst($rk) . ' (' . count($entry['songs']) . ')';
+    /* Just the role name in the subtitle — the per-role song count is already
+       shown (in context) on each "As Writer (N)" / "As Composer (N)" section
+       header below, and surfacing both counts here read as a confusing
+       "24 + 25 ≠ 27" to users (the totals overlap when someone is both writer
+       and composer of a song). The distinct total is shown after the roles. */
+    $rolesForBadges[] = ucfirst($rk);
 }
 
 ?>
@@ -355,7 +360,10 @@ foreach ($discography as $rk => $entry) {
             <?php endif; ?>
             <?php if (!empty($rolesForBadges)): ?>
                 <p class="text-muted small mb-1">
-                    <?= htmlspecialchars(implode(' &middot; ', $rolesForBadges)) ?>
+                    <?= implode(' &middot; ', array_map(
+                        static fn(string $r): string => htmlspecialchars($r, ENT_QUOTES, 'UTF-8'),
+                        $rolesForBadges
+                    )) ?>
                     — <?= (int)$totalSongs ?> song<?= $totalSongs === 1 ? '' : 's' ?> total
                 </p>
             <?php endif; ?>

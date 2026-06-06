@@ -1686,7 +1686,7 @@ export class UserAuth {
      * logout/account-switch mid-flight from repopulating the cache with the
      * old account's data (review #4).
      */
-    async triggerSetlistSync() {
+    async triggerSetlistSync(silent = false) {
         if (!this.app.setList) return false;
 
         const uid = this.getUser()?.id;
@@ -1701,7 +1701,14 @@ export class UserAuth {
         const final = this._unionSetlists(this.app.setList.getAll(), merged);
         this.app.setList.saveAll(final, { sync: false });
         this.app.setList._syncReady = true;
-        this.app.showToast(`Synced ${final.length} setlist${final.length !== 1 ? 's' : ''}`, 'success', 2000);
+        /* Only announce when the user did something deliberate (login, the
+           "Sync Now" button, a settings action). The automatic per-boot
+           reconcile passes silent=true so a routine reload doesn't pop a
+           "Synced N setlists" toast every time — favourites/tags already
+           reconcile silently on that path. */
+        if (!silent) {
+            this.app.showToast(`Synced ${final.length} setlist${final.length !== 1 ? 's' : ''}`, 'success', 2000);
+        }
         return true;
     }
 
@@ -1779,7 +1786,7 @@ export class UserAuth {
         let allOk = false;
         try {
             const results = await Promise.all([
-                this.triggerSetlistSync(),
+                this.triggerSetlistSync(true), /* silent — routine per-boot reconcile */
                 this.triggerFavoritesSync(),
                 this.triggerCustomTagsSync(),
             ]);
