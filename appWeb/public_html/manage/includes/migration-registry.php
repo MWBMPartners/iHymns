@@ -1866,4 +1866,29 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricsSourceDocuments'),
     ],
+
+    'presentation-themes' => [
+        'script' => 'migrate-presentation-themes.php',
+        'card' => [
+            'title'  => 'Presentation themes + cascade (#1168)',
+            'body'   => 'Creates the 8-table presentation-styling groundwork for casting /'
+                      . ' projection — reusable <code>tblPresentationThemes</code> + per-display-role'
+                      . ' <code>tblPresentationThemeVariants</code> (with background-layer + footer'
+                      . ' child tables), the discriminated <code>tblPresentationThemeAssignments</code>'
+                      . ' cascade spine, <code>tblPresentationSlideOverrides</code>, theme tags, and a'
+                      . ' format-fidelity round-trip carrier. Additive + idempotent + <strong>dormant</strong>'
+                      . ' (nothing reads it until the casting/editor feature consumes it).',
+            'button' => 'Run Presentation Themes Migration',
+        ],
+        /* Pending until ALL eight tables exist (multi-object OR-form, mirrors #1088). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblPresentationThemes')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeVariants')
+            || !_migProbe_tableExists($db, 'tblPresentationBackgroundLayers')
+            || !_migProbe_tableExists($db, 'tblPresentationFooterOverlays')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeAssignments')
+            || !_migProbe_tableExists($db, 'tblPresentationSlideOverrides')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeTags')
+            || !_migProbe_tableExists($db, 'tblPresentationFormatFidelity'),
+    ],
 ];
