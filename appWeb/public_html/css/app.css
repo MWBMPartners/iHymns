@@ -1058,6 +1058,9 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
 .footer-link {
     color: var(--text-muted);
     text-decoration: none;
+    /* Opt out of the global muted dotted-underline <a> default (Section 2.5):
+       footer links (Terms / Privacy) should be understated, not "obvious". */
+    border-bottom: none;
     transition: color var(--transition-fast);
 }
 

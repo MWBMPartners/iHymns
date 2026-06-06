@@ -157,11 +157,19 @@ function renderPopularRow(s, opts = {}) {
         ? `<span class="badge bg-secondary">${escapeHtml(String(views))}</span>`
         : '';
 
+    /* Suppress the number badge when there is no real number — collection /
+       unofficial songbooks (e.g. Misc) carry number 0, which otherwise rendered
+       a meaningless "0" in Recently Viewed. (Popular Songs from numbered books
+       are unaffected.) */
+    const numberBadge = number
+        ? `<span class="song-number-badge" data-songbook="${escapeHtml(book)}">${escapeHtml(String(number))}</span>`
+        : '';
+
     return `<a href="/song/${escapeHtml(id)}"
                data-navigate="song"
                data-song-id="${escapeHtml(id)}"
                class="list-group-item list-group-item-action song-list-item">
-                <span class="song-number-badge" data-songbook="${escapeHtml(book)}">${escapeHtml(String(number))}</span>
+                ${numberBadge}
                 <div class="song-info flex-grow-1">
                     <span class="song-title">${escapeHtml(title)}</span>
                     <small class="text-muted d-block">
