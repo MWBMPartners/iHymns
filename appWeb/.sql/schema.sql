@@ -3191,3 +3191,198 @@ CREATE TABLE IF NOT EXISTS tblLyricsSourceDocuments (
         FOREIGN KEY (LyricsId) REFERENCES tblLyrics(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Verbatim ingested carrier documents for lossless round-trip (#1143).';
+
+
+-- =====================================================================
+-- Presentation themes / styling groundwork for casting & projection
+-- (#1168 / #1170). Eight additive, DORMANT tables — nothing reads them
+-- until the casting/editor feature consumes them. Mirror of
+-- migrate-presentation-themes.php (rule #19). Content↔presentation
+-- separation is absolute: no table here stores a lyric string.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS tblPresentationThemes (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    OrgId       INT UNSIGNED NULL DEFAULT NULL COMMENT 'Owner org; NULL = built-in/system theme shared across orgs',
+    Name        VARCHAR(100) NOT NULL,
+    Description TEXT NULL DEFAULT NULL,
+    IsBuiltIn   TINYINT(1) NOT NULL DEFAULT 0,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_Org (OrgId, IsBuiltIn, SortOrder),
+    CONSTRAINT fk_PresTheme_Org FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Reusable presentation/projection themes, org-scoped; org-NULL = built-in. Dormant until casting/editor consumes (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationThemeVariants (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ThemeId         INT UNSIGNED NOT NULL,
+    DisplayRole     VARCHAR(30) NOT NULL DEFAULT 'audience' COMMENT 'audience|stage|lower_third|mirror|print — VARCHAR not ENUM (rule #20)',
+    FontFamily      VARCHAR(100) NULL DEFAULT NULL,
+    FontSizeScale   DECIMAL(5,3) NOT NULL DEFAULT 1.000 COMMENT '1.000 = 100% baseline',
+    FontWeight      VARCHAR(20) NULL DEFAULT NULL COMMENT 'normal|bold|light|heavy — VARCHAR (rule #20)',
+    TextColour      VARCHAR(32) NULL DEFAULT NULL COMMENT '#RRGGBB(AA) or wide-gamut/Display-P3 float string (PP7)',
+    TextAlign       VARCHAR(20) NULL DEFAULT NULL COMMENT 'left|center|right|justified|natural',
+    TextVAlign      VARCHAR(20) NULL DEFAULT NULL COMMENT 'top|middle|bottom',
+    Uppercase       TINYINT(1) NOT NULL DEFAULT 0,
+    LineHeight      DECIMAL(5,3) NULL DEFAULT NULL,
+    LetterSpacing   DECIMAL(6,3) NULL DEFAULT NULL,
+    OutlineColour   VARCHAR(32) NULL DEFAULT NULL,
+    OutlineWidth    DECIMAL(6,3) NULL DEFAULT NULL,
+    OutlineStyle    VARCHAR(20) NULL DEFAULT NULL COMMENT 'solid|dash|dot — VARCHAR (rule #20)',
+    ShadowStyle     VARCHAR(20) NULL DEFAULT NULL COMMENT 'drop|inner|glow — VARCHAR (rule #20)',
+    ShadowColour    VARCHAR(32) NULL DEFAULT NULL,
+    ShadowOffset    DECIMAL(6,3) NULL DEFAULT NULL,
+    ShadowRadius    DECIMAL(6,3) NULL DEFAULT NULL,
+    ShadowOpacity   DECIMAL(4,3) NULL DEFAULT NULL,
+    TextBgColour    VARCHAR(32) NULL DEFAULT NULL,
+    TransitionType  VARCHAR(50) NULL DEFAULT NULL COMMENT 'fade|push|wipe|dissolve|morph|custom — VARCHAR (rule #20)',
+    TransitionDurationMs INT UNSIGNED NULL DEFAULT NULL,
+    TransitionDirection  VARCHAR(20) NULL DEFAULT NULL,
+    TextAnimationType    VARCHAR(50) NULL DEFAULT NULL COMMENT 'appear|typewriter|fly|… — VARCHAR (rule #20)',
+    TextAnimationDelayMs INT UNSIGNED NULL DEFAULT NULL,
+    TextAnimationStart   VARCHAR(20) NULL DEFAULT NULL COMMENT 'on_click|with_previous|after_previous|with_slide',
+    LayoutMode      VARCHAR(40) NOT NULL DEFAULT 'standard' COMMENT 'standard|bilingual_side_by_side|bilingual_stacked|lower_third — VARCHAR (rule #20)',
+    PrimaryLanguageCode VARCHAR(35) NULL DEFAULT NULL COMMENT 'IETF BCP 47; NULL = song lang (free-text, rule #21 — no FK)',
+    AltLanguageCode     VARCHAR(35) NULL DEFAULT NULL,
+    MaxLinesPerSlide INT UNSIGNED NOT NULL DEFAULT 0 COMMENT '0 = no limit (#1065)',
+    ScaleMode       VARCHAR(30) NULL DEFAULT NULL COMMENT 'fit_container|scale_up|scale_down|scale_up_down',
+    SafeAreaInsetJson JSON NULL DEFAULT NULL COMMENT '{top,bottom,left,right} points',
+    HighlightMode   VARCHAR(20) NOT NULL DEFAULT 'line' COMMENT 'word|line|syllable — VARCHAR (rule #20); timing reads tblLyricWords/tblLyricSyllables',
+    HighlightColour VARCHAR(32) NULL DEFAULT NULL,
+    HighlightDurationMs INT UNSIGNED NULL DEFAULT NULL,
+    HighlightFadeMs INT UNSIGNED NULL DEFAULT NULL,
+    CreatedAt       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_ThemeRole (ThemeId, DisplayRole),
+    CONSTRAINT fk_PresVariant_Theme FOREIGN KEY (ThemeId) REFERENCES tblPresentationThemes(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-display-role (audience vs stage) style surface of a theme: text/colour/align/layout/transition/karaoke/bilingual (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationBackgroundLayers (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    VariantId   INT UNSIGNED NOT NULL,
+    ZIndex      INT NOT NULL DEFAULT 0,
+    BackgroundType VARCHAR(20) NOT NULL DEFAULT 'solid' COMMENT 'solid|gradient|image|video|blur|invert — VARCHAR (rule #20)',
+    Colour      VARCHAR(32) NULL DEFAULT NULL,
+    GradientType VARCHAR(20) NULL DEFAULT NULL COMMENT 'linear|radial|angle',
+    GradientAngle FLOAT NULL DEFAULT NULL,
+    GradientStopsJson JSON NULL DEFAULT NULL COMMENT '[{colour,position,blendPoint}]',
+    MediaUrl    VARCHAR(1000) NULL DEFAULT NULL,
+    MediaId     VARCHAR(200) NULL DEFAULT NULL COMMENT 'Non-portable host-library handle; round-trip only, never auto-fetched',
+    Opacity     DECIMAL(4,3) NULL DEFAULT NULL,
+    BlurAmount  FLOAT NULL DEFAULT NULL,
+    LoopMs      INT UNSIGNED NULL DEFAULT NULL,
+    IsForeground TINYINT(1) NOT NULL DEFAULT 0 COMMENT '1 = foreground media layered OVER text',
+    CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_VariantZ (VariantId, ZIndex),
+    CONSTRAINT fk_PresBgLayer_Variant FOREIGN KEY (VariantId) REFERENCES tblPresentationThemeVariants(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Z-ordered background/foreground media layers per variant (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationFooterOverlays (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    VariantId   INT UNSIGNED NOT NULL,
+    Template    VARCHAR(500) NOT NULL COMMENT 'Token string, e.g. "{ccli} © {copyright}" — tokens resolved at render from tblSongs, NOT stored',
+    Position    VARCHAR(30) NOT NULL DEFAULT 'bottom' COMMENT 'bottom|bottom_left|top_right|… — VARCHAR (rule #20)',
+    FontFamily  VARCHAR(100) NULL DEFAULT NULL,
+    FontSizeScale DECIMAL(5,3) NULL DEFAULT NULL,
+    Colour      VARCHAR(32) NULL DEFAULT NULL,
+    Opacity     DECIMAL(4,3) NULL DEFAULT NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_Variant (VariantId, SortOrder),
+    CONSTRAINT fk_PresFooter_Variant FOREIGN KEY (VariantId) REFERENCES tblPresentationThemeVariants(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='CCLI/copyright/ref footer overlays per variant; >1 allowed (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationThemeAssignments (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ThemeId     INT UNSIGNED NOT NULL,
+    AssignmentScope VARCHAR(20) NOT NULL COMMENT 'org_default|user_default|songbook|song|arrangement|component — VARCHAR (rule #20); a future setlist scope needs no ALTER',
+    OrgId         INT UNSIGNED NULL DEFAULT NULL COMMENT 'Tenant: org_default anchor, or the org whose entity-override this is',
+    UserId        INT UNSIGNED NULL DEFAULT NULL COMMENT 'Tenant: user_default anchor, or the user whose personal entity-override this is',
+    SongbookId    INT UNSIGNED NULL DEFAULT NULL,
+    SongId        VARCHAR(20)  NULL DEFAULT NULL,
+    ArrangementId INT UNSIGNED NULL DEFAULT NULL,
+    ComponentId   INT UNSIGNED NULL DEFAULT NULL,
+    DisplayRole   VARCHAR(30)  NULL DEFAULT NULL COMMENT 'NULL = applies to all display roles; else binds only that variant',
+    Priority      INT NOT NULL DEFAULT 0 COMMENT 'Tie-break within a scope level',
+    AssignmentKey VARCHAR(180) AS (CONCAT_WS('|', AssignmentScope, IFNULL(OrgId,'-'), IFNULL(UserId,'-'), IFNULL(SongbookId,'-'), IFNULL(SongId,'-'), IFNULL(ArrangementId,'-'), IFNULL(ComponentId,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null cascade key; its UNIQUE enforces one theme per (scope,tenant,anchor,role) — NULL-leak-proof',
+    CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Assignment (AssignmentKey),
+    INDEX idx_Theme (ThemeId),
+    INDEX idx_Scope (AssignmentScope),
+    INDEX idx_Org (OrgId),
+    INDEX idx_Song (SongId),
+    INDEX idx_Songbook (SongbookId),
+    CONSTRAINT fk_PresAssign_Theme     FOREIGN KEY (ThemeId) REFERENCES tblPresentationThemes(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_Org       FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_User      FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_Songbook  FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_Song      FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_Arr       FOREIGN KEY (ArrangementId) REFERENCES tblSongArrangements(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresAssign_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT chk_PresAssign_Anchor CHECK (
+        (AssignmentScope = 'org_default'  AND OrgId IS NOT NULL AND UserId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
+        (AssignmentScope = 'user_default' AND UserId IS NOT NULL AND OrgId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
+        (AssignmentScope = 'songbook'     AND SongbookId IS NOT NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
+        (AssignmentScope = 'song'         AND SongId IS NOT NULL AND SongbookId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
+        (AssignmentScope = 'arrangement'  AND ArrangementId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ComponentId IS NULL) OR
+        (AssignmentScope = 'component'    AND ComponentId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL)
+    )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Theme→scope cascade spine (org→songbook→song→arrangement→component) with org/user tenancy; one discriminated table, per-anchor typed FKs (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationSlideOverrides (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ComponentId INT UNSIGNED NOT NULL COMMENT 'The component/slide-host (tblSongComponents.Id) this override patches',
+    LyricsId    INT UNSIGNED NULL DEFAULT NULL COMMENT 'Scopes the patch to one lyrics version (tblLyrics.Id); NULL = version-agnostic',
+    LyricLineId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional per-LINE anchor → tblLyricLines.Id (rule #21)',
+    LyricWordId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional per-WORD anchor → tblLyricWords.Id for per-word karaoke styling (rule #21)',
+    LineIndex   INT UNSIGNED NULL DEFAULT NULL COMMENT 'Transitional fallback index into LinesJson when no tblLyricLines row exists yet',
+    DisplayRole VARCHAR(30) NULL DEFAULT NULL COMMENT 'NULL = all roles',
+    OverrideKey VARCHAR(120) AS (CONCAT_WS('|', ComponentId, IFNULL(LyricsId,'-'), IFNULL(LyricLineId,'-'), IFNULL(LyricWordId,'-'), IFNULL(LineIndex,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null key; UNIQUE prevents duplicate patches (NULL-leak-proof)',
+    StylePatchJson JSON NOT NULL COMMENT 'Sparse style patch {fontSizeScale,textColour,slideBreakAfter,highlightColour,foregroundMediaUrl,…} — STYLE ONLY, never lyric text',
+    CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Override (OverrideKey),
+    INDEX idx_Component (ComponentId),
+    INDEX idx_Line (LyricLineId),
+    INDEX idx_Word (LyricWordId),
+    CONSTRAINT fk_PresOverride_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresOverride_Lyrics    FOREIGN KEY (LyricsId) REFERENCES tblLyrics(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresOverride_Line      FOREIGN KEY (LyricLineId) REFERENCES tblLyricLines(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresOverride_Word      FOREIGN KEY (LyricWordId) REFERENCES tblLyricWords(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-slide / per-line / per-word STYLE patch (reference-only, no lyric text). Anchors on tblLyricLines.Id / tblLyricWords.Id (rule #21) (#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationThemeTags (
+    Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ThemeId   INT UNSIGNED NOT NULL,
+    Tag       VARCHAR(60) NOT NULL,
+    CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_ThemeTag (ThemeId, Tag),
+    CONSTRAINT fk_PresTag_Theme FOREIGN KEY (ThemeId) REFERENCES tblPresentationThemes(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Browse-by-theme tags, e.g. Advent / Good Friday / dark (#1148/#1168).';
+
+CREATE TABLE IF NOT EXISTS tblPresentationFormatFidelity (
+    Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    ThemeId   INT UNSIGNED NULL DEFAULT NULL,
+    VariantId INT UNSIGNED NULL DEFAULT NULL,
+    ComponentId INT UNSIGNED NULL DEFAULT NULL COMMENT 'Per-slide anchor (PP7 build orders are per-slide)',
+    SourceFormat VARCHAR(40) NOT NULL COMMENT 'propresenter6|propresenter7|freeshow|videopsalm|openlp|gpresenter|easyworship|mediashout|proclaim — VARCHAR (rule #20)',
+    SourceRef VARCHAR(200) NOT NULL DEFAULT '' COMMENT 'Element UUID / item key in the source file',
+    RawJson   JSON NOT NULL COMMENT 'Lossless carry of source styling with no first-class column yet',
+    CreatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Fidelity (ThemeId, VariantId, ComponentId, SourceFormat, SourceRef),
+    INDEX idx_Component (ComponentId),
+    CONSTRAINT fk_PresFidelity_Theme     FOREIGN KEY (ThemeId) REFERENCES tblPresentationThemes(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresFidelity_Variant   FOREIGN KEY (VariantId) REFERENCES tblPresentationThemeVariants(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_PresFidelity_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Round-trip fidelity carrier for source styling with no first-class column; (Source,SourceRef) UNIQUE = idempotent re-import (rule #20) (#1168).';
