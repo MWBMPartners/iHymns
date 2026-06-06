@@ -310,6 +310,32 @@ function _migProbe_tableExists(\mysqli $db, string $table): bool
     return $exists;
 }
 
+/**
+ * Truthful-completion check: re-evaluate a migration's registry probe AFTER its
+ * script ran, on a fresh connection. Every migrate-*.php catches its OWN
+ * \Throwable internally (prints "[ERROR] …" then returns normally), so the
+ * dashboard's "require didn't throw" is NOT proof the schema landed — a CREATE
+ * TABLE / ALTER can fail (timeout, bad FK, unsupported DDL on the host) and the
+ * script swallows it. Only the probe flipping to applied is real success. This
+ * is what stops the misleading "✓ completed" while the pending counter stays
+ * stuck at the same number (the recurring confusion this fixes).
+ *
+ * @return bool|null  true = STILL pending (apply did not take), false = applied
+ *                    (verified success), null = could not verify (no DB / probe)
+ *                    — caller must NOT hard-fail on null.
+ */
+function _migVerify_stillPending(?\mysqli $conn, ?callable $probe): ?bool
+{
+    if (!($conn instanceof \mysqli) || !is_callable($probe)) {
+        return null;
+    }
+    try {
+        return ($probe($conn) === true);
+    } catch (\Throwable) {
+        return null;
+    }
+}
+
 /** Returns true when an INFORMATION_SCHEMA COLUMNS row exists for $table.$column. */
 function _migProbe_columnExists(\mysqli $db, string $table, string $column): bool
 {
@@ -798,6 +824,17 @@ if ($action !== '') {
                 echo "══════════════════════════════════════════════════════\n";
             });
 
+            /* One reusable connection for the post-run probe verification (see
+               _migVerify_stillPending). DDL auto-commits, so a single connection
+               sees each migration's new tables/columns as the loop progresses. */
+            $verifyConn = null;
+            try {
+                $verifyConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                $verifyConn->set_charset('utf8mb4');
+            } catch (\Throwable $_e) {
+                $verifyConn = null;  /* can't verify → completions reported unverified, never falsely failed */
+            }
+
             /* $proceedBulk is false only when the auto pre-migration backup
                above failed — in that case iterate nothing so no migration
                runs without a recovery point. */
@@ -825,9 +862,28 @@ if ($action !== '') {
                 echo "═══════════════════════════════════════════════════════\n";
                 try {
                     require $migPath;
-                    $totalRan++;
                     $elapsed = round((microtime(true) - $migStart) * 1000);
-                    echo "\n  ✓ {$migAction} completed in {$elapsed} ms\n\n";
+                    /* TRUTHFUL completion: the script returned without throwing,
+                       but it may have caught its OWN DDL error internally. Only
+                       the probe flipping to applied is real success — otherwise
+                       we'd print "✓ completed" while the pending counter stays
+                       stuck (the confusion this fixes). */
+                    $verifyPending = _migVerify_stillPending($verifyConn, $migrationProbes[$migAction] ?? null);
+                    if ($verifyPending === true) {
+                        $totalFailed++;
+                        $actionSuccess = false;
+                        if ($firstFailStep === null) {
+                            $firstFailStep    = $migAction;
+                            $firstFailMessage = 'ran but its probe still reports PENDING — the migration script caught an internal error (see its [ERROR] output above); nothing was applied for this step.';
+                            $firstFailFile    = basename((string)$migScript);
+                            $firstFailLine    = 0;
+                        }
+                        echo "\n  ✗ {$migAction} ran but is STILL PENDING after {$elapsed} ms — its objects were NOT created (the script swallowed an error above). Stopping so you can resolve it.\n";
+                        break;
+                    }
+                    $totalRan++;
+                    $verifiedNote = ($verifyPending === false) ? ' + verified' : '';  /* null = unverifiable */
+                    echo "\n  ✓ {$migAction} completed{$verifiedNote} in {$elapsed} ms\n\n";
                 } catch (\Throwable $e) {
                     $totalFailed++;
                     $actionSuccess = false;
@@ -845,6 +901,7 @@ if ($action !== '') {
                     break;
                 }
             }
+            if ($verifyConn instanceof \mysqli) { $verifyConn->close(); }
             /* Promote captured failure data to the outer scope so the
                render below can surface a visible "Failed at" banner. */
             $bulkFirstFailStep    = $firstFailStep;
@@ -883,6 +940,27 @@ if ($action !== '') {
                      * buffer is flushed to the browser before exit. */
                     $actionSuccess = true;
                     require $scriptPath;
+                    /* TRUTHFUL completion (same as the bulk path): the script may
+                       have caught its OWN DDL error internally and returned. For a
+                       migration action, verify via its registry probe — if still
+                       pending, the apply did NOT take, so don't report success.
+                       (Non-migration actions — install/backup/cleanup — have no
+                       probe and are unaffected.) */
+                    $singleProbe = $migrationProbes[$action] ?? null;
+                    if (is_callable($singleProbe)) {
+                        $singleConn = null;
+                        try {
+                            $singleConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                            $singleConn->set_charset('utf8mb4');
+                        } catch (\Throwable) { $singleConn = null; }
+                        if (_migVerify_stillPending($singleConn, $singleProbe) === true) {
+                            $actionSuccess = false;
+                            echo "\n⚠ This migration ran but is STILL PENDING — its objects were not created"
+                               . " (the script caught an internal error above). Nothing was applied; see the"
+                               . " [ERROR] line in the output above for the cause.\n";
+                        }
+                        if ($singleConn instanceof \mysqli) { $singleConn->close(); }
+                    }
                 } catch (\Throwable $e) {
                     $actionSuccess = false;
                     echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
