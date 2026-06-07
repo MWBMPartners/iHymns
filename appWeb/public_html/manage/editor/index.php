@@ -301,7 +301,7 @@ try {
                     <span id="song-count">0 songs</span>
                     <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
                 </span>
-                <span class="d-flex gap-1">
+                <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
                             title="Multi-select mode (#399)" aria-pressed="false">
                         <i class="bi bi-check2-square me-1"></i>Select
