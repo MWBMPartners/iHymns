@@ -1891,4 +1891,20 @@ return [
             || !_migProbe_tableExists($db, 'tblPresentationThemeTags')
             || !_migProbe_tableExists($db, 'tblPresentationFormatFidelity'),
     ],
+
+    'entity-colours' => [
+        'script' => 'migrate-entity-colours.php',
+        'card' => [
+            'title'  => 'Catalogue + Series colours (#1181)',
+            'body'   => 'Adds <code>tblCatalogues.Colour</code> + <code>tblSongbookSeries.Colour</code>'
+                      . ' (badge hex <code>#RRGGBB</code>, empty = theme default) so catalogues /'
+                      . ' collections carry a badge colour and a songbook series defines ONE colour its'
+                      . ' member songbooks share. Additive + idempotent.',
+            'button' => 'Run Entity Colours Migration',
+        ],
+        /* Pending until BOTH columns exist (multi-column OR-form). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblCatalogues', 'Colour')
+            || !_migProbe_columnExists($db, 'tblSongbookSeries', 'Colour'),
+    ],
 ];
