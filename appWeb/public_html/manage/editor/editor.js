@@ -280,10 +280,9 @@ function renderSongList(filter) {
     /* Read the songbook filter dropdown value. */
     var songbookFilter = filter !== undefined ? filter : getSelectedSongbookFilter();
 
-    /* Count how many songs pass the filters (for the badge). */
-    var visibleCount = 0;
-
-    /* Sort songs according to the current sort mode (#251). */
+    /* Build the FULL filtered + sorted list. Search + songbook filters run over
+       the WHOLE corpus — only the DOM RENDER is incremental. The result is kept
+       on the module so the scroll handler can append more rows on demand. */
     var sortedSongs = songData.songs.slice().sort(function (a, b) {
         if (currentSortMode === 'title') {
             return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
@@ -297,97 +296,128 @@ function renderSongList(filter) {
         return 0;
     });
 
-    /* Iterate over sorted songs. */
-    sortedSongs.forEach(function (song) {
-        /* ---- Songbook filter ---- */
-        if (songbookFilter && song.songbook !== songbookFilter) {
-            return; // skip songs not in the selected songbook
-        }
-
-        /* ---- Text search filter ---- */
+    _sidebarVisible = sortedSongs.filter(function (song) {
+        if (songbookFilter && song.songbook !== songbookFilter) { return false; }
         if (searchTerm) {
-            /* Match against title and number (both lowercased). */
             var titleMatch  = (song.title  || '').toLowerCase().indexOf(searchTerm) !== -1;
             var numberMatch = String(song.number || '').toLowerCase().indexOf(searchTerm) !== -1;
-            if (!titleMatch && !numberMatch) {
-                return; // skip songs that don't match the search
-            }
+            if (!titleMatch && !numberMatch) { return false; }
         }
-
-        /* This song passed all filters — render it. */
-        visibleCount++;
-
-        /* Create the list-group-item element. */
-        var li = document.createElement('a');
-        li.href = '#';
-        li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
-
-        /* Multi-select mode (#399): prepend a checkbox that mirrors
-           the selected state and clicking it toggles selection without
-           navigating to the song. */
-        if (window._selectMode) {
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.className = 'form-check-input me-2 flex-shrink-0';
-            cb.dataset.songId = song.id;
-            cb.checked = window._selectedIds && window._selectedIds.has(song.id);
-            cb.addEventListener('click', function (e) {
-                e.stopPropagation();
-            });
-            cb.addEventListener('change', function () {
-                if (!window._selectedIds) window._selectedIds = new Set();
-                if (cb.checked) window._selectedIds.add(song.id);
-                else window._selectedIds.delete(song.id);
-                updateBulkActionsBar();
-            });
-            li.appendChild(cb);
-        }
-
-        /* Highlight the currently selected song. */
-        if (song.id === currentSongId) {
-            li.classList.add('active');
-        }
-
-        /* Build the display text: "number - Title Case Title" (#249). */
-        var label = document.createElement('span');
-        label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
-
-        /* Right-side badges: songbook abbreviation + modified indicator (#249). */
-        var badges = document.createElement('span');
-        badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
-        if (modifiedSongIds.has(song.id)) {
-            var modBadge = document.createElement('span');
-            modBadge.className = 'badge bg-warning text-dark';
-            modBadge.style.fontSize = '0.65rem';
-            modBadge.textContent = 'modified';
-            badges.appendChild(modBadge);
-        }
-        if (song.songbook) {
-            var sbBadge = document.createElement('span');
-            sbBadge.className = 'badge rounded-pill';
-            sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
-            sbBadge.textContent = song.songbook;
-            badges.appendChild(sbBadge);
-        }
-
-        li.appendChild(label);
-        li.appendChild(badges);
-
-        /* When the user clicks this item, load the song into the editor. */
-        li.addEventListener('click', function (e) {
-            e.preventDefault(); // prevent default anchor behaviour
-            selectSong(song.id);
-        });
-
-        /* Add the item to the list. */
-        listEl.appendChild(li);
+        return true;
     });
+    _sidebarRendered = 0;
 
-    /* Update the song-count badge in the sidebar header. */
+    /* Infinite scroll (#1180-B1): bind once. As the user nears the bottom of the
+       sidebar we append the next batch, so the editor never builds all ~16k rows
+       up front (the slow-open / slow-Edit cause) yet the WHOLE filtered list is
+       reachable by scrolling — and search/filter still span the full corpus. */
+    if (!_sidebarScrollBound) {
+        _sidebarScrollBound = true;
+        listEl.addEventListener('scroll', function () {
+            if (_sidebarRendered >= _sidebarVisible.length) { return; }
+            if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 300) {
+                renderSidebarBatch();
+            }
+        });
+    }
+
+    renderSidebarBatch();   /* first batch */
+
+    /* If the first batch is shorter than the viewport, keep loading until it
+       fills (so there is something to scroll on, and the scroll handler can fire). */
+    var _fillGuard = 0;
+    while (_sidebarRendered < _sidebarVisible.length
+           && listEl.clientHeight > 0
+           && listEl.scrollHeight <= listEl.clientHeight + 4
+           && _fillGuard++ < 80) {
+        renderSidebarBatch();
+    }
+
+    /* Update the song-count badge in the sidebar header (full match count). */
     var countEl = document.getElementById('song-count');
     if (countEl) {
-        countEl.textContent = visibleCount + ' / ' + songData.songs.length;
+        countEl.textContent = _sidebarVisible.length + ' / ' + songData.songs.length;
     }
+}
+
+/* Sidebar incremental-render state (#1180-B1). */
+var SIDEBAR_BATCH       = 200;   /* rows built per batch */
+var _sidebarVisible     = [];    /* the full filtered+sorted song list */
+var _sidebarRendered    = 0;     /* how many rows are currently in the DOM */
+var _sidebarScrollBound = false;
+
+/* Append the next batch of sidebar rows from _sidebarVisible (#1180-B1). */
+function renderSidebarBatch() {
+    var listEl = document.getElementById('song-list');
+    if (!listEl) { return; }
+    var end  = Math.min(_sidebarRendered + SIDEBAR_BATCH, _sidebarVisible.length);
+    var frag = document.createDocumentFragment();
+    for (var i = _sidebarRendered; i < end; i++) {
+        frag.appendChild(buildSongListRow(_sidebarVisible[i]));
+    }
+    listEl.appendChild(frag);
+    _sidebarRendered = end;
+}
+
+/* Build one sidebar row <a> for a song — extracted so the initial render and the
+   scroll-loaded batches share identical markup + behaviour (#1180-B1). */
+function buildSongListRow(song) {
+    var li = document.createElement('a');
+    li.href = '#';
+    li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+
+    /* Multi-select mode (#399): a checkbox that toggles selection without
+       navigating to the song. */
+    if (window._selectMode) {
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input me-2 flex-shrink-0';
+        cb.dataset.songId = song.id;
+        cb.checked = window._selectedIds && window._selectedIds.has(song.id);
+        cb.addEventListener('click', function (e) { e.stopPropagation(); });
+        cb.addEventListener('change', function () {
+            if (!window._selectedIds) window._selectedIds = new Set();
+            if (cb.checked) window._selectedIds.add(song.id);
+            else window._selectedIds.delete(song.id);
+            updateBulkActionsBar();
+        });
+        li.appendChild(cb);
+    }
+
+    /* Highlight the currently selected song. */
+    if (song.id === currentSongId) { li.classList.add('active'); }
+
+    /* "number - Title Case Title" (#249). */
+    var label = document.createElement('span');
+    label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
+
+    /* Right-side badges: modified indicator + songbook abbreviation (#249). */
+    var badges = document.createElement('span');
+    badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
+    if (modifiedSongIds.has(song.id)) {
+        var modBadge = document.createElement('span');
+        modBadge.className = 'badge bg-warning text-dark';
+        modBadge.style.fontSize = '0.65rem';
+        modBadge.textContent = 'modified';
+        badges.appendChild(modBadge);
+    }
+    if (song.songbook) {
+        var sbBadge = document.createElement('span');
+        sbBadge.className = 'badge rounded-pill';
+        sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
+        sbBadge.textContent = song.songbook;
+        badges.appendChild(sbBadge);
+    }
+
+    li.appendChild(label);
+    li.appendChild(badges);
+
+    /* Clicking a row loads the song into the editor. */
+    li.addEventListener('click', function (e) {
+        e.preventDefault();
+        selectSong(song.id);
+    });
+    return li;
 }
 
 /**

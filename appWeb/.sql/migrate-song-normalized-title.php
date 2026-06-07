@@ -57,16 +57,32 @@ if (!file_exists($credFile)) {
 }
 require_once $credFile;
 
-/* The canonical title normalizer the backfill (and write paths) use. */
-$normHelper = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'public_html'
-            . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
-if (!file_exists($normHelper)) {
-    _migNormTitle_output("ERROR: title_normalize.php not found at {$normHelper}.");
+/* The canonical title normalizer the backfill (and write paths) use. The
+   DEPLOYED layout can differ from the repo: on the live server `public_html` is
+   the web root, so `includes/` sits WITHOUT the `public_html/` path segment.
+   The migration was hard-coding the repo path, failing `file_exists`, and
+   RETURNING EARLY before the ALTER — so the column never landed and the card
+   stayed "pending" while the run clocked ~1 ms (the #1162/#1165 saga's last
+   thread). Resolve the normalizer across the known layouts so it works either
+   way. */
+$ds = DIRECTORY_SEPARATOR;
+$normCandidates = [
+    dirname(__DIR__) . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
+    dirname(__DIR__) . $ds . 'includes' . $ds . 'title_normalize.php',
+    __DIR__ . $ds . '..' . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
+    __DIR__ . $ds . '..' . $ds . 'includes' . $ds . 'title_normalize.php',
+];
+$normHelper = null;
+foreach ($normCandidates as $cand) {
+    if (is_file($cand)) { $normHelper = $cand; break; }
+}
+if ($normHelper === null) {
+    _migNormTitle_output("ERROR: title_normalize.php not found. Tried: " . implode(' | ', $normCandidates));
     return;
 }
 require_once $normHelper;
 if (!function_exists('ihymns_normalize_title')) {
-    _migNormTitle_output("ERROR: ihymns_normalize_title() unavailable after include.");
+    _migNormTitle_output("ERROR: ihymns_normalize_title() unavailable after including {$normHelper}.");
     return;
 }
 

@@ -34,6 +34,24 @@ function loadExportLibs() {
     return _libsPromise;
 }
 
+/* ProPresenter 7+ (.pro, #887) is a separate exporter (window.iHymnsProPresenter)
+   that encodes a binary protobuf, so it needs protobufjs loaded + init() first —
+   unlike the format-export.js formats. Single-song only (no exportSongbook). */
+let _pp7Promise = null;
+function loadPP7() {
+    if (_pp7Promise) { return _pp7Promise; }
+    _pp7Promise = loadScript('/manage/editor/vendor/protobuf.min.js')
+        .then(() => loadScript('/manage/editor/propresenter-export.js'))
+        .then(() => {
+            if (!window.iHymnsProPresenter || typeof window.iHymnsProPresenter.init !== 'function') {
+                throw new Error('ProPresenter 7 exporter unavailable');
+            }
+            return window.iHymnsProPresenter.init({ protobuf: window.protobuf });
+        })
+        .catch((err) => { _pp7Promise = null; throw err; });
+    return _pp7Promise;
+}
+
 function loadScript(src) {
     return new Promise((resolve, reject) => {
         if (document.querySelector('script[data-export-lib="' + src + '"]')) { resolve(); return; }
@@ -74,11 +92,16 @@ export function initSongExport(songId) {
             const fmtKey = item.dataset.exportFormat;
             try {
                 toast('Preparing export…', 'info');
+                const data = await fetchJson('/api?action=song_data&id=' + encodeURIComponent(songId));
+                if (!data || !data.song) { throw new Error('song not found'); }
+                if (fmtKey === 'proPresenter7') {
+                    await loadPP7();
+                    window.iHymnsProPresenter.exportSong(data.song, {});
+                    return;
+                }
                 await loadExportLibs();
                 const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
                 if (!fmt || typeof fmt.exportSong !== 'function') { throw new Error('format unavailable'); }
-                const data = await fetchJson('/api?action=song_data&id=' + encodeURIComponent(songId));
-                if (!data || !data.song) { throw new Error('song not found'); }
                 fmt.exportSong(data.song, {});
             } catch (err) {
                 toast('Export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
@@ -101,9 +124,6 @@ export function initSongbookExport(abbr) {
             const fmtKey = item.dataset.exportFormat;
             try {
                 toast('Preparing songbook export…', 'info');
-                await loadExportLibs();
-                const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
-                if (!fmt || typeof fmt.exportSongbook !== 'function') { throw new Error('format unavailable'); }
                 const data = await fetchJson('/api?action=songbook_export&abbr=' + encodeURIComponent(abbr));
                 const songs = data && data.songs;
                 if (!Array.isArray(songs) || !songs.length) { throw new Error('no songs to export'); }
@@ -111,6 +131,18 @@ export function initSongbookExport(abbr) {
                     name:         (data.songbook && (data.songbook.name || data.songbook.id)) || abbr,
                     abbreviation: (data.songbook && (data.songbook.id || data.songbook.abbreviation)) || abbr,
                 };
+                if (fmtKey === 'proPresenter7') {
+                    /* PP7 exports a whole songbook as a .probundle (#887). */
+                    await loadPP7();
+                    await window.iHymnsProPresenter.exportAllAsBundle(songs, {
+                        songbookAbbrev: meta.abbreviation,
+                        songbookName:   meta.name,
+                    });
+                    return;
+                }
+                await loadExportLibs();
+                const fmt = window.iHymnsFormatExport && window.iHymnsFormatExport[fmtKey];
+                if (!fmt || typeof fmt.exportSongbook !== 'function') { throw new Error('format unavailable'); }
                 fmt.exportSongbook(songs, meta);
             } catch (err) {
                 toast('Songbook export failed: ' + (err && err.message ? err.message : 'unknown error'), 'danger');
