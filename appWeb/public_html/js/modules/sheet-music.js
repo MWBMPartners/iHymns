@@ -75,38 +75,68 @@ export class SheetMusic {
         this.currentSongId = songId;
         this.currentPage = 1;
 
-        /* Create and show the modal */
+        const url = this.app.config.musicBasePath + songId + '.pdf';
+
+        /* Build (but DON'T show yet) the modal so status updates have a target.
+           We only REVEAL the viewer once we know the PDF can actually render
+           inline; if PDF.js is unavailable or the document fails to open, we
+           DOWNLOAD it directly instead of popping a dead-end "Unable to display
+           sheet music" modal (#1182). */
         this.createModal(songId);
         this.bsModal = new bootstrap.Modal(this.modalEl);
-        this.bsModal.show();
 
-        /* Load PDF.js if not already loaded */
-        if (!this.pdfjsLoaded) {
-            this.updateStatus('Loading PDF viewer...');
-            const loaded = await this.loadPdfJs();
-            if (!loaded) {
-                this.updateStatus('PDF viewer unavailable.');
-                this.showDownloadFallback(songId);
-                this.isLoading = false;
-                return;
+        try {
+            if (!this.pdfjsLoaded) {
+                const loaded = await this.loadPdfJs();
+                if (!loaded) {
+                    this.downloadSheet(songId);
+                    this.isLoading = false;
+                    return;
+                }
             }
+            this.pdfDoc = await this.pdfjsLib.getDocument(url).promise;
+        } catch (err) {
+            console.warn('[SheetMusic] Inline view unavailable — downloading instead:', err);
+            this.downloadSheet(songId);
+            this.isLoading = false;
+            return;
         }
 
-        /* Fetch and render the PDF */
+        /* Renderable — reveal the viewer + draw the first page. */
+        this.bsModal.show();
         this.updateStatus('Loading sheet music...');
         try {
-            const url = this.app.config.musicBasePath + songId + '.pdf';
-            this.pdfDoc = await this.pdfjsLib.getDocument(url).promise;
             this.updatePageInfo();
             await this.renderPage(this.currentPage);
             this.enableControls(true);
             this.updateStatus('');
         } catch (err) {
-            console.error('[SheetMusic] Error loading PDF:', err);
-            this.updateStatus('Sheet music not available for this song.');
-            this.showDownloadFallback(songId);
+            /* Doc opened but a page failed to render (rare) — fall back to download. */
+            console.warn('[SheetMusic] Render failed — downloading instead:', err);
+            if (this.bsModal) { this.bsModal.hide(); }
+            this.downloadSheet(songId);
         } finally {
             this.isLoading = false;
+        }
+    }
+
+    /**
+     * Trigger a direct download of the song's sheet-music PDF (#1182) — used
+     * whenever the PDF can't be shown inline, so the Sheet Music button is never
+     * a dead end.
+     * @param {string} songId
+     */
+    downloadSheet(songId) {
+        const url = this.app.config.musicBasePath + songId + '.pdf';
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = songId + '.pdf';
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        if (this.app && typeof this.app.showToast === 'function') {
+            this.app.showToast('Downloading sheet music…', 'info');
         }
     }
 
