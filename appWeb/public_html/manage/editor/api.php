@@ -1162,6 +1162,45 @@ switch ($action) {
             }
         }
 
+        /* #1178 — strip all-BLANK components when the song has real lyrics. A
+           blank "Verse 1" (no non-empty line) left over from the accumulation
+           bug is junk once any filled component exists; never persist it. If
+           EVERY component is blank (a genuinely empty in-progress draft) they're
+           kept as-is so the Structure tab isn't emptied. Arrangement indices are
+           remapped through the same old→new map so they stay valid (mirrors the
+           exact-dup collapse above). */
+        if (is_array($song['components'] ?? null) && count($song['components']) > 0) {
+            $hasContent = false;
+            foreach ($song['components'] as $comp) {
+                foreach (($comp['lines'] ?? []) as $ln) {
+                    if (trim((string)$ln) !== '') { $hasContent = true; break 2; }
+                }
+            }
+            if ($hasContent) {
+                $keptComp = [];
+                $idxRemap = [];
+                foreach ($song['components'] as $oldIdx => $comp) {
+                    $blank = true;
+                    foreach (($comp['lines'] ?? []) as $ln) {
+                        if (trim((string)$ln) !== '') { $blank = false; break; }
+                    }
+                    if ($blank) { continue; }   /* drop the empty component */
+                    $idxRemap[$oldIdx] = count($keptComp);
+                    $keptComp[]        = $comp;
+                }
+                if (count($keptComp) !== count($song['components'])) {
+                    $song['components'] = $keptComp;
+                    if (is_array($song['arrangement'] ?? null)) {
+                        $remappedArr = [];
+                        foreach ($song['arrangement'] as $ai) {
+                            if (isset($idxRemap[$ai])) { $remappedArr[] = $idxRemap[$ai]; }
+                        }
+                        $song['arrangement'] = $remappedArr;
+                    }
+                }
+            }
+        }
+
         $componentCount = is_array($song['components'] ?? null) ? count($song['components']) : 0;
         $arrangementJson = _sanitiseArrangement($song['arrangement'] ?? null, $componentCount);
 

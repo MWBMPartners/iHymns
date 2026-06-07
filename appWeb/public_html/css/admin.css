@@ -634,6 +634,30 @@ body:has(.navbar-admin) {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;   /* anchor for the drag-to-resize handle (#1180) */
+}
+
+/* #1180 — draggable sidebar width on large displays. A thin grip pinned to the
+   sidebar's right edge; the inline script in editor/index.php handles the drag
+   and persists the chosen width to localStorage. Hidden on the ≤768px stacked
+   layout (a full-width sidebar has no width to give on a phone). */
+.sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -1px;
+    width: 7px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 6;
+    background-color: transparent;
+    transition: background-color var(--transition-fast);
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.dragging {
+    background-color: var(--accent-solid);
+}
+@media (max-width: 768px) {
+    .sidebar-resize-handle { display: none; }
 }
 
 .sidebar-header {
