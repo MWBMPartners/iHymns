@@ -163,6 +163,7 @@ function _fetchAndParseSongs(target) {
             songData.meta      = parsed.meta      || {};
             songData.songbooks = parsed.songbooks  || [];
             songData.songs     = parsed.songs      || [];
+            rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
 
             /* Reset tracking state. */
             modifiedSongIds.clear();
@@ -1103,8 +1104,8 @@ function renderComponents(song) {
         textarea.addEventListener('input', function () {
             comp.lines = textarea.value.split('\n');
             markModified(song.id);
-            autoResizeTextarea(textarea); // re-fit height
-            renderPreview(song);
+            autoResizeTextarea(textarea); // re-fit height (cheap, keep immediate)
+            schedulePreview(song);        // debounced full preview rebuild (#1180-A3)
         });
 
         body.appendChild(textarea);
@@ -4134,11 +4135,42 @@ function updateStatusBar() {
  * @param {string} id - The song ID to search for.
  * @returns {Object|undefined} The matching song object, or undefined.
  */
-function findSongById(id) {
-    return songData.songs.find(function (s) {
-        return s.id === id;
+/* O(1) id→song index (perf #1180-A1) — replaces the O(N) linear scan that ran
+   on every interaction over the ~16k-song corpus (17 call sites). Rebuilt on
+   load + bulk mutations, updated incrementally on add, and SELF-HEALING on any
+   miss / stale id, so it can never return a wrong or ghost row. */
+var songById = new Map();
+function rebuildSongIndex() {
+    songById = new Map();
+    (songData.songs || []).forEach(function (s) {
+        if (s && s.id != null) { songById.set(s.id, s); }
     });
 }
+function findSongById(id) {
+    var hit = songById.get(id);
+    if (hit !== undefined && hit.id === id) { return hit; }
+    /* Map miss or a mutated/removed id — fall back to a scan + reindex. */
+    var s = songData.songs.find(function (x) { return x.id === id; });
+    if (s) { songById.set(id, s); }
+    return s;
+}
+
+/* Shared debounce (#1180-A2/A3/A4) — coalesce burst events (keystrokes) into a
+   single trailing call so the heavy re-renders don't fire on every key. */
+function debounce(fn, ms) {
+    var t = null;
+    return function () {
+        var ctx = this, args = arguments;
+        if (t) { clearTimeout(t); }
+        t = setTimeout(function () { t = null; fn.apply(ctx, args); }, ms);
+    };
+}
+/* Debounced wrappers for the per-keystroke hot paths (renderPreview rebuilds the
+   whole preview; updateStatusBar repaints the footer). Both are non-authoritative,
+   so a short trailing delay is invisible to the user but removes O(components)
+   work from every keypress. */
+var schedulePreview   = debounce(function (song) { renderPreview(song); }, 350);
+var scheduleStatusBar = debounce(function () { updateStatusBar(); }, 350);
 
 /**
  * markModified(songId)
@@ -4151,8 +4183,9 @@ function markModified(songId) {
     /* Add the ID to the Set (duplicates are automatically ignored). */
     modifiedSongIds.add(songId);
 
-    /* Refresh the status bar to reflect the new count. */
-    updateStatusBar();
+    /* Refresh the status bar to reflect the new count — debounced (#1180-A4) so
+       it doesn't repaint on every keystroke. */
+    scheduleStatusBar();
 
     /* Schedule a debounced auto-save (#394). */
     scheduleAutoSave();
@@ -4705,6 +4738,7 @@ function addNewSong() {
 
     /* Append to the songs array. */
     songData.songs.push(newSong);
+    songById.set(newSong.id, newSong);   /* keep the O(1) id index in sync (#1180-A1) */
 
     /* Mark the new song as modified (it hasn't been saved yet). */
     markModified(newId);
@@ -4745,6 +4779,7 @@ function deleteSong() {
     songData.songs = songData.songs.filter(function (s) {
         return s.id !== currentSongId;
     });
+    rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
 
     /* Remove from modified set if present. */
     modifiedSongIds.delete(currentSongId);
@@ -4775,10 +4810,12 @@ function bindGlobalEventListeners() {
     /* ---- Sidebar search input ---- */
     var searchEl = document.getElementById('song-search');
     if (searchEl) {
-        /* Re-render the song list on every keystroke for instant filtering. */
-        searchEl.addEventListener('input', function () {
+        /* Re-render the song list as the user types — debounced (#1180-A2) so a
+           burst of keystrokes runs ONE sort+filter pass over the ~16k-song
+           corpus instead of one per key. */
+        searchEl.addEventListener('input', debounce(function () {
             renderSongList();
-        });
+        }, 200));
     }
 
     /* ---- Sort order dropdown (#251) ---- */
@@ -5427,6 +5464,7 @@ function bindMultiSelectListeners() {
 
         var idSet = new Set(ids);
         songData.songs = (songData.songs || []).filter(function (s) { return !idSet.has(s.id); });
+        rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
         ids.forEach(function (id) { modifiedSongIds.delete(id); });
         if (currentSongId && idSet.has(currentSongId)) {
             currentSongId = null;
