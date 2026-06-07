@@ -46,8 +46,15 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     exit;
 }
 
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* These were dirname(__DIR__, 2) . '/public_html/includes/…' — which assumes a
+   NESTED public_html and only resolved in the repo (appWeb/public_html/). On the
+   deployed server public_html IS the web root, so that path doesn't exist and the
+   require_once threw a FATAL at load — BEFORE the try/catch below — surfacing as a
+   bare HTTP 500 on every Composition-Origin lookup (#1180). Use the same proven
+   one-level pattern as the auth.php require above (dirname(__DIR__)/includes/…),
+   which resolves on BOTH layouts. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 /* =========================================================================
  * Configuration
