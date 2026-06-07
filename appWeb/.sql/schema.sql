@@ -1978,6 +1978,7 @@ CREATE TABLE IF NOT EXISTS tblCatalogues (
     CreatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt    DATETIME          NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
+    Colour       VARCHAR(7)        NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB (empty = theme default) (#1181)',
     UNIQUE KEY uk_Slug (Slug),
     INDEX idx_Visibility (Visibility),
     INDEX idx_SortOrder  (SortOrder)
@@ -2257,6 +2258,7 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeries (
     Slug         VARCHAR(120)  NOT NULL UNIQUE
                  COMMENT 'URL-safe lowercase form for /series/<slug> public listing pages',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    Colour       VARCHAR(7)    NOT NULL DEFAULT '' COMMENT 'Badge colour hex #RRGGBB inherited by all member songbooks; empty = theme default (#1181)',
     KEY idx_Name (Name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
