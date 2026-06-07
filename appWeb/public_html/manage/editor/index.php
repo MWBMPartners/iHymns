@@ -214,6 +214,12 @@ try {
              ============================================================= -->
         <aside class="editor-sidebar">
 
+            <!-- #1180 — drag-to-resize grip (large displays only; CSS hides it
+                 ≤768px). Wired by the inline script near the foot of this file. -->
+            <div class="sidebar-resize-handle" id="sidebar-resize-handle"
+                 role="separator" aria-orientation="vertical"
+                 aria-label="Drag to resize the song list" title="Drag to resize"></div>
+
             <!-- Sidebar Header — Filter and search controls -->
             <div class="sidebar-header">
 
@@ -296,11 +302,12 @@ try {
             </div>
 
             <!-- Sidebar Footer — Song count + Add/Delete buttons -->
-            <div class="sidebar-footer d-flex align-items-center justify-content-between">
-                <span>
-                    <span id="song-count">0 songs</span>
-                    <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
-                </span>
+            <div class="sidebar-footer d-flex align-items-center justify-content-center flex-wrap gap-2">
+                <!-- #1180 — the redundant "N / total" song-count was removed from
+                     here: the total already shows in the page footer ("N songs
+                     loaded"), and on the same flex row it crowded + mis-aligned
+                     the action buttons. editor.js still updates #song-count if
+                     present (guarded), so this is markup-only. -->
                 <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
                             title="Multi-select mode (#399)" aria-pressed="false">
@@ -1864,6 +1871,56 @@ try {
                 wirePlaceSearch();
             }
         })();
+    </script>
+    <!-- #1180 — drag-to-resize the song-list sidebar on large displays. The
+         chosen width persists to localStorage; clamped to [240px, 60vw]; only
+         active above the 768px stacked-layout breakpoint. -->
+    <script>
+    (function () {
+        var KEY = 'ihymns_editor_sidebar_w';
+        var sidebar = document.querySelector('.editor-sidebar');
+        var handle  = document.getElementById('sidebar-resize-handle');
+        if (!sidebar || !handle) { return; }
+        function isWide() { return window.matchMedia('(min-width: 769px)').matches; }
+        function clamp(w) { return Math.max(240, Math.min(w, Math.round(window.innerWidth * 0.6))); }
+        /* Restore a saved width (large displays only). */
+        try {
+            var saved = parseInt(window.localStorage.getItem(KEY), 10);
+            if (saved && isWide() && saved >= 240 && saved <= window.innerWidth * 0.6) {
+                sidebar.style.width = saved + 'px';
+                sidebar.style.maxWidth = 'none';
+            }
+        } catch (_e) { /* private mode — skip restore */ }
+        var dragging = false;
+        handle.addEventListener('mousedown', function (e) {
+            if (!isWide()) { return; }
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'col-resize';
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+            if (!dragging) { return; }
+            var left = sidebar.getBoundingClientRect().left;
+            var w = clamp(e.clientX - left);
+            sidebar.style.width = w + 'px';
+            sidebar.style.maxWidth = 'none';
+        });
+        document.addEventListener('mouseup', function () {
+            if (!dragging) { return; }
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+            try { window.localStorage.setItem(KEY, String(parseInt(sidebar.style.width, 10) || '')); } catch (_e) {}
+        });
+        /* If the viewport shrinks to the stacked layout, drop the inline width
+           so the ≤768px rules (full-width sidebar) take over cleanly. */
+        window.addEventListener('resize', function () {
+            if (!isWide()) { sidebar.style.width = ''; sidebar.style.maxWidth = ''; }
+        });
+    })();
     </script>
 
     <!-- #858 — pre-load tblLanguages once per page so the per-component

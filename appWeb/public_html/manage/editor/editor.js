@@ -1320,10 +1320,13 @@ function removeComponent(song, index) {
     /* Mark as modified. */
     markModified(song.id);
 
-    /* Re-render. */
+    /* Re-render. The component cards + arrangement must rebuild now (the deleted
+       card has to disappear), but the PREVIEW is debounced (#1180) — rebuilding
+       the whole slide preview synchronously on every delete is what made a
+       single delete feel like it took seconds. */
     renderComponents(song);
     renderArrangement(song);
-    renderPreview(song);
+    schedulePreview(song);
 }
 
 /**
