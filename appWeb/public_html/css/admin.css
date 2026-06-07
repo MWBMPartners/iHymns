@@ -1010,6 +1010,19 @@ body:has(.navbar-admin) {
         max-width: none;
         max-height: 40vh;
     }
+    /* Sidebar footer: let the song-count + the action/export button cluster
+       WRAP instead of overflowing horizontally on the stacked/narrow layout
+       (#1180 mobile pass). */
+    .sidebar-footer {
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        justify-content: center;
+        text-align: center;
+    }
+    .sidebar-footer > span.d-flex {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -1053,6 +1066,15 @@ body:has(.navbar-admin) {
     /* Both flex groups (left nav, right actions) — tighten internal gap. */
     .navbar-editor > .d-flex {
         gap: 0.35rem !important;
+    }
+    /* Sidebar footer action/export buttons — pack tighter so the wrapped
+       cluster (#1180 mobile pass) needs fewer rows on a phone. */
+    .sidebar-footer .btn.btn-sm {
+        padding: 0.2rem 0.4rem;
+        font-size: 0.75rem;
+    }
+    .sidebar-footer .dropdown-toggle::after {
+        margin-left: 0.2rem;
     }
 }
 
