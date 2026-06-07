@@ -898,6 +898,19 @@ try {
                             >
                                 <i class="bi bi-plus-circle me-1"></i>Add Component
                             </button>
+                            <!-- Paste & Reflow (#1043) — ProPresenter-style bulk section entry.
+                                 Opens a modal to paste a whole lyrics block and auto-split it
+                                 into classified sections, then Apply creates components. -->
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btn-paste-reflow"
+                                data-bs-toggle="modal"
+                                data-bs-target="#reflow-modal"
+                                title="Paste a whole lyrics block and split it into sections (ProPresenter-style Reflow)"
+                            >
+                                <i class="bi bi-magic me-1"></i>Paste &amp; Reflow
+                            </button>
                         </div>
 
                         <!-- Legend explaining the available component types -->
@@ -1625,6 +1638,53 @@ try {
                 <div class="modal-body">
                     <div id="history-list" class="list-group list-group-flush"></div>
                     <div id="history-detail" class="mt-3"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PASTE & REFLOW modal (#1043) — ProPresenter-style bulk section entry.
+         Paste a lyrics block, auto-split into classified sections, adjust,
+         then Apply to create components via the normal save_song path.
+         All section-card UI is built in editor.js (reflowRender). -->
+    <div class="modal fade" id="reflow-modal" tabindex="-1" aria-labelledby="reflow-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light border-info">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="reflow-modal-title">
+                        <i class="bi bi-magic me-2"></i>Paste &amp; Reflow
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted small">
+                        Paste a whole song's lyrics below — <strong>blank lines separate sections</strong>.
+                        Click <strong>Parse into sections</strong> and iHymns splits + classifies them:
+                        a leading <code>Chorus:</code> / <code>Verse 1</code> label is detected and stripped,
+                        repeated blocks are flagged as the chorus, and the rest become numbered verses.
+                        Adjust the type / number / text of any section, then <strong>Apply</strong>.
+                    </p>
+                    <label for="reflow-input" class="form-label small mb-1">Raw lyrics</label>
+                    <textarea id="reflow-input"
+                              class="form-control bg-dark text-light border-secondary"
+                              rows="8"
+                              placeholder="Verse 1&#10;Amazing grace, how sweet the sound&#10;That saved a wretch like me&#10;&#10;Chorus&#10;Praise God, praise God&#10;&#10;Verse 2&#10;..."></textarea>
+                    <div class="d-flex gap-2 mt-2 align-items-center">
+                        <button type="button" class="btn btn-sm btn-info" id="reflow-parse-btn">
+                            <i class="bi bi-arrow-down-up me-1"></i>Parse into sections
+                        </button>
+                        <span class="text-muted small" id="reflow-count"></span>
+                    </div>
+                    <hr class="border-secondary">
+                    <div id="reflow-blocks">
+                        <p class="text-muted small mb-0">Paste lyrics above and click <strong>Parse into sections</strong>.</p>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-amber btn-sm" id="reflow-apply-btn" disabled>
+                        <i class="bi bi-check2-circle me-1"></i>Apply sections
+                    </button>
                 </div>
             </div>
         </div>

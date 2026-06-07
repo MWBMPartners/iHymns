@@ -4856,8 +4856,345 @@ function bindGlobalEventListeners() {
         });
     }
 
+    /* ---- Paste & Reflow modal controls (#1043) ---- */
+    initReflowControls();
+
     /* ---- Bind metadata form field live-sync listeners ---- */
     bindMetadataListeners();
+}
+
+/* ========================================================================
+ *  SECTION — Paste & Reflow (ProPresenter-style bulk section entry) (#1043)
+ *
+ *  Lets a curator paste a WHOLE lyrics block and split it into song
+ *  components in one pass, instead of adding Verse 1 / Chorus / … one card
+ *  at a time. Pure client-side text processing; "Apply" appends real
+ *  components ({type, number, lines}) onto the current song and re-renders
+ *  through the normal renderComponents() / save_song path — no new endpoint.
+ *  Inspired by ProPresenter's Reflow editor.
+ *  https://support.renewedvision.com/hc/en-us/articles/34513457866899
+ * ======================================================================== */
+
+/* Working set of parsed sections while the modal is open. */
+var REFLOW_BLOCKS = [];
+
+/* A line that is ONLY a section label — e.g. "Chorus", "Verse 2",
+ * "Pre-Chorus:", "Bridge 1." — optionally a number and a trailing
+ * separator. Never matches a real lyric line (which has more words). */
+var REFLOW_LABEL_RE = /^[ \t]*(verses?|chorus(?:es)?|refrains?|bridges?|pre[ \t-]?chorus|tags?|coda|intro|outro|interlude|vamp|ad[ \t-]?lib)\.?[ \t]*(\d+)?[ \t]*[:.)\-–]?[ \t]*$/i;
+
+/* Map a detected label word to a canonical COMPONENT_TYPES value (the type
+ * dropdown only offers those, so anything else falls back sensibly). */
+function reflowNormalizeType(raw) {
+    var t = String(raw || '').toLowerCase().trim().replace(/[ \t]+/g, '-');
+    if (t === 'verses') { t = 'verse'; }
+    if (t === 'choruses') { t = 'chorus'; }
+    if (t === 'bridges') { t = 'bridge'; }
+    if (t === 'tags') { t = 'tag'; }
+    if (t === 'prechorus') { t = 'pre-chorus'; }
+    if (t === 'adlib') { t = 'ad-lib'; }
+    if (t === 'refrain' || t === 'refrains') { t = 'chorus'; } /* no distinct 'refrain' component type */
+    return (COMPONENT_TYPES.indexOf(t) !== -1) ? t : 'verse';
+}
+
+/* Whitespace-normalised text key, for detecting repeated (chorus) blocks. */
+function reflowBlockKey(block) {
+    return block.lines.join('\n').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/* Split raw pasted text into classified section blocks. */
+function reflowParseText(rawText) {
+    var text = String(rawText || '').replace(/\r\n?/g, '\n');
+    /* One or more blank lines separate sections. */
+    var chunks = text.split(/\n[ \t]*\n+/);
+    var blocks = [];
+    chunks.forEach(function (chunk) {
+        var lines = chunk.split('\n');
+        while (lines.length && lines[0].trim() === '') { lines.shift(); }
+        while (lines.length && lines[lines.length - 1].trim() === '') { lines.pop(); }
+        if (!lines.length) { return; }
+
+        var type = null;
+        var number = null;
+        var m = lines[0].match(REFLOW_LABEL_RE);
+        /* Only treat the first line as a label when there's a lyric body after
+           it — a one-line block that merely looks like a label is kept as
+           lyrics, not silently dropped. */
+        if (m && lines.length > 1) {
+            type = reflowNormalizeType(m[1]);
+            number = m[2] ? parseInt(m[2], 10) : null;
+            lines = lines.slice(1);
+            while (lines.length && lines[0].trim() === '') { lines.shift(); }
+        }
+        blocks.push({ type: type, number: number, lines: lines });
+    });
+    reflowApplySmartDefaults(blocks);
+    return blocks;
+}
+
+/* Fill in the types/numbers the paste didn't label explicitly. */
+function reflowApplySmartDefaults(blocks) {
+    /* Repeated identical blocks are almost always the chorus. */
+    var counts = {};
+    blocks.forEach(function (b) {
+        var k = reflowBlockKey(b);
+        counts[k] = (counts[k] || 0) + 1;
+    });
+    blocks.forEach(function (b) {
+        if (!b.type && counts[reflowBlockKey(b)] > 1) { b.type = 'chorus'; }
+    });
+    /* Anything still unclassified is a verse. */
+    blocks.forEach(function (b) { if (!b.type) { b.type = 'verse'; } });
+    reflowAutoNumber(blocks);
+}
+
+/* Auto-number repeated types (Verse 1, Verse 2, …); single-instance types
+ * stay unnumbered. Respects a number already set from an explicit label. */
+function reflowAutoNumber(blocks) {
+    var totals = {};
+    blocks.forEach(function (b) { totals[b.type] = (totals[b.type] || 0) + 1; });
+    var seen = {};
+    blocks.forEach(function (b) {
+        if (totals[b.type] > 1) {
+            seen[b.type] = (seen[b.type] || 0) + 1;
+            if (b.number == null) { b.number = seen[b.type]; }
+        }
+    });
+}
+
+/* Render the parsed sections as editable cards inside the modal. */
+function reflowRender() {
+    var container = document.getElementById('reflow-blocks');
+    var applyBtn = document.getElementById('reflow-apply-btn');
+    var countEl = document.getElementById('reflow-count');
+    if (!container) { return; }
+    container.innerHTML = '';
+
+    if (!REFLOW_BLOCKS.length) {
+        container.innerHTML = '<p class="text-muted small mb-0">Paste lyrics above and click '
+                            + '<strong>Parse into sections</strong>.</p>';
+        if (applyBtn) { applyBtn.disabled = true; }
+        if (countEl) { countEl.textContent = ''; }
+        return;
+    }
+    if (applyBtn) { applyBtn.disabled = false; }
+    if (countEl) {
+        countEl.textContent = REFLOW_BLOCKS.length + ' section'
+                            + (REFLOW_BLOCKS.length === 1 ? '' : 's') + ' detected';
+    }
+
+    REFLOW_BLOCKS.forEach(function (block, index) {
+        var card = document.createElement('div');
+        card.className = 'card mb-2 reflow-block-card';
+        card.style.backgroundColor = 'var(--ih-bg-card)';
+        card.style.borderColor = 'var(--ih-border)';
+
+        var header = document.createElement('div');
+        header.className = 'card-header d-flex align-items-center gap-2 flex-wrap py-2';
+
+        /* The label badge updates live as the type/number change. */
+        var label = document.createElement('span');
+        label.className = 'badge bg-secondary reflow-label';
+        label.textContent = componentHeaderLabel(block);
+
+        /* Type picker — reuses the canonical COMPONENT_TYPES list. */
+        var typeSel = document.createElement('select');
+        typeSel.className = 'form-select form-select-sm reflow-type';
+        typeSel.style.width = 'auto';
+        typeSel.setAttribute('aria-label', 'Section type');
+        COMPONENT_TYPES.forEach(function (t) {
+            var opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+            if (t === block.type) { opt.selected = true; }
+            typeSel.appendChild(opt);
+        });
+        typeSel.addEventListener('change', function () {
+            block.type = typeSel.value;
+            label.textContent = componentHeaderLabel(block);
+        });
+
+        var numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.min = '1';
+        numInput.className = 'form-control form-control-sm reflow-number';
+        numInput.style.width = '5rem';
+        numInput.placeholder = '#';
+        numInput.setAttribute('aria-label', 'Section number');
+        numInput.value = (block.number != null && block.number > 0) ? block.number : '';
+        numInput.addEventListener('input', function () {
+            block.number = numInput.value ? parseInt(numInput.value, 10) : null;
+            label.textContent = componentHeaderLabel(block);
+        });
+
+        var actions = document.createElement('div');
+        actions.className = 'ms-auto d-flex gap-1';
+
+        var mergeBtn = document.createElement('button');
+        mergeBtn.type = 'button';
+        mergeBtn.className = 'btn btn-sm btn-outline-secondary';
+        mergeBtn.title = 'Merge into the previous section';
+        mergeBtn.innerHTML = '<i class="bi bi-arrow-up-square" aria-hidden="true"></i>';
+        mergeBtn.disabled = (index === 0);
+        mergeBtn.addEventListener('click', function () { reflowMergeUp(index); });
+
+        var bodyTextarea = document.createElement('textarea');
+
+        var splitBtn = document.createElement('button');
+        splitBtn.type = 'button';
+        splitBtn.className = 'btn btn-sm btn-outline-secondary';
+        splitBtn.title = 'Split this section at the cursor';
+        splitBtn.innerHTML = '<i class="bi bi-scissors" aria-hidden="true"></i>';
+        splitBtn.addEventListener('click', function () { reflowSplitAtCursor(index, bodyTextarea); });
+
+        var delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.title = 'Remove this section';
+        delBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
+        delBtn.addEventListener('click', function () { reflowRemove(index); });
+
+        actions.appendChild(mergeBtn);
+        actions.appendChild(splitBtn);
+        actions.appendChild(delBtn);
+
+        header.appendChild(typeSel);
+        header.appendChild(numInput);
+        header.appendChild(label);
+        header.appendChild(actions);
+
+        var body = document.createElement('div');
+        body.className = 'card-body py-2';
+        bodyTextarea.className = 'form-control form-control-sm bg-dark text-light border-secondary reflow-text';
+        bodyTextarea.rows = Math.min(Math.max(block.lines.length, 2), 12);
+        bodyTextarea.value = block.lines.join('\n');
+        bodyTextarea.setAttribute('aria-label', 'Section lyrics');
+        bodyTextarea.addEventListener('input', function () {
+            block.lines = bodyTextarea.value.split('\n');
+        });
+        body.appendChild(bodyTextarea);
+
+        card.appendChild(header);
+        card.appendChild(body);
+        container.appendChild(card);
+    });
+}
+
+/* Merge a section into the one before it (a blank line between). */
+function reflowMergeUp(index) {
+    if (index <= 0 || index >= REFLOW_BLOCKS.length) { return; }
+    var prev = REFLOW_BLOCKS[index - 1];
+    var cur = REFLOW_BLOCKS[index];
+    prev.lines = prev.lines.concat(['']).concat(cur.lines);
+    REFLOW_BLOCKS.splice(index, 1);
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Split a section at the textarea cursor (or, failing that, at its first
+ * internal blank line). The new lower half inherits the type. */
+function reflowSplitAtCursor(index, textarea) {
+    var block = REFLOW_BLOCKS[index];
+    var text = textarea ? textarea.value : block.lines.join('\n');
+    var pos = textarea ? textarea.selectionStart : null;
+    var before;
+    var after;
+    if (pos != null && pos > 0 && pos < text.length) {
+        before = text.slice(0, pos);
+        after = text.slice(pos);
+    } else {
+        var bi = text.indexOf('\n\n');
+        if (bi === -1) { return; } /* nothing sensible to split on */
+        before = text.slice(0, bi);
+        after = text.slice(bi + 2);
+    }
+    var beforeLines = before.replace(/\s+$/, '').split('\n');
+    var afterLines = after.replace(/^\s+/, '').split('\n');
+    if (!beforeLines.join('').trim() || !afterLines.join('').trim()) { return; }
+    block.lines = beforeLines;
+    REFLOW_BLOCKS.splice(index + 1, 0, { type: block.type, number: null, lines: afterLines });
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Drop a section. */
+function reflowRemove(index) {
+    REFLOW_BLOCKS.splice(index, 1);
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Apply the parsed sections to the current song as real components. */
+function reflowApply() {
+    if (!currentSongId) { showToast('Select or create a song first.', 'warning'); return; }
+    var song = findSongById(currentSongId);
+    if (!song) { return; }
+    if (!REFLOW_BLOCKS.length) { return; }
+    if (!song.components) { song.components = []; }
+
+    /* Drop pre-existing EMPTY components (e.g. the blank default verse a fresh
+       song starts with) so reflow lands clean; keep any with real text. */
+    song.components = song.components.filter(function (c) {
+        return Array.isArray(c.lines) && c.lines.join('').trim() !== '';
+    });
+
+    var added = 0;
+    REFLOW_BLOCKS.forEach(function (b) {
+        var lines = b.lines.slice();
+        while (lines.length > 1 && lines[lines.length - 1].trim() === '') { lines.pop(); }
+        if (!lines.join('').trim()) { return; } /* skip an empty section */
+        song.components.push({
+            type: (COMPONENT_TYPES.indexOf(b.type) !== -1) ? b.type : 'verse',
+            number: (b.number != null && b.number > 0) ? parseInt(b.number, 10) : null,
+            lines: lines
+        });
+        added++;
+    });
+
+    markModified(song.id);
+    renderComponents(song);
+    renderArrangement(song);
+    renderPreview(song);
+    fitAllComponentTextareas();
+
+    var modalEl = document.getElementById('reflow-modal');
+    if (modalEl && window.bootstrap) {
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+    }
+    REFLOW_BLOCKS = [];
+    showToast('Added ' + added + ' section' + (added === 1 ? '' : 's') + ' from reflow.', 'success');
+}
+
+/* Wire the modal's Parse / Apply controls + reset on open/close.
+ * Called once from the editor's listener setup. */
+function initReflowControls() {
+    var parseBtn = document.getElementById('reflow-parse-btn');
+    var applyBtn = document.getElementById('reflow-apply-btn');
+    var input = document.getElementById('reflow-input');
+    var modalEl = document.getElementById('reflow-modal');
+
+    if (parseBtn && input) {
+        parseBtn.addEventListener('click', function () {
+            REFLOW_BLOCKS = reflowParseText(input.value);
+            reflowRender();
+            if (!REFLOW_BLOCKS.length) {
+                showToast('No sections found — paste some lyrics first.', 'warning');
+            }
+        });
+    }
+    if (applyBtn) {
+        applyBtn.addEventListener('click', reflowApply);
+    }
+    if (modalEl) {
+        modalEl.addEventListener('shown.bs.modal', function () {
+            if (input) { input.focus(); }
+        });
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            REFLOW_BLOCKS = [];
+            if (input) { input.value = ''; }
+            reflowRender();
+        });
+    }
 }
 
 /**
