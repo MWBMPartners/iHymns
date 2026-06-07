@@ -4339,11 +4339,85 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
+     * delete_song (#1200 Phase 0) — REMOVE a song + its ENTIRE dependent
+     * subtree. The first real server-side delete: the legacy editor's
+     * deleteSong() was CLIENT-ONLY (no endpoint existed), so its toast lied
+     * and the song came back on refresh (a #1010 regression). Every inbound FK
+     * to tblSongs(SongId) is ON DELETE CASCADE (37) or SET NULL (3) — VERIFIED
+     * against INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS — so ONE cascade
+     * DELETE atomically removes components → lyrics → words → syllables,
+     * credits, revisions, media, tags, links, presentation rows, etc. with no
+     * orphans and no RESTRICT failure (no hand-ordering, no FK-checks-off).
+     * Guarded by the #1200 CSRF gate (the editor API had none). Returns the
+     * TRUE affected_rows — never a false success. Dormant until the rewrite UI
+     * calls it (per-phase hard cutover).
+     * ----------------------------------------------------------------- */
+    case 'delete_song':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['ok' => false, 'error' => 'POST method required.']);
+            break;
+        }
+        /* CSRF — the editor posts JSON, so the token rides an explicit
+           X-CSRF-Token header (emitted as a <meta> by the rewrite editor head). */
+        if (!validateCsrf((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Invalid or missing CSRF token.']);
+            break;
+        }
+        $delBody   = json_decode(file_get_contents('php://input') ?: '', true);
+        $delSongId = trim((string)(is_array($delBody) ? ($delBody['songId'] ?? $delBody['id'] ?? '') : ($_GET['id'] ?? '')));
+        if ($delSongId === '') {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'songId is required.']);
+            break;
+        }
+        try {
+            $db = getDbMysqli();
+            $db->begin_transaction();
+            /* Snapshot for the audit trail before the row vanishes. */
+            $delPrev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $delPrev->bind_param('s', $delSongId);
+            $delPrev->execute();
+            $delPrevRow = $delPrev->get_result()->fetch_assoc();
+            $delPrev->close();
+            if ($delPrevRow === null) {
+                $db->rollback();
+                http_response_code(404);
+                echo json_encode(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0]);
+                break;
+            }
+            /* Single cascade delete — see the block comment above. */
+            $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
+            $delStmt->bind_param('s', $delSongId);
+            $delStmt->execute();
+            $delCount = $delStmt->affected_rows;
+            $delStmt->close();
+            $db->commit();
+            logActivity('song.delete', 'song', $delSongId, [
+                'title'    => (string)($delPrevRow['Title'] ?? ''),
+                'songbook' => (string)($delPrevRow['SongbookAbbr'] ?? ''),
+            ]);
+            echo json_encode(['ok' => true, 'deleted' => (int)$delCount, 'songId' => $delSongId]);
+        } catch (\Throwable $e) {
+            if (isset($db)) { try { $db->rollback(); } catch (\Throwable $_e) {} }
+            error_log('[delete_song] ' . $e->getMessage());
+            http_response_code(500);
+            $delIsAdmin = isset($currentUser['role']) && hasRole($currentUser['role'], 'admin');
+            echo json_encode([
+                'ok'           => false,
+                'error'        => 'Delete failed.',
+                'error_detail' => $delIsAdmin ? $e->getMessage() : null,
+            ]);
+        }
+        break;
+
+    /* -----------------------------------------------------------------
      * Unknown action
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder, delete_song']);
         break;
 }
 
