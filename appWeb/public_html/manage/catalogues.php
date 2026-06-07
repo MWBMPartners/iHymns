@@ -138,6 +138,11 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $slug = $slugRaw !== '' ? $slugFor($slugRaw) : $slugFor($title);
                 if ($slug === '')                                        { $error = 'Slug could not be derived — provide one explicitly.'; break; }
                 if (mb_strlen($slug) > 255)                              { $error = 'Slug must be 255 characters or fewer.'; break; }
+                /* #1181 — optional badge colour (blank = theme default; validated hex). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
 
                 $stmt = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
@@ -147,11 +152,11 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($exists) { $error = "A catalogue with slug '{$slug}' already exists."; break; }
 
                 $stmt = $db->prepare(
-                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility)
-                     VALUES (?, ?, ?, ?, ?)'
+                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility, Colour)
+                     VALUES (?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->bind_param('sssis',
-                    $slug, $title, $description, $sortOrder, $visibility);
+                $stmt->bind_param('sssiss',
+                    $slug, $title, $description, $sortOrder, $visibility, $colour);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
@@ -175,12 +180,18 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Invalid visibility.'; break;
                 }
 
+                /* #1181 — optional badge colour (blank = theme default; validated hex). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
+
                 $stmt = $db->prepare(
                     'UPDATE tblCatalogues
-                        SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?
+                        SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?, Colour = ?
                       WHERE Id = ?'
                 );
-                $stmt->bind_param('ssisi', $title, $description, $sortOrder, $visibility, $id);
+                $stmt->bind_param('ssissi', $title, $description, $sortOrder, $visibility, $colour, $id);
                 $stmt->execute();
                 $stmt->close();
 
@@ -274,7 +285,7 @@ if ($hasSchema) {
     try {
         $stmt = $db->prepare(
             'SELECT c.Id, c.Slug, c.Title, c.Description, c.SortOrder, c.Visibility,
-                    c.CreatedAt, c.UpdatedAt,
+                    c.Colour, c.CreatedAt, c.UpdatedAt,
                     (SELECT COUNT(*) FROM tblCatalogueSongs cs WHERE cs.CatalogueId = c.Id) AS SongCount
                FROM tblCatalogues c
               ORDER BY c.SortOrder ASC, c.Title ASC'
@@ -382,6 +393,18 @@ if ($hasSchema && !empty($catalogues)) {
                         <option value="admin_only">Admin only</option>
                     </select>
                 </div>
+                <div class="col-md-3">
+                    <!-- #1181 — optional catalogue badge colour; swatch writes its
+                         hex into the text field (the submitted value). Blank = default. -->
+                    <label class="form-label small mb-0">Colour <small class="text-muted">(optional)</small></label>
+                    <div class="input-group input-group-sm">
+                        <input type="color" class="form-control form-control-color" value="#888888"
+                               title="Pick a colour" aria-label="Catalogue colour swatch"
+                               oninput="this.nextElementSibling.value = this.value.toUpperCase()">
+                        <input type="text" name="colour" class="form-control" maxlength="7"
+                               pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
+                    </div>
+                </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
                         <i class="bi bi-plus me-1"></i>Create catalogue
@@ -467,6 +490,19 @@ if ($hasSchema && !empty($catalogues)) {
                                                     <option value="<?= $v ?>" <?= $c['Visibility'] === $v ? 'selected' : '' ?>><?= $v ?></option>
                                                 <?php endforeach; ?>
                                             </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <!-- #1181 — catalogue badge colour (blank = default). -->
+                                            <label class="form-label small mb-0">Colour</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="color" class="form-control form-control-color"
+                                                       value="<?= htmlspecialchars(($c['Colour'] ?? '') !== '' ? (string)$c['Colour'] : '#888888') ?>"
+                                                       title="Pick a colour" aria-label="Catalogue colour swatch"
+                                                       oninput="this.nextElementSibling.value = this.value.toUpperCase()">
+                                                <input type="text" name="colour" class="form-control"
+                                                       value="<?= htmlspecialchars((string)($c['Colour'] ?? '')) ?>"
+                                                       maxlength="7" pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB">
+                                            </div>
                                         </div>
                                         <div class="col-md-3 text-end">
                                             <button type="submit" class="btn btn-sm btn-info">

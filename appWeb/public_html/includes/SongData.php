@@ -317,6 +317,15 @@ class SongData
                 $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
                 $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
 
+                /* #1181 — effective badge colour: own → first member series
+                   that defines a colour → theme default. Lets a series share
+                   ONE colour across all its songbooks (mirrors getSongbook()). */
+                if (($_b['colour'] ?? '') === '') {
+                    foreach ($_b['series'] as $_ser) {
+                        if (!empty($_ser['colour'])) { $_b['colour'] = $_ser['colour']; break; }
+                    }
+                }
+
                 /* #857 — union of: (a) the songbook's own primary
                    subtag, and (b) every distinct primary subtag
                    carried by songs within it. Drives the "Show
@@ -540,6 +549,7 @@ class SongData
                                s.Id           AS sid,
                                s.Name         AS sname,
                                s.Slug         AS sslug,
+                               s.Colour       AS scolour,
                                m.SortOrder    AS sortOrder
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbookSeries s ON s.Id = m.SeriesId
@@ -557,6 +567,7 @@ class SongData
                                s.Id           AS sid,
                                s.Name         AS sname,
                                s.Slug         AS sslug,
+                               s.Colour       AS scolour,
                                m.SortOrder    AS sortOrder
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbookSeries s ON s.Id = m.SeriesId
@@ -574,9 +585,10 @@ class SongData
                 $abbr = (string)$row['abbr'];
                 if (!isset($out[$abbr])) $out[$abbr] = [];
                 $out[$abbr][] = [
-                    'id'   => (int)$row['sid'],
-                    'name' => (string)$row['sname'],
-                    'slug' => (string)$row['sslug'],
+                    'id'     => (int)$row['sid'],
+                    'name'   => (string)$row['sname'],
+                    'slug'   => (string)$row['sslug'],
+                    'colour' => (string)($row['scolour'] ?? ''),  // #1181 — series badge colour
                 ];
             }
             $stmt->close();
@@ -1170,6 +1182,14 @@ class SongData
         $row['compilers']        = $compilersMap[(string)$row['id']] ?? [];
         $row['alternativeNames'] = $altNamesMap[(string)$row['id']]  ?? [];
         $row['links']            = $linksMap[(string)$row['id']]     ?? [];
+        /* #1181 — effective badge colour resolves own → first member series
+           that defines a colour → theme default (empty). So a series can give
+           ONE shared colour to all its songbooks without each being set. */
+        if (($row['colour'] ?? '') === '') {
+            foreach ($row['series'] as $ser) {
+                if (!empty($ser['colour'])) { $row['colour'] = $ser['colour']; break; }
+            }
+        }
         return $row;
     }
 
