@@ -4782,8 +4782,15 @@ function showToast(message, type) {
  * songData.songs, and selects it in the editor.
  */
 function addNewSong() {
-    /* Generate a simple unique ID (timestamp + random suffix). */
-    var newId = 'song-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
+    /* Generate a unique draft ID that fits tblSongs.SongId (VARCHAR(20)) (#1180).
+       The old 'song-' + Date.now() + '-' + 6-random form was ~25 chars, so MySQL
+       SILENTLY TRUNCATED it on save — dropping most of the random suffix, risking
+       UNIQUE-key collisions (a clash → ON DUPLICATE KEY UPDATE could overwrite a
+       different draft) and producing the ugly ids the owner spotted
+       (song-1780869822259-d). base36 timestamp (~8 chars) + 4 random fits with
+       room; the 'song-' prefix is preserved (it's how unsaved drafts are
+       detected). [Tracked: server should assign a canonical SongId on first save.] */
+    var newId = ('song-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 20);
 
     /* Build the blank song object with all required fields. The
        Song Number starts as null rather than (songs.length + 1) —
