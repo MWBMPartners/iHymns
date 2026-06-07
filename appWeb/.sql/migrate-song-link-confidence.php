@@ -87,11 +87,15 @@ try {
     _migLinkConf_output("--- tblSongLinkSuggestions: Confidence + Signal ---");
     _migLinkConf_addCol($mysql, 'tblSongLinkSuggestions', 'Confidence',
         "Confidence ENUM('high','medium','low') NOT NULL DEFAULT 'low' COMMENT 'Triage tier (#1066 Theme D)' AFTER Score");
+    /* `Signal` MUST be backtick-quoted — SIGNAL is a reserved word in MySQL 8
+       (SIGNAL/RESIGNAL), so an unquoted `ADD COLUMN Signal …` is a 1064 syntax
+       error. The migration swallowed that error (caught internally), so the
+       column was never added and the card stayed stuck pending. */
     _migLinkConf_addCol($mysql, 'tblSongLinkSuggestions', 'Signal',
-        "Signal VARCHAR(50) NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius (#1066 Theme D)' AFTER Confidence");
+        "`Signal` VARCHAR(50) NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius (#1066 Theme D)' AFTER Confidence");
 
     _migLinkConf_addIdx($mysql, 'tblSongLinkSuggestions', 'idx_Confidence', 'Confidence');
-    _migLinkConf_addIdx($mysql, 'tblSongLinkSuggestions', 'idx_Signal', 'Signal');
+    _migLinkConf_addIdx($mysql, 'tblSongLinkSuggestions', 'idx_Signal', '`Signal`');
 
     _migLinkConf_output("");
     _migLinkConf_output("--- Summary ---");
