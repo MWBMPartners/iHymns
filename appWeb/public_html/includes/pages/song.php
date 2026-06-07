@@ -767,12 +767,13 @@ try {
                         Export
                     </button>
                     <ul class="dropdown-menu dropdown-menu-end song-export-menu">
-                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong (.xml)</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP (.xml)</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6 (.pro6)</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm (.json)</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow (.show)</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim (.txt)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
                     </ul>
                 </div>
 

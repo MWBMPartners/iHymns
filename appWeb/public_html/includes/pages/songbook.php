@@ -149,12 +149,13 @@ if ($book === null) {
                     Export
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end songbook-export-menu">
-                    <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong (.zip)</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP (.zip)</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6 (.zip)</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm (.json)</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow (.zip)</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim (.zip)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
                 </ul>
             </div>
         </div>
