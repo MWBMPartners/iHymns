@@ -5294,8 +5294,28 @@ function reflowApply() {
     if (modalEl && window.bootstrap) {
         window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
     }
+    /* Belt-and-suspenders (#1180): Bootstrap removes the .modal-backdrop on the
+       modal's transitionend, which can be SKIPPED when the DOM is mutated
+       mid-transition (the heavy renderComponents/renderPreview above) — leaving
+       the page dimmed + every click blocked (the bug the owner hit applying
+       reflow). This time-based sweep runs regardless of whether the transition
+       fired, and only when no modal is genuinely still open. */
+    _sweepOrphanModalBackdrop();
     REFLOW_BLOCKS = [];
     showToast('Added ' + added + ' section' + (added === 1 ? '' : 's') + ' from reflow.', 'success');
+}
+
+/* Remove any leftover Bootstrap modal backdrop + body lock once the close
+   transition would have finished — guards against the "stuck dimmed page"
+   state. No-op while a modal is legitimately open. (#1180) */
+function _sweepOrphanModalBackdrop() {
+    setTimeout(function () {
+        if (document.querySelector('.modal.show')) { return; }
+        document.querySelectorAll('.modal-backdrop').forEach(function (b) { b.remove(); });
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+    }, 350);
 }
 
 /* Wire the modal's Parse / Apply controls + reset on open/close.
@@ -5328,6 +5348,10 @@ function initReflowControls() {
             reflowRender();
         });
     }
+    /* Global safety net (#1180): when ANY editor modal finishes hiding, sweep a
+       leftover backdrop so a leaked overlay can never strand the page dimmed +
+       unclickable. Idempotent + a no-op while a modal is still open. */
+    document.addEventListener('hidden.bs.modal', function () { _sweepOrphanModalBackdrop(); });
 }
 
 /**
