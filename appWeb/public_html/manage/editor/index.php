@@ -309,148 +309,59 @@ try {
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-song"
-                            title="Export the currently-open song as JSON. Filename follows the &lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;[ (&lt;Tune&gt;)] convention so files sort numerically in Finder / Explorer."
-                            disabled>
-                        <i class="bi bi-box-arrow-down me-1"></i>Export
-                    </button>
-                    <!-- ProPresenter 7+ export (#887): single song → .pro,
-                         whole songbook (the active sidebar filter) → .probundle.
-                         Wired by the self-contained inline script near the
-                         bottom of this page; needs no editor.js changes. -->
+                    <!-- Consolidated export (#1166 polish): ONE "Export ▾"
+                         dropdown listing every format for the open song or the
+                         active-filter songbook, replacing the former wall of
+                         per-format buttons (which the mobile flex-wrap exposed).
+                         Every item ID is preserved, so the existing
+                         bindFormat() / inline wiring is unchanged; the old
+                         per-format toggle-enable lines simply no-op now. All
+                         export handlers already guard (no-song / no-filter →
+                         toast), so the single toggle can stay always-enabled.
+                         data-bs-auto-close="outside" keeps the menu open while
+                         the Lines/slide field is used. -->
                     <div class="btn-group">
                         <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-pp-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to ProPresenter 7+ (.pro / .probundle)" disabled>
-                            <i class="bi bi-easel me-1"></i>ProPresenter
+                                id="btn-export-all" data-bs-toggle="dropdown"
+                                data-bs-auto-close="outside" aria-expanded="false"
+                                title="Export the open song or the active-filter songbook to a worship-presentation format">
+                            <i class="bi bi-box-arrow-down me-1"></i>Export
                         </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="pp-export-song">
-                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.pro</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="pp-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.probundle</code>)</a></li>
+                        <ul class="dropdown-menu dropdown-menu-dark" style="max-height:70vh;overflow-y:auto;min-width:15rem">
+                            <li><h6 class="dropdown-header">This song</h6></li>
+                            <li><a class="dropdown-item" href="#" id="btn-export-song"><i class="bi bi-braces me-2"></i>iHymns JSON</a></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-song"><i class="bi bi-easel me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.pro</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-song"><i class="bi bi-display me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.pro6</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-song"><i class="bi bi-filetype-xml me-2"></i>OpenSong <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-song"><i class="bi bi-easel me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-song"><i class="bi bi-filetype-json me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-song"><i class="bi bi-easel2 me-2"></i>FreeShow <span class="text-muted small ms-1">.show</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-song"><i class="bi bi-file-text me-2"></i>Proclaim <span class="text-muted small ms-1">.txt</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-song"><i class="bi bi-database me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header">This songbook <span class="text-muted fw-normal">· active filter</span></h6></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.probundle</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-songbook"><i class="bi bi-archive me-2"></i>OpenSong <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-songbook"><i class="bi bi-archive me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.osz</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-songbook"><i class="bi bi-journal-text me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-songbook"><i class="bi bi-archive me-2"></i>FreeShow <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-songbook"><i class="bi bi-archive me-2"></i>Proclaim <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-songbook"><i class="bi bi-database-down me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <div class="px-3 py-1">
+                                    <label class="form-label small mb-1 d-block" for="export-lines-per-slide">
+                                        Max lines / slide <span class="text-muted">· presentation formats</span>
+                                    </label>
+                                    <input type="number" class="form-control form-control-sm" id="export-lines-per-slide"
+                                           min="0" max="20" step="1" value="0" style="width:5rem"
+                                           aria-label="Maximum lyric lines per slide on export"
+                                           title="0 = keep each verse on one slide. Remembered as your default.">
+                                </div>
+                            </li>
                         </ul>
                     </div>
-                    <!-- OpenSong export (#1054): single song → .xml, whole
-                         songbook (active sidebar filter) → .zip. Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-os-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to OpenSong (.xml / .zip)" disabled>
-                            <i class="bi bi-filetype-xml me-1"></i>OpenSong
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="os-export-song">
-                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.xml</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="os-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- VideoPsalm export (#1055): single song → 1-song .json,
-                         whole songbook (active filter) → one .json. Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-vp-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to VideoPsalm (.json)" disabled>
-                            <i class="bi bi-filetype-json me-1"></i>VideoPsalm
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="vp-export-song">
-                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.json</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="vp-export-songbook">
-                                <i class="bi bi-journal-text me-2"></i>This songbook (<code>.json</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- FreeShow export (#1056): single song → .show, whole
-                         songbook (active filter) → .zip. Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-fs-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to FreeShow (.show / .zip)" disabled>
-                            <i class="bi bi-easel2 me-1"></i>FreeShow
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="fs-export-song">
-                                <i class="bi bi-file-earmark-music me-2"></i>This song (<code>.show</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="fs-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- ProPresenter 6 export (#889): single song → .pro6,
-                         whole songbook → .zip. Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-p6-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to ProPresenter 6 (.pro6 / .zip)" disabled>
-                            <i class="bi bi-display me-1"></i>PP6
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="p6-export-song">
-                                <i class="bi bi-file-earmark-code me-2"></i>This song (<code>.pro6</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="p6-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- OpenLP / OpenLyrics export (#1053): single song → .xml,
-                         whole songbook → .osz (zip of OpenLyrics). Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-ol-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to OpenLP / OpenLyrics (.xml / .osz)" disabled>
-                            <i class="bi bi-easel me-1"></i>OpenLP
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="ol-export-song">
-                                <i class="bi bi-file-earmark-code me-2"></i>This song (<code>.xml</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="ol-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.osz</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- Proclaim export (#1063): single song → .txt,
-                         whole songbook → .zip of .txt. Wired below. -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
-                                id="btn-pc-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to Proclaim (.txt / .zip)" disabled>
-                            <i class="bi bi-file-text me-1"></i>Proclaim
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><a class="dropdown-item" href="#" id="pc-export-song">
-                                <i class="bi bi-file-earmark-text me-2"></i>This song (<code>.txt</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="pc-export-songbook">
-                                <i class="bi bi-archive me-2"></i>This songbook (<code>.zip</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- EasyWorship export (#1059) — server-side: builds a
-                         SQLite Songs.db. BETA / unverified against real
-                         EasyWorship (#1059). Wired below (not via bindFormat —
-                         this hits a server endpoint, not format-export.js). -->
-                    <div class="btn-group">
-                        <button type="button" class="btn btn-sm btn-outline-warning dropdown-toggle"
-                                id="btn-ew-export" data-bs-toggle="dropdown" aria-expanded="false"
-                                title="Export to EasyWorship (SQLite Songs.db). BETA — produces an EasyWorship-schema database that round-trips with the iHymns importer; reading it in a live EasyWorship install is not yet verified.">
-                            <i class="bi bi-database me-1"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span>
-                        </button>
-                        <ul class="dropdown-menu dropdown-menu-dark">
-                            <li><h6 class="dropdown-header text-warning"><i class="bi bi-exclamation-triangle me-1"></i>Beta — unverified in EasyWorship</h6></li>
-                            <li><a class="dropdown-item" href="#" id="ew-export-song">
-                                <i class="bi bi-file-earmark-binary me-2"></i>This song (<code>Songs.db</code>)</a></li>
-                            <li><a class="dropdown-item" href="#" id="ew-export-songbook">
-                                <i class="bi bi-database-down me-2"></i>This songbook (<code>Songs.db</code>)</a></li>
-                        </ul>
-                    </div>
-                    <!-- #1065 — max lyric lines per slide for the presentation
-                         exports above (PP6 / FreeShow / OpenLP / OpenSong /
-                         VideoPsalm). The value is used for the next export AND
-                         persisted to localStorage as the user's default.
-                         0 = keep each verse whole. -->
-                    <span class="input-group input-group-sm align-middle ms-1" style="width:auto;display:inline-flex"
-                          title="Max lyric lines per slide for presentation exports (PP6 / FreeShow / OpenLP / OpenSong / VideoPsalm). 0 = keep each verse on one slide. Your choice is remembered as the default for next time.">
-                        <span class="input-group-text py-0"><i class="bi bi-distribute-vertical me-1"></i>Lines/slide</span>
-                        <input type="number" class="form-control py-0" id="export-lines-per-slide"
-                               min="0" max="20" step="1" value="0" style="width:4.5rem"
-                               aria-label="Maximum lyric lines per slide on export">
-                    </span>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
