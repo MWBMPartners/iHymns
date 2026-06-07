@@ -233,7 +233,7 @@ function saveSongs() {
     }
 
     /* Stream each song to the per-song endpoint. */
-    autoSaveSongsPerSong(ids).then(function (summary) {
+    enqueueSave(ids).then(function (summary) {
         if (summary.saved.length > 0) {
             lastSaveTime = new Date();
             summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
@@ -4154,6 +4154,7 @@ function updateStatusBar() {
        ensures every meaningful state change (load, save, select,
        deselect, add, delete) refreshes the buttons too. */
     updateHistoryButtonState();
+    updateSaveUiState();   /* #1180 — Save button enabled/label + status text */
 }
 
 /* ========================================================================
@@ -4216,8 +4217,12 @@ function markModified(songId) {
     /* Add the ID to the Set (duplicates are automatically ignored). */
     modifiedSongIds.add(songId);
 
-    /* Refresh the status bar to reflect the new count — debounced (#1180-A4) so
-       it doesn't repaint on every keystroke. */
+    /* Enable the Save button + flip the status to "Unsaved changes" IMMEDIATELY
+       (not debounced) so the editor feels responsive the instant you type (#1180). */
+    updateSaveUiState();
+
+    /* Refresh the rest of the status bar — debounced (#1180-A4) so it doesn't
+       repaint on every keystroke. */
     scheduleStatusBar();
 
     /* Schedule a debounced auto-save (#394). */
@@ -4240,6 +4245,60 @@ var _autoSaveTimer   = null;
 var _autoSaveDelayMs = 3000;
 var _autoSaveRunning = false;
 
+/* #1178 — SINGLE serial save queue shared by BOTH the manual Save button and
+   the auto-save timer. The corruption root cause was a race: clicking Save while
+   an auto-save was in flight fired two concurrent save_song POSTs for the SAME
+   song, whose server-side DELETE-then-INSERT transactions interleaved and left
+   BOTH sets of child rows (duplicated components/credits). Routing every save
+   through this promise chain guarantees they run strictly one-at-a-time, so each
+   save's DELETE always clears the previous save's rows before its INSERT. */
+var _saveQueue = Promise.resolve();
+var _saveBusy  = 0;   /* >0 while any save (auto or manual) is queued or running */
+function enqueueSave(ids) {
+    /* Both fulfil + reject handlers re-arm the chain so one failed save can't
+       wedge every subsequent save. */
+    var run = function () { return autoSaveSongsPerSong(ids); };
+    var next = _saveQueue.then(run, run);
+    _saveQueue = next.catch(function () { /* swallow so the chain survives */ });
+    /* Drive the Save-button + status-bar state off an in-flight count so the
+       button disables while saving and the status text never sticks (#1180). */
+    _saveBusy++;
+    updateSaveUiState();
+    next.then(function () {}, function () {}).then(function () {
+        _saveBusy = Math.max(0, _saveBusy - 1);
+        updateSaveUiState();
+    });
+    return next;
+}
+
+/**
+ * updateSaveUiState()
+ * -------------------
+ * Single source of truth for the Save button + the status-bar text (#1180).
+ * Auto-save is the primary persistence path, so the Save button is a manual
+ * BACKUP — disabled while a save is in flight OR when there's nothing to save
+ * (the owner's request). The status text reflects the real state instead of
+ * getting stuck on "Auto-saving…".
+ */
+function updateSaveUiState() {
+    var dirty  = modifiedSongIds.size > 0;
+    var saving = _saveBusy > 0;
+    var saveBtn = document.getElementById('btn-save');
+    if (saveBtn) {
+        saveBtn.disabled = saving || !dirty;
+        var lbl = saveBtn.querySelector('.btn-save-label');
+        if (lbl) { lbl.textContent = saving ? 'Saving…' : 'Save'; }
+        saveBtn.title = saving ? 'Saving…'
+                      : (dirty ? 'Save changes now (auto-save also runs)'
+                               : 'All changes saved');
+    }
+    var statusEl = document.getElementById('status-text');
+    if (statusEl) {
+        statusEl.textContent = saving ? 'Auto-saving…'
+                             : (dirty ? 'Unsaved changes' : 'All changes saved');
+    }
+}
+
 function scheduleAutoSave() {
     /* Drop any pending save; each edit resets the timer. */
     if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
@@ -4257,8 +4316,9 @@ function scheduleAutoSave() {
         if (validateSongsByIds(Array.from(modifiedSongIds)).errors.length > 0) return;
 
         _autoSaveRunning = true;
-        var text = document.getElementById('status-text');
-        if (text) text.textContent = 'Auto-saving…';
+        /* Status text is driven centrally by updateSaveUiState() via the
+           _saveBusy counter (in enqueueSave) — no manual set here, so it can no
+           longer get stuck on "Auto-saving…" after the save completes (#1180). */
 
         /* Per-song endpoint (#394). Walk the modified set and POST each
            song individually to /api?action=save_song. Much cheaper than
@@ -4266,7 +4326,7 @@ function scheduleAutoSave() {
            per actual edit (#400). Falls back to saveSongs() (full save)
            if the per-song endpoint returns a non-ok status. */
         var ids = Array.from(modifiedSongIds);
-        autoSaveSongsPerSong(ids).then(function (summary) {
+        enqueueSave(ids).then(function (summary) {
             if (summary.failed.length > 0) {
                 /* Something wasn't UPSERT-friendly — fall back to full save so
                    the user never ends up stuck with un-persistable diffs. */

@@ -142,7 +142,7 @@ try {
                 title="Select a song to enable Save"
                 disabled
             >
-                <i class="bi bi-floppy me-1"></i>Save
+                <i class="bi bi-floppy me-1"></i><span class="btn-save-label">Save</span>
             </button>
 
             <!-- REVISIONS — Show revision history for the currently-selected

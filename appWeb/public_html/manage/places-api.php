@@ -160,12 +160,19 @@ try {
     echo json_encode(['error' => 'Unknown action.']);
     exit;
 } catch (\Throwable $e) {
+    /* Always log server-side so a recurring geocoder/host failure leaves a
+       trail even when no admin is watching (#1180 debugging aid). */
+    error_log('[places-api] ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
     http_response_code(500);
+    /* Surface the detail to admins (or IHYMNS_DEBUG) so the curator sees WHY
+       the lookup failed instead of a bare 500 — the place-search dropdown
+       renders this `detail` inline. */
+    $isAdmin = isset($currentUser['role']) && hasRole($currentUser['role'], 'admin');
     echo json_encode([
-        'error' => 'Internal error.',
-        /* Detail only when the global debug flag is on — matches
-           the convention used elsewhere in /manage/ APIs. */
-        'detail' => (defined('IHYMNS_DEBUG') && IHYMNS_DEBUG) ? $e->getMessage() : null,
+        'error'  => 'Internal error.',
+        'detail' => ((defined('IHYMNS_DEBUG') && IHYMNS_DEBUG) || $isAdmin)
+            ? ($e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine())
+            : null,
     ]);
     exit;
 }

@@ -193,7 +193,14 @@
             }
             if (requestId !== currentRequest) return; /* superseded */
             if (!resp.ok) {
-                renderHint('Place lookup unavailable (HTTP ' + resp.status + '). Your text is saved as typed.');
+                /* Pull the server's `detail` (admins get the real error message)
+                   so the curator/dev sees WHY, not just the status (#1180). */
+                let detail = '';
+                try {
+                    const errBody = await resp.json();
+                    if (errBody && errBody.detail) { detail = ' — ' + errBody.detail; }
+                } catch (_e) { /* no JSON body */ }
+                renderHint('Place lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
                 return;
             }
             const data = await resp.json().catch(() => null);
