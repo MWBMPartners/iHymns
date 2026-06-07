@@ -104,3 +104,18 @@ Stay on the project's **no-build vanilla JS + Bootstrap 5** stack, with a discip
 - All additive + parity-safe (the current editor keeps using `save_song` until Phase 1 swaps the Structure tab onto the granular endpoints).
 
 This is low-risk and self-contained. **On your go, I'll commit this strategy doc and open the Phase 0 PR.** The in-flight fixes (#1194/#1197/#1199…) keep the current editor usable meanwhile.
+
+---
+
+## 11. Build log + mid-build directives (2026-06-08)
+
+**Owner directives mid-build:**
+- **Clean, purpose-built editor API** — do NOT bolt onto the 7,800-line legacy `api.php`. Done: `appWeb/public_html/manage/editor/api2.php` is the v2 editor backend (granular, atomic, CSRF-guarded). The legacy `api.php` is untouched; its editor actions (incl. the interim `delete_song` added in commit 150bcc89) are removed at cutover (Phase 5).
+- **Redo the broader public/PWA API + OpenAPI docs** around the new editor — tracked as a follow-up issue, to start immediately AFTER the editor rework.
+- **Version bump → v0.1000.x** at the very end (in the final rework PR) to signify the significant change. Files: `appWeb/public_html/includes/infoAppVer.php`, `api-docs.yaml`, `appWeb/CHANGELOG.md` (+ the release-promotion recipe).
+
+**Phase 0 status — COMPLETE + VALIDATED (server foundation):**
+- `api2.php` — `load_song`, `create_song` (`<ABBR>-<NNNNNN>` server-owned id allocator), `delete_song` (cascade), `metadata_field_update`, `component_upsert`/`delete`/`reorder`, `credit_upsert`/`delete`. CSRF on every write; `bind_param` throughout; `logActivity` per edit; coalesced `tblSongRevisions`. **Every SQL path validated against a real local MySQL** (allocator, coalesce window, cascade-delete = 0 orphans).
+- Tags + links reuse the existing granular endpoints (not duplicated).
+
+**Phase 1+ — REMAINING (the client UI):** the new editor UI (hand-rolled reactive store + the 7 tabs + reflow/import/export/revisions/multi-select), consuming `api2.php`. This is the large remaining body of work and **fundamentally needs browser verification** (headless can't validate UI behaviour) — to be built with the owner's screenshot-verify loop, per the parity checklist (§6). The CSRF `<meta>` token must be emitted in the editor `<head>` so the client can send `X-CSRF-Token`.
