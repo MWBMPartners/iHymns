@@ -1126,6 +1126,42 @@ switch ($action) {
            the entire reason this column exists). NULL / empty / invalid
            → store NULL so the public render falls back to plain
            SortOrder (current pre-#892 behaviour). */
+        /* Data-integrity guard (#1178): collapse EXACT-duplicate components
+           (same type + number + lines) to a single instance, keeping the first.
+           A client-side accumulation bug could otherwise persist the same blank
+           "Verse 1" many times (observed on a new Misc song). Only EXACT repeats
+           collapse, so a single in-progress blank component is preserved; the
+           arrangement (int[] indices into components) is remapped through the
+           dedup so its integrity survives. */
+        if (is_array($song['components'] ?? null) && count($song['components']) > 1) {
+            $seenComp = [];
+            $keptComp = [];
+            $idxRemap = [];   /* old component index → new index */
+            foreach ($song['components'] as $oldIdx => $comp) {
+                $cType  = (string)($comp['type'] ?? 'verse');
+                $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
+                $cLines = is_array($comp['lines'] ?? null) ? $comp['lines'] : [];
+                $sig    = $cType . '|' . $cNum . '|' . json_encode($cLines, JSON_UNESCAPED_UNICODE);
+                if (isset($seenComp[$sig])) {
+                    $idxRemap[$oldIdx] = $seenComp[$sig];   /* point dup refs at the kept copy */
+                    continue;
+                }
+                $seenComp[$sig]    = count($keptComp);
+                $idxRemap[$oldIdx] = count($keptComp);
+                $keptComp[]        = $comp;
+            }
+            if (count($keptComp) !== count($song['components'])) {
+                $song['components'] = $keptComp;
+                if (is_array($song['arrangement'] ?? null)) {
+                    $remappedArr = [];
+                    foreach ($song['arrangement'] as $ai) {
+                        if (isset($idxRemap[$ai])) { $remappedArr[] = $idxRemap[$ai]; }
+                    }
+                    $song['arrangement'] = $remappedArr;
+                }
+            }
+        }
+
         $componentCount = is_array($song['components'] ?? null) ? count($song['components']) : 0;
         $arrangementJson = _sanitiseArrangement($song['arrangement'] ?? null, $componentCount);
 
@@ -1319,9 +1355,16 @@ switch ($action) {
 
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);
+                /* Dedup (#1178): a song must never list the same person twice in
+                   the same role — a client accumulation bug duplicated the whole
+                   credit list many times over. Case-insensitive, first wins. */
+                $seenCredit = [];
                 foreach ($song[$key] ?? [] as $raw) {
                     $entry = $normaliseCreditEntry($raw);
                     if ($entry === null) continue;
+                    $dedupKey = function_exists('mb_strtolower') ? mb_strtolower($entry['name']) : strtolower($entry['name']);
+                    if (isset($seenCredit[$dedupKey])) continue;
+                    $seenCredit[$dedupKey] = true;
                     $stmt->bind_param('ss', $songId, $entry['name']);
                     $stmt->execute();
                     /* Keep the richest parts seen for this name across

@@ -427,15 +427,15 @@ body {
 a {
     color: inherit;
     text-decoration: none;
-    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
-    transition: color var(--transition-fast, 150ms ease),
-                border-color var(--transition-fast, 150ms ease);
+    /* No at-rest underline — the owner found the muted dotted-underline default
+       unpolished and asked for it removed app-wide (reverses #951/#952). Links
+       stay understated; the hover colour-shift below + cursor:pointer carry the
+       affordance, matching the footer-link treatment. */
+    transition: color var(--transition-fast, 150ms ease);
 }
 
 a:hover {
     color: var(--accent-solid, var(--bs-primary));
-    border-bottom-style: solid;
-    border-bottom-color: var(--accent-solid, var(--bs-primary));
     text-decoration: none;
 }
 
@@ -2890,14 +2890,13 @@ body.reduce-motion .related-songs-chevron {
 .song-meta-link {
     color: inherit;
     text-decoration: none;
-    border-bottom: 1px dotted var(--bs-secondary-color, #6c757d);
-    transition: color var(--transition-fast), border-color var(--transition-fast);
+    /* No at-rest dotted underline (matches the global <a> default change above) —
+       understated catalogue prose links; hover colour-shift is the affordance. */
+    transition: color var(--transition-fast);
 }
 
 .song-meta-link:hover {
     color: var(--accent-solid, var(--bs-primary));
-    border-bottom-style: solid;
-    border-bottom-color: var(--accent-solid, var(--bs-primary));
     text-decoration: none;
 }
 
