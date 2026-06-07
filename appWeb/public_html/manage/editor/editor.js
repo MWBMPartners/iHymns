@@ -174,7 +174,7 @@ function _fetchAndParseSongs(target) {
             updateStatusBar();
 
             /* Notify the user. */
-            showToast('Loaded ' + songData.songs.length + ' song(s) from URL.', 'success');
+            showToast('Loaded ' + songData.songs.length + ' song(s).', 'success');
         })
         .catch(function (err) {
             /* Network or parse error — inform the user but don't crash. */

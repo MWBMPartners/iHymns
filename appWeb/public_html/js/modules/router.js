@@ -882,8 +882,14 @@ export class Router {
             const b = rgb[2] / 255;
             const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 
-            /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */
-            badge.style.color = L > 0.4 ? '#1a1a1a' : '#ffffff';
+            /* Pick black or white text by ACTUAL WCAG contrast ratio against this
+               background — whichever is higher — so ANY songbook/collection colour
+               stays readable in every theme. The old flat luminance threshold
+               (L > 0.4) mis-picked WHITE on mid-tone colours: e.g. the CH red
+               (#ef4444) gave white ~3.5:1, where black is ~5.6:1. (#152) */
+            const contrastBlack = (L + 0.05) / 0.05;
+            const contrastWhite = 1.05 / (L + 0.05);
+            badge.style.color = contrastBlack >= contrastWhite ? '#1a1a1a' : '#ffffff';
         });
     }
 

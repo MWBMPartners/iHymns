@@ -85,6 +85,9 @@ async function loadPopularSongs() {
     }
 
     el.innerHTML = uniqueBySongId(songs).map(s => renderPopularRow(s)).join('');
+    /* These badges are injected AFTER the route render, so re-run the WCAG
+       text-contrast pass on them (else they'd keep the CSS default colour). */
+    window.iHymnsApp?.router?.fixBadgeContrast?.();
 }
 
 /**
@@ -157,13 +160,13 @@ function renderPopularRow(s, opts = {}) {
         ? `<span class="badge bg-secondary">${escapeHtml(String(views))}</span>`
         : '';
 
-    /* Suppress the number badge when there is no real number — collection /
-       unofficial songbooks (e.g. Misc) carry number 0, which otherwise rendered
-       a meaningless "0" in Recently Viewed. (Popular Songs from numbered books
-       are unaffected.) */
-    const numberBadge = number
-        ? `<span class="song-number-badge" data-songbook="${escapeHtml(book)}">${escapeHtml(String(number))}</span>`
-        : '';
+    /* Always render the coloured square (keeps the list aligned + identifies the
+       songbook). Numbered/official songbooks show the number; collection /
+       unofficial songbooks (Misc — number 0/empty) render the badge EMPTY so the
+       `.song-number-badge:empty::before` CSS shows a book glyph instead of a
+       meaningless "0". Both Popular Songs + Recently Viewed use this row.
+       (#392 book-glyph; fixes the earlier over-suppression that hid the square.) */
+    const numberBadge = `<span class="song-number-badge" data-songbook="${escapeHtml(book)}">${number ? escapeHtml(String(number)) : ''}</span>`;
 
     return `<a href="/song/${escapeHtml(id)}"
                data-navigate="song"
@@ -216,6 +219,8 @@ async function loadRecentlyViewed() {
             songbook: h.songbook,
             number:   h.number,
         }, { showViews: false })).join('');
+        /* Re-run the WCAG text-contrast pass on these async-injected badges. */
+        window.iHymnsApp?.router?.fixBadgeContrast?.();
     } catch {
         /* Non-fatal — leave the section hidden. */
     }
