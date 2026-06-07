@@ -76,15 +76,16 @@ Stay on the project's **no-build vanilla JS + Bootstrap 5** stack, with a discip
 - **Phase 2:** Credits + Metadata tabs.
 - **Phase 3:** Links · Tags · Media · Preview.
 - **Phase 4:** Reflow · Import/Export · Revisions · multi-select.
-- **Phase 5:** flip default to v2; keep v1 as fallback one release; then remove.
-Each phase = its own PR + an owner verify pass (this can't be validated headless).
+- **Phase 5:** final cleanup — remove the old editor code paths once every tab is on v2.
+
+**Git / delivery (owner directive, 2026-06-08):** the WHOLE rework is **ONE PR**, per the CLAUDE.md "one PR per piece of work" rule, opened only at the **very end** when every phase is complete + parity-checked. Each phase/piece lands as its **own atomic, individually-revertable commit** on the long-lived branch `claude/song-editor-rewrite-phase0`. **Nothing deploys to `alpha` until that final PR merges** — so the current editor stays live + untouched throughout the rework. Each phase still gets an owner verify pass against the branch (headless can't validate UI).
 
 ## 9. Risks & mitigations
 - **Feature loss** → the §6 parity checklist gates every phase.
 - **Can't test headless** → owner screenshot-verify per milestone (the cadence that's worked this session).
 - **Scope creep** → strict parity-first; new ideas → backlog, not this rewrite.
 - **Data integrity** → server-assigned ids + the single save gate + revisions; regression-test against the "Here to Stay" corruption repro.
-- **Long-lived branch drift** → ship per-phase to `alpha` behind the flag, not one mega-branch.
+- **Long-lived branch drift** (the branch now lives until the final single PR) → **merge `alpha` into the branch periodically** to stay current; keep each phase's commit atomic so any conflict resolves per-phase.
 
 ## 10. Decisions — RESOLVED (owner, 2026-06-08)
 1. **Save granularity → GRANULAR per-entity saves.** Each component/credit/metadata-field change is its own **atomic MySQL write** (`component_upsert`/`component_delete`/`credit_upsert`/…), debounced per field. This *eliminates the whole-song save race entirely* — there is no monolithic save to interleave — and is the truly MySQL-native model. Trade-off accepted: a larger server endpoint surface (built in Phase 0). The `tblSongRevisions` snapshot is written on a coalesced debounce so history stays per-meaningful-edit, not per-keystroke.
@@ -95,8 +96,9 @@ Each phase = its own PR + an owner verify pass (this can't be validated headless
 
 ---
 
-### Next step (awaiting go)
-**Phase 0 — server foundation** is the first PR, and with the granular-save decision it covers:
+### Next step
+
+**Phase 0 — server foundation** is the first commit(s) on the branch (**the PR comes at the very end** of the whole rework — see the Git/delivery note in §8). With the granular-save decision it covers:
 - **Canonical SongId assignment** on create (server-owned; client stops generating ids) + the Misc scheme (§10.5).
 - **Granular CRUD endpoints**: `component_upsert` / `component_reorder` / `component_delete`, `credit_upsert` / `credit_delete`, `metadata_field_update`, `tag`/`link` mutations — each atomic, each writing a coalesced revision + activity-log row, each guarded (CSRF, role, bind_param).
 - All additive + parity-safe (the current editor keeps using `save_song` until Phase 1 swaps the Structure tab onto the granular endpoints).
