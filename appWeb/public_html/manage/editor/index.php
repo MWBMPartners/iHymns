@@ -1575,13 +1575,23 @@ try {
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted small">
-                        Paste a whole song's lyrics below — <strong>blank lines separate sections</strong>.
-                        Click <strong>Parse into sections</strong> and iHymns splits + classifies them:
-                        a leading <code>Chorus:</code> / <code>Verse 1</code> label is detected and stripped,
-                        repeated blocks are flagged as the chorus, and the rest become numbered verses.
-                        Adjust the type / number / text of any section, then <strong>Apply</strong>.
-                    </p>
+                    <!-- #1180 — prominent, scannable explainer (the old version
+                         was small muted text that was easy to skim past). Leads
+                         with the load-bearing rule: blank line = new section. -->
+                    <div class="small border border-info rounded p-2 mb-3 d-flex gap-2"
+                         style="background: rgba(13,202,240,0.08);" role="note">
+                        <i class="bi bi-info-circle-fill text-info mt-1 flex-shrink-0"></i>
+                        <div>
+                            <strong>Put one blank line between each section.</strong>
+                            Every block of lines (separated by an empty line) becomes its own
+                            component when you Apply. Optionally begin a block with a label on its
+                            own line — <code>Verse 1</code>, <code>Chorus</code>, <code>Bridge</code>,
+                            <code>Pre-Chorus</code>… — to set its type; unlabelled blocks are
+                            auto-classified (a repeated block → Chorus, the rest → numbered Verses).
+                            Click <strong>Parse into sections</strong> to preview, adjust the
+                            type / number / text of any section, then <strong>Apply sections</strong>.
+                        </div>
+                    </div>
                     <label for="reflow-input" class="form-label small mb-1">Raw lyrics</label>
                     <textarea id="reflow-input"
                               class="form-control bg-dark text-light border-secondary"
