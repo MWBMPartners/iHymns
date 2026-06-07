@@ -4910,7 +4910,10 @@ function bindGlobalEventListeners() {
        its disabled state as part of the existing select-song flow. */
     var exportSongBtn = document.getElementById('btn-export-song');
     if (exportSongBtn) {
-        exportSongBtn.addEventListener('click', function () {
+        exportSongBtn.addEventListener('click', function (e) {
+            /* Now a dropdown <a href="#"> inside the consolidated Export menu —
+               stop the hash navigation (#1166 polish). */
+            if (e && e.preventDefault) { e.preventDefault(); }
             exportCurrentSong();
         });
     }
