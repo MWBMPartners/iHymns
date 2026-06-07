@@ -94,12 +94,17 @@ body.reduce-motion {
     animation: none !important;
 }
 
-a:not(.btn):not(.nav-link):not(.dropdown-item) {
+a:not(.btn):not(.nav-link):not(.dropdown-item):not(.footer-link) {
     color: var(--accent-solid);
 }
-a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
+a:not(.btn):not(.nav-link):not(.dropdown-item):not(.footer-link):hover {
     color: var(--accent-end);
 }
+/* `.footer-link` (Terms / Privacy in the admin footer) is deliberately
+   EXCLUDED above so it keeps its understated app.css styling (muted, same
+   colour as the surrounding footer text) — the owner wants footer links
+   understated, NOT accent-coloured. This admin accent-link rule's high
+   specificity (a + three :not()s) was overriding .footer-link's colour. */
 
 /* Anchors dressed up as buttons should render identically to their
    <button> equivalents. The global `a { border-bottom: 1px dotted }`
