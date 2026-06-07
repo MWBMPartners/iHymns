@@ -709,6 +709,30 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Public songbook export (#1166) — full records of ONE songbook's
+         * songs for the end-user export UI (js/modules/export-ui.js). DB-direct,
+         * scoped to one songbook (rule #17 — never the corpus); same shape the
+         * editor's songbook_export returns ({songs, songbook}). When content
+         * gating is enabled, export of copyrighted content is a gated action
+         * (#1141) — to wire here once gating ships; currently mirrors the public
+         * view (gating off → public-domain + open catalogue).
+         * ----------------------------------------------------------------- */
+        case 'songbook_export':
+            $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
+            if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
+                sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
+                break;
+            }
+            $sbSongs    = $songData->getSongs($abbr);
+            $sbSongbook = null;
+            foreach ($songData->getSongbooks() as $b) {
+                $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
+                if ($bid === $abbr) { $sbSongbook = $b; break; }
+            }
+            sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Resolve songs by an industry identifier (#1103).
          * Params: type (iswc|isrc|upc|ccli) + value (required).
          * The type maps to a FIXED tblSongs column (allow-list — never user

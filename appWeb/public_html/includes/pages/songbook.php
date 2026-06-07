@@ -137,8 +137,39 @@ if ($book === null) {
                 <i class="fa-solid fa-shuffle me-1" aria-hidden="true"></i>
                 Shuffle
             </button>
+            <!-- Export this whole songbook to a worship-presentation format
+                 (#1166). Wired by export-ui.js (initSongbookExport), which
+                 lazy-loads the export libs on first use. -->
+            <div class="btn-group">
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm dropdown-toggle btn-export-songbook"
+                        data-bs-toggle="dropdown" aria-expanded="false"
+                        aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format">
+                    <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
+                    Export
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end songbook-export-menu">
+                    <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong (.zip)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP (.zip)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6 (.zip)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm (.json)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow (.zip)</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim (.zip)</button></li>
+                </ul>
+            </div>
         </div>
     </div>
+
+    <!-- Export wiring (#1166) — the SPA re-runs injected inline scripts. -->
+    <script>
+    (function () {
+        if (!document.querySelector('.btn-export-songbook')) { return; }
+        var abbr = <?= json_encode($book['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
+        import('/js/modules/export-ui.js')
+            .then(function (m) { m.initSongbookExport(abbr); })
+            .catch(function () { /* best-effort */ });
+    })();
+    </script>
 
     <?php
         /* #833 — "Find this songbook elsewhere" panel. Reads from the

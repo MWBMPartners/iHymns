@@ -755,6 +755,27 @@ try {
                     Print
                 </button>
 
+                <!-- Export to a worship-presentation format (#1166). The dropdown
+                     items are wired by export-ui.js (initSongExport), which
+                     lazy-loads the export libs (format-export.js) on first use. -->
+                <div class="btn-group song-toolbar-btn">
+                    <button type="button"
+                            class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
+                            data-bs-toggle="dropdown" aria-expanded="false"
+                            aria-label="Export this song to a worship-presentation format">
+                        <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
+                        Export
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end song-export-menu">
+                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong (.xml)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP (.xml)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6 (.pro6)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm (.json)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow (.show)</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim (.txt)</button></li>
+                    </ul>
+                </div>
+
                 <!-- Chord charts toggle (#299) -->
                 <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
@@ -1356,6 +1377,18 @@ try {
     </nav>
 
 </article>
+
+<!-- Export-to-format wiring (#1166). The SPA re-runs injected inline scripts,
+     so this binds the Export dropdown after the fragment loads. -->
+<script>
+(function () {
+    if (!document.querySelector('.btn-export-song')) { return; }
+    var songId = <?= json_encode($song['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
+    import('/js/modules/export-ui.js')
+        .then(function (m) { m.initSongExport(songId); })
+        .catch(function () { /* export is best-effort; never block the page */ });
+})();
+</script>
 
 <!-- Presentation mode JS (#297) -->
 <script>

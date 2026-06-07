@@ -35,15 +35,48 @@
 (function () {
     'use strict';
 
+    /* Query params that NEVER change which resource a link points at — safe to
+       strip before comparing (so "same video + a tracker" still dedupes). The
+       identity-bearing params (e.g. YouTube `?v=`) are KEPT. (#1177) */
+    var TRACKING_PARAM = /^(?:utm_[a-z]+|ref|referrer|fbclid|gclid|dclid|msclkid|igshid|mc_[a-z]+|spm|si|feature|app|source|_hsenc|_hsmi|yclid)$/i;
+
+    /* Provider canonicalisers — collapse genuinely-equivalent forms of the SAME
+       resource to one key, so they ARE caught as duplicates, while DIFFERENT
+       resources on the same platform stay distinct. IDs are case-SENSITIVE
+       (YouTube/Spotify), so extract from the original-case path. */
+    function youtubeId(u, host, path) {
+        if (host === 'youtu.be') {
+            var m = path.match(/^\/([A-Za-z0-9_-]{6,})/);
+            return m ? m[1] : null;
+        }
+        if (host === 'youtube.com' || host === 'm.youtube.com'
+            || host === 'music.youtube.com' || host === 'youtube-nocookie.com') {
+            if (path === '/watch') { return u.searchParams.get('v') || null; }
+            var m2 = path.match(/^\/(?:shorts|embed|v|live)\/([A-Za-z0-9_-]{6,})/);
+            if (m2) return m2[1];
+        }
+        return null;
+    }
+    function spotifyId(host, path) {
+        if (host === 'open.spotify.com' || host === 'spotify.com') {
+            var m = path.match(/^\/(?:intl-[a-z]+\/)?(track|album|playlist|episode|show|artist)\/([A-Za-z0-9]+)/);
+            if (m) { return m[1] + '/' + m[2]; }
+        }
+        return null;
+    }
+
     /**
-     * Normalise a URL string to a comparison key. Strategy:
-     *   - lowercase host, strip leading 'www.'
-     *   - keep path, lowercase it, drop trailing '/'
-     *   - drop query + hash (curators paste tracker-laden links all the
-     *     time — `?ref=`, `?utm_source=`, …, none of which alter what
-     *     the page actually is)
-     *   - non-URL input (malformed, relative): lowercased + trimmed
-     *     trailing slash so simple duplicate text is still caught
+     * Normalise a URL string to a comparison key (#1177). Strategy:
+     *   - lowercase host, strip leading 'www.'; drop trailing '/'
+     *   - KEEP identity-bearing query params (strip only the tracking allowlist),
+     *     sorted for stability — so two DIFFERENT YouTube videos
+     *     (watch?v=A vs watch?v=B) are NO LONGER treated as the same link
+     *   - provider-aware canonicalisation so genuinely-equivalent forms still
+     *     dedupe (youtu.be/ID == youtube.com/watch?v=ID == /shorts/ID; Spotify
+     *     track/ID ignoring ?si)
+     *   - net: exact-same URL blocked; same platform, different resource allowed
+     *   - non-URL input (malformed, relative): lowercased + trimmed trailing
+     *     slash so simple duplicate text is still caught
      */
     function normalise(url) {
         if (typeof url !== 'string') return '';
@@ -53,8 +86,25 @@
             var u = new URL(s);
             var host = (u.hostname || '').toLowerCase();
             if (host.indexOf('www.') === 0) host = host.slice(4);
-            var path = (u.pathname || '/').toLowerCase().replace(/\/+$/, '') || '/';
-            return host + path;
+            /* Original-case path for case-sensitive provider IDs. */
+            var rawPath = (u.pathname || '/').replace(/\/+$/, '') || '/';
+
+            var yt = youtubeId(u, host, rawPath);
+            if (yt) { return 'youtube:' + yt; }
+            var sp = spotifyId(host, rawPath);
+            if (sp) { return 'spotify:' + sp; }
+
+            /* Generic: host + path + identity query (tracking stripped, sorted).
+               Keep param keys/values as-is apart from lowercasing the key — a
+               value can be a case-sensitive id. */
+            var params = [];
+            u.searchParams.forEach(function (v, k) {
+                if (TRACKING_PARAM.test(k)) { return; }
+                params.push(k.toLowerCase() + '=' + v);
+            });
+            params.sort();
+            var q = params.length ? '?' + params.join('&') : '';
+            return host + rawPath.toLowerCase() + q;
         } catch (_e) {
             return s.toLowerCase().replace(/\/+$/, '');
         }
