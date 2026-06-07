@@ -242,10 +242,8 @@ try {
             ComponentId   INT UNSIGNED NULL DEFAULT NULL,
             DisplayRole   VARCHAR(30)  NULL DEFAULT NULL COMMENT 'NULL = applies to all display roles; else binds only that variant',
             Priority      INT NOT NULL DEFAULT 0 COMMENT 'Tie-break within a scope level',
-            AssignmentKey VARCHAR(180) AS (CONCAT_WS('|', AssignmentScope, IFNULL(OrgId,'-'), IFNULL(UserId,'-'), IFNULL(SongbookId,'-'), IFNULL(SongId,'-'), IFNULL(ArrangementId,'-'), IFNULL(ComponentId,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null cascade key; its UNIQUE enforces one theme per (scope,tenant,anchor,role) — NULL-leak-proof',
             CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_Assignment (AssignmentKey),
             INDEX idx_Theme (ThemeId),
             INDEX idx_Scope (AssignmentScope),
             INDEX idx_Org (OrgId),
@@ -257,17 +255,9 @@ try {
             CONSTRAINT fk_PresAssign_Songbook  FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE ON UPDATE CASCADE,
             CONSTRAINT fk_PresAssign_Song      FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
             CONSTRAINT fk_PresAssign_Arr       FOREIGN KEY (ArrangementId) REFERENCES tblSongArrangements(Id) ON DELETE CASCADE ON UPDATE CASCADE,
-            CONSTRAINT fk_PresAssign_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE,
-            CONSTRAINT chk_PresAssign_Anchor CHECK (
-                (AssignmentScope = 'org_default'  AND OrgId IS NOT NULL AND UserId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-                (AssignmentScope = 'user_default' AND UserId IS NOT NULL AND OrgId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-                (AssignmentScope = 'songbook'     AND SongbookId IS NOT NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-                (AssignmentScope = 'song'         AND SongId IS NOT NULL AND SongbookId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-                (AssignmentScope = 'arrangement'  AND ArrangementId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ComponentId IS NULL) OR
-                (AssignmentScope = 'component'    AND ComponentId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL)
-            )
+            CONSTRAINT fk_PresAssign_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-          COMMENT='Theme→scope cascade spine (org→songbook→song→arrangement→component) with org/user tenancy; one discriminated table, per-anchor typed FKs (#1168).'"
+          COMMENT='Theme→scope cascade spine (org→songbook→song→arrangement→component) with org/user tenancy; per-anchor typed FKs. Uniqueness + anchor-exclusivity are APP-enforced — a STORED generated key / CHECK cannot coexist with the FK CASCADE actions we need for cleanup (MySQL errors 3823/1215) (#1168).'"
     );
     _migPresTheme_output("  [OK] tblPresentationThemeAssignments ensured.");
 
@@ -288,11 +278,9 @@ try {
             LyricWordId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional per-WORD anchor → tblLyricWords.Id for per-word karaoke styling (rule #21)',
             LineIndex   INT UNSIGNED NULL DEFAULT NULL COMMENT 'Transitional fallback index into LinesJson when no tblLyricLines row exists yet',
             DisplayRole VARCHAR(30) NULL DEFAULT NULL COMMENT 'NULL = all roles',
-            OverrideKey VARCHAR(120) AS (CONCAT_WS('|', ComponentId, IFNULL(LyricsId,'-'), IFNULL(LyricLineId,'-'), IFNULL(LyricWordId,'-'), IFNULL(LineIndex,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null key; UNIQUE prevents duplicate patches (NULL-leak-proof)',
             StylePatchJson JSON NOT NULL COMMENT 'Sparse style patch {fontSizeScale,textColour,slideBreakAfter,highlightColour,foregroundMediaUrl,…} — STYLE ONLY, never lyric text',
             CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            UNIQUE KEY uq_Override (OverrideKey),
             INDEX idx_Component (ComponentId),
             INDEX idx_Line (LyricLineId),
             INDEX idx_Word (LyricWordId),

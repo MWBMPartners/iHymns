@@ -1894,7 +1894,7 @@ CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
     SongIdB         VARCHAR(20)  NOT NULL,
     Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
     Confidence      ENUM('high','medium','low') NOT NULL DEFAULT 'low' COMMENT 'Triage tier so curators sort by confidence, not raw blend: strong-key match (ISRC/MBID) => high; fuzzy+author => medium; title-only => low (#1066 Theme D)',
-    Signal          VARCHAR(50)  NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius. VARCHAR (not ENUM) so a new signal type needs no ALTER (#1066 Theme D)',
+    `Signal`        VARCHAR(50)  NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius. VARCHAR (not ENUM) so a new signal type needs no ALTER (#1066 Theme D). Backtick-quoted — SIGNAL is a reserved word in MySQL 8',
     TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
     LyricsScore     DECIMAL(4,3) NOT NULL DEFAULT 0.000,
     AuthorsScore    DECIMAL(4,3) NOT NULL DEFAULT 0.000,
@@ -1902,7 +1902,7 @@ CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
     UNIQUE KEY uk_pair (SongIdA, SongIdB),
     KEY idx_Score (Score),
     KEY idx_Confidence (Confidence),
-    KEY idx_Signal (Signal),
+    KEY idx_Signal (`Signal`),
     KEY idx_SongA (SongIdA),
     KEY idx_SongB (SongIdB),
     CONSTRAINT fk_SongLinkSugg_A FOREIGN KEY (SongIdA)
@@ -3309,10 +3309,8 @@ CREATE TABLE IF NOT EXISTS tblPresentationThemeAssignments (
     ComponentId   INT UNSIGNED NULL DEFAULT NULL,
     DisplayRole   VARCHAR(30)  NULL DEFAULT NULL COMMENT 'NULL = applies to all display roles; else binds only that variant',
     Priority      INT NOT NULL DEFAULT 0 COMMENT 'Tie-break within a scope level',
-    AssignmentKey VARCHAR(180) AS (CONCAT_WS('|', AssignmentScope, IFNULL(OrgId,'-'), IFNULL(UserId,'-'), IFNULL(SongbookId,'-'), IFNULL(SongId,'-'), IFNULL(ArrangementId,'-'), IFNULL(ComponentId,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null cascade key; its UNIQUE enforces one theme per (scope,tenant,anchor,role) — NULL-leak-proof',
     CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_Assignment (AssignmentKey),
     INDEX idx_Theme (ThemeId),
     INDEX idx_Scope (AssignmentScope),
     INDEX idx_Org (OrgId),
@@ -3324,17 +3322,9 @@ CREATE TABLE IF NOT EXISTS tblPresentationThemeAssignments (
     CONSTRAINT fk_PresAssign_Songbook  FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_PresAssign_Song      FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_PresAssign_Arr       FOREIGN KEY (ArrangementId) REFERENCES tblSongArrangements(Id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_PresAssign_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT chk_PresAssign_Anchor CHECK (
-        (AssignmentScope = 'org_default'  AND OrgId IS NOT NULL AND UserId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-        (AssignmentScope = 'user_default' AND UserId IS NOT NULL AND OrgId IS NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-        (AssignmentScope = 'songbook'     AND SongbookId IS NOT NULL AND SongId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-        (AssignmentScope = 'song'         AND SongId IS NOT NULL AND SongbookId IS NULL AND ArrangementId IS NULL AND ComponentId IS NULL) OR
-        (AssignmentScope = 'arrangement'  AND ArrangementId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ComponentId IS NULL) OR
-        (AssignmentScope = 'component'    AND ComponentId IS NOT NULL AND SongbookId IS NULL AND SongId IS NULL AND ArrangementId IS NULL)
-    )
+    CONSTRAINT fk_PresAssign_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Theme→scope cascade spine (org→songbook→song→arrangement→component) with org/user tenancy; one discriminated table, per-anchor typed FKs (#1168).';
+  COMMENT='Theme→scope cascade spine (org→songbook→song→arrangement→component) with org/user tenancy; per-anchor typed FKs. Uniqueness + anchor-exclusivity are APP-enforced — a STORED generated key / CHECK cannot coexist with the FK CASCADE actions we need for cleanup (MySQL errors 3823/1215) (#1168).';
 
 CREATE TABLE IF NOT EXISTS tblPresentationSlideOverrides (
     Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -3344,11 +3334,9 @@ CREATE TABLE IF NOT EXISTS tblPresentationSlideOverrides (
     LyricWordId BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'Optional per-WORD anchor → tblLyricWords.Id for per-word karaoke styling (rule #21)',
     LineIndex   INT UNSIGNED NULL DEFAULT NULL COMMENT 'Transitional fallback index into LinesJson when no tblLyricLines row exists yet',
     DisplayRole VARCHAR(30) NULL DEFAULT NULL COMMENT 'NULL = all roles',
-    OverrideKey VARCHAR(120) AS (CONCAT_WS('|', ComponentId, IFNULL(LyricsId,'-'), IFNULL(LyricLineId,'-'), IFNULL(LyricWordId,'-'), IFNULL(LineIndex,'-'), IFNULL(DisplayRole,'*'))) STORED COMMENT 'Generated non-null key; UNIQUE prevents duplicate patches (NULL-leak-proof)',
     StylePatchJson JSON NOT NULL COMMENT 'Sparse style patch {fontSizeScale,textColour,slideBreakAfter,highlightColour,foregroundMediaUrl,…} — STYLE ONLY, never lyric text',
     CreatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt   TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY uq_Override (OverrideKey),
     INDEX idx_Component (ComponentId),
     INDEX idx_Line (LyricLineId),
     INDEX idx_Word (LyricWordId),
