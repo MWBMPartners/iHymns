@@ -1,0 +1,253 @@
+/* ==========================================================================
+ *  media-tab.js — the v2 Song Editor "Media" tab (#1200, Phase 3b)
+ *
+ *  Accompanying files per song — audio recordings, sheet-music PDFs, MIDI,
+ *  MusicXML — grouped by kind. Upload (multipart → api2.php media_upload, where
+ *  the bytes are MIME-sniffed + size-capped server-side), edit the annotation
+ *  (debounced), reorder within a kind (up/down, like the Structure tab), and
+ *  delete (with confirm). Every mutation is its own atomic, server-confirmed
+ *  write; playback links go to the gated /song-media/<id> stream route (#853).
+ *
+ *  mountMediaTab(container, { store, api, songId, toast }) -> teardown fn
+ *  Hydrates from the store's `media` slice: [{ id, kind, fileName, mimeType,
+ *  sizeBytes, annotation, sortOrder, storageBackend, uploadedAt, streamUrl }, ...].
+ * ========================================================================== */
+
+const SAVE_DEBOUNCE_MS = 500;
+
+/* Kinds + their UI hints. ACCEPT is only a picker convenience — the SERVER
+   sniffs the real MIME (SongMediaStorage::validateUpload), never the suffix.
+   sizeCap mirrors SongMediaStorage::SIZE_CAPS for a fail-fast client check. */
+const KIND_ORDER = ['audio', 'sheet-music', 'midi', 'musicxml'];
+const KIND_META = {
+    'audio':       { label: 'Audio',            icon: 'bi-music-note-beamed', accept: 'audio/*',                                   sizeCap: 50 * 1024 * 1024 },
+    'sheet-music': { label: 'Sheet music (PDF)', icon: 'bi-file-earmark-pdf',  accept: 'application/pdf,.pdf',                       sizeCap: 10 * 1024 * 1024 },
+    'midi':        { label: 'MIDI',             icon: 'bi-file-earmark-music', accept: 'audio/midi,audio/x-midi,.mid,.midi',        sizeCap:  1 * 1024 * 1024 },
+    'musicxml':    { label: 'MusicXML',         icon: 'bi-file-earmark-code',  accept: '.musicxml,.xml,application/xml,text/xml',   sizeCap:  1 * 1024 * 1024 },
+};
+
+function fmtBytes(n) {
+    n = Number(n) || 0;
+    if (n < 1024) { return n + ' B'; }
+    const u = ['KB', 'MB', 'GB'];
+    let i = -1;
+    do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+    return n.toFixed(n < 10 ? 1 : 0) + ' ' + u[i];
+}
+
+export function mountMediaTab(container, opts) {
+    const { store, api, songId } = opts;
+    const toast = opts.toast || function () {};
+    const annoTimers = new Map();   // mediaId -> debounce timer for annotation saves
+
+    function getMedia() {
+        const m = store.get('media');
+        return Array.isArray(m) ? m : [];
+    }
+    function mediaByKind(kind) {
+        return getMedia().filter((m) => m.kind === kind)
+            .sort((a, b) => (a.sortOrder - b.sortOrder) || (a.id - b.id));
+    }
+
+    /* ---- mutations ---- */
+
+    async function refresh() {
+        try {
+            const res = await api.listMedia(songId);
+            store.set('media', res.media || []);   // re-renders
+        } catch (e) {
+            toast('Could not refresh media: ' + e.message, 'danger');
+        }
+    }
+
+    async function upload(kind, fileInput, annoInput, statusEl) {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) { toast('Choose a file first.', 'danger'); return; }
+        const cap = KIND_META[kind].sizeCap;
+        if (cap && file.size > cap) {
+            toast(KIND_META[kind].label + ' files must be ≤ ' + fmtBytes(cap) + '.', 'danger');
+            return;
+        }
+        statusEl.textContent = 'Uploading…';
+        try {
+            await api.uploadMedia(songId, kind, file, annoInput.value.trim());
+            await refresh();   // full re-render shows the new file (clears the picker)
+        } catch (e) {
+            statusEl.textContent = '';
+            toast('Upload failed: ' + e.message, 'danger');
+        }
+    }
+
+    function saveAnnotation(item, value) {
+        /* item.id is stable, so the SERVER write is always correct even if an
+           intervening upload/delete/reorder re-rendered the tab and replaced the
+           store rows. Update the LIVE store row by id (not the possibly-stale
+           captured `item`) so the model stays consistent; no re-render (keeps
+           input focus). NB: we deliberately do NOT clear the debounce timers in
+           render() — that would drop an in-flight save (data loss). */
+        api.updateMedia(item.id, value)
+            .then(() => {
+                const live = getMedia().find((m) => m.id === item.id);
+                if (live) { live.annotation = value; }
+            })
+            .catch((e) => toast('Could not save note: ' + e.message, 'danger'));
+    }
+    function debouncedAnnotation(item, value) {
+        if (annoTimers.has(item.id)) { clearTimeout(annoTimers.get(item.id)); }
+        annoTimers.set(item.id, setTimeout(() => saveAnnotation(item, value), SAVE_DEBOUNCE_MS));
+    }
+
+    async function remove(item) {
+        if (!window.confirm('Remove "' + item.fileName + '"? This cannot be undone.')) { return; }
+        const before = getMedia();
+        store.set('media', before.filter((m) => m.id !== item.id));   // optimistic
+        try {
+            await api.deleteMedia(item.id);
+        } catch (e) {
+            store.set('media', before);   // revert — no optimistic lies (§6a)
+            toast('Could not delete: ' + e.message, 'danger');
+        }
+    }
+
+    async function move(kind, index, dir) {
+        const items = mediaByKind(kind);
+        const target = index + dir;
+        if (target < 0 || target >= items.length) { return; }
+        const tmp = items[index]; items[index] = items[target]; items[target] = tmp;
+        items.forEach((m, i) => { m.sortOrder = i; });   // mutate the store objects
+        store.set('media', getMedia().slice());          // re-render in the new order
+        try {
+            await api.reorderMedia(songId, kind, items.map((m) => m.id));
+        } catch (e) {
+            toast('Could not reorder: ' + e.message, 'danger');
+            refresh();   // pull the server's truth back
+        }
+    }
+
+    /* ---- render ---- */
+
+    function iconBtn(icon, title, disabled, onClick) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-outline-secondary';
+        b.title = title;
+        b.disabled = !!disabled;
+        b.innerHTML = '<i class="bi ' + icon + '"></i>';
+        b.addEventListener('click', onClick);
+        return b;
+    }
+
+    function buildFileRow(item, index, total) {
+        const row = document.createElement('div');
+        row.className = 'd-flex align-items-start gap-2 border rounded p-2 mb-2';
+
+        const main = document.createElement('div');
+        main.className = 'flex-grow-1 min-width-0';
+
+        const top = document.createElement('div');
+        top.className = 'd-flex align-items-center gap-2 flex-wrap';
+        const link = document.createElement('a');
+        link.href = item.streamUrl;                 // server-built '/song-media/<id>'
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.className = 'fw-semibold text-truncate';
+        link.textContent = item.fileName;           // untrusted → textContent
+        const meta = document.createElement('span');
+        meta.className = 'text-muted small';
+        meta.textContent = fmtBytes(item.sizeBytes) + ' · ' + (item.mimeType || '');
+        top.append(link, meta);
+        main.appendChild(top);
+
+        const anno = document.createElement('input');
+        anno.type = 'text';
+        anno.className = 'form-control form-control-sm mt-1';
+        anno.maxLength = 255;
+        anno.placeholder = 'Annotation (e.g. "1989 BBC recording")';
+        anno.value = item.annotation || '';
+        anno.addEventListener('input', () => debouncedAnnotation(item, anno.value));
+        main.appendChild(anno);
+
+        const btns = document.createElement('span');
+        btns.className = 'btn-group btn-group-sm';
+        btns.append(
+            iconBtn('bi-arrow-up', 'Move up', index === 0, () => move(item.kind, index, -1)),
+            iconBtn('bi-arrow-down', 'Move down', index === total - 1, () => move(item.kind, index, 1)),
+        );
+        const del = iconBtn('bi-trash', 'Remove file', false, () => remove(item));
+        del.classList.add('text-danger');
+        btns.appendChild(del);
+
+        row.append(main, btns);
+        return row;
+    }
+
+    function buildKindBlock(kind) {
+        const m = KIND_META[kind];
+        const block = document.createElement('div');
+        block.className = 'mb-4';
+
+        const h = document.createElement('h3');
+        h.className = 'h6 d-flex align-items-center gap-2';
+        h.innerHTML = '<i class="bi ' + m.icon + '"></i>';
+        const hLabel = document.createElement('span');
+        hLabel.textContent = m.label;
+        h.appendChild(hLabel);
+        block.appendChild(h);
+
+        const items = mediaByKind(kind);
+        if (!items.length) {
+            const empty = document.createElement('p');
+            empty.className = 'text-muted small mb-2';
+            empty.textContent = 'No ' + m.label.toLowerCase() + ' uploaded yet.';
+            block.appendChild(empty);
+        } else {
+            items.forEach((it, i) => block.appendChild(buildFileRow(it, i, items.length)));
+        }
+
+        /* upload row */
+        const up = document.createElement('div');
+        up.className = 'd-flex align-items-center gap-2 flex-wrap';
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = m.accept;
+        fileInput.className = 'form-control form-control-sm';
+        fileInput.style.maxWidth = '260px';
+        const annoInput = document.createElement('input');
+        annoInput.type = 'text';
+        annoInput.maxLength = 255;
+        annoInput.placeholder = 'Annotation (optional)';
+        annoInput.className = 'form-control form-control-sm';
+        annoInput.style.maxWidth = '240px';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm btn-outline-primary';
+        btn.innerHTML = '<i class="bi bi-upload me-1"></i>Upload';
+        const statusEl = document.createElement('span');
+        statusEl.className = 'text-muted small';
+        btn.addEventListener('click', () => upload(kind, fileInput, annoInput, statusEl));
+        up.append(fileInput, annoInput, btn, statusEl);
+        block.appendChild(up);
+
+        const hint = document.createElement('div');
+        hint.className = 'form-text';
+        hint.textContent = 'Max ' + fmtBytes(m.sizeCap) + '.';
+        block.appendChild(hint);
+
+        return block;
+    }
+
+    function render() {
+        container.innerHTML = '';
+        KIND_ORDER.forEach((kind) => container.appendChild(buildKindBlock(kind)));
+    }
+
+    const off = store.subscribe('media', render);
+    render();
+
+    return function teardown() {
+        off();
+        annoTimers.forEach((t) => clearTimeout(t));
+        annoTimers.clear();
+        container.innerHTML = '';
+    };
+}

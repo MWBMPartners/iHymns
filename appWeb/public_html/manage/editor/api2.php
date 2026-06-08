@@ -36,10 +36,16 @@ declare(strict_types=1);
  *   POST tag_attach             { songId, name }             -> { ok, tag, attached }
  *   POST tag_detach             { songId, tagId }            -> { ok, removed }
  *   POST link_save_all          { songId, links:[{typeId,url,note?,verified?}] } -> { ok, count, links }
+ *   GET  media_list?id=<SongId>                              -> { ok, media }
+ *   POST media_upload  (MULTIPART: songId, kind, annotation?, file) -> { ok, media }
+ *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
+ *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
+ *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
  *
- * load_song additionally returns `tags` (registry-backed) + `links` (the
+ * load_song additionally returns `tags` (registry-backed), `links` (the
  * {typeId,url,note,verified,sortOrder} shape the shared external-links-editor
- * consumes), so the Tags + Links tabs hydrate from the one load.
+ * consumes), and `media` (file metadata, never bytes), so the Tags / Links /
+ * Media tabs hydrate from the one load.
  *
  * @requires PHP 8.1+, mysqli. Auth: editor+.
  */
@@ -52,6 +58,9 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    forks the external-links code. Provides loadExternalLinkTypesFor(),
    loadExternalLinksForRow(), saveExternalLinksForRow(). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+/* Song media storage layer (#853) — kind→backend routing, MIME-sniff
+   validation, FS/DB staging, the same class the streaming route uses. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -151,6 +160,42 @@ function ed2_normalizeTag(string $name): string {
  *  lowercase, every non-alphanumeric run → '-', trimmed of leading/trailing '-'. */
 function ed2_tagSlug(string $name): string {
     return trim(strtolower((string)preg_replace('/[^a-z0-9]+/i', '-', $name)), '-');
+}
+
+/** True if the tblSongMedia table is present (gracefully degrades pre-migration,
+ *  like the legacy _songMedia_tableExists). Memoised — cheap to call per request. */
+function ed2_songMediaTableExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongMedia' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/** Shape a tblSongMedia row for the v2 client (camelCase, like the other slices).
+ *  NEVER returns the file bytes — playback is via the gated /song-media/<id>
+ *  stream route (#853), the only way to the content. */
+function ed2_mediaRowShape(array $r): array {
+    return [
+        'id'             => (int)$r['Id'],
+        'kind'           => (string)$r['Kind'],
+        'fileName'       => (string)$r['FileName'],
+        'mimeType'       => (string)$r['MimeType'],
+        'sizeBytes'      => (int)$r['SizeBytes'],
+        'annotation'     => (string)($r['Annotation'] ?? ''),
+        'sortOrder'      => (int)$r['SortOrder'],
+        'storageBackend' => (string)($r['StorageBackend'] ?? ''),
+        'uploadedAt'     => (string)($r['UploadedAt'] ?? ''),
+        'streamUrl'      => '/song-media/' . (int)$r['Id'],
+    ];
 }
 
 /** True if the SongId exists. */
@@ -346,6 +391,23 @@ try {
            same helper every other surface uses). [] pre-migration. */
         $links = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
 
+        /* Media — file metadata only (never bytes), grouped client-side by Kind.
+           [] pre-migration. */
+        $media = [];
+        if (ed2_songMediaTableExists($db)) {
+            $ms = $db->prepare(
+                'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                        Annotation, SortOrder, UploadedBy, UploadedAt
+                   FROM tblSongMedia WHERE SongId = ?
+                  ORDER BY Kind ASC, SortOrder ASC, Id ASC'
+            );
+            $ms->bind_param('s', $songId);
+            $ms->execute();
+            $mr = $ms->get_result();
+            while ($row = $mr->fetch_assoc()) { $media[] = ed2_mediaRowShape($row); }
+            $ms->close();
+        }
+
         ed2_respond([
             'ok'         => true,
             'song'       => $song,
@@ -353,6 +415,7 @@ try {
             'credits'    => $credits,
             'tags'       => $tags,
             'links'      => $links,
+            'media'      => $media,
         ]);
         break;
     }
@@ -812,6 +875,244 @@ try {
         logActivity('song.external_links', 'song', $songId, ['count' => $count]);
         $saved = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
         ed2_respond(['ok' => true, 'count' => $count, 'links' => $saved]);
+        break;
+    }
+
+    /* ---- media_list (GET) — file metadata for a song (never bytes) ---- */
+    case 'media_list': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        $media = [];
+        if (ed2_songMediaTableExists($db)) {
+            $ms = $db->prepare(
+                'SELECT Id, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                        Annotation, SortOrder, UploadedBy, UploadedAt
+                   FROM tblSongMedia WHERE SongId = ?
+                  ORDER BY Kind ASC, SortOrder ASC, Id ASC'
+            );
+            $ms->bind_param('s', $songId);
+            $ms->execute();
+            $mr = $ms->get_result();
+            while ($row = $mr->fetch_assoc()) { $media[] = ed2_mediaRowShape($row); }
+            $ms->close();
+        }
+        ed2_respond(['ok' => true, 'media' => $media]);
+        break;
+    }
+
+    /* ---- media_upload (POST, MULTIPART) — the one multipart endpoint: reads
+           $_POST + $_FILES, not the JSON $body. The top-of-file CSRF guard still
+           applies (token in the X-CSRF-Token header). MIME is SNIFFED on the
+           bytes (never the declared content-type); size-capped per kind; staged
+           FS-or-DB by SongMediaStorage. An FS file staged before an INSERT that
+           then fails is unlinked so nothing orphans. ---- */
+    case 'media_upload': {
+        if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+
+        $songId     = trim((string)($_POST['songId'] ?? ''));
+        $kind       = trim((string)($_POST['kind'] ?? ''));
+        $annotation = trim((string)($_POST['annotation'] ?? ''));
+        if ($songId === '' || !in_array($kind, SongMediaStorage::allKinds(), true)) {
+            ed2_respond(['ok' => false, 'error' => 'Missing or invalid songId / kind.'], 400);
+        }
+        if ($annotation !== '') { $annotation = mb_substr($annotation, 0, 255); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = match ($err) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'File exceeds the server upload size limit.',
+                UPLOAD_ERR_NO_FILE                        => 'No file received — expected multipart with a "file" field.',
+                UPLOAD_ERR_PARTIAL                        => 'Upload was interrupted.',
+                default                                   => 'Upload failed.',
+            };
+            ed2_respond(['ok' => false, 'error' => $msg, 'phpError' => $err], 400);
+        }
+
+        $tmpPath  = (string)$_FILES['file']['tmp_name'];
+        $origName = (string)($_FILES['file']['name'] ?? 'upload');
+        $size     = (int)($_FILES['file']['size'] ?? 0);
+        $staged   = null;   // tracked so the outer catch can unlink an FS orphan
+
+        try {
+            $meta  = SongMediaStorage::validateUpload($tmpPath, $kind, $size);
+            $bytes = file_get_contents($tmpPath);
+            if ($bytes === false) { throw new \RuntimeException('Could not read upload tempfile.'); }
+            $staged = SongMediaStorage::stage($bytes, $kind, $meta['extension']);
+
+            $cleanName = basename($origName);
+            $cleanName = preg_replace('/[\x00-\x1f\x7f]/', '', $cleanName) ?? 'upload';
+            $cleanName = mb_substr($cleanName, 0, 255);
+
+            $db->begin_transaction();
+            try {
+                /* SortOrder = (max+1) for this (song, kind) so new uploads append. */
+                $mx = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) AS m FROM tblSongMedia WHERE SongId = ? AND Kind = ?');
+                $mx->bind_param('ss', $songId, $kind);
+                $mx->execute();
+                $nextOrder = (int)($mx->get_result()->fetch_assoc()['m'] ?? -1) + 1;
+                $mx->close();
+
+                $annotationOrNull = ($annotation !== '') ? $annotation : null;
+                $ins = $db->prepare(
+                    'INSERT INTO tblSongMedia
+                        (SongId, Kind, StorageBackend, FileName, MimeType, SizeBytes,
+                         Sha256, Content, StoragePath, Annotation, SortOrder, UploadedBy)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                );
+                /* 's' for the BLOB content is fine under the sub-16MB cap (mysqli is binary-safe). */
+                $ins->bind_param(
+                    'sssssissssii',
+                    $songId, $kind, $staged['backend'], $cleanName, $meta['mime'], $size,
+                    $staged['sha256'], $staged['content'], $staged['path'], $annotationOrNull, $nextOrder, $ed2UserId
+                );
+                $ins->execute();
+                $newId = (int)$db->insert_id;
+                $ins->close();
+
+                ed2_touchRevision($db, $songId, $ed2UserId, 'media');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+
+            logActivity('song-media.upload', 'song', $songId, [
+                'media_id' => $newId, 'kind' => $kind, 'backend' => $staged['backend'],
+                'file_name' => $cleanName, 'mime' => $meta['mime'], 'size_bytes' => $size, 'sha256' => $staged['sha256'],
+            ]);
+            ed2_respond(['ok' => true, 'media' => ed2_mediaRowShape([
+                'Id' => $newId, 'Kind' => $kind, 'FileName' => $cleanName, 'MimeType' => $meta['mime'],
+                'SizeBytes' => $size, 'Annotation' => $annotation, 'SortOrder' => $nextOrder,
+                'StorageBackend' => $staged['backend'], 'UploadedAt' => date('Y-m-d H:i:s'),
+            ])]);
+        } catch (\Throwable $e) {
+            /* Unlink a staged FS file if the DB write never landed (no orphans). */
+            if (is_array($staged) && ($staged['backend'] ?? '') === 'filesystem' && !empty($staged['path'])) {
+                SongMediaStorage::deleteStorage(['StorageBackend' => 'filesystem', 'StoragePath' => $staged['path']]);
+            }
+            $userFacing = $e instanceof \RuntimeException || $e instanceof \InvalidArgumentException;
+            error_log('[editor-v2-api media_upload] ' . $e->getMessage());
+            ed2_respond([
+                'ok'           => false,
+                'error'        => $userFacing ? $e->getMessage() : 'Upload failed.',
+                'error_detail' => $ed2IsAdmin ? ($e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()) : null,
+            ], $userFacing ? 400 : 500);
+        }
+        break;
+    }
+
+    /* ---- media_update (POST JSON) — only Annotation is mutable post-upload ---- */
+    case 'media_update': {
+        $mediaId    = (int)($body['mediaId'] ?? 0);
+        $annotation = trim((string)($body['annotation'] ?? ''));
+        if ($mediaId <= 0) { ed2_respond(['ok' => false, 'error' => 'mediaId is required.'], 400); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+        if ($annotation !== '') { $annotation = mb_substr($annotation, 0, 255); }
+        $annotationOrNull = ($annotation !== '') ? $annotation : null;
+
+        $sel = $db->prepare('SELECT SongId FROM tblSongMedia WHERE Id = ? LIMIT 1');
+        $sel->bind_param('i', $mediaId);
+        $sel->execute();
+        $mrow = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$mrow) { ed2_respond(['ok' => false, 'error' => 'Media not found.'], 404); }
+        $mSongId = (string)$mrow['SongId'];
+
+        $db->begin_transaction();
+        try {
+            $u = $db->prepare('UPDATE tblSongMedia SET Annotation = ? WHERE Id = ?');
+            $u->bind_param('si', $annotationOrNull, $mediaId);
+            $u->execute();
+            $u->close();
+            ed2_touchRevision($db, $mSongId, $ed2UserId, 'media');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song-media.update', 'song', $mSongId, ['mediaId' => $mediaId]);
+        ed2_respond(['ok' => true, 'mediaId' => $mediaId]);
+        break;
+    }
+
+    /* ---- media_delete (POST JSON) — removes the row + its underlying bytes ---- */
+    case 'media_delete': {
+        $mediaId = (int)($body['mediaId'] ?? 0);
+        if ($mediaId <= 0) { ed2_respond(['ok' => false, 'error' => 'mediaId is required.'], 400); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+
+        $sel = $db->prepare('SELECT Id, SongId, Kind, StorageBackend, StoragePath, FileName FROM tblSongMedia WHERE Id = ? LIMIT 1');
+        $sel->bind_param('i', $mediaId);
+        $sel->execute();
+        $mrow = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$mrow) { ed2_respond(['ok' => false, 'error' => 'Media not found.'], 404); }
+        $mSongId = (string)$mrow['SongId'];
+
+        $db->begin_transaction();
+        try {
+            $d = $db->prepare('DELETE FROM tblSongMedia WHERE Id = ?');
+            $d->bind_param('i', $mediaId);
+            $d->execute();
+            $deleted = $d->affected_rows;
+            $d->close();
+            ed2_touchRevision($db, $mSongId, $ed2UserId, 'media');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        /* Remove bytes only after the row is gone (orphan file recoverable;
+           an orphan row after a "delete me" is worse). */
+        SongMediaStorage::deleteStorage([
+            'StorageBackend' => (string)$mrow['StorageBackend'],
+            'StoragePath'    => (string)($mrow['StoragePath'] ?? ''),
+        ]);
+        logActivity('song-media.delete', 'song', $mSongId, [
+            'mediaId' => $mediaId, 'kind' => (string)$mrow['Kind'], 'fileName' => (string)$mrow['FileName'],
+        ]);
+        ed2_respond(['ok' => true, 'deleted' => (int)$deleted, 'songId' => $mSongId]);
+        break;
+    }
+
+    /* ---- media_reorder (POST JSON) — rewrite SortOrder for one (song, kind)
+           group from the posted id order. The scoped WHERE (Id+SongId+Kind)
+           prevents cross-song/cross-kind tampering. ---- */
+    case 'media_reorder': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $kind   = trim((string)($body['kind'] ?? ''));
+        $rawIds = is_array($body['ids'] ?? null) ? $body['ids'] : [];
+        if ($songId === '' || !in_array($kind, SongMediaStorage::allKinds(), true)) {
+            ed2_respond(['ok' => false, 'error' => 'Missing or invalid songId / kind.'], 400);
+        }
+        $orderedIds = [];
+        foreach ($rawIds as $raw) {
+            $id = (int)$raw;
+            if ($id > 0 && !in_array($id, $orderedIds, true)) { $orderedIds[] = $id; }
+        }
+        if (empty($orderedIds)) { ed2_respond(['ok' => true, 'reordered' => 0]); }
+        if (!ed2_songMediaTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Song Media migration has not been run.'], 503); }
+
+        $db->begin_transaction();
+        try {
+            $u = $db->prepare('UPDATE tblSongMedia SET SortOrder = ? WHERE Id = ? AND SongId = ? AND Kind = ?');
+            $written = 0;
+            foreach ($orderedIds as $i => $id) {
+                $u->bind_param('iiss', $i, $id, $songId, $kind);
+                $u->execute();
+                $written += $u->affected_rows;
+            }
+            $u->close();
+            ed2_touchRevision($db, $songId, $ed2UserId, 'media');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song-media.reorder', 'song', $songId, ['kind' => $kind, 'count' => count($orderedIds)]);
+        ed2_respond(['ok' => true, 'reordered' => $written]);
         break;
     }
 

@@ -71,6 +71,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i class="bi bi-link-45deg me-1"></i>Links</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i class="bi bi-tags me-1"></i>Tags</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i class="bi bi-collection-play me-1"></i>Media</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i class="bi bi-eye me-1"></i>Preview</button></li>
         </ul>
         <div class="tab-content">
@@ -79,6 +80,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
             <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div></div>
             <div class="tab-pane fade" id="pane-tags"><div id="v2-tags"></div></div>
+            <div class="tab-pane fade" id="pane-media"><div id="v2-media"></div></div>
             <div class="tab-pane fade" id="pane-preview"><div id="v2-preview"></div></div>
         </div>
 
@@ -105,6 +107,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { mountCreditsTab }   from './v2/credits-tab.js';
         import { mountLinksTab }     from './v2/links-tab.js';
         import { mountTagsTab }      from './v2/tags-tab.js';
+        import { mountMediaTab }     from './v2/media-tab.js';
         import { mountPreviewTab }   from './v2/preview-tab.js';
 
         const songId   = <?= json_encode($songId) ?>;
@@ -127,6 +130,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                     credits:    data.credits || {},
                     tags:       data.tags || [],
                     links:      data.links || [],
+                    media:      data.media || [],
                 });
                 const ctx = { store, api: editorApi, songId, toast };
                 mountStructureTab(document.getElementById('v2-structure'), ctx);
@@ -134,6 +138,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 mountCreditsTab(document.getElementById('v2-credits'), ctx);
                 mountLinksTab(document.getElementById('v2-links'), ctx);
                 mountTagsTab(document.getElementById('v2-tags'), ctx);
+                mountMediaTab(document.getElementById('v2-media'), ctx);
                 mountPreviewTab(document.getElementById('v2-preview'), ctx);
                 status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly + atomically.', 'success');
             } catch (e) {

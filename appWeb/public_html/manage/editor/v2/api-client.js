@@ -57,6 +57,19 @@ async function postJson(action, body) {
     return unwrap(res);
 }
 
+/** POST write — CSRF-guarded, MULTIPART body (file upload). Deliberately does
+ *  NOT set Content-Type: the browser sets multipart/form-data + the boundary.
+ *  The CSRF token still rides in the X-CSRF-Token header. */
+async function postForm(action, formData) {
+    const res = await fetch(ENDPOINT + '?action=' + encodeURIComponent(action), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrfToken() },
+        body: formData,
+    });
+    return unwrap(res);
+}
+
 /* The granular editor surface — one method per atomic server mutation. */
 export const editorApi = {
     /* Reads */
@@ -87,6 +100,20 @@ export const editorApi = {
     /* External links — whole sub-form reconcile (the shared card-list editor model).
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
+
+    /* Media — file metadata reads; upload is multipart; only annotation is mutable. */
+    listMedia:         (songId)                  => getJson('media_list', { id: songId }),
+    uploadMedia:       (songId, kind, file, annotation) => {
+        const fd = new FormData();
+        fd.append('songId', songId);
+        fd.append('kind', kind);
+        fd.append('annotation', annotation || '');
+        fd.append('file', file);
+        return postForm('media_upload', fd);
+    },
+    updateMedia:       (mediaId, annotation)     => postJson('media_update', { mediaId: mediaId, annotation: annotation }),
+    deleteMedia:       (mediaId)                 => postJson('media_delete', { mediaId: mediaId }),
+    reorderMedia:      (songId, kind, ids)       => postJson('media_reorder', { songId: songId, kind: kind, ids: ids }),
 };
 
 export { csrfToken };
