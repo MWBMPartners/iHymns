@@ -240,15 +240,54 @@ $db = getDbMysqli();
 try {
     switch ($action) {
 
-    /* ---- load_song (GET) — full editable record, DB-direct ---- */
+    /* ---- load_song (GET) — purpose-built v2 payload, DB-direct. Returns the
+           song scalars + components + credits each WITH their row Id, because
+           the granular API keys every update/delete on the Id (the legacy
+           getSongById shape is index-based and not guaranteed to carry ids). ---- */
     case 'load_song': {
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
-        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
-        $sd   = new SongData();
-        $song = $sd->getSongById($songId);
+
+        $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
+        $s->bind_param('s', $songId);
+        $s->execute();
+        $song = $s->get_result()->fetch_assoc();
+        $s->close();
         if (!$song) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
-        ed2_respond(['ok' => true, 'song' => $song]);
+
+        $components = [];
+        $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
+                              FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+        $cs->bind_param('s', $songId);
+        $cs->execute();
+        $cr = $cs->get_result();
+        while ($row = $cr->fetch_assoc()) {
+            $components[] = [
+                'id'        => (int)$row['Id'],
+                'type'      => (string)$row['Type'],
+                'number'    => (int)$row['Number'],
+                'sortOrder' => (int)$row['SortOrder'],
+                'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
+                'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
+                'language'  => $row['Language'],
+            ];
+        }
+        $cs->close();
+
+        $credits = [];
+        foreach (ED2_CREDIT_TABLES as $role => $table) {
+            $credits[$role] = [];
+            $q = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? ORDER BY Id ASC");
+            $q->bind_param('s', $songId);
+            $q->execute();
+            $qr = $q->get_result();
+            while ($row = $qr->fetch_assoc()) {
+                $credits[$role][] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name']];
+            }
+            $q->close();
+        }
+
+        ed2_respond(['ok' => true, 'song' => $song, 'components' => $components, 'credits' => $credits]);
         break;
     }
 
