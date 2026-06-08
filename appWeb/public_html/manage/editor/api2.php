@@ -31,6 +31,15 @@ declare(strict_types=1);
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
  *   POST credit_upsert          { songId, role, credit:{id?,name} } -> { ok, creditId }
  *   POST credit_delete          { songId, role, creditId }  -> { ok }
+ *   GET  tag_list?id=<SongId>                                -> { ok, tags }
+ *   GET  tag_search?q=&limit=                                -> { ok, suggestions }
+ *   POST tag_attach             { songId, name }             -> { ok, tag, attached }
+ *   POST tag_detach             { songId, tagId }            -> { ok, removed }
+ *   POST link_save_all          { songId, links:[{typeId,url,note?,verified?}] } -> { ok, count, links }
+ *
+ * load_song additionally returns `tags` (registry-backed) + `links` (the
+ * {typeId,url,note,verified,sortOrder} shape the shared external-links-editor
+ * consumes), so the Tags + Links tabs hydrate from the one load.
  *
  * @requires PHP 8.1+, mysqli. Auth: editor+.
  */
@@ -38,6 +47,11 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* Shared external-link helpers (#833/#845) — the SAME loader + save +
+   reconcile the songbook / work surfaces use, so the song editor never
+   forks the external-links code. Provides loadExternalLinkTypesFor(),
+   loadExternalLinksForRow(), saveExternalLinksForRow(). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -118,6 +132,25 @@ function ed2_normalizeTitle(string $t): string {
         if ($loaded) { require_once $p; }
     }
     return ($loaded && function_exists('ihymns_normalize_title')) ? ihymns_normalize_title($t) : '';
+}
+
+/** Canonicalise a tag name — uses the SAME normalisation rules as the legacy
+ *  bulk_tag normaliser (#762): trim, collapse internal whitespace, Title-Case,
+ *  cap at 50 (the tblSongTags.Name VARCHAR(50) length). Identical rules mean
+ *  'worship' / 'WORSHIP' / 'Worship' all resolve to the SAME canonical row, so a
+ *  tag added through the v2 API never double-stores against one added through the
+ *  legacy path. Returns '' for empty/whitespace input (the legacy closure
+ *  returns null + filters it; tag_attach rejects '' explicitly — same effect). */
+function ed2_normalizeTag(string $name): string {
+    $trimmed = preg_replace('/\s+/u', ' ', trim($name));
+    if ($trimmed === null || $trimmed === '') { return ''; }
+    return mb_substr(mb_convert_case($trimmed, MB_CASE_TITLE_SIMPLE, 'UTF-8'), 0, 50);
+}
+
+/** URL-safe slug for a tag name — byte-identical to the legacy generator (#762):
+ *  lowercase, every non-alphanumeric run → '-', trimmed of leading/trailing '-'. */
+function ed2_tagSlug(string $name): string {
+    return trim(strtolower((string)preg_replace('/[^a-z0-9]+/i', '-', $name)), '-');
 }
 
 /** True if the SongId exists. */
@@ -287,7 +320,40 @@ try {
             $q->close();
         }
 
-        ed2_respond(['ok' => true, 'song' => $song, 'components' => $components, 'credits' => $credits]);
+        /* Tags (registry-backed) — {id,name,slug,description}, alpha by name,
+           the shape the Tags tab chip-list consumes. */
+        $tags = [];
+        $tg = $db->prepare(
+            'SELECT t.Id, t.Name, t.Slug, t.Description
+               FROM tblSongTagMap m JOIN tblSongTags t ON t.Id = m.TagId
+              WHERE m.SongId = ? ORDER BY t.Name ASC'
+        );
+        $tg->bind_param('s', $songId);
+        $tg->execute();
+        $tgr = $tg->get_result();
+        while ($row = $tgr->fetch_assoc()) {
+            $tags[] = [
+                'id'          => (int)$row['Id'],
+                'name'        => (string)$row['Name'],
+                'slug'        => (string)$row['Slug'],
+                'description' => (string)($row['Description'] ?? ''),
+            ];
+        }
+        $tg->close();
+
+        /* External links — {typeId,url,note,verified,sortOrder}, the EXACT shape
+           the shared external-links-editor.js setRows() consumes (loaded via the
+           same helper every other surface uses). [] pre-migration. */
+        $links = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
+
+        ed2_respond([
+            'ok'         => true,
+            'song'       => $song,
+            'components' => $components,
+            'credits'    => $credits,
+            'tags'       => $tags,
+            'links'      => $links,
+        ]);
         break;
     }
 
@@ -576,6 +642,176 @@ try {
         }
         logActivity('song.credit.delete', 'song', $songId, ['role' => $role, 'creditId' => $creditId]);
         ed2_respond(['ok' => true, 'deleted' => (int)$deleted]);
+        break;
+    }
+
+    /* ---- tag_list (GET) — tags currently attached to one song ---- */
+    case 'tag_list': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        $tags = [];
+        $q = $db->prepare(
+            'SELECT t.Id, t.Name, t.Slug, t.Description
+               FROM tblSongTagMap m JOIN tblSongTags t ON t.Id = m.TagId
+              WHERE m.SongId = ? ORDER BY t.Name ASC'
+        );
+        $q->bind_param('s', $songId);
+        $q->execute();
+        $r = $q->get_result();
+        while ($row = $r->fetch_assoc()) {
+            $tags[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'slug' => (string)$row['Slug'], 'description' => (string)($row['Description'] ?? '')];
+        }
+        $q->close();
+        ed2_respond(['ok' => true, 'tags' => $tags]);
+        break;
+    }
+
+    /* ---- tag_search (GET) — typeahead over the registry, with usage counts.
+           Empty q => top-N by usage; otherwise substring match (case-insensitive
+           via the column collation). ---- */
+    case 'tag_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 20) { $limit = 20; }
+        $suggestions = [];
+        if ($term === '') {
+            $q = $db->prepare(
+                'SELECT t.Id, t.Name, t.Slug, COUNT(m.TagId) AS UsageCount
+                   FROM tblSongTags t LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                  GROUP BY t.Id, t.Name, t.Slug
+                  ORDER BY UsageCount DESC, t.Name ASC LIMIT ?'
+            );
+            $q->bind_param('i', $limit);
+        } else {
+            $like = '%' . $term . '%';
+            $q = $db->prepare(
+                'SELECT t.Id, t.Name, t.Slug, COUNT(m.TagId) AS UsageCount
+                   FROM tblSongTags t LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+                  WHERE t.Name LIKE ?
+                  GROUP BY t.Id, t.Name, t.Slug
+                  ORDER BY UsageCount DESC, t.Name ASC LIMIT ?'
+            );
+            $q->bind_param('si', $like, $limit);
+        }
+        $q->execute();
+        $r = $q->get_result();
+        while ($row = $r->fetch_assoc()) {
+            $suggestions[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'slug' => (string)$row['Slug'], 'usage' => (int)$row['UsageCount']];
+        }
+        $q->close();
+        ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
+    }
+
+    /* ---- tag_attach (POST) — attach a tag to a song, auto-creating the registry
+           row if needed. Returns the CANONICAL {id,name,slug} so the client adopts
+           the server's stored form. attached=false means it was already on the
+           song (the (SongId,TagId) PK no-op'd). ---- */
+    case 'tag_attach': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $name   = ed2_normalizeTag((string)($body['name'] ?? ''));
+        if ($songId === '' || $name === '') { ed2_respond(['ok' => false, 'error' => 'songId + a tag name are required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        $slug = ed2_tagSlug($name);
+        if ($slug === '') { ed2_respond(['ok' => false, 'error' => 'Tag name has no usable characters.'], 400); }
+
+        $db->begin_transaction();
+        try {
+            /* ON DUPLICATE KEY pulls the existing row's Name up to the new
+               Title-Cased form (re-canonicalises legacy lower-case rows) while
+               LAST_INSERT_ID(Id) makes insert_id the existing Id on a dupe. */
+            /* Name = ? (bound twice) instead of the deprecated VALUES(Name)
+               (removed in MySQL 8.0.20+) — pulls an existing row's Name up to
+               the new Title-Cased form (re-canonicalises legacy lower-case rows)
+               while LAST_INSERT_ID(Id) makes insert_id the existing Id on a dupe. */
+            $ins = $db->prepare(
+                'INSERT INTO tblSongTags (Name, Slug) VALUES (?, ?)
+                 ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id), Name = ?'
+            );
+            $ins->bind_param('sss', $name, $slug, $name);
+            $ins->execute();
+            $tagId = (int)$db->insert_id;
+            $ins->close();
+
+            /* TaggedBy bound as nullable INT (not 0) so a session with no resolved
+               user id doesn't trip fk_TagMap_User. INSERT IGNORE = PK dedupe. */
+            $map = $db->prepare('INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)');
+            $map->bind_param('sii', $songId, $tagId, $ed2UserId);
+            $map->execute();
+            $attached = $map->affected_rows > 0;
+            $map->close();
+
+            ed2_touchRevision($db, $songId, $ed2UserId, 'tag');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.tag.attach', 'song', $songId, ['tag' => $name, 'tagId' => $tagId]);
+        ed2_respond(['ok' => true, 'tag' => ['id' => $tagId, 'name' => $name, 'slug' => $slug], 'attached' => $attached]);
+        break;
+    }
+
+    /* ---- tag_detach (POST) — remove a tag from a song by TagId ---- */
+    case 'tag_detach': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $tagId  = (int)($body['tagId'] ?? 0);
+        if ($songId === '' || $tagId <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + tagId are required.'], 400); }
+        $db->begin_transaction();
+        try {
+            $d = $db->prepare('DELETE FROM tblSongTagMap WHERE SongId = ? AND TagId = ?');
+            $d->bind_param('si', $songId, $tagId);
+            $d->execute();
+            $removed = $d->affected_rows;
+            $d->close();
+            ed2_touchRevision($db, $songId, $ed2UserId, 'tag');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.tag.detach', 'song', $songId, ['tagId' => $tagId]);
+        ed2_respond(['ok' => true, 'removed' => (int)$removed]);
+        break;
+    }
+
+    /* ---- link_save_all (POST) — reconcile the whole external-links sub-form
+           (DELETE-then-INSERT), the SAME contract every other surface uses via
+           saveExternalLinksForRow(). Links are a bounded sub-form with no
+           dual-path race, so a reconcile (rather than per-row granular) is safe
+           here and lets the editor reuse the shared card-list module + its DOM
+           field naming verbatim. Returns the canonical persisted rows. ---- */
+    case 'link_save_all': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $links  = is_array($body['links'] ?? null) ? $body['links'] : [];
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        /* Unzip rows into the parallel arrays the shared helper expects. The
+           helper itself validates each row (typeId>0, http(s) URL, ≤2048) and
+           skips invalid ones, so a half-typed row never persists. */
+        $typeIds = []; $urls = []; $notes = []; $verified = [];
+        foreach ($links as $ln) {
+            if (!is_array($ln)) { continue; }
+            $typeIds[]  = (int)($ln['typeId'] ?? 0);
+            $urls[]     = (string)($ln['url'] ?? '');
+            $notes[]    = (string)($ln['note'] ?? '');
+            $verified[] = !empty($ln['verified']) ? 1 : 0;
+        }
+
+        $db->begin_transaction();
+        try {
+            $count = saveExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId, $typeIds, $urls, $notes, $verified);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'links');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.external_links', 'song', $songId, ['count' => $count]);
+        $saved = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
+        ed2_respond(['ok' => true, 'count' => $count, 'links' => $saved]);
         break;
     }
 

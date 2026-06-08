@@ -77,6 +77,16 @@ export const editorApi = {
     /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists */
     upsertCredit:      (songId, role, credit)    => postJson('credit_upsert', { songId: songId, role: role, credit: credit }),
     deleteCredit:      (songId, role, creditId)  => postJson('credit_delete', { songId: songId, role: role, creditId: creditId }),
+
+    /* Tags — registry-backed; attach auto-creates the tag + returns its canonical form */
+    listTags:          (songId)                  => getJson('tag_list', { id: songId }),
+    searchTags:        (q, limit)                => getJson('tag_search', { q: q || '', limit: limit || 10 }),
+    attachTag:         (songId, name)            => postJson('tag_attach', { songId: songId, name: name }),
+    detachTag:         (songId, tagId)           => postJson('tag_detach', { songId: songId, tagId: tagId }),
+
+    /* External links — whole sub-form reconcile (the shared card-list editor model).
+       `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
+    saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
 };
 
 export { csrfToken };

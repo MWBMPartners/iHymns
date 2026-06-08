@@ -33,6 +33,13 @@ if (!$u || !hasRole((string)($u['role'] ?? ''), 'editor')) {
    the v2 API requires it on every write. */
 $csrf   = csrfToken();
 $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
+
+/* The external-link type registry for the Links tab — shipped to the shared
+   external-links-editor.js module via window._iHymnsLinkTypes, exactly as the
+   legacy editor/index.php does it (#845). [] pre-migration (module falls back). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
+$linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -62,12 +69,16 @@ $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
             <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i class="bi bi-info-circle me-1"></i>Metadata</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-links" type="button"><i class="bi bi-link-45deg me-1"></i>Links</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i class="bi bi-tags me-1"></i>Tags</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i class="bi bi-eye me-1"></i>Preview</button></li>
         </ul>
         <div class="tab-content">
             <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div></div>
             <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
             <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
+            <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div></div>
+            <div class="tab-pane fade" id="pane-tags"><div id="v2-tags"></div></div>
             <div class="tab-pane fade" id="pane-preview"><div id="v2-preview"></div></div>
         </div>
 
@@ -78,12 +89,22 @@ $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- Shared external-links modules (#833/#845) — classic globals the v2 Links
+         tab reuses (window.iHymnsExtLinksEditor + window.iHymnsLinkDetect). Loaded
+         BEFORE the deferred module so they're ready when mountLinksTab() runs. -->
+    <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;</script>
+    <script src="/js/modules/external-link-detect.js"></script>
+    <script src="/js/modules/external-links-editor.js"></script>
+
     <script type="module">
         import { createStore }       from './v2/store.js';
         import { editorApi }         from './v2/api-client.js';
         import { mountStructureTab } from './v2/structure-tab.js';
         import { mountMetadataTab }  from './v2/metadata-tab.js';
         import { mountCreditsTab }   from './v2/credits-tab.js';
+        import { mountLinksTab }     from './v2/links-tab.js';
+        import { mountTagsTab }      from './v2/tags-tab.js';
         import { mountPreviewTab }   from './v2/preview-tab.js';
 
         const songId   = <?= json_encode($songId) ?>;
@@ -104,11 +125,15 @@ $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
                     components: (data.components || []).map((c, i) =>
                         Object.assign({ _key: 'c' + i + '_' + (c.id || 'x') }, c)),
                     credits:    data.credits || {},
+                    tags:       data.tags || [],
+                    links:      data.links || [],
                 });
                 const ctx = { store, api: editorApi, songId, toast };
                 mountStructureTab(document.getElementById('v2-structure'), ctx);
                 mountMetadataTab(document.getElementById('v2-metadata'), ctx);
                 mountCreditsTab(document.getElementById('v2-credits'), ctx);
+                mountLinksTab(document.getElementById('v2-links'), ctx);
+                mountTagsTab(document.getElementById('v2-tags'), ctx);
                 mountPreviewTab(document.getElementById('v2-preview'), ctx);
                 status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly + atomically.', 'success');
             } catch (e) {
