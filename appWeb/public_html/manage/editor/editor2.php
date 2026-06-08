@@ -57,18 +57,31 @@ $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
             <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary ms-auto">Legacy editor</a>
         </div>
         <div id="v2-status" class="alert alert-secondary py-2 small" role="status">Loading…</div>
-        <div id="v2-structure"></div>
+
+        <ul class="nav nav-tabs mb-3" role="tablist">
+            <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-metadata" type="button"><i class="bi bi-info-circle me-1"></i>Metadata</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-credits" type="button"><i class="bi bi-people me-1"></i>Credits</button></li>
+        </ul>
+        <div class="tab-content">
+            <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div></div>
+            <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
+            <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
+        </div>
+
         <p class="text-muted small mt-3">
-            Preview of the rewritten editor's Structure tab. Each section edit saves
-            <strong>instantly + atomically</strong> through the new granular API — no whole-song
-            save, no save-race. Add / delete / reorder / type / number / lyrics all persist on their own.
+            Preview of the rewritten editor. Every edit saves <strong>instantly + atomically</strong>
+            through the new granular API — no whole-song save, no save-race, no false-success toasts.
         </p>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script type="module">
         import { createStore }       from './v2/store.js';
         import { editorApi }         from './v2/api-client.js';
         import { mountStructureTab } from './v2/structure-tab.js';
+        import { mountMetadataTab }  from './v2/metadata-tab.js';
+        import { mountCreditsTab }   from './v2/credits-tab.js';
 
         const songId   = <?= json_encode($songId) ?>;
         const statusEl = document.getElementById('v2-status');
@@ -89,8 +102,11 @@ $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));
                         Object.assign({ _key: 'c' + i + '_' + (c.id || 'x') }, c)),
                     credits:    data.credits || {},
                 });
-                mountStructureTab(document.getElementById('v2-structure'), { store, api: editorApi, songId, toast });
-                status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly.', 'success');
+                const ctx = { store, api: editorApi, songId, toast };
+                mountStructureTab(document.getElementById('v2-structure'), ctx);
+                mountMetadataTab(document.getElementById('v2-metadata'), ctx);
+                mountCreditsTab(document.getElementById('v2-credits'), ctx);
+                status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly + atomically.', 'success');
             } catch (e) {
                 status('Load failed: ' + e.message, 'danger');
             }
