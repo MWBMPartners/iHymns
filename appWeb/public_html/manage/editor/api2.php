@@ -43,6 +43,9 @@ declare(strict_types=1);
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
  *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|pro6|proclaim|freeshow|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
+ *   POST import_zip    (MULTIPART: file=.zip, dedupeMode?)    -> { ok, async, job_id, poll_url } (async) | { ok, songs_created, ... } (sync fallback / EasyWorship)
+ *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
+ *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
  *
  * load_song additionally returns `tags` (registry-backed), `links` (the
  * {typeId,url,note,verified,sortOrder} shape the shared external-links-editor
@@ -202,6 +205,33 @@ function ed2_mediaRowShape(array $r): array {
         'uploadedAt'     => (string)($r['UploadedAt'] ?? ''),
         'streamUrl'      => '/song-media/' . (int)$r['Id'],
     ];
+}
+
+/** Memoised probe: is tblBulkImportJobs present (async import job tracking, #676)? */
+function ed2_bulkJobsTableExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblBulkImportJobs' LIMIT 1");
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/** Best-effort songbook maintenance after an import created songs (cache regen +
+ *  stale-prefix fixup, #932). Guarded + lazy-required; never throws to the caller. */
+function ed2_runSongbookMaintenance(\mysqli $db, string $context): void {
+    $sm = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+    if (!is_file($sm)) { return; }
+    try {
+        require_once $sm;
+        if (function_exists('songbookMaintenanceRun')) { songbookMaintenanceRun($db, $context); }
+    } catch (\Throwable $_e) {
+        /* best-effort — maintenance must not fail the import */
+    }
 }
 
 /** True if the SongId exists. */
@@ -1285,13 +1315,7 @@ try {
         /* Regenerate songbook-derived state after a successful import (mirrors the
            legacy bulk_import_* handlers). Best-effort + guarded. */
         if ((int)($summary['songs_created'] ?? 0) > 0) {
-            $sm = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
-            if (is_file($sm)) {
-                require_once $sm;
-                if (function_exists('songbookMaintenanceRun')) {
-                    try { songbookMaintenanceRun($db, 'import_file'); } catch (\Throwable $_e) { /* best-effort */ }
-                }
-            }
+            ed2_runSongbookMaintenance($db, 'import_file');
         }
         logActivity('song.import_file', 'import', $origName, [
             'format'  => $format,
@@ -1301,6 +1325,270 @@ try {
         ]);
         ed2_respond(array_merge(['ok' => true, 'format' => $format], $summary));
         break;
+    }
+
+    /* ---- import_zip (POST, MULTIPART) — async multi-song ZIP import. Mirrors
+           the legacy bulk_import_zip orchestration but on the clean v2 surface:
+           persist the upload, create a tblBulkImportJobs row, return {job_id,
+           poll_url}, release the connection (fastcgi_finish_request), then run
+           the SHARED _bulkImport_processZip worker. The persist dir + job table
+           are SHARED with legacy. NB: the async success path does NOT use
+           ed2_respond (which exit()s) — it echoes, flushes, then keeps working. ---- */
+    case 'import_zip': {
+        if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        _bulkImport_dedupeMode(((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off');
+        if (!class_exists('ZipArchive')) { ed2_respond(['ok' => false, 'error' => 'Server is missing the PHP zip extension.'], 500); }
+        if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = match ($err) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'Uploaded file is larger than the server limit.',
+                UPLOAD_ERR_NO_FILE                        => 'No file received — expected a multipart upload with a "file" field.',
+                default                                   => 'Upload failed.',
+            };
+            ed2_respond(['ok' => false, 'error' => $msg, 'phpError' => $err], 400);
+        }
+        $sizeBytes = (int)($_FILES['file']['size'] ?? 0);
+        if ($sizeBytes > 100 * 1024 * 1024) { ed2_respond(['ok' => false, 'error' => 'Uploaded zip exceeds the 100 MB import limit.'], 413); }
+        $tmpPath  = (string)$_FILES['file']['tmp_name'];
+        $origName = (string)($_FILES['file']['name'] ?? 'upload.zip');
+
+        /* EasyWorship export zips carry a Songs.db (not the song-file layout) —
+           detect + hand to the EW reader synchronously (mirror legacy). */
+        try {
+            $ewProbe = new \ZipArchive();
+            if ($ewProbe->open($tmpPath) === true) {
+                $hasSongsDb = false;
+                for ($zi = 0; $zi < $ewProbe->numFiles; $zi++) {
+                    if (strtolower(basename((string)$ewProbe->getNameIndex($zi))) === 'songs.db') { $hasSongsDb = true; break; }
+                }
+                $ewProbe->close();
+                if ($hasSongsDb) {
+                    $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+                    if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip_easyworship'); }
+                    logActivity('song.import_zip', 'import', $origName, ['mode' => 'easyworship', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                    ed2_respond(array_merge(['ok' => (bool)($summary['ok'] ?? false)], $summary), ($summary['ok'] ?? false) ? 200 : 400);
+                }
+            }
+        } catch (\Throwable $ewE) {
+            error_log('[editor-v2-api import_zip] EasyWorship probe failed: ' . $ewE->getMessage());
+        }
+
+        /* Synchronous fallback when async job tracking isn't available. */
+        if (!ed2_bulkJobsTableExists($db)) {
+            try {
+                $summary = _bulkImport_processZip($tmpPath);
+                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync'); }
+                logActivity('song.import_zip', 'import', $origName, ['mode' => 'sync', 'created' => (int)($summary['songs_created'] ?? 0)]);
+                ed2_respond(array_merge(['ok' => true], $summary));
+            } catch (\Throwable $e) {
+                error_log('[editor-v2-api import_zip sync] ' . $e->getMessage());
+                ed2_respond(['ok' => false, 'error' => 'Import failed.', 'error_detail' => $ed2IsAdmin ? $e->getMessage() : null], 500);
+            }
+        }
+
+        /* Persist the upload outside the docroot so it survives the request close
+           (same dir + job table the legacy importer uses). */
+        $persistDir = dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . '.bulk_import_uploads';
+        if (!is_dir($persistDir)) { @mkdir($persistDir, 0700, true); }
+        $persistPath = $persistDir . DIRECTORY_SEPARATOR . 'job-' . bin2hex(random_bytes(8)) . '-' . preg_replace('/[^A-Za-z0-9._-]/', '_', $origName);
+        if (!@move_uploaded_file($tmpPath, $persistPath)) {
+            /* move failed → sync fallback so the import still succeeds. */
+            try {
+                $summary = _bulkImport_processZip($tmpPath);
+                if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.sync_fallback'); }
+                ed2_respond(array_merge(['ok' => true], $summary));
+            } catch (\Throwable $e) {
+                error_log('[editor-v2-api import_zip move-fallback] ' . $e->getMessage());
+                ed2_respond(['ok' => false, 'error' => 'Import failed.'], 500);
+            }
+        }
+        @chmod($persistPath, 0600);
+
+        /* Create the queued job row. Bind a guaranteed-int UserId (the auth gate
+           guarantees a logged-in editor; the ?? 0 keeps the stored UserId
+           consistent with the `?? 0` ownership filter in import_zip_status /
+           import_zip_skipped_csv, so a row is never un-pollable on a NULL≠0 mismatch). */
+        $insUid = (int)($ed2UserId ?? 0);
+        try {
+            $j = $db->prepare('INSERT INTO tblBulkImportJobs (UserId, Filename, TempPath, SizeBytes, Status) VALUES (?, ?, ?, ?, "queued")');
+            $j->bind_param('issi', $insUid, $origName, $persistPath, $sizeBytes);
+            $j->execute();
+            $jobId = (int)$db->insert_id;
+            $j->close();
+        } catch (\Throwable $e) {
+            @unlink($persistPath);
+            error_log('[editor-v2-api import_zip] could not create job row: ' . $e->getMessage());
+            ed2_respond(['ok' => false, 'error' => 'Could not start import job.'], 500);
+        }
+
+        /* Hand the browser its tracking handle, then release the connection.
+           NOT ed2_respond — the worker must run AFTER the response is sent. */
+        http_response_code(200);
+        echo json_encode([
+            'ok'       => true,
+            'async'    => true,
+            'job_id'   => $jobId,
+            'status'   => 'queued',
+            'poll_url' => '/manage/editor/api2.php?action=import_zip_status&job_id=' . $jobId,
+        ], JSON_UNESCAPED_UNICODE);
+        @session_write_close();
+        @ignore_user_abort(true);
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        } else {
+            if (ob_get_level() > 0) { @ob_end_flush(); }
+            @flush();
+        }
+
+        /* Worker — runs after the HTTP connection is freed. Crash → job 'failed'. */
+        try {
+            $db = getDbMysqli();
+            _bulkImport_jobMark($db, $jobId, 'running', ['StartedAt' => 'NOW()']);
+            $summary = _bulkImport_processZip($persistPath, $db, $jobId);
+            _bulkImport_jobMark($db, $jobId, 'completed', [
+                'CompletedAt'           => 'NOW()',
+                'SongbooksCreatedJson'  => json_encode($summary['songbooks_created']  ?? [], JSON_UNESCAPED_UNICODE),
+                'SongbooksExistingJson' => json_encode($summary['songbooks_existing'] ?? [], JSON_UNESCAPED_UNICODE),
+                'SongsCreated'          => (int)($summary['songs_created'] ?? 0),
+                'SongsSkippedExisting'  => (int)($summary['songs_skipped_existing'] ?? 0),
+                'SongsFailed'           => (int)($summary['songs_failed'] ?? 0),
+                'ErrorsJson'            => json_encode($summary['errors'] ?? [], JSON_UNESCAPED_UNICODE),
+                'SkippedSongIdsJson'    => json_encode($summary['skipped_song_ids'] ?? [], JSON_UNESCAPED_UNICODE),
+                'PerSongbookJson'       => json_encode($summary['per_songbook'] ?? [], JSON_UNESCAPED_UNICODE),
+                'PhaseLabel'            => 'completed',
+                'TempPath'              => '',
+            ]);
+            @unlink($persistPath);
+            if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
+
+            /* Best-effort completion notification so the curator finds the result later. */
+            if ($ed2UserId !== null) {
+                try {
+                    $c = (int)($summary['songs_created'] ?? 0); $s = (int)($summary['songs_skipped_existing'] ?? 0); $fl = (int)($summary['songs_failed'] ?? 0);
+                    $title = "Import finished: {$c} new, {$s} skipped" . ($fl > 0 ? ", {$fl} failed" : '');
+                    $bodyMsg = 'Bulk import of "' . $origName . '" completed.';
+                    $url = '/manage/editor/'; $type = 'bulk_import_complete';
+                    $nt = $db->prepare('INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl) VALUES (?, ?, ?, ?, ?)');
+                    $nt->bind_param('issss', $ed2UserId, $type, $title, $bodyMsg, $url);
+                    $nt->execute();
+                    $nt->close();
+                } catch (\Throwable $_e) { error_log('[editor-v2-api import_zip] notification skipped: ' . $_e->getMessage()); }
+            }
+            logActivity('song.import_zip', 'import', $origName, [
+                'job_id'  => $jobId, 'mode' => 'async',
+                'created' => (int)($summary['songs_created'] ?? 0),
+                'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+                'failed'  => (int)($summary['songs_failed'] ?? 0),
+            ]);
+        } catch (\Throwable $e) {
+            error_log('[editor-v2-api import_zip worker] ' . $e->getMessage());
+            try {
+                $db = getDbMysqli();
+                _bulkImport_jobMark($db, $jobId, 'failed', [
+                    'ErrorsJson'  => json_encode([['entry' => '(worker)', 'error' => $e->getMessage()]], JSON_UNESCAPED_UNICODE),
+                    'CompletedAt' => 'NOW()',
+                    'PhaseLabel'  => 'failed',
+                    'TempPath'    => '',
+                ]);
+                @unlink($persistPath);
+            } catch (\Throwable $_e) { /* give up */ }
+        }
+        exit;   // worker finished; connection already released
+    }
+
+    /* ---- import_zip_status (GET) — poll an async import job (own jobs only) ---- */
+    case 'import_zip_status': {
+        $jobId = (int)($_GET['job_id'] ?? 0);
+        if ($jobId <= 0) { ed2_respond(['ok' => false, 'error' => 'job_id required.'], 400); }
+        if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Bulk-import job tracking is not enabled on this deployment.', 'migration_needed' => true], 404); }
+
+        $uid = $ed2UserId ?? 0;
+        $s = $db->prepare(
+            'SELECT Id, UserId, Filename, SizeBytes, Status, TotalEntries, ProcessedEntries,
+                    SongbooksCreatedJson, SongbooksExistingJson, SongsCreated, SongsSkippedExisting,
+                    SongsFailed, ErrorsJson, PerSongbookJson, PhaseLabel, StartedAt, CompletedAt, CreatedAt, UpdatedAt
+               FROM tblBulkImportJobs WHERE Id = ? AND UserId = ? LIMIT 1'
+        );
+        $s->bind_param('ii', $jobId, $uid);
+        $s->execute();
+        $row = $s->get_result()->fetch_assoc();
+        $s->close();
+        if (!$row) { ed2_respond(['ok' => false, 'error' => 'Job not found.'], 404); }
+
+        $decode = static fn($x) => $x === null ? null : json_decode($x, true);
+        $total = (int)$row['TotalEntries']; $processed = (int)$row['ProcessedEntries'];
+        ed2_respond(['ok' => true, 'job' => [
+            'id'                     => (int)$row['Id'],
+            'status'                 => (string)$row['Status'],
+            'filename'               => (string)$row['Filename'],
+            'size_bytes'             => (int)$row['SizeBytes'],
+            'total_entries'          => $total,
+            'processed_entries'      => $processed,
+            'percent'                => $total > 0 ? round(($processed / $total) * 100, 1) : 0,
+            'songs_created'          => (int)$row['SongsCreated'],
+            'songs_skipped_existing' => (int)$row['SongsSkippedExisting'],
+            'songs_failed'           => (int)$row['SongsFailed'],
+            'songbooks_created'      => $decode($row['SongbooksCreatedJson'])  ?? [],
+            'songbooks_existing'     => $decode($row['SongbooksExistingJson']) ?? [],
+            'errors'                 => $decode($row['ErrorsJson'])            ?? [],
+            'per_songbook'           => $decode($row['PerSongbookJson'])       ?? null,
+            'skip_reason'            => 'existing-in-db',
+            'skipped_csv_url'        => (int)$row['SongsSkippedExisting'] > 0
+                ? '/manage/editor/api2.php?action=import_zip_skipped_csv&job_id=' . (int)$row['Id'] : '',
+            'phase_label'            => $row['PhaseLabel'] ?? null,
+            'started_at'             => $row['StartedAt'],
+            'completed_at'           => $row['CompletedAt'],
+            'created_at'             => $row['CreatedAt'],
+            'updated_at'             => $row['UpdatedAt'],
+        ]]);
+        break;
+    }
+
+    /* ---- import_zip_skipped_csv (GET) — CSV of the SongIds an async job skipped
+           (already existed). Own jobs only. Streams CSV, not JSON. ---- */
+    case 'import_zip_skipped_csv': {
+        $jobId = (int)($_GET['job_id'] ?? 0);
+        if ($jobId <= 0) { ed2_respond(['ok' => false, 'error' => 'job_id required.'], 400); }
+        if (!ed2_bulkJobsTableExists($db)) { ed2_respond(['ok' => false, 'error' => 'Job tracking not enabled.', 'migration_needed' => true], 404); }
+
+        $uid = $ed2UserId ?? 0;
+        $s = $db->prepare('SELECT Filename, Status, SkippedSongIdsJson FROM tblBulkImportJobs WHERE Id = ? AND UserId = ? LIMIT 1');
+        $s->bind_param('ii', $jobId, $uid);
+        $s->execute();
+        $row = $s->get_result()->fetch_assoc();
+        $s->close();
+        if (!$row) { ed2_respond(['ok' => false, 'error' => 'Job not found.'], 404); }
+        if ((string)$row['Status'] !== 'completed') { ed2_respond(['ok' => false, 'error' => 'Job is not yet completed.'], 409); }
+        $skipped = json_decode((string)($row['SkippedSongIdsJson'] ?? '[]'), true);
+        if (!is_array($skipped) || !$skipped) { ed2_respond(['ok' => false, 'error' => 'No skipped SongIds recorded for this job.'], 404); }
+
+        $ph    = implode(',', array_fill(0, count($skipped), '?'));
+        $types = str_repeat('s', count($skipped));
+        $look = $db->prepare(
+            "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
+               FROM tblSongs s LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+              WHERE s.SongId IN ({$ph})"
+        );
+        $look->bind_param($types, ...$skipped);
+        $look->execute();
+        $byId = [];
+        $lr = $look->get_result();
+        while ($r = $lr->fetch_assoc()) { $byId[(string)$r['SongId']] = $r; }
+        $look->close();
+
+        $safeName = preg_replace('/[^A-Za-z0-9._-]+/', '_', 'skipped-songids-job-' . $jobId . '-' . pathinfo((string)$row['Filename'], PATHINFO_FILENAME) . '.csv') ?? 'skipped-songids.csv';
+        header('Content-Type: text/csv; charset=UTF-8');
+        header('Content-Disposition: attachment; filename="' . $safeName . '"');
+        header('Cache-Control: no-store, no-cache, must-revalidate');
+        echo "\xEF\xBB\xBF";   // UTF-8 BOM for Excel
+        $out = fopen('php://output', 'w');
+        fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
+        foreach ($skipped as $sid) {
+            $sid = (string)$sid; $r = $byId[$sid] ?? null;
+            fputcsv($out, [$sid, $r ? (string)$r['Title'] : '', $r ? (string)$r['SongbookAbbr'] : '', $r ? (string)$r['SongbookName'] : '', 'existing-in-db']);
+        }
+        fclose($out);
+        exit;   // CSV already streamed — don't fall through to JSON
     }
 
     default:
