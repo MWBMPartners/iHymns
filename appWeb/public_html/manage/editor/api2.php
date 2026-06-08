@@ -29,6 +29,7 @@ declare(strict_types=1);
  *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
+ *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
  *   POST credit_upsert          { songId, role, credit:{id?,name} } -> { ok, creditId }
  *   POST credit_delete          { songId, role, creditId }  -> { ok }
  *   GET  tag_list?id=<SongId>                                -> { ok, tags }
@@ -1113,6 +1114,88 @@ try {
         }
         logActivity('song-media.reorder', 'song', $songId, ['kind' => $kind, 'count' => count($orderedIds)]);
         ed2_respond(['ok' => true, 'reordered' => $written]);
+        break;
+    }
+
+    /* ---- components_replace (POST) — atomic bulk set of a song's components,
+           for Paste & Reflow + single-song import (both produce a whole section
+           set at once). mode 'replace' (default) wipes the existing components
+           first; 'append' adds after the current max SortOrder. ONE transaction,
+           ONE LyricsText rebuild, ONE revision + activity row — no N-request
+           granular loop. Returns the persisted rows (with real ids) so the
+           client re-hydrates the Structure tab. ---- */
+    case 'components_replace': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $rows   = is_array($body['components'] ?? null) ? $body['components'] : [];
+        $mode   = (($body['mode'] ?? 'replace') === 'append') ? 'append' : 'replace';
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        $db->begin_transaction();
+        try {
+            $base = 0;
+            if ($mode === 'replace') {
+                $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
+                $del->bind_param('s', $songId);
+                $del->execute();
+                $del->close();
+            } else {
+                $mx = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) AS m FROM tblSongComponents WHERE SongId = ?');
+                $mx->bind_param('s', $songId);
+                $mx->execute();
+                $base = (int)($mx->get_result()->fetch_assoc()['m'] ?? -1) + 1;
+                $mx->close();
+            }
+
+            $ins = $db->prepare(
+                'INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+            );
+            $count = 0;
+            foreach ($rows as $i => $comp) {
+                if (!is_array($comp)) { continue; }
+                $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
+                $number    = max(0, (int)($comp['number'] ?? 0));
+                $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : ($base + (int)$i);
+                $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
+                $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
+                $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
+                $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
+                $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
+                $ins->execute();
+                $count++;
+            }
+            $ins->close();
+
+            ed2_rebuildLyricsText($db, $songId);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'components_replace');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.components.replace', 'song', $songId, ['mode' => $mode, 'count' => $count]);
+
+        /* Re-read the persisted set (real ids) — same shape load_song emits. */
+        $out = [];
+        $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
+                              FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+        $cs->bind_param('s', $songId);
+        $cs->execute();
+        $cr = $cs->get_result();
+        while ($row = $cr->fetch_assoc()) {
+            $out[] = [
+                'id'        => (int)$row['Id'],
+                'type'      => (string)$row['Type'],
+                'number'    => (int)$row['Number'],
+                'sortOrder' => (int)$row['SortOrder'],
+                'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
+                'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
+                'language'  => $row['Language'],
+            ];
+        }
+        $cs->close();
+        ed2_respond(['ok' => true, 'count' => $count, 'components' => $out]);
         break;
     }
 

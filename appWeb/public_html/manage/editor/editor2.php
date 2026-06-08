@@ -60,10 +60,19 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
 <body class="p-3">
     <div class="container-fluid" style="max-width: 980px;">
         <div class="d-flex align-items-center gap-2 mb-3">
-            <h1 class="h4 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2 preview · Structure</span></h1>
+            <h1 class="h4 mb-0"><i class="bi bi-music-note-list me-2"></i>Song Editor <span class="badge bg-info">v2 preview</span></h1>
             <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary ms-auto">Legacy editor</a>
         </div>
         <div id="v2-status" class="alert alert-secondary py-2 small" role="status">Loading…</div>
+
+        <!-- Interim toolbar (the full sidebar+toolbar shell comes in a later phase) -->
+        <div class="d-flex gap-2 mb-3" id="v2-toolbar">
+            <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-text-paragraph me-1"></i>Paste &amp; Reflow</button>
+            <div class="dropdown">
+                <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-download me-1"></i>Export</button>
+                <ul class="dropdown-menu" id="v2-export-menu"></ul>
+            </div>
+        </div>
 
         <ul class="nav nav-tabs mb-3" role="tablist">
             <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
@@ -99,6 +108,12 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
 
+    <!-- Export serializers (reused as-is by v2 export.js). propresenter-export.js
+         MUST load first — format-export.js reuses its ZIP writer. Classic globals,
+         loaded before the deferred module. -->
+    <script src="propresenter-export.js"></script>
+    <script src="format-export.js"></script>
+
     <script type="module">
         import { createStore }       from './v2/store.js';
         import { editorApi }         from './v2/api-client.js';
@@ -109,6 +124,8 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { mountTagsTab }      from './v2/tags-tab.js';
         import { mountMediaTab }     from './v2/media-tab.js';
         import { mountPreviewTab }   from './v2/preview-tab.js';
+        import { mountReflowModal }  from './v2/reflow-modal.js';
+        import { mountExportMenu }   from './v2/export.js';
 
         const songId   = <?= json_encode($songId) ?>;
         const statusEl = document.getElementById('v2-status');
@@ -140,6 +157,8 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 mountTagsTab(document.getElementById('v2-tags'), ctx);
                 mountMediaTab(document.getElementById('v2-media'), ctx);
                 mountPreviewTab(document.getElementById('v2-preview'), ctx);
+                mountReflowModal(document.getElementById('v2-reflow-btn'), ctx);
+                mountExportMenu(document.getElementById('v2-export-menu'), ctx);
                 status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly + atomically.', 'success');
             } catch (e) {
                 status('Load failed: ' + e.message, 'danger');

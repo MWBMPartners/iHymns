@@ -86,6 +86,8 @@ export const editorApi = {
     upsertComponent:   (songId, component)       => postJson('component_upsert', { songId: songId, component: component }),
     deleteComponent:   (songId, componentId)     => postJson('component_delete', { songId: songId, componentId: componentId }),
     reorderComponents: (songId, order)           => postJson('component_reorder', { songId: songId, order: order }),
+    /* Bulk-set the whole component list (reflow / single-song import). mode = 'replace' | 'append'. */
+    replaceComponents: (songId, components, mode) => postJson('components_replace', { songId: songId, components: components, mode: mode || 'replace' }),
 
     /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists */
     upsertCredit:      (songId, role, credit)    => postJson('credit_upsert', { songId: songId, role: role, credit: credit }),
