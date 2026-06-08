@@ -67,6 +67,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
 
         <!-- Interim toolbar (the full sidebar+toolbar shell comes in a later phase) -->
         <div class="d-flex gap-2 mb-3" id="v2-toolbar">
+            <a href="/manage/editor/import2.php" class="btn btn-sm btn-outline-secondary"><i class="bi bi-upload me-1"></i>Import</a>
             <button id="v2-reflow-btn" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-text-paragraph me-1"></i>Paste &amp; Reflow</button>
             <div class="dropdown">
                 <button id="v2-export-btn" type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false"><i class="bi bi-download me-1"></i>Export</button>

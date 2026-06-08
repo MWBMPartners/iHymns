@@ -42,6 +42,7 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|pro6|proclaim|freeshow|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
  *
  * load_song additionally returns `tags` (registry-backed), `links` (the
  * {typeId,url,note,verified,sortOrder} shape the shared external-links-editor
@@ -62,6 +63,10 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* Song media storage layer (#853) — kind→backend routing, MIME-sniff
    validation, FS/DB staging, the same class the streaming route uses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
+/* Shared song importers (#1200 Phase 4b) — the SAME bulk-import parsers +
+   universal saver the legacy api.php uses (extracted to a shared include so v2
+   reuses, never forks, them). Provides _bulkImport_process*() + _bulkImport_dedupeMode(). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -1196,6 +1201,105 @@ try {
         }
         $cs->close();
         ed2_respond(['ok' => true, 'count' => $count, 'components' => $out]);
+        break;
+    }
+
+    /* ---- import_file (POST, MULTIPART) — single-file bulk import for the 7
+           legacy single-file formats, routing the upload to the SHARED parser +
+           universal saver (INSERT-only, skips existing). Auto-detects the format
+           from the extension when format=auto. ZIP (multi-file/async) is a
+           separate endpoint (4b.3). Returns the same summary shape the legacy
+           bulk_import_* endpoints do. ---- */
+    case 'import_file': {
+        if ($method !== 'POST') { ed2_respond(['ok' => false, 'error' => 'POST required.'], 405); }
+        $format = strtolower(trim((string)($_POST['format'] ?? 'auto')));
+        $dedupe = ((string)($_POST['dedupeMode'] ?? 'off') === 'skip-title') ? 'skip-title' : 'off';
+
+        if (!isset($_FILES['file']) || ($_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['file']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = match ($err) {
+                UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE => 'File exceeds the server upload size limit.',
+                UPLOAD_ERR_NO_FILE                        => 'No file received — expected multipart with a "file" field.',
+                UPLOAD_ERR_PARTIAL                        => 'Upload was interrupted.',
+                default                                   => 'Upload failed.',
+            };
+            ed2_respond(['ok' => false, 'error' => $msg], 400);
+        }
+
+        /* Explicit size cap (defense-in-depth beyond php.ini upload_max_filesize),
+           mirroring the legacy per-format caps — 25 MiB covers the largest (PPTX). */
+        if ((int)($_FILES['file']['size'] ?? 0) > 25 * 1024 * 1024) {
+            ed2_respond(['ok' => false, 'error' => 'File too large (max 25 MB for single-file import).'], 400);
+        }
+        $tmpPath  = (string)$_FILES['file']['tmp_name'];
+        $origName = (string)($_FILES['file']['name'] ?? 'upload');
+        $ext      = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
+        if ($format === 'auto' || $format === '') {
+            $format = match ($ext) {
+                'json'  => 'videopsalm',
+                'xml'   => 'openlp',       // processOpenLp content-sniffs OpenLyrics vs OpenSong
+                'pro6'  => 'pro6',
+                'show'  => 'freeshow',
+                'pptx'  => 'pptx',
+                'db'    => 'easyworship',
+                'txt'   => 'proclaim',
+                default => '',
+            };
+        }
+
+        /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
+        _bulkImport_dedupeMode($dedupe);
+
+        $bodyFormats = ['videopsalm', 'openlp', 'pro6', 'proclaim', 'freeshow'];
+        $summary = null;
+        try {
+            if (in_array($format, $bodyFormats, true)) {
+                $content = file_get_contents($tmpPath);
+                if ($content === false) { throw new \RuntimeException('Could not read the uploaded file.'); }
+                $summary = match ($format) {
+                    'videopsalm' => _bulkImport_processVideoPsalm($content, $origName),
+                    'openlp'     => _bulkImport_processOpenLp($content, $origName),
+                    'pro6'       => _bulkImport_processPro6($content, $origName),
+                    'proclaim'   => _bulkImport_processProclaim($content, $origName),
+                    'freeshow'   => _bulkImport_processFreeShow($content, $origName),
+                };
+            } elseif ($format === 'pptx') {
+                $summary = _bulkImport_processPptx($tmpPath, $origName);
+            } elseif ($format === 'easyworship') {
+                $summary = _bulkImport_processEasyWorship($tmpPath, $origName);
+            } else {
+                ed2_respond(['ok' => false, 'error' => 'Unknown or undetected format — choose one explicitly.'], 400);
+            }
+        } catch (\Throwable $e) {
+            $userFacing = $e instanceof \RuntimeException || $e instanceof \InvalidArgumentException;
+            error_log('[editor-v2-api import_file] ' . $e->getMessage());
+            ed2_respond([
+                'ok'           => false,
+                'error'        => $userFacing ? $e->getMessage() : 'Import failed.',
+                'error_detail' => $ed2IsAdmin ? ($e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()) : null,
+            ], $userFacing ? 400 : 500);
+        }
+
+        if (!is_array($summary)) { ed2_respond(['ok' => false, 'error' => 'Importer returned no result.'], 500); }
+
+        /* Regenerate songbook-derived state after a successful import (mirrors the
+           legacy bulk_import_* handlers). Best-effort + guarded. */
+        if ((int)($summary['songs_created'] ?? 0) > 0) {
+            $sm = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+            if (is_file($sm)) {
+                require_once $sm;
+                if (function_exists('songbookMaintenanceRun')) {
+                    try { songbookMaintenanceRun($db, 'import_file'); } catch (\Throwable $_e) { /* best-effort */ }
+                }
+            }
+        }
+        logActivity('song.import_file', 'import', $origName, [
+            'format'  => $format,
+            'created' => (int)($summary['songs_created'] ?? 0),
+            'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
+            'failed'  => (int)($summary['songs_failed'] ?? 0),
+        ]);
+        ed2_respond(array_merge(['ok' => true, 'format' => $format], $summary));
         break;
     }
 
