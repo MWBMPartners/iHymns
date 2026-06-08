@@ -83,6 +83,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-tags" type="button"><i class="bi bi-tags me-1"></i>Tags</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-media" type="button"><i class="bi bi-collection-play me-1"></i>Media</button></li>
             <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-preview" type="button"><i class="bi bi-eye me-1"></i>Preview</button></li>
+            <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
         </ul>
         <div class="tab-content">
             <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div></div>
@@ -92,6 +93,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             <div class="tab-pane fade" id="pane-tags"><div id="v2-tags"></div></div>
             <div class="tab-pane fade" id="pane-media"><div id="v2-media"></div></div>
             <div class="tab-pane fade" id="pane-preview"><div id="v2-preview"></div></div>
+            <div class="tab-pane fade" id="pane-revisions"><div id="v2-revisions"></div></div>
         </div>
 
         <p class="text-muted small mt-3">
@@ -127,6 +129,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { mountPreviewTab }   from './v2/preview-tab.js';
         import { mountReflowModal }  from './v2/reflow-modal.js';
         import { mountExportMenu }   from './v2/export.js';
+        import { mountRevisionsTab } from './v2/revisions-tab.js';
 
         const songId   = <?= json_encode($songId) ?>;
         const statusEl = document.getElementById('v2-status');
@@ -158,6 +161,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 mountTagsTab(document.getElementById('v2-tags'), ctx);
                 mountMediaTab(document.getElementById('v2-media'), ctx);
                 mountPreviewTab(document.getElementById('v2-preview'), ctx);
+                mountRevisionsTab(document.getElementById('v2-revisions'), ctx);
                 mountReflowModal(document.getElementById('v2-reflow-btn'), ctx);
                 mountExportMenu(document.getElementById('v2-export-menu'), ctx);
                 status('Loaded "' + ((data.song && data.song.Title) || songId) + '" — edits save instantly + atomically.', 'success');

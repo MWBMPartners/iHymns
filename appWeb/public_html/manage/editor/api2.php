@@ -46,6 +46,11 @@ declare(strict_types=1);
  *   POST import_zip    (MULTIPART: file=.zip, dedupeMode?)    -> { ok, async, job_id, poll_url } (async) | { ok, songs_created, ... } (sync fallback / EasyWorship)
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
+ *   GET  revision_list?songId=<id>&limit=                     -> { ok, revisions }
+ *   POST revision_restore       { revisionId }                -> { ok, songId }
+ *
+ * tblSongRevisions NewData is the FULL hydrated record (ed2_buildSongSnapshot) —
+ * the same shape load_song returns (minus media) — so a revision restores in full.
  *
  * load_song additionally returns `tags` (registry-backed), `links` (the
  * {typeId,url,note,verified,sortOrder} shape the shared external-links-editor
@@ -309,31 +314,205 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
 }
 
 /**
- * Write a COALESCED revision snapshot (#400): one row per song per ~15s burst,
- * not one per keystroke. If the most recent revision for this song is younger
- * than the window, skip (the burst is already represented); otherwise snapshot
- * the current tblSongs row. Best-effort — a revision failure never breaks the
- * edit. The precise per-edit trail lives in tblActivityLog via logActivity().
+ * Build the full editable song record — { song, components, credits, tags, links }
+ * — in the SAME shapes load_song returns (minus media, which is a separate file
+ * lifecycle). The single source for BOTH the load_song hydration and the
+ * tblSongRevisions snapshot, so a restored snapshot re-hydrates the editor
+ * identically. Returns null if the song is gone.
  */
-function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $actionTag): void {
-    try {
-        $chk = $db->prepare(
-            'SELECT 1 FROM tblSongRevisions
-              WHERE SongId = ? AND CreatedAt > (NOW() - INTERVAL 15 SECOND)
-              LIMIT 1'
-        );
-        $chk->bind_param('s', $songId);
-        $chk->execute();
-        $recent = (bool)$chk->get_result()->fetch_row();
-        $chk->close();
-        if ($recent) { return; }
+function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
+    $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
+    $s->bind_param('s', $songId);
+    $s->execute();
+    $song = $s->get_result()->fetch_assoc();
+    $s->close();
+    if (!$song) { return null; }
 
-        $snap = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
-        $snap->bind_param('s', $songId);
-        $snap->execute();
-        $rowData = $snap->get_result()->fetch_assoc();
-        $snap->close();
-        $newData = $rowData ? json_encode($rowData, JSON_UNESCAPED_UNICODE) : null;
+    $components = [];
+    $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
+                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+    $cs->bind_param('s', $songId);
+    $cs->execute();
+    $cr = $cs->get_result();
+    while ($row = $cr->fetch_assoc()) {
+        $components[] = [
+            'id'        => (int)$row['Id'],
+            'type'      => (string)$row['Type'],
+            'number'    => (int)$row['Number'],
+            'sortOrder' => (int)$row['SortOrder'],
+            'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
+            'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
+            'language'  => $row['Language'],
+        ];
+    }
+    $cs->close();
+
+    $credits = [];
+    foreach (ED2_CREDIT_TABLES as $role => $table) {
+        $credits[$role] = [];
+        $q = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? ORDER BY Id ASC");
+        $q->bind_param('s', $songId);
+        $q->execute();
+        $qr = $q->get_result();
+        while ($row = $qr->fetch_assoc()) { $credits[$role][] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name']]; }
+        $q->close();
+    }
+
+    $tags = [];
+    $tg = $db->prepare('SELECT t.Id, t.Name, t.Slug, t.Description
+                          FROM tblSongTagMap m JOIN tblSongTags t ON t.Id = m.TagId
+                         WHERE m.SongId = ? ORDER BY t.Name ASC');
+    $tg->bind_param('s', $songId);
+    $tg->execute();
+    $tgr = $tg->get_result();
+    while ($row = $tgr->fetch_assoc()) {
+        $tags[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'slug' => (string)$row['Slug'], 'description' => (string)($row['Description'] ?? '')];
+    }
+    $tg->close();
+
+    $links = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
+
+    return ['song' => $song, 'components' => $components, 'credits' => $credits, 'tags' => $tags, 'links' => $links];
+}
+
+/**
+ * Apply a full song snapshot (a revision's NewData) onto the live song —
+ * scalars + components + credits + tags + links — replacing each. The caller
+ * owns the transaction. Tolerates an old scalar-only snapshot (the bare tblSongs
+ * row with no 'song' key) by restoring scalars only. Mirrors the relational
+ * write paths so a restore lands identical to having re-typed everything.
+ */
+function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
+    /* A v2 full snapshot has a 'song' key; an old scalar-only snapshot IS the row. */
+    $songRow = is_array($snap['song'] ?? null) ? $snap['song'] : $snap;
+
+    /* Scalars — only the allow-listed editable columns (same coercion as
+       metadata_field_update). */
+    foreach (ED2_META_FIELDS as $field => [$column, $type]) {
+        if (!array_key_exists($column, $songRow)) { continue; }
+        $raw = $songRow[$column];
+        if ($type === 'i') {
+            $value = ($field === 'number')
+                ? (($raw === null || $raw === '' || (int)$raw <= 0) ? null : (int)$raw)
+                : (int)((bool)$raw);
+        } else {
+            $value = $raw === null ? '' : trim((string)$raw);
+            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity'], true) && $value === '') { $value = null; }
+        }
+        $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
+        if ($value === null) { $np = null; $u->bind_param('ss', $np, $songId); }
+        else { $u->bind_param($type . 's', $value, $songId); }
+        $u->execute();
+        $u->close();
+    }
+    if (array_key_exists('Title', $songRow)) {
+        $norm = ed2_normalizeTitle((string)$songRow['Title']);
+        $un = $db->prepare('UPDATE tblSongs SET NormalizedTitle = ? WHERE SongId = ?');
+        $un->bind_param('ss', $norm, $songId);
+        $un->execute();
+        $un->close();
+    }
+
+    /* Components — replace the whole set (only if the snapshot carries them). */
+    if (isset($snap['components']) && is_array($snap['components'])) {
+        $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
+        $del->bind_param('s', $songId);
+        $del->execute();
+        $del->close();
+        $ins = $db->prepare('INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        foreach (array_values($snap['components']) as $i => $comp) {
+            if (!is_array($comp)) { continue; }
+            $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
+            $number    = max(0, (int)($comp['number'] ?? 0));
+            $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : (int)$i;
+            $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
+            $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
+            $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
+            $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
+            $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
+            $ins->execute();
+        }
+        $ins->close();
+        ed2_rebuildLyricsText($db, $songId);
+    }
+
+    /* Credits — replace each role table from the snapshot. */
+    if (isset($snap['credits']) && is_array($snap['credits'])) {
+        foreach (ED2_CREDIT_TABLES as $role => $table) {
+            $d = $db->prepare("DELETE FROM `{$table}` WHERE SongId = ?");
+            $d->bind_param('s', $songId);
+            $d->execute();
+            $d->close();
+            $roleList = is_array($snap['credits'][$role] ?? null) ? $snap['credits'][$role] : [];
+            if ($roleList) {
+                $ci = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
+                foreach ($roleList as $credit) {
+                    $name = mb_substr(trim((string)($credit['name'] ?? '')), 0, 255);
+                    if ($name === '') { continue; }
+                    $ci->bind_param('ss', $songId, $name);
+                    $ci->execute();
+                }
+                $ci->close();
+            }
+        }
+    }
+
+    /* Tags — replace the map from the snapshot's tag ids (the tags themselves
+       are global registry rows; INSERT IGNORE skips any since-deleted tag). */
+    if (isset($snap['tags']) && is_array($snap['tags'])) {
+        $dt = $db->prepare('DELETE FROM tblSongTagMap WHERE SongId = ?');
+        $dt->bind_param('s', $songId);
+        $dt->execute();
+        $dt->close();
+        $it = $db->prepare('INSERT IGNORE INTO tblSongTagMap (SongId, TagId) VALUES (?, ?)');
+        foreach ($snap['tags'] as $tag) {
+            $tid = (int)($tag['id'] ?? 0);
+            if ($tid <= 0) { continue; }
+            $it->bind_param('si', $songId, $tid);
+            $it->execute();
+        }
+        $it->close();
+    }
+
+    /* Links — reconcile via the shared helper (DELETE-then-INSERT). */
+    if (isset($snap['links']) && is_array($snap['links'])) {
+        $typeIds = []; $urls = []; $notes = []; $verified = [];
+        foreach ($snap['links'] as $ln) {
+            if (!is_array($ln)) { continue; }
+            $typeIds[]  = (int)($ln['typeId'] ?? 0);
+            $urls[]     = (string)($ln['url'] ?? '');
+            $notes[]    = (string)($ln['note'] ?? '');
+            $verified[] = !empty($ln['verified']) ? 1 : 0;
+        }
+        saveExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId, $typeIds, $urls, $notes, $verified);
+    }
+}
+
+/**
+ * Write a COALESCED revision snapshot (#400): one row per song per ~15s burst,
+ * not one per keystroke. NewData is the FULL hydrated record (ed2_buildSongSnapshot)
+ * so a revision can be restored in full. $force=true bypasses the coalesce window
+ * (used for restores, which must always land in the audit trail). Best-effort —
+ * a revision failure never breaks the edit; the precise per-edit trail lives in
+ * tblActivityLog via logActivity().
+ */
+function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $actionTag, bool $force = false): void {
+    try {
+        if (!$force) {
+            $chk = $db->prepare(
+                'SELECT 1 FROM tblSongRevisions
+                  WHERE SongId = ? AND CreatedAt > (NOW() - INTERVAL 15 SECOND)
+                  LIMIT 1'
+            );
+            $chk->bind_param('s', $songId);
+            $chk->execute();
+            $recent = (bool)$chk->get_result()->fetch_row();
+            $chk->close();
+            if ($recent) { return; }
+        }
+
+        $snapshot = ed2_buildSongSnapshot($db, $songId);
+        $newData  = $snapshot !== null ? json_encode($snapshot, JSON_UNESCAPED_UNICODE) : null;
 
         $rev = $db->prepare(
             'INSERT INTO tblSongRevisions (SongId, UserId, Action, PreviousData, NewData, Status)
@@ -362,73 +541,13 @@ try {
         $songId = trim((string)($_GET['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
 
-        $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
-        $s->bind_param('s', $songId);
-        $s->execute();
-        $song = $s->get_result()->fetch_assoc();
-        $s->close();
-        if (!$song) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        /* song + components + credits + tags + links — the same builder the
+           revision snapshot uses, so a restore re-hydrates the editor identically. */
+        $snapshot = ed2_buildSongSnapshot($db, $songId);
+        if ($snapshot === null) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
 
-        $components = [];
-        $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
-                              FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
-        $cs->bind_param('s', $songId);
-        $cs->execute();
-        $cr = $cs->get_result();
-        while ($row = $cr->fetch_assoc()) {
-            $components[] = [
-                'id'        => (int)$row['Id'],
-                'type'      => (string)$row['Type'],
-                'number'    => (int)$row['Number'],
-                'sortOrder' => (int)$row['SortOrder'],
-                'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
-                'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
-                'language'  => $row['Language'],
-            ];
-        }
-        $cs->close();
-
-        $credits = [];
-        foreach (ED2_CREDIT_TABLES as $role => $table) {
-            $credits[$role] = [];
-            $q = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? ORDER BY Id ASC");
-            $q->bind_param('s', $songId);
-            $q->execute();
-            $qr = $q->get_result();
-            while ($row = $qr->fetch_assoc()) {
-                $credits[$role][] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name']];
-            }
-            $q->close();
-        }
-
-        /* Tags (registry-backed) — {id,name,slug,description}, alpha by name,
-           the shape the Tags tab chip-list consumes. */
-        $tags = [];
-        $tg = $db->prepare(
-            'SELECT t.Id, t.Name, t.Slug, t.Description
-               FROM tblSongTagMap m JOIN tblSongTags t ON t.Id = m.TagId
-              WHERE m.SongId = ? ORDER BY t.Name ASC'
-        );
-        $tg->bind_param('s', $songId);
-        $tg->execute();
-        $tgr = $tg->get_result();
-        while ($row = $tgr->fetch_assoc()) {
-            $tags[] = [
-                'id'          => (int)$row['Id'],
-                'name'        => (string)$row['Name'],
-                'slug'        => (string)$row['Slug'],
-                'description' => (string)($row['Description'] ?? ''),
-            ];
-        }
-        $tg->close();
-
-        /* External links — {typeId,url,note,verified,sortOrder}, the EXACT shape
-           the shared external-links-editor.js setRows() consumes (loaded via the
-           same helper every other surface uses). [] pre-migration. */
-        $links = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
-
-        /* Media — file metadata only (never bytes), grouped client-side by Kind.
-           [] pre-migration. */
+        /* Media — file metadata only (never bytes); a separate file lifecycle,
+           so it is NOT part of the content snapshot. [] pre-migration. */
         $media = [];
         if (ed2_songMediaTableExists($db)) {
             $ms = $db->prepare(
@@ -444,15 +563,7 @@ try {
             $ms->close();
         }
 
-        ed2_respond([
-            'ok'         => true,
-            'song'       => $song,
-            'components' => $components,
-            'credits'    => $credits,
-            'tags'       => $tags,
-            'links'      => $links,
-            'media'      => $media,
-        ]);
+        ed2_respond(array_merge(['ok' => true], $snapshot, ['media' => $media]));
         break;
     }
 
@@ -1589,6 +1700,73 @@ try {
         }
         fclose($out);
         exit;   // CSV already streamed — don't fall through to JSON
+    }
+
+    /* ---- revision_list (GET) — revision history for a song, newest first
+           (metadata only; the full NewData snapshot is fetched on restore). ---- */
+    case 'revision_list': {
+        $songId = trim((string)($_GET['songId'] ?? $_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        $limit = (int)($_GET['limit'] ?? 50);
+        if ($limit < 1 || $limit > 200) { $limit = 50; }
+        $rows = [];
+        $q = $db->prepare(
+            'SELECT r.Id, r.Action, r.CreatedAt, r.UserId, u.Username
+               FROM tblSongRevisions r LEFT JOIN tblUsers u ON u.Id = r.UserId
+              WHERE r.SongId = ? ORDER BY r.CreatedAt DESC, r.Id DESC LIMIT ?'
+        );
+        $q->bind_param('si', $songId, $limit);
+        $q->execute();
+        $res = $q->get_result();
+        while ($r = $res->fetch_assoc()) {
+            $rows[] = [
+                'id'        => (int)$r['Id'],
+                'action'    => (string)$r['Action'],
+                'createdAt' => (string)$r['CreatedAt'],
+                'userId'    => $r['UserId'] !== null ? (int)$r['UserId'] : null,
+                'username'  => $r['Username'] !== null ? (string)$r['Username'] : null,
+            ];
+        }
+        $q->close();
+        ed2_respond(['ok' => true, 'revisions' => $rows]);
+        break;
+    }
+
+    /* ---- revision_restore (POST) — restore the song to a revision's full
+           snapshot (scalars + components + credits + tags + links), atomically,
+           then record a forced 'restore' revision so the trail stays linear. ---- */
+    case 'revision_restore': {
+        $revisionId   = (int)($body['revisionId'] ?? 0);
+        $expectSongId = trim((string)($body['songId'] ?? ''));   // optional defense-in-depth
+        if ($revisionId <= 0) { ed2_respond(['ok' => false, 'error' => 'revisionId is required.'], 400); }
+
+        $sel = $db->prepare('SELECT SongId, NewData FROM tblSongRevisions WHERE Id = ? LIMIT 1');
+        $sel->bind_param('i', $revisionId);
+        $sel->execute();
+        $rev = $sel->get_result()->fetch_assoc();
+        $sel->close();
+        if (!$rev) { ed2_respond(['ok' => false, 'error' => 'Revision not found.'], 404); }
+        $songId = (string)$rev['SongId'];
+        /* Guard against a client passing a revisionId from a different song. */
+        if ($expectSongId !== '' && $expectSongId !== $songId) {
+            ed2_respond(['ok' => false, 'error' => 'Revision does not belong to the expected song.'], 409);
+        }
+        $snap = $rev['NewData'] !== null ? json_decode((string)$rev['NewData'], true) : null;
+        if (!is_array($snap)) { ed2_respond(['ok' => false, 'error' => 'This revision has no snapshot to restore.'], 409); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        $db->begin_transaction();
+        try {
+            ed2_applySongSnapshot($db, $songId, $snap);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'restore', true);   // force — always audit a restore
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.revision.restore', 'song', $songId, ['fromRevisionId' => $revisionId]);
+        ed2_respond(['ok' => true, 'songId' => $songId]);
+        break;
     }
 
     default:

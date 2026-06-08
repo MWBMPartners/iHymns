@@ -116,6 +116,10 @@ export const editorApi = {
     updateMedia:       (mediaId, annotation)     => postJson('media_update', { mediaId: mediaId, annotation: annotation }),
     deleteMedia:       (mediaId)                 => postJson('media_delete', { mediaId: mediaId }),
     reorderMedia:      (songId, kind, ids)       => postJson('media_reorder', { songId: songId, kind: kind, ids: ids }),
+
+    /* Revisions — history (metadata) + full-snapshot restore */
+    listRevisions:     (songId)                  => getJson('revision_list', { songId: songId }),
+    restoreRevision:   (revisionId, songId)      => postJson('revision_restore', { revisionId: revisionId, songId: songId }),
 };
 
 export { csrfToken };
