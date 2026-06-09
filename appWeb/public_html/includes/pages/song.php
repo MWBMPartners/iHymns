@@ -105,6 +105,17 @@ $ccli        = $song['ccli']        ?? '';
 $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
+
+/* #1200 — song-language tagging. The page <html lang> stays the UI language;
+   song-language content (the TITLE here, and each lyric component below) carries
+   its OWN BCP 47 tag + dir for RTL scripts, so screen readers, browser
+   hyphenation, translators and search engines treat it correctly even when the
+   song's language differs from the UI. resolveLanguageMeta() resolves the
+   direction from tblLanguages (schema-probed + cached). Script subtags
+   (zh-Hans, sr-Cyrl, ja-Latn, …) pass straight through from the stored tag. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+$songPrimaryLang = trim((string)($song['language'] ?? ''));
+$songLangDir     = $songPrimaryLang !== '' ? (resolveLanguageMeta($songPrimaryLang)['dir'] ?? 'ltr') : 'ltr';
 $lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
 $musicPublicDomain  = !empty($song['musicPublicDomain']);
 $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
@@ -331,7 +342,7 @@ try {
                 </span>
                 <?php endif; ?>
                 <div class="flex-grow-1">
-                    <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
+                    <h1 class="h4 mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
                     <?php
                         /* #832 — "Also known as …" line. Hidden when this
                            song has no alt titles (or pre-migration). Per-row
@@ -884,8 +895,9 @@ try {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
                 }
             ?>
+            <?php $effDir = resolveLanguageMeta($effectiveLang)['dir'] ?? 'ltr'; ?>
             <div class="lyric-component <?= $typeClass ?>"
-                 lang="<?= htmlspecialchars($effectiveLang) ?>"
+                 lang="<?= htmlspecialchars($effectiveLang) ?>"<?php if ($effDir === 'rtl'): ?> dir="rtl"<?php endif; ?>
                  role="group" aria-label="<?= htmlspecialchars($label) ?>">
                 <!-- Component type label -->
                 <div class="lyric-label" aria-hidden="true">
