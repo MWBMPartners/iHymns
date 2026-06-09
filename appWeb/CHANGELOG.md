@@ -1,5 +1,18 @@
 # iHymns Web/PWA — Changelog
 
+## [0.880.0] — 2026-06-09
+
+The Song Editor v2 rewrite (#1200) landed on alpha alongside dev-tooling and accuracy improvements.
+
+### Song Editor v2 (#1200)
+- Ground-up rewrite vs the MySQL backend: a clean, granular, CSRF-guarded `api2.php` + a hand-rolled reactive store, replacing the 5,800-line JSON-era `editor.js`. Sidebar (search · multi-select · resizable) → 7 tabs (Structure / Metadata / Credits / Links / Tags / Media / Preview) + Revisions → New / Delete → Paste & Reflow → Export (8 formats) → single-file + async ZIP import → credit-people autocomplete → Composition-origin place-picker → bulk Verify / Tag. Lives alongside the legacy editor pending cutover.
+
+### Lyrics language tagging (accuracy / SEO / a11y)
+- The song **title** and each lyric **component** now carry their own BCP 47 `lang` (script subtags pass through, e.g. `zh-Hans`) plus `dir="rtl"` for right-to-left scripts, while `<html lang>` stays the UI language. Multi-language songs tag each verse independently (#858 extended).
+
+### Dev tooling
+- Database Setup: an expandable list of **which** migrations are pending (incl. card-less ones) + per-item "Run & show output"; the bulk runner no longer auto-refreshes away the output log (#1200). CI now runs `php -l` + the PHP test suites on **PHP 8.4 and 8.5** (project targets 8.5, 8.4 floor).
+
 ## [0.770.0] — 2026-06-05
 
 DB-direct data-layer rewrite (epic #1010) landed on alpha (PR #1160) alongside the home-UX rethink, importers, and the security / accessibility / W3C audit fixes.
