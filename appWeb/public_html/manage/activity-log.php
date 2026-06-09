@@ -61,6 +61,44 @@ function _activityFlagEmoji(string $cc): string
     return mb_chr($base + (ord($cc[0]) - 65), 'UTF-8') . mb_chr($base + (ord($cc[1]) - 65), 'UTF-8');
 }
 
+/* #1208 — async geo backfill endpoint. The viewer POSTs the IPs of rows that
+   have no country yet; we resolve them (cache → MaxMind → API chain), snapshot
+   the country onto matching tblActivityLog rows + the IP cache, and return
+   { ip: "GB" } so the page injects flags without a reload. CSRF-guarded (it
+   UPDATEs rows) + capped per call to respect free-API rate limits. Admin gate is
+   already enforced at the top of the page. */
+if ($hasObsCols && ($_GET['action'] ?? '') === 'geo') {
+    header('Content-Type: application/json');
+    $token = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf'] ?? '');
+    if (!validateCsrf($token)) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'csrf']);
+        exit;
+    }
+    $ipsRaw = (string)($_POST['ips'] ?? '');
+    $ips = array_values(array_unique(array_filter(array_map('trim', explode(',', $ipsRaw)))));
+    $ips = array_slice($ips, 0, 25);   // cap external lookups per call (rate limits)
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ip_geolocation.php';
+    $countries = [];
+    foreach ($ips as $oneIp) {
+        $geo = ihymnsGeoLookup($oneIp, true);   // allow external providers here
+        if ($geo !== null && $geo['code'] !== '') {
+            $countries[$oneIp] = $geo['code'];
+            /* Snapshot onto rows from this IP that have no country yet, so the
+               next view needs no lookup at all (the owner's "save the country on
+               the row" point). Bound; best-effort. */
+            try {
+                $u = $db->prepare("UPDATE tblActivityLog SET Country = ? WHERE IpAddress = ? AND (Country IS NULL OR Country = '')");
+                $u->bind_param('ss', $countries[$oneIp], $oneIp);
+                $u->execute();
+                $u->close();
+            } catch (\Throwable $_e) { /* best-effort backfill */ }
+        }
+    }
+    echo json_encode(['ok' => true, 'countries' => $countries]);
+    exit;
+}
+
 /* Filter parsing — every filter is optional. Defaults give the
    admin "last 24 h, every action, every user" landing view. */
 $filterAction     = trim((string)($_GET['action']      ?? ''));
@@ -361,6 +399,7 @@ $buildQuery = function (array $overrides = []) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Activity Log — iHymns Admin</title>
+    <meta name="csrf-token" content="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>"><!-- #1208 geo backfill POST -->
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
     <style>
@@ -606,11 +645,12 @@ $buildQuery = function (array $overrides = []) {
                             </td>
                             <td class="text-muted small">
                                 <?php
+                                /* #1208 — every IP gets a .geo-flag span (filled
+                                   server-side from the Country snapshot; empty
+                                   ones are backfilled async by the script below). */
                                 if ($hasObsCols):
                                     $cc = (string)($r['Country'] ?? '');
-                                    $flag = _activityFlagEmoji($cc);
-                                    if ($flag !== ''):
-                                ?><span title="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>" aria-label="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>"><?= $flag ?></span> <?php endif; endif; ?><?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
+                                ?><span class="geo-flag" data-ip="<?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>"<?php if ($cc !== ''): ?> title="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>"<?php endif; ?>><?= _activityFlagEmoji($cc) ?></span> <?php endif; ?><?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
                                 <?php
                                 /* Proxy/VPN indicator badge — shown inline under
                                    the IP when classification is something other
@@ -766,6 +806,52 @@ $buildQuery = function (array $overrides = []) {
             var tzLabel = document.querySelector('[data-activity-tz]');
             if (tzLabel) tzLabel.textContent = visitorTz;
         } catch (_e) { /* fail-soft — server-rendered UTC stays */ }
+    })();
+    </script>
+
+    <!-- #1208 — async country flags. Collect IPs whose flag isn't rendered yet,
+         resolve them via the geo backfill endpoint, inject the flag emoji. The
+         page never waits on this; flags pop in as the lookups return. -->
+    <script>
+    (function () {
+        try {
+            var meta = document.querySelector('meta[name="csrf-token"]');
+            var csrf = meta ? (meta.getAttribute('content') || '') : '';
+            var pending = Array.prototype.slice.call(document.querySelectorAll('.geo-flag'))
+                .filter(function (el) { return el.textContent.trim() === '' && el.getAttribute('data-ip'); });
+            if (!pending.length) { return; }
+            var ips = [];
+            pending.forEach(function (el) {
+                var ip = el.getAttribute('data-ip');
+                if (ip && ips.indexOf(ip) === -1) { ips.push(ip); }
+            });
+            ips = ips.slice(0, 25);
+            if (!ips.length) { return; }
+            function flagEmoji(cc) {
+                cc = (cc || '').toUpperCase();
+                if (!/^[A-Z]{2}$/.test(cc)) { return ''; }
+                return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+            }
+            fetch('/manage/activity-log.php?action=geo', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-Token': csrf,
+                },
+                body: 'ips=' + encodeURIComponent(ips.join(',')),
+            }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+                if (!j || !j.countries) { return; }
+                pending.forEach(function (el) {
+                    var code = j.countries[el.getAttribute('data-ip')];
+                    if (code && /^[A-Za-z]{2}$/.test(code)) {   // defense-in-depth: validate before DOM
+                        var fl = flagEmoji(code);
+                        if (fl) { el.textContent = fl; el.setAttribute('title', code.toUpperCase()); }
+                    }
+                });
+            }).catch(function () { /* fail-soft — no flags, page still fine */ });
+        } catch (_e) { /* fail-soft */ }
     })();
     </script>
 
