@@ -61,7 +61,8 @@ declare(strict_types=1);
  * consumes), and `media` (file metadata, never bytes), so the Tags / Links /
  * Media tabs hydrate from the one load.
  *
- * @requires PHP 8.1+, mysqli. Auth: editor+.
+ * @requires PHP 8.4+ — project targets PHP 8.5; 8.4 supported for backward-compat
+ *           (no implicit-nullable params, no 8.x-removed funcs). mysqli. Auth: editor+.
  */
 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';

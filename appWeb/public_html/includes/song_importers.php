@@ -15,6 +15,8 @@ declare(strict_types=1);
  * (CLAUDE.md modularity rule). Behaviour-preserving: legacy api.php require_once'es
  * this file and calls the same function names; only three lazy require paths were
  * adjusted for the new includes/ location. #1200.
+ *
+ * @requires PHP 8.4+ — project targets PHP 8.5; 8.4 supported for backward-compat.
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
