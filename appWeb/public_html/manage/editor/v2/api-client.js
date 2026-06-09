@@ -74,6 +74,10 @@ async function postForm(action, formData) {
 export const editorApi = {
     /* Reads */
     loadIndex:         ()                        => getJson('load_index', {}),
+
+    /* Bulk ops (multi-select) */
+    bulkVerify:        (songIds, verified)       => postJson('bulk_verify', { songIds: songIds, verified: verified ? 1 : 0 }),
+    bulkTagAttach:     (songIds, name)           => postJson('bulk_tag_attach', { songIds: songIds, name: name }),
     loadSong:          (id)                      => getJson('load_song', { id: id }),
 
     /* Song lifecycle */
@@ -93,6 +97,7 @@ export const editorApi = {
     /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists */
     upsertCredit:      (songId, role, credit)    => postJson('credit_upsert', { songId: songId, role: role, credit: credit }),
     deleteCredit:      (songId, role, creditId)  => postJson('credit_delete', { songId: songId, role: role, creditId: creditId }),
+    searchCredits:     (q, kind)                 => getJson('credit_search', { q: q || '', kind: kind || 'any', limit: 12 }),
 
     /* Tags — registry-backed; attach auto-creates the tag + returns its canonical form */
     listTags:          (songId)                  => getJson('tag_list', { id: songId }),

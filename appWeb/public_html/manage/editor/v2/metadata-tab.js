@@ -23,7 +23,6 @@ const FIELDS = [
     ['iswc',               'ISWC',              'Iswc',               'text'],
     ['tuneName',           'Tune Name',         'TuneName',           'text'],
     ['copyright',          'Copyright',         'Copyright',          'text'],
-    ['originCity',         'Composition origin','OriginCity',         'text'],
     ['verified',           'Verified',          'Verified',           'check'],
     ['lyricsPublicDomain', 'Lyrics Public Domain', 'LyricsPublicDomain', 'check'],
     ['musicPublicDomain',  'Music Public Domain',  'MusicPublicDomain',  'check'],
@@ -35,6 +34,7 @@ export function mountMetadataTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
     const timers = new Map();
+    let placeDetach = null;   // teardown for the geocoder attached to the origin picker
 
     function save(field, value) {
         api.updateMetadata(songId, field, value).catch((e) => {
@@ -48,6 +48,7 @@ export function mountMetadataTab(container, opts) {
 
     function render() {
         const song = store.get('song') || {};
+        if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         container.innerHTML = '';
         const row = document.createElement('div');
         row.className = 'row g-3';
@@ -94,7 +95,46 @@ export function mountMetadataTab(container, opts) {
             row.appendChild(col);
         });
 
+        /* Composition origin — a geocoded place picker (visible text + hidden id),
+           reusing the shared window.iHymnsPlaceSearch (places-api.php). Free-typing
+           saves OriginCity; picking a place also saves the OriginCityId FK. */
+        const pcol = document.createElement('div');
+        pcol.className = 'col-12 col-md-6';
+        const plab = document.createElement('label');
+        plab.className = 'form-label small mb-1';
+        plab.htmlFor = 'meta-originCity';
+        plab.textContent = 'Composition origin';
+        const pinput = document.createElement('input');
+        pinput.type = 'text';
+        pinput.className = 'form-control form-control-sm';
+        pinput.id = 'meta-originCity';
+        pinput.autocomplete = 'off';
+        pinput.placeholder = 'City / place…';
+        pinput.value = song.OriginCity != null ? String(song.OriginCity) : '';
+        const phidden = document.createElement('input');
+        phidden.type = 'hidden';
+        phidden.value = song.OriginCityId != null ? String(song.OriginCityId) : '';
+        pinput.addEventListener('input', () => {
+            song.OriginCity = pinput.value;
+            debouncedSave('originCity', pinput.value);   // free typing
+        });
+        phidden.addEventListener('change', () => {
+            const n = parseInt(phidden.value, 10);
+            const id = (phidden.value !== '' && !isNaN(n)) ? n : null;   // int or null, never ''
+            song.OriginCityId = id;
+            save('originCityId', id);            // a pick set the FK (or a clear set it null)
+            song.OriginCity = pinput.value;
+            save('originCity', pinput.value);    // a pick also set the visible display name
+        });
+        pcol.append(plab, pinput, phidden);
+        row.appendChild(pcol);
+
         container.appendChild(row);
+
+        /* Attach the geocoder typeahead (best-effort — no-op if the module didn't load). */
+        if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
+            placeDetach = window.iHymnsPlaceSearch.attach(pinput, { hiddenIdInput: phidden }) || null;
+        }
     }
 
     const off = store.subscribe('song', render);
@@ -104,6 +144,7 @@ export function mountMetadataTab(container, opts) {
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
+        if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         container.innerHTML = '';
     };
 }

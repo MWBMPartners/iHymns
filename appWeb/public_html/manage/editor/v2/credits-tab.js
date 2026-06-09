@@ -22,10 +22,70 @@ const ROLES = [
 ];
 const SAVE_DEBOUNCE_MS = 500;
 
+const SEARCH_DEBOUNCE_MS = 180;
+
 export function mountCreditsTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
     const timers = new Map();
+
+    /* One shared autocomplete dropdown, repositioned (fixed) under the active
+       credit input — so the per-render container wipe never strands per-input
+       dropdowns. Suggestions come from credit_search (all roles + the registry). */
+    let searchTimer = null;
+    const dropdown = document.createElement('div');
+    dropdown.className = 'list-group shadow-sm';
+    dropdown.style.position = 'fixed';
+    dropdown.style.zIndex = '1056';
+    dropdown.style.maxHeight = '240px';
+    dropdown.style.overflowY = 'auto';
+    dropdown.style.display = 'none';
+    document.body.appendChild(dropdown);
+
+    function hideDropdown() { dropdown.style.display = 'none'; dropdown.innerHTML = ''; }
+    function positionDropdown(input) {
+        const r = input.getBoundingClientRect();
+        dropdown.style.left = r.left + 'px';
+        dropdown.style.top = r.bottom + 'px';
+        dropdown.style.minWidth = r.width + 'px';
+    }
+    function showSuggestions(input, role, credit, suggestions) {
+        dropdown.innerHTML = '';
+        const existing = new Set((getCredits()[role] || []).map((c) => String(c.name || '').toLowerCase()));
+        let shown = 0;
+        suggestions.forEach((s) => {
+            if (existing.has(String(s.name || '').toLowerCase())) { return; }   // already credited in this role
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            const nm = document.createElement('span');
+            nm.textContent = s.name;
+            const badge = document.createElement('span');
+            badge.className = 'badge bg-secondary rounded-pill';
+            badge.textContent = String(s.usage || 0);
+            badge.title = (s.usage || 0) + ' song(s)';
+            item.append(nm, badge);
+            item.addEventListener('mousedown', (ev) => {
+                ev.preventDefault();
+                input.value = s.name;
+                credit.name = s.name;
+                hideDropdown();
+                saveCredit(role, credit);
+            });
+            dropdown.appendChild(item);
+            shown++;
+        });
+        if (shown === 0) { hideDropdown(); return; }
+        positionDropdown(input);
+        dropdown.style.display = '';
+    }
+    function runSearch(input, role, credit) {
+        const q = input.value.trim();
+        if (q === '') { hideDropdown(); return; }
+        api.searchCredits(q, 'any')
+            .then((res) => showSuggestions(input, role, credit, res.suggestions || []))
+            .catch(() => { /* autocomplete is best-effort */ });
+    }
 
     function getCredits() {
         const c = store.get('credits') || {};
@@ -65,6 +125,8 @@ export function mountCreditsTab(container, opts) {
 
     function render() {
         const credits = getCredits();
+        if (searchTimer) { clearTimeout(searchTimer); searchTimer = null; }
+        hideDropdown();
         container.innerHTML = '';
         const row = document.createElement('div');
         row.className = 'row g-3';
@@ -94,7 +156,10 @@ export function mountCreditsTab(container, opts) {
                 input.addEventListener('input', () => {
                     credit.name = input.value;
                     if (input.value.trim() !== '') { debouncedSave(role, credit); }
+                    if (searchTimer) { clearTimeout(searchTimer); }
+                    searchTimer = setTimeout(() => runSearch(input, role, credit), SEARCH_DEBOUNCE_MS);
                 });
+                input.addEventListener('blur', () => { setTimeout(hideDropdown, 150); });
                 const del = document.createElement('button');
                 del.type = 'button';
                 del.className = 'btn btn-outline-danger';
@@ -127,6 +192,8 @@ export function mountCreditsTab(container, opts) {
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
+        if (searchTimer) { clearTimeout(searchTimer); }
+        dropdown.remove();
         container.innerHTML = '';
     };
 }

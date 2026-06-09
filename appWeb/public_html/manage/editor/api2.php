@@ -23,6 +23,8 @@ declare(strict_types=1);
  *
  * Actions:
  *   GET  load_index                                         -> { ok, songs }  (slim sidebar index)
+ *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
+ *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
  *   GET  load_song?id=<SongId>                              -> { ok, song }
  *   POST create_song            { songbook, title? }        -> { ok, songId }
  *   POST delete_song            { songId }                  -> { ok, deleted }
@@ -33,6 +35,7 @@ declare(strict_types=1);
  *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
  *   POST credit_upsert          { songId, role, credit:{id?,name} } -> { ok, creditId }
  *   POST credit_delete          { songId, role, creditId }  -> { ok }
+ *   GET  credit_search?q=&kind=&limit=                       -> { ok, suggestions }
  *   GET  tag_list?id=<SongId>                                -> { ok, tags }
  *   GET  tag_search?q=&limit=                                -> { ok, suggestions }
  *   POST tag_attach             { songId, name }             -> { ok, tag, attached }
@@ -137,6 +140,7 @@ const ED2_META_FIELDS = [
     'iswc'               => ['Iswc', 's'],
     'tuneName'           => ['TuneName', 's'],
     'originCity'         => ['OriginCity', 's'],
+    'originCityId'       => ['OriginCityId', 'i'],   // FK to tblPlaces (nullable int, NOT a flag)
     'verified'           => ['Verified', 'i'],
     'lyricsPublicDomain' => ['LyricsPublicDomain', 'i'],
     'musicPublicDomain'  => ['MusicPublicDomain', 'i'],
@@ -393,7 +397,7 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         if (!array_key_exists($column, $songRow)) { continue; }
         $raw = $songRow[$column];
         if ($type === 'i') {
-            $value = ($field === 'number')
+            $value = ($field === 'number' || $field === 'originCityId')
                 ? (($raw === null || $raw === '' || (int)$raw <= 0) ? null : (int)$raw)
                 : (int)((bool)$raw);
         } else {
@@ -649,7 +653,8 @@ try {
         /* Coerce per the allow-listed type; numberless/empty → NULL where the
            column allows it (Number/TuneName/Iswc/OriginCity are nullable). */
         if ($type === 'i') {
-            if ($field === 'number') {
+            if ($field === 'number' || $field === 'originCityId') {
+                /* nullable ints (song number / place FK): empty or <=0 → NULL */
                 $value = ($raw === null || $raw === '' || (int)$raw <= 0) ? null : (int)$raw;
             } else {
                 $value = (int)((bool)$raw);   // flags
@@ -1701,6 +1706,122 @@ try {
         }
         fclose($out);
         exit;   // CSV already streamed — don't fall through to JSON
+    }
+
+    /* ---- bulk_verify (POST) — set/clear the Verified flag on many songs in one
+           transaction. Activity-logged once (no per-song revision: a bulk flag
+           flip is audited via the log, not the per-song content history). ---- */
+    case 'bulk_verify': {
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        if (!$ids) { ed2_respond(['ok' => false, 'error' => 'songIds are required.'], 400); }
+        $val = isset($body['verified']) ? (int)((bool)$body['verified']) : 1;
+        $db->begin_transaction();
+        try {
+            $u = $db->prepare('UPDATE tblSongs SET Verified = ? WHERE SongId = ?');
+            foreach ($ids as $sid) { $u->bind_param('is', $val, $sid); $u->execute(); }
+            $u->close();
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.bulk_verify', 'song', '', ['count' => count($ids), 'verified' => $val]);
+        ed2_respond(['ok' => true, 'count' => count($ids), 'verified' => $val]);
+        break;
+    }
+
+    /* ---- bulk_tag_attach (POST) — attach one tag (auto-created) to many songs in
+           one transaction. INSERT IGNORE skips already-tagged or missing songs. ---- */
+    case 'bulk_tag_attach': {
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        $name = ed2_normalizeTag((string)($body['name'] ?? ''));
+        if (!$ids || $name === '') { ed2_respond(['ok' => false, 'error' => 'songIds + a tag name are required.'], 400); }
+        $slug = ed2_tagSlug($name);
+        if ($slug === '') { ed2_respond(['ok' => false, 'error' => 'Tag name has no usable characters.'], 400); }
+
+        $db->begin_transaction();
+        try {
+            $ins = $db->prepare('INSERT INTO tblSongTags (Name, Slug) VALUES (?, ?) ON DUPLICATE KEY UPDATE Id = LAST_INSERT_ID(Id), Name = ?');
+            $ins->bind_param('sss', $name, $slug, $name);
+            $ins->execute();
+            $tagId = (int)$db->insert_id;
+            $ins->close();
+
+            $map = $db->prepare('INSERT IGNORE INTO tblSongTagMap (SongId, TagId, TaggedBy) VALUES (?, ?, ?)');
+            $attached = 0;
+            foreach ($ids as $sid) {
+                $map->bind_param('sii', $sid, $tagId, $ed2UserId);
+                $map->execute();
+                if ($db->affected_rows > 0) { $attached++; }
+            }
+            $map->close();
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.bulk_tag', 'song', '', ['tag' => $name, 'count' => count($ids), 'attached' => $attached]);
+        ed2_respond(['ok' => true, 'tag' => ['id' => $tagId, 'name' => $name, 'slug' => $slug], 'attached' => $attached, 'count' => count($ids)]);
+        break;
+    }
+
+    /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the five
+           song-credit tables (grouped by name → combined usage count + the roles
+           it appears in) + the tblCreditPeople registry for kind=any. Table +
+           label fragments come ONLY from the hardcoded allow-list (CLAUDE.md #5);
+           the query term is bound. ---- */
+    case 'credit_search': {
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $kind  = strtolower(trim((string)($_GET['kind'] ?? 'any')));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 12)));
+        if ($q === '') { ed2_respond(['ok' => true, 'suggestions' => []]); }
+
+        /* Allow-list: only these (label => table) pairs ever reach the SQL. */
+        $kindToTable = [
+            'writer'     => 'tblSongWriters',
+            'composer'   => 'tblSongComposers',
+            'arranger'   => 'tblSongArrangers',
+            'adaptor'    => 'tblSongAdaptors',
+            'translator' => 'tblSongTranslators',
+            'artist'     => 'tblSongArtists',
+        ];
+        $tables = ($kind === 'any') ? $kindToTable : (isset($kindToTable[$kind]) ? [$kind => $kindToTable[$kind]] : []);
+        if (!$tables) { ed2_respond(['ok' => false, 'error' => 'Unknown kind.'], 400); }
+
+        $like = '%' . $q . '%';
+        $parts = []; $params = []; $types = '';
+        foreach ($tables as $label => $table) {
+            $parts[]  = "SELECT Name, '{$label}' AS kindLabel, COUNT(*) AS cnt FROM `{$table}` WHERE Name LIKE ? GROUP BY Name";
+            $params[] = $like; $types .= 's';
+        }
+        if ($kind === 'any') {
+            $parts[]  = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt FROM tblCreditPeople WHERE Name LIKE ?";
+            $params[] = $like; $types .= 's';
+        }
+        $sql = 'SELECT u.Name, GROUP_CONCAT(DISTINCT u.kindLabel) AS kinds, SUM(u.cnt) AS usageCount
+                  FROM (' . implode(' UNION ALL ', $parts) . ') u
+                 GROUP BY u.Name ORDER BY usageCount DESC, u.Name ASC LIMIT ?';
+        $types .= 'i'; $params[] = $limit;
+
+        $stmt = $db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'name'  => (string)$row['Name'],
+                'usage' => (int)$row['usageCount'],
+                'kinds' => $row['kinds'] !== null ? explode(',', (string)$row['kinds']) : [],
+            ];
+        }
+        $stmt->close();
+        ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
     }
 
     /* ---- load_index (GET) — the lightweight song list for the editor sidebar:

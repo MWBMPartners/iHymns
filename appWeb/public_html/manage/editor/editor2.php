@@ -56,7 +56,8 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
 </head>
 <body class="p-0">
     <div class="d-flex" style="height: 100vh;">
-        <aside id="v2-sidebar" class="border-end bg-body-tertiary" style="width: 300px; min-width: 260px;"></aside>
+        <aside id="v2-sidebar" class="bg-body-tertiary" style="flex: 0 0 300px; min-width: 200px;"></aside>
+        <div id="v2-grip" class="border-end border-start" title="Drag to resize" style="flex: 0 0 5px; cursor: col-resize;"></div>
 
         <main class="flex-grow-1 overflow-auto p-3" style="min-width: 0;">
             <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
@@ -74,6 +75,14 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 </div>
             </div>
             <div id="v2-status" class="alert alert-secondary py-2 small" role="status">Loading…</div>
+
+            <!-- Bulk-actions bar (shown when songs are selected in the sidebar's Select mode) -->
+            <div id="v2-bulk-bar" class="alert alert-info py-2 px-3 d-none d-flex align-items-center gap-2 flex-wrap">
+                <span id="v2-bulk-count" class="small fw-semibold"></span>
+                <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
+                <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
+                <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
+            </div>
 
             <ul class="nav nav-tabs mb-3" role="tablist">
                 <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#pane-structure" type="button"><i class="bi bi-list-ol me-1"></i>Structure</button></li>
@@ -132,6 +141,9 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;</script>
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
+
+    <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch. -->
+    <script src="/js/modules/place-search.js"></script>
 
     <!-- Export serializers (reused by export.js). propresenter-export.js first (format-export reuses its ZIP writer). -->
     <script src="propresenter-export.js"></script>
@@ -216,7 +228,59 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             }
         }
 
-        const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: loadSong });
+        const bulkBar = byId('v2-bulk-bar');
+        const bulkCount = byId('v2-bulk-count');
+        function onSelChange(n) {
+            bulkBar.classList.toggle('d-none', n === 0);
+            bulkCount.textContent = n + ' song' + (n === 1 ? '' : 's') + ' selected';
+        }
+        const sidebar = mountSidebar(byId('v2-sidebar'), { api: editorApi, toast, onSelect: loadSong, onSelectionChange: onSelChange });
+
+        /* ---- bulk actions (multi-select) ---- */
+        byId('v2-bulk-clear').addEventListener('click', () => sidebar.clearSelection());
+        byId('v2-bulk-verify').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            try {
+                await editorApi.bulkVerify(ids, true);
+                toast('Marked ' + ids.length + ' song(s) verified.', 'success');
+                sidebar.clearSelection();
+            } catch (e) { status('Bulk verify failed: ' + e.message, 'danger'); }
+        });
+        byId('v2-bulk-tag').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            const name = window.prompt('Tag to add to ' + ids.length + ' selected song(s):', '');
+            if (name === null || name.trim() === '') { return; }
+            try {
+                const r = await editorApi.bulkTagAttach(ids, name.trim());
+                toast('Tagged ' + (r.attached || 0) + ' of ' + ids.length + ' song(s) with "' + (r.tag ? r.tag.name : name.trim()) + '".', 'success');
+                sidebar.clearSelection();
+            } catch (e) { status('Bulk tag failed: ' + e.message, 'danger'); }
+        });
+
+        /* ---- resizable sidebar (#1193) — drag the grip; width persists ---- */
+        (function () {
+            const aside = byId('v2-sidebar');
+            const grip = byId('v2-grip');
+            const KEY = 'ihymns_editor_sidebar_w';
+            const clampW = (w) => Math.max(200, Math.min(w, Math.round(window.innerWidth * 0.6)));
+            const saved = parseInt(window.localStorage.getItem(KEY), 10);
+            if (!isNaN(saved) && saved > 0) { aside.style.flexBasis = clampW(saved) + 'px'; }
+            let dragging = false;
+            grip.addEventListener('mousedown', (e) => { dragging = true; e.preventDefault(); document.body.style.userSelect = 'none'; });
+            window.addEventListener('mousemove', (e) => {
+                if (!dragging) { return; }
+                aside.style.flexBasis = clampW(e.clientX - aside.getBoundingClientRect().left) + 'px';
+            });
+            window.addEventListener('mouseup', () => {
+                if (!dragging) { return; }
+                dragging = false;
+                document.body.style.userSelect = '';
+                const w = parseInt(aside.style.flexBasis, 10);
+                if (!isNaN(w)) { try { window.localStorage.setItem(KEY, String(w)); } catch (_e) {} }
+            });
+        })();
 
         /* ---- New song ---- */
         const newModal = (window.bootstrap && window.bootstrap.Modal) ? new window.bootstrap.Modal(byId('v2-new-modal')) : null;
