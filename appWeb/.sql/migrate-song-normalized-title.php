@@ -57,34 +57,13 @@ if (!file_exists($credFile)) {
 }
 require_once $credFile;
 
-/* The canonical title normalizer the backfill (and write paths) use. The
-   DEPLOYED layout can differ from the repo: on the live server `public_html` is
-   the web root, so `includes/` sits WITHOUT the `public_html/` path segment.
-   The migration was hard-coding the repo path, failing `file_exists`, and
-   RETURNING EARLY before the ALTER — so the column never landed and the card
-   stayed "pending" while the run clocked ~1 ms (the #1162/#1165 saga's last
-   thread). Resolve the normalizer across the known layouts so it works either
-   way. */
-$ds = DIRECTORY_SEPARATOR;
-$normCandidates = [
-    dirname(__DIR__) . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
-    dirname(__DIR__) . $ds . 'includes' . $ds . 'title_normalize.php',
-    __DIR__ . $ds . '..' . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
-    __DIR__ . $ds . '..' . $ds . 'includes' . $ds . 'title_normalize.php',
-];
-$normHelper = null;
-foreach ($normCandidates as $cand) {
-    if (is_file($cand)) { $normHelper = $cand; break; }
-}
-if ($normHelper === null) {
-    _migNormTitle_output("ERROR: title_normalize.php not found. Tried: " . implode(' | ', $normCandidates));
-    return;
-}
-require_once $normHelper;
-if (!function_exists('ihymns_normalize_title')) {
-    _migNormTitle_output("ERROR: ihymns_normalize_title() unavailable after including {$normHelper}.");
-    return;
-}
+/* NOTE: the title normalizer is resolved LATER — AFTER the column + index are
+   added (see the backfill section below) — so a missing or relocated
+   title_normalize.php can NEVER stop the column from landing. Resolving it up
+   here and returning early on failure was the #1162/#1165 stuck-pending bug:
+   the script bailed before the ALTER, the column never landed, and the probe
+   (column-existence only) stayed pending while the run clocked ~1 ms. The
+   column-add does not need the normalizer; only the backfill does. */
 
 _migNormTitle_output("");
 _migNormTitle_output("=== iHymns — NormalizedTitle dedup column (#1066 Theme D) ===");
@@ -135,28 +114,54 @@ try {
     _migNormTitle_output("");
     _migNormTitle_output("--- Backfill (re-runnable; recomputes every row) ---");
 
-    $sel = $mysql->query("SELECT Id, Title FROM tblSongs");
-    $upd = $mysql->prepare("UPDATE tblSongs SET NormalizedTitle = ? WHERE Id = ?");
-    $count = 0;
-    $changed = 0;
-    while ($row = $sel->fetch_assoc()) {
-        $norm = ihymns_normalize_title((string)$row['Title']);
-        if (mb_strlen($norm) > 500) {
-            $norm = mb_substr($norm, 0, 500);
-        }
-        $id = (int)$row['Id'];
-        $upd->bind_param('si', $norm, $id);
-        $upd->execute();
-        $count++;
-        if ($upd->affected_rows > 0) {
-            $changed++;
-        }
-        if ($count % 500 === 0) {
-            _migNormTitle_output("  …{$count} rows processed");
-        }
+    /* Resolve the title normalizer HERE — AFTER the column + index are in place —
+       so a missing/relocated title_normalize.php can NEVER prevent the column from
+       landing (the #1162/#1165 stuck-pending bug). The probe is column-existence
+       only, so the card flips to applied once the column exists; the backfill is
+       best-effort + re-runnable on a later pass once the path is confirmed. */
+    $ds = DIRECTORY_SEPARATOR;
+    $normCandidates = [
+        dirname(__DIR__) . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
+        dirname(__DIR__) . $ds . 'includes' . $ds . 'title_normalize.php',
+        __DIR__ . $ds . '..' . $ds . 'public_html' . $ds . 'includes' . $ds . 'title_normalize.php',
+        __DIR__ . $ds . '..' . $ds . 'includes' . $ds . 'title_normalize.php',
+    ];
+    $normHelper = null;
+    foreach ($normCandidates as $cand) {
+        if (is_file($cand)) { $normHelper = $cand; break; }
     }
-    $upd->close();
-    _migNormTitle_output("  [OK] Backfilled {$count} songs ({$changed} updated).");
+    if ($normHelper !== null) { require_once $normHelper; }
+
+    if ($normHelper === null || !function_exists('ihymns_normalize_title')) {
+        _migNormTitle_output("  [WARN] title_normalize.php could not be resolved — the column + index ARE");
+        _migNormTitle_output("         in place (migration counts as applied), but the backfill was SKIPPED.");
+        _migNormTitle_output("         Tried: " . implode(' | ', $normCandidates));
+        _migNormTitle_output("         Re-run this migration once the normalizer path is confirmed to populate");
+        _migNormTitle_output("         NormalizedTitle for existing rows.");
+    } else {
+        $sel = $mysql->query("SELECT Id, Title FROM tblSongs");
+        $upd = $mysql->prepare("UPDATE tblSongs SET NormalizedTitle = ? WHERE Id = ?");
+        $count = 0;
+        $changed = 0;
+        while ($row = $sel->fetch_assoc()) {
+            $norm = ihymns_normalize_title((string)$row['Title']);
+            if (mb_strlen($norm) > 500) {
+                $norm = mb_substr($norm, 0, 500);
+            }
+            $id = (int)$row['Id'];
+            $upd->bind_param('si', $norm, $id);
+            $upd->execute();
+            $count++;
+            if ($upd->affected_rows > 0) {
+                $changed++;
+            }
+            if ($count % 500 === 0) {
+                _migNormTitle_output("  …{$count} rows processed");
+            }
+        }
+        $upd->close();
+        _migNormTitle_output("  [OK] Backfilled {$count} songs ({$changed} updated).");
+    }
 
     _migNormTitle_output("");
     _migNormTitle_output("--- Summary ---");
