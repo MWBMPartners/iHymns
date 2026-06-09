@@ -93,6 +93,26 @@ export function mountStructureTab(container, opts) {
             saveComponent(comp);
         });
 
+        /* #1206 — per-section language override (BCP 47, incl. script subtag).
+           Blank = inherit the song language. The public render emits this as
+           lang=… + dir on the verse (#858/#1205); component_upsert already
+           persists it. Loose client validation (non-blocking) flags a malformed
+           tag without preventing the save. */
+        const langInput = document.createElement('input');
+        langInput.type = 'text';
+        langInput.className = 'form-control form-control-sm';
+        langInput.style.width = '130px';
+        langInput.placeholder = 'lang (e.g. zh-Hans)';
+        langInput.title = 'Per-section language override — BCP 47, including script where relevant (en, sw, zh-Hans, sr-Cyrl, ja-Latn). Blank = inherit the song language.';
+        langInput.setAttribute('aria-label', 'Section language (BCP 47)');
+        langInput.value = comp.language || '';
+        langInput.addEventListener('change', () => {
+            const v = langInput.value.trim();
+            comp.language = v !== '' ? v : null;
+            langInput.classList.toggle('is-invalid', v !== '' && !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{1,8})*$/.test(v));
+            saveComponent(comp);
+        });
+
         const btnUp = iconBtn('bi-arrow-up', 'Move up', index === 0, () => move(index, -1));
         const btnDown = iconBtn('bi-arrow-down', 'Move down', index === total - 1, () => move(index, 1));
         const btnDel = iconBtn('bi-x-lg', 'Remove section', false, () => removeComponent(comp));
@@ -102,7 +122,7 @@ export function mountStructureTab(container, opts) {
         btns.className = 'btn-group btn-group-sm';
         btns.append(btnUp, btnDown, btnDel);
 
-        header.append(label, typeSel, numInput, btns);
+        header.append(label, typeSel, numInput, langInput, btns);
 
         const body = document.createElement('div');
         body.className = 'card-body';
