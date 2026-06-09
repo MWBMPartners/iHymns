@@ -73,6 +73,7 @@ async function postForm(action, formData) {
 /* The granular editor surface — one method per atomic server mutation. */
 export const editorApi = {
     /* Reads */
+    loadIndex:         ()                        => getJson('load_index', {}),
     loadSong:          (id)                      => getJson('load_song', { id: id }),
 
     /* Song lifecycle */

@@ -22,6 +22,7 @@ declare(strict_types=1);
  * success — the lesson from the client-only `deleteSong()` that lied).
  *
  * Actions:
+ *   GET  load_index                                         -> { ok, songs }  (slim sidebar index)
  *   GET  load_song?id=<SongId>                              -> { ok, song }
  *   POST create_song            { songbook, title? }        -> { ok, songId }
  *   POST delete_song            { songId }                  -> { ok, deleted }
@@ -1700,6 +1701,17 @@ try {
         }
         fclose($out);
         exit;   // CSV already streamed — don't fall through to JSON
+    }
+
+    /* ---- load_index (GET) — the lightweight song list for the editor sidebar:
+           id / number / title / songbook / songbookName (+ audio/sheet flags).
+           Reuses SongData::getSongsSlimIndex() (the canonical slim index the PWA
+           uses) — NEVER materialises the whole corpus (CLAUDE.md #17). ---- */
+    case 'load_index': {
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+        $songData = new SongData();
+        ed2_respond(['ok' => true, 'songs' => $songData->getSongsSlimIndex()]);
+        break;
     }
 
     /* ---- revision_list (GET) — revision history for a song, newest first
