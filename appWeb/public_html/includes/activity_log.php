@@ -287,6 +287,18 @@ function logActivity(
                      ? substr((string)$_SERVER['HTTP_REFERER'], 0, 2048)
                      : null;
 
+        /* #1208 — country snapshot AT log time. Cache + MaxMind-local ONLY on the
+           write path (never an external API call — that would add network latency
+           to every request); a brand-new uncached IP stays NULL until the
+           activity-log viewer backfills it via the API chain. Resolution drift
+           over time is exactly why this is snapshotted on the row, not joined. */
+        $country = null;
+        if ($hasObsCols) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'ip_geolocation.php';
+            $geo = ihymnsGeoLookup($ip, false);
+            $country = $geo !== null ? $geo['code'] : null;
+        }
+
         /* Build the INSERT dynamically so the column list, placeholder count,
            type string and value list can NEVER drift apart (the #919/#923/#924
            bind-count saga that silently darkened the audit trail). All three are
@@ -303,9 +315,9 @@ function logActivity(
             array_push($values, $proxyChainTrim, $proxyIndTrim, $proxyDetailJson);
         }
         if ($hasObsCols) {
-            array_push($cols, 'Environment', 'RequestPath', 'Referrer');
-            $types .= 'sss';
-            array_push($values, $environment, $requestPath, $referrer);
+            array_push($cols, 'Environment', 'RequestPath', 'Referrer', 'Country');
+            $types .= 'ssss';
+            array_push($values, $environment, $requestPath, $referrer, $country);
         }
         array_push($cols, 'UserAgent', 'RequestId', 'Method', 'DurationMs');
         $types .= 'sssi';
