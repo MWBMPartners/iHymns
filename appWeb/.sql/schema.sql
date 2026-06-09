@@ -1373,6 +1373,10 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     RequestId       CHAR(16)        NOT NULL DEFAULT '' COMMENT 'Per-HTTP-request correlation ID; groups every row from one request (#535)',
     Method          VARCHAR(10)     NOT NULL DEFAULT '' COMMENT 'HTTP method (GET/POST/etc) for HTTP-driven events; blank for cron/system (#535)',
     DurationMs      INT UNSIGNED    NULL COMMENT 'Wall-clock duration of the logged operation in milliseconds (#535)',
+    Environment     VARCHAR(16)     NULL DEFAULT NULL COMMENT 'Deploy environment at log time: alpha | beta | production (the DB is shared across all three) (#1207)',
+    RequestPath     VARCHAR(512)    NULL DEFAULT NULL COMMENT 'Requested path (REQUEST_URI minus query) — which file/route was hit (#1207)',
+    Referrer        VARCHAR(2048)   NULL DEFAULT NULL COMMENT 'HTTP Referer header — where the request came from (#1207)',
+    Country         CHAR(2)         NULL DEFAULT NULL COMMENT 'ISO-3166-1 alpha-2 country resolved from IpAddress AT log time (snapshot; geo resolver #1208 populates it)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_User              (UserId),
@@ -1382,6 +1386,9 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     INDEX idx_Result            (Result),
     INDEX idx_RequestId         (RequestId),
     INDEX idx_ProxyVpnIndicator (ProxyVpnIndicator),
+    INDEX idx_Environment       (Environment),
+    INDEX idx_RequestPath       (RequestPath(191)),
+    INDEX idx_Country           (Country),
 
     CONSTRAINT fk_Log_User
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
@@ -1411,6 +1418,9 @@ CREATE TABLE IF NOT EXISTS tblIpReputation (
                    COMMENT 'header | ipqs | maxmind | ipinfo | manual',
     LookedUpAt     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt      TIMESTAMP    NULL,
+    CountryCode    CHAR(2)      NULL DEFAULT NULL COMMENT 'ISO-3166-1 alpha-2 from the geo lookup (#1208)',
+    CountryName    VARCHAR(100) NULL DEFAULT NULL COMMENT 'Country display name from the geo lookup (#1208)',
+    GeoLookedUpAt  DATETIME     NULL DEFAULT NULL COMMENT 'When geo was last resolved for this IP — drives the cache TTL (#1208)',
 
     INDEX idx_Indicator (Indicator),
     INDEX idx_Expires   (ExpiresAt)

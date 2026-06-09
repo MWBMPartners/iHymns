@@ -1573,6 +1573,30 @@ return [
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'NormalizedTitle'),
     ],
 
+    'activity-log-observability' => [
+        'script' => 'migrate-activity-log-observability.php',
+        'card' => [
+            'title'  => 'Activity Log observability columns (#1207)',
+            'body'   => 'Adds <code>Environment</code> / <code>RequestPath</code> / '
+                      . '<code>Referrer</code> / <code>Country</code> to <code>tblActivityLog</code> '
+                      . '— the shared DB serves all three environments, so each row records which '
+                      . 'env / file / referrer / country it came from. Also adds dormant geo-cache '
+                      . 'columns to <code>tblIpReputation</code> for the IP→country resolver (#1208). '
+                      . 'Strictly additive + idempotent.',
+            'button' => 'Run Activity Log Observability Migration',
+        ],
+        /* OR-probe (rule #19): pending until EVERY added column exists, so a
+           partial apply re-applies instead of showing the card green. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblActivityLog', 'Environment')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'RequestPath')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'Referrer')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'Country')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'CountryCode')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'CountryName')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'GeoLookedUpAt'),
+    ],
+
     'song-link-confidence' => [
         'script' => 'migrate-song-link-confidence.php',
         'card' => [

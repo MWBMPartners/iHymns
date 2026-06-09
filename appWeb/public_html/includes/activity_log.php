@@ -248,28 +248,26 @@ function logActivity(
             }
         }
 
-        if ($hasProxyCols) {
-            $stmt = $db->prepare(
-                'INSERT INTO tblActivityLog
-                    (UserId, Action, EntityType, EntityId, Result, Details,
-                     IpAddress, IpProxyChain, ProxyVpnIndicator, ProxyVpnDetail,
-                     UserAgent, RequestId, Method, DurationMs, CreatedAt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
-            );
-        } else {
-            $stmt = $db->prepare(
-                'INSERT INTO tblActivityLog
-                    (UserId, Action, EntityType, EntityId, Result, Details,
-                     IpAddress, UserAgent, RequestId, Method, DurationMs, CreatedAt)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())'
-            );
+        /* #1207 — probe for the observability columns (Environment / RequestPath
+           / Referrer) added by migrate-activity-log-observability.php. Degrade to
+           skipping the group on a pre-migration deploy. Probed once per process. */
+        static $hasObsCols = null;
+        if ($hasObsCols === null) {
+            try {
+                $obsProbe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblActivityLog'
+                        AND COLUMN_NAME  = 'Environment' LIMIT 1"
+                );
+                $obsProbe->execute();
+                $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
+                $obsProbe->close();
+            } catch (\Throwable $_e) {
+                $hasObsCols = false;
+            }
         }
-        /* Types: UserId(i nullable), Action(s), EntityType(s), EntityId(s),
-           Result(s), Details(s nullable), IpAddress(s), [IpProxyChain(s nullable),
-           ProxyVpnIndicator(s nullable), ProxyVpnDetail(s nullable),]
-           UserAgent(s), RequestId(s), Method(s), DurationMs(i nullable).
-           mysqli passes NULL correctly when the bound variable is null even
-           with type 'i' or 's'. */
+
         $actionTrim   = substr($action,     0, 50);
         $entityTrim   = substr($entityType, 0, 50);
         $entityIdTrim = substr($entityId,   0, 50);
@@ -278,64 +276,48 @@ function logActivity(
         $proxyChainTrim = $proxyChain !== null ? substr($proxyChain, 0, 255) : null;
         $proxyIndTrim   = $proxyInd   !== null ? substr($proxyInd,   0, 50)  : null;
 
+        /* #1207 observability — environment, requested path, referrer. NULL on a
+           pre-migration deploy (the $hasObsCols probe degrades the column group). */
+        $environment = substr(activityLogEnvironment(), 0, 16);
+        $reqUriRaw   = (string)($_SERVER['REQUEST_URI'] ?? '');
+        $qPos        = strpos($reqUriRaw, '?');
+        $pathOnly    = $qPos === false ? $reqUriRaw : substr($reqUriRaw, 0, $qPos);
+        $requestPath = $pathOnly !== '' ? substr($pathOnly, 0, 512) : null;
+        $referrer    = isset($_SERVER['HTTP_REFERER']) && $_SERVER['HTTP_REFERER'] !== ''
+                     ? substr((string)$_SERVER['HTTP_REFERER'], 0, 2048)
+                     : null;
+
+        /* Build the INSERT dynamically so the column list, placeholder count,
+           type string and value list can NEVER drift apart (the #919/#923/#924
+           bind-count saga that silently darkened the audit trail). All three are
+           derived from ONE ordered set; optional column GROUPS are appended only
+           when their migration has run (probed once per process). CreatedAt is
+           NOW() (not a placeholder). */
+        $cols   = ['UserId', 'Action', 'EntityType', 'EntityId', 'Result', 'Details', 'IpAddress'];
+        $types  = 'issssss';
+        $values = [$resolvedUserId, $actionTrim, $entityTrim, $entityIdTrim, $result, $detailsJson, $ip];
+
         if ($hasProxyCols) {
-            /* 14 placeholders → 14 type chars: 1×'i' (UserId)
-               + 12×'s' (Action / EntityType / EntityId / Result /
-               Details / IpAddress / IpProxyChain / ProxyVpnIndicator /
-               ProxyVpnDetail / UserAgent / RequestId / Method)
-               + 1×'i' (DurationMs).
-               #923 — was previously `'isssssssssssssi'` (15 chars,
-               one extra 's'), which made bind_param throw
-               `Number of elements in type definition string
-               doesn't match number of bind variables`. The catch at
-               the bottom of this function swallows the throw to an
-               error_log line, so every logActivity() call after the
-               proxy/VPN migration ran landed silently in the file
-               log instead of tblActivityLog — the audit trail went
-               dark from #919 deploy until #924 shipped.
-               #926 — defensive `bindParamSafe()` from db_mysql.php
-               throws a context-named RuntimeException ("bind_param
-               mismatch in logActivity (post-#919) INSERT: …") if
-               the type string and arg count ever drift again,
-               instead of mysqli's generic message that originally
-               masked the regression. */
-            bindParamSafe(
-                'logActivity (post-#919) INSERT', $stmt,
-                'issssssssssssi',
-                $resolvedUserId,
-                $actionTrim,
-                $entityTrim,
-                $entityIdTrim,
-                $result,
-                $detailsJson,
-                $ip,
-                $proxyChainTrim,
-                $proxyIndTrim,
-                $proxyDetailJson,
-                $ua,
-                $rid,
-                $methodTrim,
-                $duration
-            );
-        } else {
-            /* #926 — same defensive helper for the legacy 11-col
-               INSERT (pre-migration deploys). */
-            bindParamSafe(
-                'logActivity (legacy) INSERT', $stmt,
-                'isssssssssi',
-                $resolvedUserId,
-                $actionTrim,
-                $entityTrim,
-                $entityIdTrim,
-                $result,
-                $detailsJson,
-                $ip,
-                $ua,
-                $rid,
-                $methodTrim,
-                $duration
-            );
+            array_push($cols, 'IpProxyChain', 'ProxyVpnIndicator', 'ProxyVpnDetail');
+            $types .= 'sss';
+            array_push($values, $proxyChainTrim, $proxyIndTrim, $proxyDetailJson);
         }
+        if ($hasObsCols) {
+            array_push($cols, 'Environment', 'RequestPath', 'Referrer');
+            $types .= 'sss';
+            array_push($values, $environment, $requestPath, $referrer);
+        }
+        array_push($cols, 'UserAgent', 'RequestId', 'Method', 'DurationMs');
+        $types .= 'sssi';
+        array_push($values, $ua, $rid, $methodTrim, $duration);
+
+        $placeholders = implode(', ', array_fill(0, count($cols), '?'));
+        $stmt = $db->prepare(
+            'INSERT INTO tblActivityLog (' . implode(', ', $cols) . ', CreatedAt) VALUES (' . $placeholders . ', NOW())'
+        );
+        /* #926 — bindParamSafe throws a context-named error if types/args ever
+           drift; here they're built together so they can't, but keep the guard. */
+        bindParamSafe('logActivity dynamic INSERT', $stmt, $types, ...$values);
         $stmt->execute();
         $stmt->close();
         activityLogWriteCount($count + 1);
@@ -344,6 +326,38 @@ function logActivity(
            One error_log so admins can spot a sustained outage. */
         error_log('[activity_log] write failed for "' . $action . '": ' . $e->getMessage());
     }
+}
+
+/**
+ * Resolve the deploy environment for activity-log labelling (#1207):
+ * 'alpha' | 'beta' | 'production'. Mirrors infoAppVer.php's canonical
+ * DOCUMENT_ROOT-based detection without pulling the whole $app array onto the
+ * write path. Cached per process. The shared DB serves all three environments,
+ * so this is what lets a log row say which one it came from.
+ *
+ * @return string One of 'alpha', 'beta', 'production'.
+ */
+function activityLogEnvironment(): string
+{
+    static $env = null;
+    if ($env !== null) {
+        return $env;
+    }
+    $path = (string)($_SERVER['DOCUMENT_ROOT'] ?? $_SERVER['SCRIPT_FILENAME'] ?? '');
+    if (str_contains($path, 'public_html_dev')) {
+        return $env = 'alpha';
+    }
+    if (str_contains($path, 'public_html_beta')) {
+        return $env = 'beta';
+    }
+    /* CI/CD-injected channel file fallback (mirrors infoAppVer.php). */
+    $channelFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.env-channel';
+    if (is_file($channelFile)) {
+        $ch = trim((string)@file_get_contents($channelFile));
+        if ($ch === 'alpha') { return $env = 'alpha'; }
+        if ($ch === 'beta')  { return $env = 'beta'; }
+    }
+    return $env = 'production';
 }
 
 /**
