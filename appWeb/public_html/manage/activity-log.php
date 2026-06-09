@@ -29,6 +29,38 @@ if (!$currentUser || !in_array(($currentUser['role'] ?? ''), ['admin', 'global_a
 $activePage = 'activity-log';
 $db = getDbMysqli();
 
+/* #1207 — do the observability columns (Environment / RequestPath / Referrer /
+   Country) exist yet? Probed once; gates the env filter, the path search, the
+   SELECT tail, and the display so a pre-migration deploy still renders. */
+$hasObsCols = false;
+try {
+    $obsProbe = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblActivityLog'
+            AND COLUMN_NAME  = 'Environment' LIMIT 1"
+    );
+    $obsProbe->execute();
+    $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
+    $obsProbe->close();
+} catch (\Throwable $_e) { /* pre-migration deploy → stays false */ }
+/* SELECT tail for the observability columns — empty on a pre-migration deploy
+   so the query still compiles. Reused by the CSV export + the main SELECT. */
+$obsColsSql = $hasObsCols ? ', a.Environment, a.RequestPath, a.Referrer, a.Country' : '';
+
+/* #1208 — render an ISO-3166-1 alpha-2 country code as its flag emoji (two
+   Unicode regional-indicator letters). No image assets; empty for blank/invalid
+   codes. The geo resolver (#1208) populates tblActivityLog.Country. */
+function _activityFlagEmoji(string $cc): string
+{
+    $cc = strtoupper(trim($cc));
+    if (strlen($cc) !== 2 || !ctype_alpha($cc)) {
+        return '';
+    }
+    $base = 0x1F1E6; // 🇦 regional indicator A
+    return mb_chr($base + (ord($cc[0]) - 65), 'UTF-8') . mb_chr($base + (ord($cc[1]) - 65), 'UTF-8');
+}
+
 /* Filter parsing — every filter is optional. Defaults give the
    admin "last 24 h, every action, every user" landing view. */
 $filterAction     = trim((string)($_GET['action']      ?? ''));
@@ -40,6 +72,7 @@ $filterRequestId  = trim((string)($_GET['request_id']  ?? ''));
 $filterDays       = (int)($_GET['days'] ?? 1);
 if (!in_array($filterDays, [1, 7, 30, 90, 365], true)) { $filterDays = 1; }
 $filterSearch     = trim((string)($_GET['q'] ?? ''));
+$filterEnv        = trim((string)($_GET['env'] ?? ''));   /* #1207 — alpha | beta | production */
 
 $since = (new DateTime("-{$filterDays} days"))->format('Y-m-d H:i:s');
 
@@ -88,11 +121,27 @@ if ($filterRequestId !== '') {
     $types   .= 's';
 }
 if ($filterSearch !== '') {
-    $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
     $searchLike = '%' . $filterSearch . '%';
-    $params[] = $searchLike;
-    $params[] = $searchLike;
-    $types   .= 'ss';
+    /* #1207 — also search the requested path so "find every hit on /sitemap.xml"
+       works (only when the column exists). */
+    if ($hasObsCols) {
+        $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ? OR a.RequestPath LIKE ?)';
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $types   .= 'sss';
+    } else {
+        $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $types   .= 'ss';
+    }
+}
+/* #1207 — environment filter (the shared DB serves alpha / beta / production). */
+if ($hasObsCols && in_array($filterEnv, ['alpha', 'beta', 'production'], true)) {
+    $where[]  = 'a.Environment = ?';
+    $params[] = $filterEnv;
+    $types   .= 's';
 }
 $whereSql = 'WHERE ' . implode(' AND ', $where);
 
@@ -134,6 +183,12 @@ if (($_GET['export'] ?? '') === 'csv') {
     if ($hasProxyCols) {
         array_splice($headerRow, 9, 0, ['IpProxyChain', 'ProxyVpnIndicator', 'ProxyVpnDetail']);
     }
+    if ($hasObsCols) {
+        $headerRow[] = 'Environment';
+        $headerRow[] = 'RequestPath';
+        $headerRow[] = 'Referrer';
+        $headerRow[] = 'Country';
+    }
     fputcsv($out, $headerRow);
     $proxyColsSql = $hasProxyCols
         ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
@@ -141,7 +196,7 @@ if (($_GET['export'] ?? '') === 'csv') {
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 u.Username, a.Action, a.EntityType, a.EntityId,
-                a.Result, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
+                a.Result, a.IpAddress' . $proxyColsSql . $obsColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, a.Details
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -170,6 +225,12 @@ if (($_GET['export'] ?? '') === 'csv') {
         $csvRow[] = $row['Method']     ?? '';
         $csvRow[] = $row['DurationMs'] ?? '';
         $csvRow[] = $row['Details']    ?? '';
+        if ($hasObsCols) {
+            $csvRow[] = $row['Environment'] ?? '';
+            $csvRow[] = $row['RequestPath'] ?? '';
+            $csvRow[] = $row['Referrer']    ?? '';
+            $csvRow[] = $row['Country']     ?? '';
+        }
         fputcsv($out, $csvRow);
     }
     $stmt->close();
@@ -225,7 +286,7 @@ try {
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 a.Action, a.EntityType, a.EntityId, a.Result,
-                a.Details, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
+                a.Details, a.IpAddress' . $proxyColsSql . $obsColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, u.Username
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
@@ -288,6 +349,7 @@ $buildQuery = function (array $overrides = []) {
         'request_id'  => $_GET['request_id']  ?? '',
         'days'        => $_GET['days']        ?? '',
         'q'           => $_GET['q']           ?? '',
+        'env'         => $_GET['env']          ?? '',
         'page'        => $_GET['page']        ?? '',
     ], $overrides), fn($v) => $v !== '' && $v !== null);
     return http_build_query($merged);
@@ -342,6 +404,13 @@ $buildQuery = function (array $overrides = []) {
             a positive integer (1..3650 days). Audit, compliance, and
             forensics tend to want long retention, so pruning is opt-in.
         </p>
+        <p class="text-secondary small mb-4">
+            <i class="bi bi-info-circle me-1"></i>All three environments
+            (alpha&nbsp;·&nbsp;beta&nbsp;·&nbsp;production) share one database, so this log
+            spans them all — use the <strong>Env</strong> column / filter to tell them apart.
+            The <strong>When</strong> column shows your <strong>local</strong> time
+            (<span data-activity-tz>detecting…</span>); CSV export is in UTC.
+        </p>
 
         <form method="GET" class="row g-2 mb-3 small">
             <div class="col-md-3">
@@ -371,6 +440,17 @@ $buildQuery = function (array $overrides = []) {
                     <option value="error"   <?= $filterResult === 'error'   ? 'selected' : '' ?>>error</option>
                 </select>
             </div>
+            <?php if ($hasObsCols): ?>
+            <div class="col-md-2">
+                <label class="form-label mb-1" for="filter-env">Env</label>
+                <select class="form-select form-select-sm" id="filter-env" name="env">
+                    <option value="">— any —</option>
+                    <option value="alpha"      <?= $filterEnv === 'alpha'      ? 'selected' : '' ?>>alpha</option>
+                    <option value="beta"       <?= $filterEnv === 'beta'       ? 'selected' : '' ?>>beta</option>
+                    <option value="production" <?= $filterEnv === 'production' ? 'selected' : '' ?>>production</option>
+                </select>
+            </div>
+            <?php endif; ?>
             <div class="col-md-2">
                 <label class="form-label mb-1" for="filter-entity-type">Entity</label>
                 <input class="form-control form-control-sm" id="filter-entity-type" type="text" name="entity_type"
@@ -437,9 +517,11 @@ $buildQuery = function (array $overrides = []) {
                                      the cells stay UTC and the header keeps its initial
                                      "(UTC)" suffix. (#723) */ ?>
                             <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <?php if ($hasObsCols): ?><th style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
                             <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
                             <th data-sort-key="action" data-sort-type="text">Action</th>
                             <th data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <?php if ($hasObsCols): ?><th data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
                             <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
                             <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
                             <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
@@ -473,6 +555,22 @@ $buildQuery = function (array $overrides = []) {
                                 title="<?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> UTC">
                                 <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> <span class="text-muted">UTC</span>
                             </td>
+                            <?php if ($hasObsCols): ?>
+                            <td>
+                                <?php
+                                $env = (string)($r['Environment'] ?? '');
+                                if ($env !== ''):
+                                    $envCls = match ($env) {
+                                        'production' => 'bg-success',
+                                        'beta'       => 'bg-info text-dark',
+                                        'alpha'      => 'bg-secondary',
+                                        default      => 'bg-dark border',
+                                    };
+                                ?>
+                                    <span class="badge <?= $envCls ?>"><?= htmlspecialchars($env, ENT_QUOTES, 'UTF-8') ?></span>
+                                <?php endif; ?>
+                            </td>
+                            <?php endif; ?>
                             <td>
                                 <?php if (!empty($r['Username'])): ?>
                                     <span><?= htmlspecialchars((string)$r['Username'], ENT_QUOTES, 'UTF-8') ?></span>
@@ -490,13 +588,29 @@ $buildQuery = function (array $overrides = []) {
                                     <code><?= htmlspecialchars((string)$r['EntityId'], ENT_QUOTES, 'UTF-8') ?></code>
                                 <?php endif; ?>
                             </td>
+                            <?php if ($hasObsCols): ?>
+                            <td class="small text-muted">
+                                <?php $rp = (string)($r['RequestPath'] ?? ''); if ($rp !== ''): ?>
+                                    <a class="text-decoration-none"
+                                       href="?<?= htmlspecialchars($buildQuery(['q' => $rp]), ENT_QUOTES, 'UTF-8') ?>"
+                                       title="Filter to hits on this path">
+                                        <code class="d-inline-block text-truncate" style="max-width: 18rem; vertical-align: bottom;"><?= htmlspecialchars($rp, ENT_QUOTES, 'UTF-8') ?></code>
+                                    </a>
+                                <?php endif; ?>
+                            </td>
+                            <?php endif; ?>
                             <td>
                                 <span class="badge <?= $resultBadgeClass[$r['Result']] ?? 'bg-secondary' ?>">
                                     <?= htmlspecialchars((string)$r['Result'], ENT_QUOTES, 'UTF-8') ?>
                                 </span>
                             </td>
                             <td class="text-muted small">
-                                <?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php
+                                if ($hasObsCols):
+                                    $cc = (string)($r['Country'] ?? '');
+                                    $flag = _activityFlagEmoji($cc);
+                                    if ($flag !== ''):
+                                ?><span title="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>" aria-label="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>"><?= $flag ?></span> <?php endif; endif; ?><?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
                                 <?php
                                 /* Proxy/VPN indicator badge — shown inline under
                                    the IP when classification is something other
@@ -531,7 +645,7 @@ $buildQuery = function (array $overrides = []) {
                         </tr>
                         <?php if ($detailsPretty !== '' || ($r['UserAgent'] ?? '') !== '' || $r['DurationMs'] !== null): ?>
                         <tr class="activity-row">
-                            <td colspan="7" class="bg-black-soft border-0 py-2">
+                            <td colspan="<?= $hasObsCols ? 9 : 7 ?>" class="bg-black-soft border-0 py-2">
                                 <div class="small text-muted mb-1">
                                     <?php if ($r['Method'] !== ''): ?>
                                         <code><?= htmlspecialchars((string)$r['Method'], ENT_QUOTES, 'UTF-8') ?></code>
@@ -549,6 +663,9 @@ $buildQuery = function (array $overrides = []) {
                                         · UA: <span class="activity-ua" title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
                                             <?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>
                                         </span>
+                                    <?php endif; ?>
+                                    <?php if ($hasObsCols && !empty($r['Referrer'])): ?>
+                                        <br>· Referrer: <span class="activity-ua"><?= htmlspecialchars((string)$r['Referrer'], ENT_QUOTES, 'UTF-8') ?></span>
                                     <?php endif; ?>
                                 </div>
                                 <?php if ($detailsPretty !== ''): ?>
@@ -642,8 +759,12 @@ $buildQuery = function (array $overrides = []) {
                    across teammates in different regions. */
                 cell.setAttribute('title', cell.textContent + ' (' + visitorTz + ')');
             });
+            /* #1207 — keep the header short ("When (local)") so it doesn't wrap;
+               surface the actual timezone in the blurb instead. */
             var header = document.getElementById('activity-when-header');
-            if (header) header.textContent = 'When (local — ' + visitorTz + ')';
+            if (header) header.textContent = 'When (local)';
+            var tzLabel = document.querySelector('[data-activity-tz]');
+            if (tzLabel) tzLabel.textContent = visitorTz;
         } catch (_e) { /* fail-soft — server-rendered UTC stays */ }
     })();
     </script>
