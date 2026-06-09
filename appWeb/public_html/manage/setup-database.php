@@ -1333,6 +1333,54 @@ if ($hasCredentials && defined('DB_HOST')) {
             </a>
         </div>
 
+        <?php if (!empty($pendingActions)): ?>
+            <!-- ============================================================
+                 PENDING-MIGRATION LIST (#1200)
+                 Lists EVERY migration whose probe currently reports pending —
+                 including any that have NO card (so they're invisible in the
+                 grid AND skipped by the bulk runner, which both filter to
+                 isset($migrationCards[...])). A migration that runs but whose
+                 probe never flips, or one with no card, is exactly what keeps
+                 the counter stuck above zero. Each row has a "Run & show
+                 output" link: a single-migration run renders its full output
+                 INLINE (no auto-refresh), so the curator can read the
+                 "[warn] … manual merge / skipped" lines that explain why a
+                 probe stays pending.
+                 ============================================================ -->
+            <details class="mb-4">
+                <summary class="text-secondary small" style="cursor:pointer;">
+                    Show the <?= count($pendingActions) ?> pending migration<?= count($pendingActions) === 1 ? '' : 's' ?>
+                    (which, and why each is still pending)
+                </summary>
+                <ul class="list-group list-group-flush mt-2">
+                    <?php foreach ($pendingActions as $_pa): ?>
+                        <?php $_paCard = $migrationCards[$_pa] ?? null; ?>
+                        <li class="list-group-item bg-transparent d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                            <span>
+                                <code class="text-info"><?= htmlspecialchars($_pa) ?></code>
+                                <?php if ($_paCard): ?>
+                                    <span class="ms-2"><?= htmlspecialchars(strip_tags((string)$_paCard['title'])) ?></span>
+                                <?php else: ?>
+                                    <span class="badge bg-warning text-dark ms-2">
+                                        no card — hidden from the grid &amp; skipped by &ldquo;Apply all&rdquo;
+                                    </span>
+                                <?php endif; ?>
+                            </span>
+                            <a href="?action=<?= htmlspecialchars($_pa) ?>"
+                               class="btn btn-sm btn-outline-info flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run &amp; show output
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="text-muted small mt-2 mb-0">
+                    A single-migration run shows its full output here without auto-refreshing, so you can read
+                    exactly what it did &mdash; including any <code>[warn]</code> lines (e.g. &ldquo;manual merge needed&rdquo;
+                    or &ldquo;skipped&rdquo;) that leave a probe reporting pending even though the script ran cleanly.
+                </p>
+            </details>
+        <?php endif; ?>
+
         <!-- ============================================================
              ACTION CARDS
              ============================================================ -->

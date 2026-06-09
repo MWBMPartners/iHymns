@@ -160,16 +160,39 @@ async function runSequence(scope, triggerBtn, pending) {
         panel.querySelector('[data-bulk-status-badge]').className = 'badge bg-success';
         panel.querySelector('[data-bulk-status-badge]').textContent = 'Complete';
 
-        /* Re-render the dashboard so pending-vs-applied probes refresh
-           after a clean run. Small delay so the curator sees the
-           "Complete" state for a moment first. */
-        setTimeout(() => {
-            window.location.href = ENDPOINT;
-        }, 1200);
+        /* DON'T auto-redirect (#1200): a script can return STATUS: ok yet leave
+           its probe still reporting pending (e.g. it logged "[warn] manual merge
+           needed / skipped"). Yanking the page after 1.2s hid that output. Leave
+           the panel + log on screen and offer a manual refresh — the curator
+           expands the log, reads why anything's still pending, then reloads when
+           ready (the pending/applied partition re-runs on reload). */
+        addRefreshButton(panel);
     }
 
     triggerBtn.classList.remove('disabled');
     triggerBtn.removeAttribute('aria-disabled');
+}
+
+/**
+ * Append a "Refresh dashboard" button to the panel so the curator can read the
+ * output log before reloading (instead of being auto-redirected). Idempotent.
+ */
+function addRefreshButton(panel) {
+    if (panel.querySelector('[data-bulk-refresh]')) return;
+    const body = panel.querySelector('.card-body') || panel;
+    const wrap = document.createElement('div');
+    wrap.className = 'mt-3 d-flex align-items-center gap-2 flex-wrap';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.dataset.bulkRefresh = '';
+    btn.className = 'btn btn-sm btn-primary';
+    btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1" aria-hidden="true"></i>Refresh dashboard';
+    btn.addEventListener('click', () => { window.location.href = ENDPOINT; });
+    const note = document.createElement('span');
+    note.className = 'text-muted small';
+    note.textContent = 'Expand the log above to check nothing is still pending, then refresh to update the cards.';
+    wrap.append(btn, note);
+    body.appendChild(wrap);
 }
 
 /**
