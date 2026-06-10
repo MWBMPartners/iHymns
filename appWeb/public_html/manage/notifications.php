@@ -44,6 +44,24 @@ $activePage = 'notifications';
 $db   = getDbMysqli();
 $csrf = csrfToken();
 
+/* #1238 — the Environment / ExpiresAt columns may not exist yet (migrations are
+   NOT auto-applied on deploy, per the house DB rules). Probe ONCE and degrade
+   gracefully: when absent, the compose/INSERT/list all behave as before (every
+   notification system-wide + never-expiring) instead of 500-ing on a missing
+   column. The "Notification scope + expiry" migration adds them. */
+$notifHasScope = false;
+try {
+    $r = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblNotifications'
+            AND COLUMN_NAME = 'Environment' LIMIT 1"
+    );
+    $notifHasScope = ($r && $r->num_rows > 0);
+    if ($r) { $r->close(); }
+} catch (\Throwable $_e) {
+    $notifHasScope = false;
+}
+
 /* ----------------------------------------------------------------------
  * POST handlers — compose / delete
  * ---------------------------------------------------------------------- */
@@ -71,6 +89,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $body        = trim((string)($_POST['body']      ?? ''));
             $actionUrl   = trim((string)($_POST['action_url'] ?? ''));
             $type        = trim((string)($_POST['type']      ?? 'announcement'));
+            /* #1238 — optional environment scope + expiry. */
+            $environment = (string)($_POST['environment'] ?? '');      // '' = all environments
+            $expiresAtIn = trim((string)($_POST['expires_at'] ?? ''));  // '' = never expires
+            $expiresAtSql = '';
 
             /* Validate */
             $errs = [];
@@ -93,6 +115,21 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $allowedTypes = ['announcement', 'maintenance', 'release', 'info'];
             if (!in_array($type, $allowedTypes, true)) {
                 $type = 'announcement';
+            }
+            /* #1238 — env scope must be one of the known environments (blank = all);
+               expiry, when given, must parse and be in the future. */
+            if (!in_array($environment, ['', 'alpha', 'beta', 'production'], true)) {
+                $errs[] = 'Invalid environment scope.';
+            }
+            if ($expiresAtIn !== '') {
+                $expTs = strtotime($expiresAtIn);
+                if ($expTs === false) {
+                    $errs[] = 'Expiry date/time is not valid.';
+                } elseif ($expTs <= time()) {
+                    $errs[] = 'Expiry must be in the future.';
+                } else {
+                    $expiresAtSql = date('Y-m-d H:i:s', $expTs);
+                }
             }
 
             /* Resolve recipients */
@@ -158,10 +195,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    without dynamically generated SQL — at NOTIFY_BROADCAST_MAX
                    = 5000 the loop is fast enough (~< 1s on a typical host)
                    and stays auditable per-row. */
-                $stmt = $db->prepare(
-                    'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
-                     VALUES (?, ?, ?, ?, ?)'
-                );
+                /* #1238 — include Environment + ExpiresAt only when the columns
+                   exist; otherwise fall back to the original 5-column INSERT so an
+                   un-migrated install still broadcasts (system-wide, never-expiring). */
+                if ($notifHasScope) {
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl, Environment, ExpiresAt)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)'
+                    );
+                } else {
+                    $stmt = $db->prepare(
+                        'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
+                         VALUES (?, ?, ?, ?, ?)'
+                    );
+                }
                 /* tblNotifications.ActionUrl is NOT NULL DEFAULT '' —
                    binding NULL on a blank optional field threw
                    `Column 'ActionUrl' cannot be null` and the request
@@ -170,9 +217,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    already treat empty strings as no-link, so swap
                    the NULL fallback for ''. */
                 $actionUrlForBind = $actionUrl !== '' ? $actionUrl : '';
+                /* NULL binds: blank env => all environments; blank expiry => never. */
+                $envForBind     = $environment !== '' ? $environment : null;
+                $expiresForBind = $expiresAtSql !== '' ? $expiresAtSql : null;
                 $count = 0;
                 foreach ($recipients as $uid) {
-                    $stmt->bind_param('issss', $uid, $type, $title, $body, $actionUrlForBind);
+                    if ($notifHasScope) {
+                        $stmt->bind_param('issssss', $uid, $type, $title, $body, $actionUrlForBind, $envForBind, $expiresForBind);
+                    } else {
+                        $stmt->bind_param('issss', $uid, $type, $title, $body, $actionUrlForBind);
+                    }
                     if (@$stmt->execute()) $count++;
                 }
                 $stmt->close();
@@ -576,6 +630,25 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <input type="text" name="action_url" class="form-control form-control-sm" placeholder="/manage/some-page  or  https://…">
                         <div class="form-text small">Local /-rooted path or absolute https://. Clicking the row in the bell sends the user here.</div>
                     </div>
+<?php if ($notifHasScope): /* #1238 — only when the columns exist (migration applied) */ ?>
+                    <div class="row g-2 mb-1">
+                        <div class="col-sm-6">
+                            <label class="form-label small">Environment <span class="text-muted">(optional)</span></label>
+                            <select name="environment" class="form-select form-select-sm">
+                                <option value="">All environments</option>
+                                <option value="alpha">Alpha only</option>
+                                <option value="beta">Beta only</option>
+                                <option value="production">Production only</option>
+                            </select>
+                            <div class="form-text small">The three environments share one database; scope a notice to just one.</div>
+                        </div>
+                        <div class="col-sm-6">
+                            <label class="form-label small">Expires <span class="text-muted">(optional)</span></label>
+                            <input type="datetime-local" name="expires_at" class="form-control form-control-sm">
+                            <div class="form-text small">Leave blank to never expire.</div>
+                        </div>
+                    </div>
+<?php endif; ?>
                 </div>
 
                 <div class="modal-footer">

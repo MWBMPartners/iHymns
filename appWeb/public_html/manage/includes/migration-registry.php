@@ -1398,6 +1398,22 @@ return [
         /* Pending until the table exists; self-clears once it has been created. */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongHistory'),
     ],
+    'notification-scope-expiry' => [
+        'script' => 'migrate-notification-scope-expiry.php',
+        'card' => [
+            'title'  => 'Notification scope + expiry (#1238)',
+            'body'   => 'Adds <code>Environment</code> (NULL = all; alpha / beta / production = that env'
+                      . ' only — the three environments share one DB) and <code>ExpiresAt</code>'
+                      . ' (NULL = never) to <code>tblNotifications</code>, so an admin broadcast can'
+                      . ' target a single environment and/or auto-expire. Additive + idempotent —'
+                      . ' safe to re-run.',
+            'button' => 'Run Notification Scope + Expiry Migration',
+        ],
+        /* Pending until BOTH columns exist; self-clears once they have landed. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblNotifications', 'Environment')
+            || !_migProbe_columnExists($db, 'tblNotifications', 'ExpiresAt'),
+    ],
 
     /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
        Shape-readiness so the iHymns DB can become the shared iLyricsDB core

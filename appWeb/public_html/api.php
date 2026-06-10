@@ -7448,21 +7448,45 @@ if ($action !== null) {
             }
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT Id AS id,
-                            Type AS type,
-                            Title AS title,
-                            Body AS body,
-                            ActionUrl AS action_url,
-                            IsRead AS is_read,
-                            CreatedAt AS created_at
-                       FROM tblNotifications
-                      WHERE UserId = ?
-                      ORDER BY IsRead ASC, CreatedAt DESC
-                      LIMIT 50'
-                );
                 $authUserId = (int)$authUser['Id'];
-                $stmt->bind_param('i', $authUserId);
+                /* #1238 — filter by environment scope + expiry, but ONLY if the
+                   columns exist (migrations aren't auto-applied; an un-migrated
+                   install must not 500 the bell). Probe once; degrade to the
+                   original unscoped query when absent. */
+                $notifHasScope = false;
+                $colRes = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblNotifications'
+                        AND COLUMN_NAME = 'Environment' LIMIT 1"
+                );
+                if ($colRes) { $notifHasScope = $colRes->num_rows > 0; $colRes->close(); }
+
+                if ($notifHasScope) {
+                    /* Show rows for ALL envs (Environment IS NULL) or THIS env, that
+                       are unexpired (ExpiresAt IS NULL or still in the future). */
+                    $stmt = $db->prepare(
+                        'SELECT Id AS id, Type AS type, Title AS title, Body AS body,
+                                ActionUrl AS action_url, IsRead AS is_read, CreatedAt AS created_at
+                           FROM tblNotifications
+                          WHERE UserId = ?
+                            AND (Environment IS NULL OR Environment = ?)
+                            AND (ExpiresAt IS NULL OR ExpiresAt > NOW())
+                          ORDER BY IsRead ASC, CreatedAt DESC
+                          LIMIT 50'
+                    );
+                    $env = ihymns_environment();
+                    $stmt->bind_param('is', $authUserId, $env);
+                } else {
+                    $stmt = $db->prepare(
+                        'SELECT Id AS id, Type AS type, Title AS title, Body AS body,
+                                ActionUrl AS action_url, IsRead AS is_read, CreatedAt AS created_at
+                           FROM tblNotifications
+                          WHERE UserId = ?
+                          ORDER BY IsRead ASC, CreatedAt DESC
+                          LIMIT 50'
+                    );
+                    $stmt->bind_param('i', $authUserId);
+                }
                 $stmt->execute();
                 $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
