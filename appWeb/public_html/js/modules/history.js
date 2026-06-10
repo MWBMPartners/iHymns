@@ -319,7 +319,12 @@ export class History {
         /* Remove existing recent section if present (prevents duplicates) */
         document.getElementById('recent-songs-section')?.remove();
 
-        /* Build the section HTML */
+        /* Build the section HTML.
+           #1237 — the number badge shows a value ONLY when it's a real positive number;
+           0 / null / '0' (Misc / Collection / non-official songbooks) render the badge
+           EMPTY so the `.song-number-badge:empty::before` CSS shows the book glyph,
+           matching the Popular list's renderPopularRow. The old `h.number ?? ''` was the
+           bug: nullish-coalescing does NOT catch 0, so it printed a literal "0". */
         const section = document.createElement('div');
         section.id = 'recent-songs-section';
         section.className = 'mb-4';
@@ -341,7 +346,7 @@ export class History {
                        class="list-group-item list-group-item-action song-list-item"
                        data-navigate="song"
                        data-song-id="${escapeHtml(h.id)}">
-                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${h.number ?? ''}</span>
+                        <span class="song-number-badge" data-songbook="${escapeHtml(h.songbook)}">${Number(h.number) > 0 ? escapeHtml(String(h.number)) : ''}</span>
                         <div class="song-info flex-grow-1">
                             <span class="song-title">${escapeHtml(toTitleCase(h.title))}${verifiedBadge(h)}</span>
                             <small class="text-muted d-block">${songbookLabel(h.songbook)}</small>
