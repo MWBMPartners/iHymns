@@ -111,18 +111,35 @@ asks the owner to pick C vs the C-variant before any code.
 
 ## 6. Migration path (eyes-open — this is the real work)
 
-1. **Backfill.** One-shot, idempotent migration: every `tblSongComponents.LinesJson` (+ Chords/Notes)
-   → `tblLyricLines` rows under each song's primary `tblLyrics` version (creating one if absent),
-   carrying part identity, chords and notes onto the line. CI guards (#19/#20) apply.
+**Existing data migrates IN PLACE — no re-import, no re-entry.** Every song, component, line, plus the
+chords / notes / per-component language already in the catalogue is carried into the normalised model by
+an automated backfill; curators never re-key or re-import anything. The source (`LinesJson`) is kept as a
+fallback until the backfill is **verified**, so the migration is **safe, re-runnable, and reversible**
+during the transition.
+
+1. **Backfill migration (data — P1, the "no re-import" guarantee).** A one-shot, **idempotent**,
+   re-runnable `migrate-*.php`, run via the standard Setup-Database "Apply all" mechanism with a real
+   completion probe (rule #19). For every song it:
+   - ensures a primary `tblLyrics` version (creates one, `Source='ihymns'`, if absent — idempotent via the
+     `(SongId, Source)` unique, so re-runs + any prior ingest rows never duplicate);
+   - reads each `tblSongComponents` (in `SortOrder`) and writes its `LinesJson` lines as `tblLyricLines`
+     rows, carrying **part identity** (`PartType`/`PartNumber`), **per-component language**, **chords**
+     (`ChordsJson`) and **presenter notes** (`NotesJson`) onto the line, preserving order;
+   - skips components already projected, so it is safe to re-run after a fix.
+   Batched + `set_time_limit(0)` for the ~12k-song catalogue (like the other long migrations). The whole
+   existing corpus comes across automatically — **nothing is re-entered or re-imported.**
 2. **Id-preserving editor save (the crux).** `component_upsert` (and the structure-tab) **diff** the
    edited text into line rows — insert new, update changed, delete removed, and **preserve `Id`s for
    unchanged lines** so existing timings/translations/annotations survive an edit. Naïve delete-all +
    reinsert would silently orphan all enrichment; this diff is the hardest, most important piece.
 3. **Read-model switch.** `getSongById` / the public render / every reader + exporter read from
    `tblLyricLines` (grouped into components for display), and emit JSON arrays only at the export
-   boundary. Fallback to `LinesJson` only for rows not yet backfilled (transition window), then remove.
+   boundary. Fallback to `LinesJson` only for rows not yet backfilled (transition window).
 4. **Editor refactor.** The structure-tab edits a derived component view; saves go through the diff.
-5. **Drop** `LinesJson` / `ChordsJson` / `NotesJson` once everything reads/writes the normalised model.
+5. **Verify, THEN drop.** Before any JSON column is dropped (P4): an automated consistency check (every
+   component's line count == its `LinesJson` length; spot-checks of text / part / language / chords /
+   notes) + a clean Schema-Audit. `LinesJson` stays as the read fallback until this passes, so a wrong
+   backfill is fixable with **zero data loss**. Only then drop `LinesJson` / `ChordsJson` / `NotesJson`.
 
 ## 7. iLyricsDB shared-contract implications
 
