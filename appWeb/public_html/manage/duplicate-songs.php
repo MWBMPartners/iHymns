@@ -131,6 +131,40 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             exit;
         }
 
+        /* #1218 guard — two songs in the SAME official songbook with the same
+           title are almost always DIFFERENT hymns (a published hymnal does not
+           list one song twice under two numbers). Refuse to merge such a pair
+           unless the curator explicitly forces it via the §2 type-to-confirm
+           path, so a casual click or a replayed request can't quietly destroy a
+           distinct record. */
+        $force = (string)($_POST['force'] ?? '') === '1';
+        if (!$force) {
+            $bstmt = $db->prepare(
+                'SELECT s.SongId, s.SongbookAbbr, COALESCE(sb.IsOfficial, 0) AS IsOfficial
+                   FROM tblSongs s
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                  WHERE s.SongId IN (?, ?)'
+            );
+            $bstmt->bind_param('ss', $survivor, $duplicate);
+            $bstmt->execute();
+            $books = [];
+            $br = $bstmt->get_result();
+            while ($row = $br->fetch_assoc()) { $books[(string)$row['SongId']] = $row; }
+            $bstmt->close();
+            $sa = $books[$survivor]  ?? null;
+            $sd = $books[$duplicate] ?? null;
+            if ($sa && $sd
+                && (string)$sa['SongbookAbbr'] === (string)$sd['SongbookAbbr']
+                && (int)$sa['IsOfficial'] === 1) {
+                http_response_code(409);
+                echo json_encode(['error' =>
+                    'Both songs are in the same official songbook (' . (string)$sa['SongbookAbbr']
+                    . ') — almost certainly different hymns that share a title. Merge is blocked here; '
+                    . 'use the type-to-confirm control if you are certain.']);
+                exit;
+            }
+        }
+
         $db->begin_transaction();
         try {
             /* Single-column FK tables. */
@@ -581,16 +615,24 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         }
         echo '</tbody></table>';
 
-        /* Action row — Link/Dismiss arrive in #1219; §2 guarded merge in #1218.
-           For now: Merge for §1/§3 (admin); §2 is review-only. */
-        echo '<div class="d-flex flex-wrap gap-2">';
+        /* Action row — Link/Dismiss arrive in #1219. Merge: one-click for §1/§3
+           (admin); §2 (same official songbook) requires a type-to-confirm. */
+        echo '<div class="d-flex flex-wrap gap-2 align-items-center">';
         if ($canMerge && !$isOfficialSection) {
             echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn">'
                . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
+        } elseif ($canMerge && $isOfficialSection) {
+            /* Guarded merge (#1218): the curator must type the kept song-id to
+               arm the button, and the request carries force=1 to clear the
+               server-side same-official-songbook block. */
+            echo '<span class="small text-secondary">If these really are one hymn, type the kept song-id to enable merge:</span>';
+            echo '<input type="text" class="form-control form-control-sm dup-confirm-input" style="max-width:11rem" '
+               . 'placeholder="e.g. ' . htmlspecialchars((string)$members[0], ENT_QUOTES) . '" autocomplete="off" spellcheck="false" aria-label="Type the kept song id to confirm merge">';
+            echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn" data-force="1" disabled>'
+               . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
         }
-        if ($isOfficialSection) {
-            echo '<span class="text-secondary small align-self-center">'
-               . 'Open each song in the editor to compare. Merge is disabled here.</span>';
+        if (!$canMerge) {
+            echo '<span class="text-secondary small align-self-center">Open each song in the editor to compare.</span>';
         }
         echo '</div>';
 
@@ -624,10 +666,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     var CSRF = <?= json_encode($csrf) ?>;
     function toast(msg, ok) { if (window.showToast) { window.showToast(msg, ok ? 'success' : 'error'); } else { alert(msg); } }
 
-    /* Merge: keep the survivor (radio), merge every PICKED other member into it. */
+    /* Merge: keep the survivor (radio), merge every PICKED other member into it.
+       §2 buttons carry data-force="1" to clear the same-official-songbook guard. */
     document.querySelectorAll('.dup-merge-btn').forEach(function (btn) {
         btn.addEventListener('click', function () {
             var form = btn.closest('.dup-form');
+            var force = btn.dataset.force === '1';
             var keep = form.querySelector('input[name="survivor"]:checked');
             if (!keep) { toast('Choose which song to keep.', false); return; }
             var survivor = keep.value;
@@ -639,7 +683,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             var chain = Promise.resolve();
             dups.forEach(function (dup) {
                 chain = chain.then(function () {
-                    var body = new URLSearchParams({ action: 'merge', survivor_id: survivor, duplicate_id: dup, csrf_token: CSRF });
+                    var params = { action: 'merge', survivor_id: survivor, duplicate_id: dup, csrf_token: CSRF };
+                    if (force) { params.force = '1'; }
+                    var body = new URLSearchParams(params);
                     return fetch('/manage/duplicate-songs', { method: 'POST', body: body, credentials: 'same-origin' })
                         .then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.success) { throw new Error(j.error || 'Merge failed'); } }); });
                 });
@@ -649,6 +695,25 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 var card = btn.closest('.dup-cluster');
                 if (card) { card.remove(); }
             }).catch(function (e) { btn.disabled = false; toast(e.message || 'Merge failed.', false); });
+        });
+    });
+
+    /* §2 type-to-confirm: arm the guarded merge button only while the typed
+       value matches the selected survivor's song-id (case-insensitive). */
+    function syncConfirm(form) {
+        var input = form.querySelector('.dup-confirm-input');
+        var btn   = form.querySelector('.dup-merge-btn[data-force="1"]');
+        if (!input || !btn) { return; }
+        var keep = form.querySelector('input[name="survivor"]:checked');
+        var want = keep ? keep.value.trim().toLowerCase() : '';
+        btn.disabled = !(want && input.value.trim().toLowerCase() === want);
+    }
+    document.querySelectorAll('.dup-form').forEach(function (form) {
+        var input = form.querySelector('.dup-confirm-input');
+        if (!input) { return; }
+        input.addEventListener('input', function () { syncConfirm(form); });
+        form.querySelectorAll('input[name="survivor"]').forEach(function (r) {
+            r.addEventListener('change', function () { syncConfirm(form); });
         });
     });
 })();
