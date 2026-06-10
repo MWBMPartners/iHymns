@@ -405,20 +405,54 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
  * GET — detect candidate clusters.
  * ---------------------------------------------------------------------- */
 
-/* Does the fuzzy-suggestion table exist? (It may be unmigrated on a fresh
-   install.) We read it only as an edge source, so its absence is non-fatal. */
-$suggTableExists = false;
-$probe = $db->query(
-    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongLinkSuggestions' LIMIT 1"
-);
-if ($probe) { $suggTableExists = $probe->fetch_row() !== null; $probe->close(); }
+/* The detection pass below issues several read queries. The DB layer runs
+   mysqli under MYSQLI_REPORT_STRICT (includes/db_mysql.php), so a query against
+   a table/column missing on THIS environment — e.g. a #1215 / #1064 migration
+   not yet applied on alpha — THROWS mysqli_sql_exception; it does NOT return
+   false, so the `if ($res)` guards below cannot soak it up. A single uncaught
+   throw used to white-screen the whole page (#1228). Two layers of defence:
+     (1) every OPTIONAL edge source is gated on an explicit table-existence
+         probe, so a missing suggestions / dismissed / external-links table just
+         contributes no edges (the page still works off exact-title + shared-id
+         detection); and
+     (2) the whole pass is wrapped in one try/catch, so a CORE failure degrades
+         to an actionable error card in the render — never a blank page. */
+$detectError    = null;
+$songs          = [];
+$lyricsCount    = [];
+$sectioned      = ['cross' => [], 'official' => [], 'other' => []];
+$totalClusters  = 0;
+$dismissedPairs = [];
+
+/* Local table-existence probe. INFORMATION_SCHEMA is always present, so this
+   read itself never throws — making it a safe gate for the optional sources. */
+$tableExists = static function (\mysqli $db, string $table): bool {
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? LIMIT 1"
+    );
+    $stmt->bind_param('s', $table);
+    $stmt->execute();
+    $exists = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $exists;
+};
+
+try {
+
+/* Which optional edge-source tables are present on this install? (Any may be
+   unmigrated.) Read only as edge sources, so absence is non-fatal. */
+$suggTableExists      = $tableExists($db, 'tblSongLinkSuggestions');
+$dismissedTableExists = $tableExists($db, 'tblSongLinkSuggestionsDismissed');
+$extLinksTableExists  = $tableExists($db, 'tblSongExternalLinks');
 
 /* Curator-dismissed pairs ("not the same hymn" / "reviewed, kept separate") — a
    candidate cluster is suppressed only when ALL of its internal pairs have been
-   dismissed (#1219), so adding a new member later re-surfaces the group. */
-$dismissedPairs = [];
-if ($suggTableExists) {
+   dismissed (#1219), so adding a new member later re-surfaces the group. Gated
+   on ITS OWN table's existence — previously gated on tblSongLinkSuggestions
+   (the wrong table), which is why the page blanked when only the newer
+   Dismissed table was unmigrated (#1228). */
+if ($dismissedTableExists) {
     $dr = $db->query('SELECT SongIdA, SongIdB FROM tblSongLinkSuggestionsDismissed');
     if ($dr) {
         while ($row = $dr->fetch_assoc()) {
@@ -485,32 +519,41 @@ foreach (['Isrc', 'Iswc', 'Ccli'] as $col) {
     }
 }
 
-/* (c) Shared external-link URL (same provider + Url across >1 song). */
-$lr = $db->query(
-    "SELECT GROUP_CONCAT(x.SongId) AS SongIds
-       FROM tblSongExternalLinks x
-      GROUP BY x.LinkTypeId, x.Url
-     HAVING COUNT(DISTINCT x.SongId) > 1
-      LIMIT 1000"
-);
-if ($lr) {
-    while ($row = $lr->fetch_assoc()) {
-        $ids = array_values(array_unique(array_filter(explode(',', (string)$row['SongIds']))));
-        $ids = array_values(array_filter($ids, static fn($id) => isset($songs[$id])));
-        if (count($ids) >= 2) { $unionGroup($ids); }
+/* (c) Shared external-link URL (same provider + Url across >1 song).
+   Optional table (#833) — skipped when unmigrated (it would otherwise throw
+   under MYSQLI_REPORT_STRICT). */
+if ($extLinksTableExists) {
+    $lr = $db->query(
+        "SELECT GROUP_CONCAT(x.SongId) AS SongIds
+           FROM tblSongExternalLinks x
+          GROUP BY x.LinkTypeId, x.Url
+         HAVING COUNT(DISTINCT x.SongId) > 1
+          LIMIT 1000"
+    );
+    if ($lr) {
+        while ($row = $lr->fetch_assoc()) {
+            $ids = array_values(array_unique(array_filter(explode(',', (string)$row['SongIds']))));
+            $ids = array_values(array_filter($ids, static fn($id) => isset($songs[$id])));
+            if (count($ids) >= 2) { $unionGroup($ids); }
+        }
+        $lr->close();
     }
-    $lr->close();
 }
 
-/* (d) Pre-scored fuzzy cross-book pairs (not dismissed, not already linked). */
+/* (d) Pre-scored fuzzy cross-book pairs (not dismissed, not already linked).
+   The NOT EXISTS pre-filter joins the dismissed table, so it is dropped when
+   that table is unmigrated (dismissal suppression then has nothing to filter,
+   and $dismissedPairs is empty anyway). */
 if ($suggTableExists) {
     $sr = $db->query(
-        'SELECT s.SongIdA, s.SongIdB
-           FROM tblSongLinkSuggestions s
-          WHERE NOT EXISTS (
-                  SELECT 1 FROM tblSongLinkSuggestionsDismissed d
-                   WHERE d.SongIdA = s.SongIdA AND d.SongIdB = s.SongIdB)
-          LIMIT 5000'
+        $dismissedTableExists
+            ? 'SELECT s.SongIdA, s.SongIdB
+                 FROM tblSongLinkSuggestions s
+                WHERE NOT EXISTS (
+                        SELECT 1 FROM tblSongLinkSuggestionsDismissed d
+                         WHERE d.SongIdA = s.SongIdA AND d.SongIdB = s.SongIdB)
+                LIMIT 5000'
+            : 'SELECT s.SongIdA, s.SongIdB FROM tblSongLinkSuggestions s LIMIT 5000'
     );
     if ($sr) {
         while ($row = $sr->fetch_assoc()) {
@@ -674,6 +717,17 @@ unset($bucket);
 
 $totalClusters = count($sectioned['cross']) + count($sectioned['official']) + count($sectioned['other']);
 
+} catch (\Throwable $e) {
+    /* Degrade gracefully instead of white-screening — see the note above the
+       `try`. The most common cause is a feature migration (#1215 / #1064) not
+       yet applied on this environment; the render surfaces an actionable card
+       pointing at /manage/setup-database (#1228). */
+    $detectError   = $e->getMessage();
+    $sectioned     = ['cross' => [], 'official' => [], 'other' => []];
+    $totalClusters = 0;
+    error_log('[duplicate-songs] detection failed: ' . $e->getMessage());
+}
+
 /* ---- Render helpers ---- */
 $songLabel = static function (array $s): string {
     $num = ($s['Number'] !== null && $s['Number'] !== '') ? (' #' . (int)$s['Number']) : '';
@@ -736,7 +790,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </button>
     </div>
 
-    <?php if ($totalClusters === 0): ?>
+    <?php if ($detectError !== null): ?>
+        <div class="alert alert-danger" role="alert">
+            <i class="bi bi-exclamation-octagon me-1"></i>
+            <strong>Duplicate detection couldn't run.</strong>
+            This usually means a database migration for this feature hasn't been applied on this
+            environment yet. Open <a href="/manage/setup-database" class="alert-link">Setup&nbsp;Database</a>,
+            apply any pending migrations, then reload this page.
+            <div class="small text-muted mt-2">Detail: <code><?= htmlspecialchars($detectError, ENT_QUOTES) ?></code></div>
+        </div>
+    <?php elseif ($totalClusters === 0): ?>
         <div class="alert alert-success"><i class="bi bi-check-circle me-1"></i>No potential duplicates or counterparts detected.</div>
     <?php endif; ?>
 
