@@ -1414,6 +1414,26 @@ return [
             !_migProbe_columnExists($db, 'tblNotifications', 'Environment')
             || !_migProbe_columnExists($db, 'tblNotifications', 'ExpiresAt'),
     ],
+    'lyric-lines-mirror' => [
+        'script' => 'migrate-lyric-lines-mirror.php',
+        'card' => [
+            'title'  => 'Lyric-lines mirror: chords/notes + backfill (#1235 P1)',
+            'body'   => 'Lyric-line normalisation Phase 1 (Option 1). Adds the two per-line homes'
+                      . ' <code>tblLyricLines</code> still needed — <code>ChordsJson</code> +'
+                      . ' <code>Note</code> — then backfills the WHOLE catalogue into'
+                      . ' <code>tblLyricLines</code> from the authoritative <code>tblSongComponents</code>'
+                      . ' (line text + part identity + chords + notes + per-component language),'
+                      . ' <strong>in place, no re-import</strong>. <code>tblSongComponents</code> stays'
+                      . ' authoritative + reads are unchanged; the mirror is the future single source of'
+                      . ' truth. Additive + idempotent (delete + reinsert per song) — safe to re-run.',
+            'button' => 'Run Lyric-lines Mirror Migration',
+        ],
+        /* Pending until BOTH per-line columns exist; self-clears once they land.
+           (The backfill is idempotent, so re-running after an edit is safe.) */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLyricLines', 'ChordsJson')
+            || !_migProbe_columnExists($db, 'tblLyricLines', 'Note'),
+    ],
 
     /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
        Shape-readiness so the iHymns DB can become the shared iLyricsDB core

@@ -593,6 +593,8 @@ CREATE TABLE IF NOT EXISTS tblLyricLines (
     LanguageCode  VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Per-line language override (IETF tag); NULL = song default',
     IsInstrumental TINYINT(1)     NOT NULL DEFAULT 0,
     MetaJson      JSON            NULL DEFAULT NULL COMMENT 'Lossless TTML line attrs (ttm:role, ttm:agent, itunes:song-part, background-vocal) (#141)',
+    ChordsJson    JSON            NULL DEFAULT NULL COMMENT 'Per-line chords mirrored from tblSongComponents.ChordsJson[i] (null/string/array); #1235 P1 normalisation',
+    Note          TEXT            NULL DEFAULT NULL COMMENT 'Per-line presenter/slide note mirrored from tblSongComponents.NotesJson[i]; #1235 P1 normalisation',
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
