@@ -153,6 +153,37 @@ already tracks iHymns until the backends merge — this is the merge's data cont
 - **`tblSongChords` (legacy)** vs per-line chords — decide whether to fold it in or leave it.
 - **Owner decision required:** Option C vs the C-variant (keep `tblSongComponents` as metadata-only).
 
+## 10. API surface — the contract for ALL clients (web/PWA + native; read AND write)
+
+**Hard requirement (owner):** the normalised model is exposed ONLY through the API — no client
+touches the DB directly — and the **same API serves the web/PWA AND the native apps for EVERY
+interaction**: retrieve, display, *and* administer/edit. The read + write API is therefore in scope
+**with the model**, not a follow-on. It dovetails with the editor's `api2.php` and the broader
+public/PWA API + OpenAPI redo (**#1201**), and it *is* the iLyricsDB shared contract.
+
+**Read API** — one canonical lyrics shape every client renders from:
+- A song's lyrics as the normalised **lines grouped into parts** (verse/chorus), with per-line
+  enrichment addressable: language, line/word/syllable timing, translations, annotations, chords,
+  notes, `MetaJson`. Slim/index reads for lists; full read for the song page.
+- A song's lyric **versions** (`tblLyrics`) + the primary; fetch a specific version.
+
+**Write API** — granular, atomic, used by NATIVE editors too (not just the web editor):
+- Per-line / per-part CRUD on the api2.php model, extended for the normalised schema: create / update
+  / delete a line; reorder; set part identity + number; set per-line language + timing; manage per-line
+  translations + annotations; manage chords + notes. The **Id-preserving diff (P2)** is exposed so a
+  native client editing text gets the same line-`Id` stability (timings/translations survive edits).
+- Version ops: create/import a version, set primary, status transitions.
+- **Dual auth:** the web editor uses CSRF; native apps use the `ihymns_auth` token — the write API must
+  accept BOTH consistently.
+
+**Contract stability:** native apps ship and lag, so the line/lyrics API must be **versioned, stable,
+and OpenAPI-documented** — a breaking change to the line shape breaks deployed native apps. Same reason
+it's the iLyricsDB contract: **one schema, one API, many clients** (web, native, iLyricsDB consumers).
+
+**Phasing impact:** the **read API (P1)** and the **granular write API (P2)** land WITH the model,
+fully covering retrieve / display / administer, before native clients build against it. Tracked
+jointly with #1201.
+
 ---
 *Next once approved: create the implementation epic + per-phase issues; do P1 (backfill + read-model)
 behind the `LinesJson` fallback so it ships with zero behaviour change.*
