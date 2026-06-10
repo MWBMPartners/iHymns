@@ -1382,6 +1382,22 @@ return [
             !_migProbe_tableExists($db, 'tblUserCustomTags')
             || !_migProbe_columnExists($db, 'tblUserFavorites', 'Tags'),
     ],
+    'song-history-table' => [
+        'script' => 'migrate-song-history.php',
+        'card' => [
+            'title'  => 'Recently-Viewed history table (#1236)',
+            'body'   => 'Creates <code>tblSongHistory</code> on long-running installs that predate it'
+                      . ' (fresh installs already get it from schema.sql). Without the table the'
+                      . ' <code>song_history</code> API throws, returns <code>{ fallback: true }</code>,'
+                      . ' and the client silently falls back to per-device <code>localStorage</code> — so a'
+                      . ' signed-in user&rsquo;s Recently-Viewed list differs across devices. The client +'
+                      . ' API (#546 / #549 / WS-G #1019) are already built; this only adds the missing'
+                      . ' table. Additive + idempotent — safe to re-run.',
+            'button' => 'Run Recently-Viewed History Migration',
+        ],
+        /* Pending until the table exists; self-clears once it has been created. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongHistory'),
+    ],
 
     /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
        Shape-readiness so the iHymns DB can become the shared iLyricsDB core
