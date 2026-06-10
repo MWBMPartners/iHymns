@@ -68,6 +68,14 @@ $stats = $songData->getStats();
                     $bookLangsTitle = !empty($bookLangNames)
                         ? implode(', ', $bookLangNames)
                         : resolveLanguageName($bookLang);
+                    /* #1223 — unofficial-songbook flag. SongData casts
+                       tblSongbooks.IsOfficial (#502) to a strict bool;
+                       empty() also treats a missing key (pre-migration /
+                       cached fragment) as unofficial-safe. Drives the
+                       "Unofficial" badge below + the "(unofficial songbook)"
+                       clause folded into the card's accessible name, mirroring
+                       the language-badge a11y pattern (#680 / #856). */
+                    $isUnofficial = empty($book['isOfficial']);
                 ?>
                 <div class="col-12 col-sm-6 col-md-4 col-lg-3" id="songbook-<?= htmlspecialchars($book['id']) ?>">
                     <div class="card card-songbook h-100 position-relative"
@@ -83,7 +91,7 @@ $stats = $songData->getStats();
                         <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                            class="stretched-link text-decoration-none text-reset"
                            data-navigate="songbook"
-                           aria-label="Open <?= htmlspecialchars($book['name']) ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                           aria-label="Open <?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= number_format($book['songCount']) ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
                         <?php if ($langCode !== ''): ?>
                             <!-- #856 / #857: tooltip resolves the IETF tag to
                                  the full language name; when the book contains
@@ -105,6 +113,19 @@ $stats = $songData->getStats();
                                     <span class="badge bg-body-secondary me-1">
                                         <?= htmlspecialchars($book['id']) ?>
                                     </span>
+                                    <?php if ($isUnofficial): ?>
+                                        <!-- #1223 — "Unofficial" badge. Surfaces unofficial
+                                             songbooks as first-class-but-badged alongside the
+                                             official ones (owner decision; presentation-only,
+                                             no storage merge — converting a book to a catalogue
+                                             would orphan its songs, see the issue). aria-hidden
+                                             because the stretched-link's accessible name above
+                                             already carries "(unofficial songbook)" — same a11y
+                                             pattern as the language badge (#680 / #856). -->
+                                        <span class="badge songbook-unofficial-badge"
+                                              title="Unofficial songbook"
+                                              aria-hidden="true">Unofficial</span>
+                                    <?php endif; ?>
                                     <p class="text-muted small mb-0 mt-1">
                                         <?= number_format($book['songCount']) ?> songs
                                     </p>

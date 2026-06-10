@@ -219,6 +219,13 @@ $homeCardEnd = '</div>';
                         $bookLangsTitle = !empty($bookLangNames)
                             ? implode(', ', $bookLangNames)
                             : resolveLanguageName($bookLang);
+                        /* #1223 — unofficial-songbook flag (see
+                           includes/pages/songbooks.php for full rationale).
+                           A global per-book property (tblSongbooks.IsOfficial,
+                           #502), so it's safe to render in the cached home
+                           fragment — no per-user state, no personalisation of
+                           a shared cache (CLAUDE.md rule #6). */
+                        $isUnofficial = empty($book['isOfficial']);
                     ?>
                     <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
                         <div class="card card-songbook h-100 position-relative"
@@ -233,7 +240,7 @@ $homeCardEnd = '</div>';
                             <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                                class="stretched-link text-decoration-none text-reset"
                                data-navigate="songbook"
-                               aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                               aria-label="<?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
                             <?php if ($langCode !== ''): ?>
                                 <!-- Language indicator badge (#680) — small uppercase
                                      ISO 639 code in the tile's top-right corner.
@@ -257,6 +264,17 @@ $homeCardEnd = '</div>';
                                 <span class="badge bg-body-secondary rounded-pill">
                                     <?= htmlspecialchars($book['id']) ?>
                                 </span>
+                                <?php if ($isUnofficial): ?>
+                                    <!-- #1223 — "Unofficial" badge (see
+                                         includes/pages/songbooks.php for the full
+                                         rationale). rounded-pill + ms-1 to match the
+                                         sibling abbreviation pill on the centred home
+                                         tile. aria-hidden — the accessible name in the
+                                         stretched-link already carries it. -->
+                                    <span class="badge songbook-unofficial-badge rounded-pill ms-1"
+                                          title="Unofficial songbook"
+                                          aria-hidden="true">Unofficial</span>
+                                <?php endif; ?>
                                 <p class="card-text text-muted small mt-2 mb-0">
                                     <?= number_format($book['songCount']) ?> songs
                                 </p>

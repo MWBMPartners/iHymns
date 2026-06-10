@@ -3336,6 +3336,33 @@ body.reduce-motion .related-songs-chevron {
     padding-right: 5.75rem;
 }
 
+/* "Unofficial" songbook badge (#1223). Rendered next to a songbook's
+   abbreviation badge on the home tiles, the /songbooks list tiles, and
+   the songbook detail header.
+   ELI5: a gentle tag that says "this book isn't one of the official
+   published editions" — its songs are still really here, they're just not
+   part of an official, numbered hymnal.
+   WHY: the owner's #1223 decision surfaces official + unofficial songbooks
+   together as one "Songbooks" family at the PRESENTATION layer only (no
+   storage merge — converting a book to a catalogue would orphan its songs;
+   see the issue). tblSongbooks.IsOfficial (#502) already drives ranking and
+   number-hiding; this badge makes the distinction visible so users aren't
+   surprised an unofficial book has no official numbering.
+   Colour uses Bootstrap 5.3's theme-aware "warning-subtle" token family
+   (same var(--bs-warning-*, …) + hardcoded-fallback convention used
+   elsewhere in this file) so it adapts to light / dark / high-contrast
+   automatically (admin-theme-init, data-bs-theme). The word "Unofficial"
+   carries the meaning, so colour is never the sole signal — safe under
+   colour-vision-deficiency modes and WCAG 1.4.1 (Use of Colour).
+   https://getbootstrap.com/docs/5.3/customize/color/#theme-colors
+   https://www.w3.org/WAI/WCAG21/Understanding/use-of-color.html */
+.songbook-unofficial-badge {
+    background-color: var(--bs-warning-bg-subtle, #fff3cd);
+    color: var(--bs-warning-text-emphasis, #664d03);
+    border: 1px solid var(--bs-warning-border-subtle, #ffe69c);
+    font-weight: 600;
+}
+
 /* Feature-detect class driven by js/modules/offline-ui.js. When
    .offline-unsupported is on the body, every download control hides
    (rather than showing a permanently-disabled UI that can't recover). */
