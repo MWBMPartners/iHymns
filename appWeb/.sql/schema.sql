@@ -1735,9 +1735,17 @@ CREATE TABLE IF NOT EXISTS tblSongTags (
     Name            VARCHAR(50)     NOT NULL UNIQUE,
     Slug            VARCHAR(50)     NOT NULL UNIQUE COMMENT 'URL-safe lowercase version',
     Description     VARCHAR(255)    NOT NULL DEFAULT '',
+    ParentId        INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Self-FK to tblSongTags.Id for the 2-level CCLI/OpenLyrics theme hierarchy (#1152); NULL = top-level',
+    CcliThemeId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'CCLI SongSelect theme number for import id-match (#1152); NULL until known',
+    Source          VARCHAR(50)     NOT NULL DEFAULT 'curator' COMMENT 'Provenance: curator | ccli-openlyrics (seeded standard vocab) (#1152)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    INDEX idx_Slug  (Slug)
+    INDEX idx_Slug  (Slug),
+    INDEX idx_ParentId (ParentId),
+    INDEX idx_Source (Source),
+    CONSTRAINT fk_SongTags_Parent
+        FOREIGN KEY (ParentId) REFERENCES tblSongTags(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 

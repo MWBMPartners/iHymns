@@ -53,7 +53,9 @@ $_adminLinks = [
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
     ['songbook-series',      '/manage/songbook-series',        'bi-collection',      'Songbook Series',       'manage_songbooks',            'Catalogue'  ],
-    ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Catalogues',            'manage_songbooks',            'Catalogue'  ],
+    /* User-facing label is "Collections" (#1223); the route + table + entitlement
+       stay 'catalogue(s)' internally (owner decision — keep tblCatalogues). */
+    ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Collections',           'manage_songbooks',            'Catalogue'  ],
     ['works',                '/manage/works',                  'bi-diagram-3',       'Works',                 'manage_works',                'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
     ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],

@@ -164,7 +164,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 logActivity('admin.catalogues.add', 'catalogue', (string)$newId, [
                     'slug' => $slug, 'title' => $title, 'visibility' => $visibility,
                 ]);
-                $success = "Catalogue '{$title}' created.";
+                $success = "Collection '{$title}' created.";
                 break;
             }
 
@@ -174,7 +174,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $description = trim((string)($_POST['description'] ?? '')) ?: null;
                 $visibility  = trim((string)($_POST['visibility']  ?? 'public'));
                 $sortOrder   = (int)($_POST['sort_order'] ?? 0);
-                if ($id <= 0)                                            { $error = 'Catalogue id missing.'; break; }
+                if ($id <= 0)                                            { $error = 'Collection id missing.'; break; }
                 if ($title === '')                                       { $error = 'Title is required.'; break; }
                 if (!in_array($visibility, ['public','curated','admin_only'], true)) {
                     $error = 'Invalid visibility.'; break;
@@ -198,19 +198,19 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 logActivity('admin.catalogues.update', 'catalogue', (string)$id, [
                     'title' => $title, 'visibility' => $visibility,
                 ]);
-                $success = "Catalogue updated.";
+                $success = "Collection updated.";
                 break;
             }
 
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
-                if ($id <= 0) { $error = 'Catalogue id missing.'; break; }
+                if ($id <= 0) { $error = 'Collection id missing.'; break; }
                 $stmt = $db->prepare('SELECT Title FROM tblCatalogues WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
-                if (!$row) { $error = 'Catalogue not found.'; break; }
+                if (!$row) { $error = 'Collection not found.'; break; }
                 $stmt = $db->prepare('DELETE FROM tblCatalogues WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -219,7 +219,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 logActivity('admin.catalogues.delete', 'catalogue', (string)$id, [
                     'title' => $row['Title'],
                 ]);
-                $success = "Catalogue '{$row['Title']}' deleted.";
+                $success = "Collection '{$row['Title']}' deleted.";
                 break;
             }
 
@@ -327,7 +327,7 @@ if ($hasSchema && !empty($catalogues)) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Catalogues — iHymns Admin</title>
+    <title>Collections — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -337,10 +337,10 @@ if ($hasSchema && !empty($catalogues)) {
 <main class="container py-3">
 
     <h1 class="h4 mb-3">
-        <i class="bi bi-collection me-1" aria-hidden="true"></i>Catalogues
+        <i class="bi bi-collection me-1" aria-hidden="true"></i>Collections
     </h1>
     <p class="small text-muted mb-3">
-        A <strong>Catalogue</strong> is a free-form many-to-many grouping of songs that sits alongside
+        A <strong>Collection</strong> is a free-form many-to-many grouping of songs that sits alongside
         the Songbook hierarchy. Use it for thematic collections (Christmas, Easter), worship-leader
         curations (Modern, Traditional), denominational groupings, Public-Domain-only views — anything
         where one song should appear in many groupings without duplicating data.
@@ -357,13 +357,13 @@ if ($hasSchema && !empty($catalogues)) {
         <div class="alert alert-warning small">
             <i class="bi bi-database-gear me-1" aria-hidden="true"></i>
             The <code>tblCatalogues</code> table hasn't been created yet. Run the
-            <a href="/manage/setup-database">Catalogues migration</a> to enable this page.
+            <a href="/manage/setup-database">Collections migration</a> to enable this page.
         </div>
     <?php else: ?>
 
         <!-- Add catalogue form -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-2"><i class="bi bi-plus-circle me-1" aria-hidden="true"></i>Add a catalogue</h2>
+            <h2 class="h6 mb-2"><i class="bi bi-plus-circle me-1" aria-hidden="true"></i>Add a collection</h2>
             <form method="POST" class="row g-2 align-items-end small">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="add">
@@ -399,7 +399,7 @@ if ($hasSchema && !empty($catalogues)) {
                     <label class="form-label small mb-0">Colour <small class="text-muted">(optional)</small></label>
                     <div class="input-group input-group-sm">
                         <input type="color" class="form-control form-control-color" value="#888888"
-                               title="Pick a colour" aria-label="Catalogue colour swatch"
+                               title="Pick a colour" aria-label="Collection colour swatch"
                                oninput="this.nextElementSibling.value = this.value.toUpperCase()">
                         <input type="text" name="colour" class="form-control" maxlength="7"
                                pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
@@ -415,7 +415,7 @@ if ($hasSchema && !empty($catalogues)) {
 
         <!-- Existing catalogues -->
         <?php if (empty($catalogues)): ?>
-            <div class="text-muted small">No catalogues yet — use the form above to create the first one.</div>
+            <div class="text-muted small">No collections yet — use the form above to create the first one.</div>
         <?php else: ?>
             <div class="card-admin p-0 mb-3">
                 <div class="table-responsive">
@@ -451,7 +451,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         <i class="bi bi-music-note-list"></i>
                                     </button>
                                     <form method="POST" class="d-inline"
-                                          onsubmit="return confirm('Delete catalogue \'<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>\'? This unlinks every member song; the songs themselves are NOT deleted.');">
+                                          onsubmit="return confirm('Delete collection \'<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>\'? This unlinks every member song; the songs themselves are NOT deleted.');">
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="id"     value="<?= (int)$c['Id'] ?>">
@@ -497,7 +497,7 @@ if ($hasSchema && !empty($catalogues)) {
                                             <div class="input-group input-group-sm">
                                                 <input type="color" class="form-control form-control-color"
                                                        value="<?= htmlspecialchars(($c['Colour'] ?? '') !== '' ? (string)$c['Colour'] : '#888888') ?>"
-                                                       title="Pick a colour" aria-label="Catalogue colour swatch"
+                                                       title="Pick a colour" aria-label="Collection colour swatch"
                                                        oninput="this.nextElementSibling.value = this.value.toUpperCase()">
                                                 <input type="text" name="colour" class="form-control"
                                                        value="<?= htmlspecialchars((string)($c['Colour'] ?? '')) ?>"
@@ -518,7 +518,7 @@ if ($hasSchema && !empty($catalogues)) {
                                 <td colspan="6" class="bg-body-secondary">
                                     <h3 class="h6 mb-2"><i class="bi bi-music-note-list me-1"></i>Members of "<?= htmlspecialchars($c['Title']) ?>"</h3>
                                     <?php if (empty($members)): ?>
-                                        <p class="text-muted small mb-2">No songs in this catalogue yet — use the form below to add some.</p>
+                                        <p class="text-muted small mb-2">No songs in this collection yet — use the form below to add some.</p>
                                     <?php else: ?>
                                         <ul class="list-group list-group-flush small mb-2">
                                             <?php foreach ($members as $m): ?>
@@ -531,7 +531,7 @@ if ($hasSchema && !empty($catalogues)) {
                                                         <small class="text-muted ms-2">#<?= (int)$m['SongNumber'] ?></small>
                                                     </span>
                                                     <form method="POST" class="d-inline"
-                                                          onsubmit="return confirm('Remove this song from the catalogue?');">
+                                                          onsubmit="return confirm('Remove this song from the collection?');">
                                                         <input type="hidden" name="csrf_token"   value="<?= htmlspecialchars($csrf) ?>">
                                                         <input type="hidden" name="action"       value="remove_member">
                                                         <input type="hidden" name="catalogue_id" value="<?= (int)$c['Id'] ?>">
