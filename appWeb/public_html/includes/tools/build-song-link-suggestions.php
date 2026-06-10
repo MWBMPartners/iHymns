@@ -49,6 +49,12 @@ if (PHP_SAPI === 'cli') {
     $isCli = false;
 }
 
+/* Shared similarity scorer (#1216) — the normalise/levenshtein/jaccard helpers
+   used to live here as private `_bsls_*` copies; they now live in the shared
+   includes/song_similarity.php so the builder, the duplicate-songs review page
+   and the editor panel all score identically (CLAUDE.md modularity rule). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_similarity.php';
+
 function _bsls_out(string $line): void
 {
     global $isCli;
@@ -56,61 +62,9 @@ function _bsls_out(string $line): void
     if ($isCli) flush();
 }
 
-/**
- * Lower-cases, strips diacritics, drops leading articles + punctuation,
- * collapses whitespace. Used for both title comparison and first-line
- * comparison.
- */
-function _bsls_normalise(string $s): string
-{
-    $s = mb_strtolower($s, 'UTF-8');
-    /* Strip diacritics by transliterating to ASCII. iconv() is
-       deliberately wrapped: on hosts where TRANSLIT isn't available
-       we fall back to the original string rather than blanking. */
-    $ascii = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $s);
-    if ($ascii !== false) $s = $ascii;
-    /* Drop leading articles. */
-    $s = preg_replace('/^(the|a|an|o|el|la|le|les|der|die|das)\s+/u', '', $s) ?? $s;
-    /* Strip punctuation, collapse whitespace. */
-    $s = preg_replace('/[^\p{L}\p{N}\s]/u', ' ', $s) ?? $s;
-    $s = preg_replace('/\s+/u', ' ', $s) ?? $s;
-    return trim($s);
-}
-
-/**
- * 1 - levenshtein(a,b) / max(|a|,|b|).
- * PHP's levenshtein() caps at 255 chars; truncate longer inputs to
- * keep the function defined. First-line comparison can hit that
- * limit on long opening verses, so the truncation is the realistic
- * shape.
- */
-function _bsls_similarity(string $a, string $b): float
-{
-    if ($a === '' && $b === '') return 0.0;
-    $a = mb_substr($a, 0, 255);
-    $b = mb_substr($b, 0, 255);
-    $max = max(strlen($a), strlen($b));
-    if ($max === 0) return 0.0;
-    $d = levenshtein($a, $b);
-    return 1.0 - ($d / $max);
-}
-
-/**
- * Jaccard overlap on the lowercase token set of two pipe-joined
- * author strings. Used as a small (15%) signal — songs with shared
- * writer/composer names get a bump; differing authors get a penalty.
- */
-function _bsls_authors_jaccard(string $a, string $b): float
-{
-    $tokA = array_filter(array_map('trim', explode('|', mb_strtolower($a, 'UTF-8'))));
-    $tokB = array_filter(array_map('trim', explode('|', mb_strtolower($b, 'UTF-8'))));
-    if (!$tokA && !$tokB) return 0.0;
-    $setA = array_flip($tokA);
-    $setB = array_flip($tokB);
-    $inter = count(array_intersect_key($setA, $setB));
-    $union = count($setA) + count($setB) - $inter;
-    return $union > 0 ? ($inter / $union) : 0.0;
-}
+/* The normalise / levenshtein-similarity / authors-Jaccard helpers now live in
+   includes/song_similarity.php as ihymns_sim_normalise() / ihymns_sim_text() /
+   ihymns_sim_authors_jaccard() / ihymns_sim_score(). See #1216. */
 
 /* =========================================================================
  * Main
@@ -157,6 +111,9 @@ $res = $db->query(
             s.Title,
             s.Language,
             s.SongbookAbbr,
+            s.Isrc,
+            s.Iswc,
+            s.Ccli,
             COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,
             COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers,
             (SELECT cmp.Body
@@ -179,7 +136,7 @@ $bags = [];
 $total = 0;
 while ($row = $res->fetch_assoc()) {
     $title = (string)$row['Title'];
-    $normTitle = _bsls_normalise($title);
+    $normTitle = ihymns_sim_normalise($title);
     if ($normTitle === '') continue;
     $firstLine = '';
     $body = (string)($row['FirstComponentBody'] ?? '');
@@ -195,9 +152,14 @@ while ($row = $res->fetch_assoc()) {
     $bags[$bagKey][] = [
         'songId'        => (string)$row['SongId'],
         'normTitle'     => $normTitle,
-        'normFirstLine' => _bsls_normalise($firstLine),
+        'normFirstLine' => ihymns_sim_normalise($firstLine),
         'authors'       => trim((string)$row['Writers'] . '|' . (string)$row['Composers'], '|'),
         'songbook'      => (string)$row['SongbookAbbr'],
+        /* Hard identifiers — let a shared ISWC/CCLI/ISRC override the fuzzy
+           blend to a certain match (#1216). Empty string when absent. */
+        'isrc'          => trim((string)($row['Isrc'] ?? '')),
+        'iswc'          => trim((string)($row['Iswc'] ?? '')),
+        'ccli'          => trim((string)($row['Ccli'] ?? '')),
     ];
     $total++;
 }
@@ -226,10 +188,11 @@ if ($res) $res->close();
 $inserted = 0;
 $insStmt = $db->prepare(
     'INSERT INTO tblSongLinkSuggestions
-        (SongIdA, SongIdB, Score, TitleScore, LyricsScore, AuthorsScore)
-     VALUES (?, ?, ?, ?, ?, ?)
+        (SongIdA, SongIdB, Score, TitleScore, LyricsScore, AuthorsScore, Confidence, `Signal`)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE Score=VALUES(Score), TitleScore=VALUES(TitleScore),
          LyricsScore=VALUES(LyricsScore), AuthorsScore=VALUES(AuthorsScore),
+         Confidence=VALUES(Confidence), `Signal`=VALUES(`Signal`),
          ComputedAt=CURRENT_TIMESTAMP'
 );
 
@@ -258,20 +221,34 @@ foreach ($bags as $bag) {
             }
             if (isset($dismissed[$idA . '|' . $idB])) continue;
 
-            /* Cheap pre-filter: if normalised titles differ in length
-               by >5 chars they're almost certainly different hymns;
+            /* Does this pair share a hard identifier (ISWC/CCLI/ISRC)? Then it's
+               a certain match (same composition/recording) and we bypass the
+               fuzzy pre-filters — a retitled arrangement can still be the same
+               work. The duplicate-songs page is the GLOBAL hard-ID detector;
+               here we only catch the ones that already fall in the same bucket. */
+            $sharesHardId = ($a['iswc'] !== '' && strcasecmp($a['iswc'], $b['iswc']) === 0)
+                         || ($a['ccli'] !== '' && strcasecmp($a['ccli'], $b['ccli']) === 0)
+                         || ($a['isrc'] !== '' && strcasecmp($a['isrc'], $b['isrc']) === 0);
+
+            /* Cheap pre-filter (fuzzy only): if normalised titles differ in
+               length by >5 chars they're almost certainly different hymns;
                skip the levenshtein() to save cycles. */
-            if (abs(strlen($a['normTitle']) - strlen($b['normTitle'])) > 5) continue;
+            if (!$sharesHardId && abs(strlen($a['normTitle']) - strlen($b['normTitle'])) > 5) continue;
 
-            $titleScore   = _bsls_similarity($a['normTitle'], $b['normTitle']);
-            if ($titleScore < 0.6) continue;   /* short-circuit on hopeless titles */
-            $lyricsScore  = _bsls_similarity($a['normFirstLine'], $b['normFirstLine']);
-            $authorsScore = _bsls_authors_jaccard($a['authors'], $b['authors']);
+            $sim = ihymns_sim_score($a, $b);
+            /* Short-circuit on hopeless titles — but not when a hard identifier
+               vouches for the pair. */
+            if ($sim['signal'] === 'fuzzy' && $sim['title'] < 0.6) continue;
+            if ($sim['score'] < $threshold) continue;
 
-            $score = (0.50 * $titleScore) + (0.35 * $lyricsScore) + (0.15 * $authorsScore);
-            if ($score < $threshold) continue;
+            $score        = $sim['score'];
+            $titleScore   = $sim['title'];
+            $lyricsScore  = $sim['lyrics'];
+            $authorsScore = $sim['authors'];
+            $confidence   = $sim['confidence'];
+            $signal       = $sim['signal'];
 
-            $insStmt->bind_param('ssdddd', $idA, $idB, $score, $titleScore, $lyricsScore, $authorsScore);
+            $insStmt->bind_param('ssddddss', $idA, $idB, $score, $titleScore, $lyricsScore, $authorsScore, $confidence, $signal);
             $insStmt->execute();
             $inserted++;
         }
