@@ -233,6 +233,169 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
     }
 
+    /* -------- link (curator) — bulk cross-book counterpart link (#1219) -------- */
+    if ($action === 'link') {
+        $ids = array_values(array_unique(array_filter(array_map('trim',
+            explode(',', (string)($_POST['song_ids'] ?? ''))))));
+        if (count($ids) < 2) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Pick at least two songs to link.']);
+            exit;
+        }
+        try {
+            $ph    = implode(',', array_fill(0, count($ids), '?'));
+            $types = str_repeat('s', count($ids));
+
+            /* All must exist. */
+            $chk = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+            $chk->bind_param($types, ...$ids);
+            $chk->execute();
+            $exist = [];
+            $r = $chk->get_result();
+            while ($row = $r->fetch_assoc()) { $exist[(string)$row['SongId']] = true; }
+            $chk->close();
+            foreach ($ids as $id) {
+                if (!isset($exist[$id])) {
+                    http_response_code(404);
+                    echo json_encode(['error' => "Song not found: {$id}"]);
+                    exit;
+                }
+            }
+
+            /* Existing counterpart-group memberships among the picked songs. */
+            $lk = $db->prepare("SELECT SongId, GroupId FROM tblSongLinks WHERE SongId IN ($ph)");
+            $lk->bind_param($types, ...$ids);
+            $lk->execute();
+            $member = []; $groups = [];
+            $r = $lk->get_result();
+            while ($row = $r->fetch_assoc()) {
+                $member[(string)$row['SongId']] = (int)$row['GroupId'];
+                $groups[(int)$row['GroupId']]   = true;
+            }
+            $lk->close();
+
+            /* Mirror the editor add_song_link invariant: 0 groups → mint; 1 → join;
+               ≥2 distinct → refuse (the curator must unlink one first). */
+            if (count($groups) >= 2) {
+                http_response_code(409);
+                echo json_encode(['error' => 'These songs are already in different counterpart groups. Unlink one in the editor first.']);
+                exit;
+            }
+            $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
+            if (count($groups) === 1) {
+                $groupId = (int)array_key_first($groups);
+            } else {
+                $rr = $db->query('SELECT COALESCE(MAX(GroupId), 0) + 1 AS NextId FROM tblSongLinks');
+                $groupId = $rr ? (int)$rr->fetch_assoc()['NextId'] : 1;
+                if ($rr) { $rr->close(); }
+            }
+
+            $db->begin_transaction();
+            $ins = $db->prepare('INSERT INTO tblSongLinks (GroupId, SongId, Note, CreatedBy) VALUES (?, ?, ?, ?)');
+            $emptyNote = '';
+            $added = 0;
+            foreach ($ids as $id) {
+                if (isset($member[$id])) { continue; } /* already in the group */
+                $ins->bind_param('issi', $groupId, $id, $emptyNote, $createdBy);
+                $ins->execute();
+                $added++;
+            }
+            $ins->close();
+            $db->commit();
+
+            /* Best-effort: drop any now-resolved fuzzy suggestion rows for the
+               linked pairs (outside the transaction — a missing table or stray
+               row must not undo the link itself). */
+            try {
+                $delS = $db->prepare('DELETE FROM tblSongLinkSuggestions WHERE SongIdA = ? AND SongIdB = ?');
+                $m = count($ids);
+                for ($i = 0; $i < $m; $i++) {
+                    for ($j = $i + 1; $j < $m; $j++) {
+                        $a = $ids[$i]; $b = $ids[$j];
+                        if ($a > $b) { [$a, $b] = [$b, $a]; }
+                        $delS->bind_param('ss', $a, $b);
+                        $delS->execute();
+                    }
+                }
+                $delS->close();
+            } catch (\Throwable $_e) { /* cleanup best-effort */ }
+
+            if (function_exists('logActivity')) {
+                try { logActivity('song.link', 'song', (string)$ids[0], ['group' => $groupId, 'members' => $ids, 'added' => $added]); }
+                catch (\Throwable $_e) {}
+            }
+            echo json_encode(['success' => true, 'groupId' => $groupId, 'added' => $added]);
+            exit;
+        } catch (\Throwable $e) {
+            try { $db->rollback(); } catch (\Throwable $_) {}
+            http_response_code(500);
+            echo json_encode(['error' => 'Link failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
+    /* -------- dismiss (curator) — mark a group reviewed / not-the-same (#1219) -------- */
+    if ($action === 'dismiss') {
+        $ids = array_values(array_unique(array_filter(array_map('trim',
+            explode(',', (string)($_POST['song_ids'] ?? ''))))));
+        if (count($ids) < 2) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Need at least two songs to dismiss as a group.']);
+            exit;
+        }
+        try {
+            $by = (int)($currentUser['id'] ?? 0) ?: null;
+            $reason = 'reviewed: not the same hymn';
+            /* Record every unordered pair so the whole grouping stops surfacing
+               (the detection skips a cluster only when ALL its pairs are
+               dismissed). Canonical SongIdA < SongIdB. */
+            $insD = $db->prepare(
+                'INSERT INTO tblSongLinkSuggestionsDismissed (SongIdA, SongIdB, DismissedBy, Reason)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE DismissedBy = VALUES(DismissedBy),
+                                         Reason = VALUES(Reason),
+                                         DismissedAt = CURRENT_TIMESTAMP'
+            );
+            $delS = $db->prepare('DELETE FROM tblSongLinkSuggestions WHERE SongIdA = ? AND SongIdB = ?');
+            $m = count($ids);
+            for ($i = 0; $i < $m; $i++) {
+                for ($j = $i + 1; $j < $m; $j++) {
+                    $a = $ids[$i]; $b = $ids[$j];
+                    if ($a > $b) { [$a, $b] = [$b, $a]; }
+                    $insD->bind_param('ssis', $a, $b, $by, $reason);
+                    $insD->execute();
+                    $delS->bind_param('ss', $a, $b);
+                    $delS->execute();
+                }
+            }
+            $insD->close();
+            $delS->close();
+            echo json_encode(['success' => true]);
+            exit;
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Dismiss failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
+    /* -------- rebuild (curator) — re-run the fuzzy suggestion builder (#1219) -------- */
+    if ($action === 'rebuild') {
+        ob_start();
+        try {
+            require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                . DIRECTORY_SEPARATOR . 'tools'
+                . DIRECTORY_SEPARATOR . 'build-song-link-suggestions.php';
+            $out = (string)ob_get_clean();
+            echo json_encode(['success' => true, 'message' => trim(strip_tags(str_replace('<br>', ' · ', $out)))]);
+        } catch (\Throwable $e) {
+            if (ob_get_level() > 0) { ob_end_clean(); }
+            http_response_code(500);
+            echo json_encode(['error' => 'Rebuild failed: ' . $e->getMessage()]);
+        }
+        exit;
+    }
+
     http_response_code(400);
     echo json_encode(['error' => 'Unknown action.']);
     exit;
@@ -250,6 +413,20 @@ $probe = $db->query(
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongLinkSuggestions' LIMIT 1"
 );
 if ($probe) { $suggTableExists = $probe->fetch_row() !== null; $probe->close(); }
+
+/* Curator-dismissed pairs ("not the same hymn" / "reviewed, kept separate") — a
+   candidate cluster is suppressed only when ALL of its internal pairs have been
+   dismissed (#1219), so adding a new member later re-surfaces the group. */
+$dismissedPairs = [];
+if ($suggTableExists) {
+    $dr = $db->query('SELECT SongIdA, SongIdB FROM tblSongLinkSuggestionsDismissed');
+    if ($dr) {
+        while ($row = $dr->fetch_assoc()) {
+            $dismissedPairs[(string)$row['SongIdA'] . '|' . (string)$row['SongIdB']] = true;
+        }
+        $dr->close();
+    }
+}
 
 /* ---- 1. Cheap pass: one lightweight row per song. ---- */
 $songs = [];
@@ -435,17 +612,23 @@ foreach ($clusters as $members) {
     $groups = array_unique(array_map(static fn($sid) => $groupOf[$sid] ?? 0, $members));
     if (count($groups) === 1 && (int)reset($groups) > 0) { continue; }
 
-    /* Best pairwise score across the cluster + the set of signals fired. */
+    /* Best pairwise score across the cluster + the set of signals fired. Also
+       track whether EVERY internal pair has been dismissed → suppress it. */
     $best = ['score' => 0.0, 'title' => 0.0, 'lyrics' => 0.0, 'authors' => 0.0, 'signal' => 'fuzzy', 'confidence' => 'low'];
     $signalsFired = [];
+    $allDismissed = true;
     $n = count($members);
     for ($i = 0; $i < $n; $i++) {
         for ($j = $i + 1; $j < $n; $j++) {
             $s = ihymns_sim_score($feat[$members[$i]] ?? [], $feat[$members[$j]] ?? []);
             if ($s['signal'] !== 'fuzzy') { $signalsFired[$s['signal']] = true; }
             if ($s['score'] > $best['score']) { $best = $s; }
+            $pa = $members[$i]; $pb = $members[$j];
+            if ($pa > $pb) { [$pa, $pb] = [$pb, $pa]; }
+            if (!isset($dismissedPairs[$pa . '|' . $pb])) { $allDismissed = false; }
         }
     }
+    if ($allDismissed) { continue; }
 
     /* Book span + per-official-book collision detection. */
     $bookCount = [];
@@ -535,15 +718,22 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
 
 <main class="container-fluid py-4">
-    <div class="mb-3">
-        <h1 class="h3 mb-1"><i class="bi bi-git-compare me-2"></i>Duplicate &amp; Counterpart Review</h1>
-        <p class="text-secondary small mb-0" style="max-width:60rem;">
-            Candidate groups scored by the similarity engine — <strong>title + first lyric line +
-            writers/composers</strong>, plus any shared ISWC / CCLI / ISRC (a shared code is a certain
-            match). <strong>Merge</strong> true duplicates (irreversible). Two songs sharing a title
-            <em>within one published hymnal</em> are almost always different hymns — they get a guarded
-            section of their own (#1215).
-        </p>
+    <div class="mb-3 d-flex flex-wrap justify-content-between align-items-start gap-2">
+        <div>
+            <h1 class="h3 mb-1"><i class="bi bi-git-compare me-2"></i>Duplicate &amp; Counterpart Review</h1>
+            <p class="text-secondary small mb-0" style="max-width:60rem;">
+                Candidate groups scored by the similarity engine — <strong>title + first lyric line +
+                writers/composers</strong>, plus any shared ISWC / CCLI / ISRC (a shared code is a certain
+                match). <strong>Link</strong> the same hymn across songbooks; <strong>Merge</strong> true
+                duplicates (irreversible); <strong>Dismiss</strong> false positives. Two songs sharing a
+                title <em>within one published hymnal</em> are almost always different hymns — they get a
+                guarded section of their own (#1215).
+            </p>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary dup-rebuild-btn"
+                title="Re-run the fuzzy similarity engine across the whole catalogue">
+            <i class="bi bi-arrow-clockwise me-1"></i>Rebuild suggestions
+        </button>
     </div>
 
     <?php if ($totalClusters === 0): ?>
@@ -615,25 +805,34 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         }
         echo '</tbody></table>';
 
-        /* Action row — Link/Dismiss arrive in #1219. Merge: one-click for §1/§3
-           (admin); §2 (same official songbook) requires a type-to-confirm. */
+        /* Action row. Link = cross-book only (curator). Merge: one-click for
+           §1/§3 (admin); §2 (same official songbook) needs a type-to-confirm
+           (#1218). Dismiss = every section (curator). */
         echo '<div class="d-flex flex-wrap gap-2 align-items-center">';
+
+        if ($section === 'cross') {
+            echo '<button type="button" class="btn btn-sm btn-outline-success dup-link-btn" '
+               . 'title="Link the ticked songs as cross-book counterparts (tblSongLinks)">'
+               . '<i class="bi bi-link-45deg me-1"></i>Link picked as counterparts</button>';
+        }
+
         if ($canMerge && !$isOfficialSection) {
             echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn">'
                . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
         } elseif ($canMerge && $isOfficialSection) {
-            /* Guarded merge (#1218): the curator must type the kept song-id to
-               arm the button, and the request carries force=1 to clear the
-               server-side same-official-songbook block. */
+            /* Guarded merge (#1218): type the kept song-id to arm the button;
+               the request then carries force=1 to clear the server block. */
             echo '<span class="small text-secondary">If these really are one hymn, type the kept song-id to enable merge:</span>';
             echo '<input type="text" class="form-control form-control-sm dup-confirm-input" style="max-width:11rem" '
                . 'placeholder="e.g. ' . htmlspecialchars((string)$members[0], ENT_QUOTES) . '" autocomplete="off" spellcheck="false" aria-label="Type the kept song id to confirm merge">';
             echo '<button type="button" class="btn btn-sm btn-outline-danger dup-merge-btn" data-force="1" disabled>'
                . '<i class="bi bi-union me-1"></i>Merge picked into kept</button>';
         }
-        if (!$canMerge) {
-            echo '<span class="text-secondary small align-self-center">Open each song in the editor to compare.</span>';
-        }
+
+        echo '<button type="button" class="btn btn-sm btn-outline-secondary dup-dismiss-btn ms-auto" '
+           . 'title="Mark reviewed — not the same hymn; stop surfacing this group">'
+           . '<i class="bi bi-x-lg me-1"></i>Dismiss</button>';
+
         echo '</div>';
 
         echo '</form></div></div>';
@@ -716,6 +915,55 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             r.addEventListener('change', function () { syncConfirm(form); });
         });
     });
+
+    /* Shared POST helper → JSON, throwing on any non-success. */
+    function postAction(params) {
+        params.csrf_token = CSRF;
+        return fetch('/manage/duplicate-songs', { method: 'POST', body: new URLSearchParams(params), credentials: 'same-origin' })
+            .then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.success) { throw new Error(j.error || 'Action failed'); } return j; }); });
+    }
+
+    /* Link the PICKED members as cross-book counterparts (one tblSongLinks group). */
+    document.querySelectorAll('.dup-link-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var form = btn.closest('.dup-form');
+            var ids = Array.prototype.map.call(form.querySelectorAll('.dup-pick:checked'), function (c) { return c.value; });
+            if (ids.length < 2) { toast('Tick at least two songs to link as counterparts.', false); return; }
+            btn.disabled = true;
+            postAction({ action: 'link', song_ids: ids.join(',') }).then(function () {
+                toast('Linked ' + ids.length + ' songs as counterparts.', true);
+                var card = btn.closest('.dup-cluster'); if (card) { card.remove(); }
+            }).catch(function (e) { btn.disabled = false; toast(e.message || 'Link failed.', false); });
+        });
+    });
+
+    /* Dismiss the WHOLE group (every member) as reviewed / not-the-same-hymn. */
+    document.querySelectorAll('.dup-dismiss-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var form = btn.closest('.dup-form');
+            var ids = Array.prototype.map.call(form.querySelectorAll('.dup-pick'), function (c) { return c.value; });
+            if (ids.length < 2) { return; }
+            if (!confirm('Dismiss this group as reviewed (not the same hymn)? It will stop appearing here.')) { return; }
+            btn.disabled = true;
+            postAction({ action: 'dismiss', song_ids: ids.join(',') }).then(function () {
+                toast('Dismissed.', true);
+                var card = btn.closest('.dup-cluster'); if (card) { card.remove(); }
+            }).catch(function (e) { btn.disabled = false; toast(e.message || 'Dismiss failed.', false); });
+        });
+    });
+
+    /* Rebuild the fuzzy suggestion table, then reload to show fresh candidates. */
+    var rb = document.querySelector('.dup-rebuild-btn');
+    if (rb) {
+        rb.addEventListener('click', function () {
+            var orig = rb.innerHTML;
+            rb.disabled = true; rb.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Rebuilding…';
+            postAction({ action: 'rebuild' }).then(function (j) {
+                toast('Rebuilt: ' + (j.message || 'done') + '. Reloading…', true);
+                setTimeout(function () { location.reload(); }, 900);
+            }).catch(function (e) { rb.disabled = false; rb.innerHTML = orig; toast(e.message || 'Rebuild failed.', false); });
+        });
+    }
 })();
 </script>
 
