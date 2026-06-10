@@ -263,6 +263,69 @@ class SongData
      *
      * @return array List of songbook objects (id, name, songCount)
      */
+    /**
+     * Other-language versions of a song (#281) — the translation cluster: songs
+     * THIS one translates to (outward), the source it translates FROM (inward),
+     * and that source's other translations (siblings). Used by the song page's
+     * language picker AND the song page's hreflang alternates (#1206). Wrapped so
+     * a missing table / DB hiccup yields an empty list, never a fatal.
+     *
+     * @return array<int, array<string, mixed>> rows: song_id, target_language,
+     *         language_name, native_name, text_direction, translator, verified
+     */
+    public function getSongTranslations(string $songId): array
+    {
+        if ($songId === '' || $this->jsonMode || !($this->db instanceof \mysqli)) {
+            return [];
+        }
+        try {
+            $sql = '
+                /* Outward — this song has translations to other languages */
+                SELECT t.TranslatedSongId AS song_id, t.TargetLanguage AS target_language,
+                       l.Name AS language_name, l.NativeName AS native_name,
+                       l.TextDirection AS text_direction, t.Translator AS translator, t.Verified AS verified
+                  FROM tblSongTranslations t
+                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
+                 WHERE t.SourceSongId = ? AND l.IsActive = 1
+                UNION
+                /* Inward — this song IS a translation; surface the source. */
+                SELECT src.SongId AS song_id, srcLang.Code AS target_language,
+                       srcLang.Name AS language_name, srcLang.NativeName AS native_name,
+                       srcLang.TextDirection AS text_direction, "" AS translator, 1 AS verified
+                  FROM tblSongTranslations selfT
+                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId
+                  JOIN tblLanguages srcLang ON srcLang.Code = src.Language
+                 WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+                UNION
+                /* Siblings — the source\'s OTHER translations. */
+                SELECT sibling.TranslatedSongId AS song_id, sibling.TargetLanguage AS target_language,
+                       l2.Name AS language_name, l2.NativeName AS native_name,
+                       l2.TextDirection AS text_direction, sibling.Translator AS translator, sibling.Verified AS verified
+                  FROM tblSongTranslations selfT2
+                  JOIN tblSongTranslations sibling
+                       ON sibling.SourceSongId = selfT2.SourceSongId
+                      AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                  JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+                 WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+            ';
+            $stmt = $this->db->prepare($sql);
+            if ($stmt === false) {
+                return [];
+            }
+            $stmt->bind_param('sss', $songId, $songId, $songId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $rows = [];
+            while ($row = $res->fetch_assoc()) {
+                $rows[] = $row;
+            }
+            $stmt->close();
+            return $rows;
+        } catch (\Throwable $_e) {
+            return [];   // missing table / DB hiccup → no alternates, never fatal
+        }
+    }
+
     public function getSongbooks(): array
     {
         if ($this->jsonMode) {
