@@ -1829,6 +1829,8 @@ CREATE TABLE IF NOT EXISTS tblNotifications (
     Body            TEXT            NOT NULL DEFAULT (''),
     ActionUrl       VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'Deep link (e.g., /song/CP-0001)',
     IsRead          TINYINT(1)      NOT NULL DEFAULT 0,
+    Environment     VARCHAR(16)     NULL DEFAULT NULL COMMENT 'Target environment (#1238): NULL = all; alpha / beta / production = that env only',
+    ExpiresAt       DATETIME        NULL DEFAULT NULL COMMENT 'Optional expiry (#1238): NULL = never; the client hides the notification after this moment',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_User          (UserId),
