@@ -115,10 +115,10 @@ $res = $db->query(
             s.Ccli,
             COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,
             COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers,
-            (SELECT cmp.Body
+            (SELECT cmp.LinesJson
                FROM tblSongComponents cmp
               WHERE cmp.SongId = s.SongId
-              ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstComponentBody
+              ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstComponentLines
        FROM tblSongs s
        LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
        LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
@@ -138,12 +138,16 @@ while ($row = $res->fetch_assoc()) {
     $normTitle = ihymns_sim_normalise($title);
     if ($normTitle === '') continue;
     $firstLine = '';
-    $body = (string)($row['FirstComponentBody'] ?? '');
-    if ($body !== '') {
-        /* First non-empty line of the first component. */
-        foreach (preg_split('/\r?\n/', $body) ?: [] as $ln) {
-            $ln = trim($ln);
-            if ($ln !== '') { $firstLine = $ln; break; }
+    /* The first component's lyrics live in LinesJson (a JSON array of lines),
+       not a `Body` column — decode it and take the first non-empty line. */
+    $linesJson = (string)($row['FirstComponentLines'] ?? '');
+    if ($linesJson !== '') {
+        $lines = json_decode($linesJson, true);
+        if (is_array($lines)) {
+            foreach ($lines as $ln) {
+                $ln = trim((string)$ln);
+                if ($ln !== '') { $firstLine = $ln; break; }
+            }
         }
     }
     $bagKey = (string)$row['Language'] . '|' . mb_substr($normTitle, 0, 1, 'UTF-8');

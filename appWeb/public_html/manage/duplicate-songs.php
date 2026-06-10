@@ -592,8 +592,8 @@ foreach (array_chunk($candidateIds, 200) as $chunk) {
         "SELECT s.SongId,
                 COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,
                 COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers,
-                (SELECT cmp.Body FROM tblSongComponents cmp
-                  WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstBody,
+                (SELECT cmp.LinesJson FROM tblSongComponents cmp
+                  WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstLines,
                 (SELECT COUNT(*) FROM tblLyrics l WHERE l.SongId = s.SongId) AS LyricsCount
            FROM tblSongs s
            LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
@@ -608,11 +608,16 @@ foreach (array_chunk($candidateIds, 200) as $chunk) {
         $sid = (string)$row['SongId'];
         /* First non-empty line of the first component = the strongest signal. */
         $firstLine = '';
-        $body = (string)($row['FirstBody'] ?? '');
-        if ($body !== '') {
-            foreach (preg_split('/\r?\n/', $body) ?: [] as $ln) {
-                $ln = trim($ln);
-                if ($ln !== '') { $firstLine = $ln; break; }
+        /* Lyrics live in LinesJson (a JSON array), not a `Body` column — decode
+           it and take the first non-empty line (the strongest dedup signal). */
+        $linesJson = (string)($row['FirstLines'] ?? '');
+        if ($linesJson !== '') {
+            $lines = json_decode($linesJson, true);
+            if (is_array($lines)) {
+                foreach ($lines as $ln) {
+                    $ln = trim((string)$ln);
+                    if ($ln !== '') { $firstLine = $ln; break; }
+                }
             }
         }
         $s = $songs[$sid] ?? [];
