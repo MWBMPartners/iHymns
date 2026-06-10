@@ -7,10 +7,9 @@ declare(strict_types=1);
  *
  * Walks tblSongs and computes pairwise title / first-lyric / author
  * similarity scores, writing the high-scoring candidates into
- * tblSongLinkSuggestions. The /manage/song-link-suggestions admin
- * page (and the inline suggestions panel inside the editor) reads
- * straight from that table — this script is the producer side of
- * that pipeline.
+ * tblSongLinkSuggestions. The /manage/duplicate-songs review page
+ * (and the inline suggestions panel inside the editor) reads straight
+ * from that table — this script is the producer side of that pipeline.
  *
  * Pairs are pruned early to keep the cost manageable on a 12k-row
  * catalogue:
@@ -30,7 +29,7 @@ declare(strict_types=1);
  *   php appWeb/public_html/includes/tools/build-song-link-suggestions.php           # default 0.80 threshold
  *   php appWeb/public_html/includes/tools/build-song-link-suggestions.php 0.75      # custom threshold
  *
- *   Web entry: /manage/song-link-suggestions?action=rebuild
+ *   Web entry: /manage/duplicate-songs?action=rebuild
  *
  * NOTE: Lives under appWeb/public_html/includes/ rather than the project-root
  * tools/ directory because the deploy pipeline only mirrors public_html to the

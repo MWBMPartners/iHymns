@@ -44,8 +44,11 @@ $_adminLinks = [
     ['requests',             '/manage/requests',               'bi-lightbulb',       'Song Requests',         'review_song_requests',        'Songs'      ],
     ['revisions',            '/manage/revisions',              'bi-clock-history',   'Revisions Audit',       'verify_songs',                'Songs'      ],
     ['missing-numbers',      '/manage/missing-numbers',        'bi-binoculars',      'Missing Numbers',       'edit_songs',                  'Songs'      ],
-    ['song-link-suggestions','/manage/song-link-suggestions',  'bi-link-45deg',      'Song Link Suggestions', 'edit_songs',                  'Songs'      ],
-    ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicate Songs',       'manage_duplicate_songs',      'Songs'      ],
+    /* Duplicate Songs absorbed the old Song Link Suggestions page (#1215): one
+       unified Duplicate & Counterpart Review surface. Curator-visible
+       (edit_songs) for Link/Dismiss; the destructive Merge is gated per-action
+       in-page (manage_duplicate_songs). */
+    ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicates & Links',    'edit_songs',                  'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
