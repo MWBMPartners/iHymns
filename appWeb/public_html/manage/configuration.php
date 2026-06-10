@@ -28,6 +28,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1233 per-env maintenance
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -228,22 +229,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                into a 503 maintenance landing page; /manage stays reachable
                (separate entry point) so this can always be turned back off. */
             try {
-                $mmVal  = ((string)($_POST['maintenance_mode'] ?? '0')) === '1' ? '1' : '0';
-                $msgVal = mb_substr(trim((string)($_POST['maintenance_message'] ?? '')), 0, 500);
-                $saveSetting($db, 'maintenance_mode', $mmVal);
-                $saveSetting($db, 'maintenance_message', $msgVal);
+                /* #1233 — per-environment maintenance. The shared DB means each
+                   env keys its own flags; this form toggles the CURRENT env only.
+                   Manage another env from its own /manage. */
+                $env      = ihymns_environment();
+                $mmVal    = ((string)($_POST['maintenance_mode'] ?? '0')) === '1' ? '1' : '0';
+                $msgVal   = mb_substr(trim((string)($_POST['maintenance_message'] ?? '')), 0, 500);
+                $allowVal = ((string)($_POST['maintenance_allow_admins'] ?? '0')) === '1' ? '1' : '0';
+                $saveSetting($db, 'maintenance_mode_' . $env, $mmVal);
+                $saveSetting($db, 'maintenance_message_' . $env, $msgVal);
+                $saveSetting($db, 'maintenance_allow_admins_' . $env, $allowVal);
                 if (function_exists('logActivity')) {
                     logActivity(
                         'app_setting.update',
                         'app_setting',
-                        'maintenance_mode',
-                        ['keys' => ['maintenance_mode', 'maintenance_message'], 'enabled' => $mmVal === '1'],
+                        'maintenance_mode_' . $env,
+                        ['keys' => ['maintenance_mode_' . $env, 'maintenance_message_' . $env, 'maintenance_allow_admins_' . $env], 'enabled' => $mmVal === '1'],
                         'success'
                     );
                 }
                 $saveSuccess = $mmVal === '1'
-                    ? 'Maintenance mode is now ON — the public site shows a maintenance page; /manage stays open so you can turn it off.'
-                    : 'Maintenance mode is now OFF — the public site is live again.';
+                    ? ('Maintenance mode is now ON for ' . $env . ' — that environment\'s public site shows a maintenance page; /manage stays open so you can turn it off.')
+                    : ('Maintenance mode is now OFF for ' . $env . ' — its public site is live again.');
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_maintenance] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -257,9 +264,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
  * ---------------------------------------------------------------------- */
 $currentSettings    = $loadSettings($db, array_keys($EMAIL_SETTINGS));
 $currentService     = $currentSettings['email_service'] ?? 'none';
-$maintenanceSettings = $loadSettings($db, ['maintenance_mode', 'maintenance_message']);
-$maintenanceOn       = ($maintenanceSettings['maintenance_mode'] ?? '0') === '1';
-$maintenanceMsg      = (string)($maintenanceSettings['maintenance_message'] ?? '');
+$envCurrent          = ihymns_environment();   // #1233 — per-env maintenance keys
+$maintenanceSettings = $loadSettings($db, [
+    'maintenance_mode_' . $envCurrent,
+    'maintenance_message_' . $envCurrent,
+    'maintenance_allow_admins_' . $envCurrent,
+]);
+$maintenanceOn       = ($maintenanceSettings['maintenance_mode_' . $envCurrent] ?? '0') === '1';
+$maintenanceMsg      = (string)($maintenanceSettings['maintenance_message_' . $envCurrent] ?? '');
+$maintenanceAllowAdm = ($maintenanceSettings['maintenance_allow_admins_' . $envCurrent] ?? '0') === '1';
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -312,6 +325,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-header d-flex align-items-center justify-content-between">
             <h2 class="h5 mb-0">
                 <i class="bi bi-cone-striped me-2"></i>System maintenance
+                <span class="badge bg-secondary ms-1 text-uppercase"><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></span>
             </h2>
             <span class="badge <?= $maintenanceOn ? 'bg-danger' : 'bg-success' ?>">
                 <?= $maintenanceOn ? 'ON — public site in maintenance' : 'OFF — site is live' ?>
@@ -323,6 +337,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 visitors. This admin area (<code>/manage</code>) and sign-in stay
                 available so you can turn it back off. Returning app users keep
                 their cached offline experience and see a maintenance banner.
+            </p>
+            <p class="small text-secondary mb-3">
+                <i class="bi bi-hdd-network me-1"></i><strong>Per-environment.</strong>
+                The three environments share one database, but each has its own flag —
+                this toggles <strong><?= htmlspecialchars($envCurrent, ENT_QUOTES, 'UTF-8') ?></strong>
+                only. Manage another environment from <em>its own</em> <code>/manage</code>.
+                <strong>Global admins</strong> always keep access to the live site while
+                maintenance is on; you can optionally extend that to regular admins below.
             </p>
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -339,6 +361,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <textarea name="maintenance_message" id="maintenance_message" class="form-control" rows="2"
                               maxlength="500"
                               placeholder="We&rsquo;ll be back shortly &mdash; scheduled maintenance in progress."><?= htmlspecialchars($maintenanceMsg, ENT_QUOTES, 'UTF-8') ?></textarea>
+                </div>
+                <!-- hidden 0 so an unchecked box still posts a value -->
+                <input type="hidden" name="maintenance_allow_admins" value="0">
+                <div class="form-check mb-3">
+                    <input class="form-check-input" type="checkbox" id="maintenance_allow_admins"
+                           name="maintenance_allow_admins" value="1" <?= $maintenanceAllowAdm ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="maintenance_allow_admins">
+                        Also let <strong>regular admins</strong> bypass maintenance on this environment
+                        <span class="text-secondary">(global admins always can)</span>
+                    </label>
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-save me-1"></i>Save maintenance settings

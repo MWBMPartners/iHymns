@@ -24,6 +24,16 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* #1233 — maintenance mode is PER-ENVIRONMENT (alpha/beta/production share one
+   DB), so every flag is keyed by the current environment. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';
+
+/** Env-suffixed settings key, e.g. maintenance_mode_alpha / _beta / _production. */
+function maintenanceSettingKey(string $base): string
+{
+    return $base . '_' . ihymns_environment();
+}
+
 /**
  * Read a tblAppSettings value, memoized per request. Returns $default on ANY
  * DB error so a maintenance/flag check never throws on a DB outage.
@@ -54,16 +64,57 @@ function getAppSetting(string $key, ?string $default = null): ?string
     return $cache[$key];
 }
 
-/** Is the site in admin-triggered maintenance mode? (false on a DB error.) */
+/** Is THIS environment in admin-triggered maintenance mode? (false on a DB error.) */
 function isMaintenanceMode(): bool
 {
-    return getAppSetting('maintenance_mode', '0') === '1';
+    return getAppSetting(maintenanceSettingKey('maintenance_mode'), '0') === '1';
+}
+
+/** May regular admins (not just global admins) bypass maintenance on THIS env?
+ *  Off by default — the global admin opts in per environment. (#1233) */
+function maintenanceAllowAdmins(): bool
+{
+    return getAppSetting(maintenanceSettingKey('maintenance_allow_admins'), '0') === '1';
+}
+
+/**
+ * Is the CURRENT request from a user allowed to bypass the maintenance page
+ * (WordPress-style "logged-in admins still see the live site")? Global admins
+ * always; regular admins only when this env's allow-admins flag is on. Everyone
+ * else (logged-out, regular users) is gated. Default-DENY on any uncertainty.
+ *
+ * Auth is loaded lazily here — only reached when maintenance is ON — so the
+ * normal (session-less) public hot path pays nothing. It reuses isAuthenticated()
+ * / getCurrentUser(), which resolve the cross-surface `ihymns_auth` API token
+ * (the /manage/ PHP-session cookie is path-scoped and never reaches the public
+ * site), so the bypass is the user's REAL authenticated identity, not spoofable.
+ */
+function maintenanceUserMayBypass(): bool
+{
+    try {
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'manage'
+            . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+        if (!function_exists('isAuthenticated') || !isAuthenticated()) {
+            return false;
+        }
+        $user = function_exists('getCurrentUser') ? getCurrentUser() : null;
+        $role = is_array($user) ? (string)($user['role'] ?? '') : '';
+        if ($role === 'global_admin') {
+            return true;   // global admins always get through
+        }
+        if ($role === 'admin' && maintenanceAllowAdmins()) {
+            return true;   // regular admins only if the global admin enabled it for this env
+        }
+        return false;
+    } catch (\Throwable $_e) {
+        return false;      // any error → show the maintenance page (fail safe)
+    }
 }
 
 /** The admin-configured maintenance message, or a sensible default. */
 function maintenanceMessage(): string
 {
-    $msg = trim((string)getAppSetting('maintenance_message', ''));
+    $msg = trim((string)getAppSetting(maintenanceSettingKey('maintenance_message'), ''));
     return $msg !== ''
         ? $msg
         : "iHymns is undergoing scheduled maintenance. We'll be back shortly — please check again in a few minutes.";
@@ -114,6 +165,12 @@ function enforceMaintenanceForPublicSite(): void
     if (!isMaintenanceMode()) {
         return;
     }
+    if (maintenanceUserMayBypass()) {
+        /* Admin bypass — see the live site; index.php renders a "maintenance is
+           on" banner so the admin knows visitors are being gated. */
+        $GLOBALS['_ihymnsMaintenanceBypass'] = true;
+        return;
+    }
     renderMaintenancePageHtml();
     exit;
 }
@@ -137,6 +194,9 @@ function enforceMaintenanceForApi(): void
     $action = (string)($_GET['action'] ?? '');
     if ($action === 'app_status' || strncmp($action, 'auth_', 5) === 0) {
         return;
+    }
+    if (maintenanceUserMayBypass()) {
+        return;   // authenticated admin — let their API calls through during maintenance
     }
 
     maintenanceSend503Headers();
