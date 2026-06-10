@@ -193,6 +193,11 @@ $cspDirectives = [
 
 header("Content-Security-Policy: " . implode('; ', $cspDirectives));
 
+/* #1206 — declare the page's primary (UI) language. The actual content languages
+   on a song page are carried per-component via lang/dir tags (#858/#1205); this
+   header + <html lang> stay the UI language by design. */
+header('Content-Language: ' . $locale);
+
 /* =========================================================================
  * OPEN GRAPH META TAGS — Dynamic per-page social sharing previews
  *
@@ -224,6 +229,11 @@ $jsonLdScripts   = [];
 $breadcrumbItems = [];
 $pageType        = 'home'; /* 'home', 'song', 'songbook', or 'other' */
 
+/* #1206 — hreflang alternates for a song's translation cluster. Filled in the
+   song route below (empty for every other page); emitted in <head>. */
+$hreflangLinks    = [];
+$hreflangSongLang = '';
+
 /* Detect specific page routes for customised OG tags */
 try {
     $songData = new SongData();
@@ -233,6 +243,27 @@ try {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
             $pageType = 'song';
+
+            /* #1206 — translation-cluster hreflang alternates (SEO: marks these
+               as language variants of one work). Only when the song has
+               other-language versions. Self + each alternate (+ x-default in the
+               head). Shares SongData::getSongTranslations() with the picker. */
+            $hreflangSongLang = trim((string)($ogSong['language'] ?? ''));
+            $_cluster = $songData->getSongTranslations($matches[1]);
+            if (!empty($_cluster)) {
+                $_seen = [];
+                if ($hreflangSongLang !== '') {
+                    $hreflangLinks[$hreflangSongLang] = $canonicalUrl;   // self
+                    $_seen[strtolower($hreflangSongLang)] = true;
+                }
+                foreach ($_cluster as $_c) {
+                    $_lang = trim((string)($_c['target_language'] ?? ''));
+                    $_sid  = (string)($_c['song_id'] ?? '');
+                    if ($_lang === '' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
+                    $hreflangLinks[$_lang] = getCanonicalUrl('/song/' . rawurlencode($_sid));
+                    $_seen[strtolower($_lang)] = true;
+                }
+            }
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
                      . ' #' . (int)$ogSong['number'];
@@ -633,6 +664,14 @@ if (!empty($breadcrumbItems)) {
 
     <!-- Canonical URL — prevents duplicate content for search engines -->
     <link rel="canonical" href="<?= htmlspecialchars($canonicalUrl) ?>">
+<?php /* #1206 — hreflang alternates: language variants of this song (only when a
+         translation cluster exists). x-default points at the current page. */ ?>
+<?php foreach ($hreflangLinks as $_hl => $_hurl): ?>
+    <link rel="alternate" hreflang="<?= htmlspecialchars($_hl, ENT_QUOTES, 'UTF-8') ?>" href="<?= htmlspecialchars($_hurl, ENT_QUOTES, 'UTF-8') ?>">
+<?php endforeach; ?>
+<?php if (!empty($hreflangLinks)): ?>
+    <link rel="alternate" hreflang="x-default" href="<?= htmlspecialchars($canonicalUrl, ENT_QUOTES, 'UTF-8') ?>">
+<?php endif; ?>
 
     <!-- Open Graph Protocol (Facebook, LinkedIn, Slack, Discord, etc.) -->
     <meta property="og:type" content="<?= htmlspecialchars($ogType) ?>">

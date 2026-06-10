@@ -161,62 +161,15 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
  * Wrapped in try/catch so a missing table during early setup or a
  * DB hiccup simply hides the picker rather than blanking the page.
  * =================================================================== */
+/* #1206 — the cluster query now lives in SongData::getSongTranslations() so the
+   song page picker AND the hreflang alternates (emitted in index.php's <head>)
+   share ONE definition (modularity rule). Still wrapped so a hiccup hides the
+   picker rather than blanking the page. */
 $translations = [];
 try {
-    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-    $translationsDb = getDbMysqli();
-    $sql = '
-        /* Outward — this song has translations to other languages */
-        SELECT t.TranslatedSongId  AS song_id,
-               t.TargetLanguage    AS target_language,
-               l.Name              AS language_name,
-               l.NativeName        AS native_name,
-               l.TextDirection     AS text_direction,
-               t.Translator        AS translator,
-               t.Verified          AS verified
-          FROM tblSongTranslations t
-          JOIN tblLanguages l ON l.Code = t.TargetLanguage
-         WHERE t.SourceSongId = ? AND l.IsActive = 1
-        UNION
-        /* Inward — this song IS a translation of another; surface the
-           source plus any siblings (other translations of that source). */
-        SELECT src.SongId          AS song_id,
-               srcLang.Code        AS target_language,
-               srcLang.Name        AS language_name,
-               srcLang.NativeName  AS native_name,
-               srcLang.TextDirection AS text_direction,
-               ""                  AS translator,
-               1                   AS verified
-          FROM tblSongTranslations selfT
-          JOIN tblSongs src            ON src.SongId = selfT.SourceSongId
-          JOIN tblLanguages srcLang    ON srcLang.Code = src.Language
-         WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
-        UNION
-        SELECT sibling.TranslatedSongId AS song_id,
-               sibling.TargetLanguage   AS target_language,
-               l2.Name                  AS language_name,
-               l2.NativeName            AS native_name,
-               l2.TextDirection         AS text_direction,
-               sibling.Translator       AS translator,
-               sibling.Verified         AS verified
-          FROM tblSongTranslations selfT2
-          JOIN tblSongTranslations sibling
-               ON sibling.SourceSongId = selfT2.SourceSongId
-              AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
-          JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
-         WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
-    ';
-    $stmt = $translationsDb->prepare($sql);
-    if ($stmt !== false) {
-        $sid = (string)($song['id'] ?? '');
-        $stmt->bind_param('sss', $sid, $sid, $sid);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) $translations[] = $row;
-        $stmt->close();
-    }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'SongData.php';
+    $translations = (new SongData())->getSongTranslations((string)($song['id'] ?? ''));
 } catch (\Throwable $_e) {
-    /* No translations infrastructure — picker stays hidden. */
     $translations = [];
 }
 
