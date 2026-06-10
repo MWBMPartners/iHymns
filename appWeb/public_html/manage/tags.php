@@ -43,6 +43,13 @@ $activePage = 'tags';
 $db   = getDbMysqli();
 $csrf = csrfToken();
 
+/* #1152 — the standard-vocabulary columns (Source / ParentId / CcliThemeId)
+   land via migrate-seed-theme-vocabulary.php. Probe so this page degrades
+   gracefully on a long-running install that hasn't applied it yet. */
+$hasThemeCols = false;
+$probe = $db->query("SHOW COLUMNS FROM tblSongTags LIKE 'Source'");
+if ($probe) { $hasThemeCols = $probe->num_rows > 0; $probe->close(); }
+
 $logTag = static function (string $action, string $entityId, array $details, string $result = 'success'): void {
     if (function_exists('logActivity')) {
         try { logActivity('tag.' . $action, 'tag', $entityId, $details, $result); }
@@ -326,7 +333,10 @@ $totalPages = max(1, (int)ceil($totalRows / $pageSize));
 $pageNum    = min($pageNum, $totalPages);
 $offset     = ($pageNum - 1) * $pageSize;
 
-$listSql = 'SELECT t.Id, t.Name, t.Slug, t.Description, COUNT(m.TagId) AS UseCount
+/* Source + ParentId are functionally dependent on t.Id (PK) so they're safe
+   under ONLY_FULL_GROUP_BY; only select them once the migration has run. */
+$themeCols = $hasThemeCols ? ', t.Source AS Source, t.ParentId AS ParentId' : '';
+$listSql = 'SELECT t.Id, t.Name, t.Slug, t.Description, COUNT(m.TagId) AS UseCount' . $themeCols . '
             FROM tblSongTags t
             LEFT JOIN tblSongTagMap m ON m.TagId = t.Id'
          . $where
@@ -347,6 +357,10 @@ $stmt->close();
 $res = $db->query('SELECT Id, Name FROM tblSongTags ORDER BY Name ASC');
 $allTagsForMerge = $res ? $res->fetch_all(MYSQLI_ASSOC) : [];
 if ($res) $res->close();
+/* Id → Name map so the list can show a child theme's parent without a
+   GROUP BY-unfriendly self-join (#1152). */
+$tagNameById = [];
+foreach ($allTagsForMerge as $t) { $tagNameById[(int)$t['Id']] = (string)$t['Name']; }
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -376,8 +390,10 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </h1>
             <p class="text-secondary small mb-0">
                 Curator-managed taxonomy that powers the public Browse-by-Theme home section and
-                <code>/tag/&lt;slug&gt;</code> listing pages. Use <strong>Merge</strong> to collapse
-                duplicate-meaning tags into one canonical row.
+                <code>/tag/&lt;slug&gt;</code> listing pages. Rows badged <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
+                are the seeded CCLI / OpenLyrics theme vocabulary (#1152) — the editor's tag typeahead autofills
+                from this list, so curators reuse the canonical spelling instead of re-typing variants. Use
+                <strong>Merge</strong> to fold a duplicate-meaning tag into its canonical row.
             </p>
         </div>
         <div class="d-flex gap-2">
@@ -419,7 +435,16 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <tr><td colspan="5" class="text-center text-secondary py-4">No tags match.</td></tr>
             <?php else: foreach ($rows as $r): ?>
                 <tr data-tag-id="<?= (int)$r['Id'] ?>">
-                    <td><strong><?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?></strong></td>
+                    <td>
+                        <strong><?= htmlspecialchars($r['Name'], ENT_QUOTES, 'UTF-8') ?></strong>
+                        <?php if (($r['Source'] ?? '') === 'ccli-openlyrics'): ?>
+                            <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle ms-1"
+                                  title="Standard CCLI / OpenLyrics theme (#1152)">standard</span>
+                        <?php endif; ?>
+                        <?php $pid = (int)($r['ParentId'] ?? 0); if ($pid > 0 && isset($tagNameById[$pid])): ?>
+                            <div class="small text-muted"><i class="bi bi-diagram-2 me-1"></i>under <?= htmlspecialchars($tagNameById[$pid], ENT_QUOTES, 'UTF-8') ?></div>
+                        <?php endif; ?>
+                    </td>
                     <td><code><?= htmlspecialchars($r['Slug'], ENT_QUOTES, 'UTF-8') ?></code></td>
                     <td class="small text-secondary">
                         <?= $r['Description'] !== ''
