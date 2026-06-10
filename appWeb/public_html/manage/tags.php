@@ -27,6 +27,8 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Shared fuzzy scorer for the canonicalisation suggestions (#1222). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -362,6 +364,64 @@ if ($res) $res->close();
 $tagNameById = [];
 foreach ($allTagsForMerge as $t) { $tagNameById[(int)$t['Id']] = (string)$t['Name']; }
 
+/* ----------------------------------------------------------------------
+ * Canonicalisation suggestions (#1222) — fold curator-added tags whose
+ * spelling closely matches a seeded standard theme into that theme.
+ * Exact case/spacing/diacritic variants were already promoted at seed
+ * time (the upsert is collation-insensitive on Name); this catches the
+ * FUZZY remainder (typos: "Resurrection"/"Resurection", "Thankfulness"/
+ * "Thanksgiving"-ish). Curator-confirmed via the existing Merge action —
+ * never auto-applied. Skipped entirely until the migration has run.
+ * ---------------------------------------------------------------------- */
+$canonSuggestions = [];
+if ($hasThemeCols) {
+    $std = [];
+    $sr = $db->query("SELECT Id, Name FROM tblSongTags WHERE Source = 'ccli-openlyrics'");
+    while ($sr && ($row = $sr->fetch_assoc())) {
+        $std[] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name'], 'norm' => ihymns_sim_normalise((string)$row['Name'])];
+    }
+    if ($sr) { $sr->close(); }
+
+    if ($std) {
+        /* Curator tags, most-used first; bounded so the pairwise pass stays cheap. */
+        $cr = $db->query(
+            "SELECT t.Id, t.Name, COUNT(m.TagId) AS UseCount
+               FROM tblSongTags t
+               LEFT JOIN tblSongTagMap m ON m.TagId = t.Id
+              WHERE t.Source <> 'ccli-openlyrics'
+              GROUP BY t.Id
+              ORDER BY UseCount DESC, t.Name ASC
+              LIMIT 300"
+        );
+        while ($cr && ($row = $cr->fetch_assoc())) {
+            $cn = ihymns_sim_normalise((string)$row['Name']);
+            if ($cn === '') { continue; }
+            $best = null; $bestScore = 0.0;
+            foreach ($std as $s) {
+                if ($s['norm'] === '') { continue; }
+                $score = ($cn === $s['norm']) ? 1.0 : ihymns_sim_text($cn, $s['norm']);
+                if ($score > $bestScore) { $bestScore = $score; $best = $s; }
+            }
+            /* >= 0.84 catches close spellings/typos; the strcasecmp guard is a
+               belt-and-braces no-op (the unique Name index already prevents a
+               curator row from ci-colliding with a standard one). */
+            if ($best && $bestScore >= 0.84 && strcasecmp((string)$row['Name'], $best['name']) !== 0) {
+                $canonSuggestions[] = [
+                    'curId'   => (int)$row['Id'],
+                    'curName' => (string)$row['Name'],
+                    'uses'    => (int)$row['UseCount'],
+                    'stdId'   => $best['id'],
+                    'stdName' => $best['name'],
+                    'score'   => $bestScore,
+                ];
+            }
+        }
+        if ($cr) { $cr->close(); }
+        usort($canonSuggestions, static fn($a, $b) => $b['score'] <=> $a['score']);
+        $canonSuggestions = array_slice($canonSuggestions, 0, 50);
+    }
+}
+
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
 <!DOCTYPE html>
@@ -418,6 +478,50 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <p class="small text-secondary mb-2">
         <strong><?= count($rows) ?></strong> of <strong><?= number_format($totalRows) ?></strong> tag(s). Page <?= $pageNum ?>/<?= $totalPages ?>.
     </p>
+
+    <?php if (!empty($canonSuggestions)): ?>
+    <div class="card mb-3 border-info">
+        <div class="card-body py-2">
+            <h2 class="h6 mb-1"><i class="bi bi-magic me-1"></i>Canonicalisation suggestions (<?= count($canonSuggestions) ?>)</h2>
+            <p class="small text-secondary mb-2">
+                Curator tags whose spelling closely matches a
+                <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle">standard</span>
+                theme. <strong>Fold</strong> re-points every song to the standard theme and removes the
+                variant (the existing Merge — irreversible). Review each before folding.
+            </p>
+            <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th>Variant tag</th><th class="text-end">Songs</th><th></th>
+                            <th>Standard theme</th><th>Match</th><th class="text-end">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($canonSuggestions as $s): ?>
+                        <tr>
+                            <td><strong><?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?></strong></td>
+                            <td class="text-end"><?= number_format($s['uses']) ?></td>
+                            <td class="text-secondary">→</td>
+                            <td><?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?></td>
+                            <td><span class="badge bg-secondary"><?= (int)round($s['score'] * 100) ?>%</span></td>
+                            <td class="text-end">
+                                <button class="btn btn-sm btn-outline-warning tag-canon-btn"
+                                        data-source="<?= (int)$s['curId'] ?>"
+                                        data-target="<?= (int)$s['stdId'] ?>"
+                                        data-source-name="<?= htmlspecialchars($s['curName'], ENT_QUOTES, 'UTF-8') ?>"
+                                        data-target-name="<?= htmlspecialchars($s['stdName'], ENT_QUOTES, 'UTF-8') ?>">
+                                    <i class="bi bi-arrow-down-up me-1"></i>Fold into standard
+                                </button>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <div class="table-responsive">
         <table class="table table-dark table-striped table-hover align-middle cp-sortable">
@@ -648,6 +752,25 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         if (!r.ok) { alert(d?.error || 'Merge failed.'); return; }
         alert('Merged. Repointed ' + d.repointed + ' mapping(s); ' + d.conflicts + ' duplicate(s) collapsed.');
         window.location.reload();
+    });
+
+    /* Canonicalisation (#1222): fold a variant tag into its standard theme.
+       Reuses the merge action — source = variant (deleted), target = standard. */
+    document.querySelectorAll('.tag-canon-btn').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!confirm('Fold "' + (btn.dataset.sourceName || '') + '" into the standard theme "'
+                + (btn.dataset.targetName || '') + '"? Every song is re-pointed to the standard theme and '
+                + 'the variant is deleted. This is irreversible.')) return;
+            btn.disabled = true;
+            const body = new URLSearchParams({
+                csrf_token: CSRF, action: 'merge',
+                source_id: btn.dataset.source, target_id: btn.dataset.target,
+            });
+            const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin' });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.success) { btn.disabled = false; alert(d?.error || 'Fold failed.'); return; }
+            const row = btn.closest('tr'); if (row) row.remove();
+        });
     });
 })();
 </script>
