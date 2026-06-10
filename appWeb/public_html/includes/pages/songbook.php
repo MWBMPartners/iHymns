@@ -69,6 +69,15 @@ if ($book === null) {
                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($book['name']) ?>
                 <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
+                <?php if (empty($book['isOfficial'])): ?>
+                    <!-- #1223 — "Unofficial" badge on the songbook header so the
+                         distinction persists after click-through from the list / home.
+                         NOT aria-hidden here: the <h1> is read normally (no
+                         stretched-link folding), so "Unofficial" is part of the
+                         accessible heading. -->
+                    <span class="badge songbook-unofficial-badge ms-1"
+                          title="Unofficial songbook">Unofficial</span>
+                <?php endif; ?>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
             <?php
