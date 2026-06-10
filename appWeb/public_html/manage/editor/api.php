@@ -700,7 +700,7 @@ switch ($action) {
      * Returns up to 5 highest-scoring pending suggestions involving
      * the open song, used by the editor sidebar's inline
      * "Suggested counterparts" panel. Same data the
-     * /manage/song-link-suggestions admin page lists, scoped to a
+     * /manage/duplicate-songs review page lists, scoped to a
      * single song.
      * ----------------------------------------------------------------- */
     case 'suggest_song_links':
