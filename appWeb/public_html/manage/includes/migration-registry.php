@@ -1931,4 +1931,33 @@ return [
             !_migProbe_columnExists($db, 'tblCatalogues', 'Colour')
             || !_migProbe_columnExists($db, 'tblSongbookSeries', 'Colour'),
     ],
+
+    'theme-vocabulary' => [
+        'script' => 'migrate-seed-theme-vocabulary.php',
+        'card' => [
+            'title'  => 'Standard Theme Vocabulary (CCLI / OpenLyrics) (#1152)',
+            'body'   => 'Adds <code>tblSongTags.ParentId</code> (self-FK for the 2-level theme'
+                      . ' hierarchy), <code>CcliThemeId</code> and <code>Source</code>, then seeds'
+                      . ' the standard CCLI / OpenLyrics theme vocabulary'
+                      . ' (<code>themelist.txt</code>) marked <code>Source=ccli-openlyrics</code>.'
+                      . ' Curators keep adding custom tags; the seed gives Browse-by-Theme and the'
+                      . ' tag typeahead a professional, interoperable baseline. Idempotent — re-runs'
+                      . ' upsert by name, never duplicating.',
+            'button' => 'Run Standard Theme Vocabulary Migration',
+        ],
+        /* Multi-object OR-probe: pending until all three columns exist AND the
+           standard vocabulary has actually been seeded (a partial apply never
+           shows the card green). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'ParentId'))    return true;
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'CcliThemeId')) return true;
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'Source'))      return true;
+            try {
+                $res = $db->query("SELECT 1 FROM tblSongTags WHERE Source = 'ccli-openlyrics' LIMIT 1");
+                $seeded = $res && $res->fetch_row() !== null;
+                if ($res) $res->close();
+                return !$seeded;   /* pending while nothing has been seeded */
+            } catch (\Throwable $_e) { return false; }
+        },
+    ],
 ];
