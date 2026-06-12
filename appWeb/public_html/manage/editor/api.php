@@ -1199,62 +1199,100 @@ switch ($action) {
                 $placeStmt->close();
             }
 
-            /* #1235 PF1 / R1 — carry-forward snapshot (data-loss guard). The
-               component DELETE+reinsert below only persists ChordsJson (#1094) and
-               LanguagesJson (#1235 P3) when the POST carries `chords` / `languages`.
-               A STALE client (e.g. a Service-Worker-cached pre-#1094 / pre-P3
-               editor.js) POSTs components WITHOUT those keys, so the reinsert would
-               recreate them as NULL — silently wiping per-line chords + per-line
-               language song-wide, and the projector (lyricLinesProjectSong) would
-               then propagate the wipe into tblLyricLines. So BEFORE the delete we
-               snapshot the existing per-component arrays, keyed by
-               Type | Number | line-count, as a FIFO queue per key (repeated identical
-               parts — e.g. a refrain reprised after each verse — carry forward 1:1).
-               On reinsert a component whose POST *omits* the key reclaims its carried
-               value; a component that *sends* the key (even empty) stays authoritative.
-               Column names are hardcoded constants (rule #5). */
-            $carryChords = [];   // "type\x1fnumber\x1flineCount" => FIFO list of ChordsJson|null
-            $carryLangs  = [];   // "type\x1fnumber\x1flineCount" => FIFO list of LanguagesJson|null
+            /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
+               A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
+               POSTs components WITHOUT `chords` / `languages`, so a naive recreate
+               would NULL them song-wide. BEFORE the write we snapshot the existing
+               per-component arrays keyed by Type | Number | line-count as a FIFO queue
+               (repeated identical parts — a refrain reprised after each verse — pair
+               1:1); a component whose POST OMITS the key reclaims its carried value, a
+               component that SENDS the key (even empty) stays authoritative.
+
+               #1235 P4/C5 — on a MIRRORED install the carry SOURCE is the AUTHORITATIVE
+               tblLyricLines (assembled editor shape), NOT the doomed LinesJson/
+               ChordsJson/LanguagesJson columns, and the save uses the inverted write
+               path below (lines authoritative; JSON shadow) — so it survives the C6
+               drop. On an un-migrated install (no mirror) the carry is the pre-delete
+               JSON-column snapshot, reattached as raw JSON in the legacy path. */
+            $ll_syncReady = lyricLinesSyncReady($db);
+            $carryChords  = [];   // "type\x1fnumber\x1flineCount" => FIFO list (arrays when mirrored; JSON strings legacy)
+            $carryLangs   = [];
             $pf1HasChords = false;
-            try {
-                $pf1Probe = $db->prepare(
-                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-                      WHERE TABLE_SCHEMA = DATABASE()
-                        AND TABLE_NAME   = 'tblSongComponents'
-                        AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
-                );
-                $pf1Probe->execute();
-                $pf1HasChords = $pf1Probe->get_result()->fetch_row() !== null;
-                $pf1Probe->close();
-            } catch (\Throwable $_e) { /* default false */ }
-            $pf1HasLangs = lyricLinesComponentsLangReady($db);
-            if ($pf1HasChords || $pf1HasLangs) {
-                $snapCols = 'Type, Number, LinesJson';
-                if ($pf1HasChords) { $snapCols .= ', ChordsJson'; }
-                if ($pf1HasLangs)  { $snapCols .= ', LanguagesJson'; }
-                $snap = $db->prepare(
-                    "SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
-                );
-                $snap->bind_param('s', $songId);
-                $snap->execute();
-                $snapRes = $snap->get_result();
-                while ($snapRow = $snapRes->fetch_assoc()) {
-                    $decoded = json_decode((string)$snapRow['LinesJson'], true);
-                    $lc      = is_array($decoded) ? count($decoded) : 0;
-                    $key     = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . $lc;
-                    if ($pf1HasChords) { $carryChords[$key][] = $snapRow['ChordsJson']; }
-                    if ($pf1HasLangs)  { $carryLangs[$key][]  = $snapRow['LanguagesJson']; }
+            $pf1HasLangs  = false;
+            /* Clean a component's per-line `chords` (array OR space-separated string per
+               line) into a null-padded parallel array (or null). Editor-input
+               normalisation kept at the funnel boundary; the shared write path stores it
+               verbatim. */
+            $saveSongCleanChords = static function ($chords, int $lineCount): ?array {
+                if (!is_array($chords) || $lineCount <= 0) { return null; }
+                $out = []; $any = false;
+                for ($ci = 0; $ci < $lineCount; $ci++) {
+                    $cell = $chords[$ci] ?? null;
+                    if (is_array($cell)) {
+                        $clean = array_values(array_filter(array_map(static fn($c) => trim((string)$c), $cell), static fn($c) => $c !== ''));
+                    } elseif (is_string($cell) && trim($cell) !== '') {
+                        $clean = array_values(array_filter(preg_split('/\s+/', trim($cell)) ?: [], static fn($c) => $c !== ''));
+                    } else {
+                        $clean = null;
+                    }
+                    if ($clean !== null && $clean !== []) { $out[] = $clean; $any = true; }
+                    else { $out[] = null; }
                 }
-                $snap->close();
+                return $any ? $out : null;
+            };
+            if ($ll_syncReady) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+                foreach (lyricLinesEditableComponents($db, $songId) as $pc) {
+                    $key = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
+                    $carryChords[$key][] = $pc['chords'];      // prior parallel chords array, or null
+                    $carryLangs[$key][]  = $pc['languages'];   // prior per-line override array, or null
+                }
+            } else {
+                /* lines-json-fallback (#1235 P4): un-migrated install (no mirror).
+                   Column names are hardcoded constants (rule #5). */
+                try {
+                    $pf1Probe = $db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_SCHEMA = DATABASE()
+                            AND TABLE_NAME   = 'tblSongComponents'
+                            AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+                    );
+                    $pf1Probe->execute();
+                    $pf1HasChords = $pf1Probe->get_result()->fetch_row() !== null;
+                    $pf1Probe->close();
+                } catch (\Throwable $_e) { /* default false */ }
+                $pf1HasLangs = lyricLinesComponentsLangReady($db);
+                if ($pf1HasChords || $pf1HasLangs) {
+                    $snapCols = 'Type, Number, LinesJson';
+                    if ($pf1HasChords) { $snapCols .= ', ChordsJson'; }
+                    if ($pf1HasLangs)  { $snapCols .= ', LanguagesJson'; }
+                    $snap = $db->prepare(
+                        "SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
+                    );
+                    $snap->bind_param('s', $songId);
+                    $snap->execute();
+                    $snapRes = $snap->get_result();
+                    while ($snapRow = $snapRes->fetch_assoc()) {
+                        $decoded = json_decode((string)$snapRow['LinesJson'], true);
+                        $lc      = is_array($decoded) ? count($decoded) : 0;
+                        $key     = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . $lc;
+                        if ($pf1HasChords) { $carryChords[$key][] = $snapRow['ChordsJson']; }
+                        if ($pf1HasLangs)  { $carryLangs[$key][]  = $snapRow['LanguagesJson']; }
+                    }
+                    $snap->close();
+                }
             }
 
             /* Child rows: DELETE then INSERT — simpler than diffing and
                the row counts per song are small (≈1–20 each). New credit
-               tables from #497 are cleaned up here too. */
+               tables from #497 are cleaned up here too. NOTE (#1235 P4/C5):
+               tblSongComponents is NO LONGER in this blanket DELETE — the
+               component+line write below is an Id-STABLE upsert
+               (lyricLinesWriteComponents) so ComponentId no longer churns on
+               every save. The legacy (un-migrated) branch DELETEs it itself. */
             foreach ([
                 'tblSongWriters', 'tblSongComposers', 'tblSongArrangers',
                 'tblSongAdaptors', 'tblSongTranslators', 'tblSongArtists',
-                'tblSongComponents',
             ] as $childTable) {
                 /* tblSongArtists (#587) only exists once
                    migrate-song-artists.php has been applied. Skip the
@@ -1405,6 +1443,60 @@ switch ($action) {
                 }
             }
 
+            if ($ll_syncReady) {
+                /* #1235 P4/C5 — inverted write path. Build the components payload from
+                   the POST (clean per-line chords; reattach the PF1-carried
+                   chords/languages a stale client omitted), then hand it to the shared
+                   writer: tblLyricLines becomes the source of truth and the JSON columns
+                   are shadow-written from the SAME payload while they exist. Id-stable —
+                   no component DELETE (so ComponentId no longer churns every save). */
+                $writeComps = [];
+                foreach ($song['components'] ?? [] as $comp) {
+                    /* Normalise type/number EXACTLY as lyricLinesWriteComponents stores them
+                       (trim + 20-char cap; non-negative int) so the PF1 carry key matches the
+                       snapshot key (built above from the STORED, normalised values via
+                       lyricLinesEditableComponents) — a raw-vs-normalised mismatch would
+                       silently fail the chords/languages carry-forward (the C5 review finding). */
+                    $cType  = function_exists('mb_substr')
+                        ? (mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse')
+                        : (substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse');
+                    $cNum   = max(0, (int)($comp['number'] ?? 0));
+                    $cLines = is_array($comp['lines'] ?? null) ? array_values($comp['lines']) : [];
+                    $pf1Key = $cType . "\x1f" . (string)$cNum . "\x1f" . count($cLines);
+                    /* chords: explicit (even empty) wins; omitted reclaims the carried prior array. */
+                    if (array_key_exists('chords', $comp)) {
+                        $cChords = $saveSongCleanChords($comp['chords'] ?? null, count($cLines));
+                    } else {
+                        $carried = !empty($carryChords[$pf1Key]) ? array_shift($carryChords[$pf1Key]) : null;
+                        $cChords = is_array($carried) ? $carried : null;
+                    }
+                    /* languages (per-line override): same explicit-vs-carry rule. */
+                    if (array_key_exists('languages', $comp)) {
+                        $cLangs = is_array($comp['languages'] ?? null) ? $comp['languages'] : null;
+                    } else {
+                        $carriedL = !empty($carryLangs[$pf1Key]) ? array_shift($carryLangs[$pf1Key]) : null;
+                        $cLangs = is_array($carriedL) ? $carriedL : null;
+                    }
+                    $writeComps[] = [
+                        'type'      => $cType,
+                        'number'    => $cNum,
+                        'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
+                        'lines'     => $cLines,
+                        'chords'    => $cChords,
+                        'languages' => $cLangs,
+                    ];
+                }
+                lyricLinesWriteComponents($db, $songId, $writeComps);
+            } else {
+            /* lines-json-fallback (#1235 P4): un-migrated install (no tblLyricLines
+               mirror) — the legacy component write. tblSongComponents was removed from
+               the shared child-table DELETE loop above, so DELETE it here first, then
+               re-INSERT LinesJson [+ shadow ChordsJson / LanguagesJson]. LinesJson
+               provably still exists (the C6 drop only runs once the mirror is present). */
+            $delLegacyComp = $db->prepare("DELETE FROM tblSongComponents WHERE SongId = ?");
+            $delLegacyComp->bind_param('s', $songId);
+            $delLegacyComp->execute();
+            $delLegacyComp->close();
             /* #858 — schema-probe for the optional Language column.
                When present, the INSERT carries a per-component
                override; pre-migration deploys keep the legacy
@@ -1560,6 +1652,7 @@ switch ($action) {
             $insComp->close();
             if ($updChords !== null) { $updChords->close(); }
             if ($updLangs  !== null) { $updLangs->close(); }
+            } /* end lines-json-fallback (legacy un-migrated component write) */
 
             /* Revision audit log (#400) — authenticated editors only.
                Silent no-op if the user isn't authenticated via the /manage
@@ -1833,15 +1926,11 @@ switch ($action) {
                 }
             }
 
-            /* #1235 P1b — keep the normalised tblLyricLines mirror in sync with the
-               components this legacy save just rewrote (guarded; no-op until the
-               mirror columns exist). Inside the transaction so it is atomic with the
-               save. The v2 editor (api2.php) does this via ed2_rebuildLyricsText; the
-               legacy path needs its own call until the editor cutover. */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
-            if (lyricLinesSyncReady($db)) {
-                lyricLinesProjectSong($db, $songId);
-            }
+            /* #1235 P4/C5 — the tblLyricLines mirror was already written, in-place and
+               Id-stably, by lyricLinesWriteComponents() above (mirrored install) — so
+               there is NO separate projector call here anymore (the old
+               lyricLinesProjectSong() RE-READ LinesJson, which is not drop-safe). The
+               un-migrated (no-mirror) branch has no mirror to sync. */
 
             $db->commit();
 

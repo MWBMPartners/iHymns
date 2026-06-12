@@ -30,11 +30,36 @@ is written. Three findings change the picture and need an owner call:**
    moment P3's enrichment UIs start writing line-anchored data.
 
 **UPDATE (session 3): P1+P2a+P2b+P3 (incl. the R1/R3 PF1/PF2 fixes) SHIPPED to alpha via
-PR #1259 (`7168606d`, MERGED). P4 is now IN BUILD on `feat/lyrics-1235-p4` (draft PR #1262):
-C1 assembler + C2 PartTypeSlug + C3 verification tooling + C4 read switch DONE (zero-data-loss,
-CI-green). RESUME = C4 bypass-reader cleanup → C5 write inversion → C6 drop (soak + manual run).
-Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session3.md`. The P3 editor-UI detail
-is in §0.1; the P4 plan-of-record is §11; the data-quality finding (pure-C re-opened) is §12.**
+PR #1259 (`7168606d`, MERGED). P4 IN BUILD on `feat/lyrics-1235-p4` (draft PR #1262):
+C1 assembler + C2 PartTypeSlug + C3 verification tooling + C4 read switch DONE.**
+
+**UPDATE (session 4): C4 CLEANUP + C5 WRITE INVERSION BUILT + adversarially reviewed + fixed
+(CI-green; awaiting commit + the alpha soak).** C4-cleanup repointed the 3 preview-line bypass
+readers (`SongOfTheDay`, `duplicate-songs`, `build-song-link-suggestions`) off `LinesJson` onto the
+shared assembler (`lyricLinesFirstLine`/`…Map` + `lyricLinesMirrorPresent` gate + marked
+LinesJson fallback). **C5** makes `tblLyricLines` the WRITE source of truth: the new shared engine
+`lyricLinesWriteComponents()` (Id-stable thin-component upsert by position + column-existence-gated
+shadow-JSON + payload-sourced `lyricLinesBuildDesiredFromComponents()` + the shared
+`lyricLinesApplyDesired()` diff) replaces the LinesJson-sourced projector in all 5 funnels
+(`save_song`, `component_upsert`, `components_replace`, `song_importers`, `lyrics_ingest`); the v2
+ed2 helpers (`ed2_rebuildLyricsText`/`ed2_buildSongSnapshot`/`ed2_applySongSnapshot` + granular
+funnels + `restore_revision`) read/write via the line-sourced shared helpers
+(`ed2_currentComponents`/`ed2_persistComponents`); PF1 carry-forward re-sources from the assembler;
+the CI grep guard (`tests/php/test-component-json-guard.php`) bans new ungated doomed-column refs.
+**Adversarial review (4 skeptics + verifiers) found 5 real bugs — ALL FIXED:** (B1) read gate
+(`lyricLinesMirrorPresent`, table-only) diverged from write gate → both now require
+`tblLyricLines.ChordsJson+Note+PartTypeSlug` (the mirror is built across 3 migrations:
+`normalize-lyrics` base + `song-part-types` PartTypeSlug + `lyric-lines-mirror` ChordsJson/Note);
+(B2) over-length chord arrays broke G2 → shadow ChordsJson/NotesJson now CLAMPED to line-count;
+(B3) `component_upsert` mid-list insert scrambled ComponentId → new components append (no usort);
+(B4) `save_song` PF1 reattach key normalised to match the snapshot key; (B5) `lyricLinesProjectSong`
+now no-ops post-drop (backfill button can't throw). **Deferred (documented):** editor.js R7b chord
+lineId re-anchor (client-side hardening, not cutover-critical); the legacy `load_song` raw per-line
+`languages` re-source post-drop (gated, non-throwing). RESUME = commit C4-cleanup+C5 → owner review +
+**≥7-night alpha soak** (apply `song-part-types`?/`lyric-lines-mirror`/`component-line-languages`/
+`lyric-lines-parttypeslug` migrations, run `verify-lyrics-cutover.php --phase=pre|soak`) → **C6 drop**
+(staged migration + retirement guards + schema.sql mirror, behind Gate C freeze). Full session
+detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record §11; data-quality §12.**
 
 | Phase | What | Status |
 |---|---|---|

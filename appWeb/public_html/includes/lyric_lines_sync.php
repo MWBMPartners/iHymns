@@ -47,17 +47,21 @@ function lyricLinesSyncReady(\mysqli $db): bool
         return $ready;
     }
     try {
-        /* Require BOTH per-line columns — a half-applied migration (ChordsJson
-           added, Note not) must NOT report ready, or the dual-write would throw
-           on the missing Note column. */
+        /* Require ALL THREE late-added per-line columns — a half-applied mirror
+           (ChordsJson added, Note not) OR a missing PartTypeSlug (#1138, added by the
+           separate migrate-song-part-types) must NOT report ready, because the projector
+           (lyricLinesApplyDesired) SELECTs + writes PartTypeSlug, ChordsJson AND Note — a
+           missing one throws under STRICT. DELIBERATELY the same set as
+           lyricLinesMirrorPresent() so the WRITE gate and the READ gate are aligned (#1235
+           P4/C5 review): reads + writes flip to the mirror together. */
         $r = $db->query(
             "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
                 AND TABLE_NAME   = 'tblLyricLines'
-                AND COLUMN_NAME  IN ('ChordsJson', 'Note')"
+                AND COLUMN_NAME  IN ('ChordsJson', 'Note', 'PartTypeSlug')"
         );
         $row   = $r ? $r->fetch_row() : null;
-        $ready = ($row !== null && (int)$row[0] >= 2);
+        $ready = ($row !== null && (int)$row[0] >= 3);
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
         $ready = false;
@@ -157,6 +161,36 @@ function lyricLinesEnsurePrimaryVersion(\mysqli $db, string $songId): int
  */
 function lyricLinesProjectSong(\mysqli $db, string $songId): int
 {
+    /* LEGACY / BACKFILL path — desired lines are derived by RE-READING the
+       (pre-C5-authoritative) tblSongComponents JSON columns. The #1235 P4/C5
+       cutover write path is lyricLinesWriteComponents() below: it builds desired
+       lines from the in-memory edit PAYLOAD (never re-reading LinesJson) and makes
+       tblLyricLines the source of truth, so it survives the C6 JSON-column drop.
+       This LinesJson-sourced projector stays for the backfill migration (which has
+       no payload — it reprojects what is already stored, pre-drop). */
+    /* Post-C6 self-guard: once tblSongComponents.LinesJson is dropped there is no
+       legacy source left to reproject from, and lyricLinesBuildDesired()'s SELECT would
+       throw under STRICT. The mirror is already authoritative, so a re-run of the backfill
+       migration (its setup-database card still offers a "safe to re-run" button) is a
+       genuine no-op — return early rather than throw (#1235 P4/C5 review). */
+    if (!lyricLinesShadowColumnsPresent($db)['LinesJson']) {
+        return 0;
+    }
+    return lyricLinesApplyDesired($db, $songId, lyricLinesBuildDesired($db, $songId));
+}
+
+/**
+ * Apply a pre-built DESIRED line list to a song's primary version using the
+ * Id-preserving diff (#1235 P2b). The ONE place lines are written — shared by the
+ * legacy/backfill projector (lyricLinesProjectSong, desired ← LinesJson) AND the
+ * cutover write path (lyricLinesWriteComponents, desired ← edit payload), so the
+ * diff/dirty-check/PF2-snapshot logic can never diverge between them.
+ *
+ * @param list<array<string,mixed>> $desired  lyricLinesBuildDesired()-shaped entries
+ * @return int  number of lines now stored for the version (== desired count)
+ */
+function lyricLinesApplyDesired(\mysqli $db, string $songId, array $desired): int
+{
     $lyricsId = lyricLinesEnsurePrimaryVersion($db, $songId);
 
     /* PRE-edit lines for this version — what is currently mirrored, in order.
@@ -172,9 +206,6 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
     $exStmt->execute();
     $existing = $exStmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $exStmt->close();
-
-    /* POST-edit desired lines, derived from the now-authoritative components. */
-    $desired = lyricLinesBuildDesired($db, $songId);
 
     /* Align pre→post by content, preserving Ids (and thus dependent FKs). */
     $plan = lyricLinesDiff($existing, $desired);
@@ -332,6 +363,283 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
                 : null;
             /* Per-line language override; a null/absent/empty entry inherits the
                component Language (#858), which inherits tblSongs.Language. */
+            $lineLang = (is_array($langs) && array_key_exists($i, $langs) && $langs[$i] !== null && $langs[$i] !== '')
+                ? (string)$langs[$i]
+                : $compLang;
+
+            $desired[] = [
+                'ComponentId'    => $compId,
+                'PartType'       => $partType,
+                'PartTypeSlug'   => $partSlug,
+                'PartNumber'     => $partNumber,
+                'SortOrder'      => $sort,
+                'LineText'       => $text,
+                'ChordsJson'     => $chordVal,
+                'Note'           => $noteVal,
+                'LanguageCode'   => $lineLang,
+                'IsInstrumental' => $isInst,
+            ];
+            $sort++;
+        }
+    }
+    return $desired;
+}
+
+/* ====================================================================
+ * #1235 P4 / C5 — WRITE INVERSION (lines authoritative; JSON is a shadow)
+ *
+ * The cutover write path. Where the legacy projector RE-READS the
+ * tblSongComponents JSON columns to derive lines (lyricLinesProjectSong →
+ * lyricLinesBuildDesired), the inverted path builds desired lines from the
+ * in-memory edit PAYLOAD and makes tblLyricLines the source of truth. The JSON
+ * columns are shadow-written FROM the same payload (so the two stores stay byte-
+ * consistent for the soak's G2 parity gate and full revertability) but ONLY while
+ * they exist — every reference is column-existence-gated, so one deployed build
+ * works BEFORE and AFTER the C6 drop (R2). LinesJson is NOT NULL, so it must keep
+ * being written until the drop.
+ * ==================================================================== */
+
+/**
+ * Which of the doomed tblSongComponents JSON payload columns still exist? Probed
+ * once per request (memoised). Drives the shadow-write so a deployed build keeps
+ * working across the C6 DROP COLUMN (a write naming a dropped column throws under
+ * MYSQLI_REPORT_STRICT). Column names are hardcoded constants (rule #5).
+ *
+ * @return array{LinesJson:bool,ChordsJson:bool,NotesJson:bool,LanguagesJson:bool}
+ */
+function lyricLinesShadowColumnsPresent(\mysqli $db): array
+{
+    static $cols = null;
+    if ($cols !== null) {
+        return $cols;
+    }
+    $cols = ['LinesJson' => false, 'ChordsJson' => false, 'NotesJson' => false, 'LanguagesJson' => false];
+    try {
+        $r = $db->query(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongComponents'
+                AND COLUMN_NAME IN ('LinesJson','ChordsJson','NotesJson','LanguagesJson')"
+        );
+        if ($r) {
+            while ($row = $r->fetch_row()) { $cols[(string)$row[0]] = true; }
+            $r->close();
+        }
+    } catch (\Throwable $_e) {
+        /* leave all false — caller writes a thin row only */
+    }
+    return $cols;
+}
+
+/**
+ * The #1235 P4/C5 cutover write path: persist a song's components from the
+ * in-memory edit PAYLOAD, making `tblLyricLines` the source of truth.
+ *
+ * Steps: (1) Id-stably upsert the THIN tblSongComponents rows (match by position /
+ * SortOrder — never blanket DELETE+reinsert, which mints fresh Ids and churns every
+ * line's ComponentId), shadow-writing the JSON columns that still exist; (2) build
+ * the desired line list from the payload + the upserted ComponentIds (NEVER reading
+ * LinesJson); (3) apply it to tblLyricLines via the shared Id-preserving diff
+ * (lyricLinesApplyDesired) so per-line enrichment survives. SortOrder is kept
+ * contiguous 0..n-1 (so the #1066 ArrangementJson ordinal arrays stay valid).
+ *
+ * Each component entry: { type, number, language?, lines:string[], chords?:array,
+ * notes?:array, languages?:array } — the same shape save_song / the importers /
+ * the snapshot already hold. Call only when lyricLinesSyncReady() is true.
+ *
+ * @param list<array<string,mixed>> $components  in display order
+ * @return int  number of lines now stored
+ */
+function lyricLinesWriteComponents(\mysqli $db, string $songId, array $components): int
+{
+    /* The validated per-line LanguagesJson builder is shared with the funnels so
+       the inverted path stores per-line language identically (line_enrichment.php
+       is always loaded in the web/import contexts that call this; migrations use
+       lyricLinesProjectSong, never this). */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+
+    /* Normalise each component ONCE — type/number/language coercion + the validated
+       per-line language array — so the thin-row upsert (shadow) and the line build
+       agree byte-for-byte. */
+    $norm = [];
+    foreach (array_values($components) as $c) {
+        if (!is_array($c)) { continue; }
+        $lines = is_array($c['lines'] ?? null) ? array_values(array_map('strval', $c['lines'])) : [];
+        $type  = function_exists('mb_substr')
+            ? (mb_substr(trim((string)($c['type'] ?? 'verse')), 0, 20) ?: 'verse')
+            : (substr(trim((string)($c['type'] ?? 'verse')), 0, 20) ?: 'verse');
+        $langsJson = lineEnrichmentBuildLanguagesJson($c['languages'] ?? null, count($lines));
+        $norm[] = [
+            'type'          => $type,
+            'number'        => max(0, (int)($c['number'] ?? 0)),
+            'language'      => (isset($c['language']) && trim((string)$c['language']) !== '') ? trim((string)$c['language']) : null,
+            'lines'         => $lines,
+            'chords'        => (isset($c['chords']) && is_array($c['chords'])) ? array_values($c['chords']) : null,
+            'notes'         => (isset($c['notes'])  && is_array($c['notes']))  ? array_values($c['notes'])  : null,
+            'languagesJson' => $langsJson,                                                  // shadow string (or null)
+            'validatedLangs'=> $langsJson !== null ? json_decode($langsJson, true) : null,  // null-padded validated array
+        ];
+    }
+
+    /* (1) Id-stable thin-component upsert + shadow JSON → position → ComponentId. */
+    $cidMap = lyricLinesUpsertComponents($db, $songId, $norm);
+    foreach ($norm as $i => &$c) { $c['cid'] = (int)($cidMap[$i] ?? 0); }
+    unset($c);
+
+    /* (2) Desired lines from the payload (never LinesJson). (3) Diff into tblLyricLines. */
+    $desired = lyricLinesBuildDesiredFromComponents($norm, static fn(?string $t): ?string => lyricLinesPartTypeSlug($db, $t));
+    return lyricLinesApplyDesired($db, $songId, $desired);
+}
+
+/**
+ * Id-stable upsert of a song's THIN tblSongComponents rows from the normalised
+ * payload, shadow-writing whichever JSON columns still exist. Matches existing rows
+ * to desired ones BY POSITION (SortOrder index): UPDATE matched rows in place
+ * (Id-stable — the ComponentId every line carries does not churn), INSERT extras,
+ * DELETE the surplus. Returns position → ComponentId.
+ *
+ * The INSERT/UPDATE column set is built once from lyricLinesShadowColumnsPresent()
+ * so post-drop a thin row (Type/Number/SortOrder/Language only) is written and no
+ * dropped column is named (R2). Helper for lyricLinesWriteComponents().
+ *
+ * @param list<array<string,mixed>> $norm  normalised components (lyricLinesWriteComponents)
+ * @return array<int,int>  position → ComponentId
+ */
+function lyricLinesUpsertComponents(\mysqli $db, string $songId, array $norm): array
+{
+    $cols = lyricLinesShadowColumnsPresent($db);
+
+    /* Shadow column list, in a fixed order, for both INSERT and UPDATE. */
+    $shadowCols = [];
+    foreach (['LinesJson', 'ChordsJson', 'NotesJson', 'LanguagesJson'] as $sc) {
+        if ($cols[$sc]) { $shadowCols[] = $sc; }
+    }
+
+    /* Per-component shadow VALUES in $shadowCols order (all bound as 's'/null).
+       ChordsJson / NotesJson are CLAMPED to exactly count(lines): the per-line write
+       (lyricLinesBuildDesiredFromComponents) only stores a cell for each existing LINE, so a
+       chord/note cell at an index >= line-count would otherwise live in the shadow but be
+       dropped by the assembled read — breaking the G2 byte-parity gate and silently losing
+       the trailing cell on the public read (the C5 review's over-length-chords finding). */
+    $shadowVals = static function (array $c) use ($shadowCols): array {
+        $lineCount = count($c['lines']);
+        $out = [];
+        foreach ($shadowCols as $sc) {
+            if ($sc === 'LinesJson') {
+                $out[] = json_encode($c['lines'], JSON_UNESCAPED_UNICODE);
+            } elseif ($sc === 'ChordsJson') {
+                $cells = []; $any = false;
+                for ($k = 0; $k < $lineCount; $k++) {
+                    $v = (is_array($c['chords']) && array_key_exists($k, $c['chords'])) ? $c['chords'][$k] : null;
+                    $cells[] = $v;
+                    if ($v !== null) { $any = true; }
+                }
+                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+            } elseif ($sc === 'NotesJson') {
+                $cells = []; $any = false;
+                for ($k = 0; $k < $lineCount; $k++) {
+                    $v = (is_array($c['notes']) && array_key_exists($k, $c['notes']) && $c['notes'][$k] !== null && $c['notes'][$k] !== '')
+                        ? $c['notes'][$k] : null;
+                    $cells[] = $v;
+                    if ($v !== null) { $any = true; }
+                }
+                $out[] = $any ? json_encode($cells, JSON_UNESCAPED_UNICODE) : null;
+            } else { /* LanguagesJson — already clamped to line-count by lineEnrichmentBuildLanguagesJson */
+                $out[] = $c['languagesJson'];
+            }
+        }
+        return $out;
+    };
+
+    /* Existing thin rows in position order (the match anchor). */
+    $exStmt = $db->prepare("SELECT Id FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
+    $exStmt->bind_param('s', $songId);
+    $exStmt->execute();
+    $existingIds = array_map(static fn($r) => (int)$r[0], $exStmt->get_result()->fetch_all(MYSQLI_NUM));
+    $exStmt->close();
+
+    /* Prepare INSERT + UPDATE once (column set is fixed for this call). */
+    $insCols  = array_merge(['SongId', 'Type', 'Number', 'SortOrder', 'Language'], $shadowCols);
+    $insPlace = implode(',', array_fill(0, count($insCols), '?'));
+    $insTypes = 'ssiis' . str_repeat('s', count($shadowCols));
+    $ins = $db->prepare('INSERT INTO tblSongComponents (' . implode(',', $insCols) . ") VALUES ({$insPlace})");
+
+    $updSet   = 'Type = ?, Number = ?, SortOrder = ?, Language = ?'
+              . implode('', array_map(static fn($c) => ", {$c} = ?", $shadowCols));
+    $updTypes = 'siis' . str_repeat('s', count($shadowCols)) . 'i';
+    $upd = $db->prepare("UPDATE tblSongComponents SET {$updSet} WHERE Id = ?");
+
+    $cidMap = [];
+    foreach ($norm as $i => $c) {
+        $shadow = $shadowVals($c);
+        if ($i < count($existingIds)) {
+            $compId = $existingIds[$i];
+            $vals   = array_merge([$c['type'], $c['number'], $i, $c['language']], $shadow, [$compId]);
+            $upd->bind_param($updTypes, ...$vals);
+            $upd->execute();
+            $cidMap[$i] = $compId;
+        } else {
+            $vals = array_merge([$songId, $c['type'], $c['number'], $i, $c['language']], $shadow);
+            $ins->bind_param($insTypes, ...$vals);
+            $ins->execute();
+            $cidMap[$i] = (int)$db->insert_id;
+        }
+    }
+    $ins->close();
+    $upd->close();
+
+    /* DELETE the surplus existing rows (desired set shrank). */
+    if (count($existingIds) > count($norm)) {
+        $del = $db->prepare("DELETE FROM tblSongComponents WHERE Id = ?");
+        for ($j = count($norm); $j < count($existingIds); $j++) {
+            $del->bind_param('i', $existingIds[$j]);
+            $del->execute();
+        }
+        $del->close();
+    }
+
+    return $cidMap;
+}
+
+/**
+ * Build the ordered DESIRED line list from the in-memory normalised components
+ * (each carrying its upserted `cid`), NEVER reading tblSongComponents.LinesJson.
+ * **PURE** — no DB, no I/O (the part-type→slug lookup is injected as $slugResolver
+ * so it is unit-testable) — and byte-for-byte the same shape lyricLinesBuildDesired()
+ * derives from LinesJson, so lyricLinesApplyDesired()'s diff/dirty-check behaves
+ * identically on both the legacy and the cutover paths.
+ *
+ * @param list<array<string,mixed>> $norm           normalised components with 'cid'
+ * @param callable(?string):?string  $slugResolver  PartType → tblSongPartTypes.Slug
+ * @return list<array<string,mixed>>
+ */
+function lyricLinesBuildDesiredFromComponents(array $norm, callable $slugResolver): array
+{
+    $desired = [];
+    $sort    = 0;
+    foreach ($norm as $c) {
+        $compId     = (int)($c['cid'] ?? 0);
+        $partType   = (string)$c['type'];
+        $partSlug   = $slugResolver($partType);
+        $number     = (int)$c['number'];
+        $partNumber = $number > 0 ? $number : null;
+        $compLang   = $c['language'] !== null && $c['language'] !== '' ? (string)$c['language'] : null;
+        /* array_values so the parallel arrays are sequential 0..n-1 and align with the line
+           index even if a caller passed a sparse-keyed array (the shadow write re-keys the
+           same way, so the two encodings stay byte-consistent — C5 review). */
+        $chords     = is_array($c['chords'] ?? null) ? array_values($c['chords']) : null;
+        $notes      = is_array($c['notes']  ?? null) ? array_values($c['notes'])  : null;
+        $langs      = is_array($c['validatedLangs'] ?? null) ? array_values($c['validatedLangs']) : null;
+
+        foreach ($c['lines'] as $i => $line) {
+            $text     = (string)$line;
+            $isInst   = (trim($text) === '') ? 1 : 0;
+            $chordVal = (is_array($chords) && array_key_exists($i, $chords) && $chords[$i] !== null)
+                ? json_encode($chords[$i], JSON_UNESCAPED_UNICODE)
+                : null;
+            $noteVal  = (is_array($notes) && array_key_exists($i, $notes) && $notes[$i] !== null && $notes[$i] !== '')
+                ? (string)$notes[$i]
+                : null;
             $lineLang = (is_array($langs) && array_key_exists($i, $langs) && $langs[$i] !== null && $langs[$i] !== '')
                 ? (string)$langs[$i]
                 : $compLang;

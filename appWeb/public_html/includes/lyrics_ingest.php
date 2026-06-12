@@ -591,23 +591,28 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         /* One verse component from the TTML lines, so the provisional song
            renders + is editable in the curator UI. */
         $lines = array_values(array_filter(explode("\n", $lyricsText), static fn($l) => trim($l) !== ''));
-        if (!empty($lines)) {
-            $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-            $comp = $db->prepare(
-                'INSERT INTO tblSongComponents (SongId, Type, Number, LinesJson, SortOrder)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $type = 'verse'; $num = 1; $sort = 0;
-            $comp->bind_param('ssisi', $songId, $type, $num, $linesJson, $sort);
-            $comp->execute();
-            $comp->close();
-        }
-
-        /* #1235 P1b — mirror the provisional component into tblLyricLines (guarded;
-           no-op until the mirror columns exist). Inside the transaction. */
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
-        if (lyricLinesSyncReady($db)) {
-            lyricLinesProjectSong($db, $songId);
+        if (!empty($lines)) {
+            /* #1235 P4/C5 — write inversion: when the mirror exists, the shared write
+               path makes the normalised lines authoritative and shadow-writes the
+               still-present LinesJson, so the ingest survives the C6 drop. */
+            if (lyricLinesSyncReady($db)) {
+                lyricLinesWriteComponents($db, $songId, [
+                    ['type' => 'verse', 'number' => 1, 'lines' => $lines],
+                ]);
+            } else {
+                /* lines-json-fallback (#1235 P4): un-migrated install (no mirror) —
+                   LinesJson provably still exists (C6 drop only runs once syncReady). */
+                $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
+                $comp = $db->prepare(
+                    'INSERT INTO tblSongComponents (SongId, Type, Number, LinesJson, SortOrder)
+                     VALUES (?, ?, ?, ?, ?)'
+                );
+                $type = 'verse'; $num = 1; $sort = 0;
+                $comp->bind_param('ssisi', $songId, $type, $num, $linesJson, $sort);
+                $comp->execute();
+                $comp->close();
+            }
         }
 
         $db->commit();
