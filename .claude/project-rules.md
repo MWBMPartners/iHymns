@@ -298,3 +298,25 @@ Setlists, favourites (+ their `Tags`), custom tags, and view-history sync to MyS
 ### 15.3 Maintenance mode + DB-down = themed 503 (never stale)
 
 `includes/maintenance.php` gates `index.php` + `api.php`. The `/manage/*` entry point, `app_status`, and `auth_*` are **structurally exempt** so an admin can never lock themselves out. `isDbConnectionFailure()` (in `db_mysql.php`) converts an unreachable DB into the same themed 503. The service worker caches only 2xx, so a 503 page is never cached → clean recovery once the DB/maintenance flag clears. Error surfaces render through `includes/error_page.php` (theme-aware, PWA-offline-capable).
+
+## 16. Deploy + migration include-path gotchas (2026-06, lyrics-mirror saga)
+
+### 16.1 A `.sql/` migration requiring a NEW `public_html/includes/` file MUST resolve it `DOCUMENT_ROOT`-first
+
+`appWeb/.sql/migrate-*.php` scripts compute paths to `public_html/includes/` helpers. The intuitive `dirname(__DIR__) . '/public_html/includes/foo.php'` (treating `.sql/` and `public_html/` as siblings) **works for long-lived files like `db_mysql.php` but silently 500s on a brand-new include** — on the server the SERVED web docroot is a *different tree* from that sibling path, and the sibling carries old files but not the newest ones. This cost hours on `migrate-lyric-lines-mirror.php` (`Failed opening required …/public_html/includes/lyric_lines_sync.php`, even though the deploy DID upload it).
+
+**Pattern (use this for any migration that requires a new public_html include):** try the live docroot first, sibling as the CLI fallback, error clearly if neither exists:
+
+```php
+$cands = [];
+$dr = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/');
+if ($dr !== '') { $cands[] = $dr . '/includes/foo.php'; }
+$cands[] = dirname(__DIR__) . '/public_html/includes/foo.php';
+foreach ($cands as $c) { if (is_file($c)) { require_once $c; $found = true; break; } }
+```
+
+(`db_mysql.php`-only migrations can keep the simple sibling path — it happens to be present in the stale tree. The hazard is specifically NEW includes.)
+
+### 16.2 The SFTP deploy content-compares; new files no longer silently strand
+
+`deploy.yml`'s normal path used `--only-newer`, which — because `actions/checkout` stamps every file with the checkout mtime — **silently skipped files** whose remote copy had a later (prior-deploy) mtime. It stranded `lyric_lines_sync.php` (and #919/#920 before it). Now the normal path **content-compares** (size+content); `[deploy all]` in the commit/PR-title still forces a full sweep; the deploy job has a `timeout-minutes: 20` cap + `~/.lftprc` net timeouts so a stalled mirror can't hang the 6h Actions ceiling (it did, twice). When you add a NEW file a deploy must pick up, a `[deploy all]` PR title is the belt-and-braces guarantee.
