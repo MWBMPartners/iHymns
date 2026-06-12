@@ -62,6 +62,9 @@ jobs:
   # ===========================================================================
   deploy:
     runs-on: ubuntu-latest
+    # Hard cap so a stalled SFTP mirror cannot hang for the full 6h Actions
+    # ceiling (two runs hung at "Making directory .well-known" until cancelled).
+    timeout-minutes: 20
     if: vars.SFTP_ENABLED == 'true'
 
     # Shared lftp exclude flags — available to all steps via $LFTP_EXCLUDES.
@@ -101,6 +104,20 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.ref_name }}
+
+      # -- lftp connection timeouts (global ~/.lftprc, inherited by every lftp
+      #    call below) so a stalled SFTP op retries/fails fast instead of hanging.
+      #    Two prior runs hung 6h at "Making directory .well-known"; this plus the
+      #    job timeout-minutes prevent that recurring. --
+      - name: Configure lftp timeouts
+        run: |
+          {
+            echo "set net:timeout 20"
+            echo "set net:max-retries 3"
+            echo "set net:reconnect-interval-base 5"
+            echo "set net:reconnect-interval-multiplier 1"
+            echo "set mirror:no-empty-dirs yes"
+          } >> "$HOME/.lftprc"
 
       # -- Determine which directory to deploy based on branch --
       - name: Determine deployment target
@@ -154,12 +171,18 @@ jobs:
             if [[ -z "$CHANGED" ]]; then
               echo "has_changes=false" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
-              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
+              echo "mirror_newer_flag=" >> $GITHUB_OUTPUT
               echo "No deployable files changed in $SOURCE_DIR"
             else
               echo "has_changes=true" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
-              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
+              # NEVER --only-newer: actions/checkout stamps every file with the
+              # checkout mtime, so --only-newer wrongly SKIPS a file whose remote
+              # copy carries a later (prior-deploy) mtime — that silently stranded
+              # lyric_lines_sync.php (#1235), and setup-database.php before it
+              # (#919/#920). Empty flag => lftp mirror compares size+content and
+              # uploads anything new OR changed. Slower (~2.5m) but correct.
+              echo "mirror_newer_flag=" >> $GITHUB_OUTPUT
               echo "Changed files:"
               echo "$CHANGED"
             fi
