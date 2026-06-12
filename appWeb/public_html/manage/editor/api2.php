@@ -335,6 +335,40 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
 }
 
 /**
+ * Build a validated, null-padded LanguagesJson string (#1235 P3 / #1253) from a
+ * per-line `languages` array (parallel to a component's lines), or null when no
+ * line carries a real override. Each entry is validated as BCP 47 via the shared
+ * validator (canonical _ietfBcp47Validate when loaded); empty/invalid → null
+ * (that line inherits the component language). Returning null when there are no
+ * overrides keeps the column NULL rather than storing an all-null array.
+ *
+ * @param mixed $languages  raw per-line languages (expected list aligned to lines)
+ * @param int   $lineCount  the component's line count (the array is padded to it)
+ */
+function ed2_buildLanguagesJson(mixed $languages, int $lineCount): ?string {
+    if (!is_array($languages) || $lineCount <= 0) { return null; }
+    $out = [];
+    $any = false;
+    for ($i = 0; $i < $lineCount; $i++) {
+        $v   = $languages[$i] ?? null;
+        $tag = (is_string($v) && trim($v) !== '') ? lineEnrichmentValidateLanguage($v) : null;
+        $out[$i] = $tag;
+        if ($tag !== null) { $any = true; }
+    }
+    return $any ? json_encode($out, JSON_UNESCAPED_UNICODE) : null;
+}
+
+/** Write a component's LanguagesJson (#1235 P3) — a no-op when the column is not
+ *  migrated yet, so per-line language degrades gracefully to component language. */
+function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?string $languagesJson): void {
+    if ($compId <= 0 || !lyricLinesComponentsLangReady($db)) { return; }
+    $u = $db->prepare('UPDATE tblSongComponents SET LanguagesJson = ? WHERE Id = ? AND SongId = ?');
+    $u->bind_param('sis', $languagesJson, $compId, $songId);
+    $u->execute();
+    $u->close();
+}
+
+/**
  * Build the full editable song record — { song, components, credits, tags, links }
  * — in the SAME shapes load_song returns (minus media, which is a separate file
  * lifecycle). The single source for BOTH the load_song hydration and the
@@ -350,8 +384,11 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     if (!$song) { return null; }
 
     $components = [];
-    $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
-                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+    /* #1235 P3 — LanguagesJson (per-line language) is optional pre-migration;
+       select it only when present (hardcoded column name, never input). */
+    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
+    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
+                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
     $cs->bind_param('s', $songId);
     $cs->execute();
     $cr = $cs->get_result();
@@ -364,6 +401,8 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
             'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
             'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
             'language'  => $row['Language'],
+            /* Per-line language overrides parallel to lines (null = inherit). */
+            'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
         ];
     }
     $cs->close();
@@ -452,6 +491,8 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
             $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
             $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
             $ins->execute();
+            /* #1235 P3 — restore per-line language overrides for the new row. */
+            ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
         }
         $ins->close();
         ed2_rebuildLyricsText($db, $songId);
@@ -758,6 +799,9 @@ try {
                 $compId = (int)$db->insert_id;
                 $i->close();
             }
+            /* #1235 P3 — persist any per-line language overrides BEFORE the
+               reproject, so lyricLinesProjectSong() picks them up. */
+            ed2_writeComponentLanguages($db, $compId, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
             ed2_rebuildLyricsText($db, $songId);
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();

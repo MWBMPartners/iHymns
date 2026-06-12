@@ -66,6 +66,33 @@ function lyricLinesSyncReady(\mysqli $db): bool
 }
 
 /**
+ * Is the per-line language column (tblSongComponents.LanguagesJson, #1235 P3 /
+ * #1253) present? The projector reads it for per-line language overrides; when
+ * absent (un-migrated install) every line inherits the component Language, so the
+ * SELECT must omit the column rather than error. Memoised per request.
+ */
+function lyricLinesComponentsLangReady(\mysqli $db): bool
+{
+    static $ready = null;
+    if ($ready !== null) {
+        return $ready;
+    }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongComponents'
+                AND COLUMN_NAME  = 'LanguagesJson' LIMIT 1"
+        );
+        $ready = ($r && $r->fetch_row() !== null);
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $ready = false;
+    }
+    return $ready;
+}
+
+/**
  * Find (or create) the primary `tblLyrics` version row for a song — the
  * `Source = 'ihymns'` canonical version, unique per song via uq_song_source —
  * and return its Id. Idempotent: re-runs return the existing row.
@@ -222,8 +249,12 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
  */
 function lyricLinesBuildDesired(\mysqli $db, string $songId): array
 {
+    /* Per-line language (LanguagesJson, #1235 P3) is optional on un-migrated
+       installs; select it only when present (the column name is a hardcoded
+       constant, never input — rule #5). */
+    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
     $cs = $db->prepare(
-        "SELECT Id, Type, Number, Language, LinesJson, ChordsJson, NotesJson
+        "SELECT Id, Type, Number, Language, LinesJson, ChordsJson, NotesJson, {$langCol}
            FROM tblSongComponents
           WHERE SongId = ?
           ORDER BY SortOrder, Id"
@@ -240,12 +271,13 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
         $partType   = (string)$c['Type'];
         $number     = (int)$c['Number'];
         $partNumber = $number > 0 ? $number : null;          // 0 (e.g. a lone Chorus) => NULL
-        $lang       = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
+        $compLang   = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
 
         $lines  = json_decode((string)$c['LinesJson'], true);
         if (!is_array($lines)) { $lines = []; }
         $chords = ($c['ChordsJson'] !== null) ? json_decode((string)$c['ChordsJson'], true) : null;
         $notes  = ($c['NotesJson']  !== null) ? json_decode((string)$c['NotesJson'],  true) : null;
+        $langs  = ($c['LanguagesJson'] !== null) ? json_decode((string)$c['LanguagesJson'], true) : null;
 
         foreach ($lines as $i => $line) {
             $text   = (string)$line;
@@ -258,6 +290,11 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
             $noteVal  = (is_array($notes) && array_key_exists($i, $notes) && $notes[$i] !== null && $notes[$i] !== '')
                 ? (string)$notes[$i]
                 : null;
+            /* Per-line language override; a null/absent/empty entry inherits the
+               component Language (#858), which inherits tblSongs.Language. */
+            $lineLang = (is_array($langs) && array_key_exists($i, $langs) && $langs[$i] !== null && $langs[$i] !== '')
+                ? (string)$langs[$i]
+                : $compLang;
 
             $desired[] = [
                 'ComponentId'    => $compId,
@@ -267,7 +304,7 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
                 'LineText'       => $text,
                 'ChordsJson'     => $chordVal,
                 'Note'           => $noteVal,
-                'LanguageCode'   => $lang,
+                'LanguageCode'   => $lineLang,
                 'IsInstrumental' => $isInst,
             ];
             $sort++;

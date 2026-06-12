@@ -3535,6 +3535,14 @@ class SongData
                data/songs.schema.json — additive, byte-identical when absent). */
             if ($fromMirror) {
                 $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$cid]);
+                /* #1235 P3 — effective per-line language, emitted ONLY when a line
+                   differs from the component default (a real per-line override);
+                   otherwise the component-level 'language' already says it all. */
+                $compLanguage = $component['language'];
+                $lineLangs    = array_map(static fn($l) => $l['lang'] ?? null, $mirror[$cid]);
+                foreach ($lineLangs as $ll) {
+                    if ($ll !== $compLanguage) { $component['lineLanguages'] = $lineLangs; break; }
+                }
             }
             $components[] = $component;
         }
@@ -3653,6 +3661,12 @@ class SongData
                single-song builder so getSongs() and getSongById() agree. */
             if ($fromMirror) {
                 $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$sid][$cid]);
+                /* #1235 P3 — see _getComponents(): sparse effective per-line language. */
+                $compLanguage = $component['language'];
+                $lineLangs    = array_map(static fn($l) => $l['lang'] ?? null, $mirror[$sid][$cid]);
+                foreach ($lineLangs as $ll) {
+                    if ($ll !== $compLanguage) { $component['lineLanguages'] = $lineLangs; break; }
+                }
             }
             $map[$sid][] = $component;
         }
@@ -3701,7 +3715,7 @@ class SongData
             return [];
         }
         $stmt = $this->db->prepare(
-            "SELECT ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text
+            "SELECT ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text, ll.LanguageCode AS line_lang
                FROM tblLyricLines ll
                JOIN tblLyrics ly ON ly.Id = ll.LyricsId
               WHERE ly.SongId = ? AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
@@ -3712,7 +3726,11 @@ class SongData
         $res = $stmt->get_result();
         $out = [];
         while ($row = $res->fetch_assoc()) {
-            $out[(int)$row['cid']][] = ['id' => (int)$row['line_id'], 'text' => (string)$row['line_text']];
+            $out[(int)$row['cid']][] = [
+                'id'   => (int)$row['line_id'],
+                'text' => (string)$row['line_text'],
+                'lang' => $row['line_lang'] !== null ? (string)$row['line_lang'] : null,
+            ];
         }
         $stmt->close();
         return $out;
@@ -3733,7 +3751,7 @@ class SongData
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
         $stmt = $this->db->prepare(
-            "SELECT ly.SongId AS song_id, ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text
+            "SELECT ly.SongId AS song_id, ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text, ll.LanguageCode AS line_lang
                FROM tblLyricLines ll
                JOIN tblLyrics ly ON ly.Id = ll.LyricsId
               WHERE ly.SongId IN ($placeholders) AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
@@ -3744,7 +3762,11 @@ class SongData
         $res = $stmt->get_result();
         $out = [];
         while ($row = $res->fetch_assoc()) {
-            $out[(string)$row['song_id']][(int)$row['cid']][] = ['id' => (int)$row['line_id'], 'text' => (string)$row['line_text']];
+            $out[(string)$row['song_id']][(int)$row['cid']][] = [
+                'id'   => (int)$row['line_id'],
+                'text' => (string)$row['line_text'],
+                'lang' => $row['line_lang'] !== null ? (string)$row['line_lang'] : null,
+            ];
         }
         $stmt->close();
         return $out;

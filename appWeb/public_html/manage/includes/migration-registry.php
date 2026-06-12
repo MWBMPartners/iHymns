@@ -1435,6 +1435,23 @@ return [
             || !_migProbe_columnExists($db, 'tblLyricLines', 'Note'),
     ],
 
+    'component-line-languages' => [
+        'script' => 'migrate-component-line-languages.php',
+        'card' => [
+            'title'  => 'Per-line language: tblSongComponents.LanguagesJson (#1235 P3)',
+            'body'   => 'Adds <code>tblSongComponents.LanguagesJson</code> — a per-line language'
+                      . ' parallel array (like <code>ChordsJson</code> / <code>NotesJson</code>) giving'
+                      . ' per-line language overrides a durable home that survives lyric-line'
+                      . ' reprojection. A line without one inherits the component language'
+                      . ' (which inherits <code>tblSongs.Language</code>). Strictly additive +'
+                      . ' idempotent, no backfill.',
+            'button' => 'Add Per-line Language Column',
+        ],
+        /* Pending until the column lands; self-clears once it exists. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongComponents', 'LanguagesJson'),
+    ],
+
     /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
        Shape-readiness so the iHymns DB can become the shared iLyricsDB core
        without a second re-architecture. All three are strictly additive. */

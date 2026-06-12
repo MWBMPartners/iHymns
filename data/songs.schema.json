@@ -227,6 +227,11 @@
           "description": "Optional (#1235 P3): stable tblLyricLines.Id for each line, parallel to 'lines' (same length and order). Present only when line text is sourced from the normalised tblLyricLines mirror; absent on un-migrated installs. Clients address per-line enrichment (translations/annotations, timing) by these Ids.",
           "type": "array",
           "items": { "type": "integer", "minimum": 1 }
+        },
+        "lineLanguages": {
+          "description": "Optional (#1235 P3): effective IETF BCP 47 language tag for each line, parallel to 'lines'. Emitted only when at least one line's language differs from the component's 'language' default (a genuine per-line override, e.g. a multi-language verse); otherwise omitted and every line inherits 'language'. A null entry means that line inherits the component/song language.",
+          "type": "array",
+          "items": { "type": ["string", "null"] }
         }
       }
     }
