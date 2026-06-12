@@ -1,8 +1,28 @@
-# Lyrics & song-info storage normalisation — strategy (DRAFT)
+# Lyrics & song-info storage normalisation — strategy
 
-> Status: **DRAFT for owner review.** No code, no branches, no migrations until the
-> model + phasing below are approved. Companion to the #1200 Song Editor rewrite.
-> Tracking epic: **#1235**. Author: pairing session 2026-06-10.
+> Status: **APPROVED + IN BUILD.** Owner chose **Option C (pure normalisation)** —
+> `tblLyricLines` is the single source of truth; part identity on the line;
+> components derived; JSON arrays retired. Tracking epic: **#1235**.
+> Companion to the #1200 Song Editor rewrite. Author: pairing 2026-06-10..12.
+
+## 0. Progress & RESUME POINT (2026-06-12)
+
+**Phase 1 + the read-switch are DONE and verified on alpha. Resume from P3.**
+
+| Phase | What | Status |
+|---|---|---|
+| **P1a** #1247 | `includes/lyric_lines_sync.php` (the ONE shared projector `lyricLinesProjectSong()` + `lyricLinesEnsurePrimaryVersion()` + `lyricLinesSyncReady()`); `tblLyricLines` += `ChordsJson`+`Note`; `migrate-lyric-lines-mirror.php` backfilled the whole catalogue | ✅ **verified: 16,081 songs / 291,478 lines, Query-2 parity = 0** |
+| **P1b** #1251 | transitional dual-write — guarded `lyricLinesProjectSong()` at the end of `ed2_rebuildLyricsText` (all api2.php editor paths) + legacy `api.php` save_song + `song_importers.php` + `lyrics_ingest.php createSong` | ✅ verified (edit keeps mirror in sync) |
+| **P2a** #1252 | read-switch — `SongData::_getComponents`/`_getComponentsMap` source line TEXT from `tblLyricLines` (JOIN component for metadata), **byte-identical output**, per-component `LinesJson` fallback guarded by `_hasLyricLinesMirror()` + a **line-count check** | ✅ verified visually on 6 songs (3 official + 2 unofficial books + editor) |
+| **P2b** (the Id-preserving diff) | replace the naive whole-song reproject so line `Id`s survive edits | ⏳ **COUPLE WITH P3** — its only value is keeping P3 enrichment from orphaning; harmless to defer (nothing references line `Id`s yet; P2a keeps them internal) |
+| **P3** ← RESUME HERE | per-line **translations / annotations / language** first-class (`tblLyricLineTranslations` / `tblLyricLineAnnotations` / `tblLyricLines.LanguageCode`), expose `lineIds[]` in the read output (**update `data/songs.schema.json`** — it is `additionalProperties:false`, which is why P2a withheld `lineIds`), + the **Id-preserving diff** (P2b), + the full **BCP 47 picker #1253** | TODO |
+| **P4** | drop `LinesJson` / `ChordsJson` / `NotesJson` after a verify gate | TODO |
+
+**Key facts for the resumer:**
+- The shared projector is `appWeb/public_html/includes/lyric_lines_sync.php` — reuse it; never re-fork. `_mirrorLinesByComponent[Map]()` in `SongData.php` already fetch each line's `Id` internally (P3 just exposes them).
+- **DEPLOY GOTCHA (cost us hours):** a `.sql/` migration that `require`s a NEW `public_html/includes/` file must resolve it **`DOCUMENT_ROOT`-first**, not `dirname(__DIR__)/public_html` — the sibling tree on the server is stale for brand-new includes. Pattern is in `migrate-lyric-lines-mirror.php`. Also: the SFTP deploy now content-compares (no `--only-newer`) + has a `timeout-minutes` cap (PRs #1249/#1250). Codified in `project-rules.md`.
+- **#1243 (musical metadata — Key/Tempo/Time-sig/Capo)** is the sibling `ArrangementJson`-vs-table split-brain; same Option-C treatment, plan together.
+- Sibling owner-decision still open: **beta→main promotion** (fixes live-prod songs_json/sitemap 500s) — independent of the lyrics epic.
 
 ## 1. Why this exists
 
