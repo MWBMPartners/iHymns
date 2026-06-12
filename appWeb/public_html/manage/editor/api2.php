@@ -774,12 +774,25 @@ try {
         $db->begin_transaction();
         try {
             if ($compId > 0) {
-                $u = $db->prepare(
-                    'UPDATE tblSongComponents
-                        SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, ChordsJson = ?, Language = ?
-                      WHERE Id = ? AND SongId = ?'
-                );
-                $u->bind_param('siisssis', $type, $number, $sortOrder, $linesJson, $chordsJson, $language, $compId, $songId);
+                /* PF1 / R1 — on an UPDATE, only overwrite ChordsJson when the client
+                   actually SENT `chords`; a payload that omits it PRESERVES the stored
+                   array rather than NULLing it (stale-client / partial-save guard).
+                   An explicit (even empty) `chords` stays authoritative. */
+                if (isset($comp['chords'])) {
+                    $u = $db->prepare(
+                        'UPDATE tblSongComponents
+                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, ChordsJson = ?, Language = ?
+                          WHERE Id = ? AND SongId = ?'
+                    );
+                    $u->bind_param('siisssis', $type, $number, $sortOrder, $linesJson, $chordsJson, $language, $compId, $songId);
+                } else {
+                    $u = $db->prepare(
+                        'UPDATE tblSongComponents
+                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, Language = ?
+                          WHERE Id = ? AND SongId = ?'
+                    );
+                    $u->bind_param('siissis', $type, $number, $sortOrder, $linesJson, $language, $compId, $songId);
+                }
                 $u->execute();
                 $u->close();
             } else {
@@ -792,9 +805,13 @@ try {
                 $compId = (int)$db->insert_id;
                 $i->close();
             }
-            /* #1235 P3 — persist any per-line language overrides BEFORE the
-               reproject, so lyricLinesProjectSong() picks them up. */
-            ed2_writeComponentLanguages($db, $compId, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
+            /* #1235 P3 — persist per-line language overrides BEFORE the reproject so
+               lyricLinesProjectSong() picks them up. PF1 / R1: only when the client
+               SENT `languages` — an omitted key preserves the stored LanguagesJson
+               (a fresh INSERT that omits it simply has none). */
+            if (isset($comp['languages'])) {
+                ed2_writeComponentLanguages($db, $compId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
+            }
             ed2_rebuildLyricsText($db, $songId);
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();
@@ -1452,8 +1469,28 @@ try {
 
         $db->begin_transaction();
         try {
+            /* PF1 / R1 — snapshot existing per-component ChordsJson / LanguagesJson
+               before a 'replace' wipes them, so a Paste & Reflow / import that omits
+               enrichment (it rebuilds STRUCTURE, not chords/language) doesn't silently
+               drop it. Carried forward only onto a position-matched part
+               (Type | Number | line-count, FIFO). 'append' keeps existing rows, so it
+               needs no snapshot. */
+            $pf1HasLangs = lyricLinesComponentsLangReady($db);
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>ChordsJson|null,'l'=>LanguagesJson|null]
             $base = 0;
             if ($mode === 'replace') {
+                $snapCols = 'Type, Number, LinesJson, ChordsJson' . ($pf1HasLangs ? ', LanguagesJson' : '');
+                $snap = $db->prepare("SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
+                $snap->bind_param('s', $songId);
+                $snap->execute();
+                $snapRes = $snap->get_result();
+                while ($snapRow = $snapRes->fetch_assoc()) {
+                    $dec = json_decode((string)$snapRow['LinesJson'], true);
+                    $sk  = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . (is_array($dec) ? count($dec) : 0);
+                    $carry[$sk][] = ['c' => $snapRow['ChordsJson'], 'l' => $pf1HasLangs ? $snapRow['LanguagesJson'] : null];
+                }
+                $snap->close();
+
                 $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
                 $del->bind_param('s', $songId);
                 $del->execute();
@@ -1478,11 +1515,37 @@ try {
                 $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : ($base + (int)$i);
                 $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
                 $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-                $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
                 $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
+
+                /* PF1 / R1 carry-forward — reclaim the position-matched original's
+                   chords + per-line languages when this paste omits them (one FIFO
+                   entry per matched part keeps chords + languages from the SAME
+                   original aligned). Client-sent values always win. */
+                $carried = null;
+                if ($mode === 'replace') {
+                    $ck = $type . "\x1f" . (string)$number . "\x1f" . count($lines);
+                    if (!empty($carry[$ck])) { $carried = array_shift($carry[$ck]); }
+                }
+                if (isset($comp['chords']) && is_array($comp['chords'])) {
+                    $chordsJson = json_encode($comp['chords'], JSON_UNESCAPED_UNICODE);
+                } else {
+                    $chordsJson = ($carried !== null) ? $carried['c'] : null;
+                }
                 $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
                 $ins->execute();
+                $newCompId = (int)$db->insert_id;
                 $count++;
+
+                /* Per-line languages: components_replace historically never persisted
+                   them; now the client value is honoured and, when omitted, the carried
+                   original is preserved (no-op when the column is un-migrated). */
+                if ($pf1HasLangs) {
+                    if (isset($comp['languages'])) {
+                        ed2_writeComponentLanguages($db, $newCompId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
+                    } elseif ($carried !== null && $carried['l'] !== null) {
+                        ed2_writeComponentLanguages($db, $newCompId, $songId, $carried['l']);
+                    }
+                }
             }
             $ins->close();
 
