@@ -2029,4 +2029,36 @@ return [
             } catch (\Throwable $_e) { return false; }
         },
     ],
+    'lyric-lines-parttypeslug' => [
+        'script' => 'migrate-lyric-lines-parttypeslug.php',
+        'card' => [
+            'title'  => 'Lyric-line PartTypeSlug backfill (#1138)',
+            'body'   => 'Populates <code>tblLyricLines.PartTypeSlug</code> from the free-text'
+                      . ' <code>PartType</code> via the <code>tblSongPartTypes</code> allow-list'
+                      . ' (the #1138 typed-part column was added but never backfilled — NULL on every'
+                      . ' line). Data-only, no schema change. Part of #1235 P4 (lines authoritative) —'
+                      . ' the projector now writes the slug on every save too, so the backfill cannot'
+                      . ' rot. Idempotent — re-runs touch only rows still NULL; an unrecognised type is'
+                      . ' left NULL, never invented.',
+            'button' => 'Run PartTypeSlug Backfill',
+        ],
+        /* Pending while any line with a MAPPABLE PartType still has a NULL slug; the
+           JOIN restricts to known vocab so an unknown type never keeps the card red.
+           Self-clears once the backfill (+ slug-at-write) have run. Returns not-pending
+           on an install lacking the prerequisite column/table. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblLyricLines', 'PartTypeSlug')) return false;
+            if (!_migProbe_tableExists($db, 'tblSongPartTypes'))              return false;
+            try {
+                $res = $db->query(
+                    "SELECT 1 FROM tblLyricLines ll
+                       JOIN tblSongPartTypes pt ON pt.Slug = LOWER(ll.PartType)
+                      WHERE ll.PartTypeSlug IS NULL LIMIT 1"
+                );
+                $needs = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needs;
+            } catch (\Throwable $_e) { return false; }
+        },
+    ],
 ];

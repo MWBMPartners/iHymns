@@ -162,7 +162,7 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
     /* PRE-edit lines for this version — what is currently mirrored, in order.
        Pull every projected column so the dirty-check can skip no-op UPDATEs. */
     $exStmt = $db->prepare(
-        "SELECT Id, ComponentId, PartType, PartNumber, SortOrder,
+        "SELECT Id, ComponentId, PartType, PartTypeSlug, PartNumber, SortOrder,
                 LineText, ChordsJson, Note, LanguageCode, IsInstrumental
            FROM tblLyricLines
           WHERE LyricsId = ?
@@ -204,13 +204,13 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
     /* INSERT new lines + UPDATE matched ones. Prepared once, reused per row. */
     $ins = $db->prepare(
         "INSERT INTO tblLyricLines
-            (LyricsId, ComponentId, PartType, PartNumber, SortOrder,
+            (LyricsId, ComponentId, PartType, PartTypeSlug, PartNumber, SortOrder,
              LineText, ChordsJson, Note, LanguageCode, IsInstrumental)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
     $upd = $db->prepare(
         "UPDATE tblLyricLines
-            SET ComponentId = ?, PartType = ?, PartNumber = ?, SortOrder = ?,
+            SET ComponentId = ?, PartType = ?, PartTypeSlug = ?, PartNumber = ?, SortOrder = ?,
                 LineText = ?, ChordsJson = ?, Note = ?, LanguageCode = ?, IsInstrumental = ?
           WHERE Id = ?"
     );
@@ -226,16 +226,16 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
         $matchId = $plan['matchedIds'][$di];   // existing Id to reuse, or null
         if ($matchId === null) {
             $ins->bind_param(
-                'iisiissssi',
-                $lyricsId, $d['ComponentId'], $d['PartType'], $d['PartNumber'], $d['SortOrder'],
+                'iissiissssi',
+                $lyricsId, $d['ComponentId'], $d['PartType'], $d['PartTypeSlug'], $d['PartNumber'], $d['SortOrder'],
                 $d['LineText'], $d['ChordsJson'], $d['Note'], $d['LanguageCode'], $d['IsInstrumental']
             );
             $ins->execute();
         } elseif (!lyricLinesRowClean($existingById[$matchId] ?? null, $d)) {
             /* Only write when something about the line actually changed. */
             $upd->bind_param(
-                'isiissssii',
-                $d['ComponentId'], $d['PartType'], $d['PartNumber'], $d['SortOrder'],
+                'issiissssii',
+                $d['ComponentId'], $d['PartType'], $d['PartTypeSlug'], $d['PartNumber'], $d['SortOrder'],
                 $d['LineText'], $d['ChordsJson'], $d['Note'], $d['LanguageCode'], $d['IsInstrumental'],
                 $matchId
             );
@@ -250,6 +250,33 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
 }
 
 /**
+ * Map a free-text component `Type` ('verse', 'Chorus', …) to its controlled-vocab
+ * `tblSongPartTypes.Slug` (#1138), or null when the type isn't a known slug (never
+ * invent one — rule #20). The slug set is loaded ONCE per request (memoised). Used by
+ * the projector to write `tblLyricLines.PartTypeSlug` on every line (#1235 P4 / C2),
+ * paired with the migrate-lyric-lines-parttypeslug.php backfill.
+ */
+function lyricLinesPartTypeSlug(\mysqli $db, ?string $partType): ?string
+{
+    static $slugs = null;
+    if ($slugs === null) {
+        $slugs = [];
+        try {
+            $r = $db->query("SELECT Slug FROM tblSongPartTypes");
+            if ($r) {
+                while ($row = $r->fetch_row()) { $slugs[(string)$row[0]] = (string)$row[0]; }
+                $r->close();
+            }
+        } catch (\Throwable $_e) {
+            $slugs = [];   // un-migrated install: no vocab table → every slug stays null
+        }
+    }
+    if ($partType === null || $partType === '') { return null; }
+    $key = function_exists('mb_strtolower') ? mb_strtolower($partType) : strtolower($partType);
+    return $slugs[$key] ?? null;
+}
+
+/**
  * Build the ordered DESIRED line list for a song from its now-authoritative
  * `tblSongComponents` (same per-line shape the projector writes). Pure read — no
  * writes. Each line is an assoc carrying exactly the columns lyricLinesProjectSong()
@@ -257,7 +284,7 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
  *
  * @param \mysqli $db
  * @param string  $songId
- * @return list<array{ComponentId:int,PartType:string,PartNumber:?int,SortOrder:int,LineText:string,ChordsJson:?string,Note:?string,LanguageCode:?string,IsInstrumental:int}>
+ * @return list<array{ComponentId:int,PartType:string,PartTypeSlug:?string,PartNumber:?int,SortOrder:int,LineText:string,ChordsJson:?string,Note:?string,LanguageCode:?string,IsInstrumental:int}>
  */
 function lyricLinesBuildDesired(\mysqli $db, string $songId): array
 {
@@ -281,6 +308,7 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
     foreach ($comps as $c) {
         $compId     = (int)$c['Id'];
         $partType   = (string)$c['Type'];
+        $partSlug   = lyricLinesPartTypeSlug($db, $partType);   // #1235 P4/C2 slug-at-write
         $number     = (int)$c['Number'];
         $partNumber = $number > 0 ? $number : null;          // 0 (e.g. a lone Chorus) => NULL
         $compLang   = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
@@ -311,6 +339,7 @@ function lyricLinesBuildDesired(\mysqli $db, string $songId): array
             $desired[] = [
                 'ComponentId'    => $compId,
                 'PartType'       => $partType,
+                'PartTypeSlug'   => $partSlug,
                 'PartNumber'     => $partNumber,
                 'SortOrder'      => $sort,
                 'LineText'       => $text,
@@ -528,6 +557,9 @@ function lyricLinesRowClean(?array $existingRow, array $desired): bool
     if ($existingRow === null) { return false; }
     if ((int)$existingRow['ComponentId'] !== (int)$desired['ComponentId'])       { return false; }
     if ((string)$existingRow['PartType'] !== (string)$desired['PartType'])       { return false; }
+    $exSlug = (array_key_exists('PartTypeSlug', $existingRow) && $existingRow['PartTypeSlug'] !== null)
+        ? (string)$existingRow['PartTypeSlug'] : null;
+    if ($exSlug !== ($desired['PartTypeSlug'] ?? null))                          { return false; }
     $exNum = $existingRow['PartNumber'] === null ? null : (int)$existingRow['PartNumber'];
     if ($exNum !== $desired['PartNumber'])                                       { return false; }
     if ((int)$existingRow['SortOrder'] !== (int)$desired['SortOrder'])           { return false; }
