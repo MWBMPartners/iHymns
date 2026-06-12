@@ -122,6 +122,9 @@ class SongData
     private bool $_componentLangColumnChecked = false;
     private bool $_componentChordsColumn = false;
     private bool $_componentChordsColumnChecked = false;
+    /** #1235 P2a — schema-probe result for the tblLyricLines mirror (read source). */
+    private bool $_lyricLinesMirror = false;
+    private bool $_lyricLinesMirrorChecked = false;
 
     /** #892 — schema-probe result for tblSongs.ArrangementJson. */
     private bool $_arrangementColumn = false;
@@ -3489,25 +3492,41 @@ class SongData
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
-        $result = $stmt->get_result();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        /* #1235 P2a — source the line TEXT from the normalised tblLyricLines
+           mirror; fall back to the component's authoritative LinesJson when the
+           mirror is absent OR its line count does not match LinesJson (a cheap
+           guard against a partially-synced / stale mirror silently showing
+           short or wrong lyrics). Component metadata (type/number/chords/language)
+           stays on tblSongComponents during P2. Output is BYTE-IDENTICAL to the
+           LinesJson path — no extra keys; the per-line Ids are exposed in P3 (with
+           the data/songs.schema.json update) once a consumer needs them. */
+        $mirror = $this->_mirrorLinesByComponent($songId);
+
         $components = [];
-        while ($row = $result->fetch_assoc()) {
+        foreach ($rows as $row) {
+            $cid       = (int)$row['component_id'];
+            $linesJson = json_decode($row['lines_json'], true) ?? [];
+            $lines     = (!empty($mirror[$cid]) && count($mirror[$cid]) === count($linesJson))
+                ? array_map(static fn($l) => $l['text'], $mirror[$cid])
+                : $linesJson;
             $components[] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
-                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'lines'    => $lines,
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
-        $stmt->close();
         return $components;
     }
 
@@ -3588,26 +3607,128 @@ class SongData
             ? ', ChordsJson AS chords_json'
             : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
+            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
         );
         $stmt->bind_param($types, ...$songIds);
         $stmt->execute();
-        $result = $stmt->get_result();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        /* #1235 P2a — same mirror-sourced lines + count-checked LinesJson fallback
+           as _getComponents(), batched for getSongs(). Byte-identical output. */
+        $mirror = $this->_mirrorLinesByComponentMap($songIds);
+
         $map = [];
-        while ($row = $result->fetch_assoc()) {
-            $map[$row['SongId']][] = [
+        foreach ($rows as $row) {
+            $sid       = $row['SongId'];
+            $cid       = (int)$row['component_id'];
+            $linesJson = json_decode($row['lines_json'], true) ?? [];
+            $lines     = (!empty($mirror[$sid][$cid]) && count($mirror[$sid][$cid]) === count($linesJson))
+                ? array_map(static fn($l) => $l['text'], $mirror[$sid][$cid])
+                : $linesJson;
+            $map[$sid][] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
-                'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'lines'    => $lines,
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
-        $stmt->close();
         return $map;
+    }
+
+    /**
+     * #1235 P2a — cached probe: is the normalised tblLyricLines mirror present?
+     * When true, the component builders source line text from it (with a
+     * per-component LinesJson fallback); when false (un-migrated install) every
+     * component falls back to tblSongComponents.LinesJson, so reads never break.
+     */
+    private function _hasLyricLinesMirror(): bool
+    {
+        if ($this->_lyricLinesMirrorChecked) {
+            return $this->_lyricLinesMirror;
+        }
+        $this->_lyricLinesMirrorChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblLyricLines' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_lyricLinesMirror = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_lyricLinesMirror = false;
+        }
+        return $this->_lyricLinesMirror;
+    }
+
+    /**
+     * #1235 P2a — a song's mirrored lyric lines (the primary 'ihymns' version)
+     * from tblLyricLines, grouped by ComponentId, each component in SortOrder.
+     * Returns [ componentId => [ ['id'=>int,'text'=>string], … ] ], or [] when the
+     * mirror is absent or the song has no mirrored lines (callers then fall back
+     * to LinesJson per component). One query.
+     *
+     * @return array<int,array<int,array{id:int,text:string}>>
+     */
+    private function _mirrorLinesByComponent(string $songId): array
+    {
+        if (!$this->_hasLyricLinesMirror()) {
+            return [];
+        }
+        $stmt = $this->db->prepare(
+            "SELECT ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text
+               FROM tblLyricLines ll
+               JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+              WHERE ly.SongId = ? AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
+              ORDER BY ll.SortOrder"
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $out[(int)$row['cid']][] = ['id' => (int)$row['line_id'], 'text' => (string)$row['line_text']];
+        }
+        $stmt->close();
+        return $out;
+    }
+
+    /**
+     * #1235 P2a — bulk variant of _mirrorLinesByComponent() for getSongs().
+     * Returns [ songId => [ componentId => [ ['id','text'], … ] ] ]. One query.
+     *
+     * @param string[] $songIds
+     * @return array<string,array<int,array<int,array{id:int,text:string}>>>
+     */
+    private function _mirrorLinesByComponentMap(array $songIds): array
+    {
+        if (empty($songIds) || !$this->_hasLyricLinesMirror()) {
+            return [];
+        }
+        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
+        $types = str_repeat('s', count($songIds));
+        $stmt = $this->db->prepare(
+            "SELECT ly.SongId AS song_id, ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text
+               FROM tblLyricLines ll
+               JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+              WHERE ly.SongId IN ($placeholders) AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
+              ORDER BY ll.SortOrder"
+        );
+        $stmt->bind_param($types, ...$songIds);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $out = [];
+        while ($row = $res->fetch_assoc()) {
+            $out[(string)$row['song_id']][(int)$row['cid']][] = ['id' => (int)$row['line_id'], 'text' => (string)$row['line_text']];
+        }
+        $stmt->close();
+        return $out;
     }
 
     /* --------------------------------------------------------------
