@@ -179,6 +179,18 @@ function lyricLinesProjectSong(\mysqli $db, string $songId): int
     /* Align pre→post by content, preserving Ids (and thus dependent FKs). */
     $plan = lyricLinesDiff($existing, $desired);
 
+    /* PF2 / R3 — before the deletes cascade away any per-line enrichment, snapshot it
+       to tblActivityLog so a heavy edit (a rewrite scored below the pass-3 fuzzy floor,
+       counted as delete+insert) or a genuine line removal never SILENTLY destroys a
+       curated translation / annotation. No-op while enrichment is dormant; best-effort
+       (never throws — a save must not fail because we couldn't snapshot). The fuller
+       enrichment-aware match + re-attach UX is tracked as a P3 follow-up (#1235). */
+    if (!empty($plan['deleteIds'])) {
+        $textById = [];
+        foreach ($existing as $e) { $textById[(int)$e['Id']] = (string)$e['LineText']; }
+        lyricLinesSnapshotDeletedEnrichment($db, $songId, array_map('intval', $plan['deleteIds']), $textById);
+    }
+
     /* DELETE removed lines first; CASCADE drops their orphaned enrichment. */
     if (!empty($plan['deleteIds'])) {
         $del = $db->prepare("DELETE FROM tblLyricLines WHERE Id = ?");
@@ -545,4 +557,107 @@ function lyricLinesJsonEqual($a, $b): bool
        caller might pass junk — treat any decode error as "not equal". */
     if ($ea !== JSON_ERROR_NONE || $eb !== JSON_ERROR_NONE) { return false; }
     return $da === $db;
+}
+
+/**
+ * Are the per-line enrichment tables (#1088 — tblLyricLineTranslations /
+ * tblLyricLineAnnotations) present? PF2 / R3 only needs to snapshot enrichment for a
+ * to-be-deleted line when those tables exist; an un-migrated install has nothing to
+ * lose. Memoised per request. (Local probe so the shared projector never has to
+ * depend on includes/line_enrichment.php being loaded in its caller's context —
+ * migrations call lyricLinesProjectSong() too.)
+ */
+function lyricLinesEnrichmentTablesPresent(\mysqli $db): bool
+{
+    static $present = null;
+    if ($present !== null) {
+        return $present;
+    }
+    try {
+        $r = $db->query(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME IN ('tblLyricLineTranslations', 'tblLyricLineAnnotations')"
+        );
+        $row     = $r ? $r->fetch_row() : null;
+        $present = ($row !== null && (int)$row[0] >= 2);
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $present = false;
+    }
+    return $present;
+}
+
+/**
+ * PF2 / R3 — best-effort snapshot of the per-line enrichment that lyricLinesProjectSong()'s
+ * DELETE is about to cascade away, written to tblActivityLog so it is never SILENTLY
+ * lost and can be recovered. A NO-OP while enrichment is dormant (the tables are empty,
+ * so the IN() queries return nothing) — the whole-catalogue backfill therefore does no
+ * enrichment work. NEVER throws: a logging failure must not break the save it guards.
+ *
+ * The diff already preserves Ids (and thus enrichment) for unchanged / moved / lightly-
+ * edited lines; this only fires for a GENUINE deletion or a rewrite below the pass-3
+ * fuzzy floor (counted as delete+insert). Until the fuller enrichment-aware match +
+ * re-attach UX lands (P3 follow-up), this is the safety net.
+ *
+ * @param list<int>          $deleteIds  line Ids about to be deleted
+ * @param array<int,string>  $textById   pre-edit LineText keyed by line Id (snapshot context)
+ */
+function lyricLinesSnapshotDeletedEnrichment(\mysqli $db, string $songId, array $deleteIds, array $textById): void
+{
+    if (empty($deleteIds) || !lyricLinesEnrichmentTablesPresent($db)) {
+        return;
+    }
+    try {
+        /* Placeholder string built from a hardcoded count (rule #5) — never input. */
+        $place = implode(',', array_fill(0, count($deleteIds), '?'));
+        $types = str_repeat('i', count($deleteIds));
+
+        $trStmt = $db->prepare(
+            "SELECT Id, LineId, TargetLanguage, Kind, Text
+               FROM tblLyricLineTranslations WHERE LineId IN ({$place})"
+        );
+        $trStmt->bind_param($types, ...$deleteIds);
+        $trStmt->execute();
+        $trans = $trStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $trStmt->close();
+
+        $anStmt = $db->prepare(
+            "SELECT Id, StartLineId, EndLineId, AnnotationType, Body
+               FROM tblLyricLineAnnotations WHERE StartLineId IN ({$place}) OR EndLineId IN ({$place})"
+        );
+        $anStmt->bind_param($types . $types, ...array_merge($deleteIds, $deleteIds));
+        $anStmt->execute();
+        $annos = $anStmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $anStmt->close();
+
+        if (empty($trans) && empty($annos)) {
+            return;   // the common path once enrichment exists: deleted lines had none
+        }
+
+        $snapshot = json_encode([
+            'songId'       => $songId,
+            'reason'       => 'Enrichment cascade-deleted by an Id-preserving reprojection (#1235 PF2/R3); recoverable from this row.',
+            'deletedLines' => array_map(
+                static fn(int $id): array => ['id' => $id, 'text' => $textById[$id] ?? null],
+                $deleteIds
+            ),
+            'translations' => $trans,
+            'annotations'  => $annos,
+        ], JSON_UNESCAPED_UNICODE);
+
+        $userId = null;                          // system action — projector has no user context
+        $action = 'lyrics.enrichment_orphaned';
+        $etype  = 'song';
+        $ip     = null;
+        $logStmt = $db->prepare(
+            "INSERT INTO tblActivityLog (UserId, Action, EntityType, EntityId, Details, IpAddress)
+             VALUES (?, ?, ?, ?, ?, ?)"
+        );
+        $logStmt->bind_param('isssss', $userId, $action, $etype, $songId, $snapshot, $ip);
+        $logStmt->execute();
+        $logStmt->close();
+    } catch (\Throwable $_e) {
+        /* Best-effort: never break a save because the snapshot failed. */
+    }
 }
