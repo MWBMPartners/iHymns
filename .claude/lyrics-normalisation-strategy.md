@@ -29,9 +29,12 @@ is written. Three findings change the picture and need an owner call:**
    are dormant (0 rows), so making lines authoritative orphans nothing. The window closes the
    moment P3's enrichment UIs start writing line-anchored data.
 
-**P1 + P2a verified on alpha. P2b + the P3 BACKEND + UIs are DONE + committed (branch
-`feat/lyrics-1235-p3`, NOT pushed). Remaining before P4: the P3 R1/R3 amendments (§11.1), then
-push P3. The P3 editor-UI detail is in §0.1.**
+**UPDATE (session 3): P1+P2a+P2b+P3 (incl. the R1/R3 PF1/PF2 fixes) SHIPPED to alpha via
+PR #1259 (`7168606d`, MERGED). P4 is now IN BUILD on `feat/lyrics-1235-p4` (draft PR #1262):
+C1 assembler + C2 PartTypeSlug + C3 verification tooling + C4 read switch DONE (zero-data-loss,
+CI-green). RESUME = C4 bypass-reader cleanup → C5 write inversion → C6 drop (soak + manual run).
+Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session3.md`. The P3 editor-UI detail
+is in §0.1; the P4 plan-of-record is §11; the data-quality finding (pure-C re-opened) is §12.**
 
 | Phase | What | Status |
 |---|---|---|
