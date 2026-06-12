@@ -35,7 +35,31 @@ $isCli = (PHP_SAPI === 'cli');
 if (!defined('IHYMNS_SETUP_DASHBOARD') && !function_exists('getDbMysqli')) {
     require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
 }
-require_once dirname(__DIR__) . '/public_html/includes/lyric_lines_sync.php';
+
+/* Locate the shared projector ROBUSTLY. The naive `dirname(__DIR__)/public_html`
+   (sibling of .sql/) assumes the deploy keeps .sql and the SERVED public_html as
+   siblings — but on the server the live web docroot is a DIFFERENT tree from that
+   sibling path (the sibling carries long-lived files like db_mysql.php but NOT a
+   brand-new include), so a single hardcoded path 500s on "Failed opening
+   required". Try the live docroot (DOCUMENT_ROOT — where the dashboard runs and
+   the deploy lands) first, then the sibling for CLI. */
+$_llSyncCandidates = [];
+$_llDocRoot = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/');
+if ($_llDocRoot !== '') {
+    $_llSyncCandidates[] = $_llDocRoot . '/includes/lyric_lines_sync.php';
+}
+$_llSyncCandidates[] = dirname(__DIR__) . '/public_html/includes/lyric_lines_sync.php';
+$_llSyncPath = null;
+foreach ($_llSyncCandidates as $_cand) {
+    if (is_file($_cand)) { $_llSyncPath = $_cand; break; }
+}
+if ($_llSyncPath === null) {
+    echo 'ERROR: could not locate lyric_lines_sync.php (tried: '
+        . implode(' | ', $_llSyncCandidates) . ')' . ($isCli ? "\n" : "<br>\n");
+    if ($isCli) { exit(1); }
+    return;
+}
+require_once $_llSyncPath;
 
 function _migLLMirror_out(string $msg): void
 {
