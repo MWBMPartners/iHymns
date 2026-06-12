@@ -5,18 +5,59 @@
 > components derived; JSON arrays retired. Tracking epic: **#1235**.
 > Companion to the #1200 Song Editor rewrite. Author: pairing 2026-06-10..12.
 
-## 0. Progress & RESUME POINT (2026-06-12)
+## 0. Progress & RESUME POINT (2026-06-12 — session 2)
 
-**Phase 1 + the read-switch are DONE and verified on alpha. Resume from P3.**
+**P1 + P2a verified on alpha. P2b + the P3 BACKEND are DONE + committed (branch
+`feat/lyrics-1235-p3`, NOT pushed). Remaining: the P3 editor UIs — see §0.1.**
 
 | Phase | What | Status |
 |---|---|---|
-| **P1a** #1247 | `includes/lyric_lines_sync.php` (the ONE shared projector `lyricLinesProjectSong()` + `lyricLinesEnsurePrimaryVersion()` + `lyricLinesSyncReady()`); `tblLyricLines` += `ChordsJson`+`Note`; `migrate-lyric-lines-mirror.php` backfilled the whole catalogue | ✅ **verified: 16,081 songs / 291,478 lines, Query-2 parity = 0** |
-| **P1b** #1251 | transitional dual-write — guarded `lyricLinesProjectSong()` at the end of `ed2_rebuildLyricsText` (all api2.php editor paths) + legacy `api.php` save_song + `song_importers.php` + `lyrics_ingest.php createSong` | ✅ verified (edit keeps mirror in sync) |
-| **P2a** #1252 | read-switch — `SongData::_getComponents`/`_getComponentsMap` source line TEXT from `tblLyricLines` (JOIN component for metadata), **byte-identical output**, per-component `LinesJson` fallback guarded by `_hasLyricLinesMirror()` + a **line-count check** | ✅ verified visually on 6 songs (3 official + 2 unofficial books + editor) |
-| **P2b** (the Id-preserving diff) | replace the naive whole-song reproject so line `Id`s survive edits | ⏳ **COUPLE WITH P3** — its only value is keeping P3 enrichment from orphaning; harmless to defer (nothing references line `Id`s yet; P2a keeps them internal) |
-| **P3** ← RESUME HERE | per-line **translations / annotations / language** first-class (`tblLyricLineTranslations` / `tblLyricLineAnnotations` / `tblLyricLines.LanguageCode`), expose `lineIds[]` in the read output (**update `data/songs.schema.json`** — it is `additionalProperties:false`, which is why P2a withheld `lineIds`), + the **Id-preserving diff** (P2b), + the full **BCP 47 picker #1253** | TODO |
+| **P1a** #1247 | shared projector `lyricLinesProjectSong()` + `tblLyricLines` `ChordsJson`/`Note` + whole-catalogue backfill | ✅ verified on alpha (16,081 songs / 291,478 lines, parity 0) |
+| **P1b** #1251 | transitional dual-write across all component-write paths | ✅ verified |
+| **P2a** #1252 | read-switch — line TEXT from `tblLyricLines`, byte-identical | ✅ verified on 6 songs |
+| **P2b** Id-preserving diff | `lyricLinesProjectSong()` now diffs pre→post lines by CONTENT (part identity + text, NOT `ComponentId` — it churns on legacy save), 3-pass (same-part exact → any-part exact → same-part fuzzy ≥0.5 code-point), dirty-checked + idempotent. Pure helpers unit-tested (`tests/php/test-lyric-lines-diff.php`, 47 assertions, fuzz-reviewed). **`lineIds[]` exposed** in `SongData` + `data/songs.schema.json` | ✅ **committed `c3c372d7`** |
+| **P3 enrichment write API** | shared `includes/line_enrichment.php` (translations + annotations CRUD; vocab allow-lists, derived LyricsId, ownership-enforced, code-point offsets, `bindParamSafe` labelled binds) + 4 api2.php handlers (`line_translation_upsert/delete`, `line_annotation_upsert/delete`) + `load_song` returns `lineTranslations`/`lineAnnotations`. READ side already shipped via #1099 `getSongDetailExtras`. Validators unit-tested (`tests/php/test-line-enrichment.php`, 21) | ✅ **committed `d545f6cf`** |
+| **P3 per-line language** | `tblSongComponents.LanguagesJson` (parallel array, durable home that survives reprojection) — migration + schema.sql + registry + projector reads it (`LanguagesJson[i] ?? component lang`) + `component_upsert`/snapshot write it + `SongData` emits sparse `lineLanguages[]` | ✅ **committed `65c9c818`** |
+| **P3 editor UIs** ← RESUME HERE | (1) BCP 47 per-component + per-line picker #1253 (swap the `editor.js` language-only `<select>`); (2) translation editor UI; (3) annotation editor UI. All wire to the COMMITTED api2.php endpoints. **Needs the running app to build + verify.** See §0.1 | TODO |
 | **P4** | drop `LinesJson` / `ChordsJson` / `NotesJson` after a verify gate | TODO |
+
+### 0.1 P3 editor UIs — precise plan (the only thing left; backend is done)
+
+The entire P3 backend + read API is committed and CI-green. What remains is purely
+front-end wiring to endpoints that already exist. Build with the app running
+(`/run` + `/verify`).
+
+1. **BCP 47 picker #1253 (per-component + per-line).** The shared picker
+   (`js/modules/ietf-language-picker.js` + `manage/includes/partials/ietf-language-picker.php`,
+   full lang+script+region+variant, IANA/CLDR-seeded) already works at SONG level.
+   - **Per-component:** replace the language-only `<select>` in `editor.js` (~L1079-1114,
+     bound to `comp.language`) with a compact instance of the shared picker. The
+     module needs a **compact mode** (single control or popover, not the 4-input row);
+     extend the partial/module with a `$compact` flag rather than forking.
+   - **Per-line:** new high-density control writing into `comp.languages[i]` (the
+     parallel array). `component_upsert` already accepts `component.languages[]` and
+     `load_song` returns `component.languages` — so the editor just needs the control;
+     the save path is done.
+   - Route component + line language validation through the canonical
+     `_ietfBcp47Validate` (already done server-side in `ed2_buildLanguagesJson`).
+2. **Translation editor UI.** Per lyric line (the editor now has `lineIds` via
+   `load_song`'s components + the new `lineTranslations` array): add/edit/delete
+   translation rows. POST `action=line_translation_upsert` `{ songId, translation:{
+   id?, lineId, kind, targetLanguage, text, translationType?, isPrimary?, status? } }`
+   and `line_translation_delete { songId, id }`. Use the BCP47 picker for
+   `targetLanguage`; `kind` ∈ {translation, transliteration}.
+3. **Annotation editor UI.** Select a line (or a span: `startLineId`+`endLineId`,
+   optional code-point `startOffset`/`endOffset`) and write a gloss. POST
+   `action=line_annotation_upsert { songId, annotation:{ id?, startLineId, endLineId?,
+   startOffset?, endOffset?, annotationType, body, bodyFormat?, languageCode? } }` and
+   `line_annotation_delete`. `annotationType` ∈ {explanation, reference, scripture,
+   history, translation, trivia}. **Render note:** `bodyFormat='html'` must be
+   sanitised on render (stored-XSS otherwise); default `markdown`.
+
+**Auth note:** api2.php is session+CSRF editor auth. The native/token (`ihymns_auth`)
+write path the strategy §10 envisions is tracked with **#1201** (reuse the SAME
+`includes/line_enrichment.php` functions — they take a `\mysqli`, no session
+coupling). Don't fork the write logic.
 
 **Key facts for the resumer:**
 - The shared projector is `appWeb/public_html/includes/lyric_lines_sync.php` — reuse it; never re-fork. `_mirrorLinesByComponent[Map]()` in `SongData.php` already fetch each line's `Id` internally (P3 just exposes them).
