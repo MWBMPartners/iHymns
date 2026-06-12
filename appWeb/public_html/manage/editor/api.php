@@ -243,6 +243,29 @@ switch ($action) {
                             $cref['languages'] = $langsByIdx[$ci] ?? null;
                         }
                         unset($cref);
+                    } else {
+                        /* #1235 P4/C6 — post-drop: tblSongComponents.LanguagesJson is gone,
+                           so DERIVE the per-line override array from the EFFECTIVE per-line
+                           language getSongById already assembled from the authoritative
+                           tblLyricLines (comp.lineLanguages). effective ≡ override under the
+                           inherit rule (a line whose effective language differs from the
+                           component default WAS an override; equal = inherit = null). Keeps
+                           the legacy editor's per-line language editing working after the
+                           drop instead of silently dropping the overrides. */
+                        foreach ($song['components'] as &$cref) {
+                            $compLang = (isset($cref['language']) && $cref['language'] !== '') ? $cref['language'] : null;
+                            $eff = is_array($cref['lineLanguages'] ?? null) ? $cref['lineLanguages'] : null;
+                            if ($eff === null) { $cref['languages'] = null; continue; }
+                            $override = [];
+                            $any = false;
+                            foreach ($eff as $lv) {
+                                $ov = ($lv !== null && $lv !== $compLang) ? $lv : null;
+                                $override[] = $ov;
+                                if ($ov !== null) { $any = true; }
+                            }
+                            $cref['languages'] = $any ? $override : null;
+                        }
+                        unset($cref);
                     }
                     /* #1235 P3 / #1088 — attach per-line translations + annotations
                        (the editor edits them by tblLyricLines.Id, which the

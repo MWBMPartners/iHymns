@@ -65,13 +65,18 @@ A 4-skeptic + per-finding-verifier workflow (wf_443132d1) confirmed 5 real bugs 
 guard whole-file allowlist (the allowlisted refs ARE gated/backfill); api2 `isset` vs api.php `array_key_exists`
 asymmetry (no loss).
 
-## Deferred (documented, NOT cutover-blocking)
-- **editor.js R7b chord lineId re-anchor** — client-side hardening; the chord SAVE contract is byte-identical to
-  pre-C5 (payload `chords[i]` ↔ `lines[i]` parallel array, preserved by the diff). The assembler now EMITS
-  `lineIds[]` as the enabler. Track as a P4 follow-up.
-- **Legacy `load_song` raw per-line `languages` post-drop** — the gated read (api.php:228) stops attaching raw
-  overrides once `LanguagesJson` is dropped (non-throwing); could re-source from the component `lineLanguages`
-  the assembler already emits. C6-era refinement.
+## Deferred → ACTIONED (post-review, this session)
+- **Legacy `load_song` raw per-line `languages` post-drop — ACTIONED** (`manage/editor/api.php` load_song):
+  when `LanguagesJson` is gone (post-C6), the per-line override array is now DERIVED from the assembler's
+  effective `comp.lineLanguages` (effective ≡ override under the inherit rule), so the legacy editor keeps
+  per-line language editing after the drop instead of silently dropping the overrides.
+- **editor.js R7b chord lineId re-anchor — FILED #1263 (`for consideration`), not actioned in code.** Investigation
+  concluded it's NOT validly actionable in the legacy TEXTAREA editor: chords/languages are parallel textareas
+  (positional by design), and load-time `comp.lineIds` go stale on any reorder, so lineId-keying is unreliable
+  from free text. The data-integrity edge is already closed server-side (C5 fix B2 clamp + under-length padding).
+  True per-line chord anchoring needs the per-line-DOM rewrite editor (#1200); #1263 captures the full requirement.
+
+## Still deferred (documented, NOT cutover-blocking)
 - **Empty-component G1/G2** — if a curator creates a 0-line component, the public assembler drops it while the
   editor/shadow keep it; consider pruning empties in the write path or surfacing them in the assembler.
 
