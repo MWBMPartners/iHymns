@@ -62,6 +62,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php'; // canonical ihymns_environment()
 
 /* =========================================================================
  * DIRECT ACCESS PREVENTION
@@ -351,25 +352,11 @@ function logActivity(
  */
 function activityLogEnvironment(): string
 {
-    static $env = null;
-    if ($env !== null) {
-        return $env;
-    }
-    $path = (string)($_SERVER['DOCUMENT_ROOT'] ?? $_SERVER['SCRIPT_FILENAME'] ?? '');
-    if (str_contains($path, 'public_html_dev')) {
-        return $env = 'alpha';
-    }
-    if (str_contains($path, 'public_html_beta')) {
-        return $env = 'beta';
-    }
-    /* CI/CD-injected channel file fallback (mirrors infoAppVer.php). */
-    $channelFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.env-channel';
-    if (is_file($channelFile)) {
-        $ch = trim((string)@file_get_contents($channelFile));
-        if ($ch === 'alpha') { return $env = 'alpha'; }
-        if ($ch === 'beta')  { return $env = 'beta'; }
-    }
-    return $env = 'production';
+    /* Delegates to the ONE canonical detector (includes/environment.php). This
+       used to be a verbatim copy of ihymns_environment(); kept as a thin wrapper
+       so existing callers + the #1207 naming stay put while the detection logic
+       lives in a single place (the modularity rule). */
+    return ihymns_environment();
 }
 
 /**
