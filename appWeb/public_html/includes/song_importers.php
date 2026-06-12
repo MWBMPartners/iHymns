@@ -502,6 +502,14 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         }
         $insComp->close();
 
+        /* #1235 P1b — mirror the imported components into tblLyricLines (guarded;
+           no-op until the mirror columns exist). Inside the import transaction so
+           it commits / rolls back atomically with the song. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+        if (lyricLinesSyncReady($db)) {
+            lyricLinesProjectSong($db, $songId);
+        }
+
         /* Revision audit row (#400). Same shape as save_song writes. */
         try {
             $editor = function_exists('getCurrentUser') ? getCurrentUser() : null;
