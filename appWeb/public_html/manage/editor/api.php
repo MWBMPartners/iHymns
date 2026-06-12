@@ -1689,6 +1689,16 @@ switch ($action) {
                 }
             }
 
+            /* #1235 P1b — keep the normalised tblLyricLines mirror in sync with the
+               components this legacy save just rewrote (guarded; no-op until the
+               mirror columns exist). Inside the transaction so it is atomic with the
+               save. The v2 editor (api2.php) does this via ed2_rebuildLyricsText; the
+               legacy path needs its own call until the editor cutover. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+            if (lyricLinesSyncReady($db)) {
+                lyricLinesProjectSong($db, $songId);
+            }
+
             $db->commit();
 
             /* WS-J #1020: no songs.json cache to refresh — all reads are now

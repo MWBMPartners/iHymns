@@ -80,6 +80,8 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    universal saver the legacy api.php uses (extracted to a shared include so v2
    reuses, never forks, them). Provides _bulkImport_process*() + _bulkImport_dedupeMode(). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+/* #1235 P1b — the shared tblLyricLines projector (transitional dual-write). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -317,6 +319,16 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
     $u->bind_param('ss', $text, $songId);
     $u->execute();
     $u->close();
+
+    /* #1235 P1b — transitional dual-write. Every editor component change
+       (upsert / delete / reorder / components_replace / snapshot-restore) funnels
+       through here to rebuild the LyricsText mirror, so this is the ONE place to
+       also keep the normalised tblLyricLines mirror in sync. Guarded so it is a
+       no-op until the mirror columns exist (migrate-lyric-lines-mirror); naive
+       whole-song reproject (P2 swaps in the Id-preserving diff). */
+    if (lyricLinesSyncReady($db)) {
+        lyricLinesProjectSong($db, $songId);
+    }
 }
 
 /**

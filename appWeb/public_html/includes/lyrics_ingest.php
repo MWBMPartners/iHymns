@@ -603,6 +603,13 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
             $comp->close();
         }
 
+        /* #1235 P1b — mirror the provisional component into tblLyricLines (guarded;
+           no-op until the mirror columns exist). Inside the transaction. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+        if (lyricLinesSyncReady($db)) {
+            lyricLinesProjectSong($db, $songId);
+        }
+
         $db->commit();
         return $songId;
     } catch (\Throwable $e) {
