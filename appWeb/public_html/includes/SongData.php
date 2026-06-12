@@ -3514,18 +3514,29 @@ class SongData
 
         $components = [];
         foreach ($rows as $row) {
-            $cid       = (int)$row['component_id'];
-            $linesJson = json_decode($row['lines_json'], true) ?? [];
-            $lines     = (!empty($mirror[$cid]) && count($mirror[$cid]) === count($linesJson))
+            $cid        = (int)$row['component_id'];
+            $linesJson  = json_decode($row['lines_json'], true) ?? [];
+            $fromMirror = (!empty($mirror[$cid]) && count($mirror[$cid]) === count($linesJson));
+            $lines      = $fromMirror
                 ? array_map(static fn($l) => $l['text'], $mirror[$cid])
                 : $linesJson;
-            $components[] = [
+            $component = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => $lines,
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            /* #1235 P3 — expose the stable per-line Ids parallel to 'lines' (same
+               length + order) so clients can address per-line enrichment
+               (translations/annotations #1088, timing #141). Emitted ONLY when the
+               text came from the tblLyricLines mirror; the LinesJson fallback has
+               no stable Ids, so the key is simply absent then (optional in
+               data/songs.schema.json — additive, byte-identical when absent). */
+            if ($fromMirror) {
+                $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$cid]);
+            }
+            $components[] = $component;
         }
         return $components;
     }
@@ -3623,19 +3634,27 @@ class SongData
 
         $map = [];
         foreach ($rows as $row) {
-            $sid       = $row['SongId'];
-            $cid       = (int)$row['component_id'];
-            $linesJson = json_decode($row['lines_json'], true) ?? [];
-            $lines     = (!empty($mirror[$sid][$cid]) && count($mirror[$sid][$cid]) === count($linesJson))
+            $sid        = $row['SongId'];
+            $cid        = (int)$row['component_id'];
+            $linesJson  = json_decode($row['lines_json'], true) ?? [];
+            $fromMirror = (!empty($mirror[$sid][$cid]) && count($mirror[$sid][$cid]) === count($linesJson));
+            $lines      = $fromMirror
                 ? array_map(static fn($l) => $l['text'], $mirror[$sid][$cid])
                 : $linesJson;
-            $map[$sid][] = [
+            $component = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => $lines,
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
+            /* #1235 P3 — stable per-line Ids parallel to 'lines' (see
+               _getComponents()); mirror-sourced only, kept in lockstep with the
+               single-song builder so getSongs() and getSongById() agree. */
+            if ($fromMirror) {
+                $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$sid][$cid]);
+            }
+            $map[$sid][] = $component;
         }
         return $map;
     }

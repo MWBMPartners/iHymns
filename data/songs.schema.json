@@ -222,6 +222,11 @@
           "type": "array",
           "minItems": 1,
           "items": { "type": "string" }
+        },
+        "lineIds": {
+          "description": "Optional (#1235 P3): stable tblLyricLines.Id for each line, parallel to 'lines' (same length and order). Present only when line text is sourced from the normalised tblLyricLines mirror; absent on un-migrated installs. Clients address per-line enrichment (translations/annotations, timing) by these Ids.",
+          "type": "array",
+          "items": { "type": "integer", "minimum": 1 }
         }
       }
     }

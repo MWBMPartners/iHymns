@@ -216,6 +216,18 @@ jobs:
           php tests/php/test-schema-coverage.php
 
       # -----------------------------------------------------------------------
+      # Step 5d: Id-preserving lyric-line diff (#1235 P2b)
+      # Asserts the pure matching logic in includes/lyric_lines_sync.php keeps a
+      # line's Id (and its FK'd timing / translations / annotations) across an
+      # edit. A regression here silently orphans per-line enrichment on the next
+      # save, which is invisible until enrichment data exists — so guard it now.
+      # -----------------------------------------------------------------------
+      - name: Lyric-line diff (Id preservation)
+        run: |
+          echo "Running lyric-line Id-preserving diff test..."
+          php tests/php/test-lyric-lines-diff.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -349,3 +361,6 @@ jobs:
 
       - name: Schema-coverage drift guard
         run: php tests/php/test-schema-coverage.php
+
+      - name: Lyric-line diff (Id preservation)
+        run: php tests/php/test-lyric-lines-diff.php
