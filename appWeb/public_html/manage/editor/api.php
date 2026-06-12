@@ -244,6 +244,14 @@ switch ($action) {
                         }
                         unset($cref);
                     }
+                    /* #1235 P3 / #1088 — attach per-line translations + annotations
+                       (the editor edits them by tblLyricLines.Id, which the
+                       components now expose as lineIds). Nested INTO the song so
+                       _loadSongFull (which returns d.song) carries them. Empty
+                       arrays on an un-migrated install. */
+                    $enr = lineEnrichmentForSong(getDbMysqli(), $songId);
+                    $song['lineTranslations'] = $enr['translations'];
+                    $song['lineAnnotations']  = $enr['annotations'];
                 }
                 echo json_encode(['song' => $song]);
             }

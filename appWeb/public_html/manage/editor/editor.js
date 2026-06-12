@@ -1195,6 +1195,11 @@ function renderComponents(song) {
         langsWrap.appendChild(langsBox);
         body.appendChild(langsWrap);
 
+        /* #1235 P3 / #1088 — per-line translations + annotations editor
+           (collapsible). Keys off the saved line Ids (comp.lineIds); writes to
+           the CSRF-protected v2 API. */
+        body.appendChild(buildEnrichmentPanel(song, comp));
+
         /* Assemble the full card. */
         card.appendChild(header);
         card.appendChild(body);
@@ -1281,6 +1286,210 @@ function ensureComponentLangDatalist() {
     });
     document.body.appendChild(dl);
     return dl;
+}
+
+/* ====================================================================
+ * Per-line translation + annotation editor (#1235 P3 / #1088)
+ *
+ * The legacy editor edits lyrics as a textarea, so per-line enrichment is keyed
+ * off the SAVED line Ids (tblLyricLines.Id), exposed parallel to the lines as
+ * comp.lineIds. Existing enrichment arrives on song.lineTranslations /
+ * song.lineAnnotations (api.php load_song). Writes go to the v2 API (api2.php),
+ * which validates the CSRF token — the legacy api.php deliberately hosts no
+ * enrichment endpoints. A line with no saved Id (freshly typed, or edited since
+ * the last save) shows a "save first" hint instead of add controls; the
+ * Id-preserving diff keeps a line's Id (and its enrichment) across later edits.
+ * ==================================================================== */
+
+var ED2_TRANSLATION_KINDS = ['translation', 'transliteration'];
+var ED2_ANNOTATION_TYPES  = ['explanation', 'reference', 'scripture', 'history', 'translation', 'trivia'];
+
+/* POST to the v2 API with the CSRF header. Resolves to the parsed JSON or
+   rejects with a useful message. */
+function ed2EnrichApi(action, body) {
+    var base = window.IHYMNS_EDITOR_API2 || '/manage/editor/api2';
+    return fetch(base + '?action=' + encodeURIComponent(action), {
+        method:      'POST',
+        headers:     {
+            'Content-Type':     'application/json',
+            'X-CSRF-Token':     window.IHYMNS_EDITOR_CSRF || '',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body:        JSON.stringify(body || {})
+    }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (d) {
+            if (!r.ok || !d || d.ok === false) {
+                throw new Error((d && d.error) ? d.error : ('HTTP ' + r.status));
+            }
+            return d;
+        });
+    });
+}
+
+/**
+ * buildEnrichmentPanel(song, comp) — a collapsible per-component panel listing
+ * each lyric line with its translations + annotations and add/delete controls.
+ * Returns the wrapper element. (#1235 P3 / #1088)
+ */
+function buildEnrichmentPanel(song, comp) {
+    if (!Array.isArray(song.lineTranslations)) { song.lineTranslations = []; }
+    if (!Array.isArray(song.lineAnnotations))  { song.lineAnnotations  = []; }
+
+    var wrap = document.createElement('div');
+    wrap.className = 'mt-2';
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Translations &amp; annotations';
+    var box = document.createElement('div');
+    box.className = 'mt-1';
+    box.style.display = 'none';
+    toggle.addEventListener('click', function () {
+        var show = (box.style.display === 'none');
+        box.style.display = show ? '' : 'none';
+        if (show) { renderBody(); }
+    });
+
+    function lineIdAt(i) {
+        return (Array.isArray(comp.lineIds) && comp.lineIds[i] != null) ? Number(comp.lineIds[i]) : 0;
+    }
+    function forLine(list, key, lineId) {
+        return list.filter(function (e) { return Number(e[key]) === lineId; });
+    }
+    function chip(label, onRemove) {
+        var c = document.createElement('span');
+        c.className = 'badge bg-secondary-subtle text-secondary-emphasis me-1 mb-1 fw-normal';
+        c.style.whiteSpace = 'normal';
+        c.textContent = label + '  ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-sm align-middle';
+        x.style.fontSize = '0.6rem';
+        x.title = 'Remove';
+        x.addEventListener('click', onRemove);
+        c.appendChild(x);
+        return c;
+    }
+    function addBtn(label, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm btn-outline-secondary py-0 px-1 me-1';
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        return b;
+    }
+
+    function deleteEnrichment(action, id, listKey) {
+        ed2EnrichApi(action, { songId: song.id, id: id }).then(function () {
+            song[listKey] = song[listKey].filter(function (e) { return Number(e.id) !== Number(id); });
+            renderBody();
+        }).catch(function (err) { showToast('Delete failed: ' + err.message, 'danger'); });
+    }
+
+    function showTranslationForm(host, lineId) {
+        var form = document.createElement('div');
+        form.className = 'd-flex flex-wrap gap-1 align-items-center mt-1';
+        var kind = document.createElement('select');
+        kind.className = 'form-select form-select-sm w-auto';
+        ED2_TRANSLATION_KINDS.forEach(function (k) {
+            var o = document.createElement('option'); o.value = k; o.textContent = k; kind.appendChild(o);
+        });
+        var lang = document.createElement('input');
+        lang.type = 'text'; lang.className = 'form-control form-control-sm w-auto';
+        lang.setAttribute('list', 'component-lang-datalist'); lang.placeholder = 'lang (e.g. es)';
+        lang.style.maxWidth = '110px';
+        var text = document.createElement('input');
+        text.type = 'text'; text.className = 'form-control form-control-sm'; text.placeholder = 'Translated line text';
+        text.style.minWidth = '180px';
+        var save = addBtn('Save', function () {
+            var payload = { lineId: lineId, kind: kind.value, targetLanguage: lang.value.trim(), text: text.value.trim() };
+            if (!payload.targetLanguage || !payload.text) { showToast('Language and text are required.', 'warning'); return; }
+            ed2EnrichApi('line_translation_upsert', { songId: song.id, translation: payload }).then(function (d) {
+                if (d.translation) { song.lineTranslations.push(d.translation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        form.appendChild(kind); form.appendChild(lang); form.appendChild(text);
+        form.appendChild(save); form.appendChild(cancel);
+        host.appendChild(form);
+        lang.focus();
+    }
+
+    function showAnnotationForm(host, lineId) {
+        var form = document.createElement('div');
+        form.className = 'd-flex flex-wrap gap-1 align-items-start mt-1';
+        var type = document.createElement('select');
+        type.className = 'form-select form-select-sm w-auto';
+        ED2_ANNOTATION_TYPES.forEach(function (t) {
+            var o = document.createElement('option'); o.value = t; o.textContent = t; type.appendChild(o);
+        });
+        var body = document.createElement('textarea');
+        body.className = 'form-control form-control-sm'; body.rows = 2; body.placeholder = 'Annotation (markdown)';
+        body.style.minWidth = '220px';
+        var save = addBtn('Save', function () {
+            var payload = { startLineId: lineId, annotationType: type.value, body: body.value.trim() };
+            if (!payload.body) { showToast('Annotation body is required.', 'warning'); return; }
+            ed2EnrichApi('line_annotation_upsert', { songId: song.id, annotation: payload }).then(function (d) {
+                if (d.annotation) { song.lineAnnotations.push(d.annotation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        form.appendChild(type); form.appendChild(body); form.appendChild(save); form.appendChild(cancel);
+        host.appendChild(form);
+        body.focus();
+    }
+
+    function renderBody() {
+        box.innerHTML = '';
+        var lines = Array.isArray(comp.lines) ? comp.lines : [];
+        if (!lines.length) {
+            box.innerHTML = '<div class="text-muted small fst-italic">No lines yet.</div>';
+            return;
+        }
+        lines.forEach(function (lineText, i) {
+            var lineId = lineIdAt(i);
+            var row = document.createElement('div');
+            row.className = 'border-start border-2 ps-2 mb-2 small';
+            var txt = document.createElement('div');
+            txt.className = 'text-muted';
+            txt.textContent = (lineText && String(lineText).trim()) ? String(lineText) : '(blank line)';
+            row.appendChild(txt);
+
+            if (!lineId) {
+                var note = document.createElement('div');
+                note.className = 'fst-italic text-secondary';
+                note.textContent = 'Save the song first to add translations or annotations to this line.';
+                row.appendChild(note);
+                box.appendChild(row);
+                return;
+            }
+
+            forLine(song.lineTranslations, 'lineId', lineId).forEach(function (t) {
+                row.appendChild(chip('🌐 ' + t.kind + ' · ' + t.targetLanguage + ': ' + t.text,
+                    function () { deleteEnrichment('line_translation_delete', t.id, 'lineTranslations'); }));
+            });
+            forLine(song.lineAnnotations, 'startLineId', lineId).forEach(function (a) {
+                row.appendChild(chip('📝 ' + a.annotationType + ': ' + a.body,
+                    function () { deleteEnrichment('line_annotation_delete', a.id, 'lineAnnotations'); }));
+            });
+
+            var btns = document.createElement('div');
+            btns.className = 'mt-1';
+            btns.appendChild(addBtn('+ Translation', function () { showTranslationForm(row, lineId); }));
+            btns.appendChild(addBtn('+ Annotation',  function () { showAnnotationForm(row, lineId); }));
+            row.appendChild(btns);
+            box.appendChild(row);
+        });
+    }
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(box);
+    return wrap;
 }
 
 function componentHeaderLabel(comp) {
