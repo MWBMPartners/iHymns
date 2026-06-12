@@ -87,6 +87,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* -------------------------------------------------------------------------
+ * DOWNLOAD A BACKUP — stream a server-side backup file to a Global Admin for
+ * off-site archival. Backups live OUTSIDE the web root
+ * (appWeb/data_share/backups/ + a deny-all .htaccess), so there is no direct
+ * URL; PHP reads + streams them here, behind this page's global_admin gate +
+ * CSRF (validated above). Defence in depth: the requested name is basename()'d,
+ * matched against the SAME strict backup-file pattern the list/restore/upload
+ * use, and its realpath must resolve INSIDE the backups dir (no traversal). The
+ * dump contains every table incl. credentials/PII, so each download is
+ * audit-logged. Must run BEFORE any HTML is emitted — it streams binary + exits.
+ * ------------------------------------------------------------------------- */
+if (!$isInitialSetup
+    && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && ($_POST['action'] ?? '') === 'download-backup') {
+
+    $backupDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
+    $reqName   = basename((string)($_POST['file'] ?? ''));
+
+    if (!preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $reqName)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Invalid backup filename.';
+        exit;
+    }
+
+    /* The resolved path MUST live inside the backups dir (belt-and-braces against
+       any traversal surviving basename()). */
+    $real    = realpath($backupDir . DIRECTORY_SEPARATOR . $reqName);
+    $realDir = realpath($backupDir);
+    if ($real === false || $realDir === false || !is_file($real)
+        || strncmp($real, $realDir . DIRECTORY_SEPARATOR, strlen($realDir) + 1) !== 0) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Backup not found.';
+        exit;
+    }
+
+    /* Audit-log the download (sensitive). Same idiom as the upload handler;
+       best-effort — never block the download on a log failure. */
+    try {
+        $auditDb = getDbMysqli();
+        $stmt = $auditDb->prepare(
+            'INSERT INTO tblActivityLog
+                (UserId, Action, EntityType, EntityId, Details, IpAddress)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        if ($stmt) {
+            $uid        = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+            $action     = 'backup.download';
+            $entityType = 'backup';
+            $entityId   = $reqName;
+            $details    = json_encode([
+                'filename'   => $reqName,
+                'size_bytes' => (int)@filesize($real),
+                'by'         => $currentUser['username'] ?? 'unknown',
+            ], JSON_UNESCAPED_SLASHES);
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            $stmt->bind_param('isssss', $uid, $action, $entityType, $entityId, $details, $ip);
+            @$stmt->execute();
+            $stmt->close();
+        }
+    } catch (\Throwable $_e) { /* best effort */ }
+
+    /* Stream verbatim as an attachment. Do NOT set Content-Encoding for a .gz —
+       that makes the browser transparently decompress it; we want the .gz saved
+       as-is. Drop any output buffering first so the binary stream is clean. */
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    header('Content-Type: ' . (str_ends_with($real, '.gz') ? 'application/gzip' : 'application/sql'));
+    header('Content-Disposition: attachment; filename="' . $reqName . '"');
+    header('Content-Length: ' . (string)filesize($real));
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+    readfile($real);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save-credentials') {
     $host   = trim((string)($_POST['host']    ?? ''));
     $port   = trim((string)($_POST['port']    ?? '3306'));
@@ -1642,6 +1718,30 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <?php endif; ?>
 
                         <?php if ($backupFiles): ?>
+                            <!-- Download a backup to keep off-site (#1255). Streams the
+                                 server-side .sql.gz from data_share/backups/ (outside the
+                                 web root) via the gated download-backup handler at the top
+                                 of this page. No DB connection needed, so it stays enabled
+                                 even when credentials are unset. -->
+                            <label class="form-label small text-secondary mb-1">
+                                <i class="bi bi-download me-1"></i>Download a backup (to archive off-site):
+                            </label>
+                            <form action="" method="post" class="d-flex gap-2 flex-wrap mb-3">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+                                <input type="hidden" name="action" value="download-backup">
+                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                    <?php foreach ($backupFiles as $f): ?>
+                                        <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-success">
+                                    Download
+                                </button>
+                            </form>
+
+                            <label class="form-label small text-secondary mb-1">
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
+                            </label>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
                                 <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
