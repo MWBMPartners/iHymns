@@ -18,8 +18,17 @@
 | **P2b** Id-preserving diff | `lyricLinesProjectSong()` now diffs pre→post lines by CONTENT (part identity + text, NOT `ComponentId` — it churns on legacy save), 3-pass (same-part exact → any-part exact → same-part fuzzy ≥0.5 code-point), dirty-checked + idempotent. Pure helpers unit-tested (`tests/php/test-lyric-lines-diff.php`, 47 assertions, fuzz-reviewed). **`lineIds[]` exposed** in `SongData` + `data/songs.schema.json` | ✅ **committed `c3c372d7`** |
 | **P3 enrichment write API** | shared `includes/line_enrichment.php` (translations + annotations CRUD; vocab allow-lists, derived LyricsId, ownership-enforced, code-point offsets, `bindParamSafe` labelled binds) + 4 api2.php handlers (`line_translation_upsert/delete`, `line_annotation_upsert/delete`) + `load_song` returns `lineTranslations`/`lineAnnotations`. READ side already shipped via #1099 `getSongDetailExtras`. Validators unit-tested (`tests/php/test-line-enrichment.php`, 21) | ✅ **committed `d545f6cf`** |
 | **P3 per-line language** | `tblSongComponents.LanguagesJson` (parallel array, durable home that survives reprojection) — migration + schema.sql + registry + projector reads it (`LanguagesJson[i] ?? component lang`) + `component_upsert`/snapshot write it + `SongData` emits sparse `lineLanguages[]` | ✅ **committed `65c9c818`** |
-| **P3 editor UIs** ← RESUME HERE | (1) BCP 47 per-component + per-line picker #1253 (swap the `editor.js` language-only `<select>`); (2) translation editor UI; (3) annotation editor UI. All wire to the COMMITTED api2.php endpoints. **Needs the running app to build + verify.** See §0.1 | TODO |
+| **P3 editor UIs** | (1) #1253 per-component + per-line language in `editor.js` (datalist input accepting full BCP 47 + collapsible per-line-languages textarea) + api.php save/load wiring; (2) collapsible per-line **translation + annotation editor** (chips + add/delete) POSTing to the CSRF-protected api2.php. | ✅ **committed `d2b11bb4` (language) + `9bd5743d` (enrichment)** — backend e2e-verified vs a local MySQL (17/17); editor.js node-checked; **UI click-through still wants a live browser pass** (collapsibles, datalist render, api2 round-trips) |
 | **P4** | drop `LinesJson` / `ChordsJson` / `NotesJson` after a verify gate | TODO |
+
+> **Active vs rewrite editor (important):** the live editor is `editor.js` + **api.php**
+> (whole-song save, session-only, no CSRF). The P3 backend first landed on **api2.php**
+> (the in-progress granular rewrite). So the language axis + enrichment load were ALSO
+> wired into api.php (reusing the shared `line_enrichment.php` / `lyric_lines_sync.php`),
+> and the enrichment EDITOR posts to api2.php with a CSRF token now exposed via
+> `window.IHYMNS_EDITOR_CSRF`. Because the legacy editor edits lyrics as a textarea (no
+> per-line DOM) and line Ids exist only post-save, enrichment is a **save-then-enrich**
+> workflow there; the richer inline experience belongs to the rewrite editor.
 
 ### 0.1 P3 editor UIs — precise plan (the only thing left; backend is done)
 
