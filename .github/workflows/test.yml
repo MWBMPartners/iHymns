@@ -228,6 +228,17 @@ jobs:
           php tests/php/test-lyric-lines-diff.php
 
       # -----------------------------------------------------------------------
+      # Step 5e: Per-line enrichment validators (#1235 P3 / #1088)
+      # Guards the shared translation/annotation write layer's pure validators
+      # (vocab allow-lists, code-point offset bounds, BCP47) the editor + native
+      # API both rely on.
+      # -----------------------------------------------------------------------
+      - name: Line enrichment validators
+        run: |
+          echo "Running per-line enrichment validator test..."
+          php tests/php/test-line-enrichment.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -364,3 +375,6 @@ jobs:
 
       - name: Lyric-line diff (Id preservation)
         run: php tests/php/test-lyric-lines-diff.php
+
+      - name: Line enrichment validators
+        run: php tests/php/test-line-enrichment.php

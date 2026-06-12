@@ -82,6 +82,9 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
 /* #1235 P1b — the shared tblLyricLines projector (transitional dual-write). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+/* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
+   write+read layer; the SAME contract the future native API (#1201) reuses. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -581,7 +584,17 @@ try {
             $ms->close();
         }
 
-        ed2_respond(array_merge(['ok' => true], $snapshot, ['media' => $media]));
+        /* #1235 P3 — per-line enrichment (translations + annotations), keyed to
+           tblLyricLines.Id (which load_song's components now expose as lineIds).
+           Empty arrays on an un-migrated install. A separate concern from the
+           component-content snapshot, like media. */
+        $enrichment = lineEnrichmentForSong($db, $songId);
+
+        ed2_respond(array_merge(['ok' => true], $snapshot, [
+            'media'            => $media,
+            'lineTranslations' => $enrichment['translations'],
+            'lineAnnotations'  => $enrichment['annotations'],
+        ]));
         break;
     }
 
@@ -805,6 +818,110 @@ try {
         }
         logActivity('song.component.reorder', 'song', $songId, ['count' => count($order)]);
         ed2_respond(['ok' => true, 'count' => count($order)]);
+        break;
+    }
+
+    /* ---- line_translation_upsert (POST) — per-line translation / transliteration
+           (#1235 P3 / #1088). Body: { songId, translation:{ id?, lineId, kind,
+           targetLanguage, text, translationType?, isPrimary?, sortOrder?, status? } }.
+           The shared layer derives LyricsId from the line + enforces the line
+           belongs to this song; enrichment survives later edits via the Id-
+           preserving diff. NOT a component-content change → no revision touch. ---- */
+    case 'line_translation_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $input = is_array($body['translation'] ?? null) ? $body['translation'] : [];
+        $db->begin_transaction();
+        try {
+            $row = lineEnrichmentUpsertTranslation($db, $songId, $input, $ed2UserId);
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineTranslation', 'song', $songId, ['id' => (int)($row['id'] ?? 0), 'lineId' => (int)($row['lineId'] ?? 0)]);
+        ed2_respond(['ok' => true, 'translation' => $row]);
+        break;
+    }
+
+    /* ---- line_translation_delete (POST) — { songId, id } ---- */
+    case 'line_translation_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = lineEnrichmentDeleteTranslation($db, $songId, $id);
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineTranslation.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0]);
+        break;
+    }
+
+    /* ---- line_annotation_upsert (POST) — per-line / per-span annotation
+           (#1235 P3 / #1088). Body: { songId, annotation:{ id?, startLineId,
+           endLineId?, startOffset?, endOffset?, annotationType, body, bodyFormat?,
+           languageCode?, sortOrder?, status? } }. Offsets are code-point indices. ---- */
+    case 'line_annotation_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $input = is_array($body['annotation'] ?? null) ? $body['annotation'] : [];
+        $db->begin_transaction();
+        try {
+            $row = lineEnrichmentUpsertAnnotation($db, $songId, $input, $ed2UserId);
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineAnnotation', 'song', $songId, ['id' => (int)($row['id'] ?? 0), 'startLineId' => (int)($row['startLineId'] ?? 0)]);
+        ed2_respond(['ok' => true, 'annotation' => $row]);
+        break;
+    }
+
+    /* ---- line_annotation_delete (POST) — { songId, id } ---- */
+    case 'line_annotation_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = lineEnrichmentDeleteAnnotation($db, $songId, $id);
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineAnnotation.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0]);
         break;
     }
 
