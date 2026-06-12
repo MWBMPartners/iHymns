@@ -346,16 +346,9 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
  * @param int   $lineCount  the component's line count (the array is padded to it)
  */
 function ed2_buildLanguagesJson(mixed $languages, int $lineCount): ?string {
-    if (!is_array($languages) || $lineCount <= 0) { return null; }
-    $out = [];
-    $any = false;
-    for ($i = 0; $i < $lineCount; $i++) {
-        $v   = $languages[$i] ?? null;
-        $tag = (is_string($v) && trim($v) !== '') ? lineEnrichmentValidateLanguage($v) : null;
-        $out[$i] = $tag;
-        if ($tag !== null) { $any = true; }
-    }
-    return $any ? json_encode($out, JSON_UNESCAPED_UNICODE) : null;
+    /* Thin wrapper over the shared builder (line_enrichment.php) so api.php +
+       api2.php store per-line language identically. */
+    return lineEnrichmentBuildLanguagesJson($languages, $lineCount);
 }
 
 /** Write a component's LanguagesJson (#1235 P3) — a no-op when the column is not

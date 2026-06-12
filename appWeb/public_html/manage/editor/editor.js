@@ -1068,48 +1068,27 @@ function renderComponents(song) {
         btnGroup.appendChild(btnDown);
         btnGroup.appendChild(btnRemove);
 
-        /* #858 — per-component language override. NULL / empty value
-           means "inherit from the parent song's language"; an explicit
-           pick overrides for this component only. The dropdown is
-           populated from window.iHymnsLanguageOptions which is
-           pre-loaded at editor boot from /api?action=languages.
-           Disabled when the schema column is absent (pre-migration);
-           the boot script sets dataset.componentLangColumn = '0' in
-           that case so this just becomes a no-op. */
-        var langSelect = document.createElement('select');
-        langSelect.className = 'form-select form-select-sm component-language-select';
+        /* #858 / #1253 — per-component language override. A TEXT input with a
+           shared languages datalist (not a fixed <select>) so a curator can enter
+           a FULL BCP 47 tag — base language plus optional script / region /
+           variant (pt-BR, zh-Hans-CN, es-419) — not just a seeded base language.
+           Empty = inherit from the parent song's language. The datalist offers
+           the active languages as suggestions; any valid tag may be typed
+           directly and is validated server-side on save (_ietfBcp47Validate).
+           A previously-saved tag that isn't in the suggestion list is preserved
+           because it's simply the input's current value, never silently reverted. */
+        ensureComponentLangDatalist();
+        var langSelect = document.createElement('input');
+        langSelect.type = 'text';
+        langSelect.className = 'form-control form-control-sm component-language-select';
         langSelect.style.maxWidth = '160px';
-        langSelect.title = 'Language override (optional) — defaults to the song language';
-        var langInherit = document.createElement('option');
-        langInherit.value = '';
-        langInherit.textContent = 'Same as song';
-        langSelect.appendChild(langInherit);
-        var languageOptions = Array.isArray(window.iHymnsLanguageOptions)
-            ? window.iHymnsLanguageOptions : [];
-        var currentLang = comp.language ? String(comp.language) : '';
-        var sawCurrent = false;
-        languageOptions.forEach(function (opt) {
-            var o = document.createElement('option');
-            o.value = opt.code;
-            o.textContent = opt.name + ' (' + opt.code + ')';
-            if (currentLang && currentLang.toLowerCase() === String(opt.code).toLowerCase()) {
-                o.selected = true;
-                sawCurrent = true;
-            }
-            langSelect.appendChild(o);
-        });
-        /* If the saved tag isn't in the registry (pt-BR when only pt
-           is seeded, or a brand-new tag), surface it as an extra
-           option so it doesn't silently revert on save. */
-        if (currentLang && !sawCurrent) {
-            var oExtra = document.createElement('option');
-            oExtra.value = currentLang;
-            oExtra.textContent = currentLang;
-            oExtra.selected = true;
-            langSelect.appendChild(oExtra);
-        }
-        langSelect.addEventListener('change', function () {
-            comp.language = langSelect.value || null;
+        langSelect.setAttribute('list', 'component-lang-datalist');
+        langSelect.setAttribute('autocomplete', 'off');
+        langSelect.placeholder = 'Same as song';
+        langSelect.title = 'Language override (optional) — a BCP 47 tag like en, pt-BR, zh-Hans. Blank = same as the song.';
+        langSelect.value = comp.language ? String(comp.language) : '';
+        langSelect.addEventListener('input', function () {
+            comp.language = langSelect.value.trim() || null;
             markModified(song.id);
         });
 
@@ -1178,6 +1157,44 @@ function renderComponents(song) {
         chordsWrap.appendChild(chordsBox);
         body.appendChild(chordsWrap);
 
+        /* #1253 — optional per-line language overrides (collapsible). One BCP 47
+           tag per lyric line, parallel to the lyrics; a blank line inherits the
+           component language. Saved to LanguagesJson via comp.languages. Mirrors
+           the chords editor above exactly (same parallel-textarea idiom). */
+        var langsWrap = document.createElement('div');
+        langsWrap.className = 'mt-2';
+        var hasLineLangs = Array.isArray(comp.languages) && comp.languages.some(function (l) {
+            return l && String(l).trim();
+        });
+        var langsToggle = document.createElement('button');
+        langsToggle.type = 'button';
+        langsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        langsToggle.innerHTML = '<i class="bi bi-translate me-1"></i>Per-line languages';
+        var langsBox = document.createElement('div');
+        langsBox.className = 'mt-1';
+        langsBox.style.display = hasLineLangs ? '' : 'none';
+        var langsArea = document.createElement('textarea');
+        langsArea.className = 'form-control form-control-sm component-line-languages font-monospace';
+        langsArea.rows = 2;
+        langsArea.placeholder = 'One BCP 47 tag per lyric line, e.g.  en  /  es  /  zh-Hans  (blank = same as the component)';
+        langsArea.value = componentLanguagesToText(comp);
+        langsArea.addEventListener('input', function () {
+            comp.languages = langsArea.value.split('\n').map(function (l) { return l.trim(); });
+            markModified(song.id);
+        });
+        langsToggle.addEventListener('click', function () {
+            langsBox.style.display = (langsBox.style.display === 'none') ? '' : 'none';
+            if (langsBox.style.display !== 'none') { langsArea.focus(); }
+        });
+        var langsHint = document.createElement('div');
+        langsHint.className = 'form-text small';
+        langsHint.textContent = 'Optional. Each line lines up with the lyric line above it; blank inherits the component language.';
+        langsBox.appendChild(langsArea);
+        langsBox.appendChild(langsHint);
+        langsWrap.appendChild(langsToggle);
+        langsWrap.appendChild(langsBox);
+        body.appendChild(langsWrap);
+
         /* Assemble the full card. */
         card.appendChild(header);
         card.appendChild(body);
@@ -1225,6 +1242,45 @@ function componentChordsToText(comp) {
         if (Array.isArray(c)) { return c.join(' '); }
         return (c == null) ? '' : String(c);
     }).join('\n');
+}
+
+/**
+ * componentLanguagesToText(comp) — render a component's per-line language
+ * overrides (comp.languages, parallel to lines) back into the editable textarea:
+ * one tag per lyric line, blank where the line inherits the component language.
+ * (#1253)
+ * @param {{languages?:Array}} comp
+ * @returns {string}
+ */
+function componentLanguagesToText(comp) {
+    if (!Array.isArray(comp.languages)) { return ''; }
+    return comp.languages.map(function (l) {
+        return (l == null) ? '' : String(l);
+    }).join('\n');
+}
+
+/**
+ * ensureComponentLangDatalist() — create (once) a shared <datalist> of the active
+ * languages that every per-component language input references via list=. Built
+ * from window.iHymnsLanguageOptions (pre-loaded at editor boot from
+ * /api?action=languages). Idempotent — returns the existing node on re-render so
+ * we don't rebuild it per component card. (#1253)
+ * @returns {HTMLDataListElement}
+ */
+function ensureComponentLangDatalist() {
+    var dl = document.getElementById('component-lang-datalist');
+    if (dl) { return dl; }
+    dl = document.createElement('datalist');
+    dl.id = 'component-lang-datalist';
+    var opts = Array.isArray(window.iHymnsLanguageOptions) ? window.iHymnsLanguageOptions : [];
+    opts.forEach(function (opt) {
+        var o = document.createElement('option');
+        o.value = opt.code;
+        o.label = opt.name + ' (' + opt.code + ')';
+        dl.appendChild(o);
+    });
+    document.body.appendChild(dl);
+    return dl;
 }
 
 function componentHeaderLabel(comp) {

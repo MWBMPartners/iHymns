@@ -93,6 +93,27 @@ assertEq(lineEnrichmentValidateLanguage('not a tag!'), null, 'lang: malformed re
 assertEq(mb_strlen((string)lineEnrichmentValidateLanguage('en' . str_repeat('-aaaaaaaa', 6))), 35,
     'lang: a valid over-long tag is capped at the 35-char column width');
 
+/* ==================================================================== */
+/* Per-line LanguagesJson builder (#1235 P3 / #1253) — the shared builder  */
+/* both editor save paths (api.php save_song, api2.php component_upsert) use */
+/* ==================================================================== */
+assertEq(lineEnrichmentBuildLanguagesJson(['', 'es', 'fr'], 3), '[null,"es","fr"]',
+    'languagesJson: null-pads inheriting lines, keeps overrides');
+assertEq(lineEnrichmentBuildLanguagesJson(['en'], 1), '["en"]',
+    'languagesJson: single override');
+assertEq(lineEnrichmentBuildLanguagesJson(['en-GB', 'zh-Hans-CN'], 2), '["en-GB","zh-Hans-CN"]',
+    'languagesJson: full BCP47 tags pass through');
+assertEq(lineEnrichmentBuildLanguagesJson(['', '', ''], 3), null,
+    'languagesJson: all-inherit returns null (column stays NULL)');
+assertEq(lineEnrichmentBuildLanguagesJson(['not a tag!', 'es'], 2), '[null,"es"]',
+    'languagesJson: invalid tag becomes null (inherit), valid kept');
+assertEq(lineEnrichmentBuildLanguagesJson(['es'], 0), null,
+    'languagesJson: zero lineCount returns null');
+assertEq(lineEnrichmentBuildLanguagesJson('es', 2), null,
+    'languagesJson: non-array input returns null');
+assertEq(lineEnrichmentBuildLanguagesJson(['es'], 3), '["es",null,null]',
+    'languagesJson: pads to lineCount when the array is short');
+
 echo "\n  ----------------------------------------\n";
 echo "  $passed passed, $failed failed\n";
 exit($failed > 0 ? 1 : 0);

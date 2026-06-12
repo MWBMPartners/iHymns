@@ -615,3 +615,29 @@ function lineEnrichmentValidateLanguage(string $tag): ?string
     if (!preg_match('/^[A-Za-z]{2,3}([-_][A-Za-z0-9]{1,8})*$/', $tag)) { return null; }
     return mb_substr($tag, 0, 35);
 }
+
+/**
+ * Build a validated, null-padded LanguagesJson string (#1235 P3 / #1253) for a
+ * component from a per-line `languages` array (parallel to the lines), or null
+ * when no line carries a real override (keeps the column NULL — every line then
+ * inherits the component language). Each entry is BCP47-validated via the shared
+ * validator; empty/invalid → null (inherit). The ONE builder both editor APIs
+ * (api.php save_song, api2.php component_upsert) share, so per-line language is
+ * stored identically whichever editor writes it.
+ *
+ * @param mixed $languages  raw per-line languages (expected list aligned to lines)
+ * @param int   $lineCount  the component's line count (the array is padded to it)
+ */
+function lineEnrichmentBuildLanguagesJson(mixed $languages, int $lineCount): ?string
+{
+    if (!is_array($languages) || $lineCount <= 0) { return null; }
+    $out = [];
+    $any = false;
+    for ($i = 0; $i < $lineCount; $i++) {
+        $v   = $languages[$i] ?? null;
+        $tag = (is_string($v) && trim($v) !== '') ? lineEnrichmentValidateLanguage($v) : null;
+        $out[$i] = $tag;
+        if ($tag !== null) { $any = true; }
+    }
+    return $any ? json_encode($out, JSON_UNESCAPED_UNICODE) : null;
+}
