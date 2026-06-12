@@ -46,6 +46,45 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 const LYRIC_LINES_READ_CHUNK = 500;
 
 /**
+ * Is the normalised `tblLyricLines` mirror FULLY present — i.e. carrying every column the
+ * line-first read assembler + the projector touch? The ONE shared gate every line-first
+ * reader checks before delegating here. Migrations are not auto-applied (rule #19) AND the
+ * mirror is built across THREE independent migrations (`normalize-lyrics` creates the base
+ * table; `song-part-types` adds `PartTypeSlug`; `lyric-lines-mirror` adds `ChordsJson` +
+ * `Note`), so the bare table can exist WITHOUT those columns — the assembler's
+ * `SELECT ll.ChordsJson` would then throw under MYSQLI_REPORT_STRICT (the C5 review's
+ * blocker). So we require the late-added columns, NOT just the table; when any is absent the
+ * reader falls back to the legacy `tblSongComponents.LinesJson` path. This is DELIBERATELY
+ * the same column set as lyricLinesSyncReady() so the READ gate and the WRITE gate are
+ * aligned — reads + writes flip to the mirror together, never leaving a window where reads
+ * come from a mirror that writes don't maintain (or vice-versa). Memoised per request.
+ */
+function lyricLinesMirrorPresent(\mysqli $db): bool
+{
+    static $present = null;
+    if ($present !== null) {
+        return $present;
+    }
+    try {
+        /* Require ChordsJson + Note + PartTypeSlug — the columns the assembler reads
+           (ChordsJson) and the projector reads/writes (all three). Column names are
+           hardcoded constants (rule #5). */
+        $r = $db->query(
+            "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblLyricLines'
+                AND COLUMN_NAME  IN ('ChordsJson', 'Note', 'PartTypeSlug')"
+        );
+        $row     = $r ? $r->fetch_row() : null;
+        $present = ($row !== null && (int)$row[0] >= 3);
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $present = false;
+    }
+    return $present;
+}
+
+/**
  * Assemble ordered per-line rows (one song) into the component-shaped array
  * `SongData::_getComponents()` returns. **PURE** — no DB, no I/O.
  *
@@ -256,9 +295,11 @@ function lyricLinesAssembleComponentsMap(\mysqli $db, array $songIds): array
 }
 
 /**
- * The first lyric line of a song's primary version (its lowest SortOrder), or null when
- * it has none. For the lightweight "preview line" bypass readers (SongOfTheDay,
- * duplicate-songs, the link-suggestion builder) that used to crack open LinesJson[0].
+ * The first NON-EMPTY lyric line of a song's primary version (lowest SortOrder), or null
+ * when it has none. The "preview line" the lightweight bypass readers (SongOfTheDay,
+ * duplicate-songs, the link-suggestion builder) used to crack out of LinesJson[0] — they
+ * all skipped blank lines, so this does too (`TRIM(LineText) <> ''`, the projector's own
+ * blank rule). Source='ihymns'-keyed (never IsPrimary — #1235 R6/PF3).
  */
 function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
 {
@@ -266,7 +307,7 @@ function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
         "SELECT ll.LineText
            FROM tblLyricLines ll
            JOIN tblLyrics ly ON ly.Id = ll.LyricsId
-          WHERE ly.SongId = ? AND ly.Source = 'ihymns'
+          WHERE ly.SongId = ? AND ly.Source = 'ihymns' AND TRIM(ll.LineText) <> ''
           ORDER BY ll.SortOrder, ll.Id
           LIMIT 1"
     );
@@ -275,4 +316,120 @@ function lyricLinesFirstLine(\mysqli $db, string $songId): ?string
     $row = $stmt->get_result()->fetch_row();
     $stmt->close();
     return $row !== null ? (string)$row[0] : null;
+}
+
+/**
+ * Bulk variant of lyricLinesFirstLine() — SongId → first non-empty preview line, for the
+ * candidate-set / whole-corpus bypass readers (duplicate-songs, build-song-link-suggestions)
+ * that must not N+1 a query per song. Chunked IN() (never whole-corpus in one query, #929);
+ * the result rows arrive grouped + ordered, so the first non-empty line seen per song is its
+ * answer. Songs with no non-empty primary line are simply absent from the map (caller
+ * defaults to '').
+ *
+ * @param string[] $songIds
+ * @return array<string,string>  SongId → first non-empty line
+ */
+function lyricLinesFirstLineMap(\mysqli $db, array $songIds): array
+{
+    $songIds = array_values(array_unique(array_filter($songIds, static fn($s) => $s !== '' && $s !== null)));
+    if (empty($songIds)) { return []; }
+
+    $out = [];
+    foreach (array_chunk($songIds, LYRIC_LINES_READ_CHUNK) as $chunk) {
+        $place = implode(',', array_fill(0, count($chunk), '?'));
+        $types = str_repeat('s', count($chunk));
+        $stmt  = $db->prepare(
+            "SELECT ly.SongId AS song_id, ll.LineText AS text
+               FROM tblLyricLines ll
+               JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+              WHERE ly.SongId IN ({$place}) AND ly.Source = 'ihymns' AND TRIM(ll.LineText) <> ''
+              ORDER BY ly.SongId, ll.SortOrder, ll.Id"
+        );
+        $stmt->bind_param($types, ...$chunk);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $sid = (string)$row['song_id'];
+            /* First row seen per song wins (rows are ordered by SortOrder within song). */
+            if (!array_key_exists($sid, $out)) { $out[$sid] = (string)$row['text']; }
+        }
+        $stmt->close();
+    }
+    return $out;
+}
+
+/**
+ * Assemble one song's components in the EDITOR/SNAPSHOT shape
+ * `[{id,type,number,sortOrder,lines,chords,language,languages}]` — the shape the v2
+ * editor's load + revision snapshot (`ed2_buildSongSnapshot`) speak. Sourced from the
+ * authoritative `tblLyricLines` (lines/chords/per-line language) JOINed to the THIN
+ * `tblSongComponents` metadata (Id/Type/Number/SortOrder/Language) — reads NO doomed
+ * JSON payload column, so it survives the #1235 P4/C6 drop (R2).
+ *
+ * Differs from lyricLinesAssembleComponents (the public read/export shape) in that it
+ * (a) carries the component `id` + `sortOrder` the editor edits, (b) includes EMPTY
+ * components (a thin row with no mirrored lines — `lines: []`), and (c) emits a
+ * null-padded per-line `languages` OVERRIDE array (effective ≠ component default →
+ * the override; else null) byte-equal to the retired `LanguagesJson`. `chords` is the
+ * null-padded parallel array (null when no line carries one), as `ChordsJson` held it.
+ *
+ * @return list<array{id:int,type:string,number:int,sortOrder:int,lines:list<string>,chords:?array,language:?string,languages:?array}>
+ */
+function lyricLinesEditableComponents(\mysqli $db, string $songId): array
+{
+    /* Thin component metadata, in display order (NOT a doomed column among these). */
+    $cs = $db->prepare(
+        "SELECT Id, Type, Number, SortOrder, Language
+           FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
+    );
+    $cs->bind_param('s', $songId);
+    $cs->execute();
+    $comps = $cs->get_result()->fetch_all(MYSQLI_ASSOC);
+    $cs->close();
+
+    /* Authoritative lines grouped by ComponentId. */
+    $byCid = [];
+    foreach (lyricLinesFetchPrimary($db, $songId) as $r) {
+        $cid = ($r['cid'] !== null && $r['cid'] !== '') ? (int)$r['cid'] : 0;
+        $byCid[$cid]['lines'][]  = (string)$r['text'];
+        $byCid[$cid]['chords'][] = ($r['line_chords'] !== null && $r['line_chords'] !== '')
+            ? (json_decode((string)$r['line_chords'], true) ?? null) : null;
+        $byCid[$cid]['langs'][]  = ($r['line_lang'] !== null && $r['line_lang'] !== '')
+            ? (string)$r['line_lang'] : null;
+    }
+
+    $out = [];
+    foreach ($comps as $c) {
+        $cid      = (int)$c['Id'];
+        $compLang = ($c['Language'] !== null && $c['Language'] !== '') ? (string)$c['Language'] : null;
+        $lines    = $byCid[$cid]['lines']  ?? [];
+        $chords   = $byCid[$cid]['chords'] ?? [];
+        $langs    = $byCid[$cid]['langs']  ?? [];
+
+        $anyChord = false;
+        foreach ($chords as $cv) { if ($cv !== null) { $anyChord = true; break; } }
+
+        /* Per-line override = effective language when it differs from the component
+           default (mirrors the retired LanguagesJson; effective ≡ override under the
+           inherit rule). */
+        $langOut = [];
+        $anyLang = false;
+        foreach ($langs as $lv) {
+            $ov = ($lv !== null && $lv !== $compLang) ? $lv : null;
+            $langOut[] = $ov;
+            if ($ov !== null) { $anyLang = true; }
+        }
+
+        $out[] = [
+            'id'        => $cid,
+            'type'      => (string)$c['Type'],
+            'number'    => (int)$c['Number'],
+            'sortOrder' => (int)$c['SortOrder'],
+            'lines'     => $lines,
+            'chords'    => $anyChord ? $chords : null,
+            'language'  => $compLang,
+            'languages' => $anyLang ? $langOut : null,
+        ];
+    }
+    return $out;
 }

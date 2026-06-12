@@ -3667,18 +3667,11 @@ class SongData
             return $this->_lyricLinesMirror;
         }
         $this->_lyricLinesMirrorChecked = true;
-        try {
-            $stmt = $this->db->prepare(
-                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                  WHERE TABLE_SCHEMA = DATABASE()
-                    AND TABLE_NAME   = 'tblLyricLines' LIMIT 1"
-            );
-            $stmt->execute();
-            $this->_lyricLinesMirror = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-        } catch (\Throwable $_e) {
-            $this->_lyricLinesMirror = false;
-        }
+        /* Delegate the actual probe to the shared assembler helper so the
+           INFORMATION_SCHEMA query lives in ONE place (modularity rule); the
+           instance flag above keeps it a thin per-request cache. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $this->_lyricLinesMirror = lyricLinesMirrorPresent($this->db);
         return $this->_lyricLinesMirror;
     }
 

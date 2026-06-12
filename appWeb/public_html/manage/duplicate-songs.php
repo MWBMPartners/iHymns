@@ -43,6 +43,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -584,17 +585,28 @@ $candidateIds = array_keys($candidateIds);
 $feat = [];        // sid => ['normTitle','normFirstLine','authors','isrc','iswc','ccli']
 $lyricsCount = []; // sid => int
 $groupOf = [];     // sid => existing tblSongLinks GroupId (0 = none)
+/* #1235 P4 — the preview first-line comes from the authoritative tblLyricLines mirror
+   (shared bulk reader, chunked), NOT tblSongComponents.LinesJson. Only an un-migrated
+   install (no mirror table) falls back to the legacy correlated LinesJson subquery —
+   keeps this page rendering on a fresh install (the #1228/#1229 lesson). */
+$mirrorReady = lyricLinesMirrorPresent($db);
 foreach (array_chunk($candidateIds, 200) as $chunk) {
     $ph    = implode(',', array_fill(0, count($chunk), '?'));
     $types = str_repeat('s', count($chunk));
+
+    /* Mirror-ready: first lines come from the bulk map below, not the SQL. Un-migrated:
+       a correlated first-component LinesJson subquery (lines-json-fallback, #1235 P4). */
+    $firstLineBySid = $mirrorReady ? lyricLinesFirstLineMap($db, $chunk) : [];
+    $firstLineCol   = $mirrorReady
+        ? ''
+        : ", (SELECT cmp.LinesJson FROM tblSongComponents cmp
+              WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstLines";
 
     $stmt = $db->prepare(
         "SELECT s.SongId,
                 COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,
                 COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers,
-                (SELECT cmp.LinesJson FROM tblSongComponents cmp
-                  WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstLines,
-                (SELECT COUNT(*) FROM tblLyrics l WHERE l.SongId = s.SongId) AS LyricsCount
+                (SELECT COUNT(*) FROM tblLyrics l WHERE l.SongId = s.SongId) AS LyricsCount{$firstLineCol}
            FROM tblSongs s
            LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
            LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
@@ -606,17 +618,20 @@ foreach (array_chunk($candidateIds, 200) as $chunk) {
     $rr = $stmt->get_result();
     while ($row = $rr->fetch_assoc()) {
         $sid = (string)$row['SongId'];
-        /* First non-empty line of the first component = the strongest signal. */
-        $firstLine = '';
-        /* Lyrics live in LinesJson (a JSON array), not a `Body` column — decode
-           it and take the first non-empty line (the strongest dedup signal). */
-        $linesJson = (string)($row['FirstLines'] ?? '');
-        if ($linesJson !== '') {
-            $lines = json_decode($linesJson, true);
-            if (is_array($lines)) {
-                foreach ($lines as $ln) {
-                    $ln = trim((string)$ln);
-                    if ($ln !== '') { $firstLine = $ln; break; }
+        /* First non-empty line of the song = the strongest dedup signal. */
+        if ($mirrorReady) {
+            $firstLine = $firstLineBySid[$sid] ?? '';
+        } else {
+            /* lines-json-fallback (#1235 P4): decode the first component's LinesJson. */
+            $firstLine = '';
+            $linesJson = (string)($row['FirstLines'] ?? '');
+            if ($linesJson !== '') {
+                $lines = json_decode($linesJson, true);
+                if (is_array($lines)) {
+                    foreach ($lines as $ln) {
+                        $ln = trim((string)$ln);
+                        if ($ln !== '') { $firstLine = $ln; break; }
+                    }
                 }
             }
         }
