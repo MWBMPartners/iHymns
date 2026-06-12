@@ -1633,6 +1633,12 @@ try {
     <script src="/js/modules/place-search.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/place-search.js') ?>"></script>
     <script>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+        /* #1235 P3 / #1088 — CSRF token for the v2 API (api2.php) that the per-line
+           translation/annotation editor POSTs to. The legacy load/save path
+           (api.php) is session-only; api2.php's enrichment endpoints additionally
+           validate this token via the X-CSRF-Token header. */
+        window.IHYMNS_EDITOR_CSRF = <?= json_encode(function_exists('csrfToken') ? csrfToken() : '') ?>;
+        window.IHYMNS_EDITOR_API2 = '/manage/editor/api2';
     </script>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)

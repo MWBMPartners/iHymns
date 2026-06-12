@@ -1068,48 +1068,27 @@ function renderComponents(song) {
         btnGroup.appendChild(btnDown);
         btnGroup.appendChild(btnRemove);
 
-        /* #858 — per-component language override. NULL / empty value
-           means "inherit from the parent song's language"; an explicit
-           pick overrides for this component only. The dropdown is
-           populated from window.iHymnsLanguageOptions which is
-           pre-loaded at editor boot from /api?action=languages.
-           Disabled when the schema column is absent (pre-migration);
-           the boot script sets dataset.componentLangColumn = '0' in
-           that case so this just becomes a no-op. */
-        var langSelect = document.createElement('select');
-        langSelect.className = 'form-select form-select-sm component-language-select';
+        /* #858 / #1253 — per-component language override. A TEXT input with a
+           shared languages datalist (not a fixed <select>) so a curator can enter
+           a FULL BCP 47 tag — base language plus optional script / region /
+           variant (pt-BR, zh-Hans-CN, es-419) — not just a seeded base language.
+           Empty = inherit from the parent song's language. The datalist offers
+           the active languages as suggestions; any valid tag may be typed
+           directly and is validated server-side on save (_ietfBcp47Validate).
+           A previously-saved tag that isn't in the suggestion list is preserved
+           because it's simply the input's current value, never silently reverted. */
+        ensureComponentLangDatalist();
+        var langSelect = document.createElement('input');
+        langSelect.type = 'text';
+        langSelect.className = 'form-control form-control-sm component-language-select';
         langSelect.style.maxWidth = '160px';
-        langSelect.title = 'Language override (optional) — defaults to the song language';
-        var langInherit = document.createElement('option');
-        langInherit.value = '';
-        langInherit.textContent = 'Same as song';
-        langSelect.appendChild(langInherit);
-        var languageOptions = Array.isArray(window.iHymnsLanguageOptions)
-            ? window.iHymnsLanguageOptions : [];
-        var currentLang = comp.language ? String(comp.language) : '';
-        var sawCurrent = false;
-        languageOptions.forEach(function (opt) {
-            var o = document.createElement('option');
-            o.value = opt.code;
-            o.textContent = opt.name + ' (' + opt.code + ')';
-            if (currentLang && currentLang.toLowerCase() === String(opt.code).toLowerCase()) {
-                o.selected = true;
-                sawCurrent = true;
-            }
-            langSelect.appendChild(o);
-        });
-        /* If the saved tag isn't in the registry (pt-BR when only pt
-           is seeded, or a brand-new tag), surface it as an extra
-           option so it doesn't silently revert on save. */
-        if (currentLang && !sawCurrent) {
-            var oExtra = document.createElement('option');
-            oExtra.value = currentLang;
-            oExtra.textContent = currentLang;
-            oExtra.selected = true;
-            langSelect.appendChild(oExtra);
-        }
-        langSelect.addEventListener('change', function () {
-            comp.language = langSelect.value || null;
+        langSelect.setAttribute('list', 'component-lang-datalist');
+        langSelect.setAttribute('autocomplete', 'off');
+        langSelect.placeholder = 'Same as song';
+        langSelect.title = 'Language override (optional) — a BCP 47 tag like en, pt-BR, zh-Hans. Blank = same as the song.';
+        langSelect.value = comp.language ? String(comp.language) : '';
+        langSelect.addEventListener('input', function () {
+            comp.language = langSelect.value.trim() || null;
             markModified(song.id);
         });
 
@@ -1178,6 +1157,49 @@ function renderComponents(song) {
         chordsWrap.appendChild(chordsBox);
         body.appendChild(chordsWrap);
 
+        /* #1253 — optional per-line language overrides (collapsible). One BCP 47
+           tag per lyric line, parallel to the lyrics; a blank line inherits the
+           component language. Saved to LanguagesJson via comp.languages. Mirrors
+           the chords editor above exactly (same parallel-textarea idiom). */
+        var langsWrap = document.createElement('div');
+        langsWrap.className = 'mt-2';
+        var hasLineLangs = Array.isArray(comp.languages) && comp.languages.some(function (l) {
+            return l && String(l).trim();
+        });
+        var langsToggle = document.createElement('button');
+        langsToggle.type = 'button';
+        langsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        langsToggle.innerHTML = '<i class="bi bi-translate me-1"></i>Per-line languages';
+        var langsBox = document.createElement('div');
+        langsBox.className = 'mt-1';
+        langsBox.style.display = hasLineLangs ? '' : 'none';
+        var langsArea = document.createElement('textarea');
+        langsArea.className = 'form-control form-control-sm component-line-languages font-monospace';
+        langsArea.rows = 2;
+        langsArea.placeholder = 'One BCP 47 tag per lyric line, e.g.  en  /  es  /  zh-Hans  (blank = same as the component)';
+        langsArea.value = componentLanguagesToText(comp);
+        langsArea.addEventListener('input', function () {
+            comp.languages = langsArea.value.split('\n').map(function (l) { return l.trim(); });
+            markModified(song.id);
+        });
+        langsToggle.addEventListener('click', function () {
+            langsBox.style.display = (langsBox.style.display === 'none') ? '' : 'none';
+            if (langsBox.style.display !== 'none') { langsArea.focus(); }
+        });
+        var langsHint = document.createElement('div');
+        langsHint.className = 'form-text small';
+        langsHint.textContent = 'Optional. Each line lines up with the lyric line above it; blank inherits the component language.';
+        langsBox.appendChild(langsArea);
+        langsBox.appendChild(langsHint);
+        langsWrap.appendChild(langsToggle);
+        langsWrap.appendChild(langsBox);
+        body.appendChild(langsWrap);
+
+        /* #1235 P3 / #1088 — per-line translations + annotations editor
+           (collapsible). Keys off the saved line Ids (comp.lineIds); writes to
+           the CSRF-protected v2 API. */
+        body.appendChild(buildEnrichmentPanel(song, comp));
+
         /* Assemble the full card. */
         card.appendChild(header);
         card.appendChild(body);
@@ -1225,6 +1247,249 @@ function componentChordsToText(comp) {
         if (Array.isArray(c)) { return c.join(' '); }
         return (c == null) ? '' : String(c);
     }).join('\n');
+}
+
+/**
+ * componentLanguagesToText(comp) — render a component's per-line language
+ * overrides (comp.languages, parallel to lines) back into the editable textarea:
+ * one tag per lyric line, blank where the line inherits the component language.
+ * (#1253)
+ * @param {{languages?:Array}} comp
+ * @returns {string}
+ */
+function componentLanguagesToText(comp) {
+    if (!Array.isArray(comp.languages)) { return ''; }
+    return comp.languages.map(function (l) {
+        return (l == null) ? '' : String(l);
+    }).join('\n');
+}
+
+/**
+ * ensureComponentLangDatalist() — create (once) a shared <datalist> of the active
+ * languages that every per-component language input references via list=. Built
+ * from window.iHymnsLanguageOptions (pre-loaded at editor boot from
+ * /api?action=languages). Idempotent — returns the existing node on re-render so
+ * we don't rebuild it per component card. (#1253)
+ * @returns {HTMLDataListElement}
+ */
+function ensureComponentLangDatalist() {
+    var dl = document.getElementById('component-lang-datalist');
+    if (dl) { return dl; }
+    dl = document.createElement('datalist');
+    dl.id = 'component-lang-datalist';
+    var opts = Array.isArray(window.iHymnsLanguageOptions) ? window.iHymnsLanguageOptions : [];
+    opts.forEach(function (opt) {
+        var o = document.createElement('option');
+        o.value = opt.code;
+        o.label = opt.name + ' (' + opt.code + ')';
+        dl.appendChild(o);
+    });
+    document.body.appendChild(dl);
+    return dl;
+}
+
+/* ====================================================================
+ * Per-line translation + annotation editor (#1235 P3 / #1088)
+ *
+ * The legacy editor edits lyrics as a textarea, so per-line enrichment is keyed
+ * off the SAVED line Ids (tblLyricLines.Id), exposed parallel to the lines as
+ * comp.lineIds. Existing enrichment arrives on song.lineTranslations /
+ * song.lineAnnotations (api.php load_song). Writes go to the v2 API (api2.php),
+ * which validates the CSRF token — the legacy api.php deliberately hosts no
+ * enrichment endpoints. A line with no saved Id (freshly typed, or edited since
+ * the last save) shows a "save first" hint instead of add controls; the
+ * Id-preserving diff keeps a line's Id (and its enrichment) across later edits.
+ * ==================================================================== */
+
+var ED2_TRANSLATION_KINDS = ['translation', 'transliteration'];
+var ED2_ANNOTATION_TYPES  = ['explanation', 'reference', 'scripture', 'history', 'translation', 'trivia'];
+
+/* POST to the v2 API with the CSRF header. Resolves to the parsed JSON or
+   rejects with a useful message. */
+function ed2EnrichApi(action, body) {
+    var base = window.IHYMNS_EDITOR_API2 || '/manage/editor/api2';
+    return fetch(base + '?action=' + encodeURIComponent(action), {
+        method:      'POST',
+        headers:     {
+            'Content-Type':     'application/json',
+            'X-CSRF-Token':     window.IHYMNS_EDITOR_CSRF || '',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body:        JSON.stringify(body || {})
+    }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (d) {
+            if (!r.ok || !d || d.ok === false) {
+                throw new Error((d && d.error) ? d.error : ('HTTP ' + r.status));
+            }
+            return d;
+        });
+    });
+}
+
+/**
+ * buildEnrichmentPanel(song, comp) — a collapsible per-component panel listing
+ * each lyric line with its translations + annotations and add/delete controls.
+ * Returns the wrapper element. (#1235 P3 / #1088)
+ */
+function buildEnrichmentPanel(song, comp) {
+    if (!Array.isArray(song.lineTranslations)) { song.lineTranslations = []; }
+    if (!Array.isArray(song.lineAnnotations))  { song.lineAnnotations  = []; }
+
+    var wrap = document.createElement('div');
+    wrap.className = 'mt-2';
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Translations &amp; annotations';
+    var box = document.createElement('div');
+    box.className = 'mt-1';
+    box.style.display = 'none';
+    toggle.addEventListener('click', function () {
+        var show = (box.style.display === 'none');
+        box.style.display = show ? '' : 'none';
+        if (show) { renderBody(); }
+    });
+
+    function lineIdAt(i) {
+        return (Array.isArray(comp.lineIds) && comp.lineIds[i] != null) ? Number(comp.lineIds[i]) : 0;
+    }
+    function forLine(list, key, lineId) {
+        return list.filter(function (e) { return Number(e[key]) === lineId; });
+    }
+    function chip(label, onRemove) {
+        var c = document.createElement('span');
+        c.className = 'badge bg-secondary-subtle text-secondary-emphasis me-1 mb-1 fw-normal';
+        c.style.whiteSpace = 'normal';
+        c.textContent = label + '  ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-sm align-middle';
+        x.style.fontSize = '0.6rem';
+        x.title = 'Remove';
+        x.addEventListener('click', onRemove);
+        c.appendChild(x);
+        return c;
+    }
+    function addBtn(label, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm btn-outline-secondary py-0 px-1 me-1';
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        return b;
+    }
+
+    function deleteEnrichment(action, id, listKey) {
+        ed2EnrichApi(action, { songId: song.id, id: id }).then(function () {
+            song[listKey] = song[listKey].filter(function (e) { return Number(e.id) !== Number(id); });
+            renderBody();
+        }).catch(function (err) { showToast('Delete failed: ' + err.message, 'danger'); });
+    }
+
+    function showTranslationForm(host, lineId) {
+        var form = document.createElement('div');
+        form.className = 'd-flex flex-wrap gap-1 align-items-center mt-1';
+        var kind = document.createElement('select');
+        kind.className = 'form-select form-select-sm w-auto';
+        ED2_TRANSLATION_KINDS.forEach(function (k) {
+            var o = document.createElement('option'); o.value = k; o.textContent = k; kind.appendChild(o);
+        });
+        var lang = document.createElement('input');
+        lang.type = 'text'; lang.className = 'form-control form-control-sm w-auto';
+        lang.setAttribute('list', 'component-lang-datalist'); lang.placeholder = 'lang (e.g. es)';
+        lang.style.maxWidth = '110px';
+        var text = document.createElement('input');
+        text.type = 'text'; text.className = 'form-control form-control-sm'; text.placeholder = 'Translated line text';
+        text.style.minWidth = '180px';
+        var save = addBtn('Save', function () {
+            var payload = { lineId: lineId, kind: kind.value, targetLanguage: lang.value.trim(), text: text.value.trim() };
+            if (!payload.targetLanguage || !payload.text) { showToast('Language and text are required.', 'warning'); return; }
+            ed2EnrichApi('line_translation_upsert', { songId: song.id, translation: payload }).then(function (d) {
+                if (d.translation) { song.lineTranslations.push(d.translation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        form.appendChild(kind); form.appendChild(lang); form.appendChild(text);
+        form.appendChild(save); form.appendChild(cancel);
+        host.appendChild(form);
+        lang.focus();
+    }
+
+    function showAnnotationForm(host, lineId) {
+        var form = document.createElement('div');
+        form.className = 'd-flex flex-wrap gap-1 align-items-start mt-1';
+        var type = document.createElement('select');
+        type.className = 'form-select form-select-sm w-auto';
+        ED2_ANNOTATION_TYPES.forEach(function (t) {
+            var o = document.createElement('option'); o.value = t; o.textContent = t; type.appendChild(o);
+        });
+        var body = document.createElement('textarea');
+        body.className = 'form-control form-control-sm'; body.rows = 2; body.placeholder = 'Annotation (markdown)';
+        body.style.minWidth = '220px';
+        var save = addBtn('Save', function () {
+            var payload = { startLineId: lineId, annotationType: type.value, body: body.value.trim() };
+            if (!payload.body) { showToast('Annotation body is required.', 'warning'); return; }
+            ed2EnrichApi('line_annotation_upsert', { songId: song.id, annotation: payload }).then(function (d) {
+                if (d.annotation) { song.lineAnnotations.push(d.annotation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        form.appendChild(type); form.appendChild(body); form.appendChild(save); form.appendChild(cancel);
+        host.appendChild(form);
+        body.focus();
+    }
+
+    function renderBody() {
+        box.innerHTML = '';
+        var lines = Array.isArray(comp.lines) ? comp.lines : [];
+        if (!lines.length) {
+            box.innerHTML = '<div class="text-muted small fst-italic">No lines yet.</div>';
+            return;
+        }
+        lines.forEach(function (lineText, i) {
+            var lineId = lineIdAt(i);
+            var row = document.createElement('div');
+            row.className = 'border-start border-2 ps-2 mb-2 small';
+            var txt = document.createElement('div');
+            txt.className = 'text-muted';
+            txt.textContent = (lineText && String(lineText).trim()) ? String(lineText) : '(blank line)';
+            row.appendChild(txt);
+
+            if (!lineId) {
+                var note = document.createElement('div');
+                note.className = 'fst-italic text-secondary';
+                note.textContent = 'Save the song first to add translations or annotations to this line.';
+                row.appendChild(note);
+                box.appendChild(row);
+                return;
+            }
+
+            forLine(song.lineTranslations, 'lineId', lineId).forEach(function (t) {
+                row.appendChild(chip('🌐 ' + t.kind + ' · ' + t.targetLanguage + ': ' + t.text,
+                    function () { deleteEnrichment('line_translation_delete', t.id, 'lineTranslations'); }));
+            });
+            forLine(song.lineAnnotations, 'startLineId', lineId).forEach(function (a) {
+                row.appendChild(chip('📝 ' + a.annotationType + ': ' + a.body,
+                    function () { deleteEnrichment('line_annotation_delete', a.id, 'lineAnnotations'); }));
+            });
+
+            var btns = document.createElement('div');
+            btns.className = 'mt-1';
+            btns.appendChild(addBtn('+ Translation', function () { showTranslationForm(row, lineId); }));
+            btns.appendChild(addBtn('+ Annotation',  function () { showAnnotationForm(row, lineId); }));
+            row.appendChild(btns);
+            box.appendChild(row);
+        });
+    }
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(box);
+    return wrap;
 }
 
 function componentHeaderLabel(comp) {

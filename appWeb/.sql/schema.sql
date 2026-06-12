@@ -529,6 +529,7 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
     ChordsJson  JSON            NULL DEFAULT NULL COMMENT 'Per-line chord annotations parallel to LinesJson; null-padded array e.g. [null,["C","Am"],null]. Lossless chord interchange so importers stop regex-stripping chord rows (#1066 Theme E)',
     NotesJson   JSON            NULL DEFAULT NULL COMMENT 'Per-line presenter/slide notes parallel to LinesJson; null-padded array of strings e.g. [null,"Repeat 2x",null]. ProPresenter speaker notes round-trip (#1066 Theme E)',
+    LanguagesJson JSON          NULL DEFAULT NULL COMMENT 'Per-line language overrides parallel to LinesJson; null-padded IETF BCP 47 tags. A null/absent entry inherits the component Language. Durable home for per-line language so it survives lyric-line reprojection (#1235 P3 / #1253)',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),

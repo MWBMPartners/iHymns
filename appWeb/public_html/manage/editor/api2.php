@@ -82,6 +82,9 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
 /* #1235 P1b — the shared tblLyricLines projector (transitional dual-write). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+/* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
+   write+read layer; the SAME contract the future native API (#1201) reuses. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -332,6 +335,33 @@ function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
 }
 
 /**
+ * Build a validated, null-padded LanguagesJson string (#1235 P3 / #1253) from a
+ * per-line `languages` array (parallel to a component's lines), or null when no
+ * line carries a real override. Each entry is validated as BCP 47 via the shared
+ * validator (canonical _ietfBcp47Validate when loaded); empty/invalid → null
+ * (that line inherits the component language). Returning null when there are no
+ * overrides keeps the column NULL rather than storing an all-null array.
+ *
+ * @param mixed $languages  raw per-line languages (expected list aligned to lines)
+ * @param int   $lineCount  the component's line count (the array is padded to it)
+ */
+function ed2_buildLanguagesJson(mixed $languages, int $lineCount): ?string {
+    /* Thin wrapper over the shared builder (line_enrichment.php) so api.php +
+       api2.php store per-line language identically. */
+    return lineEnrichmentBuildLanguagesJson($languages, $lineCount);
+}
+
+/** Write a component's LanguagesJson (#1235 P3) — a no-op when the column is not
+ *  migrated yet, so per-line language degrades gracefully to component language. */
+function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?string $languagesJson): void {
+    if ($compId <= 0 || !lyricLinesComponentsLangReady($db)) { return; }
+    $u = $db->prepare('UPDATE tblSongComponents SET LanguagesJson = ? WHERE Id = ? AND SongId = ?');
+    $u->bind_param('sis', $languagesJson, $compId, $songId);
+    $u->execute();
+    $u->close();
+}
+
+/**
  * Build the full editable song record — { song, components, credits, tags, links }
  * — in the SAME shapes load_song returns (minus media, which is a separate file
  * lifecycle). The single source for BOTH the load_song hydration and the
@@ -347,8 +377,11 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     if (!$song) { return null; }
 
     $components = [];
-    $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
-                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+    /* #1235 P3 — LanguagesJson (per-line language) is optional pre-migration;
+       select it only when present (hardcoded column name, never input). */
+    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
+    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
+                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
     $cs->bind_param('s', $songId);
     $cs->execute();
     $cr = $cs->get_result();
@@ -361,6 +394,8 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
             'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
             'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
             'language'  => $row['Language'],
+            /* Per-line language overrides parallel to lines (null = inherit). */
+            'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
         ];
     }
     $cs->close();
@@ -449,6 +484,8 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
             $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
             $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
             $ins->execute();
+            /* #1235 P3 — restore per-line language overrides for the new row. */
+            ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
         }
         $ins->close();
         ed2_rebuildLyricsText($db, $songId);
@@ -581,7 +618,17 @@ try {
             $ms->close();
         }
 
-        ed2_respond(array_merge(['ok' => true], $snapshot, ['media' => $media]));
+        /* #1235 P3 — per-line enrichment (translations + annotations), keyed to
+           tblLyricLines.Id (which load_song's components now expose as lineIds).
+           Empty arrays on an un-migrated install. A separate concern from the
+           component-content snapshot, like media. */
+        $enrichment = lineEnrichmentForSong($db, $songId);
+
+        ed2_respond(array_merge(['ok' => true], $snapshot, [
+            'media'            => $media,
+            'lineTranslations' => $enrichment['translations'],
+            'lineAnnotations'  => $enrichment['annotations'],
+        ]));
         break;
     }
 
@@ -727,12 +774,25 @@ try {
         $db->begin_transaction();
         try {
             if ($compId > 0) {
-                $u = $db->prepare(
-                    'UPDATE tblSongComponents
-                        SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, ChordsJson = ?, Language = ?
-                      WHERE Id = ? AND SongId = ?'
-                );
-                $u->bind_param('siisssis', $type, $number, $sortOrder, $linesJson, $chordsJson, $language, $compId, $songId);
+                /* PF1 / R1 — on an UPDATE, only overwrite ChordsJson when the client
+                   actually SENT `chords`; a payload that omits it PRESERVES the stored
+                   array rather than NULLing it (stale-client / partial-save guard).
+                   An explicit (even empty) `chords` stays authoritative. */
+                if (isset($comp['chords'])) {
+                    $u = $db->prepare(
+                        'UPDATE tblSongComponents
+                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, ChordsJson = ?, Language = ?
+                          WHERE Id = ? AND SongId = ?'
+                    );
+                    $u->bind_param('siisssis', $type, $number, $sortOrder, $linesJson, $chordsJson, $language, $compId, $songId);
+                } else {
+                    $u = $db->prepare(
+                        'UPDATE tblSongComponents
+                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, Language = ?
+                          WHERE Id = ? AND SongId = ?'
+                    );
+                    $u->bind_param('siissis', $type, $number, $sortOrder, $linesJson, $language, $compId, $songId);
+                }
                 $u->execute();
                 $u->close();
             } else {
@@ -744,6 +804,13 @@ try {
                 $i->execute();
                 $compId = (int)$db->insert_id;
                 $i->close();
+            }
+            /* #1235 P3 — persist per-line language overrides BEFORE the reproject so
+               lyricLinesProjectSong() picks them up. PF1 / R1: only when the client
+               SENT `languages` — an omitted key preserves the stored LanguagesJson
+               (a fresh INSERT that omits it simply has none). */
+            if (isset($comp['languages'])) {
+                ed2_writeComponentLanguages($db, $compId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
             }
             ed2_rebuildLyricsText($db, $songId);
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
@@ -805,6 +872,110 @@ try {
         }
         logActivity('song.component.reorder', 'song', $songId, ['count' => count($order)]);
         ed2_respond(['ok' => true, 'count' => count($order)]);
+        break;
+    }
+
+    /* ---- line_translation_upsert (POST) — per-line translation / transliteration
+           (#1235 P3 / #1088). Body: { songId, translation:{ id?, lineId, kind,
+           targetLanguage, text, translationType?, isPrimary?, sortOrder?, status? } }.
+           The shared layer derives LyricsId from the line + enforces the line
+           belongs to this song; enrichment survives later edits via the Id-
+           preserving diff. NOT a component-content change → no revision touch. ---- */
+    case 'line_translation_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $input = is_array($body['translation'] ?? null) ? $body['translation'] : [];
+        $db->begin_transaction();
+        try {
+            $row = lineEnrichmentUpsertTranslation($db, $songId, $input, $ed2UserId);
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineTranslation', 'song', $songId, ['id' => (int)($row['id'] ?? 0), 'lineId' => (int)($row['lineId'] ?? 0)]);
+        ed2_respond(['ok' => true, 'translation' => $row]);
+        break;
+    }
+
+    /* ---- line_translation_delete (POST) — { songId, id } ---- */
+    case 'line_translation_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = lineEnrichmentDeleteTranslation($db, $songId, $id);
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineTranslation.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0]);
+        break;
+    }
+
+    /* ---- line_annotation_upsert (POST) — per-line / per-span annotation
+           (#1235 P3 / #1088). Body: { songId, annotation:{ id?, startLineId,
+           endLineId?, startOffset?, endOffset?, annotationType, body, bodyFormat?,
+           languageCode?, sortOrder?, status? } }. Offsets are code-point indices. ---- */
+    case 'line_annotation_upsert': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $input = is_array($body['annotation'] ?? null) ? $body['annotation'] : [];
+        $db->begin_transaction();
+        try {
+            $row = lineEnrichmentUpsertAnnotation($db, $songId, $input, $ed2UserId);
+            $db->commit();
+        } catch (\InvalidArgumentException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 400);
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineAnnotation', 'song', $songId, ['id' => (int)($row['id'] ?? 0), 'startLineId' => (int)($row['startLineId'] ?? 0)]);
+        ed2_respond(['ok' => true, 'annotation' => $row]);
+        break;
+    }
+
+    /* ---- line_annotation_delete (POST) — { songId, id } ---- */
+    case 'line_annotation_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + id are required.'], 400); }
+        if (!lineEnrichmentTablesReady($db)) { ed2_respond(['ok' => false, 'error' => 'Line-enrichment tables are not migrated.'], 409); }
+        $db->begin_transaction();
+        try {
+            $removed = lineEnrichmentDeleteAnnotation($db, $songId, $id);
+            $db->commit();
+        } catch (\RuntimeException $e) {
+            $db->rollback();
+            ed2_respond(['ok' => false, 'error' => $e->getMessage()], 404);
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.lineAnnotation.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => $removed ? 1 : 0]);
         break;
     }
 
@@ -1298,8 +1469,28 @@ try {
 
         $db->begin_transaction();
         try {
+            /* PF1 / R1 — snapshot existing per-component ChordsJson / LanguagesJson
+               before a 'replace' wipes them, so a Paste & Reflow / import that omits
+               enrichment (it rebuilds STRUCTURE, not chords/language) doesn't silently
+               drop it. Carried forward only onto a position-matched part
+               (Type | Number | line-count, FIFO). 'append' keeps existing rows, so it
+               needs no snapshot. */
+            $pf1HasLangs = lyricLinesComponentsLangReady($db);
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>ChordsJson|null,'l'=>LanguagesJson|null]
             $base = 0;
             if ($mode === 'replace') {
+                $snapCols = 'Type, Number, LinesJson, ChordsJson' . ($pf1HasLangs ? ', LanguagesJson' : '');
+                $snap = $db->prepare("SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
+                $snap->bind_param('s', $songId);
+                $snap->execute();
+                $snapRes = $snap->get_result();
+                while ($snapRow = $snapRes->fetch_assoc()) {
+                    $dec = json_decode((string)$snapRow['LinesJson'], true);
+                    $sk  = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . (is_array($dec) ? count($dec) : 0);
+                    $carry[$sk][] = ['c' => $snapRow['ChordsJson'], 'l' => $pf1HasLangs ? $snapRow['LanguagesJson'] : null];
+                }
+                $snap->close();
+
                 $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
                 $del->bind_param('s', $songId);
                 $del->execute();
@@ -1324,11 +1515,37 @@ try {
                 $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : ($base + (int)$i);
                 $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
                 $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-                $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
                 $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
+
+                /* PF1 / R1 carry-forward — reclaim the position-matched original's
+                   chords + per-line languages when this paste omits them (one FIFO
+                   entry per matched part keeps chords + languages from the SAME
+                   original aligned). Client-sent values always win. */
+                $carried = null;
+                if ($mode === 'replace') {
+                    $ck = $type . "\x1f" . (string)$number . "\x1f" . count($lines);
+                    if (!empty($carry[$ck])) { $carried = array_shift($carry[$ck]); }
+                }
+                if (isset($comp['chords']) && is_array($comp['chords'])) {
+                    $chordsJson = json_encode($comp['chords'], JSON_UNESCAPED_UNICODE);
+                } else {
+                    $chordsJson = ($carried !== null) ? $carried['c'] : null;
+                }
                 $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
                 $ins->execute();
+                $newCompId = (int)$db->insert_id;
                 $count++;
+
+                /* Per-line languages: components_replace historically never persisted
+                   them; now the client value is honoured and, when omitted, the carried
+                   original is preserved (no-op when the column is un-migrated). */
+                if ($pf1HasLangs) {
+                    if (isset($comp['languages'])) {
+                        ed2_writeComponentLanguages($db, $newCompId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
+                    } elseif ($carried !== null && $carried['l'] !== null) {
+                        ed2_writeComponentLanguages($db, $newCompId, $songId, $carried['l']);
+                    }
+                }
             }
             $ins->close();
 

@@ -106,6 +106,12 @@ function _songArtistsTableExists(\mysqli $db): bool
    reuses the SAME parser code instead of forking it (#1200 Phase 4b). Required
    ABOVE the switch so the constants are defined before any handler runs. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+/* #1235 P3 / #1253 — the per-line-language column readiness probe
+   (lyricLinesComponentsLangReady) + the shared LanguagesJson builder
+   (lineEnrichmentBuildLanguagesJson), so save_song persists per-line language
+   overrides and load_song surfaces them — the SAME shared layer api2.php uses. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -211,6 +217,42 @@ switch ($action) {
                 http_response_code(404);
                 echo json_encode(['error' => 'Song not found: ' . $songId]);
             } else {
+                /* #1235 P3 — attach the RAW per-line language overrides
+                   (tblSongComponents.LanguagesJson) so the editor edits overrides
+                   directly; getSongById only emits the EFFECTIVE per-line language
+                   for rendering. Zipped by component order — both getSongById's
+                   _getComponents and this read order by SortOrder. Guarded for
+                   un-migrated installs. */
+                if (is_array($song['components'] ?? null)) {
+                    $db = getDbMysqli();
+                    if (lyricLinesComponentsLangReady($db)) {
+                        $langsByIdx = [];
+                        $lr = $db->prepare(
+                            "SELECT LanguagesJson FROM tblSongComponents
+                              WHERE SongId = ? ORDER BY SortOrder, Id"
+                        );
+                        $lr->bind_param('s', $songId);
+                        $lr->execute();
+                        $lres = $lr->get_result();
+                        while ($lrow = $lres->fetch_assoc()) {
+                            $langsByIdx[] = $lrow['LanguagesJson'] !== null
+                                ? json_decode((string)$lrow['LanguagesJson'], true) : null;
+                        }
+                        $lr->close();
+                        foreach ($song['components'] as $ci => &$cref) {
+                            $cref['languages'] = $langsByIdx[$ci] ?? null;
+                        }
+                        unset($cref);
+                    }
+                    /* #1235 P3 / #1088 — attach per-line translations + annotations
+                       (the editor edits them by tblLyricLines.Id, which the
+                       components now expose as lineIds). Nested INTO the song so
+                       _loadSongFull (which returns d.song) carries them. Empty
+                       arrays on an un-migrated install. */
+                    $enr = lineEnrichmentForSong(getDbMysqli(), $songId);
+                    $song['lineTranslations'] = $enr['translations'];
+                    $song['lineAnnotations']  = $enr['annotations'];
+                }
                 echo json_encode(['song' => $song]);
             }
         } catch (\Throwable $e) {
@@ -1157,6 +1199,55 @@ switch ($action) {
                 $placeStmt->close();
             }
 
+            /* #1235 PF1 / R1 — carry-forward snapshot (data-loss guard). The
+               component DELETE+reinsert below only persists ChordsJson (#1094) and
+               LanguagesJson (#1235 P3) when the POST carries `chords` / `languages`.
+               A STALE client (e.g. a Service-Worker-cached pre-#1094 / pre-P3
+               editor.js) POSTs components WITHOUT those keys, so the reinsert would
+               recreate them as NULL — silently wiping per-line chords + per-line
+               language song-wide, and the projector (lyricLinesProjectSong) would
+               then propagate the wipe into tblLyricLines. So BEFORE the delete we
+               snapshot the existing per-component arrays, keyed by
+               Type | Number | line-count, as a FIFO queue per key (repeated identical
+               parts — e.g. a refrain reprised after each verse — carry forward 1:1).
+               On reinsert a component whose POST *omits* the key reclaims its carried
+               value; a component that *sends* the key (even empty) stays authoritative.
+               Column names are hardcoded constants (rule #5). */
+            $carryChords = [];   // "type\x1fnumber\x1flineCount" => FIFO list of ChordsJson|null
+            $carryLangs  = [];   // "type\x1fnumber\x1flineCount" => FIFO list of LanguagesJson|null
+            $pf1HasChords = false;
+            try {
+                $pf1Probe = $db->prepare(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE()
+                        AND TABLE_NAME   = 'tblSongComponents'
+                        AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+                );
+                $pf1Probe->execute();
+                $pf1HasChords = $pf1Probe->get_result()->fetch_row() !== null;
+                $pf1Probe->close();
+            } catch (\Throwable $_e) { /* default false */ }
+            $pf1HasLangs = lyricLinesComponentsLangReady($db);
+            if ($pf1HasChords || $pf1HasLangs) {
+                $snapCols = 'Type, Number, LinesJson';
+                if ($pf1HasChords) { $snapCols .= ', ChordsJson'; }
+                if ($pf1HasLangs)  { $snapCols .= ', LanguagesJson'; }
+                $snap = $db->prepare(
+                    "SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id"
+                );
+                $snap->bind_param('s', $songId);
+                $snap->execute();
+                $snapRes = $snap->get_result();
+                while ($snapRow = $snapRes->fetch_assoc()) {
+                    $decoded = json_decode((string)$snapRow['LinesJson'], true);
+                    $lc      = is_array($decoded) ? count($decoded) : 0;
+                    $key     = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . $lc;
+                    if ($pf1HasChords) { $carryChords[$key][] = $snapRow['ChordsJson']; }
+                    if ($pf1HasLangs)  { $carryLangs[$key][]  = $snapRow['LanguagesJson']; }
+                }
+                $snap->close();
+            }
+
             /* Child rows: DELETE then INSERT — simpler than diffing and
                the row counts per song are small (≈1–20 each). New credit
                tables from #497 are cleaned up here too. */
@@ -1350,6 +1441,12 @@ switch ($action) {
             $updChords = $hasComponentChords
                 ? $db->prepare('UPDATE tblSongComponents SET ChordsJson = ? WHERE Id = ?')
                 : null;
+            /* #1235 P3 — per-line language overrides (LanguagesJson), written like
+               chords: one UPDATE per component by its insert_id when present.
+               No-op (null) on an un-migrated install. */
+            $updLangs = lyricLinesComponentsLangReady($db)
+                ? $db->prepare('UPDATE tblSongComponents SET LanguagesJson = ? WHERE Id = ?')
+                : null;
 
             if ($hasComponentLanguage) {
                 $insComp = $db->prepare(
@@ -1384,6 +1481,10 @@ switch ($action) {
                     $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
                 }
                 $insComp->execute();
+                /* Capture the new component Id ONCE — the chords UPDATE below
+                   would zero $db->insert_id, so the per-line-language write that
+                   follows it must reuse this captured value. */
+                $newCompId = (int)$db->insert_id;
 
                 /* #1094 — persist manual per-line chords (parallel to LinesJson).
                    comp['chords'][i] may be a space-separated string or an array
@@ -1407,15 +1508,58 @@ switch ($action) {
                     }
                     if ($anyChords) {
                         $chordsJson = json_encode($chordsArr, JSON_UNESCAPED_UNICODE);
-                        $newCompId  = (int)$db->insert_id;
                         $updChords->bind_param('si', $chordsJson, $newCompId);
                         $updChords->execute();
+                    }
+                } elseif ($updChords !== null && !isset($comp['chords'])) {
+                    /* PF1 / R1 carry-forward — the client did NOT send `chords` for
+                       this component, so don't let the reinsert leave ChordsJson NULL:
+                       reclaim the pre-delete array for the position-matched part
+                       (same Type | Number | line-count), FIFO so duplicate parts pair
+                       1:1. An explicit (even empty) `chords` above stays authoritative. */
+                    $pf1Key = $type . "\x1f" . (string)$cNum . "\x1f"
+                            . (is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0);
+                    if (!empty($carryChords[$pf1Key])) {
+                        $pf1Carried = array_shift($carryChords[$pf1Key]);
+                        if ($pf1Carried !== null) {
+                            $updChords->bind_param('si', $pf1Carried, $newCompId);
+                            $updChords->execute();
+                        }
+                    }
+                }
+
+                /* #1235 P3 — persist per-line language overrides (parallel to
+                   LinesJson; null-padded BCP47 tags). Stored only when at least
+                   one line carries a real override; a null/absent entry inherits
+                   the component Language. Same shared builder as api2.php. */
+                if ($updLangs !== null) {
+                    if (isset($comp['languages'])) {
+                        $lineCount = is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0;
+                        $langsJson = lineEnrichmentBuildLanguagesJson($comp['languages'], $lineCount);
+                        if ($langsJson !== null) {
+                            $updLangs->bind_param('si', $langsJson, $newCompId);
+                            $updLangs->execute();
+                        }
+                    } else {
+                        /* PF1 / R1 carry-forward — client OMITTED `languages`; preserve
+                           the existing per-line language array (FIFO by Type | Number |
+                           line-count) instead of letting the reinsert NULL it. */
+                        $pf1KeyL = $type . "\x1f" . (string)$cNum . "\x1f"
+                                 . (is_array($comp['lines'] ?? null) ? count($comp['lines']) : 0);
+                        if (!empty($carryLangs[$pf1KeyL])) {
+                            $pf1CarriedL = array_shift($carryLangs[$pf1KeyL]);
+                            if ($pf1CarriedL !== null) {
+                                $updLangs->bind_param('si', $pf1CarriedL, $newCompId);
+                                $updLangs->execute();
+                            }
+                        }
                     }
                 }
                 $order++;
             }
             $insComp->close();
             if ($updChords !== null) { $updChords->close(); }
+            if ($updLangs  !== null) { $updLangs->close(); }
 
             /* Revision audit log (#400) — authenticated editors only.
                Silent no-op if the user isn't authenticated via the /manage
