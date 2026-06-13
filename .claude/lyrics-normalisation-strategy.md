@@ -55,11 +55,29 @@ the CI grep guard (`tests/php/test-component-json-guard.php`) bans new ungated d
 (B4) `save_song` PF1 reattach key normalised to match the snapshot key; (B5) `lyricLinesProjectSong`
 now no-ops post-drop (backfill button can't throw). **Deferred (documented):** editor.js R7b chord
 lineId re-anchor (client-side hardening, not cutover-critical); the legacy `load_song` raw per-line
-`languages` re-source post-drop (gated, non-throwing). RESUME = commit C4-cleanup+C5 → owner review +
-**≥7-night alpha soak** (apply `song-part-types`?/`lyric-lines-mirror`/`component-line-languages`/
-`lyric-lines-parttypeslug` migrations, run `verify-lyrics-cutover.php --phase=pre|soak`) → **C6 drop**
-(staged migration + retirement guards + schema.sql mirror, behind Gate C freeze). Full session
-detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record §11; data-quality §12.**
+`languages` re-source post-drop (gated, non-throwing). C4-cleanup+C5 committed
+(`97336426`/`91a77dec`); the load_song follow-up `ae52f8bc`; R7b filed #1263.**
+
+**UPDATE (session 4 cont.): C6 — THE DROP — BUILT + adversarially reviewed + 4 bugs fixed (CI-green;
+uncommitted; RUN is owner/soak-gated).** `migrate-retire-component-lines-json.php` (Stage-0 refuses
+unless the C3 sentinel is pre-drop/green/<24h + fingerprint-count match + per-song `JSON_LENGTH(LinesJson)`
+== mirror line count + 0 NULL ComponentId + a `confirm=1` web gate; then `columnExists`-guarded DROPs,
+LinesJson FIRST so its absence is the canonical "retired era" signal) · `regenerate-lines-json-from-lines.php`
+(reversibility layer 3 — re-add + rebuild all 4 columns from `tblLyricLines`) · schema.sql thin-table mirror +
+`@migration-drops` Signal-5 in `schema_audit.php` (keeps `test-schema-coverage` green through the deletion) ·
+probe-resurrection fix on the interchange-fidelity + component-line-languages probes + retired-era no-op
+guards in those two plus `normalize-lyrics`/`json`/`lyric-lines-mirror` · registry entry. **Review (4
+dimensions) found 4 real bugs, ALL FIXED:** the drop was swept into "Apply all" (probe perpetually
+"pending") → added a `'manual'` registry flag honoured by setup-database (`$migrationManual`) that EXCLUDES
+it from the JS bulk-runner + the no-JS apply-all loop + the pending counter, danger-styles its card, and
+gates its run-links + the script on `confirm=1` (the `drop-legacy` pattern); the no-JS bulk loop no longer
+hard-fails on its pending probe; the counter reaches zero again; and the deprecated `generate-full-sql.php`
+legacy dump (emits the retired LinesJson, no tblLyricLines) now refuses to run. **RESUME = commit C6 → owner
+review + ≥7-night alpha soak** (apply `song-part-types`/`lyric-lines-mirror`/`component-line-languages`/
+`lyric-lines-parttypeslug`; `verify-lyrics-cutover.php --phase=pre|soak`) **→ run the drop BY HAND per env**
+(`--phase=pre-drop` → the `retire-component-lines-json` card with `confirm=1`) inside a #1234 freeze + tested
+backup (Gate C/D). Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record
+§11; data-quality §12.**
 
 | Phase | What | Status |
 |---|---|---|

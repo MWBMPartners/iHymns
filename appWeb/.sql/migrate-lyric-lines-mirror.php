@@ -107,6 +107,18 @@ try {
 
     /* ---- Step 2: backfill the whole catalogue (in place, no re-import) ---- */
     _migLLMirror_out('--- Step 2: backfilling tblLyricLines from tblSongComponents ---');
+    /* #1235 P4/C6 retired-era guard: post-drop, tblSongComponents.LinesJson is gone — there
+       is nothing to backfill FROM (tblLyricLines is authoritative). lyricLinesProjectSong()
+       already self-no-ops in that state, but skip the whole-corpus loop so a manual re-run
+       is instant instead of 16k pointless no-op projections. Step 1 (the column adds) is
+       idempotent and already ran above. */
+    $_llmLinesCol = $db->query("SHOW COLUMNS FROM tblSongComponents LIKE 'LinesJson'");
+    $_llmLinesPresent = ($_llmLinesCol && $_llmLinesCol->num_rows > 0);
+    if ($_llmLinesCol) { $_llmLinesCol->close(); }
+    if (!$_llmLinesPresent) {
+        _migLLMirror_out('  [SKIP] retired era (tblSongComponents.LinesJson gone) — tblLyricLines is authoritative; nothing to backfill (#1235 P4/C6).');
+        return;
+    }
     if (function_exists('set_time_limit')) { @set_time_limit(0); }
 
     /* Collect SongIds up front (buffered) so projection queries can run on the

@@ -1447,9 +1447,12 @@ return [
                       . ' idempotent, no backfill.',
             'button' => 'Add Per-line Language Column',
         ],
-        /* Pending until the column lands; self-clears once it exists. */
+        /* Pending until the column lands; self-clears once it exists. #1235 P4/C6
+           resurrection guard: pending only while the JSON era is active (LinesJson present),
+           so the C6 drop of LanguagesJson is never undone by an "Apply all" re-run. */
         'probe' => static fn(\mysqli $db) =>
-            !_migProbe_columnExists($db, 'tblSongComponents', 'LanguagesJson'),
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson')
+            && !_migProbe_columnExists($db, 'tblSongComponents', 'LanguagesJson'),
     ],
 
     /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
@@ -1597,7 +1600,14 @@ return [
                       . ' <code>IsDefault=1</code>). Additive + idempotent.',
             'button' => 'Run Interchange Fidelity Migration',
         ],
-        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongComponents', 'ChordsJson'),
+        /* #1235 P4/C6 resurrection guard: "pending" only while the JSON era is active
+           (tblSongComponents.LinesJson present). Once C6 drops the payload columns,
+           LinesJson is gone and this must NOT report pending — re-running would re-ADD the
+           retired ChordsJson. (tblSongArrangements, also created here, survives independently
+           and is in schema.sql, so a fresh post-C6 install gets it without this migration.) */
+        'probe' => static fn(\mysqli $db) =>
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson')
+            && !_migProbe_columnExists($db, 'tblSongComponents', 'ChordsJson'),
     ],
 
     'ingest-review-queue' => [
@@ -2060,5 +2070,39 @@ return [
                 return $needs;
             } catch (\Throwable $_e) { return false; }
         },
+    ],
+
+    /* ---- #1235 P4 / C6 — the DROP (DESTRUCTIVE, manual + gated) ----------------
+       Retires the four tblSongComponents JSON payload columns now that tblLyricLines is
+       authoritative. Registered LAST (after every ADD migration). It is RUN MANUALLY per
+       env inside a #1234 freeze with a tested backup, but the real safety is in the script:
+       Stage 0 ABORTS unless the C3 verifier sentinel is pre-drop/green/<24h AND live parity
+       holds — so even an accidental "Apply all pending" is a harmless no-op skip. Recovery:
+       regenerate-lines-json-from-lines.php. */
+    'retire-component-lines-json' => [
+        'script' => 'migrate-retire-component-lines-json.php',
+        /* #1235 P4/C6 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS
+           bulk runner and the no-JS apply-all loop) and from the pending counter, and its
+           single-run requires confirm=1 (like drop-legacy). Without this, its perpetually-
+           "pending" probe would (a) let a routine Apply-all execute the irreversible drop and
+           (b) keep the counter stuck non-zero + hard-fail the no-JS bulk run. setup-database.php
+           honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '⚠ RETIRE tblSongComponents JSON columns (#1235 P4/C6)',
+            'body'   => 'DESTRUCTIVE — drops <code>LinesJson</code> / <code>ChordsJson</code> /'
+                      . ' <code>NotesJson</code> / <code>LanguagesJson</code> from'
+                      . ' <code>tblSongComponents</code> now that <code>tblLyricLines</code> is the'
+                      . ' single source of truth. Do NOT run via "Apply all" — run by hand inside a'
+                      . ' #1234 maintenance freeze with a fresh tested backup, AFTER a ≥7-night soak.'
+                      . ' It REFUSES to drop unless <code>tools/verify-lyrics-cutover.php'
+                      . ' --phase=pre-drop</code> wrote a green sentinel &lt; 24h ago AND live line-count'
+                      . ' parity holds. Reversible via <code>regenerate-lines-json-from-lines.php</code>.',
+            'button' => 'RETIRE JSON Columns (gated)',
+        ],
+        /* "Pending" while LinesJson still exists (the drop has not run); self-clears to
+           applied once retired. Detects real completion (never always-true). */
+        'probe' => static fn(\mysqli $db) =>
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson'),
     ],
 ];

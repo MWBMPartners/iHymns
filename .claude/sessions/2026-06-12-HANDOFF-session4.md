@@ -76,9 +76,46 @@ asymmetry (no loss).
   from free text. The data-integrity edge is already closed server-side (C5 fix B2 clamp + under-length padding).
   True per-line chord anchoring needs the per-line-DOM rewrite editor (#1200); #1263 captures the full requirement.
 
+## C6 — THE DROP — BUILT + reviewed + fixed (uncommitted; RUN is owner/soak-gated)
+The final code phase. **All CI-green locally; the RUN is owner-gated (≥7-night soak + Gate-C freeze).**
+- **`appWeb/.sql/migrate-retire-component-lines-json.php`** — staged, idempotent. Stage 0 REFUSES (clean no-op
+  return, no drop) unless: a `confirm=1` web gate (so "Apply all" can never trigger it); the C3 sentinel
+  `tblAppSettings['lyrics_cutover_gate']` is phase=pre-drop / green / <24h; the sentinel fingerprint counts
+  {songs,components,lines} still match live; per-song `SUM(JSON_LENGTH(LinesJson))` == mirror line count;
+  0 NULL ComponentId. Stages 1–4 `columnExists`-guarded DROP, **LinesJson FIRST** (its absence is the canonical
+  "retired era" signal the resurrection guards key on, robust to a partial run).
+- **`appWeb/.sql/regenerate-lines-json-from-lines.php`** — reversibility layer 3: re-ADDs the 4 columns +
+  rebuilds them from `tblLyricLines` (re-tightens LinesJson to NOT NULL). Recovery without a backup restore.
+- **`schema.sql`** thin tblSongComponents mirror (4 column lines deleted + retag) + **`@migration-drops`
+  Signal-5** in `schema_audit.php` (removes dropped cols from migration coverage → `test-schema-coverage`
+  passes the deletion). The stale tblLyrics header comment fixed.
+- **Probe-resurrection fix**: the interchange-fidelity + component-line-languages registry probes now
+  `columnExists(LinesJson) && !columnExists(X)` — never "pending" post-drop (no re-add). **Retired-era no-op
+  guards** added to migrate-{interchange-fidelity, component-line-languages, normalize-lyrics, json,
+  lyric-lines-mirror} (skip when LinesJson is gone).
+- **Registry entry** `retire-component-lines-json` (LAST; probe = `columnExists(LinesJson)`).
+
+### C6 adversarial review → 4 real bugs, ALL FIXED
+A 4-dimension skeptic+verifier workflow confirmed 4 bugs — all from the same root (a destructive, manual-only,
+gated migration doesn't fit the binary pending-probe + "Apply all" model):
+1. **HIGH** — JS "Apply all" would EXECUTE the irreversible drop (probe perpetually pending), relying only on
+   the Stage-0 gate which is OPEN during the freeze.
+2. **MEDIUM** — the no-JS "Apply all" loop hard-FAILS/halts on the always-pending probe.
+3. **MEDIUM** — the pending counter never reaches zero on pre-drop installs.
+4. **MEDIUM** — `generate-full-sql.php` (legacy full dump) emits the retired LinesJson / no tblLyricLines → a
+   regenerated dump throws + is structurally divergent.
+**Fix:** a **`'manual' => true`** registry flag honoured by setup-database (`$migrationManual`) — EXCLUDES the
+drop from the JS bulk-runner list, the no-JS apply-all loop, and the pending counter; danger-styles its card;
+and gates its card/pending-list run-links + the script itself on **`confirm=1`** (the `drop-legacy` pattern).
+`generate-full-sql.php` now refuses to run (deprecated; points to schema.sql + Apply-all). Bugs 1–3 = the
+`manual` flag; bug 4 = the deprecation.
+
 ## Still deferred (documented, NOT cutover-blocking)
 - **Empty-component G1/G2** — if a curator creates a 0-line component, the public assembler drops it while the
   editor/shadow keep it; consider pruning empties in the write path or surfacing them in the assembler.
+- **Legacy `ihymns-full.sql`** is long-stale (pre-dates ~39 tables incl. tblLyricLines) — the generator is now
+  disabled, but the committed dump could be removed in a cleanup; README/DEV_NOTES "instant install via the
+  full dump" should be marked deprecated (C7 doc task, when P4 lands).
 
 ## Owner actions pending
 1. **Review + commit** this session's C4-cleanup + C5 (the work is verified + reviewed, awaiting the commit ask).
