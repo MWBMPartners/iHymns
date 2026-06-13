@@ -2074,11 +2074,13 @@ return [
 
     /* ---- #1235 P4 / C6 — the DROP (DESTRUCTIVE, manual + gated) ----------------
        Retires the four tblSongComponents JSON payload columns now that tblLyricLines is
-       authoritative. Registered LAST (after every ADD migration). It is RUN MANUALLY per
-       env inside a #1234 freeze with a tested backup, but the real safety is in the script:
-       Stage 0 ABORTS unless the C3 verifier sentinel is pre-drop/green/<24h AND live parity
-       holds — so even an accidental "Apply all pending" is a harmless no-op skip. Recovery:
-       regenerate-lines-json-from-lines.php. */
+       authoritative. Registered LAST (after every ADD migration). alpha/beta/production SHARE
+       ONE database, so this is a SINGLE in-place drop run ONCE BY HAND — never per-env (a
+       re-run is an idempotent no-op) — only after C4/C5 is live on ALL THREE envs and a soak
+       is green, with all three UIs frozen (#1234) + a tested backup. The real safety is in the
+       script: Stage 0 ABORTS unless confirm=1 + the C3 verifier sentinel is pre-drop/green/<24h
+       + live parity holds — so even an accidental "Apply all pending" is a harmless no-op skip.
+       Recovery: regenerate-lines-json-from-lines.php. */
     'retire-component-lines-json' => [
         'script' => 'migrate-retire-component-lines-json.php',
         /* #1235 P4/C6 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS

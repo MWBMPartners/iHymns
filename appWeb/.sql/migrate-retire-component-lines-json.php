@@ -15,9 +15,13 @@ declare(strict_types=1);
  *   - NotesJson      (mirrored per line into tblLyricLines.Note)
  *   - LanguagesJson  (folds into tblLyricLines.LanguageCode)
  *
- * ⚠ DESTRUCTIVE. Do NOT run from "Apply all pending" — it is RUN MANUALLY per environment
- * (alpha → beta → production) inside a #1234 maintenance freeze, with a fresh tested backup,
- * AFTER a ≥7-night soak. Three reversibility layers protect it:
+ * ⚠ DESTRUCTIVE. Do NOT run from "Apply all pending". alpha / beta / production SHARE ONE MySQL
+ * database, so this is a SINGLE in-place drop on that shared DB — NOT a per-environment operation
+ * (a re-run is an idempotent no-op). Run it ONCE, BY HAND, only after ALL of: the drop-safe C4/C5
+ * code is live on alpha AND beta AND production (every env reads/writes these columns, so a
+ * lagging env breaks the instant they're gone); a ≥7-night soak is green; and all three UIs are
+ * paused inside a #1234 maintenance freeze (each env has its OWN maintenance_mode_* flag — freeze
+ * all three), with a fresh tested backup. Three reversibility layers protect it:
  *   1. Stage 0 here ABORTS rather than drop on any gate/parity mismatch (below);
  *   2. the Gate-C mysqldump restore (operator runbook);
  *   3. appWeb/.sql/regenerate-lines-json-from-lines.php rebuilds all four columns FROM

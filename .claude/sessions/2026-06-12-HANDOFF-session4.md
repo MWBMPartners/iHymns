@@ -117,8 +117,16 @@ and gates its card/pending-list run-links + the script itself on **`confirm=1`**
   disabled, but the committed dump could be removed in a cleanup; README/DEV_NOTES "instant install via the
   full dump" should be marked deprecated (C7 doc task, when P4 lands).
 
+## ★ Shared-DB cutover sequencing (verified by the 2026-06-13 ground-truth audit)
+A 5-agent read-only audit (git + grep evidence) established the topology + code-version skew, which DOMINATES the C6 timing:
+- **alpha / beta / production SHARE ONE MySQL** (`ihymns@mysql.MWBMpartners.ltd:3306`; ProjectBrief + `environment.php`/`maintenance.php` docblocks + the setup-database banner). The PHP does ZERO per-env DB switching; env detection drives only feature flags + per-env `maintenance_mode_*`. (Live-config "all three creds identical" is owner-confirm — the credentials file is gitignored.)
+- **Code-version skew (the gating fact):** `origin/alpha` = **P3** (`7168606d`); `origin/beta` + `origin/main` have **NO lyric-normalisation code at all (pre-P1)**; the drop-safe C4/C5/C6 is only on the unpushed `feat/lyrics-1235-p4`. So **none of the three live envs is drop-safe today** — P3 and pre-P1 both reference `tblSongComponents.LinesJson` in UNGATED SELECTs/INSERTs. Dropping the columns on the shared DB (in-place OR via an imported thin-schema dump) would break ALL THREE at once.
+- **Therefore the drop is ONE operation on the shared DB**, gated on **C4/C5 being live on alpha AND beta AND production** (full-stack promotion, since beta/prod are pre-P1), the soak being green, all three UIs frozen, + a tested backup. NOT per-env (one copy of the columns; a re-run is an idempotent no-op).
+- **Drift hazard (currently benign):** writes can occur on any env (users/setlists/favourites/config are DB-based), but **lyric/component edits have been alpha-only** (internal testing), and alpha (P2a+) maintains the mirror — so parity isn't drifting. **Guardrail:** keep lyric editing alpha-only until C4/C5 is live on every env; a pre-C5 env editing lyrics on the shared DB would orphan `tblLyricLines` and break the soak's G2 parity.
+- **Dump-import (option B) rejected:** it relocates the same code-skew risk without removing it, `restore.php` replaces ALL tables in the one shared DB (hits all three envs), the freeze is per-env (3 separate flags), and it's hours of downtime vs a minutes `DROP COLUMN`. In-place is the lower-risk path. The dump's real use is a **local dress rehearsal** of the chain + verifier (more valuable now since alpha shares prod data — no throwaway env).
+
 ## Owner actions pending
-1. **Review + commit** this session's C4-cleanup + C5 (the work is verified + reviewed, awaiting the commit ask).
+1. **Push / review PR #1262** → land C4/C5/C6 on alpha (the work is committed + reviewed; not pushed).
 2. **≥7-night alpha soak** of the inverted write path. To light it up, ensure these migrations are applied on
    alpha via Setup-Database: `migrate-song-part-types` (PartTypeSlug column, #1138 — the gate now REQUIRES it),
    `migrate-lyric-lines-mirror` (ChordsJson/Note), `migrate-component-line-languages`, `migrate-lyric-lines-parttypeslug`

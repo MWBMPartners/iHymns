@@ -72,12 +72,17 @@ dimensions) found 4 real bugs, ALL FIXED:** the drop was swept into "Apply all" 
 it from the JS bulk-runner + the no-JS apply-all loop + the pending counter, danger-styles its card, and
 gates its run-links + the script on `confirm=1` (the `drop-legacy` pattern); the no-JS bulk loop no longer
 hard-fails on its pending probe; the counter reaches zero again; and the deprecated `generate-full-sql.php`
-legacy dump (emits the retired LinesJson, no tblLyricLines) now refuses to run. **RESUME = commit C6 → owner
-review + ≥7-night alpha soak** (apply `song-part-types`/`lyric-lines-mirror`/`component-line-languages`/
-`lyric-lines-parttypeslug`; `verify-lyrics-cutover.php --phase=pre|soak`) **→ run the drop BY HAND per env**
-(`--phase=pre-drop` → the `retire-component-lines-json` card with `confirm=1`) inside a #1234 freeze + tested
-backup (Gate C/D). Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record
-§11; data-quality §12.**
+legacy dump (emits the retired LinesJson, no tblLyricLines) now refuses to run. **RESUME = commit C6 → push/
+review PR #1262 → land C4/C5/C6 on alpha → ≥7-night alpha soak** (apply `song-part-types`/`lyric-lines-mirror`/
+`component-line-languages`/`lyric-lines-parttypeslug`; `verify-lyrics-cutover.php --phase=pre|soak`) **→ PROMOTE
+the full lyric stack to beta + production** (audit confirms BOTH are currently pre-P1 — no lyric-normalisation
+code at all; alpha is at P3/`7168606d`), so every env that reads/writes the SHARED DB becomes drop-safe **→ run
+the drop ONCE on the shared DB** (`--phase=pre-drop` → the `retire-component-lines-json` card with `confirm=1`)
+inside a #1234 freeze with ALL THREE UIs paused (each has its own `maintenance_mode_*` flag) + a tested backup
+(Gate C/D). **NOT a per-env drop** — the three subdomains share ONE MySQL (`ihymns@mysql.MWBMpartners.ltd`), so
+there is one copy of the columns; a re-run is an idempotent no-op. The drop's hard prerequisite is C4/C5 live on
+ALL THREE envs (a lagging pre-P4 env reads/writes LinesJson ungated and would break the instant it's dropped).
+Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record §11; data-quality §12.**
 
 | Phase | What | Status |
 |---|---|---|
@@ -553,7 +558,7 @@ manifest race — the runbook freeze is not optional.
 | C4 read switch (incl. R2 snapshot/revision sites) | M |
 | C5 write inversion | **L** (5 funnels, carry-forward, lineId chord anchor, shadow-write) |
 | C6 drop migration + scanner + probe fix + guards + schema.sql | M (high blast radius, small diff) |
-| Soak + runbook per env | ≥7 nights/env |
+| Soak + runbook | ≥7 nights on alpha; then ONE drop on the shared DB after C4/C5 is promoted to beta+prod (see §0) |
 
 **Owner gate 1** = sign-off on this plan + decisions D-1/D-2/D-3 before C1 is written.
 **Owner gate 2** = post-soak go/no-go before running the drop card on each env (alpha → beta →
@@ -599,4 +604,4 @@ songs that *genuinely* need duplicate part keys (true call-and-response, medleys
 ---
 *Next: (1) PF1/PF2 amendments on `feat/lyrics-1235-p3` + tests (owner-approved) → push P3; (2) the
 cutover-first-vs-clean-first sequencing call + a data-cleanup epic issue; (3) ONE P4 PR (C1→C7, C-variant,
-`tblSongChords` as chord home per D-2) targeting `alpha`, drop run manually per env behind the gates.*
+`tblSongChords` as chord home per D-2) targeting `alpha`, drop run manually ONCE on the shared DB behind the gates (NOT per-env — see §0).*
