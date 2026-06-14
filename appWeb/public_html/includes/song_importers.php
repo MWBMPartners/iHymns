@@ -486,28 +486,33 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         $insert->execute();
         $insert->close();
 
-        $insComp = $db->prepare(
-            'INSERT INTO tblSongComponents
-                (SongId, Type, Number, SortOrder, LinesJson)
-             VALUES (?, ?, ?, ?, ?)'
-        );
-        $order = 0;
-        foreach ($song['components'] as $comp) {
-            $type   = (string)($comp['type'] ?? 'verse');
-            $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
-            $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
-            $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
-            $insComp->execute();
-            $order++;
-        }
-        $insComp->close();
-
-        /* #1235 P1b — mirror the imported components into tblLyricLines (guarded;
-           no-op until the mirror columns exist). Inside the import transaction so
-           it commits / rolls back atomically with the song. */
+        /* #1235 P4/C5 — write inversion. When the tblLyricLines mirror exists, the
+           shared write path makes the normalised lines authoritative and shadow-writes
+           the (still-present) JSON columns from the same payload — so this import keeps
+           working before AND after the C6 JSON-column drop. Inside the import
+           transaction so it commits / rolls back atomically with the song. */
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
         if (lyricLinesSyncReady($db)) {
-            lyricLinesProjectSong($db, $songId);
+            lyricLinesWriteComponents($db, $songId, $song['components'] ?? []);
+        } else {
+            /* lines-json-fallback (#1235 P4): un-migrated install (no mirror) — write
+               LinesJson directly. LinesJson provably still exists here (the C6 drop
+               only runs once the mirror is present, i.e. syncReady would be true). */
+            $insComp = $db->prepare(
+                'INSERT INTO tblSongComponents
+                    (SongId, Type, Number, SortOrder, LinesJson)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $order = 0;
+            foreach ($song['components'] as $comp) {
+                $type   = (string)($comp['type'] ?? 'verse');
+                $cNum   = isset($comp['number']) ? (int)$comp['number'] : 0;
+                $lines  = json_encode($comp['lines'] ?? [], JSON_UNESCAPED_UNICODE);
+                $insComp->bind_param('ssiis', $songId, $type, $cNum, $order, $lines);
+                $insComp->execute();
+                $order++;
+            }
+            $insComp->close();
         }
 
         /* Revision audit row (#400). Same shape as save_song writes. */

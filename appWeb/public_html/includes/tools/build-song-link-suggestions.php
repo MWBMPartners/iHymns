@@ -53,6 +53,7 @@ if (PHP_SAPI === 'cli') {
    includes/song_similarity.php so the builder, the duplicate-songs review page
    and the editor panel all score identically (CLAUDE.md modularity rule). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_similarity.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
 
 function _bsls_out(string $line): void
 {
@@ -102,9 +103,16 @@ if (count($present) < 3) {
    a curator's "no, different hymns" verdict is permanent). */
 $db->query('TRUNCATE TABLE tblSongLinkSuggestions');
 
-/* Pull every song's title + first lyric line + writer/composer
-   list. The first-line snippet comes from tblSongComponents — we
-   take the first row's first non-empty paragraph. */
+/* #1235 P4 — the first-line snippet comes from the authoritative tblLyricLines mirror
+   (shared bulk reader, chunked per #929), NOT tblSongComponents.LinesJson. Only an
+   un-migrated install (no mirror table) falls back to the correlated LinesJson subquery. */
+$mirrorReady = lyricLinesMirrorPresent($db);
+$firstLineCol = $mirrorReady
+    ? ''
+    : ", (SELECT cmp.LinesJson FROM tblSongComponents cmp
+          WHERE cmp.SongId = s.SongId ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstComponentLines"; // lines-json-fallback (#1235 P4)
+
+/* Pull every song's title + writer/composer list (one tblSongs scan). */
 $res = $db->query(
     "SELECT s.SongId,
             s.Title,
@@ -114,11 +122,7 @@ $res = $db->query(
             s.Iswc,
             s.Ccli,
             COALESCE(GROUP_CONCAT(DISTINCT w.Name SEPARATOR '|'), '') AS Writers,
-            COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers,
-            (SELECT cmp.LinesJson
-               FROM tblSongComponents cmp
-              WHERE cmp.SongId = s.SongId
-              ORDER BY cmp.SortOrder ASC LIMIT 1) AS FirstComponentLines
+            COALESCE(GROUP_CONCAT(DISTINCT c.Name SEPARATOR '|'), '') AS Composers{$firstLineCol}
        FROM tblSongs s
        LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
        LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
@@ -129,31 +133,49 @@ if (!$res) {
     exit(1);
 }
 
-/* Group rows into language-bucket × first-letter-of-title-bucket
-   bags. The pairwise pass walks each bag, not the whole corpus. */
+/* First pass — collect kept rows (non-empty normalised title) and their ids. */
+$rawRows = [];
+$keptIds = [];
+while ($row = $res->fetch_assoc()) {
+    $normTitle = ihymns_sim_normalise((string)$row['Title']);
+    if ($normTitle === '') continue;
+    $row['_normTitle'] = $normTitle;
+    $rawRows[]  = $row;
+    $keptIds[]  = (string)$row['SongId'];
+}
+$res->close();
+
+/* Bulk preview-line map from the mirror (chunked internally); empty when un-migrated. */
+$firstLineBySid = $mirrorReady ? lyricLinesFirstLineMap($db, $keptIds) : [];
+
+/* Group rows into language-bucket × first-letter-of-title-bucket bags. The pairwise
+   pass walks each bag, not the whole corpus. */
 $bags = [];
 $total = 0;
-while ($row = $res->fetch_assoc()) {
-    $title = (string)$row['Title'];
-    $normTitle = ihymns_sim_normalise($title);
-    if ($normTitle === '') continue;
-    $firstLine = '';
-    /* The first component's lyrics live in LinesJson (a JSON array of lines),
-       not a `Body` column — decode it and take the first non-empty line. */
-    $linesJson = (string)($row['FirstComponentLines'] ?? '');
-    if ($linesJson !== '') {
-        $lines = json_decode($linesJson, true);
-        if (is_array($lines)) {
-            foreach ($lines as $ln) {
-                $ln = trim((string)$ln);
-                if ($ln !== '') { $firstLine = $ln; break; }
+foreach ($rawRows as $row) {
+    $sid       = (string)$row['SongId'];
+    $normTitle = (string)$row['_normTitle'];
+    if ($mirrorReady) {
+        $firstLine = $firstLineBySid[$sid] ?? '';
+    } else {
+        /* lines-json-fallback (#1235 P4): decode the first component's LinesJson and
+           take its first non-empty line. */
+        $firstLine = '';
+        $linesJson = (string)($row['FirstComponentLines'] ?? '');
+        if ($linesJson !== '') {
+            $lines = json_decode($linesJson, true);
+            if (is_array($lines)) {
+                foreach ($lines as $ln) {
+                    $ln = trim((string)$ln);
+                    if ($ln !== '') { $firstLine = $ln; break; }
+                }
             }
         }
     }
     $bagKey = (string)$row['Language'] . '|' . mb_substr($normTitle, 0, 1, 'UTF-8');
     if (!isset($bags[$bagKey])) $bags[$bagKey] = [];
     $bags[$bagKey][] = [
-        'songId'        => (string)$row['SongId'],
+        'songId'        => $sid,
         'normTitle'     => $normTitle,
         'normFirstLine' => ihymns_sim_normalise($firstLine),
         'authors'       => trim((string)$row['Writers'] . '|' . (string)$row['Composers'], '|'),
@@ -166,7 +188,6 @@ while ($row = $res->fetch_assoc()) {
     ];
     $total++;
 }
-$res->close();
 _bsls_out("Loaded {$total} song(s) into " . count($bags) . ' bucket(s).');
 
 /* Pre-load dismissed pairs into a hash for O(1) skip. */

@@ -239,6 +239,29 @@ jobs:
           php tests/php/test-line-enrichment.php
 
       # -----------------------------------------------------------------------
+      # Step 5f: Line-first assembler (#1235 P4 / C1)
+      # Pins the pure component-assembly core that rebuilds a song from the
+      # authoritative tblLyricLines. Its output must match SongData::_getComponents()
+      # byte-for-byte — the read switch (P4b) is a clean delegation only if it does.
+      # -----------------------------------------------------------------------
+      - name: Line-first assembler (P4 C1)
+        run: |
+          echo "Running line-first assembler test..."
+          php tests/php/test-lyric-lines-read.php
+
+      # -----------------------------------------------------------------------
+      # tblSongComponents JSON-payload column guard (#1235 P4 / C5). Fails when a
+      # raw LinesJson / NotesJson / LanguagesJson reference on tblSongComponents
+      # appears outside a column-existence-gated or `lines-json-fallback`-marked
+      # site — those columns are retired in P4d/C6 and a surviving raw reference
+      # throws under MYSQLI_REPORT_STRICT.
+      # -----------------------------------------------------------------------
+      - name: Component JSON-payload column guard (P4 C5)
+        run: |
+          echo "Running tblSongComponents JSON-column guard..."
+          php tests/php/test-component-json-guard.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -378,3 +401,9 @@ jobs:
 
       - name: Line enrichment validators
         run: php tests/php/test-line-enrichment.php
+
+      - name: Line-first assembler (P4 C1)
+        run: php tests/php/test-lyric-lines-read.php
+
+      - name: Component JSON-payload column guard (P4 C5)
+        run: php tests/php/test-component-json-guard.php

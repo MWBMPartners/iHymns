@@ -54,6 +54,18 @@ mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 _migCompLang_out('=== iHymns — tblSongComponents.LanguagesJson (#1235 P3 / #1253) ===');
 
 try {
+    /* #1235 P4/C6 retired-era guard: once C6 drops the payload columns, tblSongComponents.
+       LinesJson is gone. Do NOT re-add LanguagesJson — that would RESURRECT a retired column
+       (per-line language now lives on tblLyricLines.LanguageCode). */
+    $linesGone = $db->query("SHOW COLUMNS FROM tblSongComponents LIKE 'LinesJson'");
+    if (!($linesGone && $linesGone->num_rows > 0)) {
+        if ($linesGone) { $linesGone->close(); }
+        _migCompLang_out('  [SKIP] retired era (tblSongComponents.LinesJson gone) — not re-adding LanguagesJson (#1235 P4/C6).');
+        _migCompLang_out('Done (no-op: per-line language is on tblLyricLines.LanguageCode post-cutover).');
+        return;
+    }
+    if ($linesGone) { $linesGone->close(); }
+
     $res = $db->query("SHOW COLUMNS FROM tblSongComponents LIKE 'LanguagesJson'");
     if ($res && $res->num_rows > 0) {
         _migCompLang_out('  [SKIP] tblSongComponents.LanguagesJson already present.');

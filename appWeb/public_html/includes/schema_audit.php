@@ -277,6 +277,29 @@ function schemaAuditScanMigrations(string $sqlDir): array
         }
     }
 
+    /* Signal 5 — @migration-drops tblX.colName (#1235 P4/C6). A column a later migration
+       DROPS is no longer expected to live in schema.sql, so REMOVE it from coverage. Without
+       this, the schema-coverage test would forever flag the column as "added by a migration
+       but missing from schema.sql" after the retirement migration + the schema.sql byte-mirror
+       land. (A column that is added AND later dropped nets to "not expected" — the retire
+       migration's doctag wins.) */
+    $dropped = [];
+    foreach ($files as $file) {
+        $contents = @file_get_contents($file);
+        if ($contents === false) continue;
+        if (preg_match_all(
+            '/@migration-drops\s+(tbl\w+)\.([A-Za-z_][A-Za-z0-9_]*)/i',
+            $contents,
+            $matches,
+            PREG_SET_ORDER
+        )) {
+            foreach ($matches as $m) { $dropped[$m[1] . '.' . $m[2]] = true; }
+        }
+    }
+    foreach (array_keys($dropped) as $key) {
+        unset($coverage[$key]);
+    }
+
     /* De-dupe filenames per column. */
     foreach ($coverage as $k => $files) {
         $coverage[$k] = array_values(array_unique($files));

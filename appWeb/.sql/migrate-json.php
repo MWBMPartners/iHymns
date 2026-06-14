@@ -148,6 +148,21 @@ $mysqli->set_charset($charset);
 output("Connected.");
 output("");
 
+/* #1235 P4/C6 retired-era guard. This is the LEGACY early-JSON bootstrap importer: it
+   TRUNCATEs tblSongComponents and re-INSERTs LinesJson straight from data/songs.json. After
+   the cutover, tblLyricLines is the authoritative store and the JSON payload columns are
+   retired — so the INSERT would throw under STRICT AND a re-import would DISCARD the
+   normalized lyrics/enrichment. Refuse to run once the thin schema is in place. */
+$_mjLinesCol = $mysqli->query("SHOW COLUMNS FROM tblSongComponents LIKE 'LinesJson'");
+$_mjLinesPresent = ($_mjLinesCol && $_mjLinesCol->num_rows > 0);
+if ($_mjLinesCol) { $_mjLinesCol->close(); }
+if (!$_mjLinesPresent) {
+    output("ABORT: tblSongComponents.LinesJson is gone (#1235 P4/C6 retired era).");
+    output("This legacy JSON bootstrap import is incompatible with the post-cutover thin schema");
+    output("and would discard the authoritative tblLyricLines. Use the editor / importers instead.");
+    return;
+}
+
 /* =========================================================================
  * MIGRATION — Transaction-wrapped
  * ========================================================================= */

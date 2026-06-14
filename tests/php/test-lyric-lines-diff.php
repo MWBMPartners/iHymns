@@ -229,6 +229,85 @@ assertEq(lyricLinesRowClean($row, ['ComponentId' => 5, 'PartType' => 'verse', 'P
     'SortOrder' => 7, 'LineText' => 'Holy holy holy', 'ChordsJson' => '"C"', 'Note' => 'sing softly',
     'LanguageCode' => 'en', 'IsInstrumental' => 0]), false, 'rowClean: note added = dirty');
 
+/* ==================================================================== */
+/* lyricLinesBuildDesiredFromComponents (#1235 P4/C5 write inversion)     */
+/* The PURE payload→desired-lines builder. Must produce the SAME shape    */
+/* lyricLinesBuildDesired() derives from LinesJson, so lyricLinesApplyDesired */
+/* (the diff) behaves identically on the legacy + cutover paths.          */
+/* ==================================================================== */
+/* Slug resolver stub: 'verse'/'chorus' map to themselves, else null. */
+$slug = static fn(?string $t): ?string => in_array($t, ['verse', 'chorus'], true) ? $t : null;
+
+/* One verse, two lines, no chords/notes/languages → inherits component language. */
+assertEq(
+    lyricLinesBuildDesiredFromComponents([
+        ['cid' => 5, 'type' => 'verse', 'number' => 1, 'language' => 'en',
+         'lines' => ['Amazing grace', 'how sweet the sound'],
+         'chords' => null, 'notes' => null, 'validatedLangs' => null],
+    ], $slug),
+    [
+        ['ComponentId' => 5, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 1,
+         'SortOrder' => 0, 'LineText' => 'Amazing grace', 'ChordsJson' => null, 'Note' => null,
+         'LanguageCode' => 'en', 'IsInstrumental' => 0],
+        ['ComponentId' => 5, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 1,
+         'SortOrder' => 1, 'LineText' => 'how sweet the sound', 'ChordsJson' => null, 'Note' => null,
+         'LanguageCode' => 'en', 'IsInstrumental' => 0],
+    ],
+    'fromComponents: simple verse, lang inherited, contiguous SortOrder'
+);
+
+/* Per-line chords (parallel array) re-encoded as JSON per line; absent slot → null. */
+assertEq(
+    lyricLinesBuildDesiredFromComponents([
+        ['cid' => 9, 'type' => 'chorus', 'number' => 0, 'language' => null,
+         'lines' => ['Praise him', 'Praise him'],
+         'chords' => [['C', 'G'], null], 'notes' => [null, 'softly'], 'validatedLangs' => null],
+    ], $slug),
+    [
+        ['ComponentId' => 9, 'PartType' => 'chorus', 'PartTypeSlug' => 'chorus', 'PartNumber' => null,
+         'SortOrder' => 0, 'LineText' => 'Praise him', 'ChordsJson' => '["C","G"]', 'Note' => null,
+         'LanguageCode' => null, 'IsInstrumental' => 0],
+        ['ComponentId' => 9, 'PartType' => 'chorus', 'PartTypeSlug' => 'chorus', 'PartNumber' => null,
+         'SortOrder' => 1, 'LineText' => 'Praise him', 'ChordsJson' => null, 'Note' => 'softly',
+         'LanguageCode' => null, 'IsInstrumental' => 0],
+    ],
+    'fromComponents: per-line chords + notes; number 0 → PartNumber null'
+);
+
+/* Per-line language OVERRIDE wins over the component default; blank line → instrumental. */
+assertEq(
+    lyricLinesBuildDesiredFromComponents([
+        ['cid' => 2, 'type' => 'verse', 'number' => 2, 'language' => 'en',
+         'lines' => ['Gloria', '', 'in excelsis'],
+         'chords' => null, 'notes' => null, 'validatedLangs' => ['la', null, 'la']],
+    ], $slug),
+    [
+        ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
+         'SortOrder' => 0, 'LineText' => 'Gloria', 'ChordsJson' => null, 'Note' => null,
+         'LanguageCode' => 'la', 'IsInstrumental' => 0],
+        ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
+         'SortOrder' => 1, 'LineText' => '', 'ChordsJson' => null, 'Note' => null,
+         'LanguageCode' => 'en', 'IsInstrumental' => 1],
+        ['ComponentId' => 2, 'PartType' => 'verse', 'PartTypeSlug' => 'verse', 'PartNumber' => 2,
+         'SortOrder' => 2, 'LineText' => 'in excelsis', 'ChordsJson' => null, 'Note' => null,
+         'LanguageCode' => 'la', 'IsInstrumental' => 0],
+    ],
+    'fromComponents: per-line language override + blank-line instrumental'
+);
+
+/* SortOrder is GLOBAL across components; an unknown type yields a null slug (rule #20). */
+assertEq(
+    array_map(static fn($d) => [$d['SortOrder'], $d['PartType'], $d['PartTypeSlug'], $d['ComponentId']],
+        lyricLinesBuildDesiredFromComponents([
+            ['cid' => 1, 'type' => 'verse', 'number' => 1, 'language' => null, 'lines' => ['a', 'b'],
+             'chords' => null, 'notes' => null, 'validatedLangs' => null],
+            ['cid' => 2, 'type' => 'prechorus', 'number' => 0, 'language' => null, 'lines' => ['c'],
+             'chords' => null, 'notes' => null, 'validatedLangs' => null],
+        ], $slug)),
+    [[0, 'verse', 'verse', 1], [1, 'verse', 'verse', 1], [2, 'prechorus', null, 2]],
+    'fromComponents: global SortOrder spans components; unknown type → null slug'
+);
+
 /* -------------------------------------------------------------------- */
 echo "\n";
 echo "  ----------------------------------------\n";

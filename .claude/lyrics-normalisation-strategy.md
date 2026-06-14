@@ -29,9 +29,60 @@ is written. Three findings change the picture and need an owner call:**
    are dormant (0 rows), so making lines authoritative orphans nothing. The window closes the
    moment P3's enrichment UIs start writing line-anchored data.
 
-**P1 + P2a verified on alpha. P2b + the P3 BACKEND + UIs are DONE + committed (branch
-`feat/lyrics-1235-p3`, NOT pushed). Remaining before P4: the P3 R1/R3 amendments (§11.1), then
-push P3. The P3 editor-UI detail is in §0.1.**
+**UPDATE (session 3): P1+P2a+P2b+P3 (incl. the R1/R3 PF1/PF2 fixes) SHIPPED to alpha via
+PR #1259 (`7168606d`, MERGED). P4 IN BUILD on `feat/lyrics-1235-p4` (draft PR #1262):
+C1 assembler + C2 PartTypeSlug + C3 verification tooling + C4 read switch DONE.**
+
+**UPDATE (session 4): C4 CLEANUP + C5 WRITE INVERSION BUILT + adversarially reviewed + fixed
+(CI-green; awaiting commit + the alpha soak).** C4-cleanup repointed the 3 preview-line bypass
+readers (`SongOfTheDay`, `duplicate-songs`, `build-song-link-suggestions`) off `LinesJson` onto the
+shared assembler (`lyricLinesFirstLine`/`…Map` + `lyricLinesMirrorPresent` gate + marked
+LinesJson fallback). **C5** makes `tblLyricLines` the WRITE source of truth: the new shared engine
+`lyricLinesWriteComponents()` (Id-stable thin-component upsert by position + column-existence-gated
+shadow-JSON + payload-sourced `lyricLinesBuildDesiredFromComponents()` + the shared
+`lyricLinesApplyDesired()` diff) replaces the LinesJson-sourced projector in all 5 funnels
+(`save_song`, `component_upsert`, `components_replace`, `song_importers`, `lyrics_ingest`); the v2
+ed2 helpers (`ed2_rebuildLyricsText`/`ed2_buildSongSnapshot`/`ed2_applySongSnapshot` + granular
+funnels + `restore_revision`) read/write via the line-sourced shared helpers
+(`ed2_currentComponents`/`ed2_persistComponents`); PF1 carry-forward re-sources from the assembler;
+the CI grep guard (`tests/php/test-component-json-guard.php`) bans new ungated doomed-column refs.
+**Adversarial review (4 skeptics + verifiers) found 5 real bugs — ALL FIXED:** (B1) read gate
+(`lyricLinesMirrorPresent`, table-only) diverged from write gate → both now require
+`tblLyricLines.ChordsJson+Note+PartTypeSlug` (the mirror is built across 3 migrations:
+`normalize-lyrics` base + `song-part-types` PartTypeSlug + `lyric-lines-mirror` ChordsJson/Note);
+(B2) over-length chord arrays broke G2 → shadow ChordsJson/NotesJson now CLAMPED to line-count;
+(B3) `component_upsert` mid-list insert scrambled ComponentId → new components append (no usort);
+(B4) `save_song` PF1 reattach key normalised to match the snapshot key; (B5) `lyricLinesProjectSong`
+now no-ops post-drop (backfill button can't throw). **Deferred (documented):** editor.js R7b chord
+lineId re-anchor (client-side hardening, not cutover-critical); the legacy `load_song` raw per-line
+`languages` re-source post-drop (gated, non-throwing). C4-cleanup+C5 committed
+(`97336426`/`91a77dec`); the load_song follow-up `ae52f8bc`; R7b filed #1263.**
+
+**UPDATE (session 4 cont.): C6 — THE DROP — BUILT + adversarially reviewed + 4 bugs fixed (CI-green;
+uncommitted; RUN is owner/soak-gated).** `migrate-retire-component-lines-json.php` (Stage-0 refuses
+unless the C3 sentinel is pre-drop/green/<24h + fingerprint-count match + per-song `JSON_LENGTH(LinesJson)`
+== mirror line count + 0 NULL ComponentId + a `confirm=1` web gate; then `columnExists`-guarded DROPs,
+LinesJson FIRST so its absence is the canonical "retired era" signal) · `regenerate-lines-json-from-lines.php`
+(reversibility layer 3 — re-add + rebuild all 4 columns from `tblLyricLines`) · schema.sql thin-table mirror +
+`@migration-drops` Signal-5 in `schema_audit.php` (keeps `test-schema-coverage` green through the deletion) ·
+probe-resurrection fix on the interchange-fidelity + component-line-languages probes + retired-era no-op
+guards in those two plus `normalize-lyrics`/`json`/`lyric-lines-mirror` · registry entry. **Review (4
+dimensions) found 4 real bugs, ALL FIXED:** the drop was swept into "Apply all" (probe perpetually
+"pending") → added a `'manual'` registry flag honoured by setup-database (`$migrationManual`) that EXCLUDES
+it from the JS bulk-runner + the no-JS apply-all loop + the pending counter, danger-styles its card, and
+gates its run-links + the script on `confirm=1` (the `drop-legacy` pattern); the no-JS bulk loop no longer
+hard-fails on its pending probe; the counter reaches zero again; and the deprecated `generate-full-sql.php`
+legacy dump (emits the retired LinesJson, no tblLyricLines) now refuses to run. **RESUME = commit C6 → push/
+review PR #1262 → land C4/C5/C6 on alpha → ≥7-night alpha soak** (apply `song-part-types`/`lyric-lines-mirror`/
+`component-line-languages`/`lyric-lines-parttypeslug`; `verify-lyrics-cutover.php --phase=pre|soak`) **→ PROMOTE
+the full lyric stack to beta + production** (audit confirms BOTH are currently pre-P1 — no lyric-normalisation
+code at all; alpha is at P3/`7168606d`), so every env that reads/writes the SHARED DB becomes drop-safe **→ run
+the drop ONCE on the shared DB** (`--phase=pre-drop` → the `retire-component-lines-json` card with `confirm=1`)
+inside a #1234 freeze with ALL THREE UIs paused (each has its own `maintenance_mode_*` flag) + a tested backup
+(Gate C/D). **NOT a per-env drop** — the three subdomains share ONE MySQL (`ihymns@mysql.MWBMpartners.ltd`), so
+there is one copy of the columns; a re-run is an idempotent no-op. The drop's hard prerequisite is C4/C5 live on
+ALL THREE envs (a lagging pre-P4 env reads/writes LinesJson ungated and would break the instant it's dropped).
+Full session detail: `.claude/sessions/2026-06-12-HANDOFF-session4.md`. P4 plan-of-record §11; data-quality §12.**
 
 | Phase | What | Status |
 |---|---|---|
@@ -507,7 +558,7 @@ manifest race — the runbook freeze is not optional.
 | C4 read switch (incl. R2 snapshot/revision sites) | M |
 | C5 write inversion | **L** (5 funnels, carry-forward, lineId chord anchor, shadow-write) |
 | C6 drop migration + scanner + probe fix + guards + schema.sql | M (high blast radius, small diff) |
-| Soak + runbook per env | ≥7 nights/env |
+| Soak + runbook | ≥7 nights on alpha; then ONE drop on the shared DB after C4/C5 is promoted to beta+prod (see §0) |
 
 **Owner gate 1** = sign-off on this plan + decisions D-1/D-2/D-3 before C1 is written.
 **Owner gate 2** = post-soak go/no-go before running the drop card on each env (alpha → beta →
@@ -553,4 +604,4 @@ songs that *genuinely* need duplicate part keys (true call-and-response, medleys
 ---
 *Next: (1) PF1/PF2 amendments on `feat/lyrics-1235-p3` + tests (owner-approved) → push P3; (2) the
 cutover-first-vs-clean-first sequencing call + a data-cleanup epic issue; (3) ONE P4 PR (C1→C7, C-variant,
-`tblSongChords` as chord home per D-2) targeting `alpha`, drop run manually per env behind the gates.*
+`tblSongChords` as chord home per D-2) targeting `alpha`, drop run manually ONCE on the shared DB behind the gates (NOT per-env — see §0).*

@@ -475,10 +475,13 @@ $MIGRATIONS = require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 $migrationOrder  = array_keys($MIGRATIONS);
 $migrationCards  = [];
 $migrationProbes = [];
+$migrationManual = [];   /* #1235 P4/C6 — slugs flagged 'manual' (destructive, gated): excluded
+                            from "Apply all" + the pending counter; single-run needs confirm=1. */
 foreach ($MIGRATIONS as $_slug => $_entry) {
     $scriptMap[$_slug]       = $_entry['script'];
     $migrationCards[$_slug]  = $_entry['card'];
     $migrationProbes[$_slug] = $_entry['probe'];
+    if (!empty($_entry['manual'])) { $migrationManual[$_slug] = true; }
 }
 unset($_slug, $_entry);
 /* Captured during bulk-run so the failure can be surfaced as a visible
@@ -915,6 +918,15 @@ if ($action !== '') {
                above failed — in that case iterate nothing so no migration
                runs without a recovery point. */
             foreach (($proceedBulk ? $migrationOrder : []) as $migAction) {
+                /* #1235 P4/C6 — never run a DESTRUCTIVE manual-only migration (e.g. the JSON-
+                   column drop) from "Apply all": it is gated + run by hand with confirm=1.
+                   Skipping here (and excluding it from the pending counter / bulk-runner list
+                   below) is what keeps the irreversible drop OUT of routine bulk runs and stops
+                   its perpetually-pending probe from hard-failing this no-JS loop. */
+                if (!empty($migrationManual[$migAction])) {
+                    echo "  ⏭ {$migAction} — manual/destructive (run by hand with confirm=1); skipped by Apply all.\n\n";
+                    continue;
+                }
                 /* #862 — reset the execution-time alarm before EACH
                    migration in case the host enforces a per-script
                    limit that survives the require() boundary. Cheap
@@ -1353,7 +1365,10 @@ if ($hasCredentials && defined('DB_HOST')) {
                skip-only entries (or not yet defined). */
             $_pendingCardCount = count(array_filter(
                 $pendingActions,
-                static fn(string $slug): bool => isset($migrationCards[$slug])
+                /* #1235 P4/C6 — exclude manual/destructive migrations (the JSON-column drop is
+                   pending-by-design until a human runs it): so the counter still reaches zero
+                   once all AUTO migrations are applied. */
+                static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
             ));
             $_alertVariant = $_pendingCardCount > 0 ? 'alert-primary' : 'alert-success';
         ?>
@@ -1397,7 +1412,8 @@ if ($hasCredentials && defined('DB_HOST')) {
                    handle the timeout edge case). */
                 $bulkRunnerPending = array_values(array_filter(
                     $pendingActions,
-                    static fn(string $slug): bool => isset($migrationCards[$slug])
+                    /* #1235 P4/C6 — manual/destructive migrations are NEVER bulk-run targets. */
+                    static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
                 ));
             ?>
             <a href="?action=apply-all-migrations"
@@ -1441,9 +1457,21 @@ if ($hasCredentials && defined('DB_HOST')) {
                                         no card — hidden from the grid &amp; skipped by &ldquo;Apply all&rdquo;
                                     </span>
                                 <?php endif; ?>
+                                <?php if (!empty($migrationManual[$_pa])): ?>
+                                    <span class="badge bg-danger ms-2">manual &amp; destructive — run by hand, not by &ldquo;Apply all&rdquo;</span>
+                                <?php endif; ?>
                             </span>
-                            <a href="?action=<?= htmlspecialchars($_pa) ?>"
-                               class="btn btn-sm btn-outline-info flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
+                            <?php
+                                /* #1235 P4/C6 — a manual/destructive migration's run link carries
+                                   confirm=1 (the script refuses without it) + a confirm() dialog. */
+                                $_paManual  = !empty($migrationManual[$_pa]);
+                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
+                                $_paOnclick = $_paManual
+                                    ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds behind the pre-drop verification gate. Continue?\');"'
+                                    : '';
+                            ?>
+                            <a href="<?= $_paHref ?>"<?= $_paOnclick ?>
+                               class="btn btn-sm <?= $_paManual ? 'btn-danger' : 'btn-outline-info' ?> flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run &amp; show output
                             </a>
                         </li>
@@ -1530,15 +1558,26 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php
                 /* Render helper — single card markup reused for both
                    the pending grid and the inside-expander grid. */
-                $_renderCard = static function (string $migAction, array $card, bool $hasCreds): void {
+                $_renderCard = static function (string $migAction, array $card, bool $hasCreds, bool $isManual = false): void {
+                    /* #1235 P4/C6 — a manual/destructive migration's run link carries confirm=1
+                       (the script REFUSES a web run without it) + a JS confirm() dialog, mirroring
+                       the drop-legacy pattern; the button is danger-styled and the card flagged. */
+                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
+                    $btnClass = $isManual ? 'btn-danger' : 'btn-info';
+                    $onclick = $isManual
+                        ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds if the pre-drop verification gate is green and &lt;24h old. Continue?\');"'
+                        : '';
                     ?>
                     <div class="col-md-6">
-                        <div class="card bg-dark border-secondary h-100">
+                        <div class="card bg-dark <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
                             <div class="card-body">
                                 <h5 class="card-title"><?= $card['title'] ?></h5>
+                                <?php if ($isManual): ?>
+                                    <span class="badge bg-danger mb-2">Manual &amp; destructive — NOT run by &ldquo;Apply all&rdquo;</span>
+                                <?php endif; ?>
                                 <p class="card-text text-secondary small"><?= $card['body'] ?></p>
-                                <a href="?action=<?= htmlspecialchars($migAction) ?>"
-                                   class="btn btn-info btn-action <?= $hasCreds ? '' : 'disabled' ?>">
+                                <a href="<?= $href ?>"<?= $onclick ?>
+                                   class="btn <?= $btnClass ?> btn-action <?= $hasCreds ? '' : 'disabled' ?>">
                                     <?= htmlspecialchars($card['button']) ?>
                                 </a>
                                 <?php if (!empty($card['extra_html'])): ?>
@@ -1555,7 +1594,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 <?php
                     $_card = $migrationCards[$_migAction] ?? null;
                     if (!$_card) continue;     /* slug in $migrationOrder but no card body */
-                    $_renderCard($_migAction, $_card, $hasCredentials);
+                    $_renderCard($_migAction, $_card, $hasCredentials, !empty($migrationManual[$_migAction]));
                 ?>
             <?php endforeach; ?>
 
@@ -1586,7 +1625,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <div class="card-body">
                             <div class="row g-3">
                                 <?php foreach ($_appliedRenderable as $_appliedAction): ?>
-                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials); ?>
+                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials, !empty($migrationManual[$_appliedAction])); ?>
                                 <?php endforeach; ?>
                             </div>
                         </div>

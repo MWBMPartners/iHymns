@@ -239,9 +239,24 @@ final class SongOfTheDay
         ];
     }
 
-    /** First non-empty lyric line of the song's first component. */
+    /**
+     * First non-empty lyric line of the song (its preview line).
+     *
+     * #1235 P4 (read switch) — the normalised tblLyricLines mirror is the authoritative
+     * line source, so the preview line comes from the shared assembler
+     * (lyricLinesFirstLine), never from tblSongComponents.LinesJson. The LinesJson read
+     * survives ONLY as the un-migrated-install fallback below (no mirror table yet), so
+     * the home card never breaks on a fresh install (the #1228/#1229 lesson).
+     */
     private function firstLine(string $songId): string
     {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        if (lyricLinesMirrorPresent($this->db)) {
+            return (string)(lyricLinesFirstLine($this->db, $songId) ?? '');
+        }
+
+        /* lines-json-fallback (#1235 P4): un-migrated install with no tblLyricLines
+           mirror — read the first component's LinesJson directly. */
         $stmt = $this->db->prepare(
             "SELECT LinesJson FROM tblSongComponents
               WHERE SongId = ? AND LinesJson IS NOT NULL

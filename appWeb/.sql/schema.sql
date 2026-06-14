@@ -515,9 +515,15 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
 
 
 -- ----------------------------------------------------------------------------
--- tblSongComponents
--- Each component stores its lyrics lines as a JSON array.
--- `SortOrder` preserves the display sequence from the original data.
+-- tblSongComponents (THIN metadata, #1235 P4/C6)
+-- A component is now thin metadata only: Type / Number / SortOrder / Language.
+-- Its lyric lines live in the AUTHORITATIVE tblLyricLines (grouped by ComponentId);
+-- `SortOrder` preserves the display sequence. The JSON payload columns LinesJson /
+-- ChordsJson / NotesJson / LanguagesJson were RETIRED (migrate-retire-component-lines-json.php)
+-- once tblLyricLines became the single source of truth (read switch C4, write inversion C5).
+-- This is the post-cutover canonical shape a fresh install lands directly; long-running
+-- installs converge by running that drop migration. Rebuild the columns from lines via
+-- regenerate-lines-json-from-lines.php if ever needed.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongComponents (
     Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -525,11 +531,7 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
     Type        VARCHAR(20)     NOT NULL COMMENT 'verse, chorus, refrain, bridge, etc.',
     Number      INT UNSIGNED    NOT NULL COMMENT 'Component number (e.g., verse 1, verse 2)',
     SortOrder   INT UNSIGNED    NOT NULL COMMENT 'Display order within the song',
-    LinesJson   JSON            NOT NULL COMMENT 'Array of lyric lines',
     Language    VARCHAR(35)     NULL DEFAULT NULL COMMENT 'Optional per-component language override; NULL = inherit from parent tblSongs.Language. Used for multi-language medleys (#858)',
-    ChordsJson  JSON            NULL DEFAULT NULL COMMENT 'Per-line chord annotations parallel to LinesJson; null-padded array e.g. [null,["C","Am"],null]. Lossless chord interchange so importers stop regex-stripping chord rows (#1066 Theme E)',
-    NotesJson   JSON            NULL DEFAULT NULL COMMENT 'Per-line presenter/slide notes parallel to LinesJson; null-padded array of strings e.g. [null,"Repeat 2x",null]. ProPresenter speaker notes round-trip (#1066 Theme E)',
-    LanguagesJson JSON          NULL DEFAULT NULL COMMENT 'Per-line language overrides parallel to LinesJson; null-padded IETF BCP 47 tags. A null/absent entry inherits the component Language. Durable home for per-line language so it survives lyric-line reprojection (#1235 P3 / #1253)',
 
     INDEX idx_SongId        (SongId),
     INDEX idx_SongOrder     (SongId, SortOrder),
@@ -546,8 +548,9 @@ CREATE TABLE IF NOT EXISTS tblSongComponents (
 -- "approved" version, explicit vs clean, a timed Apple-Music import …); each is
 -- a list of tblLyricLines (optional line timing + per-line language), each of
 -- which MAY carry tblLyricWords for word/syllable timing (TTML / LRC-A).
--- ADDITIVE: tblSongComponents.LinesJson stays authoritative; these are
--- backfilled from it and no read path uses them yet.
+-- #1235 P4: tblLyricLines is now the AUTHORITATIVE store (read switch C4, write
+-- inversion C5); the legacy tblSongComponents JSON payload columns it was once
+-- backfilled from were retired in C6 (see tblSongComponents above).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLyrics (
     Id            INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,

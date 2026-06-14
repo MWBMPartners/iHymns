@@ -58,6 +58,11 @@ function _migFidelity_tableExists(\mysqli $db, string $table): bool {
     return (bool)($r && $r->num_rows > 0);
 }
 
+function _migFidelity_columnExists(\mysqli $db, string $table, string $col): bool {
+    $r = $db->query("SHOW COLUMNS FROM {$table} LIKE '{$col}'");
+    return (bool)($r && $r->num_rows > 0);
+}
+
 $credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 if (!file_exists($credFile)) {
     _migFidelity_output("ERROR: MySQL credentials not found. Run install.php first.");
@@ -82,10 +87,18 @@ _migFidelity_output("Connected to MySQL: " . DB_NAME);
 try {
     _migFidelity_output("");
     _migFidelity_output("--- tblSongComponents: ChordsJson + NotesJson ---");
-    _migFidelity_addCol($mysql, 'tblSongComponents', 'ChordsJson',
-        "ChordsJson JSON NULL DEFAULT NULL COMMENT 'Per-line chord annotations parallel to LinesJson; null-padded array e.g. [null,[\"C\",\"Am\"],null]. Lossless chord interchange so importers stop regex-stripping chord rows (#1066 Theme E)' AFTER Language");
-    _migFidelity_addCol($mysql, 'tblSongComponents', 'NotesJson',
-        "NotesJson JSON NULL DEFAULT NULL COMMENT 'Per-line presenter/slide notes parallel to LinesJson; null-padded array of strings e.g. [null,\"Repeat 2x\",null]. ProPresenter speaker notes round-trip (#1066 Theme E)' AFTER ChordsJson");
+    /* #1235 P4/C6 retired-era guard: once C6 drops the payload columns, tblSongComponents.
+       LinesJson is gone (the canonical "JSON era over" signal). Do NOT re-add ChordsJson/
+       NotesJson — that would RESURRECT retired columns; tblLyricLines is authoritative.
+       tblSongArrangements (below) is unrelated and still created. */
+    if (!_migFidelity_columnExists($mysql, 'tblSongComponents', 'LinesJson')) {
+        _migFidelity_output("  [SKIP] retired era (tblSongComponents.LinesJson gone) — not re-adding ChordsJson/NotesJson (#1235 P4/C6).");
+    } else {
+        _migFidelity_addCol($mysql, 'tblSongComponents', 'ChordsJson',
+            "ChordsJson JSON NULL DEFAULT NULL COMMENT 'Per-line chord annotations parallel to LinesJson; null-padded array e.g. [null,[\"C\",\"Am\"],null]. Lossless chord interchange so importers stop regex-stripping chord rows (#1066 Theme E)' AFTER Language");
+        _migFidelity_addCol($mysql, 'tblSongComponents', 'NotesJson',
+            "NotesJson JSON NULL DEFAULT NULL COMMENT 'Per-line presenter/slide notes parallel to LinesJson; null-padded array of strings e.g. [null,\"Repeat 2x\",null]. ProPresenter speaker notes round-trip (#1066 Theme E)' AFTER ChordsJson");
+    }
 
     _migFidelity_output("");
     _migFidelity_output("--- tblSongArrangements ---");

@@ -3485,6 +3485,30 @@ class SongData
      */
     private function _getComponents(string $songId): array
     {
+        /* #1235 P4b (read switch) — the normalised tblLyricLines mirror is now
+           AUTHORITATIVE for reads: assemble components from it via the shared
+           line-first reader (no LinesJson read). Component metadata
+           (type/number/language) still comes from the THIN tblSongComponents inside
+           the assembler (C-variant); chords are recomposed from the per-line mirror.
+           Output is byte-identical to the P2a path — proven corpus-wide by the G2
+           cutover gate (tools/verify-lyrics-cutover.php). The LinesJson path survives
+           ONLY as the un-migrated-install fallback (no mirror table yet). */
+        if ($this->_hasLyricLinesMirror()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+            return lyricLinesAssembleComponents($this->db, $songId);
+        }
+        return $this->_getComponentsFromJson($songId);
+    }
+
+    /**
+     * Legacy fallback for an un-migrated install with no tblLyricLines mirror: build
+     * components straight from tblSongComponents.LinesJson (no per-line Ids — there is
+     * no stable line identity without the mirror). Once the P1 mirror exists this is
+     * never reached; the column-existence guard means the same deployed code keeps
+     * working before and after the P4d JSON-column drop.
+     */
+    private function _getComponentsFromJson(string $songId): array
+    {
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
@@ -3502,49 +3526,15 @@ class SongData
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
 
-        /* #1235 P2a — source the line TEXT from the normalised tblLyricLines
-           mirror; fall back to the component's authoritative LinesJson when the
-           mirror is absent OR its line count does not match LinesJson (a cheap
-           guard against a partially-synced / stale mirror silently showing
-           short or wrong lyrics). Component metadata (type/number/chords/language)
-           stays on tblSongComponents during P2. Output is BYTE-IDENTICAL to the
-           LinesJson path — no extra keys; the per-line Ids are exposed in P3 (with
-           the data/songs.schema.json update) once a consumer needs them. */
-        $mirror = $this->_mirrorLinesByComponent($songId);
-
         $components = [];
         foreach ($rows as $row) {
-            $cid        = (int)$row['component_id'];
-            $linesJson  = json_decode($row['lines_json'], true) ?? [];
-            $fromMirror = (!empty($mirror[$cid]) && count($mirror[$cid]) === count($linesJson));
-            $lines      = $fromMirror
-                ? array_map(static fn($l) => $l['text'], $mirror[$cid])
-                : $linesJson;
-            $component = [
+            $components[] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
-                'lines'    => $lines,
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
-            /* #1235 P3 — expose the stable per-line Ids parallel to 'lines' (same
-               length + order) so clients can address per-line enrichment
-               (translations/annotations #1088, timing #141). Emitted ONLY when the
-               text came from the tblLyricLines mirror; the LinesJson fallback has
-               no stable Ids, so the key is simply absent then (optional in
-               data/songs.schema.json — additive, byte-identical when absent). */
-            if ($fromMirror) {
-                $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$cid]);
-                /* #1235 P3 — effective per-line language, emitted ONLY when a line
-                   differs from the component default (a real per-line override);
-                   otherwise the component-level 'language' already says it all. */
-                $compLanguage = $component['language'];
-                $lineLangs    = array_map(static fn($l) => $l['lang'] ?? null, $mirror[$cid]);
-                foreach ($lineLangs as $ll) {
-                    if ($ll !== $compLanguage) { $component['lineLanguages'] = $lineLangs; break; }
-                }
-            }
-            $components[] = $component;
         }
         return $components;
     }
@@ -3617,6 +3607,21 @@ class SongData
     private function _getComponentsMap(array $songIds): array
     {
         if (empty($songIds)) return [];
+        /* #1235 P4b (read switch) — assemble from the authoritative tblLyricLines
+           mirror (batched + chunked) when present; LinesJson only for an un-migrated
+           install. Kept in lockstep with _getComponents() so getSongs() and
+           getSongById() agree. */
+        if ($this->_hasLyricLinesMirror()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+            return lyricLinesAssembleComponentsMap($this->db, $songIds);
+        }
+        return $this->_getComponentsMapFromJson($songIds);
+    }
+
+    /** Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson(). */
+    private function _getComponentsMapFromJson(array $songIds): array
+    {
+        if (empty($songIds)) return [];
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
         $langSelect = $this->_hasComponentLanguageColumn()
@@ -3636,39 +3641,16 @@ class SongData
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
 
-        /* #1235 P2a — same mirror-sourced lines + count-checked LinesJson fallback
-           as _getComponents(), batched for getSongs(). Byte-identical output. */
-        $mirror = $this->_mirrorLinesByComponentMap($songIds);
-
         $map = [];
         foreach ($rows as $row) {
-            $sid        = $row['SongId'];
-            $cid        = (int)$row['component_id'];
-            $linesJson  = json_decode($row['lines_json'], true) ?? [];
-            $fromMirror = (!empty($mirror[$sid][$cid]) && count($mirror[$sid][$cid]) === count($linesJson));
-            $lines      = $fromMirror
-                ? array_map(static fn($l) => $l['text'], $mirror[$sid][$cid])
-                : $linesJson;
-            $component = [
+            $sid = $row['SongId'];
+            $map[$sid][] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
-                'lines'    => $lines,
+                'lines'    => json_decode($row['lines_json'], true) ?? [],
                 'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
-            /* #1235 P3 — stable per-line Ids parallel to 'lines' (see
-               _getComponents()); mirror-sourced only, kept in lockstep with the
-               single-song builder so getSongs() and getSongById() agree. */
-            if ($fromMirror) {
-                $component['lineIds'] = array_map(static fn($l) => (int)$l['id'], $mirror[$sid][$cid]);
-                /* #1235 P3 — see _getComponents(): sparse effective per-line language. */
-                $compLanguage = $component['language'];
-                $lineLangs    = array_map(static fn($l) => $l['lang'] ?? null, $mirror[$sid][$cid]);
-                foreach ($lineLangs as $ll) {
-                    if ($ll !== $compLanguage) { $component['lineLanguages'] = $lineLangs; break; }
-                }
-            }
-            $map[$sid][] = $component;
         }
         return $map;
     }
@@ -3685,92 +3667,18 @@ class SongData
             return $this->_lyricLinesMirror;
         }
         $this->_lyricLinesMirrorChecked = true;
-        try {
-            $stmt = $this->db->prepare(
-                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                  WHERE TABLE_SCHEMA = DATABASE()
-                    AND TABLE_NAME   = 'tblLyricLines' LIMIT 1"
-            );
-            $stmt->execute();
-            $this->_lyricLinesMirror = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-        } catch (\Throwable $_e) {
-            $this->_lyricLinesMirror = false;
-        }
+        /* Delegate the actual probe to the shared assembler helper so the
+           INFORMATION_SCHEMA query lives in ONE place (modularity rule); the
+           instance flag above keeps it a thin per-request cache. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $this->_lyricLinesMirror = lyricLinesMirrorPresent($this->db);
         return $this->_lyricLinesMirror;
     }
 
-    /**
-     * #1235 P2a — a song's mirrored lyric lines (the primary 'ihymns' version)
-     * from tblLyricLines, grouped by ComponentId, each component in SortOrder.
-     * Returns [ componentId => [ ['id'=>int,'text'=>string], … ] ], or [] when the
-     * mirror is absent or the song has no mirrored lines (callers then fall back
-     * to LinesJson per component). One query.
-     *
-     * @return array<int,array<int,array{id:int,text:string}>>
-     */
-    private function _mirrorLinesByComponent(string $songId): array
-    {
-        if (!$this->_hasLyricLinesMirror()) {
-            return [];
-        }
-        $stmt = $this->db->prepare(
-            "SELECT ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text, ll.LanguageCode AS line_lang
-               FROM tblLyricLines ll
-               JOIN tblLyrics ly ON ly.Id = ll.LyricsId
-              WHERE ly.SongId = ? AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
-              ORDER BY ll.SortOrder"
-        );
-        $stmt->bind_param('s', $songId);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $out = [];
-        while ($row = $res->fetch_assoc()) {
-            $out[(int)$row['cid']][] = [
-                'id'   => (int)$row['line_id'],
-                'text' => (string)$row['line_text'],
-                'lang' => $row['line_lang'] !== null ? (string)$row['line_lang'] : null,
-            ];
-        }
-        $stmt->close();
-        return $out;
-    }
-
-    /**
-     * #1235 P2a — bulk variant of _mirrorLinesByComponent() for getSongs().
-     * Returns [ songId => [ componentId => [ ['id','text'], … ] ] ]. One query.
-     *
-     * @param string[] $songIds
-     * @return array<string,array<int,array<int,array{id:int,text:string}>>>
-     */
-    private function _mirrorLinesByComponentMap(array $songIds): array
-    {
-        if (empty($songIds) || !$this->_hasLyricLinesMirror()) {
-            return [];
-        }
-        $placeholders = implode(',', array_fill(0, count($songIds), '?'));
-        $types = str_repeat('s', count($songIds));
-        $stmt = $this->db->prepare(
-            "SELECT ly.SongId AS song_id, ll.ComponentId AS cid, ll.Id AS line_id, ll.LineText AS line_text, ll.LanguageCode AS line_lang
-               FROM tblLyricLines ll
-               JOIN tblLyrics ly ON ly.Id = ll.LyricsId
-              WHERE ly.SongId IN ($placeholders) AND ly.Source = 'ihymns' AND ll.ComponentId IS NOT NULL
-              ORDER BY ll.SortOrder"
-        );
-        $stmt->bind_param($types, ...$songIds);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $out = [];
-        while ($row = $res->fetch_assoc()) {
-            $out[(string)$row['song_id']][(int)$row['cid']][] = [
-                'id'   => (int)$row['line_id'],
-                'text' => (string)$row['line_text'],
-                'lang' => $row['line_lang'] !== null ? (string)$row['line_lang'] : null,
-            ];
-        }
-        $stmt->close();
-        return $out;
-    }
+    /* #1235 P4b — _mirrorLinesByComponent[Map]() were REMOVED here: the shared
+       assembler in includes/lyric_lines_read.php (lyricLinesAssembleComponents / …Map)
+       is now the ONE line reader, and the read switch above delegates to it. The
+       _hasLyricLinesMirror() probe above stays — it gates that delegation. */
 
     /* --------------------------------------------------------------
      * Arrangers / Adaptors / Translators (#497)

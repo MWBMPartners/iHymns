@@ -304,34 +304,38 @@ function ed2_allocateSongId(\mysqli $db, string $abbr): string {
     throw new \RuntimeException('Could not allocate a unique SongId.');
 }
 
-/** Recompute tblSongs.LyricsText (the FULLTEXT mirror) from the components,
- *  in display order. Called after any component mutation. */
+/** Recompute tblSongs.LyricsText (the FULLTEXT mirror) from the song's lines, in
+ *  display order. Called after any component mutation.
+ *
+ *  #1235 P4/C5 — sourced from the AUTHORITATIVE tblLyricLines (drop-safe), NOT
+ *  tblSongComponents.LinesJson. The v2 mutators now write the lines themselves via
+ *  the shared inverted write path (lyricLinesWriteComponents), so this is purely the
+ *  text-mirror rebuild — there is NO lyricLinesProjectSong() reproject here anymore
+ *  (it re-read LinesJson, which is not drop-safe). LinesJson survives only as the
+ *  un-migrated-install fallback. */
 function ed2_rebuildLyricsText(\mysqli $db, string $songId): void {
-    $s = $db->prepare('SELECT LinesJson FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
-    $s->bind_param('s', $songId);
-    $s->execute();
-    $res = $s->get_result();
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
     $lines = [];
-    while ($r = $res->fetch_assoc()) {
-        $arr = json_decode((string)$r['LinesJson'], true);
-        if (is_array($arr)) { foreach ($arr as $ln) { $lines[] = (string)$ln; } }
+    if (lyricLinesMirrorPresent($db)) {
+        foreach (lyricLinesFetchPrimary($db, $songId) as $r) { $lines[] = (string)$r['text']; }
+    } else {
+        /* lines-json-fallback (#1235 P4): un-migrated install (no mirror) — concat the
+           component LinesJson, which provably still exists pre-mirror. */
+        $s = $db->prepare('SELECT LinesJson FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
+        $s->bind_param('s', $songId);
+        $s->execute();
+        $res = $s->get_result();
+        while ($r = $res->fetch_assoc()) {
+            $arr = json_decode((string)$r['LinesJson'], true);
+            if (is_array($arr)) { foreach ($arr as $ln) { $lines[] = (string)$ln; } }
+        }
+        $s->close();
     }
-    $s->close();
     $text = implode("\n", $lines);
     $u = $db->prepare('UPDATE tblSongs SET LyricsText = ? WHERE SongId = ?');
     $u->bind_param('ss', $text, $songId);
     $u->execute();
     $u->close();
-
-    /* #1235 P1b — transitional dual-write. Every editor component change
-       (upsert / delete / reorder / components_replace / snapshot-restore) funnels
-       through here to rebuild the LyricsText mirror, so this is the ONE place to
-       also keep the normalised tblLyricLines mirror in sync. Guarded so it is a
-       no-op until the mirror columns exist (migrate-lyric-lines-mirror); naive
-       whole-song reproject (P2 swaps in the Id-preserving diff). */
-    if (lyricLinesSyncReady($db)) {
-        lyricLinesProjectSong($db, $songId);
-    }
 }
 
 /**
@@ -362,6 +366,86 @@ function ed2_writeComponentLanguages(\mysqli $db, int $compId, string $songId, ?
 }
 
 /**
+ * #1235 P4/C5 — a song's components in the editor shape
+ * ({id,type,number,sortOrder,lines,chords,language,languages}), drop-safely. The ONE
+ * read for the v2 mutators' read-modify-write + ed2_buildSongSnapshot. Sourced from the
+ * authoritative tblLyricLines (assembler) when the mirror exists; the legacy LinesJson
+ * read is the un-migrated-install fallback only.
+ *
+ * @return list<array<string,mixed>>
+ */
+function ed2_currentComponents(\mysqli $db, string $songId): array {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    if (lyricLinesMirrorPresent($db)) {
+        return lyricLinesEditableComponents($db, $songId);
+    }
+    /* lines-json-fallback (#1235 P4): un-migrated install — LanguagesJson optional
+       (hardcoded column name, never input — rule #5). */
+    $out = [];
+    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
+    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
+                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
+    $cs->bind_param('s', $songId);
+    $cs->execute();
+    $cr = $cs->get_result();
+    while ($row = $cr->fetch_assoc()) {
+        $out[] = [
+            'id'        => (int)$row['Id'],
+            'type'      => (string)$row['Type'],
+            'number'    => (int)$row['Number'],
+            'sortOrder' => (int)$row['SortOrder'],
+            'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
+            'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
+            'language'  => $row['Language'],
+            'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
+        ];
+    }
+    $cs->close();
+    return $out;
+}
+
+/**
+ * #1235 P4/C5 — persist a FULL component set (editor shape, in display order) for a song
+ * and rebuild the LyricsText mirror. The ONE write for every v2 component mutation. When
+ * the tblLyricLines mirror exists, delegates to the shared inverted write path
+ * (lyricLinesWriteComponents): lines become authoritative, the JSON columns are
+ * shadow-written from the same payload while they exist, and component rows are upserted
+ * Id-stably (drop-safe + revertable). The legacy DELETE+reinsert is the un-migrated-only
+ * fallback. SortOrder is the array position; pass components already in display order.
+ *
+ * @param list<array<string,mixed>> $components
+ */
+function ed2_persistComponents(\mysqli $db, string $songId, array $components): void {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
+    $components = array_values(array_filter($components, 'is_array'));
+    if (lyricLinesSyncReady($db)) {
+        lyricLinesWriteComponents($db, $songId, $components);
+    } else {
+        /* lines-json-fallback (#1235 P4): un-migrated install (no mirror) — legacy
+           DELETE + reinsert of the JSON columns, which provably still exist here. */
+        $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
+        $del->bind_param('s', $songId);
+        $del->execute();
+        $del->close();
+        $ins = $db->prepare('INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        foreach ($components as $i => $comp) {
+            $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
+            $number    = max(0, (int)($comp['number'] ?? 0));
+            $sortOrder = (int)$i;
+            $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
+            $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
+            $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
+            $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
+            $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
+            $ins->execute();
+            ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
+        }
+        $ins->close();
+    }
+    ed2_rebuildLyricsText($db, $songId);
+}
+
+/**
  * Build the full editable song record — { song, components, credits, tags, links }
  * — in the SAME shapes load_song returns (minus media, which is a separate file
  * lifecycle). The single source for BOTH the load_song hydration and the
@@ -376,29 +460,9 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     $s->close();
     if (!$song) { return null; }
 
-    $components = [];
-    /* #1235 P3 — LanguagesJson (per-line language) is optional pre-migration;
-       select it only when present (hardcoded column name, never input). */
-    $langCol = lyricLinesComponentsLangReady($db) ? 'LanguagesJson' : 'NULL AS LanguagesJson';
-    $cs = $db->prepare("SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language, {$langCol}
-                          FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC");
-    $cs->bind_param('s', $songId);
-    $cs->execute();
-    $cr = $cs->get_result();
-    while ($row = $cr->fetch_assoc()) {
-        $components[] = [
-            'id'        => (int)$row['Id'],
-            'type'      => (string)$row['Type'],
-            'number'    => (int)$row['Number'],
-            'sortOrder' => (int)$row['SortOrder'],
-            'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
-            'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
-            'language'  => $row['Language'],
-            /* Per-line language overrides parallel to lines (null = inherit). */
-            'languages' => $row['LanguagesJson'] !== null ? json_decode((string)$row['LanguagesJson'], true) : null,
-        ];
-    }
-    $cs->close();
+    /* #1235 P4/C5 — components in the editor/snapshot shape from the AUTHORITATIVE
+       tblLyricLines (drop-safe), so the revision NewData + v2 load are line-sourced. */
+    $components = ed2_currentComponents($db, $songId);
 
     $credits = [];
     foreach (ED2_CREDIT_TABLES as $role => $table) {
@@ -466,29 +530,15 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         $un->close();
     }
 
-    /* Components — replace the whole set (only if the snapshot carries them). */
+    /* Components — replace the whole set (only if the snapshot carries them). #1235
+       P4/C5 — restore through the shared write path (drop-safe; lines authoritative +
+       JSON shadow). Works for OLD revisions too — their NewData carries
+       components[].lines/chords/languages. Order by the snapshot's sortOrder so the
+       position-keyed write lands them in their saved display order. */
     if (isset($snap['components']) && is_array($snap['components'])) {
-        $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
-        $del->bind_param('s', $songId);
-        $del->execute();
-        $del->close();
-        $ins = $db->prepare('INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language) VALUES (?, ?, ?, ?, ?, ?, ?)');
-        foreach (array_values($snap['components']) as $i => $comp) {
-            if (!is_array($comp)) { continue; }
-            $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
-            $number    = max(0, (int)($comp['number'] ?? 0));
-            $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : (int)$i;
-            $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
-            $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-            $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
-            $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
-            $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
-            $ins->execute();
-            /* #1235 P3 — restore per-line language overrides for the new row. */
-            ed2_writeComponentLanguages($db, (int)$db->insert_id, $songId, ed2_buildLanguagesJson($comp['languages'] ?? null, count($lines)));
-        }
-        $ins->close();
-        ed2_rebuildLyricsText($db, $songId);
+        $snapComps = array_values(array_filter($snap['components'], 'is_array'));
+        usort($snapComps, static fn($a, $b) => ((int)($a['sortOrder'] ?? 0)) <=> ((int)($b['sortOrder'] ?? 0)));
+        ed2_persistComponents($db, $songId, $snapComps);
     }
 
     /* Credits — replace each role table from the snapshot. */
@@ -767,52 +817,49 @@ try {
         $number    = max(0, (int)($comp['number'] ?? 0));
         $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : $number;
         $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
-        $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-        $chordsJson = (isset($comp['chords']) && is_array($comp['chords'])) ? json_encode($comp['chords'], JSON_UNESCAPED_UNICODE) : null;
         $language  = isset($comp['language']) && trim((string)$comp['language']) !== '' ? trim((string)$comp['language']) : null;
 
         $db->begin_transaction();
         try {
-            if ($compId > 0) {
-                /* PF1 / R1 — on an UPDATE, only overwrite ChordsJson when the client
-                   actually SENT `chords`; a payload that omits it PRESERVES the stored
-                   array rather than NULLing it (stale-client / partial-save guard).
-                   An explicit (even empty) `chords` stays authoritative. */
-                if (isset($comp['chords'])) {
-                    $u = $db->prepare(
-                        'UPDATE tblSongComponents
-                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, ChordsJson = ?, Language = ?
-                          WHERE Id = ? AND SongId = ?'
-                    );
-                    $u->bind_param('siisssis', $type, $number, $sortOrder, $linesJson, $chordsJson, $language, $compId, $songId);
-                } else {
-                    $u = $db->prepare(
-                        'UPDATE tblSongComponents
-                            SET Type = ?, Number = ?, SortOrder = ?, LinesJson = ?, Language = ?
-                          WHERE Id = ? AND SongId = ?'
-                    );
-                    $u->bind_param('siissis', $type, $number, $sortOrder, $linesJson, $language, $compId, $songId);
+            /* #1235 P4/C5 — read-modify-write the WHOLE component set through the shared
+               drop-safe path (lines authoritative + JSON shadow), instead of a single-row
+               LinesJson upsert. The new/updated component lands at its sortOrder; PF1/R1 —
+               an UPDATE that OMITS `chords`/`languages` preserves the stored arrays. */
+            $comps = ed2_currentComponents($db, $songId);
+            $entry = [
+                'type'      => $type,
+                'number'    => $number,
+                'sortOrder' => $sortOrder,
+                'lines'     => $lines,
+                'chords'    => (isset($comp['chords'])    && is_array($comp['chords']))    ? array_values($comp['chords'])    : null,
+                'language'  => $language,
+                'languages' => (isset($comp['languages']) && is_array($comp['languages'])) ? array_values($comp['languages']) : null,
+                '_target'   => true,   // marker to resolve the resulting Id (stripped by the writer)
+            ];
+            $found = false;
+            foreach ($comps as $idx => $c) {
+                if ($compId > 0 && (int)($c['id'] ?? 0) === $compId) {
+                    if (!isset($comp['chords']))    { $entry['chords']    = $c['chords'] ?? null; }
+                    if (!isset($comp['languages'])) { $entry['languages'] = $c['languages'] ?? null; }
+                    $comps[$idx] = $entry;
+                    $found = true;
+                    break;
                 }
-                $u->execute();
-                $u->close();
-            } else {
-                $i = $db->prepare(
-                    'INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)'
-                );
-                $i->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
-                $i->execute();
-                $compId = (int)$db->insert_id;
-                $i->close();
             }
-            /* #1235 P3 — persist per-line language overrides BEFORE the reproject so
-               lyricLinesProjectSong() picks them up. PF1 / R1: only when the client
-               SENT `languages` — an omitted key preserves the stored LanguagesJson
-               (a fresh INSERT that omits it simply has none). */
-            if (isset($comp['languages'])) {
-                ed2_writeComponentLanguages($db, $compId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
-            }
-            ed2_rebuildLyricsText($db, $songId);
+            /* New component → APPEND at the end (never mid-list insert): the shared
+               writer upserts existing thin rows BY POSITION, so a mid-list insert would
+               shift every downstream component onto the wrong row (churning ComponentId +
+               misrouting the returned id — the C5 review finding). Keeping $comps in the
+               existing display order (target replaced in place, new appended) keeps the
+               position-match Id-stable. A new component lands last; reorder via
+               component_reorder. */
+            if (!$found) { $comps[] = $entry; }
+            ed2_persistComponents($db, $songId, $comps);
+            /* Resolve the resulting componentId from the target's position. */
+            $targetPos = 0;
+            foreach ($comps as $idx => $c) { if (!empty($c['_target'])) { $targetPos = $idx; break; } }
+            $after  = ed2_currentComponents($db, $songId);
+            $compId = isset($after[$targetPos]['id']) ? (int)$after[$targetPos]['id'] : $compId;
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();
         } catch (\Throwable $e) {
@@ -831,12 +878,14 @@ try {
         if ($songId === '' || $compId <= 0) { ed2_respond(['ok' => false, 'error' => 'songId + componentId are required.'], 400); }
         $db->begin_transaction();
         try {
-            $d = $db->prepare('DELETE FROM tblSongComponents WHERE Id = ? AND SongId = ?');
-            $d->bind_param('is', $compId, $songId);
-            $d->execute();
-            $deleted = $d->affected_rows;
-            $d->close();
-            ed2_rebuildLyricsText($db, $songId);
+            /* #1235 P4/C5 — read-modify-write the whole set (drop-safe): drop the target
+               component, persist the remainder through the shared write path (which also
+               cascade-removes its lines from tblLyricLines + the JSON shadow). */
+            $comps   = ed2_currentComponents($db, $songId);
+            $before  = count($comps);
+            $comps   = array_values(array_filter($comps, static fn($c) => (int)($c['id'] ?? 0) !== $compId));
+            $deleted = $before - count($comps);
+            ed2_persistComponents($db, $songId, $comps);
             ed2_touchRevision($db, $songId, $ed2UserId, 'component');
             $db->commit();
         } catch (\Throwable $e) {
@@ -855,15 +904,20 @@ try {
         if ($songId === '' || !$order) { ed2_respond(['ok' => false, 'error' => 'songId + order[] are required.'], 400); }
         $db->begin_transaction();
         try {
-            $u = $db->prepare('UPDATE tblSongComponents SET SortOrder = ? WHERE Id = ? AND SongId = ?');
-            foreach ($order as $pos => $cid) {
+            /* #1235 P4/C5 — read-modify-write the whole set in the requested order
+               (drop-safe). Components named in order[] come first (in that order); any
+               not named are appended in their current order. The shared write path then
+               reassigns contiguous SortOrder + re-stamps each line's component. */
+            $comps = ed2_currentComponents($db, $songId);
+            $byId  = [];
+            foreach ($comps as $c) { $byId[(int)($c['id'] ?? 0)] = $c; }
+            $reordered = [];
+            foreach ($order as $cid) {
                 $cid = (int)$cid;
-                if ($cid <= 0) { continue; }
-                $u->bind_param('iis', $pos, $cid, $songId);
-                $u->execute();
+                if ($cid > 0 && isset($byId[$cid])) { $reordered[] = $byId[$cid]; unset($byId[$cid]); }
             }
-            $u->close();
-            ed2_rebuildLyricsText($db, $songId);
+            foreach ($byId as $c) { $reordered[] = $c; }   // any not listed → appended (stable)
+            ed2_persistComponents($db, $songId, $reordered);
             ed2_touchRevision($db, $songId, $ed2UserId, 'reorder');
             $db->commit();
         } catch (\Throwable $e) {
@@ -1469,87 +1523,54 @@ try {
 
         $db->begin_transaction();
         try {
-            /* PF1 / R1 — snapshot existing per-component ChordsJson / LanguagesJson
-               before a 'replace' wipes them, so a Paste & Reflow / import that omits
-               enrichment (it rebuilds STRUCTURE, not chords/language) doesn't silently
-               drop it. Carried forward only onto a position-matched part
-               (Type | Number | line-count, FIFO). 'append' keeps existing rows, so it
-               needs no snapshot. */
-            $pf1HasLangs = lyricLinesComponentsLangReady($db);
-            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>ChordsJson|null,'l'=>LanguagesJson|null]
-            $base = 0;
+            /* #1235 P4/C5 — bulk replace/append through the shared drop-safe write path
+               (lines authoritative + JSON shadow). PF1 / R1: on 'replace', a pasted
+               component that OMITS chords/languages reclaims the position-matched
+               original's (Type | Number | line-count, FIFO) — so Paste & Reflow / import
+               (which rebuilds STRUCTURE, not enrichment) never silently drops it. Client-
+               sent values always win. */
+            $existing = ed2_currentComponents($db, $songId);
+            $carry = [];   // "type\x1fnumber\x1flineCount" => FIFO of ['c'=>chords array|null,'l'=>languages array|null]
             if ($mode === 'replace') {
-                $snapCols = 'Type, Number, LinesJson, ChordsJson' . ($pf1HasLangs ? ', LanguagesJson' : '');
-                $snap = $db->prepare("SELECT {$snapCols} FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder, Id");
-                $snap->bind_param('s', $songId);
-                $snap->execute();
-                $snapRes = $snap->get_result();
-                while ($snapRow = $snapRes->fetch_assoc()) {
-                    $dec = json_decode((string)$snapRow['LinesJson'], true);
-                    $sk  = (string)$snapRow['Type'] . "\x1f" . (string)(int)$snapRow['Number'] . "\x1f" . (is_array($dec) ? count($dec) : 0);
-                    $carry[$sk][] = ['c' => $snapRow['ChordsJson'], 'l' => $pf1HasLangs ? $snapRow['LanguagesJson'] : null];
+                foreach ($existing as $pc) {
+                    $ck = (string)$pc['type'] . "\x1f" . (string)(int)$pc['number'] . "\x1f" . count($pc['lines']);
+                    $carry[$ck][] = ['c' => $pc['chords'], 'l' => $pc['languages']];
                 }
-                $snap->close();
-
-                $del = $db->prepare('DELETE FROM tblSongComponents WHERE SongId = ?');
-                $del->bind_param('s', $songId);
-                $del->execute();
-                $del->close();
-            } else {
-                $mx = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) AS m FROM tblSongComponents WHERE SongId = ?');
-                $mx->bind_param('s', $songId);
-                $mx->execute();
-                $base = (int)($mx->get_result()->fetch_assoc()['m'] ?? -1) + 1;
-                $mx->close();
             }
 
-            $ins = $db->prepare(
-                'INSERT INTO tblSongComponents (SongId, Type, Number, SortOrder, LinesJson, ChordsJson, Language)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
-            );
-            $count = 0;
-            foreach ($rows as $i => $comp) {
+            /* Normalise the incoming components (editor shape), applying carry-forward. */
+            $incoming = [];
+            foreach ($rows as $comp) {
                 if (!is_array($comp)) { continue; }
-                $type      = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
-                $number    = max(0, (int)($comp['number'] ?? 0));
-                $sortOrder = isset($comp['sortOrder']) ? (int)$comp['sortOrder'] : ($base + (int)$i);
-                $lines     = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
-                $linesJson = json_encode($lines, JSON_UNESCAPED_UNICODE);
-                $language  = (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null;
-
-                /* PF1 / R1 carry-forward — reclaim the position-matched original's
-                   chords + per-line languages when this paste omits them (one FIFO
-                   entry per matched part keeps chords + languages from the SAME
-                   original aligned). Client-sent values always win. */
+                $type   = mb_substr(trim((string)($comp['type'] ?? 'verse')), 0, 20) ?: 'verse';
+                $number = max(0, (int)($comp['number'] ?? 0));
+                $lines  = is_array($comp['lines'] ?? null) ? array_values(array_map('strval', $comp['lines'])) : [];
                 $carried = null;
                 if ($mode === 'replace') {
                     $ck = $type . "\x1f" . (string)$number . "\x1f" . count($lines);
                     if (!empty($carry[$ck])) { $carried = array_shift($carry[$ck]); }
                 }
-                if (isset($comp['chords']) && is_array($comp['chords'])) {
-                    $chordsJson = json_encode($comp['chords'], JSON_UNESCAPED_UNICODE);
-                } else {
-                    $chordsJson = ($carried !== null) ? $carried['c'] : null;
-                }
-                $ins->bind_param('ssiisss', $songId, $type, $number, $sortOrder, $linesJson, $chordsJson, $language);
-                $ins->execute();
-                $newCompId = (int)$db->insert_id;
-                $count++;
-
-                /* Per-line languages: components_replace historically never persisted
-                   them; now the client value is honoured and, when omitted, the carried
-                   original is preserved (no-op when the column is un-migrated). */
-                if ($pf1HasLangs) {
-                    if (isset($comp['languages'])) {
-                        ed2_writeComponentLanguages($db, $newCompId, $songId, ed2_buildLanguagesJson($comp['languages'], count($lines)));
-                    } elseif ($carried !== null && $carried['l'] !== null) {
-                        ed2_writeComponentLanguages($db, $newCompId, $songId, $carried['l']);
-                    }
-                }
+                $chords = (isset($comp['chords']) && is_array($comp['chords']))
+                    ? array_values($comp['chords'])
+                    : ($carried !== null ? $carried['c'] : null);
+                $langs  = (isset($comp['languages']) && is_array($comp['languages']))
+                    ? array_values($comp['languages'])
+                    : ($carried !== null ? $carried['l'] : null);
+                $incoming[] = [
+                    'type'      => $type,
+                    'number'    => $number,
+                    'language'  => (isset($comp['language']) && trim((string)$comp['language']) !== '') ? trim((string)$comp['language']) : null,
+                    'lines'     => $lines,
+                    'chords'    => is_array($chords) ? $chords : null,
+                    'languages' => is_array($langs) ? $langs : null,
+                ];
             }
-            $ins->close();
+            $count = count($incoming);
 
-            ed2_rebuildLyricsText($db, $songId);
+            /* replace = the incoming set; append = existing rows then incoming. The
+               shared writer upserts the existing rows Id-stably + inserts the rest. */
+            $finalComps = ($mode === 'append') ? array_merge($existing, $incoming) : $incoming;
+            ed2_persistComponents($db, $songId, $finalComps);
             ed2_touchRevision($db, $songId, $ed2UserId, 'components_replace');
             $db->commit();
         } catch (\Throwable $e) {
@@ -1558,25 +1579,8 @@ try {
         }
         logActivity('song.components.replace', 'song', $songId, ['mode' => $mode, 'count' => $count]);
 
-        /* Re-read the persisted set (real ids) — same shape load_song emits. */
-        $out = [];
-        $cs = $db->prepare('SELECT Id, Type, Number, SortOrder, LinesJson, ChordsJson, Language
-                              FROM tblSongComponents WHERE SongId = ? ORDER BY SortOrder ASC, Id ASC');
-        $cs->bind_param('s', $songId);
-        $cs->execute();
-        $cr = $cs->get_result();
-        while ($row = $cr->fetch_assoc()) {
-            $out[] = [
-                'id'        => (int)$row['Id'],
-                'type'      => (string)$row['Type'],
-                'number'    => (int)$row['Number'],
-                'sortOrder' => (int)$row['SortOrder'],
-                'lines'     => is_array($d = json_decode((string)$row['LinesJson'], true)) ? $d : [],
-                'chords'    => $row['ChordsJson'] !== null ? json_decode((string)$row['ChordsJson'], true) : null,
-                'language'  => $row['Language'],
-            ];
-        }
-        $cs->close();
+        /* Re-read the persisted set (real ids) — same editor shape load_song emits. */
+        $out = ed2_currentComponents($db, $songId);
         ed2_respond(['ok' => true, 'count' => $count, 'components' => $out]);
         break;
     }

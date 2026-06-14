@@ -172,6 +172,19 @@ try {
 _migNormLyrics_output("");
 _migNormLyrics_output("--- Step 3: backfill lines from tblSongComponents (LinesJson) ---");
 try {
+    /* #1235 P4/C6 retired-era guard: post-drop, tblSongComponents.LinesJson is gone and
+       tblLyricLines is authoritative — there is nothing to backfill FROM, and the SELECT
+       below would throw under MYSQLI_REPORT_STRICT. Skip Step 3 (Steps 1-2 already created
+       the tables; any post-cutover song gets its lines via lyricLinesWriteComponents). */
+    $linesCol = $mysql->query("SHOW COLUMNS FROM tblSongComponents LIKE 'LinesJson'");
+    $linesPresent = ($linesCol && $linesCol->num_rows > 0);
+    if ($linesCol) { $linesCol->close(); }
+    if (!$linesPresent) {
+        _migNormLyrics_output("  [SKIP] retired era (tblSongComponents.LinesJson gone) — tblLyricLines is authoritative; nothing to backfill (#1235 P4/C6).");
+        _migNormLyrics_output("Migration complete (Step 3 skipped — retired era).");
+        return;
+    }
+
     /* Only ihymns-primary lyrics that have NO lines yet (idempotent). */
     $todo = $mysql->query(
         "SELECT ly.Id AS LyricsId, ly.SongId
