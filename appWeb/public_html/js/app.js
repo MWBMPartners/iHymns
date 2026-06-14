@@ -516,6 +516,12 @@ class iHymnsApp {
                     /* Toggle presentation mode (#125) */
                     this.display.togglePresentationMode();
                     break;
+                case 'b':
+                case 'B':
+                    /* Blank/black the screen while presenting (#1273). No-ops
+                       elsewhere — toggleBlankScreen checks for the overlay. */
+                    this.display.toggleBlankScreen();
+                    break;
                 case 'l':
                 case 'L':
                     /* Navigate to set list page (#125) */
