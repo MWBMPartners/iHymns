@@ -27,6 +27,9 @@ export class Display {
         /** @type {boolean} Whether auto-scroll is active */
         this.autoScrollActive = false;
 
+        /** @type {number|null} setInterval id for the pre-service countdown (#1273) */
+        this.countdownTimer = null;
+
         /** Default display preferences */
         this.defaults = {
             fontSize: 1.0,          /* Multiplier: 0.5 – 5.0 */
@@ -517,13 +520,34 @@ export class Display {
                     ${songNum ? `<span class="presentation-number">${escapeHtml(songNum)}</span>` : ''}
                     <span>${escapeHtml(title)}</span>
                 </div>
-                <button type="button" class="btn btn-light btn-sm" id="presentation-close-btn"
-                        aria-label="Exit presentation mode">
-                    <i class="fa-solid fa-compress me-1" aria-hidden="true"></i> Exit
-                </button>
+                <div class="presentation-controls">
+                    <label class="visually-hidden" for="presentation-countdown-select">Pre-service countdown</label>
+                    <select class="form-select form-select-sm presentation-countdown-select"
+                            id="presentation-countdown-select" aria-label="Pre-service countdown">
+                        <option value="0">Countdown…</option>
+                        <option value="5">5 min</option>
+                        <option value="10">10 min</option>
+                        <option value="15">15 min</option>
+                        <option value="20">20 min</option>
+                    </select>
+                    <button type="button" class="btn btn-dark btn-sm" id="presentation-blank-btn"
+                            aria-pressed="false" aria-label="Blank the screen (press B)" title="Blank screen (B)">
+                        <i class="fa-solid fa-circle-half-stroke me-1" aria-hidden="true"></i> Blank
+                    </button>
+                    <button type="button" class="btn btn-light btn-sm" id="presentation-close-btn"
+                            aria-label="Exit presentation mode">
+                        <i class="fa-solid fa-compress me-1" aria-hidden="true"></i> Exit
+                    </button>
+                </div>
             </div>
             <div class="presentation-lyrics">
                 ${lyricsEl.innerHTML}
+            </div>
+            <div class="presentation-countdown" id="presentation-countdown" hidden
+                 title="Click to dismiss the countdown">
+                <div class="presentation-countdown-label">Service begins in</div>
+                <div class="presentation-countdown-time" id="presentation-countdown-time"
+                     role="timer" aria-live="off">0:00</div>
             </div>`;
 
         document.body.appendChild(overlay);
@@ -547,6 +571,29 @@ export class Display {
             this.exitPresentationMode();
         });
 
+        /* Blank/black screen toggle (#1273) — operator control; the "B" key
+           (wired in app.js) does the same hands-on-keyboard blackout. */
+        overlay.querySelector('#presentation-blank-btn')?.addEventListener('click', () => {
+            this.toggleBlankScreen();
+        });
+
+        /* Pre-service countdown (#1273) — picking a preset starts/replaces the
+           timer; the "Countdown…" option (value 0) clears it. */
+        overlay.querySelector('#presentation-countdown-select')?.addEventListener('change', (e) => {
+            const mins = parseInt(e.target.value, 10) || 0;
+            if (mins > 0) {
+                this.startCountdown(mins);
+            } else {
+                this.stopCountdown();
+            }
+        });
+
+        /* Tapping the countdown (e.g. on the projector/touch device) dismisses
+           it — Escape exits and "B" blanks regardless, via the key handlers. */
+        overlay.querySelector('#presentation-countdown')?.addEventListener('click', () => {
+            this.stopCountdown();
+        });
+
         /* Escape key to close */
         const escHandler = (e) => {
             if (e.key === 'Escape') {
@@ -566,12 +613,123 @@ export class Display {
 
     /** Exit presentation mode */
     exitPresentationMode() {
+        /* Clear any running pre-service countdown so its interval doesn't
+           keep firing after the overlay is gone (#1273). */
+        this.stopCountdown();
+
         document.body.classList.remove('presentation-active');
         document.getElementById('presentation-overlay')?.remove();
 
         if (document.fullscreenElement) {
             document.exitFullscreen().catch(() => {});
         }
+    }
+
+    /* =====================================================================
+     * PRESENTATION UTILITY SLIDES (#1273)
+     * Blank/black screen + a pre-service countdown — the live-operation
+     * controls worship presenters expect (ProPresenter / WorshipTools ship
+     * these). Pure client-side over the existing presentation overlay; no
+     * song data, no schema, no network.
+     * ===================================================================== */
+
+    /**
+     * Toggle the blank/black screen in presentation mode.
+     *
+     * ELI5: hides the words behind a black screen so the congregation sees
+     * nothing between songs, then brings them back.
+     *
+     * Detailed: flips the `presentation-blank` class on the overlay (CSS
+     * blacks it out and hides the header/lyrics/countdown) and mirrors the
+     * state into the Blank button's `aria-pressed`. No-ops when not in
+     * presentation mode, so the bound "B" key is harmless on other pages.
+     * MDN: https://developer.mozilla.org/en-US/docs/Web/API/Element/classList
+     */
+    toggleBlankScreen() {
+        const overlay = document.getElementById('presentation-overlay');
+        if (!overlay) return;
+
+        const blanked = overlay.classList.toggle('presentation-blank');
+
+        const btn = document.getElementById('presentation-blank-btn');
+        if (btn) btn.setAttribute('aria-pressed', blanked ? 'true' : 'false');
+    }
+
+    /**
+     * Start (or restart) a pre-service countdown overlay.
+     *
+     * ELI5: shows a big "Service begins in 5:00" timer that counts down to
+     * zero so people know when to be seated.
+     *
+     * Detailed: anchors on an absolute end timestamp (`Date.now() + minutes`)
+     * and recomputes the remaining seconds on every tick, so the display
+     * can't drift even when a tick is delayed or the tab is throttled. Ticks
+     * every 250ms for a crisp final second; on reaching zero it stops
+     * ticking but leaves "0:00" on screen. Replaces any prior run.
+     *
+     * @param {number} minutes Whole minutes to count down from (clamped 1–180).
+     */
+    startCountdown(minutes) {
+        const layer = document.getElementById('presentation-countdown');
+        const timeEl = document.getElementById('presentation-countdown-time');
+        if (!layer || !timeEl) return;
+
+        /* Clear any previous run first so presets replace cleanly. */
+        this.stopCountdown();
+
+        /* Clamp to a sane range so a stray value can't run away. */
+        const mins = Math.min(180, Math.max(1, Math.floor(minutes) || 0));
+        const endAt = Date.now() + mins * 60 * 1000;
+
+        const render = () => {
+            const remaining = Math.max(0, Math.round((endAt - Date.now()) / 1000));
+            timeEl.textContent = this._formatCountdown(remaining);
+            if (remaining <= 0 && this.countdownTimer) {
+                /* Reached zero — stop ticking but leave 0:00 displayed. */
+                clearInterval(this.countdownTimer);
+                this.countdownTimer = null;
+            }
+        };
+
+        layer.hidden = false;
+        render();
+        this.countdownTimer = setInterval(render, 250);
+    }
+
+    /**
+     * Stop the pre-service countdown and hide its overlay.
+     *
+     * ELI5: turns the countdown timer off.
+     *
+     * Detailed: clears the interval, hides the countdown layer, and resets
+     * the header `<select>` back to "Countdown…" so the control reflects the
+     * off state. Safe to call when nothing is running.
+     */
+    stopCountdown() {
+        if (this.countdownTimer) {
+            clearInterval(this.countdownTimer);
+            this.countdownTimer = null;
+        }
+        const layer = document.getElementById('presentation-countdown');
+        if (layer) layer.hidden = true;
+        const select = document.getElementById('presentation-countdown-select');
+        if (select) select.value = '0';
+    }
+
+    /**
+     * Format whole seconds as `M:SS` (or `H:MM:SS` past an hour).
+     * @param {number} totalSeconds
+     * @returns {string}
+     */
+    _formatCountdown(totalSeconds) {
+        const s = Math.max(0, totalSeconds);
+        const hours = Math.floor(s / 3600);
+        const mins = Math.floor((s % 3600) / 60);
+        const secs = s % 60;
+        const pad = (n) => String(n).padStart(2, '0');
+        return hours > 0
+            ? `${hours}:${pad(mins)}:${pad(secs)}`
+            : `${mins}:${pad(secs)}`;
     }
 
     /* =====================================================================

@@ -2143,6 +2143,71 @@ body.presentation-active .scroll-to-top-btn {
     display: none !important;
 }
 
+/* --------------------------------------------------------------------------
+   Presentation utility slides (#1273): operator blank toggle + pre-service
+   countdown. Live-operation controls a worship presenter expects; purely
+   client-side over the existing overlay.
+   -------------------------------------------------------------------------- */
+
+/* Operator controls cluster in the presentation header (blank + countdown). */
+.presentation-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.presentation-countdown-select {
+    width: auto;
+}
+
+/* Blank/black screen — black out everything between songs. The overlay goes
+   black and its direct children are hidden; the "B" key or Blank button (and
+   Escape to exit) still work because those are document-level key handlers. */
+.presentation-overlay.presentation-blank {
+    background: #000 !important;
+}
+.presentation-overlay.presentation-blank > .presentation-header,
+.presentation-overlay.presentation-blank > .presentation-lyrics,
+.presentation-overlay.presentation-blank > .presentation-countdown {
+    visibility: hidden;
+}
+
+/* Pre-service countdown — a large centred timer covering the slide. Tap it
+   (or pick "Countdown…") to dismiss. */
+.presentation-countdown {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1rem;
+    background: var(--bs-body-bg, #fff);
+    color: var(--bs-body-color, #000);
+    text-align: center;
+    cursor: pointer;
+}
+/* The [hidden] attribute would normally hide it, but our display:flex wins —
+   restore the intended hiding when the attribute is present. */
+.presentation-countdown[hidden] {
+    display: none;
+}
+.presentation-countdown-label {
+    font-size: 2rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    opacity: 0.75;
+}
+.presentation-countdown-time {
+    font-size: clamp(4rem, 22vw, 16rem);
+    font-weight: 800;
+    line-height: 1;
+    /* Tabular figures so the digits don't jitter as they count down. */
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" 1;
+}
+
 /* ==========================================================================
    QUICK-JUMP NUMBER INDICATOR (#96)
    ========================================================================== */
