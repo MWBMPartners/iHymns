@@ -337,8 +337,15 @@ class iHymnsApp {
                 const bar = document.createElement('div');
                 bar.id = 'maintenance-banner';
                 bar.setAttribute('role', 'status');
+                /* Pad for the iOS safe area so the banner text clears the
+                   Dynamic Island / status bar in standalone PWA mode (the app
+                   uses viewport-fit=cover + black-translucent). Insets resolve
+                   to 0 in a normal browser tab, matching css/app.css. (#1279) */
                 bar.style.cssText = 'position:sticky;top:0;z-index:1080;background:#b45309;'
-                    + 'color:#fff;padding:.5rem 1rem;text-align:center;font-size:.9rem';
+                    + 'color:#fff;padding:calc(.5rem + env(safe-area-inset-top, 0px)) '
+                    + 'calc(1rem + env(safe-area-inset-right, 0px)) .5rem '
+                    + 'calc(1rem + env(safe-area-inset-left, 0px));'
+                    + 'text-align:center;font-size:.9rem';
                 const icon = document.createElement('i');
                 icon.className = 'fa-solid fa-screwdriver-wrench me-2';
                 icon.setAttribute('aria-hidden', 'true');

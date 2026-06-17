@@ -863,8 +863,8 @@ if (!empty($breadcrumbItems)) {
 </head>
 
 <body class="d-flex flex-column min-vh-100">
-<?php if (!empty($GLOBALS['_ihymnsMaintenanceBypass'])): /* #1233 — admin is bypassing maintenance; make that obvious. Self-contained styles (no icon/CSS deps). */ ?>
-    <div role="status" style="position:sticky;top:0;z-index:1080;background:#ffc107;color:#000;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;line-height:1.3;">
+<?php if (!empty($GLOBALS['_ihymnsMaintenanceBypass'])): /* #1233 — admin is bypassing maintenance; make that obvious. Self-contained styles (no icon/CSS deps). Padding carries the iOS safe-area insets so the text clears the Dynamic Island in standalone PWA mode (#1279). */ ?>
+    <div role="status" style="position:sticky;top:0;z-index:1080;background:#ffc107;color:#000;text-align:center;padding:calc(0.5rem + env(safe-area-inset-top, 0px)) calc(1rem + env(safe-area-inset-right, 0px)) 0.5rem calc(1rem + env(safe-area-inset-left, 0px));font-size:0.85rem;line-height:1.3;">
         🔧 <strong>Maintenance mode is ON</strong> for this environment — visitors see a maintenance page; you have admin access.
         <a href="/manage/configuration" style="color:#000;text-decoration:underline;font-weight:600;">Turn it off</a>.
     </div>
