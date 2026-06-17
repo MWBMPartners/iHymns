@@ -142,6 +142,26 @@ try {
     echo "tblLoginAttempts:      ERROR — " . $e->getMessage() . "\n";
 }
 
+/* 4b. Expired Live-Follow sessions (#1268) — broadcast state is ephemeral:
+   drop rows past their ExpiresAt horizon, plus any deactivated session left
+   over from a prior day. ExpiresAt is written in UTC (UTC_TIMESTAMP()) by the
+   live_follow_* endpoints, so compare against the UTC $now built above. */
+try {
+    $stmt = $db->prepare(
+        'DELETE FROM tblLiveFollowSessions
+          WHERE ExpiresAt < ?
+             OR (IsActive = 0 AND UpdatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 DAY))'
+    );
+    $stmt->bind_param('s', $now);
+    $stmt->execute();
+    $count = $stmt->affected_rows;
+    echo "tblLiveFollowSessions: $count stale session(s) deleted\n";
+    $totalDeleted += $count;
+    $stmt->close();
+} catch (\mysqli_sql_exception $e) {
+    echo "tblLiveFollowSessions: ERROR — " . $e->getMessage() . "\n";
+}
+
 /* 5. tblActivityLog retention prune (#535).
    Pruning is OPT-IN — the default retention is 0 (unset), meaning
    activity rows are kept indefinitely. Audit, compliance, and

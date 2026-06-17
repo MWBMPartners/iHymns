@@ -11518,6 +11518,293 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * Live Follow (#1268) — web/PWA real-time multi-device follow.
+         * DB-relayed short-poll over tblLiveFollowSessions (no SSE — shared
+         * hosting can't hold a worker per follower). The host writes its
+         * current song/section/state and bumps StateRevision; followers poll
+         * with ?since=<rev> and get a near-free "unchanged" until it advances.
+         * Host endpoints require auth + ownership; join/poll are anonymous,
+         * scoped by the unguessable code. State-changing POSTs inherit the
+         * X-Requested-With CSRF guard at the top of this file.
+         * ----------------------------------------------------------------- */
+        case 'live_follow_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* 20 new sessions / hour / user is plenty for a worship leader. */
+            checkRateLimit('live_follow_create', $liveIp, 20, 3600, true, $userId);
+            recordRateLimitHit('live_follow_create', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $setlistId = isset($body['setlistId'])
+                ? mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', (string)$body['setlistId']), 0, 100) : null;
+            if ($setlistId === '') { $setlistId = null; }
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : null;
+            if ($songId === '') { $songId = null; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+            $orgId = null; /* v1: org scoping deferred; the FK stays NULL (SET NULL-safe). */
+
+            $db = getDbMysqli();
+
+            /* Reject an unknown songId up front — the CurrentSongId FK would
+               otherwise throw 1452 under STRICT → an uncaught 500. */
+            if ($songId !== null) {
+                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chkSong->bind_param('s', $songId);
+                $chkSong->execute();
+                $songOk = $chkSong->get_result()->fetch_row() !== null;
+                $chkSong->close();
+                if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
+            }
+
+            /* One active session per host — supersede any prior one. */
+            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
+            $deact->bind_param('i', $userId);
+            $deact->execute();
+            $deact->close();
+
+            /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
+            $alphabet = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+            $alphaMax = strlen($alphabet) - 1;
+            $code = '';
+            $inserted = false;
+            for ($attempt = 0; $attempt < 6 && !$inserted; $attempt++) {
+                $code = '';
+                for ($i = 0; $i < 6; $i++) { $code .= $alphabet[random_int(0, $alphaMax)]; }
+                try {
+                    $ins = $db->prepare(
+                        'INSERT INTO tblLiveFollowSessions
+                            (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
+                             CurrentComponentIndex, StateJson, IsActive, StartedAt,
+                             LastHeartbeatAt, ExpiresAt, StateRevision)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
+                                 DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0)'
+                    );
+                    $ins->bind_param('siissis', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson);
+                    $ins->execute();
+                    $ins->close();
+                    $inserted = true;
+                } catch (\mysqli_sql_exception $e) {
+                    /* uq_Code collision (errno 1062) — retry; anything else is real. */
+                    if ($e->getCode() !== 1062) { throw $e; }
+                }
+            }
+            if (!$inserted) { sendJson(['error' => 'Could not allocate a session code, please retry.'], 503); break; }
+
+            sendJson(['ok' => true, 'code' => $code, 'revision' => 0]);
+            break;
+        }
+
+        case 'live_follow_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Generous: a fast operator + heartbeats stay well under 600/min. */
+            checkRateLimit('live_follow_update', $liveIp, 600, 60, true, $userId);
+            recordRateLimitHit('live_follow_update', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            /* The host broadcasts its FULL current context each update. */
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : '';
+            if ($songId === '') { sendJson(['error' => 'songId is required.'], 400); break; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+
+            $db = getDbMysqli();
+
+            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500. */
+            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $chkSong->bind_param('s', $songId);
+            $chkSong->execute();
+            $songOk = $chkSong->get_result()->fetch_row() !== null;
+            $chkSong->close();
+            if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
+
+            $upd = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                        LastHeartbeatAt = UTC_TIMESTAMP(),
+                        ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR),
+                        StateRevision = StateRevision + 1
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $upd->bind_param('sissi', $songId, $componentIndex, $stateJson, $code, $userId);
+            $upd->execute();
+            $changed = $upd->affected_rows;
+            $upd->close();
+            if ($changed === 0) { sendJson(['ok' => false, 'error' => 'Session not found, not yours, or ended.'], 409); break; }
+
+            $sel = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE SessionCode = ? AND HostUserId = ?');
+            $sel->bind_param('si', $code, $userId);
+            $sel->execute();
+            $revRow = $sel->get_result()->fetch_row();
+            $rev = $revRow ? (int)$revRow[0] : 0;
+            $sel->close();
+
+            sendJson(['ok' => true, 'revision' => $rev]);
+            break;
+        }
+
+        case 'live_follow_heartbeat': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            $db = getDbMysqli();
+            /* Keepalive only — does NOT bump StateRevision (no state changed). */
+            $hb = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET LastHeartbeatAt = UTC_TIMESTAMP(),
+                        ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR)
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $hb->bind_param('si', $code, $userId);
+            $hb->execute();
+            $hb->close();
+
+            /* Liveness via existence, NOT affected_rows: two heartbeats in the
+               same second write identical timestamps, so affected_rows (changed
+               rows) would be 0 even though the session is fine. */
+            $chk = $db->prepare(
+                'SELECT 1 FROM tblLiveFollowSessions
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $chk->bind_param('si', $code, $userId);
+            $chk->execute();
+            $alive = $chk->get_result()->fetch_row() !== null;
+            $chk->close();
+
+            sendJson(['ok' => $alive]);
+            break;
+        }
+
+        case 'live_follow_leave': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            $db = getDbMysqli();
+            $end = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE SessionCode = ? AND HostUserId = ?');
+            $end->bind_param('si', $code, $userId);
+            $end->execute();
+            $end->close();
+
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        case 'live_follow_join': {
+            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['ok' => false, 'error' => 'Invalid session code.'], 400); break; }
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Join is infrequent (once per follower); a per-IP cap blunts code
+               enumeration without penalising a real congregation. */
+            checkRateLimit('live_follow_join', $liveIp, 60, 60, true);
+            recordRateLimitHit('live_follow_join', $liveIp);
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
+                        u.DisplayName AS HostName
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                  WHERE s.SessionCode = ? AND s.IsActive = 1
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)'
+            );
+            $stmt->bind_param('s', $code);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            /* Identical message for missing / expired / wrong code so liveness
+               can't be probed cheaply (combined with the rate limit). */
+            if (!$row) { sendJson(['ok' => false, 'error' => 'Session not found or ended.'], 404); break; }
+
+            sendJson([
+                'ok'              => true,
+                'code'            => $code,
+                'hostDisplayName' => (string)($row['HostName'] ?? ''),
+                'currentSongId'   => $row['CurrentSongId'],
+                'componentIndex'  => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
+                'state'           => $row['StateJson'] !== null ? json_decode($row['StateJson'], true) : null,
+                'revision'        => (int)$row['StateRevision'],
+            ]);
+            break;
+        }
+
+        case 'live_follow_poll': {
+            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['active' => false], 400); break; }
+            $since = (int)($_GET['since'] ?? 0);
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Per-IP cap so `poll` can't serve as an un-throttled code-existence
+               oracle that sidesteps the join cap (a live vs unknown code give
+               different responses). Generous for legitimate ~2.5s polling from a
+               handful of devices. NOTE: a NAT-shared congregation polling at
+               scale needs the NAT-safe anti-enumeration design — a short-lived
+               join token gating poll + a per-session counter instead of per-IP
+               recording — which lands with the Phase-3 client (#1268). Dormant in
+               Phase 1 (no client polls yet). */
+            checkRateLimit('live_follow_poll', $liveIp, 600, 60, true);
+            recordRateLimitHit('live_follow_poll', $liveIp);
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
+                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)) AS Fresh
+                   FROM tblLiveFollowSessions
+                  WHERE SessionCode = ?'
+            );
+            $stmt->bind_param('s', $code);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$row || (int)$row['Fresh'] !== 1) { sendJson(['active' => false]); break; }
+
+            $rev = (int)$row['StateRevision'];
+            if ($rev <= $since) { sendJson(['changed' => false, 'revision' => $rev]); break; }
+
+            sendJson([
+                'changed'        => true,
+                'currentSongId'  => $row['CurrentSongId'],
+                'componentIndex' => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
+                'state'          => $row['StateJson'] !== null ? json_decode($row['StateJson'], true) : null,
+                'revision'       => $rev,
+            ]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
@@ -11577,6 +11864,38 @@ function sendJson(array $data, int $statusCode = 200): void
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * Live Follow (#1268) — sanitise a SongId from client input to the SongId
+ * charset (alnum + _ -) and the column width (VARCHAR(20)). Empty after
+ * cleaning ⇒ '' (caller treats as "no song").
+ */
+function _liveFollowCleanSongId(string $raw): string
+{
+    return mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', $raw), 0, 20);
+}
+
+/**
+ * Live Follow (#1268) — whitelist the broadcast StateJson. NEVER stores raw
+ * client JSON: only the known broadcast hints survive, each clamped to a safe
+ * range. Returns a compact JSON string, or null when nothing valid was sent.
+ */
+function _liveFollowCleanState($state): ?string
+{
+    if (!is_array($state)) { return null; }
+    $clean = [];
+    if (array_key_exists('blank', $state)) {
+        $clean['blank'] = (bool)$state['blank'];
+    }
+    if (array_key_exists('scrollPct', $state) && is_numeric($state['scrollPct'])) {
+        $clean['scrollPct'] = max(0.0, min(1.0, (float)$state['scrollPct']));
+    }
+    if (array_key_exists('transposeOffset', $state) && is_numeric($state['transposeOffset'])) {
+        $clean['transposeOffset'] = max(-12, min(12, (int)$state['transposeOffset']));
+    }
+    if (!$clean) { return null; }
+    return json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 /**

@@ -3004,6 +3004,7 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     CurrentSongId        VARCHAR(20)  NULL DEFAULT NULL COMMENT 'FK to tblSongs — the song currently displayed',
     CurrentComponentIndex INT        NULL DEFAULT NULL COMMENT 'Index into the arrangement/component order being shown',
     StateJson            JSON         NULL DEFAULT NULL COMMENT 'Extra broadcast state (blank, theme, font-size hints)',
+    StateRevision        INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Monotonic broadcast revision; host bumps on each state write so followers poll cheaply with ?since=',
     IsActive             TINYINT(1)   NOT NULL DEFAULT 1,
     StartedAt            DATETIME     NOT NULL,
     LastHeartbeatAt      DATETIME     NOT NULL,
