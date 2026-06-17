@@ -614,6 +614,77 @@
         return { filename: zipName, size: zip.length, count: files.length };
     }
 
+    /* ====================================================================
+     *  ChordPro (.cho) — #1264  (lyrics-only v1)
+     * ====================================================================
+     * ChordPro is the lingua franca chord-chart text format and the only
+     * format WorshipTools Presenter/Planning imports under six extensions
+     * (.chord/.cho/.crd/.chopro/.pro/.txt) — also read by OnSong, SongBeamer
+     * and Planning Center. This v1 emits the header directives WorshipTools
+     * documents plus section labels as {comment:} (the section directive
+     * WorshipTools confirms), with LYRICS ONLY. Inline [chord] markers are a
+     * follow-on once per-line chords are surfaced on the export read path
+     * (#299 / #1094) — they aren't in the export song-shape yet. A songbook
+     * exports as a zip of .cho files. */
+
+    function cpDirective(name, value) {
+        /* A ChordPro directive value cannot contain a brace or newline, so
+           collapse any to spaces; an empty value emits nothing. */
+        var v = String(value == null ? '' : value).replace(/[{}\r\n]+/g, ' ').trim();
+        return v ? ('{' + name + ': ' + v + '}\n') : '';
+    }
+
+    function buildChordPro(song, options) {
+        if (!song) { throw new Error('buildChordPro: song required'); }
+        var authors = [].concat(song.writers || [], song.composers || []).filter(Boolean).join(', ');
+        var out = '';
+        out += cpDirective('title', song.title || 'Untitled');
+        if (song.alternateTitle) { out += cpDirective('subtitle', song.alternateTitle); }
+        if (authors)             { out += cpDirective('artist', authors); }
+        if (song.key)            { out += cpDirective('key', song.key); }
+        if (song.capo)           { out += cpDirective('capo', song.capo); }
+        if (song.ccli)           { out += cpDirective('ccli', song.ccli); }
+        if (song.copyright)      { out += cpDirective('copyright', song.copyright); }
+        (song.components || []).forEach(function (comp) {
+            /* Section label as a {comment:} (e.g. "Verse 1", "Chorus") —
+               reuses the Proclaim label map so labelling stays consistent. */
+            out += '\n' + cpDirective('comment', pcLabel(comp));
+            (comp.lines || []).forEach(function (line) {
+                out += String(line == null ? '' : line) + '\n';
+            });
+        });
+        return out;
+    }
+
+    function exportSongChordPro(song, options) {
+        var txt = buildChordPro(song, options);
+        var filename = baseFilename(song) + '.cho';
+        download(txt, filename, 'text/plain');
+        return { filename: filename, size: txt.length };
+    }
+
+    function exportSongbookChordPro(songs, options) {
+        options = options || {};
+        if (!Array.isArray(songs) || !songs.length) {
+            throw new Error('exportSongbookChordPro: non-empty songs array required');
+        }
+        var enc = new TextEncoder();
+        var seen = Object.create(null);
+        var files = songs.map(function (song) {
+            var name = baseFilename(song) + '.cho';
+            if (seen[name]) { name = baseFilename(song) + ' (' + (seen[name]++) + ').cho'; }
+            else { seen[name] = 1; }
+            return { name: name, bytes: enc.encode(buildChordPro(song, options)) };
+        });
+        var zip = buildZip(files);
+        var stem = options.songbookName
+            ? sanitizeFilename(options.songbookName + (options.songbookAbbr ? ' (' + options.songbookAbbr + ')' : ''))
+            : (options.songbookAbbr ? sanitizeFilename(options.songbookAbbr) : 'ChordPro Export');
+        var zipName = stem + ' [ChordPro].zip';
+        download(zip, zipName, 'application/zip');
+        return { filename: zipName, size: zip.length, count: files.length };
+    }
+
     /* ---- public API ----------------------------------------------------- */
 
     var api = {
@@ -646,6 +717,11 @@
             build:           buildFreeShow,
             exportSong:      exportSongFreeShow,
             exportSongbook:  exportSongbookFreeShow
+        },
+        chordPro: {
+            build:           buildChordPro,
+            exportSong:      exportSongChordPro,
+            exportSongbook:  exportSongbookChordPro
         },
         _internal: { escapeXml: escapeXml, baseFilename: baseFilename, buildZip: buildZip, download: download }
     };

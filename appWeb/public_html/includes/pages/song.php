@@ -738,6 +738,7 @@ try {
                         <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
                         <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
                         <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="chordPro">ChordPro</button></li>
                     </ul>
                 </div>
 
