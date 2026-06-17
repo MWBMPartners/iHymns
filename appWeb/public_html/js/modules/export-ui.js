@@ -20,6 +20,7 @@ const FORMATS = [
     { key: 'videoPsalm',    label: 'VideoPsalm (.json)' },
     { key: 'freeShow',      label: 'FreeShow (.show)' },
     { key: 'proclaim',      label: 'Proclaim (.txt)' },
+    { key: 'chordPro',      label: 'ChordPro (.cho)' },
 ];
 
 let _libsPromise = null;
