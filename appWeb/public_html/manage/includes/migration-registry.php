@@ -1836,6 +1836,20 @@ return [
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLiveFollowSessions'),
     ],
 
+    'live-follow-revision' => [
+        'script' => 'migrate-live-follow-revision.php',
+        'card' => [
+            'title'  => 'Live-follow: StateRevision (#1268)',
+            'body'   => 'Adds <code>tblLiveFollowSessions.StateRevision</code> — a'
+                      . ' monotonic broadcast counter so web/PWA Live-Follow'
+                      . ' followers short-poll cheaply (<code>?since=</code>) without'
+                      . ' holding a server connection open. Additive + idempotent;'
+                      . ' run the Live-follow sessions migration first.',
+            'button' => 'Run Live-Follow Revision Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'StateRevision'),
+    ],
+
     'request-corrections' => [
         'script' => 'migrate-request-corrections.php',
         'card' => [
