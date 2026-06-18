@@ -247,7 +247,13 @@ if (($_GET['export'] ?? '') === 'csv') {
     $res = $stmt->get_result();
     while ($row = $res->fetch_assoc()) {
         $ts        = (int)($row['CreatedAtTs'] ?? 0);
-        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s\Z', $ts) : '';
+        /* Sub-second fraction (#1287) — from the raw TIMESTAMP(6) string when present
+           (UNIX_TIMESTAMP is cast to int, so the fraction lives on the raw value). */
+        $frac = '';
+        if (preg_match('/\.(\d{1,6})/', (string)($row['CreatedAt'] ?? ''), $fm)) {
+            $frac = '.' . substr(str_pad($fm[1], 3, '0'), 0, 3);
+        }
+        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s', $ts) . $frac . 'Z' : '';
         $csvRow = [
             $row['Id'], $row['CreatedAt'], $createdUtc, $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
@@ -587,12 +593,21 @@ $buildQuery = function (array $overrides = []) {
                         $createdUtcStr = $createdTs > 0
                             ? gmdate('Y-m-d H:i:s', $createdTs)
                             : (string)$r['CreatedAt'];
+                        /* Sub-second fraction (#1287) — ms (3 digits) from the raw
+                           TIMESTAMP(6) value; empty on a pre-migration second column,
+                           so the cell renders identically until the column is widened. */
+                        $createdMs = '';
+                        if (preg_match('/\.(\d{1,6})/', (string)($r['CreatedAt'] ?? ''), $msMatch)) {
+                            $createdMs = substr(str_pad($msMatch[1], 3, '0'), 0, 3);
+                        }
+                        $createdUtcFull = $createdUtcStr . ($createdMs !== '' ? '.' . $createdMs : '');
                     ?>
                         <tr class="activity-row">
                             <td class="text-muted small activity-when"
                                 data-ts="<?= (int)$createdTs ?>"
-                                title="<?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> UTC">
-                                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> <span class="text-muted">UTC</span>
+                                data-ms="<?= htmlspecialchars($createdMs, ENT_QUOTES, 'UTF-8') ?>"
+                                title="<?= htmlspecialchars($createdUtcFull, ENT_QUOTES, 'UTF-8') ?> UTC">
+                                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?><?php if ($createdMs !== ''): ?><span class="text-muted">.<?= htmlspecialchars($createdMs, ENT_QUOTES, 'UTF-8') ?></span><?php endif; ?> <span class="text-muted">UTC</span>
                             </td>
                             <?php if ($hasObsCols): ?>
                             <td>
@@ -791,8 +806,13 @@ $buildQuery = function (array $overrides = []) {
                 var parts = fmt.formatToParts(d).reduce(function (acc, p) {
                     if (p.type !== 'literal') acc[p.type] = p.value; return acc;
                 }, {});
+                /* #1287 — re-append the sub-second fraction after the local-TZ
+                   reformat (the fraction is timezone-invariant). Empty on rows
+                   logged before the TIMESTAMP(6) migration. */
+                var ms = cell.getAttribute('data-ms') || '';
                 cell.textContent = parts.year + '-' + parts.month + '-' + parts.day
-                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
+                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second
+                    + (ms ? '.' + ms : '');
                 /* Hover title carries the resolved timezone name so
                    curators inspecting an entry can see the offset
                    they're looking at — useful when comparing logs

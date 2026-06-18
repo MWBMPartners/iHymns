@@ -2121,4 +2121,31 @@ return [
         'probe' => static fn(\mysqli $db) =>
             _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson'),
     ],
+
+    'activity-log-microtime' => [
+        'script' => 'migrate-activity-log-microtime.php',
+        'card' => [
+            'title'  => 'Activity Log: microsecond timestamps (#1287)',
+            'body'   => 'Widens <code>tblActivityLog.CreatedAt</code> to'
+                      . ' <code>TIMESTAMP(6)</code> so log entries capture sub-second'
+                      . ' time (<code>logActivity</code> writes <code>NOW(6)</code>) —'
+                      . ' forensics / latency / precise sequencing. Idempotent;'
+                      . ' one-time column rewrite (opt-in per env).',
+            'button' => 'Run Activity-Log Microtime Migration',
+        ],
+        /* Pending until CreatedAt is TIMESTAMP(6); self-clears once the precision is
+           6. Table-absent (fresh install pre-Install) reports not-pending. */
+        'probe' => static function (\mysqli $db): bool {
+            $r = $db->query(
+                "SELECT DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblActivityLog'
+                    AND COLUMN_NAME  = 'CreatedAt' LIMIT 1"
+            );
+            $row = $r ? $r->fetch_assoc() : null;
+            if ($r) { $r->close(); }
+            if ($row === null) { return false; }
+            return (int)($row['DATETIME_PRECISION'] ?? 0) < 6;
+        },
+    ],
 ];

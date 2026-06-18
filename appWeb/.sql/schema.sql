@@ -1383,7 +1383,7 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     RequestPath     VARCHAR(512)    NULL DEFAULT NULL COMMENT 'Requested path (REQUEST_URI minus query) — which file/route was hit (#1207)',
     Referrer        VARCHAR(2048)   NULL DEFAULT NULL COMMENT 'HTTP Referer header — where the request came from (#1207)',
     Country         CHAR(2)         NULL DEFAULT NULL COMMENT 'ISO-3166-1 alpha-2 country resolved from IpAddress AT log time (snapshot; geo resolver #1208 populates it)',
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CreatedAt       TIMESTAMP(6)    NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT 'Microsecond precision (#1287) — logActivity writes NOW(6); the Id PK is the tiebreaker for same-instant rows (#1285)',
 
     INDEX idx_User              (UserId),
     INDEX idx_Action            (Action),
