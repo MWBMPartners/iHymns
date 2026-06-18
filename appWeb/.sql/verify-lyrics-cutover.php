@@ -11,12 +11,15 @@ declare(strict_types=1);
  * retiring the tblSongComponents JSON payload columns loses NO data, and gates the
  * irreversible DROP behind that proof. Run at each phase of the cutover:
  *
- *   php tools/verify-lyrics-cutover.php --phase=pre        # before the read switch (Gate A)
- *   php tools/verify-lyrics-cutover.php --phase=soak       # nightly during the soak
- *   php tools/verify-lyrics-cutover.php --phase=pre-drop   # inside the freeze, just before the drop (Gate C)
- *   php tools/verify-lyrics-cutover.php --phase=post-drop   # after the drop (Gate D)
+ * Web (the owner's path — Global Admin → /manage/setup-database → "Verify cutover gate"):
+ *   ?action=verify-cutover&phase=pre|soak|pre-drop|post-drop  (web-only DreamHost; no CLI)
+ * CLI (CI / the local dress rehearsal):
+ *   php appWeb/.sql/verify-lyrics-cutover.php --phase=pre        # before the read switch (Gate A)
+ *   php appWeb/.sql/verify-lyrics-cutover.php --phase=soak       # during the soak
+ *   php appWeb/.sql/verify-lyrics-cutover.php --phase=pre-drop   # inside the freeze, just before the drop (Gate C)
+ *   php appWeb/.sql/verify-lyrics-cutover.php --phase=post-drop  # after the drop (Gate D)
  *
- * Options:
+ * Options (CLI only):
  *   --limit=N        only the first N songs (smoke / dev)
  *   --emit-samples   print up to 20 example divergences per failing gate
  *   --json           machine-readable summary on stdout (NDJSON failures to stderr)
@@ -35,53 +38,101 @@ declare(strict_types=1);
  * Exit 0 = all gates for the phase passed; 1 = at least one failed; 2 = setup error.
  */
 
-if (PHP_SAPI !== 'cli') {
+/* ── Execution mode ──────────────────────────────────────────────────────────
+ * DUAL-MODE: a CLI tool (CI / the local dress rehearsal) AND a web runner
+ * included by /manage/setup-database. The owner operates web-only on shared
+ * DreamHost (no CLI), so the cutover gate MUST be runnable from the dashboard;
+ * the dashboard defines IHYMNS_SETUP_DASHBOARD and passes the phase via ?phase=.
+ * In web mode we echo (HTML-escaped) and `return` from the included script
+ * instead of writing STDOUT/STDERR + exit() — STDOUT/STDERR are undefined under
+ * PHP-FPM (fatal) and exit() would truncate the dashboard. The 10 gates below
+ * are IDENTICAL in both modes; only this wrapper differs. */
+$LCV_WEB = (PHP_SAPI !== 'cli') && defined('IHYMNS_SETUP_DASHBOARD');
+
+/* Direct web hits (no dashboard context) stay blocked. */
+if (PHP_SAPI !== 'cli' && !$LCV_WEB) {
     http_response_code(403);
     exit("CLI only.\n");
+}
+
+/** Emit one report line: STDOUT in CLI, an HTML-escaped <br> line in the dashboard. */
+function out(string $s): void {
+    global $LCV_WEB;
+    if ($LCV_WEB) { echo htmlspecialchars($s, ENT_QUOTES, 'UTF-8') . "<br>\n"; }
+    else { fwrite(STDOUT, $s . "\n"); }
+}
+/** Report a setup error (STDERR in CLI, escaped line in the dashboard). */
+function lcv_err(string $m): void {
+    global $LCV_WEB;
+    if ($LCV_WEB) { echo '<strong>ERROR:</strong> ' . htmlspecialchars($m, ENT_QUOTES, 'UTF-8') . "<br>\n"; }
+    else { fwrite(STDERR, "ERROR: {$m}\n"); }
 }
 
 /* ext-intl is REQUIRED — Tier-2 NFC classification needs Normalizer (a byte mismatch
    that is only a Unicode normalisation difference is still a FAIL, but we must be able
    to label it so a curator knows it's NFD-vs-NFC, not corruption). */
 if (!class_exists(\Normalizer::class)) {
-    fwrite(STDERR, "ERROR: ext-intl (Normalizer) is required for the cutover gate.\n");
+    lcv_err('ext-intl (Normalizer) is required for the cutover gate.');
+    if ($LCV_WEB) { return; }
     exit(2);
 }
 
-require_once dirname(__DIR__) . '/appWeb/public_html/includes/db_mysql.php';
-/* DOCUMENT_ROOT-first for the shared reader/projector (the #1250 deploy gotcha: the
-   .sql/public_html sibling tree is stale for brand-new includes). CLI has no docroot,
-   so the sibling path is the working fallback here. */
+/* DB layer + the shared line-first assembler. DOCUMENT_ROOT-first (set in web
+   mode) so the live web-root includes are used; the .sql-sibling path is the CLI
+   fallback. db_mysql is already loaded when included by the dashboard. */
 $docRoot = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/');
+if (!function_exists('getDbMysqli')) {
+    foreach ([
+        ($docRoot !== '' ? $docRoot . '/includes/db_mysql.php' : null),
+        dirname(__DIR__) . '/public_html/includes/db_mysql.php',
+    ] as $cand) {
+        if ($cand !== null && is_file($cand)) { require_once $cand; break; }
+    }
+}
 foreach ([
     ($docRoot !== '' ? $docRoot . '/includes/lyric_lines_read.php' : null),
-    dirname(__DIR__) . '/appWeb/public_html/includes/lyric_lines_read.php',
+    dirname(__DIR__) . '/public_html/includes/lyric_lines_read.php',
 ] as $cand) {
     if ($cand !== null && is_file($cand)) { require_once $cand; break; }
 }
-if (!function_exists('lyricLinesAssembleComponents')) {
-    fwrite(STDERR, "ERROR: could not load includes/lyric_lines_read.php\n");
+if (!function_exists('lyricLinesAssembleComponents') || !function_exists('getDbMysqli')) {
+    lcv_err('could not load includes/db_mysql.php or includes/lyric_lines_read.php');
+    if ($LCV_WEB) { return; }
     exit(2);
 }
 
-/* ---- args ---- */
-$opt = getopt('', ['phase:', 'limit:', 'emit-samples', 'json']);
-$phase = (string)($opt['phase'] ?? 'pre');
+/* ---- args ---- (CLI: getopt; web: ?phase= only — the smoke/sample flags are CLI-only) */
+if ($LCV_WEB) {
+    $phase       = (string)($_GET['phase'] ?? 'pre');
+    /* Optional smoke limit (capped): a fast first-N-songs dry-run so the operator
+       can confirm the web path works before the slow full-corpus run. limit>0 NEVER
+       writes the sentinel (see the report tail), so a smoke run can't arm the drop. */
+    $limit       = isset($_GET['limit']) ? max(0, min(5000, (int)$_GET['limit'])) : 0;
+    $emitSamples = false;
+    $asJson      = false;
+} else {
+    $opt         = getopt('', ['phase:', 'limit:', 'emit-samples', 'json']);
+    $phase       = (string)($opt['phase'] ?? 'pre');
+    $limit       = isset($opt['limit']) ? max(0, (int)$opt['limit']) : 0;
+    $emitSamples = array_key_exists('emit-samples', $opt);
+    $asJson      = array_key_exists('json', $opt);
+}
 if (!in_array($phase, ['pre', 'soak', 'pre-drop', 'post-drop'], true)) {
-    fwrite(STDERR, "ERROR: --phase must be pre|soak|pre-drop|post-drop\n");
+    lcv_err('phase must be pre | soak | pre-drop | post-drop');
+    if ($LCV_WEB) { return; }
     exit(2);
 }
-$limit       = isset($opt['limit']) ? max(0, (int)$opt['limit']) : 0;
-$emitSamples = array_key_exists('emit-samples', $opt);
-$asJson      = array_key_exists('json', $opt);
 
 $db = getDbMysqli();
-if (!($db instanceof mysqli)) { fwrite(STDERR, "ERROR: no DB.\n"); exit(2); }
+if (!($db instanceof mysqli)) {
+    lcv_err('no DB.');
+    if ($LCV_WEB) { return; }
+    exit(2);
+}
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
 
 /* ---- output helpers ---- */
-$failuresNdjson = [];   // collected NDJSON lines (stderr)
-function out(string $s): void { fwrite(STDOUT, $s . "\n"); }
+$failuresNdjson = [];   // collected NDJSON lines (CLI stderr only)
 function nfc(string $s): string { $n = \Normalizer::normalize($s, \Normalizer::FORM_C); return $n === false ? $s : $n; }
 
 /** First differing code-point index + a short context window, for a readable report. */
@@ -379,8 +430,10 @@ foreach ($gates as $id => $g) {
 }
 out('  fingerprint: ' . json_encode($fingerprint, JSON_UNESCAPED_UNICODE));
 
-/* NDJSON failure stream → stderr (CI / log capture). */
-foreach ($failuresNdjson as $line) { fwrite(STDERR, $line . "\n"); }
+/* NDJSON failure stream → stderr (CI / log capture). CLI only — STDERR is undefined under PHP-FPM. */
+if (!$LCV_WEB) {
+    foreach ($failuresNdjson as $line) { fwrite(STDERR, $line . "\n"); }
+}
 
 /* Write the sentinel only on a full corpus all-green run (not when --limit truncated). */
 if ($allGreen && $limit === 0) {
@@ -404,4 +457,6 @@ if ($asJson) {
 }
 
 out($allGreen ? "== GREEN — phase {$phase} passed ==" : "== RED — phase {$phase} has failures ==");
+/* Web: return so the dashboard reads $allGreen + finishes the page chrome; CLI: exit code for CI. */
+if ($LCV_WEB) { return; }
 exit($allGreen ? 0 : 1);

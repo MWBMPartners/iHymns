@@ -40,7 +40,7 @@ the shared DB is already migrated (Track A).
 
 ### 1. Soak on alpha (≥7 nights)
 - [ ] Track-A migrations applied on the shared DB (above).
-- [ ] `php tools/verify-lyrics-cutover.php --phase=pre` green; nightly `--phase=soak` green (parity 0).
+- [ ] `php appWeb/.sql/verify-lyrics-cutover.php --phase=pre` green; nightly `--phase=soak` green (parity 0).
 - [ ] **Guardrail:** keep lyric/component editing **alpha-only** for the whole cutover. Beta/prod run
       pre-P1 code; if a curator edited lyrics there, the write would update `LinesJson` only and orphan
       `tblLyricLines` (breaking the soak's G2 parity). Non-lyric writes (users/setlists/config) are fine.
@@ -66,10 +66,10 @@ the shared DB is already migrated (Track A).
 - [ ] Fresh **tested** backup taken (`backup.php`) + restore rehearsed (per the dress rehearsal).
 - [ ] **Freeze all three UIs** — each has its OWN flag: set `maintenance_mode_alpha`, `_beta`,
       `_production` (don't miss one; the freeze is per-env even though the DB is shared).
-- [ ] `php tools/verify-lyrics-cutover.php --phase=pre-drop` → green sentinel (<24h).
+- [ ] `php appWeb/.sql/verify-lyrics-cutover.php --phase=pre-drop` → green sentinel (<24h).
 - [ ] Run `retire-component-lines-json` (setup-database card with `confirm=1`, or CLI). One `DROP COLUMN`
       on the shared DB — affects all three at once; all three are drop-safe.
-- [ ] `php tools/verify-lyrics-cutover.php --phase=post-drop` (Gate D) green; smoke all three envs.
+- [ ] `php appWeb/.sql/verify-lyrics-cutover.php --phase=post-drop` (Gate D) green; smoke all three envs.
 - [ ] Lift the three maintenance flags.
 - [ ] (Recovery, if needed) `php appWeb/.sql/regenerate-lines-json-from-lines.php`.
 

@@ -32,7 +32,7 @@ declare(strict_types=1);
  * harmless):
  *   (a) the C3 verifier sentinel tblAppSettings['lyrics_cutover_gate'] says
  *       phase='pre-drop', result='green', written < 24h ago (that run IS the full G1–G13
- *       byte-parity proof, incl. ChordsJson — see tools/verify-lyrics-cutover.php);
+ *       byte-parity proof, incl. ChordsJson — see appWeb/.sql/verify-lyrics-cutover.php);
  *   (b) the sentinel's fingerprint counts {songs,components,lines} STILL match the live
  *       corpus (nothing drifted since the gate ran — the freeze should guarantee this);
  *   (c) an INDEPENDENT live structural re-check: every song's mirrored line count equals
@@ -129,7 +129,8 @@ try {
     if ($sres) { $sres->close(); }
     if ($srow === null) {
         _migRetire_out('  [REFUSE] No lyrics_cutover_gate sentinel. Run inside the freeze first:');
-        _migRetire_out('           php tools/verify-lyrics-cutover.php --phase=pre-drop');
+        _migRetire_out('           Setup-Database → "Verify Lyrics-Cutover Gate" card → Run --phase=pre-drop');
+        _migRetire_out('           (CLI alt: php appWeb/.sql/verify-lyrics-cutover.php --phase=pre-drop)');
         return;
     }
     $gate = json_decode((string)$srow['SettingValue'], true);
@@ -140,7 +141,7 @@ try {
     if (($gate['phase'] ?? null) !== 'pre-drop' || ($gate['result'] ?? null) !== 'green') {
         _migRetire_out('  [REFUSE] sentinel is not phase=pre-drop / result=green (got phase='
             . json_encode($gate['phase'] ?? null) . ', result=' . json_encode($gate['result'] ?? null) . ').');
-        _migRetire_out('           Re-run: php tools/verify-lyrics-cutover.php --phase=pre-drop');
+        _migRetire_out('           Re-run the "Verify Lyrics-Cutover Gate" card → --phase=pre-drop (CLI alt: php appWeb/.sql/verify-lyrics-cutover.php --phase=pre-drop)');
         return;
     }
     if ((int)$srow['fresh'] !== 1) {

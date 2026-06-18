@@ -273,6 +273,7 @@ $friendlyTitles = [
     'restore'                          => 'Restore from Backup',
     'drop-legacy'                      => 'Drop Legacy Tables',
     'apply-all-migrations'             => 'Apply All Pending Migrations',
+    'verify-cutover'                   => 'Verify Lyrics-Cutover Gate (#1235)',
     /* Per-migration cards (label = card title minus the legacy
        alphabetic prefix; #816 standardised this on the issue
        number as the primary identifier). */
@@ -1008,6 +1009,40 @@ if ($action !== '') {
             }
             echo " in {$totalElapsed} ms.\n";
         }
+    } elseif ($action === 'verify-cutover') {
+        /* #1235 lyrics-cutover GATE runner — the WEB path for the verification
+           gate (the owner is web-only on shared DreamHost). The verify script
+           (appWeb/.sql/verify-lyrics-cutover.php) reads ?phase= directly in
+           dashboard mode, emits via its out() helper (captured into the panel
+           below) and sets $allGreen, then returns (never exit()s in web mode).
+           pre/soak are read-only except writing the green sentinel row;
+           pre-drop/post-drop are the drop-day gates. */
+        $vfPhase = (string)($_GET['phase'] ?? '');
+        if (!in_array($vfPhase, ['pre', 'soak', 'pre-drop', 'post-drop'], true)) {
+            echo "ERROR: phase must be pre | soak | pre-drop | post-drop.\n";
+            $actionSuccess = false;
+        } elseif (!$hasCredentials) {
+            echo "ERROR: Database credentials not configured.\n";
+            $actionSuccess = false;
+        } else {
+            $vfScript = $scriptDir . 'verify-lyrics-cutover.php';
+            if (!is_file($vfScript)) {
+                echo "ERROR: verify-lyrics-cutover.php not found in .sql/.\n";
+                $actionSuccess = false;
+            } else {
+                $allGreen = false;   /* the script sets this true on an all-green run */
+                try {
+                    require $vfScript;
+                    $actionSuccess = ($allGreen === true);
+                } catch (\Throwable $e) {
+                    $actionSuccess = false;
+                    echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
+                    if ($e->getFile()) {
+                        echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
+                    }
+                }
+            }
+        }
     } else {
         $scriptName = $scriptMap[$action] ?? null;
         if ($scriptName === null) {
@@ -1529,6 +1564,56 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <a href="?action=users" class="btn btn-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run User Migration
                         </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- #1235 lyrics-cutover verification gate — web runner (the owner is
+                 web-only on shared DreamHost, so the gate that arms the drop must be
+                 runnable here, not just from the CLI). -->
+            <div class="col-12">
+                <div class="card bg-dark border-info h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
+                            Verify Lyrics-Cutover Gate
+                            <span class="badge bg-info-subtle text-info-emphasis">#1235</span>
+                        </h5>
+                        <p class="card-text text-secondary small mb-3">
+                            Runs <code>verify-lyrics-cutover.php</code> against the live corpus — the
+                            losslessness proof (10 gates incl. the byte-identical <strong>G2</strong>)
+                            that ARMS the destructive JSON-column drop. <strong>pre</strong> establishes
+                            the baseline and writes the green sentinel the drop requires; run
+                            <strong>soak</strong> repeatedly during the soak (parity must stay 0).
+                            <strong>pre-drop</strong> / <strong>post-drop</strong> are for the
+                            maintenance-freeze drop day only. A full-corpus run can take a minute or two.
+                        </p>
+                        <p class="card-text small mb-3">
+                            <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                            <strong>A complete run ends with</strong> a <code>== GREEN — phase … passed ==</code>
+                            (or <code>RED</code>) line, and <code>pre</code>/<code>pre-drop</code> add
+                            <code>sentinel: lyrics_cutover_gate written (green)</code>. If you don't see that
+                            trailer, the request was cut short (a shared-host timeout) — nothing was armed;
+                            just run it again. Use <em>Smoke test</em> first to confirm the path in seconds.
+                        </p>
+                        <div class="d-flex flex-wrap gap-2">
+                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Smoke test <span class="small ms-1">(first 50 songs — no sentinel)</span>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=pre" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=pre</code> <span class="small ms-1">(baseline + sentinel)</span>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=soak" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=soak</code>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=pre-drop" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
+                               onclick="return confirm('pre-drop writes the sentinel that ARMS the irreversible JSON-column drop. Only run this inside the maintenance freeze, immediately before the drop. Continue?');">
+                                Run <code>--phase=pre-drop</code>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=post-drop" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=post-drop</code>
+                            </a>
+                        </div>
                     </div>
                 </div>
             </div>

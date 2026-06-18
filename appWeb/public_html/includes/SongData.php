@@ -3491,7 +3491,7 @@ class SongData
            (type/number/language) still comes from the THIN tblSongComponents inside
            the assembler (C-variant); chords are recomposed from the per-line mirror.
            Output is byte-identical to the P2a path — proven corpus-wide by the G2
-           cutover gate (tools/verify-lyrics-cutover.php). The LinesJson path survives
+           cutover gate (appWeb/.sql/verify-lyrics-cutover.php). The LinesJson path survives
            ONLY as the un-migrated-install fallback (no mirror table yet). */
         if ($this->_hasLyricLinesMirror()) {
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
