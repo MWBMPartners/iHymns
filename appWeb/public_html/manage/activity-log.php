@@ -239,7 +239,7 @@ if (($_GET['export'] ?? '') === 'csv') {
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
            ' . $whereSql . '
-           ORDER BY a.CreatedAt DESC
+           ORDER BY a.CreatedAt DESC, a.Id DESC
            LIMIT 10000'
     );
     $stmt->bind_param($types, ...$params);
@@ -329,7 +329,7 @@ try {
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
            ' . $whereSql . '
-           ORDER BY a.CreatedAt DESC
+           ORDER BY a.CreatedAt DESC, a.Id DESC
            LIMIT ' . (int)$pageSize . ' OFFSET ' . (int)$offset
     );
     $stmt->bind_param($types, ...$params);
