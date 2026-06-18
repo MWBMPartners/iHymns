@@ -413,7 +413,7 @@ gate. Each commit atomic + revertable.
   - **C2** `PartTypeSlug` backfill (`UPDATE … JOIN tblSongPartTypes` — all 7 live Type values map;
     291,634 rows; unmapped stays NULL, rule #20) **+ slug-at-write in the projector/write path**
     (a backfill alone rots on the next save). Data-only, no DDL. **Closes #1138 typing.**
-  - **C3** verification tooling: `tools/verify-lyrics-cutover.php` (modes
+  - **C3** verification tooling: `appWeb/.sql/verify-lyrics-cutover.php` (modes
     `--phase=pre|soak|pre-drop|post-drop`, runs G1–G13, writes the `tblAppSettings`
     `lyrics_cutover_gate` sentinel), `tools/export-fidelity-snapshot.php` (hashes all 26
     `songbook_export` payloads + a committed ~380-song sample across the export surfaces — this

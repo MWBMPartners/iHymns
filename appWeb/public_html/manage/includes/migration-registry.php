@@ -2111,7 +2111,7 @@ return [
                       . ' <code>tblSongComponents</code> now that <code>tblLyricLines</code> is the'
                       . ' single source of truth. Do NOT run via "Apply all" — run by hand inside a'
                       . ' #1234 maintenance freeze with a fresh tested backup, AFTER a ≥7-night soak.'
-                      . ' It REFUSES to drop unless <code>tools/verify-lyrics-cutover.php'
+                      . ' It REFUSES to drop unless <code>appWeb/.sql/verify-lyrics-cutover.php'
                       . ' --phase=pre-drop</code> wrote a green sentinel &lt; 24h ago AND live line-count'
                       . ' parity holds. Reversible via <code>regenerate-lines-json-from-lines.php</code>.',
             'button' => 'RETIRE JSON Columns (gated)',

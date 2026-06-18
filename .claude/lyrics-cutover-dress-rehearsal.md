@@ -56,7 +56,7 @@ return true (ChordsJson + Note + PartTypeSlug all present on `tblLyricLines`).
 
 ### 4. Prove pre-drop parity (Gate A)
 ```bash
-php tools/verify-lyrics-cutover.php --phase=pre
+php appWeb/.sql/verify-lyrics-cutover.php --phase=pre
 ```
 **Expect:** all gates `PASS` + `sentinel: lyrics_cutover_gate written (green)`. If any gate fails,
 STOP — the mirror isn't a faithful superset; investigate before going further.
@@ -65,14 +65,14 @@ STOP — the mirror isn't a faithful superset; investigate before going further.
 Load the editor locally, save a few songs (edit lyrics, chords, per-line language), restore a
 revision, run an import. Then:
 ```bash
-php tools/verify-lyrics-cutover.php --phase=soak
+php appWeb/.sql/verify-lyrics-cutover.php --phase=soak
 ```
 **Expect:** parity still 0 — proving C5 keeps `tblLyricLines` (authoritative) and the `LinesJson`
 shadow byte-consistent through real saves. This is the local analogue of the alpha soak.
 
 ### 6. Rehearse the drop (Gate C)
 ```bash
-php tools/verify-lyrics-cutover.php --phase=pre-drop     # writes the pre-drop/green sentinel (<24h)
+php appWeb/.sql/verify-lyrics-cutover.php --phase=pre-drop     # writes the pre-drop/green sentinel (<24h)
 php appWeb/.sql/migrate-retire-component-lines-json.php   # CLI: no confirm=1 needed (CLI is deliberate); web needs &confirm=1
 ```
 **Expect:** Stage 0 prints `[OK]` for sentinel + live-count match + line-count parity + 0 NULL
@@ -82,7 +82,7 @@ try:** run it WITHOUT the pre-drop sentinel (delete the `tblAppSettings['lyrics_
 
 ### 7. Prove the post-drop state (Gate D)
 ```bash
-php tools/verify-lyrics-cutover.php --phase=post-drop
+php appWeb/.sql/verify-lyrics-cutover.php --phase=post-drop
 ```
 **Expect:** green (G2 skipped — no JSON source left; structural gates pass). Then **smoke-test** the
 app against the now-thin schema: open a song page (reads assemble from `tblLyricLines`), edit + save a
@@ -92,7 +92,7 @@ song, restore a revision, run an import. None should reference the dropped colum
 ### 8. Rehearse the recovery (reversibility layer 3)
 ```bash
 php appWeb/.sql/regenerate-lines-json-from-lines.php
-php tools/verify-lyrics-cutover.php --phase=pre          # re-prove parity after rebuild
+php appWeb/.sql/verify-lyrics-cutover.php --phase=pre          # re-prove parity after rebuild
 ```
 **Expect:** the 4 columns are re-added + rebuilt from `tblLyricLines`, LinesJson re-tightened to
 NOT NULL, and `--phase=pre` green again — proving the drop is reversible without a backup restore.
