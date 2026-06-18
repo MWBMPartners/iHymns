@@ -326,7 +326,10 @@ function logActivity(
 
         $placeholders = implode(', ', array_fill(0, count($cols), '?'));
         $stmt = $db->prepare(
-            'INSERT INTO tblActivityLog (' . implode(', ', $cols) . ', CreatedAt) VALUES (' . $placeholders . ', NOW())'
+            /* NOW(6) captures microsecond precision (#1287) when CreatedAt is
+               TIMESTAMP(6); on a pre-migration second-granularity column MySQL
+               just truncates the fraction, so this is safe before the migration. */
+            'INSERT INTO tblActivityLog (' . implode(', ', $cols) . ', CreatedAt) VALUES (' . $placeholders . ', NOW(6))'
         );
         /* #926 — bindParamSafe throws a context-named error if types/args ever
            drift; here they're built together so they can't, but keep the guard. */
