@@ -101,6 +101,19 @@ if (!function_exists('lyricLinesAssembleComponents') || !function_exists('getDbM
     exit(2);
 }
 
+/* Activity Log (#1282) — OPTIONAL/best-effort: every run (CLI cron + web) leaves a
+   queryable row so a RED soak surfaces in /manage/activity-log without trawling cron
+   email. Already loaded by the dashboard (via auth.php); load it for the CLI path. A
+   missing activity_log.php must NOT abort the gate, so this is not in the guard above. */
+if (!function_exists('logActivity')) {
+    foreach ([
+        ($docRoot !== '' ? $docRoot . '/includes/activity_log.php' : null),
+        dirname(__DIR__) . '/public_html/includes/activity_log.php',
+    ] as $cand) {
+        if ($cand !== null && is_file($cand)) { require_once $cand; break; }
+    }
+}
+
 /* ---- args ---- (CLI: getopt; web: ?phase= only — the smoke/sample flags are CLI-only) */
 if ($LCV_WEB) {
     $phase       = (string)($_GET['phase'] ?? 'pre');
@@ -130,6 +143,7 @@ if (!($db instanceof mysqli)) {
     exit(2);
 }
 mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+$vcStart = microtime(true);   /* for the Activity-Log durationMs (#1282) */
 
 /* ---- output helpers ---- */
 $failuresNdjson = [];   // collected NDJSON lines (CLI stderr only)
@@ -450,6 +464,32 @@ if ($allGreen && $limit === 0) {
     out('  sentinel: lyrics_cutover_gate written (green).');
 } elseif ($allGreen) {
     out('  sentinel: NOT written (--limit run is not a full-corpus proof).');
+}
+
+/* Activity Log (#1282) — record every run's outcome (CLI cron + web) so an
+   unattended soak going RED is visible in /manage/activity-log without cron email.
+   Best-effort: logActivity never throws + is absent only if activity_log didn't load. */
+if (function_exists('logActivity')) {
+    $vcFailedGates = [];
+    foreach ($gates as $vcGid => $vcG) {
+        if (!$vcG['pass']) { $vcFailedGates[$vcGid] = $vcG['fails']; }
+    }
+    logActivity(
+        'setup.verify_cutover',
+        'database',
+        $phase,
+        [
+            'result'      => $allGreen ? 'green' : 'red',
+            'mode'        => $LCV_WEB ? 'web' : 'cli',
+            'limit'       => $limit,
+            'failedGates' => $vcFailedGates,
+            'fingerprint' => $fingerprint,
+            'sentinel'    => ($allGreen && $limit === 0) ? 'written' : 'not-written',
+        ],
+        $allGreen ? 'success' : 'failure',
+        null,
+        (int) round((microtime(true) - $vcStart) * 1000)
+    );
 }
 
 if ($asJson) {

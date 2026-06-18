@@ -711,6 +711,18 @@ if ($action !== '') {
         echo "---\n";
         echo $migOutput;
 
+        /* Activity Log (#1282) — per-run status for the JS per-card / bulk-runner
+           path (the bulk runner runs PENDING migrations only, so low volume).
+           Covers migrations + the install/migrate/users/cleanup/backup ops. */
+        if (function_exists('logActivity')) {
+            $logDetails = ['script' => $scriptName, 'elapsedMs' => (int)$elapsed, 'via' => 'ajax'];
+            if (!$migOk) {
+                $logDetails['error'] = $migErr;
+                if ($migErrFile !== '') { $logDetails['at'] = basename($migErrFile) . ':' . $migErrLine; }
+            }
+            logActivity('setup.run', 'database', $action, $logDetails, $migOk ? 'success' : 'error', null, (int)$elapsed);
+        }
+
         $pageRenderedCleanly = true;
         exit;
     }
@@ -968,6 +980,9 @@ if ($action !== '') {
                             $firstFailLine    = 0;
                         }
                         echo "\n  ✗ {$migAction} ran but is STILL PENDING after {$elapsed} ms — its objects were NOT created (the script swallowed an error above). Stopping so you can resolve it.\n";
+                        if (function_exists('logActivity')) {
+                            logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'reason' => 'ran but probe still PENDING'], 'error', null, (int)$elapsed);
+                        }
                         break;
                     }
                     $totalRan++;
@@ -987,6 +1002,9 @@ if ($action !== '') {
                         echo "    File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
                     }
                     echo "\n  Stopping the bulk run so you can resolve this before continuing.\n";
+                    if (function_exists('logActivity')) {
+                        logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'error' => $e->getMessage(), 'at' => basename((string)$e->getFile()) . ':' . $e->getLine()], 'error');
+                    }
                     break;
                 }
             }
@@ -1008,6 +1026,12 @@ if ($action !== '') {
                 echo ", {$totalFailed} failed";
             }
             echo " in {$totalElapsed} ms.\n";
+            /* Activity Log (#1282) — one summary row per Apply-all (per-migration
+               FAILURE rows are logged inline above; successes are not logged
+               individually to avoid ~95 no-op rows per click). */
+            if (function_exists('logActivity')) {
+                logActivity('setup.apply_all', 'database', '', ['ran' => $totalRan, 'failed' => $totalFailed, 'firstFailStep' => $firstFailStep], $totalFailed > 0 ? 'failure' : 'success', null, (int)$totalElapsed);
+            }
         }
     } elseif ($action === 'verify-cutover') {
         /* #1235 lyrics-cutover GATE runner — the WEB path for the verification
@@ -1055,6 +1079,7 @@ if ($action !== '') {
             if (!file_exists($scriptPath)) {
                 echo "ERROR: Script not found: {$scriptName}\n";
             } else {
+                $singleErr = null;
                 try {
                     /* Run the script in an isolated scope via an anonymous function.
                      * The scripts detect $isCli and adapt output accordingly.
@@ -1086,10 +1111,18 @@ if ($action !== '') {
                     }
                 } catch (\Throwable $e) {
                     $actionSuccess = false;
+                    $singleErr = $e->getMessage();
                     echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
                     if ($e->getFile()) {
                         echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
                     }
+                }
+                /* Activity Log (#1282) — per-run status for the no-JS single-action path
+                   (migrations + install/migrate/users/cleanup/backup/restore). */
+                if (function_exists('logActivity')) {
+                    $d = ['script' => $scriptName, 'via' => 'no-js'];
+                    if ($singleErr !== null) { $d['error'] = $singleErr; }
+                    logActivity('setup.run', 'database', $action, $d, $actionSuccess ? 'success' : 'error');
                 }
             }
         }
