@@ -988,6 +988,13 @@ if ($action !== '') {
                     $totalRan++;
                     $verifiedNote = ($verifyPending === false) ? ' + verified' : '';  /* null = unverifiable */
                     echo "\n  ✓ {$migAction} completed{$verifiedNote} in {$elapsed} ms\n\n";
+                    /* Activity Log (#1282) — log EVERY migration run in the no-JS bulk
+                       path, success included, so the audit trail is complete in every
+                       path (the JS per-card runner already logs each). A no-JS Apply-all
+                       therefore writes one row per migration in $migrationOrder. */
+                    if (function_exists('logActivity')) {
+                        logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'verified' => ($verifyPending === false)], 'success', null, (int)$elapsed);
+                    }
                 } catch (\Throwable $e) {
                     $totalFailed++;
                     $actionSuccess = false;
@@ -1026,9 +1033,8 @@ if ($action !== '') {
                 echo ", {$totalFailed} failed";
             }
             echo " in {$totalElapsed} ms.\n";
-            /* Activity Log (#1282) — one summary row per Apply-all (per-migration
-               FAILURE rows are logged inline above; successes are not logged
-               individually to avoid ~95 no-op rows per click). */
+            /* Activity Log (#1282) — one summary row per Apply-all, on top of the
+               per-migration rows (success + failure) logged inline above. */
             if (function_exists('logActivity')) {
                 logActivity('setup.apply_all', 'database', '', ['ran' => $totalRan, 'failed' => $totalFailed, 'firstFailStep' => $firstFailStep], $totalFailed > 0 ? 'failure' : 'success', null, (int)$totalElapsed);
             }
