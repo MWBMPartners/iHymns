@@ -25,9 +25,18 @@ declare(strict_types=1);
  *   - sendgrid : SendGrid v3 REST API
  *   - mailgun  : Mailgun v3 REST API (auto-detects EU / US region)
  *   - ses      : AWS SES SendEmail (SigV4-signed POST, no AWS SDK)
- *   - smtp     : NOT YET IMPLEMENTED (#898 follow-up). Returns a
- *                structured failure so the caller surfaces a real 500
- *                rather than silently dropping the email.
+ *   - smtp     : Self-contained SMTP-AUTH client (no PHPMailer / Composer).
+ *                Speaks ESMTP over a raw socket with STARTTLS or implicit
+ *                SSL/TLS, AUTH LOGIN, and an RFC 5322 MIME multipart body.
+ *                Supports Microsoft 365 (smtp.office365.com) and Google
+ *                Workspace (smtp.gmail.com) via the provider presets in
+ *                /manage/configuration.php, plus DELEGATE / "send-as"
+ *                sending where the From / Sender address differs from the
+ *                SMTP AUTH login (the login mailbox must be granted
+ *                Send-As on the delegate mailbox in the provider's admin
+ *                console — see the configuration.php setup guides). OAuth2
+ *                (and the eventual MailerMatt service) is the future path;
+ *                today it is SMTP-AUTH + an app password + delegate. (feature C)
  *   - log      : developer-only "send to PHP error_log" mode. Sanitises
  *                the log line — never writes the magic-link token, the
  *                6-digit code, or the verification token. The raw
@@ -190,15 +199,10 @@ final class EmailService
             case 'ses':
                 return self::sendViaSes($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'smtp':
-                /* Documented as TODO in #898 — see configuration.php
-                   instructions panel. Returning a structured failure
-                   makes the caller surface a real 500 rather than
-                   silently dropping the email. */
-                return EmailSendResult::failure(
-                    'smtp',
-                    'smtp_provider_not_yet_implemented',
-                    'NotImplemented'
-                );
+                /* feature C — real SMTP-AUTH client with STARTTLS / implicit
+                   SSL, AUTH LOGIN, and delegate ("send-as") From support.
+                   Supersedes the #898 "not yet implemented" stub. */
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
             default:
                 return EmailSendResult::failure(
                     (string)$service,
@@ -415,6 +419,286 @@ final class EmailService
     }
 
     /* -------------------------------------------------------------------
+     * Driver: SMTP (feature C — self-contained ESMTP client)
+     * -----------------------------------------------------------------
+     * Speaks ESMTP over a raw socket so the repo stays Composer-free,
+     * mirroring the no-SDK approach of the SES driver. Supports:
+     *   - STARTTLS (port 587, the Microsoft 365 / Google Workspace default)
+     *     and implicit SSL/TLS (port 465).
+     *   - AUTH LOGIN with the SMTP username + password.
+     *   - DELEGATE / "send-as" sending: the MAIL FROM envelope sender and
+     *     the From: header use email_smtp_from_address (the delegate
+     *     mailbox) when set, while authentication still uses email_smtp_user
+     *     (the login mailbox). The provider must have granted the login
+     *     mailbox Send-As permission on the delegate mailbox — that's an
+     *     admin-console step, documented in configuration.php.
+     *
+     * NOTE: the SMTP password is read here and written ONLY into the
+     * AUTH LOGIN exchange on the encrypted socket — it is never logged,
+     * never echoed, never placed in the activity-log row.
+     * ----------------------------------------------------------------- */
+    private static function sendViaSmtp(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $host   = trim((string)($cfg['email_smtp_host'] ?? ''));
+        $port   = (int)($cfg['email_smtp_port'] ?? 0);
+        $user   = (string)($cfg['email_smtp_user'] ?? '');
+        $pass   = (string)($cfg['email_smtp_pass'] ?? '');
+        $secure = (string)($cfg['email_smtp_secure'] ?? 'tls');
+        /* fromAddress() already prefers the delegate / send-as address
+           (email_smtp_from_address → falls back to email_from_address). */
+        $from   = self::fromAddress($cfg);
+
+        if ($host === '' || $port <= 0 || $user === '' || $pass === '' || $from['email'] === '') {
+            return EmailSendResult::failure('smtp', 'missing_host_port_credentials_or_from', 'NotConfigured');
+        }
+        if (!function_exists('fsockopen') && !function_exists('stream_socket_client')) {
+            return EmailSendResult::failure('smtp', 'no_socket_transport_available', 'TransportError');
+        }
+
+        /* Implicit-SSL connects to an already-TLS socket (port 465);
+           STARTTLS and "none" connect in cleartext and (for tls) upgrade
+           after EHLO. */
+        $useImplicitSsl = ($secure === 'ssl');
+        $useStartTls    = ($secure === 'tls');
+        $transport      = $useImplicitSsl ? 'ssl://' : '';
+
+        $errno  = 0;
+        $errstr = '';
+        $timeout = 15;
+        /* @ suppresses the connection-warning so a refused/timed-out
+           connection becomes a clean structured failure instead of a
+           PHP warning leaking host details into the output. */
+        $fp = @stream_socket_client(
+            $transport . $host . ':' . $port,
+            $errno,
+            $errstr,
+            $timeout,
+            STREAM_CLIENT_CONNECT
+        );
+        if ($fp === false) {
+            return EmailSendResult::failure(
+                'smtp',
+                'connect_failed:' . self::sanitiseForLog($errstr !== '' ? $errstr : ('errno_' . $errno), 80),
+                'TransportError'
+            );
+        }
+        stream_set_timeout($fp, $timeout);
+
+        /* RFC 5321 conversation. Each helper reads the multi-line reply
+           and asserts the leading 3-digit code is in the accepted set;
+           any deviation aborts and closes the socket. */
+        $fail = static function (string $why, ?string $detail = null) use ($fp): EmailSendResult {
+            @fclose($fp);
+            $msg = $detail !== null ? ($why . ':' . self::sanitiseForLog($detail, 120)) : $why;
+            return EmailSendResult::failure('smtp', $msg, 'ProviderError');
+        };
+
+        $ehloName = self::smtpEhloName($from['email']);
+
+        $greet = self::smtpRead($fp);
+        if (substr($greet, 0, 1) !== '2') {
+            return $fail('no_greeting', $greet);
+        }
+
+        self::smtpWrite($fp, 'EHLO ' . $ehloName);
+        $ehlo = self::smtpRead($fp);
+        if (substr($ehlo, 0, 1) !== '2') {
+            return $fail('ehlo_rejected', $ehlo);
+        }
+
+        if ($useStartTls) {
+            self::smtpWrite($fp, 'STARTTLS');
+            $tls = self::smtpRead($fp);
+            if (substr($tls, 0, 1) !== '2') {
+                return $fail('starttls_rejected', $tls);
+            }
+            /* Negotiate TLS on the existing socket. Use the modern "any
+               TLS" crypto-method constant so 1.2 / 1.3 are both allowed. */
+            $cryptoOk = @stream_socket_enable_crypto(
+                $fp,
+                true,
+                STREAM_CRYPTO_METHOD_TLS_CLIENT
+            );
+            if ($cryptoOk !== true) {
+                return $fail('starttls_handshake_failed', null);
+            }
+            /* RFC 3207: re-issue EHLO over the now-encrypted channel. */
+            self::smtpWrite($fp, 'EHLO ' . $ehloName);
+            $ehlo2 = self::smtpRead($fp);
+            if (substr($ehlo2, 0, 1) !== '2') {
+                return $fail('ehlo_after_tls_rejected', $ehlo2);
+            }
+        }
+
+        /* AUTH LOGIN — username + password base64-encoded, each on its
+           own line after the server's 334 challenge. The password leaves
+           this process only here, over the (TLS) socket. */
+        self::smtpWrite($fp, 'AUTH LOGIN');
+        $authChallenge = self::smtpRead($fp);
+        if (substr($authChallenge, 0, 3) !== '334') {
+            return $fail('auth_login_unsupported', $authChallenge);
+        }
+        self::smtpWrite($fp, base64_encode($user));
+        $userChallenge = self::smtpRead($fp);
+        if (substr($userChallenge, 0, 3) !== '334') {
+            return $fail('auth_username_rejected', $userChallenge);
+        }
+        self::smtpWrite($fp, base64_encode($pass));
+        $authResult = self::smtpRead($fp);
+        if (substr($authResult, 0, 3) !== '235') {
+            /* 535 here = bad credentials / SMTP-AUTH disabled / app
+               password required. We surface the SERVER's text but never
+               the password itself. */
+            return $fail('auth_failed', $authResult);
+        }
+
+        /* Envelope. MAIL FROM is the delegate address when send-as is
+           configured; some providers (M365) require it to match an
+           address the login mailbox is authorised to send as. */
+        self::smtpWrite($fp, 'MAIL FROM:<' . self::smtpAddr($from['email']) . '>');
+        $mailFrom = self::smtpRead($fp);
+        if (substr($mailFrom, 0, 1) !== '2') {
+            return $fail('mail_from_rejected', $mailFrom);
+        }
+        self::smtpWrite($fp, 'RCPT TO:<' . self::smtpAddr($to) . '>');
+        $rcptTo = self::smtpRead($fp);
+        if (substr($rcptTo, 0, 1) !== '2') {
+            return $fail('rcpt_to_rejected', $rcptTo);
+        }
+
+        self::smtpWrite($fp, 'DATA');
+        $dataPrompt = self::smtpRead($fp);
+        if (substr($dataPrompt, 0, 3) !== '354') {
+            return $fail('data_rejected', $dataPrompt);
+        }
+
+        $message = self::smtpBuildMessage($from, $to, $subject, $bodyHtml, $bodyText);
+        /* Dot-stuffing (RFC 5321 §4.5.2): a line that is just "." would
+           terminate DATA prematurely, so any leading dot is doubled. */
+        $message = preg_replace('/^\./m', '..', $message) ?? $message;
+        /* Terminate DATA with CRLF.CRLF. */
+        self::smtpWriteRaw($fp, $message . "\r\n.\r\n");
+        $sent = self::smtpRead($fp);
+        if (substr($sent, 0, 1) !== '2') {
+            return $fail('message_rejected', $sent);
+        }
+
+        /* Best-effort polite close; the message is already accepted. */
+        self::smtpWrite($fp, 'QUIT');
+        @fclose($fp);
+
+        /* Pull the queue id out of the 250 acceptance line if present
+           (e.g. "250 2.0.0 OK <id>") so admins can cross-reference. */
+        $msgId = null;
+        if (preg_match('/queued as ([A-Za-z0-9]+)/i', $sent, $m)) {
+            $msgId = $m[1];
+        }
+        return EmailSendResult::success('smtp', $msgId);
+    }
+
+    /** Send one SMTP command line terminated with CRLF. */
+    private static function smtpWrite($fp, string $line): void
+    {
+        self::smtpWriteRaw($fp, $line . "\r\n");
+    }
+
+    /** Write a raw payload to the socket. */
+    private static function smtpWriteRaw($fp, string $data): void
+    {
+        @fwrite($fp, $data);
+    }
+
+    /**
+     * Read a (possibly multi-line) SMTP reply. Continuation lines have a
+     * hyphen after the 3-digit code ("250-..."); the final line has a
+     * space ("250 ..."). Returns the full block so callers inspect the
+     * leading code via substr().
+     */
+    private static function smtpRead($fp): string
+    {
+        $data = '';
+        while (!feof($fp)) {
+            $line = fgets($fp, 1024);
+            if ($line === false) {
+                break;
+            }
+            $data .= $line;
+            /* 4th char is a space on the last line of a reply. */
+            if (strlen($line) >= 4 && $line[3] === ' ') {
+                break;
+            }
+            $info = stream_get_meta_data($fp);
+            if (!empty($info['timed_out'])) {
+                break;
+            }
+        }
+        return $data;
+    }
+
+    /**
+     * Strip CR/LF from an address before it goes into a MAIL FROM /
+     * RCPT TO command or a header — prevents SMTP command / header
+     * injection via a crafted address.
+     */
+    private static function smtpAddr(string $addr): string
+    {
+        return str_replace(["\r", "\n"], '', trim($addr));
+    }
+
+    /**
+     * Derive the EHLO hostname. RFC 5321 wants a FQDN; the From domain is
+     * a reasonable, non-leaking choice (falls back to a literal).
+     */
+    private static function smtpEhloName(string $fromEmail): string
+    {
+        $at = strrpos($fromEmail, '@');
+        $domain = $at !== false ? substr($fromEmail, $at + 1) : '';
+        $domain = preg_replace('/[^A-Za-z0-9.\-]/', '', $domain) ?? '';
+        return $domain !== '' ? $domain : 'localhost';
+    }
+
+    /**
+     * Build the RFC 5322 message: headers + multipart/alternative body
+     * (text + HTML). All header values are CRLF-stripped so neither the
+     * subject nor the From name can inject extra headers.
+     */
+    private static function smtpBuildMessage(array $from, string $to, string $subject, string $bodyHtml, string $bodyText): string
+    {
+        $headerSafe = static fn (string $v): string => str_replace(["\r", "\n"], '', $v);
+
+        $fromHeader = self::formatFrom($from);
+        $boundary   = 'ihymns_' . bin2hex(random_bytes(16));
+        $date       = gmdate('r');
+        $messageId  = '<' . bin2hex(random_bytes(16)) . '@' . self::smtpEhloName($from['email']) . '>';
+        if ($bodyText === '') {
+            $bodyText = trim(strip_tags($bodyHtml));
+        }
+
+        $headers = [
+            'Date: ' . $date,
+            'From: ' . $headerSafe($fromHeader),
+            'To: <' . self::smtpAddr($to) . '>',
+            'Subject: ' . $headerSafe($subject),
+            'Message-ID: ' . $messageId,
+            'MIME-Version: 1.0',
+            'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
+        ];
+
+        $crlf = "\r\n";
+        $body = '--' . $boundary . $crlf
+              . 'Content-Type: text/plain; charset=UTF-8' . $crlf
+              . 'Content-Transfer-Encoding: 8bit' . $crlf . $crlf
+              . $bodyText . $crlf . $crlf
+              . '--' . $boundary . $crlf
+              . 'Content-Type: text/html; charset=UTF-8' . $crlf
+              . 'Content-Transfer-Encoding: 8bit' . $crlf . $crlf
+              . $bodyHtml . $crlf . $crlf
+              . '--' . $boundary . '--' . $crlf;
+
+        return implode($crlf, $headers) . $crlf . $crlf . $body;
+    }
+
+    /* -------------------------------------------------------------------
      * Internal helpers
      * ----------------------------------------------------------------- */
 
@@ -467,6 +751,11 @@ final class EmailService
             'email_from_address', 'email_from_name',
             'email_smtp_host', 'email_smtp_port', 'email_smtp_user',
             'email_smtp_pass', 'email_smtp_secure',
+            /* feature C — SMTP provider preset + delegate / send-as From.
+               The preset only pre-fills host/port/secure in the UI; the
+               delegate address overrides the From / Sender at send time. */
+            'email_smtp_preset',
+            'email_smtp_from_address', 'email_smtp_from_name',
             'email_sendgrid_api_key',
             'email_mailgun_api_key', 'email_mailgun_domain',
             'email_ses_region', 'email_ses_access_key', 'email_ses_secret_key',
@@ -492,11 +781,37 @@ final class EmailService
         return self::$settings = $out;
     }
 
+    /**
+     * Resolve the effective From / Sender.
+     *
+     * feature C — DELEGATE / "send-as": when an SMTP delegate address is
+     * configured (email_smtp_from_address), it overrides the generic
+     * email_from_address so the message is sent on behalf of the
+     * delegated mailbox while AUTH still uses email_smtp_user. The
+     * delegate name (email_smtp_from_name) falls back to the generic
+     * From name. If no delegate is set, behaviour is identical to the
+     * pre-feature-C path (generic From for every provider).
+     *
+     * The delegate keys are SMTP-specific in the UI, but reading them
+     * here is harmless for the API providers (they have no delegate
+     * fields, so the keys are empty and we fall through to the generic
+     * From) and keeps the resolution in one place.
+     */
     private static function fromAddress(array $cfg): array
     {
+        $delegate = trim((string)($cfg['email_smtp_from_address'] ?? ''));
+        $email = ($delegate !== '' && filter_var($delegate, FILTER_VALIDATE_EMAIL))
+            ? $delegate
+            : (string)($cfg['email_from_address'] ?? '');
+
+        $delegateName = trim((string)($cfg['email_smtp_from_name'] ?? ''));
+        $name = $delegateName !== ''
+            ? $delegateName
+            : (string)($cfg['email_from_name'] ?? 'iHymns');
+
         return [
-            'email' => (string)($cfg['email_from_address'] ?? ''),
-            'name'  => (string)($cfg['email_from_name']    ?? 'iHymns'),
+            'email' => $email,
+            'name'  => $name,
         ];
     }
 
