@@ -275,6 +275,7 @@ $friendlyTitles = [
     'apply-all-migrations'             => 'Apply All Pending Migrations',
     'verify-cutover'                   => 'Verify Lyrics-Cutover Gate (#1235)',
     'opcache-reset'                    => 'Reset PHP OPcache (runtime code cache)',
+    'deploy-forensics'                 => 'Deployment Forensics (read-only diagnostics)',
     /* Per-migration cards (label = card title minus the legacy
        alphabetic prefix; #816 standardised this on the issue
        number as the primary identifier). */
@@ -1110,6 +1111,419 @@ if ($action !== '') {
             echo "(the deployed code is already correct). If they persist, the deploy didn't upload the\n";
             echo "current SongData.php — tell me and we'll fix the deploy itself.\n";
         }
+    } elseif ($action === 'deploy-forensics') {
+        /* #1295 — READ-ONLY deploy forensics. The live site INTERMITTENTLY throws
+           "Unknown column 's.SongbookName'" from SongData.php even though the repo
+           SongData.php uses a `b.Name` JOIN (no `s.SongbookName`) and the column is
+           dropped; an OPcache reset stops it, then it RETURNS. Separately, an editor
+           CSRF early-mint fix was deployed but delete_song still 403s. Competing
+           hypotheses: (1) the live DISK files aren't the repo versions; (2) a SECOND
+           stale copy is loaded; (3) opcache.file_cache resurrects stale bytecode
+           across resets; (4) multiple app servers each with independent OPcache.
+           This action emits a plain-text report that definitively reveals WHICH —
+           and it does so WITHOUT writing anything: no opcache_reset, no file writes,
+           no DB mutations. Every section is wrapped in its own try/catch so one
+           failing probe never aborts the rest, and every directory walk / loop is
+           bounded (file count + depth + a wall-time budget). */
+
+        $sec = static function (string $letter, string $title, callable $body): void {
+            echo "\n=== [{$letter}] {$title} ===\n";
+            try {
+                $body();
+            } catch (\Throwable $e) {
+                /* basename() the file so we never leak the absolute server path of an
+                   internal include into the panel; the message is already operator-safe. */
+                echo "  (section failed — continuing) " . $e->getMessage()
+                   . " @ " . basename((string)$e->getFile()) . ":" . $e->getLine() . "\n";
+            }
+        };
+
+        $fmtTime = static function ($ts): string {
+            $ts = (int)$ts;
+            return $ts > 0 ? date('Y-m-d H:i:s', $ts) : '(none)';
+        };
+
+        echo "iHymns DEPLOYMENT FORENSICS (read-only) — generated " . date('Y-m-d H:i:s') . "\n";
+        echo "Run this TWICE: if [A] hostname / SERVER_ADDR / PID differ between runs,\n";
+        echo "you are hitting MULTIPLE app servers, each with its own OPcache.\n";
+
+        /* ---- [A] SERVER IDENTITY ---------------------------------------- */
+        $sec('A', 'SERVER IDENTITY', function () {
+            echo "  gethostname():     " . (gethostname() ?: '?') . "\n";
+            echo "  php_uname('n'):    " . (php_uname('n') ?: '?') . "\n";
+            echo "  SERVER_ADDR:       " . ($_SERVER['SERVER_ADDR'] ?? '?') . "\n";
+            echo "  getmypid():        " . getmypid() . "\n";
+            echo "  php_sapi_name():   " . php_sapi_name() . "\n";
+            echo "  PHP_VERSION:       " . PHP_VERSION . "\n";
+        });
+
+        /* ---- [B] LOADED SongData.php ------------------------------------ */
+        /* Resolve the file the autoloader/require ACTUALLY loaded (not a guessed
+           path) via reflection on the loaded class, then fingerprint it and print
+           the exact lines + a substring tally so staleness is unambiguous. */
+        $loadedSongData = null;
+        $sec('B', 'LOADED SongData.php', function () use ($fmtTime, &$loadedSongData) {
+            if (!class_exists('SongData')) {
+                /* Force the include using the same require the app uses, so we report
+                   the file that WOULD load on a real request. */
+                $candidate = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                           . DIRECTORY_SEPARATOR . 'SongData.php';
+                if (is_file($candidate)) { require_once $candidate; }
+            }
+            if (!class_exists('SongData')) {
+                echo "  class SongData is NOT loadable — cannot reflect its file.\n";
+                return;
+            }
+            $ref  = new \ReflectionClass('SongData');
+            $path = $ref->getFileName();
+            $real = $path !== false ? (realpath($path) ?: $path) : '(unknown)';
+            $loadedSongData = $real;
+            echo "  ReflectionClass file: {$real}\n";
+            if (is_file($real)) {
+                echo "  filesize:  " . filesize($real) . " bytes\n";
+                echo "  filemtime: " . $fmtTime(filemtime($real)) . "\n";
+                echo "  sha1_file: " . sha1_file($real) . "\n";
+                $contents = file_get_contents($real);
+                if ($contents !== false) {
+                    $lines = preg_split('/\r\n|\r|\n/', $contents);
+                    $dump  = static function (int $from, int $to) use ($lines) {
+                        $max = count($lines);
+                        for ($i = $from; $i <= $to && $i <= $max; $i++) {
+                            /* $lines is 0-indexed; print human (1-based) line numbers. */
+                            echo "    " . str_pad((string)$i, 5, ' ', STR_PAD_LEFT)
+                               . " | " . ($lines[$i - 1] ?? '') . "\n";
+                        }
+                    };
+                    echo "  --- lines 360-372 ---\n";
+                    $dump(360, 372);
+                    echo "  --- lines 1628-1640 ---\n";
+                    $dump(1628, 1640);
+                    /* The stale-code smoking gun: the dropped column should appear ZERO
+                       times in SQL string literals; the correct JOIN alias should appear. */
+                    echo "  substr_count('s.SongbookName'):      "
+                       . substr_count($contents, 's.SongbookName') . "\n";
+                    echo "  substr_count('b.Name AS songbookName'): "
+                       . substr_count($contents, 'b.Name AS songbookName') . "\n";
+                    echo "  substr_count('b.Name'):              "
+                       . substr_count($contents, 'b.Name') . "\n";
+                    echo "  NOTE: any 's.SongbookName' hits here may be in COMMENTS; the SQL\n";
+                    echo "        itself should read 'b.Name AS songbookName' / 'sb.Name AS songbookName'.\n";
+                } else {
+                    echo "  (could not read file contents)\n";
+                }
+            } else {
+                echo "  reflected path is not a readable file.\n";
+            }
+        });
+
+        /* ---- [C] ALL COPIES on disk ------------------------------------- */
+        /* Walk the deploy root (parent of DOCUMENT_ROOT — holds public_html +
+           .sql / .auth / data_share / private_html siblings) for (1) every file
+           literally named SongData.php and (2) every *.php that CONTAINS the dropped
+           column string. A second docroot or a #1250 sibling-tree copy shows up here.
+           Bounded by file-count, depth and a wall-time budget so a pathological tree
+           never hangs the page; any cap hit is printed, never silent. */
+        $sec('C', 'ALL COPIES on disk (bounded scan)', function () use ($fmtTime, $loadedSongData) {
+            $docRoot    = $_SERVER['DOCUMENT_ROOT'] ?? '';
+            $deployRoot = $docRoot !== '' ? dirname($docRoot) : dirname(__DIR__, 3);
+            $deployRoot = realpath($deployRoot) ?: $deployRoot;
+            echo "  scan root: {$deployRoot}\n";
+
+            $maxFiles = 20000;
+            $maxDepth = 12;
+            $budget   = 5.0;            // seconds of wall-time
+            /* Skip VCS, deps, backups AND credential dirs (.auth/.env): the scan
+               must never even READ a credential file into memory (#1295 safety
+               review). SongData.php never lives in those dirs, so coverage of the
+               real deploy tree (public_html + .sql / private_html / data_share
+               siblings) is unaffected. */
+            $skipDirs = ['.git', '.auth', '.env', 'node_modules', 'vendor', '_backups', 'backups'];
+            $start    = microtime(true);
+
+            $seen     = 0;
+            $capped   = false;
+            $reason   = '';
+            $songData = [];            // files named exactly SongData.php
+            $colHits  = [];            // *.php whose contents contain s.SongbookName
+
+            /* Iterative stack walk (no recursion) so depth + budget are trivially
+               enforceable; each frame is [path, depth]. */
+            $stack = [[$deployRoot, 0]];
+            while ($stack !== []) {
+                if ((microtime(true) - $start) > $budget) { $capped = true; $reason = 'wall-time budget (~5s)'; break; }
+                if ($seen >= $maxFiles)                   { $capped = true; $reason = "file cap ({$maxFiles})"; break; }
+                [$dir, $depth] = array_pop($stack);
+                if ($depth > $maxDepth) { $capped = true; $reason = "depth cap ({$maxDepth})"; continue; }
+
+                $entries = @scandir($dir);
+                if ($entries === false) { continue; }
+                foreach ($entries as $entry) {
+                    if ($entry === '.' || $entry === '..') { continue; }
+                    $full = $dir . DIRECTORY_SEPARATOR . $entry;
+                    if (is_dir($full)) {
+                        if (in_array($entry, $skipDirs, true)) { continue; }
+                        if (is_link($full)) { continue; }      // don't follow symlinks (loop/escape guard)
+                        $stack[] = [$full, $depth + 1];
+                        continue;
+                    }
+                    if (!is_file($full)) { continue; }
+                    $seen++;
+                    if ($seen >= $maxFiles) { $capped = true; $reason = "file cap ({$maxFiles})"; break 2; }
+
+                    $isSongData = ($entry === 'SongData.php');
+                    $isPhp      = (substr($entry, -4) === '.php');
+                    if (!$isSongData && !$isPhp) { continue; }
+
+                    /* Only read contents for .php files (the column string only lives
+                       in PHP source); cap individual reads implicitly via is_file. */
+                    $hasCol = false;
+                    if ($isPhp) {
+                        $c = @file_get_contents($full);
+                        if ($c !== false && strpos($c, 's.SongbookName') !== false) { $hasCol = true; }
+                    }
+                    if ($isSongData) {
+                        $songData[] = [
+                            'path' => $full,
+                            'mtime' => $fmtTime(@filemtime($full)),
+                            'size' => @filesize($full),
+                            'sha1' => @sha1_file($full) ?: '?',
+                            'col'  => $hasCol ? 'YES' : 'no',
+                        ];
+                    }
+                    if ($hasCol) {
+                        $colHits[] = [
+                            'path' => $full,
+                            'mtime' => $fmtTime(@filemtime($full)),
+                            'size' => @filesize($full),
+                            'sha1' => @sha1_file($full) ?: '?',
+                        ];
+                    }
+                }
+            }
+
+            echo "  files examined: {$seen}" . ($capped ? "  *** SCAN CAPPED: {$reason} (results below are PARTIAL) ***" : "") . "\n";
+
+            echo "  -- files named 'SongData.php' (" . count($songData) . ") --\n";
+            if ($songData === []) {
+                echo "    (none found under scan root)\n";
+            }
+            foreach ($songData as $f) {
+                $isLoaded = ($loadedSongData !== null && (realpath($f['path']) ?: $f['path']) === $loadedSongData) ? '  <== the LOADED one' : '';
+                echo "    {$f['path']}{$isLoaded}\n";
+                echo "      mtime={$f['mtime']}  size={$f['size']}  sha1={$f['sha1']}  contains-s.SongbookName={$f['col']}\n";
+            }
+            if (count($songData) > 1) {
+                echo "  *** MORE THAN ONE SongData.php ON DISK — a second copy may be shadowing the repo file. ***\n";
+            }
+
+            echo "  -- *.php containing 's.SongbookName' (" . count($colHits) . ") --\n";
+            if ($colHits === []) {
+                echo "    (none — no source on disk references the dropped column)\n";
+            }
+            foreach ($colHits as $f) {
+                echo "    {$f['path']}\n";
+                echo "      mtime={$f['mtime']}  size={$f['size']}  sha1={$f['sha1']}\n";
+            }
+        });
+
+        /* ---- [D] OPCACHE CONFIG + FILE_CACHE ---------------------------- */
+        /* opcache.file_cache is the dangerous one: a SECONDARY on-disk bytecode
+           store that survives opcache_reset() and can resurrect stale code. Flag
+           it loudly and, if set, scan it for any blob that mentions SongData. */
+        $sec('D', 'OPCACHE CONFIG + FILE_CACHE', function () use ($fmtTime) {
+            if (!function_exists('opcache_get_configuration')) {
+                echo "  opcache_get_configuration() unavailable — OPcache not loaded.\n";
+                return;
+            }
+            $cfg = @opcache_get_configuration();
+            $d   = (is_array($cfg) && isset($cfg['directives'])) ? $cfg['directives'] : [];
+            $show = static function (string $k) use ($d) {
+                if (!array_key_exists($k, $d)) { return '(unset)'; }
+                $v = $d[$k];
+                if (is_bool($v)) { return $v ? 'true' : 'false'; }
+                if ($v === '' || $v === null) { return '(empty)'; }
+                return (string)$v;
+            };
+            echo "  opcache.enable:                        " . $show('opcache.enable') . "\n";
+            echo "  opcache.validate_timestamps:           " . $show('opcache.validate_timestamps') . "\n";
+            echo "  opcache.revalidate_freq:               " . $show('opcache.revalidate_freq') . "\n";
+            echo "  opcache.file_cache:                    " . $show('opcache.file_cache') . "\n";
+            echo "  opcache.file_cache_only:               " . $show('opcache.file_cache_only') . "\n";
+            echo "  opcache.file_cache_consistency_checks: " . $show('opcache.file_cache_consistency_checks') . "\n";
+
+            $fileCache = $d['opcache.file_cache'] ?? '';
+            if (is_string($fileCache) && $fileCache !== '') {
+                echo "  *** opcache.file_cache IS SET ({$fileCache}) — a secondary on-disk\n";
+                echo "      bytecode cache that can RESURRECT stale code ACROSS opcache_reset(). ***\n";
+                if (is_dir($fileCache)) {
+                    $found = 0;
+                    $cnt   = 0;
+                    $it = null;
+                    try {
+                        $it = new \RecursiveIteratorIterator(
+                            new \RecursiveDirectoryIterator($fileCache, \FilesystemIterator::SKIP_DOTS),
+                            \RecursiveIteratorIterator::LEAVES_ONLY
+                        );
+                    } catch (\Throwable) { $it = null; }
+                    if ($it !== null) {
+                        foreach ($it as $p) {
+                            if (++$cnt > 20000) { echo "      (file_cache scan capped at 20000 entries)\n"; break; }
+                            $ps = (string)$p;
+                            if (stripos($ps, 'SongData') !== false) {
+                                $found++;
+                                echo "      cached blob mentions SongData: {$ps}  mtime=" . $fmtTime(@filemtime($ps)) . "\n";
+                            }
+                        }
+                    }
+                    if ($found === 0) {
+                        echo "      (scanned {$cnt} cached entries — none mention SongData)\n";
+                    }
+                } else {
+                    echo "      (file_cache path is not a readable directory from this process)\n";
+                }
+            } else {
+                echo "  opcache.file_cache is empty — no secondary bytecode store to resurrect stale code.\n";
+            }
+        });
+
+        /* ---- [E] OPCACHE SCRIPT TABLE ----------------------------------- */
+        /* The interned script table is the ground truth for "what bytecode is the
+           runtime actually executing." Two distinct SongData paths cached = two
+           copies being executed (multi-docroot or shadow file confirmed). */
+        $sec('E', 'OPCACHE SCRIPT TABLE', function () use ($fmtTime) {
+            if (!function_exists('opcache_get_status')) {
+                echo "  opcache_get_status() unavailable — OPcache not loaded.\n";
+                return;
+            }
+            $st = @opcache_get_status(true);
+            if (!is_array($st)) {
+                echo "  opcache_get_status(true) returned no data (restricted or disabled).\n";
+                return;
+            }
+            echo "  opcache_enabled:   " . (!empty($st['opcache_enabled']) ? 'yes' : 'no') . "\n";
+            echo "  num_cached_scripts: " . (int)($st['opcache_statistics']['num_cached_scripts'] ?? 0) . "\n";
+            $scripts = $st['scripts'] ?? [];
+            if (!is_array($scripts) || $scripts === []) {
+                echo "  (no per-script table available — opcache.restrict_api may hide it, or list was not requested)\n";
+                return;
+            }
+            $songPaths = [];
+            $shown = 0;
+            foreach ($scripts as $key => $info) {
+                if (stripos((string)$key, 'SongData') === false) { continue; }
+                if ($shown++ > 200) { echo "  (script-table SongData matches capped at 200)\n"; break; }
+                $fp = $info['full_path'] ?? (string)$key;
+                $songPaths[$fp] = true;
+                echo "  SongData script: {$fp}\n";
+                echo "    compiled(timestamp)=" . $fmtTime($info['timestamp'] ?? 0)
+                   . "  last_used=" . (isset($info['last_used']) ? (string)$info['last_used'] : '?') . "\n";
+            }
+            if ($songPaths === []) {
+                echo "  (no cached script path contains 'SongData')\n";
+            } elseif (count($songPaths) > 1) {
+                echo "  *** " . count($songPaths) . " DISTINCT SongData paths are cached — MORE THAN ONE COPY\n";
+                echo "      IS BEING EXECUTED (multi-docroot or a shadow file). ***\n";
+            }
+        });
+
+        /* ---- [F] CSRF / index.php DEPLOY CHECK -------------------------- */
+        /* The editor's #1294 fix is an early $editorCsrf mint near the top of
+           manage/editor/index.php. If that token is ABSENT from the file on disk,
+           the deploy did NOT land this file — deploy-staleness confirmed, NOT a
+           CSRF-logic bug. Also surface the session config that governs whether the
+           token's cookie survives the editor's cross-page POST. */
+        $sec('F', 'CSRF / editor index.php DEPLOY CHECK', function () use ($fmtTime) {
+            $idx  = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                  . 'editor' . DIRECTORY_SEPARATOR . 'index.php';
+            $real = realpath($idx) ?: $idx;
+            echo "  editor index.php: {$real}\n";
+            if (is_file($real)) {
+                echo "  filemtime: " . $fmtTime(filemtime($real)) . "\n";
+                echo "  sha1_file: " . sha1_file($real) . "\n";
+                $c = file_get_contents($real);
+                if ($c !== false) {
+                    $lines = preg_split('/\r\n|\r|\n/', $c);
+                    $grep  = static function (string $needle) use ($lines) {
+                        $hits = [];
+                        foreach ($lines as $i => $ln) {
+                            if (strpos($ln, $needle) !== false) { $hits[] = $i + 1; }
+                        }
+                        return $hits;
+                    };
+                    $csrfVar  = $grep('$editorCsrf');
+                    $csrfCall = $grep('csrfToken()');
+                    echo "  '\$editorCsrf' lines: " . ($csrfVar === [] ? '(NONE)' : implode(', ', $csrfVar)) . "\n";
+                    echo "  'csrfToken()' lines: " . ($csrfCall === [] ? '(none)' : implode(', ', $csrfCall)) . "\n";
+                    if ($csrfVar === []) {
+                        echo "  *** '\$editorCsrf' early-mint is ABSENT — the #1294 deploy did NOT land\n";
+                        echo "      this file. DEPLOY-STALENESS CONFIRMED for editor/index.php. ***\n";
+                    } else {
+                        echo "  '\$editorCsrf' early-mint IS present — this file is the #1294 version.\n";
+                    }
+                } else {
+                    echo "  (could not read editor index.php contents)\n";
+                }
+            } else {
+                echo "  editor index.php not found on disk at the expected path.\n";
+            }
+
+            $savePath = ini_get('session.save_path');
+            echo "  session.cookie_samesite: " . (ini_get('session.cookie_samesite') ?: '(unset)') . "\n";
+            echo "  session.save_path:       " . ($savePath !== false && $savePath !== '' ? $savePath : '(default/unset)') . "\n";
+            if (is_string($savePath) && $savePath !== '') {
+                /* save_path may carry an "N;/path" prefix; take the trailing path segment. */
+                $sp = $savePath;
+                if (strpos($sp, ';') !== false) { $sp = substr($sp, strrpos($sp, ';') + 1); }
+                echo "  is_writable(save_path):  " . (@is_writable($sp) ? 'yes' : 'NO — session writes may be failing') . "\n";
+            }
+            $ss = session_status();
+            echo "  session_status():        "
+               . ($ss === PHP_SESSION_DISABLED ? 'DISABLED'
+                  : ($ss === PHP_SESSION_NONE ? 'none (not started)'
+                     : 'active')) . "\n";
+        });
+
+        /* ---- [G] BUILD MARKER ------------------------------------------- */
+        /* The deploy pipeline sed-injects the commit SHA + date into infoAppVer.php.
+           Reading it here tells the operator which commit the LIVE bytecode claims to
+           be — cross-check against [B]/[F] file mtimes + the expected SHA. */
+        $sec('G', 'BUILD MARKER (infoAppVer.php)', function () {
+            $verPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                     . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+            $real = realpath($verPath) ?: $verPath;
+            echo "  infoAppVer.php: {$real}\n";
+            if (!is_file($real)) {
+                echo "  (not found on disk)\n";
+                return;
+            }
+            $app = [];
+            /* Loaded in an isolated scope: the file just assigns into $app. */
+            require $real;
+            $get = static function (array $keys) use ($app) {
+                $v = $app;
+                foreach ($keys as $k) {
+                    if (!is_array($v) || !array_key_exists($k, $v)) { return null; }
+                    $v = $v[$k];
+                }
+                return $v;
+            };
+            $version  = $get(['Application', 'Version', 'Number']);
+            $shaFull  = $get(['Application', 'Version', 'Repo', 'Commit', 'SHA', 'Full']);
+            $shaShort = $get(['Application', 'Version', 'Repo', 'Commit', 'SHA', 'Short']);
+            $date     = $get(['Application', 'Version', 'Repo', 'Commit', 'Date']);
+            $url      = $get(['Application', 'Version', 'Repo', 'Commit', 'URL']);
+            echo "  version:     " . ($version ?? '(unset)') . "\n";
+            echo "  commit SHA:  " . ($shaFull ?? '(NULL — not injected; running from un-deployed source?)') . "\n";
+            echo "  commit short:" . ($shaShort ?? '(NULL)') . "\n";
+            echo "  commit date: " . ($date ?? '(NULL — deploy sed did not run)') . "\n";
+            echo "  commit URL:  " . ($url ?? '(NULL)') . "\n";
+        });
+
+        echo "\n=== END OF FORENSICS REPORT ===\n";
+        $actionSuccess = true;
+        if (function_exists('logActivity')) {
+            logActivity('setup.deploy-forensics', 'database', 'deploy-forensics', ['via' => 'web'], 'success');
+        }
     } else {
         $scriptName = $scriptMap[$action] ?? null;
         if ($scriptName === null) {
@@ -1826,6 +2240,32 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=opcache-reset" class="btn btn-outline-warning btn-action">
                             Reset OPcache
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- #1295 — READ-ONLY deploy forensics. Definitively reveals WHY deployed
+                 code isn't running: stale disk files, a second/shadow SongData.php,
+                 an opcache.file_cache resurrecting bytecode, or multiple app servers.
+                 Writes nothing — no reset, no DB mutation. Run twice to spot multi-server. -->
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-search me-1" aria-hidden="true"></i>
+                            Deployment Forensics
+                        </h5>
+                        <p class="card-text text-secondary small">
+                            <strong>Read-only.</strong> Fingerprints the SongData.php the runtime
+                            actually loaded, scans the deploy tree for shadow copies, dumps the
+                            OPcache script table + <code>file_cache</code>, checks the editor
+                            CSRF deploy and reports the live build SHA. Use to diagnose
+                            "deployed code isn't running" — writes nothing. Run twice to detect
+                            multiple app servers.
+                        </p>
+                        <a href="?action=deploy-forensics" class="btn btn-outline-warning btn-action">
+                            Run Forensics
                         </a>
                     </div>
                 </div>
