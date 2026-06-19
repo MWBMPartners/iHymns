@@ -25,6 +25,20 @@ requireEditor();
 
 $currentUser = getCurrentUser();
 
+/* CSRF token mint — MUST run BEFORE any HTML output (mirrors editor2.php:34).
+   csrfToken() calls initSession() → session_start(), so the session cookie
+   and the freshly-minted $_SESSION['csrf_token'] are committed to the response
+   headers + session store while we still own the output buffer. The old code
+   first called csrfToken() at the inline <script> ~1640 lines down, deep in the
+   HTML body; for a token-adopted session (ihymns_auth cookie, no prior PHP
+   session) that was the FIRST mint, and minting/persisting a brand-new token
+   that late made api2.php's validateCsrf() (X-CSRF-Token header) reject the
+   subsequent delete_song POST with a 403 "Invalid or missing CSRF token".
+   Establishing it here, before <!DOCTYPE>, gives the same early-mint guarantee
+   that makes the v2 editor's CSRF validate. The window.IHYMNS_EDITOR_CSRF emit
+   below now just re-reads this same session token. (delete_song 403 fix) */
+$editorCsrf = function_exists('csrfToken') ? csrfToken() : '';
+
 /* External-link type registry for the Song-Editor Links tab (#833).
    Empty array on pre-migration installs — the Links tab still
    renders but the dropdown shows the empty-state hint. */
@@ -1637,7 +1651,7 @@ try {
            translation/annotation editor POSTs to. The legacy load/save path
            (api.php) is session-only; api2.php's enrichment endpoints additionally
            validate this token via the X-CSRF-Token header. */
-        window.IHYMNS_EDITOR_CSRF = <?= json_encode(function_exists('csrfToken') ? csrfToken() : '') ?>;
+        window.IHYMNS_EDITOR_CSRF = <?= json_encode($editorCsrf) ?>;
         window.IHYMNS_EDITOR_API2 = '/manage/editor/api2';
     </script>
 
