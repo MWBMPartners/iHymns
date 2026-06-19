@@ -320,3 +320,22 @@ foreach ($cands as $c) { if (is_file($c)) { require_once $c; $found = true; brea
 ### 16.2 The SFTP deploy content-compares; new files no longer silently strand
 
 `deploy.yml`'s normal path used `--only-newer`, which — because `actions/checkout` stamps every file with the checkout mtime — **silently skipped files** whose remote copy had a later (prior-deploy) mtime. It stranded `lyric_lines_sync.php` (and #919/#920 before it). Now the normal path **content-compares** (size+content); `[deploy all]` in the commit/PR-title still forces a full sweep; the deploy job has a `timeout-minutes: 20` cap + `~/.lftprc` net timeouts so a stalled mirror can't hang the 6h Actions ceiling (it did, twice). When you add a NEW file a deploy must pick up, a `[deploy all]` PR title is the belt-and-braces guarantee.
+
+## 17. Model-tier selection — match the model to the task complexity
+
+**Standing rule:** when delegating to subagents (the Agent tool) or to a workflow stage, **match the model tier to the complexity of the work.** Don't default everything to the top tier (wasteful on cost + latency); don't hand hard reasoning to a weak tier (risky for correctness). Spread the work across the tiers available to you so each task runs on the cheapest model that can still do it well.
+
+The mapping:
+
+- **Fast / cheap tier (e.g. Haiku)** → mechanical, low-reasoning work: renames, formatting, import sorting, doc-blocks + comment annotation, boilerplate, simple find-and-replace, trivial config edits, simple `grep`/`glob` sweeps, syntax-only fixes.
+- **Mid tier (e.g. Sonnet)** → standard implementation: a self-contained feature, a single-page handler, a focused bugfix in code you already understand, writing tests against a clear spec.
+- **Top tier (e.g. Opus)** → genuinely hard reasoning: architecture + data-model decisions, subtle multi-file bugs, large cross-cutting refactors, adversarial review / verification, security-sensitive changes (auth, CSRF, SQL-binding, secrets), ambiguous trade-offs with no obvious right answer.
+
+The aim is cost/latency efficiency **without sacrificing quality where it matters**. **When unsure, prefer the more capable tier for anything correctness-critical** — a wrong auth check or a missed SQL-injection vector costs far more than the extra tokens. Tier-down only when the task is unambiguously mechanical.
+
+This repo already ships matching agent types as the natural vehicles — use them rather than reinventing the routing:
+
+- **`quick-edits`** (`.claude/agents/quick-edits.md`, fast/cheap tier) — the low-reasoning mechanical lane.
+- **`deep-architect`** (`.claude/agents/deep-architect.md`, top tier) — the hard-reasoning / review / security lane.
+
+Standard mid-tier implementation work needs no special agent — run it on the default model. Reserve the two named agents for the ends of the spectrum.

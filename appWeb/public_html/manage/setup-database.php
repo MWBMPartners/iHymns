@@ -1988,14 +1988,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                             </span>
                             <?php
                                 /* #1235 P4/C6 — a manual/destructive migration's run link carries
-                                   confirm=1 (the script refuses without it) + a confirm() dialog. */
+                                   confirm=1 (the script refuses without it) + a confirm() dialog.
+                                   #1298 — plus the type-to-confirm speed-bump (data attribute carries
+                                   the exact slug the operator must type). Layered on top of the
+                                   server-side confirm=1 / sentinel gate, never instead of it. */
                                 $_paManual  = !empty($migrationManual[$_pa]);
                                 $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
                                 $_paOnclick = $_paManual
                                     ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds behind the pre-drop verification gate. Continue?\');"'
                                     : '';
+                                $_paType    = $_paManual
+                                    ? ' data-type-to-confirm="' . htmlspecialchars($_pa, ENT_QUOTES) . '"'
+                                    : '';
                             ?>
-                            <a href="<?= $_paHref ?>"<?= $_paOnclick ?>
+                            <a href="<?= $_paHref ?>"<?= $_paOnclick ?><?= $_paType ?>
                                class="btn btn-sm <?= $_paManual ? 'btn-danger' : 'btn-outline-info' ?> flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
                                 Run &amp; show output
                             </a>
@@ -2136,11 +2142,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                 $_renderCard = static function (string $migAction, array $card, bool $hasCreds, bool $isManual = false): void {
                     /* #1235 P4/C6 — a manual/destructive migration's run link carries confirm=1
                        (the script REFUSES a web run without it) + a JS confirm() dialog, mirroring
-                       the drop-legacy pattern; the button is danger-styled and the card flagged. */
+                       the drop-legacy pattern; the button is danger-styled and the card flagged.
+                       ADDITIONAL client speed-bump (#1298): the anchor also carries
+                       data-type-to-confirm="<slug>" so the shared inline JS forces the operator to
+                       type the exact migration slug before the destructive request fires. This is
+                       layered ON TOP of the server-side confirm=1 / sentinel gate — never instead. */
                     $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
                     $btnClass = $isManual ? 'btn-danger' : 'btn-info';
                     $onclick = $isManual
                         ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds if the pre-drop verification gate is green and &lt;24h old. Continue?\');"'
+                        : '';
+                    /* The required phrase IS the migration slug — shown to the operator in the
+                       prompt and matched case-sensitively. htmlspecialchars guards the attribute. */
+                    $typeToConfirm = $isManual
+                        ? ' data-type-to-confirm="' . htmlspecialchars($migAction, ENT_QUOTES) . '"'
                         : '';
                     ?>
                     <div class="col-md-6">
@@ -2151,7 +2166,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     <span class="badge bg-danger mb-2">Manual &amp; destructive — NOT run by &ldquo;Apply all&rdquo;</span>
                                 <?php endif; ?>
                                 <p class="card-text text-secondary small"><?= $card['body'] ?></p>
-                                <a href="<?= $href ?>"<?= $onclick ?>
+                                <a href="<?= $href ?>"<?= $onclick ?><?= $typeToConfirm ?>
                                    class="btn <?= $btnClass ?> btn-action <?= $hasCreds ? '' : 'disabled' ?>">
                                     <?= htmlspecialchars($card['button']) ?>
                                 </a>
@@ -2461,6 +2476,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 Preview
                             </a>
                             <a href="?action=drop-legacy&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                               data-type-to-confirm="drop-legacy"
                                onclick="return confirm('This will DROP all tables in the database that are not defined in schema.sql.\n\nThis cannot be undone. Run a Backup first.\n\nContinue?')">
                                 Drop Them
                             </a>
@@ -2534,6 +2550,51 @@ if ($hasCredentials && defined('DB_HOST')) {
         <?php endif; ?>
     </p>
 </div>
+
+<script>
+/* Type-to-confirm speed-bump for DESTRUCTIVE / irreversible actions (#1298).
+
+   Any anchor tagged data-type-to-confirm="<phrase>" (the migration slug, e.g.
+   "retire-component-lines-json", or the "drop-legacy" action) forces the operator
+   to type that EXACT phrase before the request is allowed to fire. An exact,
+   case-sensitive match navigates; anything else cancels the click.
+
+   This is an ADDITIONAL client speed-bump only — it does NOT replace any
+   server-side guard. The destructive request still carries confirm=1 (the
+   migration / drop script refuses without it), the existing native confirm()
+   dialog still runs, the verifier-sentinel / parity preconditions still apply,
+   and the whole page is still behind the global_admin gate. We bind in the
+   CAPTURE phase so this runs BEFORE the anchor's inline onclick confirm(): on a
+   mismatch we preventDefault() + stopImmediatePropagation() so neither the inline
+   confirm nor the navigation proceeds. Vanilla JS, no dependencies. */
+(() => {
+    document.addEventListener('click', (ev) => {
+        const link = ev.target.closest('a[data-type-to-confirm]');
+        if (!link) return;
+        /* Respect the page's own disabled-state convention (no credentials). */
+        if (link.classList.contains('disabled')) return;
+
+        const phrase = link.getAttribute('data-type-to-confirm') || '';
+        if (phrase === '') return;
+
+        const typed = window.prompt(
+            'DESTRUCTIVE, irreversible action.\n\n' +
+            'To confirm, type the following EXACTLY (case-sensitive):\n\n' +
+            phrase
+        );
+
+        /* Exact, case-sensitive match required. Cancel / mismatch aborts the
+           click entirely — stopImmediatePropagation() prevents the inline
+           onclick confirm() from also running, preventDefault() blocks nav. */
+        if (typed !== phrase) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+        }
+        /* On an exact match we fall through: the inline onclick confirm()
+           (if any) runs next, then the browser follows the href. */
+    }, true /* capture */);
+})();
+</script>
 
 <script>
 /* IANA + CLDR live refresh button (#738).

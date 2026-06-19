@@ -111,7 +111,7 @@ If an item can't be completed (network for a Wiki push, an owner decision for a 
 
 - `.claude/ProjectBrief.md` — current project state, versions, phase, database schema summary.
 - `.claude/ProjectOverview.md` — original multi-platform scoping.
-- `.claude/project-rules.md` — this file's detailed expansion (naming, data-access layers, error handling, i18n, test discipline).
+- `.claude/project-rules.md` — this file's detailed expansion (naming, data-access layers, error handling, i18n, test discipline). Includes §17 **model-tier selection**: match the model to task complexity — fast/cheap tier (`quick-edits`) for mechanical work, top tier (`deep-architect`) for hard reasoning / security / review, default model for standard implementation.
 
 ## 💾 Session continuity across devices
 

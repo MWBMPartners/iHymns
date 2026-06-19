@@ -676,6 +676,18 @@ body:has(.navbar-admin) {
 
 .song-list-container { flex: 1; overflow-y: auto; padding: 0; }
 
+/* Song-list rows are Bootstrap `.list-group-item`s appended straight into the
+   `padding:0` container by editor.js (buildSongListRow). Bootstrap's default
+   `padding-x: 1rem` left the row text out of line with the filter / search /
+   sort controls in `.sidebar-header` above (which are inset `0.75rem`). Pin the
+   rows' horizontal padding to that same `0.75rem` so the list text's left edge
+   aligns with the controls above (and keep the right side symmetric). Scoped to
+   `#song-list` so no other admin `.list-group-item` is touched. */
+#song-list .list-group-item {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+}
+
 .song-list-item {
     padding: 0.5rem 0.75rem;
     border-bottom: 1px solid var(--card-border);
