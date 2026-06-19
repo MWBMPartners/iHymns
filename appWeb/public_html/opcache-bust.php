@@ -76,8 +76,44 @@ $available = function_exists('opcache_reset');
 $reset     = $available ? @opcache_reset() : false;
 clearstatcache(true);
 
+/* ---- Best-effort Activity-Log entry (#1290). ----------------------------
+   The bust above has ALREADY run; logging is observability only. We pull in
+   the long-lived DB + logging includes (present in every live docroot —
+   not the NEW-include #1250 hazard, which is specific to .sql/ migrations)
+   using the same __DIR__-relative convention as sitemap.xml.php / api.php /
+   index.php. The ENTIRE require + log is wrapped so a DB outage, a missing
+   tblActivityLog, or any throwable can NEVER break or delay the reset
+   response. We deliberately log NOTHING derived from the secret key or any
+   raw request input — only the reset outcome + environment. */
+$logged = false;
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+    logActivity(
+        'ops.opcache_reset',
+        'runtime',
+        'opcache',
+        [
+            'trigger'           => 'auto-deploy',
+            'reset'             => (bool) $reset,
+            'opcache_available' => $available,
+            'environment'       => function_exists('ihymns_environment') ? ihymns_environment() : null,
+        ],
+        $reset ? 'success' : 'error'
+    );
+    $logged = true;
+} catch (\Throwable $e) {
+    /* Swallow — logging must NEVER break or delay the bust, especially if the
+       DB is down. logActivity() is itself best-effort, but the require_once of
+       the DB layer (or getDbMysqli() inside it under MYSQLI_REPORT_STRICT) can
+       still throw, so the whole block is guarded here. One error_log line lets
+       an operator spot a sustained logging outage. */
+    error_log('[opcache-bust] activity log failed: ' . $e->getMessage());
+}
+
 echo json_encode([
     'ok'                => true,
     'reset'             => (bool) $reset,
     'opcache_available' => $available,
+    'logged'            => $logged,
 ]);

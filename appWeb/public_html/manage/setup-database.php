@@ -1110,6 +1110,26 @@ if ($action !== '') {
             echo "(the deployed code is already correct). If they persist, the deploy didn't upload the\n";
             echo "current SongData.php — tell me and we'll fix the deploy itself.\n";
         }
+        /* #1290 — mirror the auto-deploy endpoint's Activity-Log entry so a
+           manual reset from this dashboard is auditable alongside cron busts.
+           Same action key + EntityType as opcache-bust.php (trigger='manual').
+           This handler already runs authenticated as a global_admin with the
+           DB + app bootstrap loaded, so no require/try-catch gymnastics are
+           needed — but logActivity() is best-effort and never throws. */
+        if (function_exists('logActivity')) {
+            logActivity(
+                'ops.opcache_reset',
+                'runtime',
+                'opcache',
+                [
+                    'trigger'           => 'manual',
+                    'reset'             => !empty($reset),
+                    'opcache_available' => function_exists('opcache_reset'),
+                    'environment'       => function_exists('ihymns_environment') ? ihymns_environment() : null,
+                ],
+                $actionSuccess ? 'success' : 'error'
+            );
+        }
     } else {
         $scriptName = $scriptMap[$action] ?? null;
         if ($scriptName === null) {
