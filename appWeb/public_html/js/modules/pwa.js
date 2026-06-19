@@ -33,6 +33,17 @@ export class PWA {
 
         /** @type {string} localStorage key for banner dismissal */
         this.dismissKey = STORAGE_PWA_BANNER_DISMISSED;
+
+        /**
+         * @type {boolean} When the app is in maintenance mode we suppress the
+         * install banner — a new visitor gets the full server-side maintenance
+         * 503 page (which never loads this module), but a returning, NOT-yet-
+         * installed user can still load the cached SPA shell during an outage;
+         * prompting them to install mid-maintenance is poor UX and collides
+         * with the maintenance banner app.js raises. Set true once
+         * _ensureAppStatus() reports maintenance. (#1276 feature A)
+         */
+        this._maintenanceSuppressed = false;
     }
 
     /**
@@ -50,6 +61,23 @@ export class PWA {
         const alreadyInstalled = await this._isAlreadyInstalled();
         if (alreadyInstalled) {
             return;
+        }
+
+        /* Suppress the install banner during maintenance (#1276 feature A).
+           app_status is a cached, lightweight fetch shared with the auth modal
+           and the maintenance banner; if maintenance is on we set the flag so
+           the show* methods below bail. Best-effort — a failed/late status
+           fetch leaves the banner enabled (the server-side 503 page is the
+           real safety net for new visitors). Awaited here so the flag is set
+           before beforeinstallprompt or the platform banners can fire. */
+        try {
+            const status = await this.app?.userAuth?._ensureAppStatus?.();
+            if (status && status.maintenance) {
+                this._maintenanceSuppressed = true;
+            }
+        } catch (_e) { /* status unavailable — leave banner enabled */ }
+        if (this._maintenanceSuppressed) {
+            return;   /* don't even wire the install listeners during maintenance */
         }
 
         /* Capture the beforeinstallprompt event (Chrome, Edge, Samsung on Android/desktop) */
@@ -164,6 +192,7 @@ export class PWA {
      * @param {Function} [opts.buttonAction] Click handler for the button
      */
     showPlatformBanner(opts) {
+        if (this._maintenanceSuppressed) return;   /* #1276 — no install prompt during maintenance */
         if (localStorage.getItem(this.dismissKey)) return;
 
         const banner = document.getElementById('pwa-install-banner');
@@ -210,6 +239,7 @@ export class PWA {
      * Populates the empty banner HTML with default install content.
      */
     showInstallBanner() {
+        if (this._maintenanceSuppressed) return;   /* #1276 — no install prompt during maintenance */
         if (localStorage.getItem(this.dismissKey)) return;
 
         const banner = document.getElementById('pwa-install-banner');

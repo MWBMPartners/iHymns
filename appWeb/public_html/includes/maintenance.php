@@ -120,6 +120,33 @@ function maintenanceMessage(): string
         : "iHymns is undergoing scheduled maintenance. We'll be back shortly — please check again in a few minutes.";
 }
 
+/* Auto-refresh interval bounds for the maintenance 503 page (#1276 feature A).
+   30s floor keeps a stuck-on-maintenance browser from hammering the origin;
+   3600s (1h) ceiling keeps the page from sitting stale forever. */
+const MAINTENANCE_REFRESH_DEFAULT = 300;
+const MAINTENANCE_REFRESH_MIN     = 30;
+const MAINTENANCE_REFRESH_MAX      = 3600;
+
+/**
+ * Admin-configured auto-refresh interval (seconds) for the maintenance 503
+ * page, read from the per-env `maintenance_refresh_seconds_<env>` setting.
+ * Parsed to an int, clamped to [MIN, MAX], and falls back to the default on
+ * ANY DB/parse error — getAppSetting() already returns the default string on
+ * a DB outage, and a non-numeric / out-of-range stored value can never push
+ * the timer below the floor. The maintenance page must never throw, so this
+ * is total: every code path returns a sane positive integer.
+ */
+function maintenanceRefreshSeconds(): int
+{
+    $raw = getAppSetting(maintenanceSettingKey('maintenance_refresh_seconds'), (string)MAINTENANCE_REFRESH_DEFAULT);
+    /* filter_var returns false on a non-numeric / empty value → default. */
+    $n = filter_var((string)$raw, FILTER_VALIDATE_INT);
+    if ($n === false) {
+        return MAINTENANCE_REFRESH_DEFAULT;
+    }
+    return max(MAINTENANCE_REFRESH_MIN, min(MAINTENANCE_REFRESH_MAX, (int)$n));
+}
+
 /** Shared 503 headers for maintenance + DB-down responses. */
 function maintenanceSend503Headers(): void
 {
@@ -145,14 +172,152 @@ function renderMaintenancePageHtml(): void
        maintenance page respects the user's light / dark / high-contrast / CVD
        theme instead of the old hardcoded-dark flash. */
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'error_page.php';
+
+    /* Admin-configurable auto-refresh interval (seconds), DB-safe + clamped. */
+    $refreshSeconds = maintenanceRefreshSeconds();
+
     renderErrorPage(503, [
         'title'      => 'Under maintenance',
         'message'    => maintenanceMessage(),
         'emoji'      => '&#128295;',
         'code'       => '',                /* show the wrench + title, not "503" */
-        'retryAfter' => 120,
-        'actions'    => [['label' => 'Try again', 'href' => '/', 'primary' => true]],
+        'retryAfter' => $refreshSeconds,   /* HTTP Retry-After mirrors the JS timer */
+        'actions'    => [
+            /* Padlock-to-login: a logged-out admin can sign in here then
+               bypass maintenance. /manage is a SEPARATE entry point served
+               directly by .htaccess (RewriteRule ^manage/ - [L]) so it is
+               always reachable during maintenance — confirmed in the file
+               header above. The padlock icon is CLOSED at rest and OPENS on
+               hover/focus (CSS swap of the two glyphs), an affordance hint
+               that this unlocks the live site for an admin. */
+            ['label' => 'Admin sign-in', 'href' => '/manage/login', 'icon' => 'padlock'],
+            ['label' => 'Try again',     'href' => '/',             'primary' => true],
+        ],
+        'extraHead'      => maintenancePageExtraHead(),
+        'extraBody'      => maintenancePageExtraBody($refreshSeconds),
+        /* The single aria-live="polite" announcement, placed OUTSIDE the
+           <main role="alert"> so the assertive alert can't double-announce it. */
+        'extraBodyAfter' => maintenancePageExtraBodyAfter($refreshSeconds),
     ]);
+}
+
+/**
+ * Inline CSS for the maintenance-page extras (countdown widget + padlock
+ * affordance + standalone-PWA safe-area). Self-contained — appended to the
+ * error page's own <style> via the renderer's extraHead, so it paints with
+ * no dependency on app.css. All animation is gated behind
+ * prefers-reduced-motion so it stops dead when the user asks for less motion.
+ */
+function maintenancePageExtraHead(): string
+{
+    return <<<'CSS'
+<style>
+/* Standalone-PWA safe area: when the maintenance page is loaded inside an
+   installed PWA, env(safe-area-inset-*) clears the iPhone Dynamic Island /
+   notch and the rounded landscape corners. 0px fallback = no-op in a normal
+   browser tab. */
+@media (display-mode: standalone){
+  body{
+    padding-top:max(1.5rem,env(safe-area-inset-top,0px));
+    padding-bottom:max(1.5rem,env(safe-area-inset-bottom,0px));
+    padding-left:max(1.5rem,env(safe-area-inset-left,0px));
+    padding-right:max(1.5rem,env(safe-area-inset-right,0px));
+  }
+}
+/* Corner countdown chip — small, semi-transparent, pinned to a page corner
+   and clearing any notch in standalone mode. */
+.mtn-countdown{
+  position:fixed;
+  top:calc(0.75rem + env(safe-area-inset-top,0px));
+  right:calc(0.75rem + env(safe-area-inset-right,0px));
+  display:inline-flex;align-items:center;gap:.4rem;
+  padding:.35rem .7rem;border-radius:50px;
+  font-size:.8rem;font-weight:600;line-height:1;
+  background:var(--ep-card);color:var(--ep-muted);
+  border:1px solid var(--ep-border);
+  opacity:.6;                       /* semi-transparent at rest */
+  box-shadow:0 2px 8px rgba(0,0,0,.06);
+  transition:opacity .3s ease;
+}
+.mtn-countdown:hover{opacity:.95}
+/* Subtle pulse on the dot so the eye reads it as a live timer. Disabled
+   below for reduced-motion. */
+.mtn-countdown-dot{
+  width:.5rem;height:.5rem;border-radius:50%;
+  background:var(--ep-accent);
+  animation:mtn-pulse 2s ease-in-out infinite;
+}
+@keyframes mtn-pulse{0%,100%{opacity:.4}50%{opacity:1}}
+/* Padlock affordance: show the CLOSED lock at rest, swap to the OPEN lock on
+   hover/focus of the button, hinting that signing in unlocks the site. */
+.ep-btn .mtn-lock-open{display:none}
+.ep-btn:hover .mtn-lock-closed,
+.ep-btn:focus-visible .mtn-lock-closed{display:none}
+.ep-btn:hover .mtn-lock-open,
+.ep-btn:focus-visible .mtn-lock-open{display:inline}
+.mtn-lock{font-style:normal}
+@media (prefers-reduced-motion: reduce){
+  /* No pulse, no opacity transition — static, calm indicator. */
+  .mtn-countdown{transition:none;opacity:.85}
+  .mtn-countdown-dot{animation:none;opacity:1}
+}
+</style>
+CSS;
+}
+
+/**
+ * The countdown widget markup + the auto-refresh timer script, appended to the
+ * page body via the renderer's extraBody. A single setTimeout drives the hard
+ * reload at exactly $refreshSeconds; a 1-second setInterval updates the visible
+ * countdown so it stays in sync with that one timer (NOT a meta-refresh — that
+ * would fire independently and the countdown could never line up).
+ *
+ * Accessibility: the visible countdown chip is ENTIRELY aria-hidden (its dot
+ * and per-second numeric tick never reach a screen reader, so no once-a-second
+ * spam). The single aria-live="polite" announcement is NOT emitted here — it is
+ * returned by maintenancePageExtraBodyAfter() and placed by the renderer OUTSIDE
+ * the <main role="alert"> (via the extraBodyAfter hook) so the assertive alert
+ * cannot double-announce it. There is now exactly ONE live region on the page
+ * (no nested / overlapping polite-inside-status-inside-alert stack).
+ *
+ * @param int $refreshSeconds Already clamped to [30, 3600] by the caller.
+ */
+function maintenancePageExtraBody(int $refreshSeconds): string
+{
+    /* (int) cast belt-and-braces — the value is interpolated into JS, so it
+       must be a bare integer literal and nothing else. */
+    $n = (int)$refreshSeconds;
+    /* The visible chip is fully aria-hidden (no role="status" — that role was an
+       implicit polite live region nested inside the explicit polite span AND
+       inside <main role="alert">, the overlap this fix removes). */
+    return '<div class="mtn-countdown" aria-hidden="true">'
+         . '<span class="mtn-countdown-dot"></span>'
+         . '<span>Refreshing in <strong id="mtn-secs">' . $n . '</strong>s</span>'
+         . '</div>'
+         . '<script>(function(){'
+         . 'var n=' . $n . ',el=document.getElementById("mtn-secs"),left=n;'
+         . '/* One hard reload at the interval; the SW serves cache on a 503 so this is cheap. */'
+         . 'setTimeout(function(){location.reload();},n*1000);'
+         . '/* Visible tick — chip is aria-hidden so it never reaches the SR. */'
+         . 'var iv=setInterval(function(){left-=1;if(left<0)left=0;if(el)el.textContent=left;'
+         . 'if(left<=0)clearInterval(iv);},1000);'
+         . '})();</script>';
+}
+
+/**
+ * The ONE screen-reader announcement for the auto-refresh, placed by the
+ * renderer AFTER </main> (extraBodyAfter) — i.e. OUTSIDE the assertive
+ * <main role="alert"> — so it is announced once by the polite region alone and
+ * is never double-announced by the alert. Announced once on load; the visible
+ * per-second tick is aria-hidden (in maintenancePageExtraBody()).
+ *
+ * @param int $refreshSeconds Already clamped to [30, 3600] by the caller.
+ */
+function maintenancePageExtraBodyAfter(int $refreshSeconds): string
+{
+    $n = (int)$refreshSeconds;
+    return '<div class="visually-hidden" aria-live="polite">This page refreshes automatically every '
+         . $n . ' seconds.</div>';
 }
 
 /**
