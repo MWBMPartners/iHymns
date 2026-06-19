@@ -18,8 +18,11 @@ declare(strict_types=1);
  * timestamp X" without writing the password into the log).
  *
  * Real send-mechanism landed in #898 via includes/EmailService.php
- * (SendGrid / Mailgun / SES drivers; SMTP driver is a documented TODO
- * — admins should pick one of the API providers in the meantime).
+ * (SendGrid / Mailgun / SES drivers). feature C adds a working SMTP-AUTH
+ * driver with provider presets (Microsoft 365 priority, Google Workspace)
+ * and DELEGATE / "send-as" support — the From / Sender mailbox can differ
+ * from the SMTP login when the provider has granted Send-As. OAuth2 /
+ * MailerMatt is the eventual path; today it is SMTP-AUTH + app password.
  * The "Send test email" button posts to test_email and renders the
  * EmailSendResult inline so admins can verify provider config without
  * triggering a real auth flow.
@@ -59,11 +62,20 @@ $EMAIL_SETTINGS = [
     'email_service'             => ['Email service',             'select', false, null],
     'email_from_address'        => ['From address',              'email',  false, ['smtp','sendgrid','mailgun','ses']],
     'email_from_name'           => ['From name',                 'text',   false, ['smtp','sendgrid','mailgun','ses']],
+    /* feature C — SMTP provider preset (pre-fills host/port/secure in the
+       UI; constrained server-side to the $SMTP_PRESETS keys). */
+    'email_smtp_preset'         => ['SMTP provider preset',      'select', false, ['smtp']],
     'email_smtp_host'           => ['SMTP host',                 'text',   false, ['smtp']],
     'email_smtp_port'           => ['SMTP port',                 'number', false, ['smtp']],
     'email_smtp_user'           => ['SMTP username',             'text',   false, ['smtp']],
     'email_smtp_pass'           => ['SMTP password',             'password', true, ['smtp']],
     'email_smtp_secure'         => ['SMTP encryption',           'select', false, ['smtp']],
+    /* feature C — delegate / send-as. Optional; validated as an email in
+       the save handler. When set, mail is sent FROM this mailbox while
+       AUTH still uses the SMTP username above (the login mailbox must be
+       granted Send-As on it in the provider's admin console). */
+    'email_smtp_from_address'   => ['Send-as / From address (delegate)', 'email', false, ['smtp']],
+    'email_smtp_from_name'      => ['Send-as display name',      'text',   false, ['smtp']],
     'email_sendgrid_api_key'    => ['SendGrid API key',          'password', true, ['sendgrid']],
     'email_mailgun_api_key'     => ['Mailgun API key',           'password', true, ['mailgun']],
     'email_mailgun_domain'      => ['Mailgun domain',            'text',   false, ['mailgun']],
@@ -74,7 +86,7 @@ $EMAIL_SETTINGS = [
 
 $EMAIL_SERVICE_OPTIONS = [
     'none'     => 'None — email login disabled',
-    'smtp'     => 'SMTP — not yet implemented (#898 follow-up)',
+    'smtp'     => 'SMTP (incl. Microsoft 365 / Google Workspace)',
     'sendgrid' => 'SendGrid',
     'mailgun'  => 'Mailgun',
     'ses'      => 'AWS SES',
@@ -84,6 +96,22 @@ $SMTP_SECURE_OPTIONS = [
     'tls'  => 'STARTTLS (port 587)',
     'ssl'  => 'SSL/TLS implicit (port 465)',
     'none' => 'None (port 25 — not recommended)',
+];
+
+/* ----------------------------------------------------------------------
+ * feature C — SMTP provider presets. Selecting one pre-fills host / port /
+ * encryption in the UI (client-side JS, below). 'custom' leaves the manual
+ * fields as-is. The value is stored only as a hint for the next page load;
+ * the authoritative connection details are the host/port/secure fields.
+ *
+ * The host/port/secure here are also the SINGLE source of truth the JS
+ * reads, so adding a provider is a one-line change. (Microsoft 365 is the
+ * priority target; Google Workspace second.)
+ * ---------------------------------------------------------------------- */
+$SMTP_PRESETS = [
+    'custom'    => ['label' => 'Custom / manual',                 'host' => '',                  'port' => '',    'secure' => ''],
+    'office365' => ['label' => 'Microsoft 365 (Exchange Online)', 'host' => 'smtp.office365.com', 'port' => '587', 'secure' => 'tls'],
+    'gmail'     => ['label' => 'Google Workspace / Gmail',        'host' => 'smtp.gmail.com',     'port' => '587', 'secure' => 'tls'],
 ];
 
 /* ----------------------------------------------------------------------
@@ -141,6 +169,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     }
                     if ($key === 'email_smtp_secure' && !isset($SMTP_SECURE_OPTIONS[$value])) {
                         $value = 'tls';
+                    }
+                    /* feature C — preset constrained to the known keys;
+                       anything else (incl. a tampered POST) → 'custom'. */
+                    if ($key === 'email_smtp_preset' && !isset($SMTP_PRESETS[$value])) {
+                        $value = 'custom';
+                    }
+                    /* feature C — delegate / send-as address. Empty is
+                       allowed (means "no delegate, use the generic From");
+                       a non-empty value MUST be a syntactically valid email
+                       or the save is rejected, so a bad address can never
+                       reach the From / MAIL FROM in EmailService. */
+                    if ($key === 'email_smtp_from_address' && $value !== ''
+                        && !filter_var($value, FILTER_VALIDATE_EMAIL)) {
+                        throw new \RuntimeException('Send-as / From address is not a valid email address.');
                     }
                     /* Empty password fields mean "leave existing value"
                        (the form doesn't echo current secrets back, so
@@ -236,15 +278,26 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $mmVal    = ((string)($_POST['maintenance_mode'] ?? '0')) === '1' ? '1' : '0';
                 $msgVal   = mb_substr(trim((string)($_POST['maintenance_message'] ?? '')), 0, 500);
                 $allowVal = ((string)($_POST['maintenance_allow_admins'] ?? '0')) === '1' ? '1' : '0';
+                /* Auto-refresh interval for the maintenance 503 page (#1276
+                   feature A). Coerce to int and clamp to the same [30, 3600]
+                   range maintenanceRefreshSeconds() enforces on read, so a
+                   hand-edited or out-of-range POST can never store a value the
+                   page would have to defend against again. */
+                require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+                $refreshIn  = filter_var((string)($_POST['maintenance_refresh_seconds'] ?? ''), FILTER_VALIDATE_INT);
+                $refreshVal = $refreshIn === false
+                    ? MAINTENANCE_REFRESH_DEFAULT
+                    : max(MAINTENANCE_REFRESH_MIN, min(MAINTENANCE_REFRESH_MAX, (int)$refreshIn));
                 $saveSetting($db, 'maintenance_mode_' . $env, $mmVal);
                 $saveSetting($db, 'maintenance_message_' . $env, $msgVal);
                 $saveSetting($db, 'maintenance_allow_admins_' . $env, $allowVal);
+                $saveSetting($db, 'maintenance_refresh_seconds_' . $env, (string)$refreshVal);
                 if (function_exists('logActivity')) {
                     logActivity(
                         'app_setting.update',
                         'app_setting',
                         'maintenance_mode_' . $env,
-                        ['keys' => ['maintenance_mode_' . $env, 'maintenance_message_' . $env, 'maintenance_allow_admins_' . $env], 'enabled' => $mmVal === '1'],
+                        ['keys' => ['maintenance_mode_' . $env, 'maintenance_message_' . $env, 'maintenance_allow_admins_' . $env, 'maintenance_refresh_seconds_' . $env], 'enabled' => $mmVal === '1'],
                         'success'
                     );
                 }
@@ -269,10 +322,16 @@ $maintenanceSettings = $loadSettings($db, [
     'maintenance_mode_' . $envCurrent,
     'maintenance_message_' . $envCurrent,
     'maintenance_allow_admins_' . $envCurrent,
+    'maintenance_refresh_seconds_' . $envCurrent,
 ]);
 $maintenanceOn       = ($maintenanceSettings['maintenance_mode_' . $envCurrent] ?? '0') === '1';
 $maintenanceMsg      = (string)($maintenanceSettings['maintenance_message_' . $envCurrent] ?? '');
 $maintenanceAllowAdm = ($maintenanceSettings['maintenance_allow_admins_' . $envCurrent] ?? '0') === '1';
+/* Auto-refresh interval (#1276). Reuse maintenanceRefreshSeconds() so the
+   form's displayed value is the SAME clamped value the 503 page would use —
+   no drift between what the admin sees and what visitors get. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+$maintenanceRefresh  = maintenanceRefreshSeconds();
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -362,6 +421,21 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                               maxlength="500"
                               placeholder="We&rsquo;ll be back shortly &mdash; scheduled maintenance in progress."><?= htmlspecialchars($maintenanceMsg, ENT_QUOTES, 'UTF-8') ?></textarea>
                 </div>
+                <div class="mb-3">
+                    <label for="maintenance_refresh_seconds" class="form-label">
+                        Auto-refresh interval (seconds)
+                    </label>
+                    <input type="number" name="maintenance_refresh_seconds" id="maintenance_refresh_seconds"
+                           class="form-control" style="max-width: 12rem;"
+                           min="<?= MAINTENANCE_REFRESH_MIN ?>" max="<?= MAINTENANCE_REFRESH_MAX ?>" step="1"
+                           value="<?= (int)$maintenanceRefresh ?>">
+                    <div class="form-text">
+                        How often the maintenance page reloads itself to check if the site is back
+                        (a corner countdown shows the time remaining). Clamped to
+                        <?= MAINTENANCE_REFRESH_MIN ?>&ndash;<?= MAINTENANCE_REFRESH_MAX ?> seconds; default
+                        <?= MAINTENANCE_REFRESH_DEFAULT ?>.
+                    </div>
+                </div>
                 <!-- hidden 0 so an unchecked box still posts a value -->
                 <input type="hidden" name="maintenance_allow_admins" value="0">
                 <div class="form-check mb-3">
@@ -398,6 +472,14 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <strong>None</strong>, the Sign In modal hides the email-login
                 option and falls back to password-only mode (#766 / PR #767).
             </p>
+
+            <?php /* feature C — preset host/port/secure data for the JS,
+                     emitted as a JSON island so the script reads ONE source.
+                     json_encode with JSON_HEX_* hardens against an XSS via a
+                     future preset label containing < or ". */ ?>
+            <script type="application/json" data-smtp-presets>
+                <?= json_encode($SMTP_PRESETS, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>
+            </script>
 
             <form method="post" id="email-form">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -441,6 +523,31 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="email-fields" data-provider-show="smtp">
                     <hr class="text-secondary">
                     <h3 class="h6 mb-3"><i class="bi bi-server me-1"></i>SMTP server</h3>
+
+                    <!-- feature C — provider preset. Pre-fills host / port /
+                         encryption client-side from $SMTP_PRESETS (see the
+                         data-smtp-presets script JSON below). -->
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email_smtp_preset" class="form-label">Provider preset</label>
+                            <select name="email_smtp_preset" id="email_smtp_preset"
+                                    class="form-select" data-smtp-preset>
+                                <?php
+                                    $smtpPreset = $currentSettings['email_smtp_preset'] ?? 'custom';
+                                    foreach ($SMTP_PRESETS as $pVal => $pCfg):
+                                ?>
+                                    <option value="<?= htmlspecialchars($pVal, ENT_QUOTES, 'UTF-8') ?>" <?= $smtpPreset === $pVal ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($pCfg['label'], ENT_QUOTES, 'UTF-8') ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text">
+                                Pre-fills host, port and encryption for common providers.
+                                Choose <strong>Custom / manual</strong> to enter them yourself.
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_smtp_host" class="form-label">SMTP host</label>
@@ -487,6 +594,35 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <input type="password" name="email_smtp_pass" id="email_smtp_pass"
                                    class="form-control" autocomplete="new-password"
                                    placeholder="<?= !empty($currentSettings['email_smtp_pass']) ? '••••••••' : 'Enter password' ?>">
+                        </div>
+                    </div>
+
+                    <!-- feature C — delegate / send-as. Optional: when set,
+                         mail is sent FROM this mailbox while AUTH stays on the
+                         username above. Requires Send-As granted on the
+                         delegate mailbox in the provider's admin console. -->
+                    <div class="row g-3 mb-3">
+                        <div class="col-12">
+                            <div class="form-text mb-1">
+                                <i class="bi bi-person-badge me-1"></i><strong>Send on behalf of a different mailbox (optional).</strong>
+                                Leave blank to send as the username above. To send as a shared / delegate
+                                mailbox, the username must be granted <em>Send As</em> on it in your provider's
+                                admin console (see the setup guide below).
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_smtp_from_address" class="form-label">Send-as / From address</label>
+                            <input type="email" name="email_smtp_from_address" id="email_smtp_from_address"
+                                   class="form-control"
+                                   value="<?= htmlspecialchars($currentSettings['email_smtp_from_address'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="noreply@yourdomain.com">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_smtp_from_name" class="form-label">Send-as display name</label>
+                            <input type="text" name="email_smtp_from_name" id="email_smtp_from_name"
+                                   class="form-control"
+                                   value="<?= htmlspecialchars($currentSettings['email_smtp_from_name'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="iHymns">
                         </div>
                     </div>
                 </div>
@@ -602,31 +738,108 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="card-body">
             <div class="accordion" id="email-instructions">
-                <!-- SMTP -->
+                <!-- Microsoft 365 (priority) -->
+                <div class="accordion-item bg-dark">
+                    <h3 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#instr-m365">
+                            <i class="bi bi-microsoft me-2"></i>SMTP — Microsoft 365 (recommended)
+                        </button>
+                    </h3>
+                    <div id="instr-m365" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
+                        <div class="accordion-body small">
+                            <p>Pick provider <strong>SMTP</strong>, then preset <strong>Microsoft 365</strong> — that fills
+                               host <code>smtp.office365.com</code>, port <code>587</code>, encryption <code>STARTTLS</code>.</p>
+                            <ol class="mb-2">
+                                <li><strong>Enable SMTP AUTH on the sending mailbox.</strong> In the
+                                    <a href="https://admin.microsoft.com" target="_blank" rel="noopener">Microsoft 365 admin centre</a> →
+                                    <em>Users → Active users → (the mailbox) → Mail → Manage email apps</em>, tick
+                                    <em>Authenticated SMTP</em>. SMTP AUTH is off by default on most tenants.</li>
+                                <li><strong>Create an app password.</strong> M365 requires MFA, and basic SMTP can't do an
+                                    interactive MFA prompt, so generate an app password for the mailbox at
+                                    <a href="https://mysignins.microsoft.com/security-info" target="_blank" rel="noopener">My Sign-Ins → Security info → Add → App password</a>.
+                                    Use that as the SMTP <strong>password</strong> here (your normal password will be rejected).</li>
+                                <li><strong>Username</strong> = the mailbox you authenticate as (e.g. <code>automation@yourtenant.com</code>).</li>
+                                <li><strong>Send-as a different mailbox (optional).</strong> To send from, say,
+                                    <code>noreply@yourtenant.com</code> while authenticating as <code>automation@…</code>,
+                                    grant the automation account <em>Send As</em> on the target in the
+                                    <a href="https://admin.exchange.microsoft.com" target="_blank" rel="noopener">Exchange admin centre</a> →
+                                    <em>Recipients → Mailboxes → (target) → Delegation → Send as</em>, then put the target
+                                    address in <strong>Send-as / From address</strong> above.</li>
+                                <li><strong>Save</strong>, then <strong>Send test email</strong> to confirm.</li>
+                            </ol>
+                            <p class="text-secondary mb-0"><strong>If Send test fails:</strong>
+                               <em>auth_failed</em> → SMTP AUTH not enabled, or you used the account password instead of an app password.
+                               <em>mail_from_rejected</em> / <em>rcpt</em> with a 550 → the Send-as address isn't authorised for the login mailbox.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Google Workspace -->
+                <div class="accordion-item bg-dark">
+                    <h3 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#instr-gws">
+                            <i class="bi bi-google me-2"></i>SMTP — Google Workspace / Gmail
+                        </button>
+                    </h3>
+                    <div id="instr-gws" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
+                        <div class="accordion-body small">
+                            <p>Pick provider <strong>SMTP</strong>, then preset <strong>Google Workspace / Gmail</strong> — that fills
+                               host <code>smtp.gmail.com</code>, port <code>587</code>, encryption <code>STARTTLS</code>.</p>
+                            <ol class="mb-2">
+                                <li><strong>Turn on 2-Step Verification</strong> on the sending account (required before
+                                    you can create an app password).</li>
+                                <li><strong>Create an app password</strong> at
+                                    <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>
+                                    and use it as the SMTP <strong>password</strong> here. A normal account password is rejected
+                                    over SMTP.</li>
+                                <li><strong>Username</strong> = the full Google Workspace address (e.g. <code>automation@yourdomain.com</code>).</li>
+                                <li><strong>Allow SMTP for the org (if needed).</strong> A Workspace admin can confirm SMTP
+                                    sending is permitted in the
+                                    <a href="https://admin.google.com" target="_blank" rel="noopener">Google Admin console</a>
+                                    (<em>Apps → Google Workspace → Gmail → End User Access</em>); some tenants block app passwords entirely.</li>
+                                <li><strong>Send-as a different address (optional).</strong> Gmail can send as an alias or a
+                                    delegated address only if it's been added under
+                                    <a href="https://mail.google.com/mail/u/0/#settings/accounts" target="_blank" rel="noopener">Gmail Settings → Accounts → Send mail as</a>
+                                    (verified), or granted to the account in the Admin console. Put that address in
+                                    <strong>Send-as / From address</strong> above; unverified send-as addresses are silently
+                                    rewritten by Gmail to the login address.</li>
+                                <li><strong>Save</strong>, then <strong>Send test email</strong>.</li>
+                            </ol>
+                            <p class="text-secondary mb-0"><strong>If Send test fails with</strong> <em>auth_failed</em>:
+                               2-Step Verification / app password isn't set up, or the org blocks app passwords.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Custom SMTP + future-direction note -->
                 <div class="accordion-item bg-dark">
                     <h3 class="accordion-header">
                         <button class="accordion-button collapsed bg-dark text-light" type="button"
                                 data-bs-toggle="collapse" data-bs-target="#instr-smtp">
-                            <i class="bi bi-server me-2"></i>SMTP — any provider with SMTP relay
+                            <i class="bi bi-server me-2"></i>SMTP — any other provider (custom)
                         </button>
                     </h3>
                     <div id="instr-smtp" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
                         <div class="accordion-body small">
-                            <p>SMTP is the most portable option — works with any provider that exposes a relay endpoint.</p>
-                            <ol class="mb-2">
-                                <li><strong>Pick a provider</strong> and grab its SMTP details. Common ones:
-                                    <ul>
-                                        <li><strong>Gmail / Google Workspace</strong> — host <code>smtp.gmail.com</code>, port <code>587</code>, encryption <code>STARTTLS</code>. Username = your Google address, password = an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">App Password</a> (regular password is rejected). Requires 2FA on the account.</li>
-                                        <li><strong>Microsoft 365</strong> — host <code>smtp.office365.com</code>, port <code>587</code>, <code>STARTTLS</code>. Same account credentials; admin must enable SMTP AUTH on the mailbox.</li>
-                                        <li><strong>Zoho Mail</strong> — host <code>smtp.zoho.com</code>, port <code>587</code> (TLS) or <code>465</code> (SSL).</li>
-                                        <li><strong>Fastmail</strong> — host <code>smtp.fastmail.com</code>, port <code>465</code>, <code>SSL/TLS</code>. Use an app-specific password.</li>
-                                        <li><strong>Mailgun SMTP relay</strong> — host <code>smtp.mailgun.org</code>, port <code>587</code>. Username + password are listed under <em>Sending → Domain settings → SMTP credentials</em> for each domain.</li>
-                                    </ul>
-                                </li>
-                                <li><strong>Set the From address</strong> to a mailbox the provider allows you to send from (usually a domain you own + verified).</li>
-                                <li><strong>Save configuration</strong> here. Use <strong>Send test email</strong> to verify — note: SMTP driver is not yet implemented (#898 follow-up); pick SendGrid, Mailgun, or AWS SES for a working transactional provider in the meantime.</li>
-                            </ol>
-                            <p class="text-secondary mb-0"><strong>Tip:</strong> if Send test fails with <em>auth failed</em>, the username/password is wrong or the provider hasn't enabled SMTP for the account. If it fails with <em>relay denied</em>, the From address isn't verified for that account.</p>
+                            <p>SMTP works with any provider that exposes an authenticated relay endpoint. Choose the
+                               <strong>Custom / manual</strong> preset and enter the details by hand:</p>
+                            <ul class="mb-2">
+                                <li><strong>Zoho Mail</strong> — host <code>smtp.zoho.com</code>, port <code>587</code> (STARTTLS) or <code>465</code> (SSL).</li>
+                                <li><strong>Fastmail</strong> — host <code>smtp.fastmail.com</code>, port <code>465</code>, <code>SSL/TLS</code>. Use an app-specific password.</li>
+                                <li><strong>Mailgun SMTP relay</strong> — host <code>smtp.mailgun.org</code>, port <code>587</code>. Credentials are under <em>Sending → Domain settings → SMTP credentials</em>.</li>
+                            </ul>
+                            <p class="mb-2">Set the <strong>From address</strong> to a mailbox the provider lets you send from.
+                               Use the optional <strong>Send-as / From address</strong> when the message should appear from a
+                               delegate mailbox the login account is authorised to send as.</p>
+                            <p class="text-secondary mb-2"><strong>Tip:</strong> if Send test fails with <em>auth_failed</em>,
+                               the username / password is wrong or the provider hasn't enabled SMTP AUTH. <em>mail_from_rejected</em>
+                               / <em>relay denied</em> means the From / Send-as address isn't authorised for that login.</p>
+                            <p class="text-info mb-0"><i class="bi bi-info-circle me-1"></i><strong>Future direction:</strong>
+                               this uses SMTP AUTH with an app password + delegate today. OAuth2 sign-in (and the planned
+                               <em>MailerMatt</em> delivery service) is the eventual path — not built yet; SMTP AUTH is the
+                               supported mechanism for now.</p>
                         </div>
                     </div>
                 </div>
@@ -744,6 +957,39 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     };
     providerSel.addEventListener('change', apply);
     apply();
+})();
+
+(function () {
+    'use strict';
+    /* feature C — SMTP provider preset. Selecting Microsoft 365 or Google
+       Workspace fills the host / port / encryption fields from the JSON
+       island so admins don't memorise endpoints. 'Custom / manual' leaves
+       the fields untouched. The fields stay editable after pre-fill — the
+       preset is a convenience, not a lock. */
+    const presetSel = document.querySelector('[data-smtp-preset]');
+    const dataEl    = document.querySelector('[data-smtp-presets]');
+    if (!presetSel || !dataEl) return;
+
+    let presets = {};
+    try {
+        presets = JSON.parse(dataEl.textContent || '{}');
+    } catch (e) {
+        return; /* malformed JSON — leave manual entry working */
+    }
+
+    const hostEl   = document.getElementById('email_smtp_host');
+    const portEl   = document.getElementById('email_smtp_port');
+    const secureEl = document.getElementById('email_smtp_secure');
+
+    presetSel.addEventListener('change', () => {
+        const cfg = presets[presetSel.value];
+        /* 'custom' (and any unknown key) has empty host/port/secure — skip
+           so we never wipe what the admin already typed. */
+        if (!cfg || !cfg.host) return;
+        if (hostEl)   hostEl.value = cfg.host;
+        if (portEl)   portEl.value = cfg.port;
+        if (secureEl && cfg.secure) secureEl.value = cfg.secure;
+    });
 })();
 </script>
 </body>

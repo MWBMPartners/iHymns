@@ -347,7 +347,7 @@ git clone https://github.com/MWBMPartners/iHymns.wiki.git
 
 ## License
 
-Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+Copyright © 2026 MWBM Partners Ltd. All rights reserved.
 
 This software is proprietary. Unauthorized copying, modification, or distribution is strictly prohibited.
 

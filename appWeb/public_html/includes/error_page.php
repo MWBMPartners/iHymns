@@ -101,6 +101,11 @@ body{font-family:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;background
 .ep-btn-primary{background:linear-gradient(135deg,var(--ep-accent),var(--ep-accent2));color:#fff}
 .ep-btn-ghost{background:transparent;color:var(--ep-text);border-color:var(--ep-border)}
 .ep-btn:focus-visible{outline:3px solid var(--ep-accent);outline-offset:2px}
+/* SR-only helper (Bootstrap's .visually-hidden equivalent) — this page is
+   self-contained and does not load Bootstrap, so define it inline for the
+   aria-live announcements callers inject via extraBody. */
+.visually-hidden{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;
+ overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 </style>
 CSS;
 }
@@ -115,7 +120,11 @@ CSS;
  *   detail?:string (already-safe-to-show text; caller gates by env),
  *   retryAfter?:int, noStatusCode?:bool,
  *   actions?:list<array{label:string,href:string,primary?:bool}>,
- *   extraHead?:string, extraBody?:string
+ *   extraHead?:string, extraBody?:string,
+ *   extraBodyAfter?:string (markup placed AFTER </main>, before </body> — for
+ *     content that must sit OUTSIDE the main's role="alert" assertive live
+ *     region, e.g. a separate aria-live="polite" announcement that must not be
+ *     double-announced by the alert)
  * }
  */
 function renderErrorPage(int $status, array $opts = []): void
@@ -143,7 +152,20 @@ function renderErrorPage(int $status, array $opts = []): void
     $actionsHtml = '';
     foreach ($actions as $a) {
         $cls = !empty($a['primary']) ? 'ep-btn ep-btn-primary' : 'ep-btn ep-btn-ghost';
+        /* Optional leading icon. Only the self-contained-safe 'padlock' is
+           supported (no Font Awesome on this page); it renders two inline
+           glyphs — a CLOSED lock shown at rest and an OPEN lock revealed on
+           hover/focus by the caller's CSS (.mtn-lock-closed / .mtn-lock-open),
+           giving the "signing in unlocks the site" affordance. */
+        $iconHtml = '';
+        if (($a['icon'] ?? '') === 'padlock') {
+            $iconHtml = '<span class="mtn-lock" aria-hidden="true">'
+                      . '<span class="mtn-lock-closed">&#128274;</span>'   /* 🔒 closed */
+                      . '<span class="mtn-lock-open">&#128275;</span>'      /* 🔓 open   */
+                      . '</span> ';
+        }
         $actionsHtml .= '<a class="' . $cls . '" href="' . htmlspecialchars((string)$a['href'], ENT_QUOTES, 'UTF-8') . '">'
+                      . $iconHtml
                       . htmlspecialchars((string)$a['label'], ENT_QUOTES, 'UTF-8') . '</a>';
     }
     $detailHtml = ($detail !== null && $detail !== '')
@@ -151,7 +173,11 @@ function renderErrorPage(int $status, array $opts = []): void
         : '';
 
     echo '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">'
-       . '<meta name="viewport" content="width=device-width,initial-scale=1">'
+       /* viewport-fit=cover is REQUIRED for env(safe-area-inset-*) to resolve
+          to non-zero inside an installed iOS PWA — without it the standalone
+          safe-area padding block in maintenancePageExtraHead() is a no-op
+          (env() stays 0 in the default contain mode). #1276 feature A. */
+       . '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
        . '<meta name="robots" content="noindex">'
        . '<title>iHymns &mdash; ' . $eTitle . '</title>'
        . errorPageThemeScript()
@@ -165,7 +191,9 @@ function renderErrorPage(int $status, array $opts = []): void
        . $detailHtml
        . '<div class="ep-actions">' . $actionsHtml . '</div>'
        . ($opts['extraBody'] ?? '')
-       . '</main></body></html>';
+       . '</main>'
+       . ($opts['extraBodyAfter'] ?? '')   /* outside the role="alert" main */
+       . '</body></html>';
 }
 
 /**
