@@ -274,6 +274,7 @@ $friendlyTitles = [
     'drop-legacy'                      => 'Drop Legacy Tables',
     'apply-all-migrations'             => 'Apply All Pending Migrations',
     'verify-cutover'                   => 'Verify Lyrics-Cutover Gate (#1235)',
+    'opcache-reset'                    => 'Reset PHP OPcache (runtime code cache)',
     /* Per-migration cards (label = card title minus the legacy
        alphabetic prefix; #816 standardised this on the issue
        number as the primary identifier). */
@@ -1073,6 +1074,42 @@ if ($action !== '') {
                 }
             }
         }
+    } elseif ($action === 'opcache-reset') {
+        /* #1290 — diagnose + reset the PHP OPcache. Stale compiled bytecode is the
+           leading cause of "deployed code isn't running" on shared hosting — e.g.
+           the songs_json 's.SongbookName' flood, where the column is dropped + the
+           repo SongData.php is correct (b.Name JOIN), but the live runtime executes
+           an OLD compiled copy. Resetting forces every PHP file to recompile from
+           disk on the next request. */
+        if (!function_exists('opcache_get_status')) {
+            echo "OPcache is NOT available on this PHP runtime (opcache_get_status missing).\n";
+            echo "Nothing to reset — if stale code persists, it's a deploy-upload issue, not OPcache.\n";
+            $actionSuccess = false;
+        } else {
+            $cfg    = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : [];
+            $status = @opcache_get_status(false);
+            $vt     = $cfg['directives']['opcache.validate_timestamps'] ?? null;
+            $freq   = $cfg['directives']['opcache.revalidate_freq']     ?? null;
+            echo "=== OPcache status (before reset) ===\n";
+            echo "  enabled:             " . (($status && !empty($status['opcache_enabled'])) ? 'yes' : 'no') . "\n";
+            echo "  validate_timestamps: " . ($vt === null ? 'unknown'
+                : ($vt ? 'on (changed files auto-reload)'
+                       : 'OFF — never auto-reloads; deployed changes stay STALE until a reset')) . "\n";
+            echo "  revalidate_freq:     " . ($freq === null ? 'unknown' : ((int)$freq) . 's') . "\n";
+            if ($status && isset($status['opcache_statistics']['num_cached_scripts'])) {
+                echo "  cached scripts:      " . (int)$status['opcache_statistics']['num_cached_scripts'] . "\n";
+            }
+            $reset = function_exists('opcache_reset') ? @opcache_reset() : false;
+            clearstatcache(true);
+            echo "\n" . ($reset
+                ? "  ✓ OPcache reset — every PHP file recompiles from disk on the next request.\n"
+                : "  ✗ opcache_reset() returned false (disabled or restricted on this host).\n");
+            $actionSuccess = (bool)$reset;
+            echo "\nNow reload the public site (or wait for the next crawler hit) and re-check the Activity\n";
+            echo "Log. If the 'Unknown column s.SongbookName' errors STOP, stale OPcache was the cause\n";
+            echo "(the deployed code is already correct). If they persist, the deploy didn't upload the\n";
+            echo "current SongData.php — tell me and we'll fix the deploy itself.\n";
+        }
     } else {
         $scriptName = $scriptMap[$action] ?? null;
         if ($scriptName === null) {
@@ -1767,6 +1804,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=cleanup" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Cleanup
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- #1290 — reset the PHP runtime code cache. The fix for "deployed code
+                 isn't running" on shared hosting (stale OPcache). -->
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-cpu me-1" aria-hidden="true"></i>
+                            Reset PHP OPcache
+                        </h5>
+                        <p class="card-text text-secondary small">
+                            Forces every PHP file to recompile from disk. Use after a deploy when the
+                            live site runs <strong>stale code</strong> (e.g. errors that reference a
+                            column already dropped). Reports the OPcache status — incl.
+                            <code>validate_timestamps</code> — before resetting. No DB needed.
+                        </p>
+                        <a href="?action=opcache-reset" class="btn btn-outline-warning btn-action">
+                            Reset OPcache
                         </a>
                     </div>
                 </div>

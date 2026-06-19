@@ -5132,33 +5132,55 @@ function deleteSong() {
     }
 
     /* Find the song to show its title in the confirmation dialog. */
-    var song = findSongById(currentSongId);
+    var song  = findSongById(currentSongId);
     var title = song ? song.title : currentSongId;
 
     /* Ask for confirmation. */
-    if (!confirm('Delete "' + title + '"? This cannot be undone.')) {
+    if (!confirm('Delete "' + title + '"?\n\nThis permanently removes the song and ALL its data (components, lyric lines, credits, links, media) from the database. This cannot be undone.')) {
         return;
     }
 
-    /* Remove the song from the array. */
-    songData.songs = songData.songs.filter(function (s) {
-        return s.id !== currentSongId;
-    });
-    rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
+    var idToDelete = currentSongId;
 
-    /* Remove from modified set if present. */
-    modifiedSongIds.delete(currentSongId);
+    /* SERVER-BACKED delete (#1200 / #1290). The legacy implementation only
+       filtered the in-memory songData.songs array and toasted "deleted" — the
+       DB row was never touched, so the song reappeared on reload (and still
+       loaded in Song View). We now POST delete_song to the v2 API (cascade
+       delete + CSRF) and ONLY mutate local state + toast once the server
+       confirms. On failure nothing is removed locally and the error is shown,
+       so the toast can never lie again. */
+    var btn = document.getElementById('btn-delete-song');
+    if (btn) { btn.disabled = true; }
 
-    /* Clear the selection. */
-    currentSongId = null;
-
-    /* Refresh UI. */
-    clearEditForm();
-    renderSongList();
-    updateStatusBar();
-
-    /* Notify. */
-    showToast('Song deleted.', 'info');
+    ed2EnrichApi('delete_song', { songId: idToDelete })
+        .then(function (res) {
+            /* Server confirmed the cascade delete — sync local state now. */
+            songData.songs = songData.songs.filter(function (s) { return s.id !== idToDelete; });
+            rebuildSongIndex();           /* keep the O(1) id index in sync (#1180-A1) */
+            modifiedSongIds.delete(idToDelete);
+            if (currentSongId === idToDelete) {
+                currentSongId = null;
+                clearEditForm();
+            }
+            renderSongList();
+            updateStatusBar();
+            var n = (res && typeof res.deleted === 'number') ? res.deleted : null;
+            showToast(
+                'Deleted "' + title + '" from the database'
+                    + (n !== null ? ' (' + n + ' row' + (n === 1 ? '' : 's') + ' removed).' : '.'),
+                'success'
+            );
+        })
+        .catch(function (err) {
+            showToast(
+                'Delete failed: ' + (err && err.message ? err.message : 'unknown error')
+                    + '. The song was NOT removed.',
+                'danger'
+            );
+        })
+        .finally(function () {
+            if (btn) { btn.disabled = false; }
+        });
 }
 
 /* ========================================================================
