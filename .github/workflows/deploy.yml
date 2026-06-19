@@ -553,6 +553,43 @@ jobs:
           echo ".sql deployed to ${SQL_PATH}"
 
       # ================================================================
+      # POST-DEPLOY: bust PHP OPcache (#1290)
+      # On this shared FPM host, OPcache can serve STALE bytecode across a
+      # deploy even with opcache.validate_timestamps=on, so freshly-uploaded
+      # PHP doesn't run until the cache is reset (this caused the songs_json
+      # 's.SongbookName' flood + the editor CSRF mismatch). Curl the token-
+      # guarded /opcache-bust.php so new code goes live immediately.
+      # No-op (logs a notice, never fails the deploy) until OPCACHE_BUST_KEY
+      # is set AND the matching ../.auth/opcache_bust_key.php exists on the host.
+      # ================================================================
+      - name: Bust PHP OPcache (post-deploy)
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          OPCACHE_KEY: ${{ secrets.OPCACHE_BUST_KEY }}
+          CHANNEL: ${{ steps.target.outputs.channel }}
+        run: |
+          if [[ -z "$OPCACHE_KEY" ]]; then
+            echo "::notice::OPCACHE_BUST_KEY secret not set — skipping OPcache bust. Set it (and ../.auth/opcache_bust_key.php on the host) to enable automatic post-deploy cache busting (#1290)."
+            exit 0
+          fi
+          case "$CHANNEL" in
+            alpha) BASE="https://dev.ihymns.app" ;;
+            beta)  BASE="https://beta.ihymns.app" ;;
+            live)  BASE="https://ihymns.app" ;;
+            *)     echo "::notice::Unknown channel '$CHANNEL' — skipping OPcache bust."; exit 0 ;;
+          esac
+          echo "Busting OPcache at ${BASE}/opcache-bust.php"
+          HTTP=$(curl -fsS -o /tmp/opcache_resp.json -w '%{http_code}' \
+            -H "X-OPcache-Key: ${OPCACHE_KEY}" \
+            --max-time 30 "${BASE}/opcache-bust.php" || true)
+          echo "HTTP ${HTTP}"
+          cat /tmp/opcache_resp.json 2>/dev/null || true
+          echo
+          if [[ "$HTTP" != "200" ]]; then
+            echo "::warning::OPcache bust returned HTTP ${HTTP} (deploy still succeeded; new code may lag until the cache evicts). 503=key not configured on host; 403=key mismatch."
+          fi
+
+      # ================================================================
       # .auth/ DEPLOYMENT (#272)
       # Uploads appWeb/.auth/ (.htaccess, db_credentials.example.php)
       # as a sibling of public_html/. The real db_credentials.php is
