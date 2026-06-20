@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1315 — ihymns_environment() for the per-env log default
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -131,7 +132,16 @@ $filterRequestId  = trim((string)($_GET['request_id']  ?? ''));
 $filterDays       = (int)($_GET['days'] ?? 1);
 if (!in_array($filterDays, [1, 7, 30, 90, 365], true)) { $filterDays = 1; }
 $filterSearch     = trim((string)($_GET['q'] ?? ''));
-$filterEnv        = trim((string)($_GET['env'] ?? ''));   /* #1207 — alpha | beta | production */
+/* #1315 — default the Env filter to the CURRENT environment on a BARE load (no
+   ?env= param) so each env's log shows its OWN rows instead of the cross-env
+   firehose that masked the real origin of errors (the prod/beta s.SongbookName
+   saga). An explicit ?env= — including ''=the "— any —" option — is always
+   respected: once the filter form is submitted the param is present, so this only
+   changes the first bare visit. Safe on un-migrated installs: the env WHERE (~200)
+   is gated on $hasObsCols + an allow-list. (#1207 — alpha | beta | production) */
+$filterEnv = array_key_exists('env', $_GET)
+    ? trim((string)$_GET['env'])
+    : (function_exists('ihymns_environment') ? ihymns_environment() : '');
 
 $since = (new DateTime("-{$filterDays} days"))->format('Y-m-d H:i:s');
 
@@ -216,7 +226,7 @@ $resultBadgeClass = [
    "next page" / "export csv" links — saves writing them out
    manually at every callsite. Defined up here (rather than after the
    main query) so the #1302 fragment endpoint below can reuse it. */
-$buildQuery = function (array $overrides = []) {
+$buildQuery = function (array $overrides = []) use ($filterEnv) {
     $merged = array_filter(array_merge([
         'action'      => $_GET['action']      ?? '',
         'user'        => $_GET['user']        ?? '',
@@ -226,7 +236,7 @@ $buildQuery = function (array $overrides = []) {
         'request_id'  => $_GET['request_id']  ?? '',
         'days'        => $_GET['days']        ?? '',
         'q'           => $_GET['q']           ?? '',
-        'env'         => $_GET['env']          ?? '',
+        'env'         => $filterEnv,          /* #1315 — effective env (defaults to current) so paging/export links stay consistent */
         'page'        => $_GET['page']        ?? '',
     ], $overrides), fn($v) => $v !== '' && $v !== null);
     return http_build_query($merged);
