@@ -15,8 +15,11 @@ declare(strict_types=1);
  * API + OpenAPI docs to be redone next (tracked follow-up).
  *
  * Wire format: `action` via query string (GET reads) or JSON body (POST writes).
- * Every POST requires the `X-CSRF-Token` header (the legacy editor API had NO
- * CSRF — this closes that gap). All values are bound (`bind_param`), every
+ * Every POST requires the `X-Requested-With: XMLHttpRequest` header — the same
+ * same-origin AJAX CSRF defence as the public api.php (#293), chosen over a
+ * per-form session token because the embedded token went stale / absent under
+ * the cross-subdomain token-adopted admin session and 403'd every POST (#1307).
+ * All values are bound (`bind_param`), every
  * mutation writes a `logActivity` row + a coalesced `tblSongRevisions` snapshot,
  * and every response is `{ ok, ... }` with the TRUE result (never a false
  * success — the lesson from the client-only `deleteSong()` that lied).
@@ -115,9 +118,28 @@ if ($method === 'POST') {
     $raw  = file_get_contents('php://input') ?: '';
     $body = json_decode($raw, true);
     if (!is_array($body)) { $body = []; }
-    /* CSRF on every state-changing request. */
-    if (!validateCsrf((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))) {
-        ed2_respond(['ok' => false, 'error' => 'Invalid or missing CSRF token.'], 403);
+    /* CSRF defence — aligned with the public api.php policy (#293), NOT a
+       per-form session token (#1307).
+       WHY THE CHANGE: the previous gate validated $_SESSION['csrf_token']
+       against the X-CSRF-Token header. That session token is baked into the
+       editor page HTML (window.IHYMNS_EDITOR_CSRF) at load time, so it goes
+       stale the moment the PHP session's token rotates (re-login / session
+       regeneration / GC) under a long-lived editor tab — or is simply absent
+       when the admin is authed via the adopted cross-subdomain `ihymns_auth`
+       token rather than a persistent /manage/ PHP session. Either case made
+       hash_equals() fail and 403'd EVERY api2 POST (delete_song, the line
+       enrichment upserts, …), e.g. "Here to Stay" #1289.
+       THE DEFENCE STACK (identical to api.php, which is why save_song over
+       there always worked): (1) this endpoint already requires isAuthenticated()
+       + the editor role above; the auth cookies are SameSite (manage session =
+       Strict, ihymns_auth = Lax) so a cross-site POST carries no identity → 401.
+       (2) X-Requested-With: XMLHttpRequest is a forbidden header name a cross-
+       origin <form>/navigation cannot set without a CORS preflight we never
+       honour — so only same-origin `fetch()` (editor.js ed2EnrichApi, which
+       already sends it) reaches here. That eliminates the classic CSRF surface
+       without depending on a fragile embedded token. */
+    if (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') !== 'XMLHttpRequest') {
+        ed2_respond(['ok' => false, 'error' => 'Cross-site POST blocked: missing or invalid X-Requested-With header.'], 403);
     }
 }
 

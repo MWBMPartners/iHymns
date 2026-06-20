@@ -864,10 +864,37 @@ if (!empty($breadcrumbItems)) {
 
 <body class="d-flex flex-column min-vh-100">
 <?php if (!empty($GLOBALS['_ihymnsMaintenanceBypass'])): /* #1233 — admin is bypassing maintenance; make that obvious. Self-contained styles (no icon/CSS deps). */ ?>
-    <div role="status" style="position:sticky;top:0;z-index:1080;background:#ffc107;color:#000;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;line-height:1.3;">
+    <?php /* #1308 — was position:sticky;z-index:1080, which painted OVER the
+       position:fixed .app-header (z-1030) and hid the nav brand / profile
+       controls. Now position:fixed at the very top, and the nonce'd script
+       below pushes BOTH the fixed header (.app-header top) and the scrollable
+       content (.main-content padding-top) down by the banner's MEASURED height
+       so nothing is occluded. Height is measured (not hard-coded) because the
+       message wraps to 2–3 lines on narrow viewports; re-measured on resize.
+       The PWA install banner is suppressed during maintenance (pwa.js #1301),
+       so the single-banner layout is the only case to handle here. */ ?>
+    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;line-height:1.3;">
         🔧 <strong>Maintenance mode is ON</strong> for this environment — visitors see a maintenance page; you have admin access.
         <a href="/manage/configuration" style="color:#000;text-decoration:underline;font-weight:600;">Turn it off</a>.
     </div>
+    <script nonce="<?= $cspNonce ?>">
+    (function () {
+        function applyMaintBypassOffset() {
+            var bar = document.getElementById('ihymns-maint-bypass');
+            if (!bar) return;
+            var h = bar.offsetHeight;                 /* live height incl. wrapped lines */
+            var hdr = document.querySelector('.app-header');
+            if (hdr) { hdr.style.top = h + 'px'; }    /* push fixed header below the banner */
+            var main = document.querySelector('.main-content');
+            if (main) { main.style.paddingTop = 'calc(var(--header-height) + 8px + ' + h + 'px)'; }
+        }
+        /* .app-header / .main-content are emitted AFTER this script, so wait for
+           the DOM before measuring; also re-run on resize (width → wrap → height). */
+        if (document.readyState !== 'loading') { applyMaintBypassOffset(); }
+        else { document.addEventListener('DOMContentLoaded', applyMaintBypassOffset); }
+        window.addEventListener('resize', applyMaintBypassOffset);
+    })();
+    </script>
 <?php endif; ?>
     <!-- ================================================================
          SKIP NAVIGATION LINK — Accessibility: allows keyboard users

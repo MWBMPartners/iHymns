@@ -60,22 +60,25 @@ $csrf = csrfToken();
 $EMAIL_SETTINGS = [
     /* key                     => [label, type, secret, providers] */
     'email_service'             => ['Email service',             'select', false, null],
-    'email_from_address'        => ['From address',              'email',  false, ['smtp','sendgrid','mailgun','ses']],
-    'email_from_name'           => ['From name',                 'text',   false, ['smtp','sendgrid','mailgun','ses']],
+    /* #1309 — 'office365' and 'gmail' are first-class SMTP-AUTH providers, so
+       the SMTP + common field groups are visible for them too. */
+    'email_from_address'        => ['From address',              'email',  false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
+    'email_from_name'           => ['From name',                 'text',   false, ['smtp','office365','gmail','sendgrid','mailgun','ses']],
     /* feature C — SMTP provider preset (pre-fills host/port/secure in the
-       UI; constrained server-side to the $SMTP_PRESETS keys). */
+       UI; constrained server-side to the $SMTP_PRESETS keys). Custom SMTP
+       only — for office365/gmail the preset is implied by the provider. */
     'email_smtp_preset'         => ['SMTP provider preset',      'select', false, ['smtp']],
-    'email_smtp_host'           => ['SMTP host',                 'text',   false, ['smtp']],
-    'email_smtp_port'           => ['SMTP port',                 'number', false, ['smtp']],
-    'email_smtp_user'           => ['SMTP username',             'text',   false, ['smtp']],
-    'email_smtp_pass'           => ['SMTP password',             'password', true, ['smtp']],
-    'email_smtp_secure'         => ['SMTP encryption',           'select', false, ['smtp']],
+    'email_smtp_host'           => ['SMTP host',                 'text',   false, ['smtp','office365','gmail']],
+    'email_smtp_port'           => ['SMTP port',                 'number', false, ['smtp','office365','gmail']],
+    'email_smtp_user'           => ['SMTP username',             'text',   false, ['smtp','office365','gmail']],
+    'email_smtp_pass'           => ['SMTP password',             'password', true, ['smtp','office365','gmail']],
+    'email_smtp_secure'         => ['SMTP encryption',           'select', false, ['smtp','office365','gmail']],
     /* feature C — delegate / send-as. Optional; validated as an email in
        the save handler. When set, mail is sent FROM this mailbox while
        AUTH still uses the SMTP username above (the login mailbox must be
        granted Send-As on it in the provider's admin console). */
-    'email_smtp_from_address'   => ['Send-as / From address (delegate)', 'email', false, ['smtp']],
-    'email_smtp_from_name'      => ['Send-as display name',      'text',   false, ['smtp']],
+    'email_smtp_from_address'   => ['Send-as / From address (delegate)', 'email', false, ['smtp','office365','gmail']],
+    'email_smtp_from_name'      => ['Send-as display name',      'text',   false, ['smtp','office365','gmail']],
     'email_sendgrid_api_key'    => ['SendGrid API key',          'password', true, ['sendgrid']],
     'email_mailgun_api_key'     => ['Mailgun API key',           'password', true, ['mailgun']],
     'email_mailgun_domain'      => ['Mailgun domain',            'text',   false, ['mailgun']],
@@ -84,12 +87,20 @@ $EMAIL_SETTINGS = [
     'email_ses_secret_key'      => ['AWS secret key',            'password', true, ['ses']],
 ];
 
+/* #1309 — Microsoft 365 + Google Workspace are now FIRST-CLASS providers in
+   this dropdown (they used to be a nested "preset" under a generic SMTP entry,
+   which the owner reported as undiscoverable — the guides showed but the
+   services weren't selectable). The keys match the shared smtp_presets map so
+   the pre-fill JS + EmailService dispatch recognise them; both route through
+   the SMTP-AUTH transport. 'smtp' remains for any OTHER custom server. */
 $EMAIL_SERVICE_OPTIONS = [
-    'none'     => 'None — email login disabled',
-    'smtp'     => 'SMTP (incl. Microsoft 365 / Google Workspace)',
-    'sendgrid' => 'SendGrid',
-    'mailgun'  => 'Mailgun',
-    'ses'      => 'AWS SES',
+    'none'      => 'None — email login disabled',
+    'office365' => 'Microsoft 365 (Exchange Online)',
+    'gmail'     => 'Google Workspace / Gmail',
+    'smtp'      => 'SMTP (other / custom server)',
+    'sendgrid'  => 'SendGrid',
+    'mailgun'   => 'Mailgun',
+    'ses'       => 'AWS SES',
 ];
 
 $SMTP_SECURE_OPTIONS = [
@@ -108,11 +119,11 @@ $SMTP_SECURE_OPTIONS = [
  * reads, so adding a provider is a one-line change. (Microsoft 365 is the
  * priority target; Google Workspace second.)
  * ---------------------------------------------------------------------- */
-$SMTP_PRESETS = [
-    'custom'    => ['label' => 'Custom / manual',                 'host' => '',                  'port' => '',    'secure' => ''],
-    'office365' => ['label' => 'Microsoft 365 (Exchange Online)', 'host' => 'smtp.office365.com', 'port' => '587', 'secure' => 'tls'],
-    'gmail'     => ['label' => 'Google Workspace / Gmail',        'host' => 'smtp.gmail.com',     'port' => '587', 'secure' => 'tls'],
-];
+/* #1309 — the preset map now lives in the shared includes/smtp_presets.php so
+   EmailService.php reads the SAME host/port/secure when an office365 / gmail
+   provider is sent server-side (no drift between UI and sender). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'smtp_presets.php';
+$SMTP_PRESETS = ihymns_smtp_presets();
 
 /* ----------------------------------------------------------------------
  * Helpers
@@ -500,7 +511,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
 
                 <!-- Common fields (visible when provider != 'none') -->
-                <div class="email-fields" data-provider-show="smtp,sendgrid,mailgun,ses">
+                <div class="email-fields" data-provider-show="smtp,office365,gmail,sendgrid,mailgun,ses">
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_from_address" class="form-label">From address</label>
@@ -519,14 +530,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
 
-                <!-- SMTP-specific -->
-                <div class="email-fields" data-provider-show="smtp">
+                <!-- SMTP-specific (custom SMTP + the first-class office365 / gmail providers, #1309) -->
+                <div class="email-fields" data-provider-show="smtp,office365,gmail">
                     <hr class="text-secondary">
                     <h3 class="h6 mb-3"><i class="bi bi-server me-1"></i>SMTP server</h3>
 
                     <!-- feature C — provider preset. Pre-fills host / port /
                          encryption client-side from $SMTP_PRESETS (see the
-                         data-smtp-presets script JSON below). -->
+                         data-smtp-presets script JSON below). #1309: shown ONLY
+                         for the generic "SMTP (custom server)" choice — for the
+                         Microsoft 365 / Google Workspace providers the endpoint
+                         is implied and auto-filled by the provider-change JS. -->
+                    <div class="email-fields" data-provider-show="smtp">
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
                             <label for="email_smtp_preset" class="form-label">Provider preset</label>
@@ -547,6 +562,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             </div>
                         </div>
                     </div>
+                    </div><!-- /preset row (custom-SMTP only, #1309) -->
 
                     <div class="row g-3 mb-3">
                         <div class="col-md-6">
@@ -748,7 +764,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </h3>
                     <div id="instr-m365" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
                         <div class="accordion-body small">
-                            <p>Pick provider <strong>SMTP</strong>, then preset <strong>Microsoft 365</strong> — that fills
+                            <p>Pick provider <strong>Microsoft 365 (Exchange Online)</strong> — that fills
                                host <code>smtp.office365.com</code>, port <code>587</code>, encryption <code>STARTTLS</code>.</p>
                             <ol class="mb-2">
                                 <li><strong>Enable SMTP AUTH on the sending mailbox.</strong> In the
@@ -785,7 +801,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </h3>
                     <div id="instr-gws" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
                         <div class="accordion-body small">
-                            <p>Pick provider <strong>SMTP</strong>, then preset <strong>Google Workspace / Gmail</strong> — that fills
+                            <p>Pick provider <strong>Google Workspace / Gmail</strong> — that fills
                                host <code>smtp.gmail.com</code>, port <code>587</code>, encryption <code>STARTTLS</code>.</p>
                             <ol class="mb-2">
                                 <li><strong>Turn on 2-Step Verification</strong> on the sending account (required before
@@ -981,15 +997,25 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     const portEl   = document.getElementById('email_smtp_port');
     const secureEl = document.getElementById('email_smtp_secure');
 
-    presetSel.addEventListener('change', () => {
-        const cfg = presets[presetSel.value];
+    const fill = (cfg) => {
         /* 'custom' (and any unknown key) has empty host/port/secure — skip
            so we never wipe what the admin already typed. */
         if (!cfg || !cfg.host) return;
         if (hostEl)   hostEl.value = cfg.host;
         if (portEl)   portEl.value = cfg.port;
         if (secureEl && cfg.secure) secureEl.value = cfg.secure;
-    });
+    };
+    presetSel.addEventListener('change', () => fill(presets[presetSel.value]));
+
+    /* #1309 — Microsoft 365 / Google Workspace are now first-class PROVIDERS.
+       Their email_service value matches a preset key, so when the admin picks
+       one we apply the same host/port/encryption pre-fill. Only on an explicit
+       change (never on initial load) so a previously-saved host isn't clobbered
+       when the page renders with the provider already selected. */
+    const providerSel = document.querySelector('[data-email-provider]');
+    if (providerSel) {
+        providerSel.addEventListener('change', () => fill(presets[providerSel.value]));
+    }
 })();
 </script>
 </body>
