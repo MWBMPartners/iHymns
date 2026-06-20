@@ -198,6 +198,12 @@ final class EmailService
                 return self::sendViaMailgun($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'ses':
                 return self::sendViaSes($to, $subject, $bodyHtml, $bodyText, $cfg);
+            case 'office365':
+            case 'gmail':
+                /* #1309 — Microsoft 365 / Google Workspace are first-class
+                   providers that ride the same SMTP-AUTH transport; sendViaSmtp
+                   defaults host/port/secure from the shared preset keyed by the
+                   service when the admin left them blank. */
             case 'smtp':
                 /* feature C — real SMTP-AUTH client with STARTTLS / implicit
                    SSL, AUTH LOGIN, and delegate ("send-as") From support.
@@ -444,6 +450,24 @@ final class EmailService
         $user   = (string)($cfg['email_smtp_user'] ?? '');
         $pass   = (string)($cfg['email_smtp_pass'] ?? '');
         $secure = (string)($cfg['email_smtp_secure'] ?? 'tls');
+
+        /* #1309 — when a first-class office365 / gmail provider is selected,
+           default the connection endpoint from the shared preset (keyed by the
+           service) for any field the admin left blank. The UI pre-fills these
+           too, but this guarantees a correct send even if the JS pre-fill never
+           ran (e.g. the value was saved before this field was filled). The
+           preset keys are identical to the email_service values by design. */
+        $service = (string)($cfg['email_service'] ?? '');
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'smtp_presets.php';
+        $presets = ihymns_smtp_presets();
+        if (isset($presets[$service])) {
+            if ($host === '')              { $host   = (string)$presets[$service]['host']; }
+            if ($port <= 0)                { $port   = (int)$presets[$service]['port']; }
+            if ($secure === '' && $presets[$service]['secure'] !== '') {
+                $secure = (string)$presets[$service]['secure'];
+            }
+        }
+
         /* fromAddress() already prefers the delegate / send-as address
            (email_smtp_from_address → falls back to email_from_address). */
         $from   = self::fromAddress($cfg);
