@@ -3489,7 +3489,12 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
                Dynamic IN-list with str_repeat for the bind type string. */
-            $publicKeys = ['maintenance_mode', 'maintenance_message', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled', 'content_gating_enabled'];
+            /* #1313 — maintenance is PER-ENV and is sourced below via the canonical
+               env-aware helpers (isMaintenanceMode()/maintenanceMessage()), NOT from
+               here: the non-env-suffixed maintenance_mode/_message keys are never set,
+               so reading them made the PWA flag permanently false. The rest of these
+               public settings ARE global keys. */
+            $publicKeys = ['song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled', 'content_gating_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
@@ -3504,9 +3509,14 @@ if ($action !== null) {
                 $settings[$row['SettingKey']] = $row['SettingValue'];
             }
 
+            /* #1313 — env-aware maintenance state via the SAME helpers the 503 gate
+               uses (includes/maintenance.php, already required by this entry point).
+               Message only when actually in maintenance, so app_status stays empty-
+               when-off as before (maintenanceMessage() otherwise returns a default). */
+            $inMaintenance = function_exists('isMaintenanceMode') ? isMaintenanceMode() : false;
             sendJson([
-                'maintenance'         => ($settings['maintenance_mode'] ?? '0') === '1',
-                'maintenanceMessage'  => $settings['maintenance_message'] ?? '',
+                'maintenance'         => $inMaintenance,
+                'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
                 'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
                 'registrationMode'    => $settings['registration_mode'] ?? 'open',
                 'motd'                => $settings['motd'] ?? '',
