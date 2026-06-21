@@ -15,6 +15,7 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
+import { songsExist } from '../utils/song-existence.js';
 import { STORAGE_HISTORY, STORAGE_HISTORY_BACKFILLED, songbookLabel } from '../constants.js';
 
 export class History {
@@ -246,6 +247,14 @@ export class History {
     async renderHomeSection() {
         this._renderSection(this.getAll());
 
+        /* #1329 — prune entries whose song has since been DELETED from the
+           catalogue so a stale cache never renders an unresolvable id (the
+           deleted "Here to Stay" the owner spotted). Self-healing: it rewrites
+           the local cache. Runs for everyone (anon + signed-in); the signed-in
+           server pull below is already clean (song_history INNER-JOINs tblSongs)
+           and unions against this now-pruned cache. */
+        await this._pruneDeletedSongs();
+
         if (this.app?.userAuth?.isLoggedIn?.()) {
             if (this._clearedLocally) {
                 /* A clear just fired on this device; its server DELETE may not
@@ -275,6 +284,24 @@ export class History {
                 this.saveAll(merged);       /* mirror to the local cache */
                 this._renderSection(merged);
             }
+        }
+    }
+
+    /**
+     * Drop recently-viewed entries whose song no longer exists in the
+     * catalogue (#1329), rewriting the local cache + re-rendering if anything
+     * changed. No-op when the existence check can't run (offline / error) so a
+     * transient failure never wipes the cache.
+     */
+    async _pruneDeletedSongs() {
+        const items = this.getAll();
+        if (!Array.isArray(items) || items.length === 0) return;
+        const exists = await songsExist(this.app, items.map(h => h.id));
+        if (!exists) return;                 /* check failed — keep the cache */
+        const pruned = items.filter(h => h.id && exists.has(h.id));
+        if (pruned.length !== items.length) {
+            this.saveAll(pruned);
+            this._renderSection(pruned);
         }
     }
 
