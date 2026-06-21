@@ -155,11 +155,16 @@ function serviceMode_mintCode(\mysqli $db, int $sessionId): string
 }
 
 /**
- * Resolve a submitted join code to its LIVE session id, scoped to the venue +
- * channel (so two venues' identical codes never cross-validate). Accepts a
- * 'current' or 'previous' code whose ExpiresAt is still in the future and whose
- * session is active + fresh (LastHeartbeatAt within 90s). Returns the session
- * row (assoc) or null. The opaque-on-failure messaging is the caller's job.
+ * Resolve a submitted join code to its LIVE service session, within a channel.
+ * A 'current' or 'previous' code whose ExpiresAt is still in the future and
+ * whose session is active + fresh (LastHeartbeatAt within 90s) resolves.
+ *
+ * $venueId is OPTIONAL: a congregant typing a code off the screen doesn't know
+ * the venue, so pass 0 to resolve by code + channel alone (codes are 6 Crockford
+ * chars ≈ 1e9 space, so a code maps to ≤1 active session in practice; the
+ * freshest wins on the rare clash). A QR deep-link can pass venueId for an exact
+ * scope. Returns the session row (assoc) or null; opaque messaging is the
+ * caller's job.
  */
 function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string $channel): ?array
 {
@@ -170,14 +175,15 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
           WHERE c.Code = ?
             AND c.Status IN ('current', 'previous')
             AND c.ExpiresAt > UTC_TIMESTAMP()
-            AND s.VenueId = ?
+            AND (? = 0 OR s.VenueId = ?)
             AND s.Channel = ?
             AND s.SessionKind = 'service'
             AND s.IsActive = 1
             AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)
+          ORDER BY s.LastHeartbeatAt DESC
           LIMIT 1"
     );
-    $stmt->bind_param('sis', $code, $venueId, $channel);
+    $stmt->bind_param('siis', $code, $venueId, $venueId, $channel);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();

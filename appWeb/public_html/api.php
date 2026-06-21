@@ -12116,10 +12116,10 @@ if ($action !== null) {
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
             $code   = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
-            $venueId = (int)($body['venueId'] ?? 0);
+            $venueId = (int)($body['venueId'] ?? 0);  /* OPTIONAL — 0 = resolve by code+channel alone (congregant typed it off the screen). */
             $deviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($body['presenceDeviceId'] ?? ''));
             $deviceId = mb_substr($deviceId, 0, 64);
-            if ($code === '' || $venueId <= 0 || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
+            if ($code === '' || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
 
             $db = getDbMysqli();
             $channel = serviceMode_channel();

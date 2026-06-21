@@ -32,6 +32,7 @@ import { SetList } from './modules/setlist.js';
 import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
 import { LiveFollow } from './modules/live-follow.js';
+import { ServiceFollow } from './modules/service-follow.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
@@ -294,6 +295,11 @@ class iHymnsApp {
                After userAuth + display so isLoggedIn() + the song toolbar exist. */
             this.liveFollow = new LiveFollow(this);
             this.liveFollow.init();
+
+            /* Service Mode — congregant join-by-code + follow (#1335 Phase 2c).
+               Anonymous; resumes a join across reloads + wires [data-action=join-service]. */
+            this.serviceFollow = new ServiceFollow(this);
+            this.serviceFollow.init();
 
             /* Side-by-side song comparison (#102) */
             this.compare = new Compare(this);
