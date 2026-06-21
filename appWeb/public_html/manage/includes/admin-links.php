@@ -71,6 +71,9 @@ $_adminLinks = [
     ['users',                '/manage/users',                  'bi-people',          'Users',                 'view_users',                  'People'     ],
     ['groups',               '/manage/groups',                 'bi-people-fill',     'User Groups',           'manage_user_groups',          'People'     ],
     ['organisations',        '/manage/organisations',          'bi-building',        'Organisations',         'manage_organisations',        'People'     ],
+    /* Venues & service times (#1325) — the where/when of an org; foundation for
+       Service Mode (#1323). Same entitlement as Organisations. */
+    ['venues',               '/manage/venues',                 'bi-geo-alt',         'Venues',                'manage_organisations',        'People'     ],
     /* My Organisations (#707) — the entitlement is open to every signed-in
        role; admin-nav.php applies a data-driven hide via
        userHasOwnOrganisation() so non-admins only see this link when they
