@@ -1646,6 +1646,7 @@ try {
                 'pptx'  => 'pptx',
                 'db'    => 'easyworship',
                 'txt'   => 'proclaim',
+                'cho', 'chopro', 'crd', 'chord', 'pro' => 'chordpro',   // #1264 ChordPro
                 default => '',
             };
         }
@@ -1653,7 +1654,7 @@ try {
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
         _bulkImport_dedupeMode($dedupe);
 
-        $bodyFormats = ['videopsalm', 'openlp', 'pro6', 'proclaim', 'freeshow'];
+        $bodyFormats = ['videopsalm', 'openlp', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
@@ -1665,6 +1666,7 @@ try {
                     'pro6'       => _bulkImport_processPro6($content, $origName),
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),
                     'freeshow'   => _bulkImport_processFreeShow($content, $origName),
+                    'chordpro'   => _bulkImport_processChordPro($content, $origName),   // #1264
                 };
             } elseif ($format === 'pptx') {
                 $summary = _bulkImport_processPptx($tmpPath, $origName);
