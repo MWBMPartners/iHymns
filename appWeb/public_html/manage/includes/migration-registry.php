@@ -2165,4 +2165,33 @@ return [
             !_migProbe_tableExists($db, 'tblOrgVenues')
             || !_migProbe_tableExists($db, 'tblOrgServiceSchedules'),
     ],
+    'external-systems' => [
+        'script' => 'migrate-external-systems.php',
+        'card' => [
+            'title'  => 'External-system integration hook (#1327)',
+            'body'   => 'Creates the DORMANT integration scaffold: <code>tblExternalSystems</code>'
+                      . ' (system registry, seeded with a paused <code>webms-intra</code> row) plus'
+                      . ' per-entity ref tables <code>tblOrganisationExternalRefs</code>,'
+                      . ' <code>tblOrgVenueExternalRefs</code> and'
+                      . ' <code>tblOrgServiceScheduleExternalRefs</code> — so orgs / venues / service'
+                      . ' times can be linked to WebMS-Intra (or another system) in future without a'
+                      . ' second migration. No read/write code consumes them yet. Runs after Org Venues.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run External-Systems Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until all four tables exist
+           AND the seeded webms-intra registry row is present (the tableExists
+           guards short-circuit before the SELECT, so it never runs against a
+           missing table under STRICT). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalSystems')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrganisationExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgVenueExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgServiceScheduleExternalRefs')) { return true; }
+            $r = $db->query("SELECT 1 FROM tblExternalSystems WHERE SystemKey = 'webms-intra' LIMIT 1");
+            $seeded = $r && $r->num_rows > 0;
+            if ($r) { $r->close(); }
+            return !$seeded;
+        },
+    ],
 ];

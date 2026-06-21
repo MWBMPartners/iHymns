@@ -113,3 +113,29 @@ free**. Geolocation/SSID/BLE can only ever *reduce friction*, never unlock.
 Worship team = **Live Follow** (shipped). Congregation = suggest **"Service Mode"** (or "Congregation
 Follow" / "Pew Mode") — clearly distinct, and it reads as *the church running the service*, which also
 aligns better with the CCLI "church operates it" framing.
+
+## External-system integration hook (#1327) — WebMS-Intra & beyond
+Owner asked (2026-06-21) that orgs / venues / etc be able to integrate with **WebMS-Intra** in
+future. Per rule #20 (design the family up front; don't ALTER later) this shipped **dormant** in the
+Phase-1 batch (PR #1326). A design workflow (`w0ktly3yn`) surveyed the codebase idioms and **rejected
+a generic polymorphic `EntityType+EntityId` table** — rule #15 forbids it, and a numeric `EntityId`
+can't address the `SongId VARCHAR(20)` / `Abbreviation` keys the codebase already FKs on, and a no-FK
+polymorphism orphan-rots on delete. The idiomatic shape, validated adversarially, is:
+- **`tblExternalSystems`** — a registry (sibling of `tblExternalLinkTypes`); system keys live in
+  **data, not PHP** (rule #15). Seeded with a **paused `webms-intra`** row so the per-entity FKs
+  (RESTRICT) have a target (the migration seeds it — else the first insert throws under STRICT).
+- **`tblOrganisationExternalRefs` / `tblOrgVenueExternalRefs` / `tblOrgServiceScheduleExternalRefs`** —
+  per-entity dedicated ref tables (rule #15). Each carries `(Source, SourceRef)` UNIQUE (idempotent
+  re-import), `(SystemId, ExternalId)` UNIQUE (one external record ↔ one iHymns row per system, and
+  `SystemId` in the key = a **second system never needs an ALTER**), plus reserved-dormant operator
+  columns: `SyncStatus` / `SyncDirection` (VARCHAR, not ENUM), `LocalHash` + `ExternalEtag`
+  (optimistic-concurrency conflict detection), `LastError` + `LastErrorAt`, `DeletedAt` (soft-unlink
+  vs FK-cascade hard delete), `MetaJson` (loss-free), `CreatedBy`. All three entities ship in **one
+  pass** so a schedule sync never forces a third migration.
+
+**Nothing reads/writes these yet** — the actual sync engine is future, **gated** work (#1327) that
+requires, before it goes live: a **DPA** + lawful basis (org/venue address + service times are
+GDPR Art. 9-adjacent — a faith community's presence pattern); **`inbound`-first** until an outbound
+DPA exists; **production-only** runs (the 3 docroots share one MySQL — alpha/beta must not exfiltrate
+real data; gate on a sandbox `BaseUrl`); credentials **never in the DB** (`AuthScope` = a secret
+*name* hint only); sync history → `tblActivityLog` **without raw PII payloads**.
