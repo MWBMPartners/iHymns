@@ -34,9 +34,18 @@ declare(strict_types=1);
  *                sending where the From / Sender address differs from the
  *                SMTP AUTH login (the login mailbox must be granted
  *                Send-As on the delegate mailbox in the provider's admin
- *                console — see the configuration.php setup guides). OAuth2
- *                (and the eventual MailerMatt service) is the future path;
- *                today it is SMTP-AUTH + an app password + delegate. (feature C)
+ *                console — see the configuration.php setup guides). (feature C)
+ *   - graph    : Microsoft 365 via Microsoft Graph (OAuth2 app-only) — #1311.
+ *                client-credentials token → POST /users/{sender}/sendMail with
+ *                the Mail.Send application permission. No SMTP, no app password;
+ *                the modern path immune to Basic-Auth / SMTP-AUTH deprecation.
+ *                Selected when email_service=office365 + email_auth_method=oauth2.
+ *   - gmail-api : Google Workspace via the Gmail API (OAuth2 service-account +
+ *                domain-wide delegation) — #1311. Signed JWT → access token
+ *                impersonating the sender → users/{sender}/messages/send (raw
+ *                base64url RFC822). Selected when email_service=gmail +
+ *                email_auth_method=oauth2. (MailerMatt remains the eventual
+ *                consolidated mechanism; these are the native OAuth2 drivers.)
  *   - log      : developer-only "send to PHP error_log" mode. Sanitises
  *                the log line — never writes the magic-link token, the
  *                6-digit code, or the verification token. The raw
@@ -199,11 +208,22 @@ final class EmailService
             case 'ses':
                 return self::sendViaSes($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'office365':
-            case 'gmail':
                 /* #1309 — Microsoft 365 / Google Workspace are first-class
-                   providers that ride the same SMTP-AUTH transport; sendViaSmtp
-                   defaults host/port/secure from the shared preset keyed by the
-                   service when the admin left them blank. */
+                   providers. #1311 — each can authenticate via SMTP-AUTH (app
+                   password) OR an OAuth2 REST API. email_auth_method picks;
+                   default 'smtp' preserves the #1309 behaviour for existing
+                   configs. M365's OAuth2 path is Microsoft Graph (app-only). */
+                if (($cfg['email_auth_method'] ?? 'smtp') === 'oauth2') {
+                    return self::sendViaGraph($to, $subject, $bodyHtml, $bodyText, $cfg);
+                }
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
+            case 'gmail':
+                /* #1311 — Google Workspace OAuth2 path is the Gmail API
+                   (service-account + domain-wide delegation). */
+                if (($cfg['email_auth_method'] ?? 'smtp') === 'oauth2') {
+                    return self::sendViaGmailApi($to, $subject, $bodyHtml, $bodyText, $cfg);
+                }
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'smtp':
                 /* feature C — real SMTP-AUTH client with STARTTLS / implicit
                    SSL, AUTH LOGIN, and delegate ("send-as") From support.
@@ -723,6 +743,219 @@ final class EmailService
     }
 
     /* -------------------------------------------------------------------
+     * Driver: Microsoft Graph (OAuth2 app-only) — #1311
+     *
+     * The modern alternative to SMTP-AUTH for Microsoft 365, immune to the
+     * Basic-Auth / SMTP-AUTH deprecation. OAuth2 client-credentials grant
+     * (app-only) against the tenant token endpoint → POST /users/{sender}/
+     * sendMail with the Mail.Send APPLICATION permission. Requires (Azure):
+     * an app registration with Mail.Send application permission + admin
+     * consent, a client secret, and the sender mailbox UPN. The client
+     * secret + bearer token are NEVER logged (only short error codes are).
+     * ----------------------------------------------------------------- */
+    private static function sendViaGraph(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $tenant = trim((string)($cfg['email_graph_tenant_id'] ?? ''));
+        $client = trim((string)($cfg['email_graph_client_id'] ?? ''));
+        $secret = (string)($cfg['email_graph_client_secret'] ?? '');
+        $sender = trim((string)($cfg['email_graph_sender'] ?? ''));
+        if ($tenant === '' || $client === '' || $secret === '' || $sender === '') {
+            return EmailSendResult::failure('graph', 'missing_tenant_client_secret_or_sender', 'NotConfigured');
+        }
+
+        $from      = self::oauthFrom($cfg, $sender);   /* default From = sender; explicit delegate = Send-As */
+        $fromEmail = $from['email'];
+
+        /* 1) OAuth2 client-credentials token. scope=.default grants the app's
+              consented application permissions (Mail.Send). */
+        $tok = self::httpPostForm(
+            'https://login.microsoftonline.com/' . rawurlencode($tenant) . '/oauth2/v2.0/token',
+            [
+                'client_id'     => $client,
+                'client_secret' => $secret,
+                'scope'         => 'https://graph.microsoft.com/.default',
+                'grant_type'    => 'client_credentials',
+            ],
+            []
+        );
+        if ($tok['err'] !== '') {
+            return EmailSendResult::failure('graph', 'token_' . $tok['err'], 'TransportError');
+        }
+        if ($tok['code'] < 200 || $tok['code'] >= 300) {
+            return EmailSendResult::failure('graph', 'token_http_' . $tok['code'] . ':' . self::oauthErr($tok['body']), 'AuthError', $tok['code']);
+        }
+        $accessToken = (string)(json_decode($tok['body'], true)['access_token'] ?? '');
+        if ($accessToken === '') {
+            return EmailSendResult::failure('graph', 'token_no_access_token', 'AuthError');
+        }
+
+        /* 2) sendMail. From defaults to the sender mailbox; an explicit
+              different From requires Send-As granted on it (the SMTP delegate
+              model). Setting From = the sender's own address is always valid. */
+        $fromAddr = ['address' => $fromEmail];
+        if (($from['name'] ?? '') !== '') { $fromAddr['name'] = (string)$from['name']; }
+        $message = [
+            'subject'      => $subject,
+            'body'         => ['contentType' => 'HTML', 'content' => $bodyHtml],
+            'toRecipients' => [['emailAddress' => ['address' => $to]]],
+            'from'         => ['emailAddress' => $fromAddr],
+        ];
+
+        $resp = self::httpPostJson(
+            'https://graph.microsoft.com/v1.0/users/' . rawurlencode($sender) . '/sendMail',
+            ['message' => $message, 'saveToSentItems' => false],
+            [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/json',
+            ]
+        );
+        if ($resp['err'] !== '') {
+            return EmailSendResult::failure('graph', $resp['err'], 'TransportError');
+        }
+        if ($resp['code'] >= 200 && $resp['code'] < 300) {
+            return EmailSendResult::success('graph', null);   /* 202 Accepted, no Message-Id */
+        }
+        return EmailSendResult::failure('graph', 'http_' . $resp['code'] . ':' . self::oauthErr($resp['body']), 'ProviderError', $resp['code']);
+    }
+
+    /* -------------------------------------------------------------------
+     * Driver: Gmail API (OAuth2 service-account + domain-wide delegation) — #1311
+     *
+     * The Google Workspace equivalent of the Graph path. A service account
+     * with domain-wide delegation for the gmail.send scope signs a JWT,
+     * exchanges it for an access token impersonating the configured sender,
+     * then POSTs a base64url RFC822 message to users/{sender}/messages/send.
+     * Requires (Google Cloud): a project with the Gmail API enabled, a
+     * service-account JSON key, and domain-wide delegation authorised for the
+     * gmail.send scope in the Workspace Admin console. The private key +
+     * bearer token are NEVER logged.
+     * ----------------------------------------------------------------- */
+    private static function sendViaGmailApi(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $saJson = (string)($cfg['email_gmail_sa_json'] ?? '');
+        $sender = trim((string)($cfg['email_gmail_sender'] ?? ''));
+        if ($saJson === '' || $sender === '') {
+            return EmailSendResult::failure('gmail-api', 'missing_service_account_or_sender', 'NotConfigured');
+        }
+        if (!function_exists('openssl_sign')) {
+            return EmailSendResult::failure('gmail-api', 'openssl_extension_missing', 'TransportError');
+        }
+        $sa = json_decode($saJson, true);
+        if (!is_array($sa) || empty($sa['client_email']) || empty($sa['private_key'])) {
+            return EmailSendResult::failure('gmail-api', 'invalid_service_account_json', 'NotConfigured');
+        }
+        /* token_uri comes from the pasted SA JSON; constrain it to a Google
+           host (defence-in-depth) so a tampered key can't aim the signed
+           assertion elsewhere. Falls back to the canonical endpoint. */
+        $tokenUri = (string)($sa['token_uri'] ?? 'https://oauth2.googleapis.com/token');
+        $tuHost   = (string)parse_url($tokenUri, PHP_URL_HOST);
+        if (stripos($tokenUri, 'https://') !== 0 || substr($tuHost, -15) !== '.googleapis.com') {
+            $tokenUri = 'https://oauth2.googleapis.com/token';
+        }
+
+        $from = self::oauthFrom($cfg, $sender);   /* default From = impersonated sender; explicit delegate = verified send-as */
+
+        /* 1) Build + sign the JWT assertion (RS256), impersonating $sender via
+              domain-wide delegation (the `sub` claim). iat is backdated 60s to
+              absorb server clock-skew vs Google (a fast clock → invalid_grant). */
+        $now    = time();
+        $header = ['alg' => 'RS256', 'typ' => 'JWT'];
+        $claims = [
+            'iss'   => (string)$sa['client_email'],
+            'sub'   => $sender,
+            'scope' => 'https://www.googleapis.com/auth/gmail.send',
+            'aud'   => $tokenUri,
+            'iat'   => $now - 60,
+            'exp'   => $now + 3600,
+        ];
+        $signingInput = self::b64url((string)json_encode($header)) . '.' . self::b64url((string)json_encode($claims));
+        $signature    = '';
+        if (!@openssl_sign($signingInput, $signature, (string)$sa['private_key'], OPENSSL_ALGO_SHA256)) {
+            return EmailSendResult::failure('gmail-api', 'jwt_signing_failed', 'AuthError');
+        }
+        $assertion = $signingInput . '.' . self::b64url($signature);
+
+        /* 2) Exchange the JWT for an access token. */
+        $tok = self::httpPostForm($tokenUri, [
+            'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'assertion'  => $assertion,
+        ], []);
+        if ($tok['err'] !== '') {
+            return EmailSendResult::failure('gmail-api', 'token_' . $tok['err'], 'TransportError');
+        }
+        if ($tok['code'] < 200 || $tok['code'] >= 300) {
+            return EmailSendResult::failure('gmail-api', 'token_http_' . $tok['code'] . ':' . self::oauthErr($tok['body']), 'AuthError', $tok['code']);
+        }
+        $accessToken = (string)(json_decode($tok['body'], true)['access_token'] ?? '');
+        if ($accessToken === '') {
+            return EmailSendResult::failure('gmail-api', 'token_no_access_token', 'AuthError');
+        }
+
+        /* 3) Build the RFC822 message (reuse the SMTP MIME builder) and send it
+              base64url-encoded via the Gmail API. */
+        $raw  = self::smtpBuildMessage($from, $to, $subject, $bodyHtml, $bodyText);
+        $resp = self::httpPostJson(
+            'https://gmail.googleapis.com/gmail/v1/users/' . rawurlencode($sender) . '/messages/send',
+            ['raw' => self::b64url($raw)],
+            [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/json',
+            ]
+        );
+        if ($resp['err'] !== '') {
+            return EmailSendResult::failure('gmail-api', $resp['err'], 'TransportError');
+        }
+        if ($resp['code'] >= 200 && $resp['code'] < 300) {
+            $msgId = (string)(json_decode($resp['body'], true)['id'] ?? '');
+            return EmailSendResult::success('gmail-api', $msgId !== '' ? $msgId : null);
+        }
+        return EmailSendResult::failure('gmail-api', 'http_' . $resp['code'] . ':' . self::oauthErr($resp['body']), 'ProviderError', $resp['code']);
+    }
+
+    /** base64url (RFC 4648 §5, unpadded) — JWT segments + Gmail raw message. */
+    private static function b64url(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    /**
+     * Extract a SHORT, secret-free error summary from an OAuth/REST error body.
+     * Never receives or returns a token/secret — the success bodies (which carry
+     * access_token) are parsed separately and never reach here.
+     */
+    private static function oauthErr(string $body): string
+    {
+        $j = json_decode($body, true);
+        if (is_array($j)) {
+            if (isset($j['error']) && is_array($j['error'])) {        /* Graph: {error:{code,message}} */
+                return self::sanitiseForLog(trim((string)($j['error']['code'] ?? '') . ' ' . (string)($j['error']['message'] ?? '')), 180);
+            }
+            if (isset($j['error_description'])) {                     /* Google/AAD: {error,error_description} */
+                return self::sanitiseForLog((string)$j['error_description'], 180);
+            }
+            if (isset($j['error']) && is_string($j['error'])) {
+                return self::sanitiseForLog($j['error'], 180);
+            }
+        }
+        return self::sanitiseForLog($body, 120);
+    }
+
+    /**
+     * #1311 — From for the OAuth2 drivers. Prefers an EXPLICIT delegate /
+     * send-as address (email_smtp_from_address) only; otherwise defaults to the
+     * OAuth sender mailbox (always authorised), NOT the generic cross-provider
+     * email_from_address — so a leftover From from another provider's setup
+     * can't silently 400/rewrite a Graph/Gmail send. A delegate From still
+     * needs Send-As (Graph) / a verified "Send mail as" alias (Gmail).
+     */
+    private static function oauthFrom(array $cfg, string $sender): array
+    {
+        $delegate = trim((string)($cfg['email_smtp_from_address'] ?? ''));
+        $email = ($delegate !== '' && filter_var($delegate, FILTER_VALIDATE_EMAIL)) ? $delegate : $sender;
+        return ['email' => $email, 'name' => self::fromAddress($cfg)['name']];
+    }
+
+    /* -------------------------------------------------------------------
      * Internal helpers
      * ----------------------------------------------------------------- */
 
@@ -783,6 +1016,15 @@ final class EmailService
             'email_sendgrid_api_key',
             'email_mailgun_api_key', 'email_mailgun_domain',
             'email_ses_region', 'email_ses_access_key', 'email_ses_secret_key',
+            /* #1311 — OAuth2 API transport. email_auth_method ('smtp'|'oauth2')
+               selects, for the office365/gmail providers, between the SMTP-AUTH
+               driver and the OAuth2 REST driver (Microsoft Graph / Gmail API).
+               office365 → Graph (tenant/client/secret + sender mailbox);
+               gmail → Gmail API (service-account JSON + impersonated sender). */
+            'email_auth_method',
+            'email_graph_tenant_id', 'email_graph_client_id',
+            'email_graph_client_secret', 'email_graph_sender',
+            'email_gmail_sa_json', 'email_gmail_sender',
         ];
         try {
             $db = getDbMysqli();
