@@ -12036,6 +12036,203 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * SERVICE MODE (#1335) — broadcast (operator) + congregant join/poll/
+         * leave (Phase 2c). The broadcast endpoint serves BOTH broadcaster
+         * mechanisms (the projection laptop OR a separate leader device) — it
+         * just needs the sessionId + operator auth. Congregant endpoints are
+         * anonymous, gated by the unguessable rotating code (join) / opaque
+         * presence token (poll/leave), CHANNEL-scoped, NAT-safe per-token.
+         * ----------------------------------------------------------------- */
+        case 'service_broadcast': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            checkRateLimit('service_broadcast', $_SERVER['REMOTE_ADDR'] ?? '', 600, 60, true, $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $sessionId = (int)($body['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : null;
+            if ($songId === '') { $songId = null; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) { sendJson(['error' => 'Unknown or ended session.'], 404); break; }
+            $orgId = (int)$sess['OrgId'];
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || (int)$sess['HostUserId'] === $userId
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+
+            if ($songId !== null) {
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chk->bind_param('s', $songId);
+                $chk->execute();
+                $ok = $chk->get_result()->fetch_row() !== null;
+                $chk->close();
+                if (!$ok) { sendJson(['error' => 'Unknown song.'], 400); break; }
+            }
+
+            $upd = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                        StateRevision = StateRevision + 1, LastHeartbeatAt = UTC_TIMESTAMP()
+                  WHERE Id = ?'
+            );
+            $upd->bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId);
+            $upd->execute();
+            $upd->close();
+            $rev = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+            $rev->bind_param('i', $sessionId);
+            $rev->execute();
+            $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
+            $rev->close();
+            sendJson(['ok' => true, 'revision' => $revision]);
+            break;
+        }
+
+        case 'service_join': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            $svcIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* Generous per-IP cap — a whole congregation joins at once behind one
+               church-wifi IP, so this is high; the real throttle is the per-device
+               presence row + the rotating code's air-gap. */
+            checkRateLimit('service_join', $svcIp, 300, 60, false, null);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code   = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
+            $venueId = (int)($body['venueId'] ?? 0);
+            $deviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($body['presenceDeviceId'] ?? ''));
+            $deviceId = mb_substr($deviceId, 0, 64);
+            if ($code === '' || $venueId <= 0 || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $sess = serviceMode_resolveJoin($db, $code, $venueId, $channel);
+            if (!$sess) {
+                /* Opaque — don't distinguish wrong/expired/unknown (anti-probe). */
+                sendJson(['ok' => false, 'error' => 'That code isn’t active. Check the screen and try again.'], 404);
+                break;
+            }
+            $sessionId = (int)$sess['Id'];
+
+            /* Resolve the session's ExpiresAt (the resolved-UTC occurrence end) +
+               its current broadcast state for an immediate follow. */
+            $meta = $db->prepare('SELECT ExpiresAt, CurrentSongId, CurrentComponentIndex, StateJson, StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+            $meta->bind_param('i', $sessionId);
+            $meta->execute();
+            $m = $meta->get_result()->fetch_assoc();
+            $meta->close();
+            $expiresAt = (string)($m['ExpiresAt'] ?? '');
+
+            /* Opaque presence token (base64url 32 bytes = 43 chars) — the gate key. */
+            $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            $orgId = $sess['OrgId'] !== null ? (int)$sess['OrgId'] : null;
+            $sVenueId = $sess['VenueId'] !== null ? (int)$sess['VenueId'] : null;
+            $schedId = $sess['ScheduleId'] !== null ? (int)$sess['ScheduleId'] : null;
+            $occDate = $sess['OccurrenceDate'] !== null ? (string)$sess['OccurrenceDate'] : null;
+
+            /* Upsert presence: one row per (session, device); a re-join reactivates
+               + re-tokens rather than duplicating (uq_DeviceSession). */
+            $ins = $db->prepare(
+                "INSERT INTO tblServicePresence
+                    (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                     PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                 ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
+                     LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+            );
+            $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+            $ins->execute();
+            $ins->close();
+
+            sendJson([
+                'ok' => true,
+                'presenceToken' => $token,
+                'currentSongId' => $m['CurrentSongId'] ?? null,
+                'componentIndex' => isset($m['CurrentComponentIndex']) ? (int)$m['CurrentComponentIndex'] : null,
+                'state' => isset($m['StateJson']) && $m['StateJson'] !== null ? json_decode((string)$m['StateJson'], true) : null,
+                'revision' => (int)($m['StateRevision'] ?? 0),
+            ]);
+            break;
+        }
+
+        case 'service_poll': {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            $token = (string)($_GET['presenceToken'] ?? '');
+            if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['active' => false]); break; }
+            $since = max(0, (int)($_GET['since'] ?? 0));
+            /* NAT-safe: rate-limit PER TOKEN (not per IP) so many congregants
+               behind one IP each get their own budget, and one bad token can't
+               DoS the rest. 40/min comfortably covers ~2.5s polling. */
+            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), 40, 60, false, null);
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $stmt = $db->prepare(
+                "SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision
+                   FROM tblServicePresence p
+                   JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+                  WHERE p.PresenceToken = ? AND p.IsActive = 1 AND p.ExpiresAt > UTC_TIMESTAMP()
+                    AND s.IsActive = 1 AND s.Channel = ?
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 120 SECOND)
+                  LIMIT 1"
+            );
+            $stmt->bind_param('ss', $token, $channel);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) { sendJson(['active' => false]); break; }
+
+            /* Touch liveness (best-effort; not every poll needs it but cheap). */
+            $touch = $db->prepare('UPDATE tblServicePresence SET LastSeenAt = UTC_TIMESTAMP() WHERE PresenceToken = ?');
+            $touch->bind_param('s', $token);
+            $touch->execute();
+            $touch->close();
+
+            $revision = (int)$row['StateRevision'];
+            if ($revision <= $since) { sendJson(['active' => true, 'changed' => false, 'revision' => $revision]); break; }
+            sendJson([
+                'active' => true,
+                'changed' => true,
+                'currentSongId' => $row['CurrentSongId'] ?? null,
+                'componentIndex' => isset($row['CurrentComponentIndex']) ? (int)$row['CurrentComponentIndex'] : null,
+                'state' => isset($row['StateJson']) && $row['StateJson'] !== null ? json_decode((string)$row['StateJson'], true) : null,
+                'revision' => $revision,
+            ]);
+            break;
+        }
+
+        case 'service_leave': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $token = (string)(($body = json_decode(file_get_contents('php://input'), true)) && is_array($body) ? ($body['presenceToken'] ?? '') : '');
+            if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['ok' => true]); break; }
+            $db = getDbMysqli();
+            /* Immediate gate revocation. */
+            $upd = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE PresenceToken = ?');
+            $upd->bind_param('s', $token);
+            $upd->execute();
+            $upd->close();
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
