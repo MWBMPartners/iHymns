@@ -91,6 +91,36 @@ $sections = [
         'group' => 'Content',
     ],
     [
+        'id'    => 'duplicate-songs',
+        'icon'  => 'bi-files',
+        'title' => 'Duplicate & Counterpart Songs',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'works',
+        'icon'  => 'bi-diagram-3',
+        'title' => 'Works',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'tags',
+        'icon'  => 'bi-tags',
+        'title' => 'Tags & Themes',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'catalogues',
+        'icon'  => 'bi-collection',
+        'title' => 'Collections (Catalogues)',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'external-links',
+        'icon'  => 'bi-link-45deg',
+        'title' => 'External Links',
+        'group' => 'Content',
+    ],
+    [
         'id'    => 'restrictions',
         'icon'  => 'bi-shield-lock',
         'title' => 'Content Restrictions',
@@ -133,6 +163,12 @@ $sections = [
         'group' => 'People',
     ],
     [
+        'id'    => 'service-mode',
+        'icon'  => 'bi-broadcast-pin',
+        'title' => 'Service Mode (Live-Follow)',
+        'group' => 'People',
+    ],
+    [
         'id'    => 'analytics',
         'icon'  => 'bi-graph-up',
         'title' => 'Analytics',
@@ -157,6 +193,12 @@ $sections = [
         'group' => 'Operations',
     ],
     [
+        'id'    => 'notifications',
+        'icon'  => 'bi-bell',
+        'title' => 'Notifications',
+        'group' => 'Operations',
+    ],
+    [
         'id'    => 'schema-audit',
         'icon'  => 'bi-clipboard2-data',
         'title' => 'Schema Audit',
@@ -178,6 +220,12 @@ $sections = [
         'id'    => 'native-api',
         'icon'  => 'bi-broadcast',
         'title' => 'Native API surface',
+        'group' => 'Operations',
+    ],
+    [
+        'id'    => 'mobile-admin',
+        'icon'  => 'bi-phone',
+        'title' => 'Mobile admin (responsive lists)',
         'group' => 'Operations',
     ],
     [
@@ -444,9 +492,12 @@ foreach ($sections as $s) {
                     </p>
                     <p>
                         The big one. The Song Editor is where you author and maintain
-                        the catalogue. It loads every song in the library into your
-                        browser, then lets you edit one song or many at once before
-                        saving everything back.
+                        the catalogue. It loads a lightweight <em>index</em> of the
+                        whole library (id / number / title / songbook) so the list and
+                        filters are instant, then fetches each full song record
+                        <strong>on demand</strong> from the database as you open it &mdash;
+                        nothing materialises the entire corpus in your browser. Edit one
+                        song or many at once and save straight back to MySQL.
                     </p>
                     <h3 class="h6">Working with the catalogue</h3>
                     <ul>
@@ -701,6 +752,31 @@ foreach ($sections as $s) {
                     </p>
                 </section>
 
+                <section id="duplicate-songs" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-files me-2"></i>Duplicate &amp; Counterpart Songs</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The unified review surface for songs that look like the same hymn appearing in more than one place (#1215). It folds together exact duplicates (same normalised title) and fuzzy counterparts scored across books. The old <code>/manage/song-link-suggestions</code> page was absorbed here and now just redirects to this one.
+                    </p>
+                    <h3 class="h6">How candidates are found</h3>
+                    <p class="small">
+                        Scoring is the shared similarity engine in <code>includes/song_similarity.php</code> (normalise &rarr; Levenshtein &rarr; Jaccard &rarr; blend) &mdash; the same maths the editor's inline panel and the batch builder use. A nightly batch (<code>build-song-link-suggestions.php</code>) writes scored pairs with a confidence and signal into <code>tblSongLinkSuggestions</code>; exact-title clusters are detected live.
+                    </p>
+                    <h3 class="h6">Per-action what-it-does</h3>
+                    <dl class="actions">
+                        <dt>Link <span class="badge bg-primary">edit_songs</span></dt><dd>Records that two songs in <em>different</em> books are the same hymn (writes <code>tblSongLinks</code>) so the public site can cross-reference them. Non-destructive.</dd>
+                        <dt>Dismiss <span class="badge bg-primary">edit_songs</span></dt><dd>Hides a pair you've judged <em>not</em> a duplicate. A cluster only disappears once <em>all</em> its pairs are dismissed.</dd>
+                        <dt>Merge <span class="badge bg-warning text-dark">manage_duplicate_songs</span></dt><dd>The destructive one: collapses two song records into one. Merging two songs that share the <em>same official songbook</em> additionally requires a type-to-confirm guard (<code>force=1</code>) because that's the riskiest case.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Link and Dismiss are reversible bookkeeping; Merge is not. Use Link when both copies should stay (e.g. the same hymn in two hymnals); reserve Merge for genuine accidental duplicates.
+                    </div>
+                </section>
+
                 <section id="works" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-diagram-3 me-2"></i>Works</h2>
                     <p class="role-badges">
@@ -726,6 +802,46 @@ foreach ($sections as $s) {
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> The same song <em>can</em> belong to multiple Works (e.g. a medley arrangement that quotes two compositions), but it's rare and usually a misclassification. The list view's "Members" column is the quickest sanity check.
+                    </div>
+                </section>
+
+                <section id="tags" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-tags me-2"></i>Tags &amp; Themes</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The registry of the categorical tags (e.g. <em>Easter</em>, <em>Communion</em>, <em>Grace</em>) that drive Browse-by-Theme in the main app and can be used as targets for <a href="#restrictions">Content Restrictions</a>. Curators add, rename, and merge tags here; the editor's Tags tab just attaches them to songs. Gated by <code>manage_tags</code>.
+                    </p>
+                    <h3 class="h6">Standard theme vocabulary (#1152)</h3>
+                    <p>
+                        The page seeds the CCLI / SongSelect theme taxonomy (the OpenLyrics <code>themelist.txt</code>) into the tag list via <code>migrate-seed-theme-vocabulary.php</code> &mdash; a two-level Parent/Child hierarchy (<code>ParentId</code> self-FK) with each tag carrying a <code>Source</code> of either <code>curator</code> or <code>ccli-openlyrics</code>. Never hand-type a theme list or re-seed ad-hoc; grow the standard vocabulary through that migration.
+                    </p>
+                    <h3 class="h6">Canonicalisation (#1222)</h3>
+                    <p>
+                        Curator-typed variants (e.g. <em>Xmas</em> vs <em>Christmas</em>) are folded into the standard themes by the <strong>canonicalisation suggestions</strong> on this page, which reuse the shared <code>includes/song_similarity.php</code> scorer. Picking a suggestion runs the same irreversible <strong>Merge</strong> as Credit People &mdash; the variant becomes the source and is deleted, the standard theme is the survivor and every song re-points to it.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Merge is atomic and irreversible. Confirm the survivor is the canonical theme before you click through.
+                    </div>
+                </section>
+
+                <section id="catalogues" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-collection me-2"></i>Collections (Catalogues)</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A <strong>Collection</strong> is a curated, cross-songbook grouping of songs &mdash; a themed selection (e.g. &ldquo;Carols for Christmas Eve&rdquo;) that draws from any number of songbooks without changing where each song <em>lives</em>. Gated by <code>manage_songbooks</code> (the same entitlement as the Songbooks page).
+                    </p>
+                    <h3 class="h6">Naming note (#1223)</h3>
+                    <p class="small">
+                        The user-facing label is <strong>&ldquo;Collection&rdquo;</strong>, but this is presentation copy only &mdash; internally the feature is still <em>catalogue</em>: the route is <code>/manage/catalogues</code>, the tables are <code>tblCatalogues</code> / <code>tblCatalogueSongs</code>, and the audit log keys are <code>admin.catalogues.*</code>. So a developer reading logs and a curator reading the UI are looking at the same thing under two names.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A Collection never moves a song. Each song's home is still its songbook (<code>tblSongs.SongbookAbbr</code>); a Collection just references it. Deleting a Collection leaves every member song untouched.
                     </div>
                 </section>
 
@@ -759,7 +875,7 @@ foreach ($sections as $s) {
                         Admin list pages opt into a column-priority responsive convention (#842). Tag the table <code>.admin-table-responsive</code>, then mark each <code>&lt;th&gt;</code> + <code>&lt;td&gt;</code> with <code>data-col-priority="primary"</code>, <code>"secondary"</code>, or <code>"tertiary"</code>. Below 992px tertiary columns hide; below 768px secondary columns hide too. Primary columns are always visible.
                     </p>
                     <p>
-                        Pages currently opted in: Credit People, Songbooks, Songbook Series, Works. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
+                        Pages currently opted in include Credit People, Songbooks, Songbook Series, Works and several other admin lists. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
                     </p>
                 </section>
 
@@ -953,6 +1069,40 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="service-mode" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-broadcast-pin me-2"></i>Service Mode (congregation Live-Follow)</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-secondary">org admin</span>
+                        <span class="badge bg-secondary">org owner</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <div class="alert alert-info small">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Dormant by default.</strong> The whole feature is gated off behind <code>content_gating_enabled = '0'</code> and additionally needs <code>require_licence:ccli</code> restriction rows before it does anything. Turn it on deliberately when your organisation is ready (#1323 / #1335).
+                    </div>
+                    <p>
+                        Service Mode lets a congregation follow the songs of a live service in sync on their own devices. The leader drives which song is showing; everyone who has joined sees it change in real time. Joining is by a <strong>rotating code</strong> shown at the venue &mdash; no account or sign-in required for a congregant.
+                    </p>
+                    <h3 class="h6">Setting up (org admin / owner)</h3>
+                    <dl class="actions">
+                        <dt>Venues &amp; Service Times <span class="badge bg-secondary">/manage/venues</span></dt><dd>Define your organisation's physical venues (name, address, timezone) and their recurring service schedules (day, start time, duration). These anchor a live session to a place and an occurrence so a join code can expire when the service ends.</dd>
+                        <dt>Service Projection <span class="badge bg-secondary">/manage/service-projection.php</span></dt><dd>The big-screen / projector view. Displays the current song and the rotating join code (plus QR) for the congregation to scan or type. One of the two broadcaster front-ends &mdash; song-nav here sets the current song for everyone.</dd>
+                        <dt>Service Lead <span class="badge bg-secondary">/manage/service-lead.php</span></dt><dd>The leader's own device: connect to a session and drive it from your phone or tablet, without needing to stand at the projector.</dd>
+                    </dl>
+                    <h3 class="h6">How a congregant follows</h3>
+                    <p class="small">
+                        A congregant opens the join link / scans the QR / types the code shown at the venue. The client (<code>js/modules/service-follow.js</code>) mints an opaque presence token, polls for the current song, and follows along. Presence is rate-limited <em>per token</em> (not per IP) so a whole congregation behind one venue Wi-Fi NAT isn't throttled as a single client.
+                    </p>
+                    <h3 class="h6">CCLI unlock (Phase 3)</h3>
+                    <p class="small">
+                        When the dormant gate is enabled, a valid presence token whose session belongs to an org holding a <em>live</em> CCLI licence unlocks the copyrighted-lyrics view for the duration of the service &mdash; the congregant sees the per-song CCL copyright notice. The owner has accepted the licensing basis for this (#1324).
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Proof-of-presence is the venue-displayed rotating code, deliberately &mdash; <em>not</em> geolocation (which is spoofable). Don't expect a GPS check; the code rotating at the venue is what proves someone is actually there.
+                    </div>
+                </section>
+
                 <!-- ====================================================================
                      OPERATIONS
                      ==================================================================== -->
@@ -996,8 +1146,12 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        Confirms that MySQL is the authoritative source for every kind of data, and lets you safely <em>disconnect</em> the legacy fallbacks (the original <code>songs.json</code>, the SQLite user database, the file-system setlist share directory) so the app stops checking them.
+                        Confirms that MySQL is the authoritative source for every kind of data, and lets you safely <em>disconnect</em> the remaining legacy fallbacks (the SQLite user database, the file-system setlist share directory) so the app stops checking them.
                     </p>
+                    <div class="alert alert-info small">
+                        <i class="bi bi-info-circle me-1"></i>
+                        Song reads are now <strong>live MySQL, full stop</strong> (the DB-direct rewrite, #1010 / #1020). There is no longer a <code>songs.json</code> corpus cache or JSON read fallback to disconnect &mdash; reads are scoped (<code>?action=songs_index</code> for the slim index, <code>?action=song_detail</code> for one record, the editor's <code>?action=songbook_export</code> for one book). If the database is unreachable the app returns a themed 503 maintenance page (#1021), <em>never</em> stale JSON. The old <code>songs.json</code> survives only as a one-time migration <em>input</em>, not a runtime source.
+                    </div>
                     <h3 class="h6">Workflow</h3>
                     <ol>
                         <li>Read the row counts at the top to confirm MySQL has the data you expect.</li>
@@ -1038,6 +1192,28 @@ foreach ($sections as $s) {
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Rows are immutable. There's no edit, no delete &mdash; that's the whole point of an audit log.
+                    </div>
+                </section>
+
+                <section id="notifications" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-bell me-2"></i>Notifications</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Compose and broadcast in-app notifications (#813) &mdash; the rows that drive the header bell every signed-in user sees. Gated by <code>manage_notifications</code>.
+                    </p>
+                    <h3 class="h6">Who you can target</h3>
+                    <ul>
+                        <li><strong>A single user</strong> &mdash; resolved by username, email, or ID.</li>
+                        <li><strong>A role</strong> &mdash; every signed-in user holding that role.</li>
+                        <li><strong>Broadcast</strong> &mdash; everyone.</li>
+                    </ul>
+                    <p class="small">
+                        One row per recipient is inserted on send, and the action is written to the <a href="#activity-log">Activity Log</a> so the trail can answer &ldquo;who broadcast what to whom, when.&rdquo; This is also where the <a href="#editor">Bulk Import ZIP</a> worker posts its completion message.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A broadcast fans out to one row per recipient &mdash; on a large install that's a lot of rows. Compose carefully; there's no &ldquo;unsend.&rdquo;
                     </div>
                 </section>
 
@@ -1205,7 +1381,7 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;Two songs / two people / two anything look like duplicates.&rdquo;</h3>
                     <p class="small">
-                        For people, use <a href="#credit-people">Credit People &rarr; Merge</a>. For songs, the editor doesn't have a merge tool yet &mdash; the safest path is to copy any unique data from one into the other, then delete the duplicate.
+                        For people, use <a href="#credit-people">Credit People &rarr; Merge</a>. For songs, use <a href="#duplicate-songs">Duplicate &amp; Counterpart Songs</a> &mdash; that page is the dedicated song-merge surface: it scores likely duplicates for you and lets you <strong>Link</strong> (keep both, cross-reference), <strong>Dismiss</strong> (not a duplicate), or <strong>Merge</strong> (collapse into one). For themes/tags, use <a href="#tags">Tags &amp; Themes &rarr; Merge</a>.
                     </p>
 
                     <h3 class="h6">&ldquo;Activity Log shows an action I don't recognise. What is it?&rdquo;</h3>
