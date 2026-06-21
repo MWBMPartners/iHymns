@@ -85,6 +85,24 @@ $EMAIL_SETTINGS = [
     'email_ses_region'          => ['AWS region (e.g. eu-west-1)', 'text', false, ['ses']],
     'email_ses_access_key'      => ['AWS access key',            'password', true, ['ses']],
     'email_ses_secret_key'      => ['AWS secret key',            'password', true, ['ses']],
+    /* #1311 — OAuth2 API transport. The auth-method selector applies to the
+       office365/gmail providers; the Graph + Gmail-API credential fields show
+       only when method=oauth2 (client-side data-auth-show). The secrets (client
+       secret, service-account JSON) keep secret=true → blank-skip on save +
+       redaction from the activity-log key list. */
+    'email_auth_method'         => ['Authentication method',          'select',   false, ['office365','gmail']],
+    'email_graph_tenant_id'     => ['Azure tenant ID',                'text',     false, ['office365']],
+    'email_graph_client_id'     => ['Azure app (client) ID',          'text',     false, ['office365']],
+    'email_graph_client_secret' => ['Azure client secret',            'password', true,  ['office365']],
+    'email_graph_sender'        => ['Sender mailbox (UPN)',           'text',     false, ['office365']],
+    'email_gmail_sa_json'       => ['Service-account JSON key',       'textarea', true,  ['gmail']],
+    'email_gmail_sender'        => ['Sender mailbox (impersonated)',  'text',     false, ['gmail']],
+];
+
+/* #1311 — OAuth2 transport options for the office365/gmail providers. */
+$EMAIL_AUTH_METHOD_OPTIONS = [
+    'smtp'   => 'SMTP-AUTH (host + app password)',
+    'oauth2' => 'OAuth2 API (Microsoft Graph / Gmail API — no SMTP)',
 ];
 
 /* #1309 — Microsoft 365 + Google Workspace are now FIRST-CLASS providers in
@@ -218,6 +236,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                        anything else (incl. a tampered POST) → 'custom'. */
                     if ($key === 'email_smtp_preset' && !isset($SMTP_PRESETS[$value])) {
                         $value = 'custom';
+                    }
+                    /* #1311 — auth method constrained to the option list. */
+                    if ($key === 'email_auth_method' && !isset($EMAIL_AUTH_METHOD_OPTIONS[$value])) {
+                        $value = 'smtp';
+                    }
+                    /* #1311 — service-account JSON must be valid + carry the
+                       fields the Gmail-API driver needs (client_email +
+                       private_key) before it can reach EmailService. Empty is
+                       allowed (secret blank-skip below keeps the existing key). */
+                    if ($key === 'email_gmail_sa_json' && $value !== '') {
+                        $sa = json_decode($value, true);
+                        if (!is_array($sa) || empty($sa['client_email']) || empty($sa['private_key'])) {
+                            throw new \RuntimeException('Service-account JSON is not valid — it must be the downloaded key file containing "client_email" and "private_key".');
+                        }
                     }
                     /* feature C — delegate / send-as address. Empty is
                        allowed (means "no delegate, use the generic From");
@@ -585,8 +617,33 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
 
-                <!-- SMTP-specific (custom SMTP + the first-class office365 / gmail providers, #1309) -->
-                <div class="email-fields" data-provider-show="smtp,office365,gmail">
+                <!-- #1311 — transport selector for the office365 / gmail providers:
+                     SMTP-AUTH (host + app password) vs OAuth2 API (Graph / Gmail API). -->
+                <div class="email-fields" data-provider-show="office365,gmail">
+                    <hr class="text-secondary">
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email_auth_method" class="form-label">Authentication method</label>
+                            <select name="email_auth_method" id="email_auth_method" class="form-select" data-email-auth-method>
+                                <?php
+                                    $authMethod = $currentSettings['email_auth_method'] ?? 'smtp';
+                                    foreach ($EMAIL_AUTH_METHOD_OPTIONS as $amVal => $amLabel):
+                                ?>
+                                    <option value="<?= htmlspecialchars($amVal, ENT_QUOTES, 'UTF-8') ?>" <?= $authMethod === $amVal ? 'selected' : '' ?>>
+                                        <?= htmlspecialchars($amLabel, ENT_QUOTES, 'UTF-8') ?>
+                                    </option>
+                                <?php endforeach; ?>
+                            </select>
+                            <div class="form-text">
+                                <strong>SMTP-AUTH</strong> = host + app password (simplest).
+                                <strong>OAuth2 API</strong> = Microsoft Graph (M365) / Gmail API (Google) — recommended where Basic-Auth / SMTP-AUTH is disabled on the tenant.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SMTP-specific: custom SMTP, OR the office365/gmail providers when method=SMTP-AUTH (#1309/#1311) -->
+                <div class="email-fields" data-provider-show="smtp,office365,gmail" data-auth-show="smtp">
                     <hr class="text-secondary">
                     <h3 class="h6 mb-3"><i class="bi bi-server me-1"></i>SMTP server</h3>
 
@@ -696,6 +753,72 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                                    placeholder="iHymns">
                         </div>
                     </div>
+                </div>
+
+                <!-- #1311 — Microsoft Graph (OAuth2 app-only); M365 + method=OAuth2 API -->
+                <div class="email-fields" data-provider-show="office365" data-auth-show="oauth2">
+                    <hr class="text-secondary">
+                    <h3 class="h6 mb-3"><i class="bi bi-microsoft me-1"></i>Microsoft Graph (OAuth2)</h3>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email_graph_tenant_id" class="form-label">Azure tenant ID</label>
+                            <input type="text" name="email_graph_tenant_id" id="email_graph_tenant_id" class="form-control" autocomplete="off"
+                                   value="<?= htmlspecialchars($currentSettings['email_graph_tenant_id'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="00000000-0000-0000-0000-000000000000">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_graph_client_id" class="form-label">App (client) ID</label>
+                            <input type="text" name="email_graph_client_id" id="email_graph_client_id" class="form-control" autocomplete="off"
+                                   value="<?= htmlspecialchars($currentSettings['email_graph_client_id'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="00000000-0000-0000-0000-000000000000">
+                        </div>
+                    </div>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email_graph_client_secret" class="form-label">
+                                Client secret
+                                <?php if (!empty($currentSettings['email_graph_client_secret'])): ?>
+                                    <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">saved — leave blank to keep</span>
+                                <?php endif; ?>
+                            </label>
+                            <input type="password" name="email_graph_client_secret" id="email_graph_client_secret" class="form-control" autocomplete="new-password"
+                                   placeholder="<?= !empty($currentSettings['email_graph_client_secret']) ? '••••••••' : 'client secret VALUE (not the secret ID)' ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_graph_sender" class="form-label">Sender mailbox (UPN)</label>
+                            <input type="email" name="email_graph_sender" id="email_graph_sender" class="form-control" autocomplete="off"
+                                   value="<?= htmlspecialchars($currentSettings['email_graph_sender'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="noreply@yourtenant.com">
+                        </div>
+                    </div>
+                    <div class="form-text">Sends via the <strong>Mail.Send</strong> application permission (admin-consented). No SMTP, no app password — survives Basic-Auth deprecation. See the setup guide below.</div>
+                </div>
+
+                <!-- #1311 — Gmail API (OAuth2 service-account + domain-wide delegation); Google + method=OAuth2 API -->
+                <div class="email-fields" data-provider-show="gmail" data-auth-show="oauth2">
+                    <hr class="text-secondary">
+                    <h3 class="h6 mb-3"><i class="bi bi-google me-1"></i>Gmail API (OAuth2 service account)</h3>
+                    <div class="row g-3 mb-3">
+                        <div class="col-md-6">
+                            <label for="email_gmail_sender" class="form-label">Sender mailbox (impersonated)</label>
+                            <input type="email" name="email_gmail_sender" id="email_gmail_sender" class="form-control" autocomplete="off"
+                                   value="<?= htmlspecialchars($currentSettings['email_gmail_sender'] ?? '', ENT_QUOTES, 'UTF-8') ?>"
+                                   placeholder="noreply@yourdomain.com">
+                            <div class="form-text">The Workspace user the service account impersonates (domain-wide delegation).</div>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="email_gmail_sa_json" class="form-label">
+                                Service-account JSON key
+                                <?php if (!empty($currentSettings['email_gmail_sa_json'])): ?>
+                                    <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">saved — leave blank to keep</span>
+                                <?php endif; ?>
+                            </label>
+                            <textarea name="email_gmail_sa_json" id="email_gmail_sa_json" class="form-control font-monospace" rows="4" autocomplete="off" spellcheck="false"
+                                      placeholder="<?= !empty($currentSettings['email_gmail_sa_json']) ? '•••••••• (saved — paste a new key to replace)' : 'Paste the downloaded service-account .json key file' ?>"></textarea>
+                            <div class="form-text">The downloaded key file (contains <code>client_email</code> + <code>private_key</code>). Stored in <code>tblAppSettings</code>; never echoed back to this form.</div>
+                        </div>
+                    </div>
+                    <div class="form-text">Requires the Gmail API enabled + domain-wide delegation for the <code>gmail.send</code> scope. See the setup guide below.</div>
                 </div>
 
                 <!-- SendGrid -->
@@ -809,6 +932,52 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         </div>
         <div class="card-body">
             <div class="accordion" id="email-instructions">
+                <!-- #1311 — Microsoft Graph (OAuth2, recommended for M365) -->
+                <div class="accordion-item bg-dark">
+                    <h3 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#instr-graph">
+                            <i class="bi bi-microsoft me-2"></i>OAuth2 — Microsoft 365 via Graph (recommended; no SMTP)
+                        </button>
+                    </h3>
+                    <div id="instr-graph" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
+                        <div class="accordion-body small">
+                            <p>Pick provider <strong>Microsoft 365</strong>, then <strong>Authentication method → OAuth2 API</strong>. No SMTP host or app password — works even when SMTP AUTH is disabled on the tenant.</p>
+                            <ol class="mb-2">
+                                <li><strong>Register an app.</strong> <a href="https://entra.microsoft.com" target="_blank" rel="noopener">Microsoft Entra admin centre</a> → <em>Applications → App registrations → New registration</em>. Copy the <strong>Application (client) ID</strong> and <strong>Directory (tenant) ID</strong> into the fields above.</li>
+                                <li><strong>Grant the application permission.</strong> <em>API permissions → Add a permission → Microsoft Graph → Application permissions → Mail.Send</em>, then <strong>Grant admin consent</strong>. (Application — <em>not</em> Delegated.)</li>
+                                <li><strong>Create a client secret.</strong> <em>Certificates &amp; secrets → New client secret</em>. Copy the secret <strong>Value</strong> (not the Secret ID) into <strong>Client secret</strong> — it's shown only once.</li>
+                                <li><strong>Sender mailbox (UPN)</strong> = the mailbox the app sends as (e.g. <code>noreply@yourtenant.com</code>). App-only Mail.Send can reach any mailbox; restrict it with an <a href="https://learn.microsoft.com/graph/auth-limit-mailbox-access" target="_blank" rel="noopener">application access policy</a> if desired.</li>
+                                <li><strong>Save</strong>, then <strong>Send test email</strong>.</li>
+                            </ol>
+                            <p class="text-secondary mb-0"><strong>If it fails:</strong> <em>token_http_401</em> → wrong tenant / client / secret; <em>http_403</em> → admin consent missing or an access policy blocks the sender; <em>http_400</em> → the From differs from the sender mailbox without Send-As.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- #1311 — Gmail API (OAuth2, recommended for Google Workspace) -->
+                <div class="accordion-item bg-dark">
+                    <h3 class="accordion-header">
+                        <button class="accordion-button collapsed bg-dark text-light" type="button"
+                                data-bs-toggle="collapse" data-bs-target="#instr-gmail-api">
+                            <i class="bi bi-google me-2"></i>OAuth2 — Google Workspace via Gmail API (recommended; no SMTP)
+                        </button>
+                    </h3>
+                    <div id="instr-gmail-api" class="accordion-collapse collapse" data-bs-parent="#email-instructions">
+                        <div class="accordion-body small">
+                            <p>Pick provider <strong>Google Workspace / Gmail</strong>, then <strong>Authentication method → OAuth2 API</strong>. Uses a service account with domain-wide delegation — no app password, no per-user OAuth dance.</p>
+                            <ol class="mb-2">
+                                <li><strong>Create a service account + JSON key.</strong> <a href="https://console.cloud.google.com" target="_blank" rel="noopener">Google Cloud console</a> → a project → <em>IAM &amp; Admin → Service accounts → Create</em>, then <em>Keys → Add key → JSON</em> and download the key file.</li>
+                                <li><strong>Enable the Gmail API</strong> on the project (<em>APIs &amp; Services → Enable APIs → Gmail API</em>).</li>
+                                <li><strong>Authorise domain-wide delegation.</strong> Copy the service account's <em>Client ID</em>, then in the <a href="https://admin.google.com" target="_blank" rel="noopener">Workspace Admin console</a> → <em>Security → Access and data control → API controls → Domain-wide delegation → Add new</em>, paste the Client ID and the scope <code>https://www.googleapis.com/auth/gmail.send</code>.</li>
+                                <li><strong>Paste the JSON key</strong> into <strong>Service-account JSON key</strong> above, and set <strong>Sender mailbox</strong> to the Workspace user to impersonate.</li>
+                                <li><strong>Save</strong>, then <strong>Send test email</strong>.</li>
+                            </ol>
+                            <p class="text-secondary mb-0"><strong>If it fails:</strong> <em>invalid_service_account_json</em> → the pasted key is malformed; <em>token_http_400 / unauthorized_client</em> → domain-wide delegation not authorised for the scope (or wrong Client ID); <em>http_403</em> → Gmail API not enabled, or the sender isn't a real mailbox.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Microsoft 365 (priority) -->
                 <div class="accordion-item bg-dark">
                     <h3 class="accordion-header">
@@ -1007,16 +1176,28 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     const providerSel = document.querySelector('[data-email-provider]');
     const groups = document.querySelectorAll('[data-provider-show]');
     if (!providerSel || groups.length === 0) return;
+    /* #1311 — second visibility axis: the auth-method selector (SMTP-AUTH vs
+       OAuth2 API), which only exists for the office365/gmail providers. A group
+       tagged data-auth-show is shown only when its method matches; groups with
+       no data-auth-show ignore the axis. For any provider WITHOUT an auth-method
+       selector (smtp/sendgrid/…), the method is implicitly 'smtp'. */
+    const authSel = document.querySelector('[data-email-auth-method]');
 
     const apply = () => {
         const current = providerSel.value;
+        const hasAuthAxis = (current === 'office365' || current === 'gmail');
+        const method = (hasAuthAxis && authSel) ? authSel.value : 'smtp';
         groups.forEach((g) => {
             const allowed = (g.dataset.providerShow || '').split(',').map(s => s.trim());
-            const visible = allowed.includes(current);
+            let visible = allowed.includes(current);
+            if (visible && g.dataset.authShow !== undefined) {
+                const authAllowed = (g.dataset.authShow || '').split(',').map(s => s.trim());
+                visible = authAllowed.includes(method);
+            }
             g.style.display = visible ? '' : 'none';
             /* Disable inputs in hidden groups so the form doesn't
-               submit stale values when the admin switches provider
-               and saves. */
+               submit stale values when the admin switches provider /
+               method and saves. */
             g.querySelectorAll('input, select, textarea').forEach((inp) => {
                 if (visible) {
                     inp.removeAttribute('disabled');
@@ -1027,6 +1208,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         });
     };
     providerSel.addEventListener('change', apply);
+    if (authSel) { authSel.addEventListener('change', apply); }
     apply();
 })();
 
