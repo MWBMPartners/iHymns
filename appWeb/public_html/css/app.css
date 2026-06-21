@@ -1440,12 +1440,15 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     border-left-color: rgba(255, 255, 255, 0.18);
 }
 
-/* Chorus styling — emphasised with accent gradient strip + subtle tint. */
+/* Chorus styling — emphasised with accent gradient strip + subtle tint.
+   Italic lyrics (#1337) — same treatment as Bridge/pre-chorus; keeps the
+   chorus tint + accent border, just slants the text. */
 .lyric-chorus,
 .lyric-refrain {
     background-color: var(--lyric-chorus-bg);
     border-left-color: var(--lyric-chorus-border);
     padding: 0.75rem 1rem;
+    font-style: italic;
 }
 .lyric-chorus .lyric-label,
 .lyric-refrain .lyric-label {
