@@ -572,6 +572,7 @@ export class Router {
             this.app.setList.renderSongNavigation();
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
+            if (this.app.liveFollow) { this.app.liveFollow.initSongPage(); }  // #1268 Live Follow controls + host broadcast
             this.app.transpose.initSongPage();
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
