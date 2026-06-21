@@ -11854,6 +11854,187 @@ if ($action !== null) {
             break;
         }
 
+        /* =================================================================
+         * SERVICE MODE (#1335) — operator endpoints (Phase 2b).
+         * A venue/service session congregants join via a rotating code (2c)
+         * + (Phase 3) get a temporary presence-scoped CCLI unlock. Operator =
+         * global_admin/admin OR an org-admin/owner of the venue's org. Every
+         * row is CHANNEL-scoped (the 3-docroot guard) so an alpha/beta session
+         * is never joinable on production. State-changing POSTs inherit the
+         * X-Requested-With CSRF guard at the top of this file.
+         * ================================================================= */
+        case 'service_session_start': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_session_start', $svcIp, 30, 3600, true, $userId);
+            recordRateLimitHit('service_session_start', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $venueId    = (int)($body['venueId'] ?? 0);
+            $scheduleId = (int)($body['scheduleId'] ?? 0);
+            $occDate    = (string)($body['occurrenceDate'] ?? '');
+            if ($venueId <= 0) { sendJson(['error' => 'Missing venue.'], 400); break; }
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $occDate)) { sendJson(['error' => 'Invalid occurrence date.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+
+            $vstmt = $db->prepare('SELECT OrgId, TimeZone FROM tblOrgVenues WHERE Id = ? AND IsActive = 1');
+            $vstmt->bind_param('i', $venueId);
+            $vstmt->execute();
+            $venue = $vstmt->get_result()->fetch_assoc();
+            $vstmt->close();
+            if (!$venue) { sendJson(['error' => 'Unknown venue.'], 404); break; }
+            $orgId   = (int)$venue['OrgId'];
+            $venueTz = (string)($venue['TimeZone'] ?? 'UTC');
+
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised for this organisation.'], 403); break; }
+
+            /* Schedule (if given) must belong to the venue → start/duration/tz. */
+            $startTime = '10:00:00'; $duration = 90; $schedTz = $venueTz; $scheduleIdN = null;
+            if ($scheduleId > 0) {
+                $sstmt = $db->prepare('SELECT StartTime, DurationMins, TimeZone FROM tblOrgServiceSchedules WHERE Id = ? AND VenueId = ?');
+                $sstmt->bind_param('ii', $scheduleId, $venueId);
+                $sstmt->execute();
+                $sched = $sstmt->get_result()->fetch_assoc();
+                $sstmt->close();
+                if (!$sched) { sendJson(['error' => 'Unknown schedule for this venue.'], 404); break; }
+                $startTime   = (string)$sched['StartTime'];
+                $duration    = (int)$sched['DurationMins'];
+                $schedTz     = ($sched['TimeZone'] ?? '') ?: $venueTz;
+                $scheduleIdN = $scheduleId;
+            }
+            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz);
+
+            /* Supersede any prior active service session for the same occurrence + channel. */
+            $deact = $db->prepare(
+                "UPDATE tblLiveFollowSessions SET IsActive = 0
+                  WHERE SessionKind = 'service' AND IsActive = 1 AND Channel = ?
+                    AND VenueId = ? AND OccurrenceDate = ? AND (ScheduleId <=> ?)"
+            );
+            $deact->bind_param('sisi', $channel, $venueId, $occDate, $scheduleIdN);
+            $deact->execute();
+            $deact->close();
+
+            /* Insert the session (SessionKind=service; SessionCode is the spine's
+               required unique id, internal — congregants use the rotating codes).
+               ExpiresAt = the resolved-UTC occurrence end. Retry on uq_Code. */
+            $newSessionId = 0;
+            $ins = $db->prepare(
+                "INSERT INTO tblLiveFollowSessions
+                    (SessionCode, HostUserId, OrgId, VenueId, ScheduleId, OccurrenceDate,
+                     SessionKind, Channel, IsActive, StartedAt, LastHeartbeatAt, ExpiresAt, StateRevision)
+                 VALUES (?, ?, ?, ?, ?, ?, 'service', ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 0)"
+            );
+            $sessionCode = '';
+            $ins->bind_param('siiiisss', $sessionCode, $userId, $orgId, $venueId, $scheduleIdN, $occDate, $channel, $endUtc);
+            for ($attempt = 0; $attempt < 6 && $newSessionId === 0; $attempt++) {
+                $sessionCode = 'SVC' . serviceMode_generateCode(8);
+                try {
+                    $ins->execute();
+                    $newSessionId = (int)$db->insert_id;
+                } catch (\mysqli_sql_exception $e) {
+                    if ($e->getCode() !== 1062) { throw $e; }
+                }
+            }
+            $ins->close();
+            if ($newSessionId === 0) { sendJson(['error' => 'Could not start the session, please retry.'], 503); break; }
+
+            $code = serviceMode_mintCode($db, $newSessionId);
+            logActivity('service.session.start', 'organisation', (string)$orgId, ['session_id' => $newSessionId, 'venue_id' => $venueId, 'channel' => $channel]);
+            sendJson(['ok' => true, 'sessionId' => $newSessionId, 'code' => $code, 'occurrenceEnd' => $endUtc]);
+            break;
+        }
+
+        case 'service_code_rotate':
+        case 'service_code_current':
+        case 'service_session_end': {
+            $isRotate = ($action === 'service_code_rotate');
+            $isEnd    = ($action === 'service_session_end');
+            if (($isRotate || $isEnd) && $_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_operator', $svcIp, 600, 60, true, $userId);
+
+            $sessionId = $isRotate || $isEnd
+                ? (int)((json_decode(file_get_contents('php://input'), true) ?: [])['sessionId'] ?? 0)
+                : (int)($_GET['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            /* Resolve the session (channel-scoped) + gate on operator. */
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId, IsActive FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ?");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) { sendJson(['error' => 'Unknown session.'], 404); break; }
+            $orgId = (int)$sess['OrgId'];
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || (int)$sess['HostUserId'] === $userId
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+
+            if ($isEnd) {
+                $db->begin_transaction();
+                try {
+                    $e1 = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE Id = ?');
+                    $e1->bind_param('i', $sessionId); $e1->execute(); $e1->close();
+                    /* Revoke all presence → immediate gate revocation. */
+                    $e2 = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+                    $e2->bind_param('i', $sessionId); $e2->execute(); $e2->close();
+                    $db->commit();
+                } catch (\Throwable $e) { $db->rollback(); throw $e; }
+                logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                sendJson(['ok' => true]);
+                break;
+            }
+
+            if ($isRotate) {
+                if ((int)$sess['IsActive'] !== 1) { sendJson(['error' => 'Session is not active.'], 409); break; }
+                /* The rotate doubles as a heartbeat keeping the session fresh. */
+                $hb = $db->prepare('UPDATE tblLiveFollowSessions SET LastHeartbeatAt = UTC_TIMESTAMP() WHERE Id = ?');
+                $hb->bind_param('i', $sessionId); $hb->execute(); $hb->close();
+                $code = serviceMode_mintCode($db, $sessionId);
+                sendJson(['ok' => true, 'code' => $code]);
+                break;
+            }
+
+            /* service_code_current — projection-page resume after a reload. */
+            $cur = $db->prepare("SELECT Code FROM tblLiveFollowJoinCodes WHERE SessionId = ? AND Status = 'current' AND ExpiresAt > UTC_TIMESTAMP() ORDER BY Generation DESC LIMIT 1");
+            $cur->bind_param('i', $sessionId);
+            $cur->execute();
+            $row = $cur->get_result()->fetch_assoc();
+            $cur->close();
+            if (!$row) {
+                /* Current expired (e.g. tab slept) — mint a fresh one if the session's still active. */
+                if ((int)$sess['IsActive'] === 1) {
+                    $code = serviceMode_mintCode($db, $sessionId);
+                    sendJson(['ok' => true, 'code' => $code]);
+                } else {
+                    sendJson(['ok' => false, 'error' => 'Session not active.'], 409);
+                }
+                break;
+            }
+            sendJson(['ok' => true, 'code' => (string)$row['Code']]);
+            break;
+        }
+
         /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
