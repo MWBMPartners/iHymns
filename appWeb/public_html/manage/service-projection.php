@@ -21,6 +21,13 @@ declare(strict_types=1);
  * full-bleed, high-contrast overlay. The rotating QR is a planned drop-in
  * (no QR lib is bundled yet) — for now the large typeable code + join URL are
  * shown, which is the accessible fallback we'd keep beside a QR anyway.
+ *
+ * Broadcaster (#1335): once a session is live, a dockable OPERATOR CONSOLE
+ * (the shared js/modules/service-broadcast.js — same core the leader-device
+ * page uses) lets the worship leader drive the congregation's current song +
+ * section from this laptop. It's collapsible for a clean code-only screen; a
+ * handheld leader who'd rather not show controls on the projector uses the
+ * separate /manage/service-lead page instead (both POST `service_broadcast`).
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
@@ -117,6 +124,18 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         .svc-proj-url { font-size: 4vmin; margin-top: 4vmin; opacity: .85; }
         .svc-proj-foot { position: absolute; bottom: 3vmin; font-size: 2.4vmin; opacity: .6; }
         #svc-end-btn { position: absolute; top: 3vmin; right: 3vmin; }
+        /* Operator console — docked bottom-left of the projection overlay so the
+           worship leader can drive songs from the projection laptop. Light card
+           on the dark overlay so the Bootstrap controls keep normal contrast.
+           Toggleable to hidden for a clean code-only screen. */
+        #svc-op-console { position: absolute; left: 2vmin; right: 2vmin; bottom: 2vmin;
+            max-width: 720px; margin: 0 auto; background: rgba(255,255,255,.96); color: #1b1f29;
+            border-radius: .6rem; padding: .75rem .9rem; box-shadow: 0 6px 24px rgba(0,0,0,.45);
+            text-align: left; max-height: 62vh; overflow-y: auto; font-size: 1rem; }
+        #svc-op-console.collapsed #svc-op-body { display: none; }
+        #svc-op-console .svc-op-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+        #svc-op-console .svc-op-title { font-weight: 600; font-size: .95rem; }
+        .sb-now-title { font-size: 1.05rem; }
     </style>
 </head>
 <body>
@@ -168,40 +187,58 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         <div class="svc-proj-code" id="svc-proj-code">······</div>
         <div class="svc-proj-url" id="svc-proj-url"></div>
         <div class="svc-proj-foot">The code changes regularly — the latest one always works.</div>
+
+        <!-- Operator console (#1335): drive the congregation's current song from
+             the projection laptop. Mounts the shared ServiceBroadcaster. -->
+        <div id="svc-op-console">
+            <div class="svc-op-head">
+                <span class="svc-op-title"><i class="bi bi-music-note-list me-1"></i>Drive songs</span>
+                <button type="button" id="svc-op-toggle" class="btn btn-sm btn-outline-dark">Hide</button>
+            </div>
+            <div id="svc-op-body"></div>
+        </div>
     </div>
 
     <?php if ($schemaReady && $venues): ?>
-    <script>
-    (function () {
-        var VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE) ?>;
-        var DOW = <?= json_encode($DOW) ?>;
-        var JOIN_BASE = <?= json_encode($joinBase) ?>;
-        var ROTATE_MS = 30000;
-        var api = '/api';
-        var session = null, rotateTimer = null;
+    <script type="module">
+        /* Module so it can import the shared broadcaster (#1335 rule #26 — the
+           projection laptop + the leader device share ONE driver core). */
+        import { ServiceBroadcaster } from '/js/modules/service-broadcast.js';
 
-        var venueSel = document.getElementById('svc-venue');
-        var schedSel = document.getElementById('svc-schedule');
-        var dateInp  = document.getElementById('svc-date');
-        var startBtn = document.getElementById('svc-start-btn');
-        var startErr = document.getElementById('svc-start-error');
-        var overlay  = document.getElementById('svc-projection');
+        /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing
+           "</script>" (or < > & ' ") can't break out of this inline module
+           script — the established convention (tiers.php, credit-people.php). */
+        const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        const ROTATE_MS = 30000;
+        let session = null, rotateTimer = null, broadcaster = null;
+
+        const venueSel = document.getElementById('svc-venue');
+        const schedSel = document.getElementById('svc-schedule');
+        const dateInp  = document.getElementById('svc-date');
+        const startBtn = document.getElementById('svc-start-btn');
+        const startErr = document.getElementById('svc-start-error');
+        const overlay  = document.getElementById('svc-projection');
+        const console_ = document.getElementById('svc-op-console');
+        const consoleBody = document.getElementById('svc-op-body');
+        const toggleBtn = document.getElementById('svc-op-toggle');
 
         // Default date = today (local).
         dateInp.value = new Date().toISOString().slice(0, 10);
 
-        VENUES.forEach(function (v, i) {
-            var o = document.createElement('option');
+        VENUES.forEach(function (v) {
+            const o = document.createElement('option');
             o.value = String(v.Id); o.textContent = v.Name;
             venueSel.appendChild(o);
         });
         function fillSchedules() {
             schedSel.innerHTML = '';
-            var v = VENUES.find(function (x) { return String(x.Id) === venueSel.value; });
-            var none = document.createElement('option'); none.value = ''; none.textContent = '— ad-hoc (no set time) —'; schedSel.appendChild(none);
+            const v = VENUES.find(function (x) { return String(x.Id) === venueSel.value; });
+            const none = document.createElement('option'); none.value = ''; none.textContent = '— ad-hoc (no set time) —'; schedSel.appendChild(none);
             (v && v.schedules || []).forEach(function (s) {
-                var o = document.createElement('option'); o.value = String(s.Id);
-                var d = DOW[String(s.DayOfWeek)] || '';
+                const o = document.createElement('option'); o.value = String(s.Id);
+                const d = DOW[String(s.DayOfWeek)] || '';
                 o.textContent = (s.Title || 'Service') + (d ? ' · ' + d : '') + ' ' + String(s.StartTime || '').slice(0, 5);
                 schedSel.appendChild(o);
             });
@@ -209,10 +246,13 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         venueSel.addEventListener('change', fillSchedules);
         fillSchedules();
 
-        function apiCall(action, method, body) {
-            var opts = { method: method, headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' };
-            if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
-            return fetch(api + '?action=' + action, opts).then(function (r) { return r.json().catch(function () { return {}; }); });
+        /* Shared call shape the ServiceBroadcaster expects: (action, {method,query,body}).
+           Cookie-authed (same-origin); X-Requested-With satisfies the CSRF guard. */
+        function apiCall(action, opts) {
+            opts = opts || {};
+            const init = { method: opts.method || 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin', cache: 'no-store' };
+            if (opts.body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
+            return fetch('/api?action=' + action + (opts.query || ''), init).then(function (r) { return r.json().catch(function () { return {}; }); });
         }
 
         function showCode(code) {
@@ -223,21 +263,28 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
             if (rotateTimer) clearInterval(rotateTimer);
             rotateTimer = setInterval(function () {
                 if (!session) return;
-                apiCall('service_code_rotate', 'POST', { sessionId: session.sessionId }).then(function (d) {
+                apiCall('service_code_rotate', { method: 'POST', body: { sessionId: session.sessionId } }).then(function (d) {
                     if (d && d.ok && d.code) showCode(d.code);
                 });
             }, ROTATE_MS);
         }
 
+        function teardown() {
+            if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
+            if (broadcaster) { broadcaster.destroy(); broadcaster = null; }
+            session = null;
+            overlay.classList.remove('active');
+        }
+
         startBtn.addEventListener('click', function () {
             startErr.textContent = '';
             startBtn.disabled = true;
-            var v = VENUES.find(function (x) { return String(x.Id) === venueSel.value; });
-            apiCall('service_session_start', 'POST', {
+            const v = VENUES.find(function (x) { return String(x.Id) === venueSel.value; });
+            apiCall('service_session_start', { method: 'POST', body: {
                 venueId: parseInt(venueSel.value, 10),
                 scheduleId: schedSel.value ? parseInt(schedSel.value, 10) : 0,
                 occurrenceDate: dateInp.value
-            }).then(function (d) {
+            } }).then(function (d) {
                 startBtn.disabled = false;
                 if (!d || !d.ok) { startErr.textContent = (d && d.error) || 'Could not start the service.'; return; }
                 session = d;
@@ -245,24 +292,34 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                 showCode(d.code);
                 overlay.classList.add('active');
                 startRotate();
+                /* Mount the song-driver console (the projection-laptop broadcaster). */
+                broadcaster = new ServiceBroadcaster({
+                    apiCall: apiCall,
+                    sessionId: session.sessionId,
+                    mount: consoleBody,
+                    onSessionEnded: function () { teardown(); },
+                });
+                broadcaster.init();
             }).catch(function () { startBtn.disabled = false; startErr.textContent = 'Network error.'; });
         });
 
+        toggleBtn.addEventListener('click', function () {
+            const collapsed = console_.classList.toggle('collapsed');
+            toggleBtn.textContent = collapsed ? 'Drive songs' : 'Hide';
+        });
+
         document.getElementById('svc-end-btn').addEventListener('click', function () {
-            if (rotateTimer) clearInterval(rotateTimer);
-            if (session) apiCall('service_session_end', 'POST', { sessionId: session.sessionId });
-            session = null;
-            overlay.classList.remove('active');
+            if (session) apiCall('service_session_end', { method: 'POST', body: { sessionId: session.sessionId } });
+            teardown();
         });
 
         // Re-fetch the current code when the tab regains focus (timers throttle when hidden).
         document.addEventListener('visibilitychange', function () {
             if (!document.hidden && session) {
-                fetch(api + '?action=service_code_current&sessionId=' + session.sessionId, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
-                    .then(function (r) { return r.json(); }).then(function (d) { if (d && d.ok && d.code) showCode(d.code); }).catch(function () {});
+                apiCall('service_code_current', { method: 'GET', query: '&sessionId=' + session.sessionId })
+                    .then(function (d) { if (d && d.ok && d.code) showCode(d.code); }).catch(function () {});
             }
         });
-    })();
     </script>
     <?php endif; ?>
 

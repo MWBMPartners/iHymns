@@ -78,6 +78,10 @@ $_adminLinks = [
        shows the rotating join code. Page self-gates to org-admins; nav visible to
        manage_organisations like Venues. */
     ['service-projection',   '/manage/service-projection',     'bi-projector',       'Service Projection',    'manage_organisations',        'People'     ],
+    /* Lead a service (#1335) — the second broadcaster front-end: a handheld the
+       worship leader uses to drive the songs of a running service (the projection
+       laptop shows the code; this drives the songs). Same self-gate + entitlement. */
+    ['service-lead',         '/manage/service-lead',           'bi-music-note-list', 'Lead a Service',        'manage_organisations',        'People'     ],
     /* My Organisations (#707) — the entitlement is open to every signed-in
        role; admin-nav.php applies a data-driven hide via
        userHasOwnOrganisation() so non-admins only see this link when they
