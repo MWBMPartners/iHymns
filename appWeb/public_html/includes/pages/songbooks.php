@@ -15,6 +15,8 @@ declare(strict_types=1);
 
 /* #856 — language-name resolver for the tile badge tooltip. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+/* #1328 — hide the abbreviation badge when it just repeats the title. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
 $songbooks = $songData->getSongbooks();
 $stats = $songData->getStats();
@@ -110,9 +112,11 @@ $stats = $songData->getStats();
                                     <h2 class="h6 card-title mb-1">
                                         <?= htmlspecialchars($book['name']) ?>
                                     </h2>
+                                    <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
                                     <span class="badge bg-body-secondary me-1">
                                         <?= htmlspecialchars($book['id']) ?>
                                     </span>
+                                    <?php endif; ?>
                                     <?php if ($isUnofficial): ?>
                                         <!-- #1223 — "Unofficial" badge. Surfaces unofficial
                                              songbooks as first-class-but-badged alongside the

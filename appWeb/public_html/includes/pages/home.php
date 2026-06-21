@@ -18,6 +18,9 @@ declare(strict_types=1);
    tooltip. Static-cached per request so this require + map build
    only fires once per page load. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+/* Songbook display helper (#1328) — ihymns_songbook_show_abbr() hides the
+   abbreviation badge when it just repeats the title (e.g. "Psalty"/"Psalty"). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
 /* Load song data for statistics */
 $stats = $songData->getStats();
@@ -261,9 +264,11 @@ $homeCardEnd = '</div>';
                                 <h3 class="card-title h6 mb-1">
                                     <?= htmlspecialchars($book['name']) ?>
                                 </h3>
+                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
                                 <span class="badge bg-body-secondary rounded-pill">
                                     <?= htmlspecialchars($book['id']) ?>
                                 </span>
+                                <?php endif; ?>
                                 <?php if ($isUnofficial): ?>
                                     <!-- #1223 — "Unofficial" badge (see
                                          includes/pages/songbooks.php for the full
