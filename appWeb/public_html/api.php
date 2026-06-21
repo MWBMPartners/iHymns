@@ -5068,6 +5068,46 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Batch existence check for a list of SongIds (#1329).
+         * Public — only reveals whether already-public song ids still exist.
+         * The client uses it to PRUNE songs that have been deleted from the
+         * catalogue out of localStorage-backed lists (Recently Viewed etc.)
+         * so a stale cached entry never renders an unresolvable id.
+         * GET ?action=songs_exist&ids=CP-0001,MP-0042 → {exists:[ids…]}.
+         * On error returns {exists:null} so the client leaves its cache intact.
+         * ----------------------------------------------------------------- */
+        case 'songs_exist':
+            $idsRaw = (string)($_GET['ids'] ?? '');
+            /* Validate each id to the SongId charset (mirrors song_view at
+               api.php ~5097); drop anything malformed before it reaches SQL. */
+            $existIds = array_values(array_unique(array_filter(
+                array_map('trim', explode(',', $idsRaw)),
+                static fn($s) => $s !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $s)
+            )));
+            if (!$existIds) { sendJson(['exists' => []]); break; }
+            if (count($existIds) > 200) { $existIds = array_slice($existIds, 0, 200); }
+            try {
+                $db = getDbMysqli();
+                /* Placeholder string built from a constant count (rule #5 —
+                   the only legitimate interpolation into SQL); values bound. */
+                $ph    = implode(',', array_fill(0, count($existIds), '?'));
+                $types = str_repeat('s', count($existIds));
+                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                $stmt->bind_param($types, ...$existIds);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $found = [];
+                while ($row = $res->fetch_row()) { $found[] = $row[0]; }
+                $stmt->close();
+                sendJson(['exists' => $found]);
+            } catch (\Throwable $e) {
+                error_log('[api/songs_exist] ' . $e->getMessage());
+                /* null (not []) so the client does NOT wrongly prune everything. */
+                sendJson(['exists' => null, 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Record a song view
          *
          * POST body (JSON): { "song_id": "CP-0001" }

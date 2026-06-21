@@ -15,6 +15,9 @@
 
 declare(strict_types=1);
 
+/* #1328 — hide the abbreviation badge when it just repeats the title. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+
 /* Fetch songbook and its songs */
 $book = $songData->getSongbook($bookId);
 $songs = $songData->getSongs($bookId);
@@ -68,7 +71,9 @@ if ($book === null) {
             <h1 class="h4 mb-1">
                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($book['name']) ?>
+                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
                 <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
+                <?php endif; ?>
                 <?php if (empty($book['isOfficial'])): ?>
                     <!-- #1223 — "Unofficial" badge on the songbook header so the
                          distinction persists after click-through from the list / home.

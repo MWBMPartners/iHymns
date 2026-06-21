@@ -16,6 +16,9 @@
 
 declare(strict_types=1);
 
+/* #1328 — hide the songbook abbreviation badge when it just repeats the name. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+
 /* Fetch the full song data */
 $song = $songData->getSongById($songId);
 
@@ -328,7 +331,9 @@ try {
                         </p>
                     <?php endif; ?>
                     <p class="text-muted mb-0">
+                        <?php if (ihymns_songbook_show_abbr($bookName, $songbook)): ?>
                         <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
+                        <?php endif; ?>
                         <?= htmlspecialchars($bookName) ?>
                     </p>
                     <?php if ($songbookParent !== null && $parentSongLinkUrl !== ''):
