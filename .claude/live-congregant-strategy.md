@@ -21,6 +21,18 @@ the licence's **non-transferable / no-sublicense** clause: if CCLI reads "lyrics
 installed app" as the church *authorising a third party* to display, the church's licence would
 **not** cover it. **Silence is not permission.** → **Do not ship the auto-unlock on assumption.**
 
+> **Owner decision (2026-06-21) — risk accepted; Phase 3 UNBLOCKED.** The owner assesses this as
+> low-risk on two grounds: (1) the CCL already covers **printed** song sheets the church gives
+> congregants — which *persist and go home* — so a **temporary, presence-gated, vanishes-on-leave**
+> per-device display is *more* restrictive, not less; (2) the unlock is bound to presence and revoked
+> on leaving (no take-home copy). This is sound and materially de-risks the premise. The **one** point
+> the printed-sheet analogy doesn't settle is the non-transferable/no-sublicense angle — whether the
+> text routed through the iHymns app is "the church's own electronic display" (fine — cf.
+> ProPresenter / Proclaim / SongSelect apps operating under a church licence) or "authorising a third
+> party". A one-line written confirmation from CCLI would make it airtight but is **optional**, not a
+> gate. **Build requirement that still stands:** each device MUST render the CCL copyright notice
+> (title · author · copyright owner · the church's CCLI licence number) per song, same as print/projection.
+
 ### Reframe 2 — geolocation can't prove "in this room for this service"; a venue code can
 Browser geolocation is the **wrong primary gate**: trivially spoofable (DevTools Sensors / one-click
 extensions, no native defence), **35–100 m indoors** (can't tell the car park or the back-to-back

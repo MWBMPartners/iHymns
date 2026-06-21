@@ -2998,8 +2998,13 @@ CREATE TABLE IF NOT EXISTS tblSongEmbeddings (
 CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     Id                   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     SessionCode          VARCHAR(12)  NOT NULL COMMENT 'Short human code / QR payload congregants enter to join',
-    HostUserId           INT UNSIGNED NOT NULL COMMENT 'FK to tblUsers — the worship leader hosting',
+    HostUserId           INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblUsers — leader hosting; NULL for an org/venue-anchored service session (#1335)',
     OrgId                INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblOrganisations',
+    VenueId              INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrgVenues — venue of this service session (#1335)',
+    ScheduleId           INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblOrgServiceSchedules — the recurring schedule (#1335)',
+    OccurrenceDate       DATE         NULL DEFAULT NULL COMMENT 'Date of this occurrence (scheduleId + date = occurrence identity) (#1335)',
+    SessionKind          VARCHAR(20)  NOT NULL DEFAULT 'host' COMMENT 'host = #1268 leader follow | service = #1335 venue/org session — app-validated, VARCHAR not ENUM',
+    Channel              VARCHAR(16)  NULL DEFAULT NULL COMMENT '3-docroot env discriminator (HTTP_HOST-derived at create); filter in every join/poll/gate/prune query (#1335)',
     SetlistId            VARCHAR(100) NULL DEFAULT NULL COMMENT 'Soft link to the setlist being followed',
     CurrentSongId        VARCHAR(20)  NULL DEFAULT NULL COMMENT 'FK to tblSongs — the song currently displayed',
     CurrentComponentIndex INT        NULL DEFAULT NULL COMMENT 'Index into the arrangement/component order being shown',
@@ -3015,15 +3020,78 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     UNIQUE KEY uq_Code   (SessionCode),
     INDEX      idx_Host  (HostUserId),
     INDEX      idx_Active (IsActive, LastHeartbeatAt),
+    INDEX      idx_Service (VenueId, ScheduleId, OccurrenceDate, IsActive),
+    INDEX      idx_OrgActive (OrgId, IsActive),
 
     CONSTRAINT fk_LiveFollow_Host
         FOREIGN KEY (HostUserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT fk_LiveFollow_Org
         FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_LiveFollow_Song
-        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_LiveFollow_Venue
+        FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_LiveFollow_Schedule
+        FOREIGN KEY (ScheduleId) REFERENCES tblOrgServiceSchedules(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Live-follow broadcast sessions for native present+follow (#1090 P7).';
+  COMMENT='Live-follow broadcast sessions for native present+follow (#1090 P7); extended for Service Mode org/venue/service sessions (#1335).';
+
+-- ----------------------------------------------------------------------------
+-- Service Mode (#1335) — rotating venue join codes + anonymous congregant
+-- presence + per-session poll budget. Dormant until Phase 2b/2c/3. Mirror of
+-- migrate-service-mode-sessions.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblLiveFollowJoinCodes (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SessionId   INT UNSIGNED  NOT NULL COMMENT 'FK tblLiveFollowSessions',
+    Code        VARCHAR(12)   NOT NULL COMMENT 'Crockford base32 rotating join code (current/previous live)',
+    Generation  INT UNSIGNED  NOT NULL DEFAULT 0 COMMENT 'Monotonic per-session rotation counter',
+    Status      VARCHAR(20)   NOT NULL DEFAULT 'current' COMMENT 'current | previous | superseded — app-validated, VARCHAR not ENUM (rule #20)',
+    IssuedAt    DATETIME      NOT NULL,
+    ExpiresAt   DATETIME      NOT NULL COMMENT 'Rotation horizon + grace (UTC); join rejects past this',
+    CreatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Session_Code (SessionId, Code),
+    INDEX idx_Session_Status (SessionId, Status),
+    INDEX idx_Expiry (ExpiresAt),
+    CONSTRAINT fk_JoinCode_Session FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Rotating venue join codes for Service Mode (#1335). Session-scoped uniqueness; current+previous window so a just-before-rotation scan still validates.';
+
+CREATE TABLE IF NOT EXISTS tblServicePresence (
+    Id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SessionId        INT UNSIGNED  NOT NULL COMMENT 'FK tblLiveFollowSessions',
+    OrgId            INT UNSIGNED  NULL DEFAULT NULL COMMENT 'Denorm of the session org for the Phase-3 gate read',
+    VenueId          INT UNSIGNED  NULL DEFAULT NULL,
+    ScheduleId       INT UNSIGNED  NULL DEFAULT NULL,
+    OccurrenceDate   DATE          NULL DEFAULT NULL,
+    Channel          VARCHAR(16)   NULL DEFAULT NULL COMMENT '3-docroot env discriminator (copied from the session); filter in every query',
+    PresenceDeviceId VARCHAR(64)   NOT NULL COMMENT 'Client-minted anonymous device id (localStorage UUID) — advisory cooldown key, NOT a security control',
+    PresenceToken    CHAR(43)      NOT NULL COMMENT 'Opaque base64url 32-byte nonce — the gate key; hard-revocable (not a signed token)',
+    JoinedAt         DATETIME      NOT NULL,
+    LastSeenAt       DATETIME      NOT NULL,
+    ExpiresAt        DATETIME      NOT NULL COMMENT 'Resolved UTC = min(service-occurrence end via venue IANA tz, hard ceiling); gate + prune compare against this',
+    IsActive         TINYINT(1)    NOT NULL DEFAULT 1 COMMENT '0 = left/revoked → immediate gate revocation',
+    CreatedAt        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt        TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Token (PresenceToken),
+    UNIQUE KEY uq_DeviceSession (SessionId, PresenceDeviceId),
+    INDEX idx_Session (SessionId, IsActive),
+    INDEX idx_Gate (PresenceToken, IsActive, ExpiresAt),
+    CONSTRAINT fk_Presence_Session FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Anonymous congregant presence for Service Mode (#1335). PresenceToken = the Phase-3 gate key; ExpiresAt = resolved-UTC service end; one row per device per session (re-join reactivates).';
+
+CREATE TABLE IF NOT EXISTS tblServicePollCounters (
+    Id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SessionId   INT UNSIGNED NOT NULL COMMENT 'FK tblLiveFollowSessions',
+    WindowStart DATETIME     NOT NULL COMMENT 'Start of the fixed counting window (UTC)',
+    PollCount   INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Polls served to the WHOLE session in this window — NAT-safe per-session budget (not per-IP, which would throttle a congregation behind one church-wifi IP)',
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_Session_Window (SessionId, WindowStart),
+    INDEX idx_Window (WindowStart),
+    CONSTRAINT fk_PollCtr_Session FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Per-session poll budget for Service Mode (#1335) — the NAT-safe replacement for the #1268 per-IP poll cap.';
 
 
 -- ============================================================================
