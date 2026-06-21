@@ -2165,6 +2165,18 @@ return [
             !_migProbe_tableExists($db, 'tblOrgVenues')
             || !_migProbe_tableExists($db, 'tblOrgServiceSchedules'),
     ],
+    'songbook-display-abbr' => [
+        'script' => 'migrate-songbook-display-abbr.php',
+        'card' => [
+            'title'  => 'Songbook display label (#1332)',
+            'body'   => 'Adds <code>tblSongbooks.DisplayAbbr</code> — an optional free-text label'
+                      . ' shown to users in place of the Abbreviation (so a book can display'
+                      . ' &ldquo;AH-OLD&rdquo;, &ldquo;Psalty:Kids&rdquo;, …) while the Abbreviation stays'
+                      . ' the alphanumeric SongId prefix. Idempotent — safe to re-run.',
+            'button' => 'Run Songbook Display Label Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'DisplayAbbr'),
+    ],
     'external-systems' => [
         'script' => 'migrate-external-systems.php',
         'card' => [
@@ -2193,5 +2205,24 @@ return [
             if ($r) { $r->close(); }
             return !$seeded;
         },
+    ],
+    'service-mode-sessions' => [
+        'script' => 'migrate-service-mode-sessions.php',
+        'card' => [
+            'title'  => 'Service Mode sessions (#1335)',
+            'body'   => 'Extends <code>tblLiveFollowSessions</code> (NULL-able host + venue/schedule/'
+                      . 'occurrence/kind + the 3-docroot <code>Channel</code> discriminator) and creates'
+                      . ' <code>tblLiveFollowJoinCodes</code>, <code>tblServicePresence</code> and'
+                      . ' <code>tblServicePollCounters</code> — the dormant foundation for congregation'
+                      . ' &ldquo;Service Mode&rdquo; (#1323). Runs after Org Venues. Idempotent — safe to re-run.',
+            'button' => 'Run Service Mode Sessions Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the spine column AND all
+           three new tables exist. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'VenueId')
+            || !_migProbe_tableExists($db, 'tblLiveFollowJoinCodes')
+            || !_migProbe_tableExists($db, 'tblServicePresence')
+            || !_migProbe_tableExists($db, 'tblServicePollCounters'),
     ],
 ];

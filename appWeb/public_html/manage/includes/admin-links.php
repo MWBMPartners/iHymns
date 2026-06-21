@@ -74,6 +74,10 @@ $_adminLinks = [
     /* Venues & service times (#1325) — the where/when of an org; foundation for
        Service Mode (#1323). Same entitlement as Organisations. */
     ['venues',               '/manage/venues',                 'bi-geo-alt',         'Venues',                'manage_organisations',        'People'     ],
+    /* Service projection (#1335) — the projector page that runs a live service +
+       shows the rotating join code. Page self-gates to org-admins; nav visible to
+       manage_organisations like Venues. */
+    ['service-projection',   '/manage/service-projection',     'bi-projector',       'Service Projection',    'manage_organisations',        'People'     ],
     /* My Organisations (#707) — the entitlement is open to every signed-in
        role; admin-nav.php applies a data-driven hide via
        userHasOwnOrganisation() so non-admins only see this link when they

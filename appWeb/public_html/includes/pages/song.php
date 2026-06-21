@@ -135,14 +135,36 @@ $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
    actually switched on. */
 $lyricsGated = false;
 $gateReason  = '';
+$serviceCcliNumber = null;   /* #1335 — set when a present congregant rides the org's CCLI licence; drives the per-song CCL notice. */
 if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
     && function_exists('checkContentAccess')) {
     try {
         $gateViewer = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
-        $gateAccess = checkContentAccess('song', (string)$songId, isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null, 'PWA');
+        /* #1335 — a congregant following a live service carries an opaque presence
+           token (set as a same-origin cookie by service-follow.js on join). It
+           lets them ride the org's live CCLI licence for gated lyrics while
+           present, and is revoked the moment they leave / it expires. */
+        $presenceTok = '';
+        if (isset($_COOKIE['ihymns_sf_presence_token'])
+            && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+            $presenceTok = (string)$_COOKIE['ihymns_sf_presence_token'];
+        }
+        $gateAccess = checkContentAccess(
+            'song', (string)$songId,
+            isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null,
+            'PWA',
+            $presenceTok !== '' ? $presenceTok : null
+        );
         if (empty($gateAccess['allowed'])) {
             $lyricsGated = true;
             $gateReason  = (string)($gateAccess['reason'] ?? '');
+        } elseif ($presenceTok !== '' && !$fullyPublicDomain && function_exists('serviceMode_presenceCcliNumber')) {
+            /* Allowed + a present congregant viewing a copyrighted song → the CCL
+               requires the licence-holder's copyright notice on each device. */
+            $serviceCcliNumber = serviceMode_presenceCcliNumber(
+                getDbMysqli(), $presenceTok,
+                function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
+            );
         }
     } catch (\Throwable $_e) {
         /* Gating must never break a song render — fail open (show lyrics). */
@@ -331,11 +353,18 @@ try {
                         </p>
                     <?php endif; ?>
                     <p class="text-muted mb-0">
-                        <?php if (ihymns_songbook_show_abbr($bookName, $songbook)): ?>
-                        <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
+                        <?php $sbAbbr = ihymns_songbook_abbr_label($songbook, (is_array($bookData ?? null) ? ($bookData['displayAbbr'] ?? null) : null)); ?>
+                        <?php if (ihymns_songbook_show_abbr($bookName, $sbAbbr)): ?>
+                        <span class="badge bg-body-secondary"><?= htmlspecialchars($sbAbbr) ?></span>
                         <?php endif; ?>
                         <?= htmlspecialchars($bookName) ?>
                     </p>
+                    <?php if ($serviceCcliNumber !== null): /* #1335 — CCL copyright notice for a present congregant riding the org licence. */ ?>
+                        <p class="small text-muted fst-italic mb-0 mt-1">
+                            <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
+                            Shown under your church’s CCLI Copyright Licence<?= $serviceCcliNumber !== '' ? ' #' . htmlspecialchars($serviceCcliNumber) : '' ?> while you follow the service.
+                        </p>
+                    <?php endif; ?>
                     <?php if ($songbookParent !== null && $parentSongLinkUrl !== ''):
                         /* #782 phase D — canonical-source link. Renders only
                            when the current songbook declares a parent AND we

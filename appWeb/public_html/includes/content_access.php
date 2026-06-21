@@ -42,7 +42,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';
  * @param string   $platform    'PWA', 'Apple', or 'Android'
  * @return array{allowed: bool, reason: string}
  */
-function checkContentAccess(string $entityType, string $entityId, ?int $userId, string $platform = 'PWA'): array
+function checkContentAccess(string $entityType, string $entityId, ?int $userId, string $platform = 'PWA', ?string $presenceToken = null): array
 {
     $db = getDbMysqli();
 
@@ -81,6 +81,22 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
            to + every ancestor org (#462). Replaces the old single-level
            query that only looked at direct memberships. */
         $userLicenceTypes = getUserEffectiveLicenceTypes($userId);
+    }
+
+    /* Service-Mode presence unlock (#1335): a congregant physically present in a
+       live service (a valid, unexpired presence token on an active session whose
+       org holds a LIVE CCLI licence) rides that org's licence for the duration —
+       so a `require_licence: ccli` rule passes. Works for ANONYMOUS congregants
+       (no userId). Revoked the instant they leave / it expires / the licence
+       lapses (serviceMode_presenceCcliNumber re-checks every call). The owner has
+       accepted the licensing basis (#1324); the per-song CCL notice is rendered
+       by song.php when this grant applies. */
+    if ($presenceToken !== null && $presenceToken !== '') {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
+        if (function_exists('serviceMode_presenceCcliNumber')
+            && serviceMode_presenceCcliNumber($db, $presenceToken, serviceMode_channel()) !== null) {
+            $userLicenceTypes[] = 'ccli';
+        }
     }
 
     /* Evaluate rules in priority order */

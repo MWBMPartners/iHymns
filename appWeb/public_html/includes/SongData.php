@@ -339,6 +339,7 @@ class SongData
 
         $bibSelect    = $this->_songbookBibSelect();
         $langSelect   = $this->_songbookLanguageSelect();
+        $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
@@ -349,6 +350,7 @@ class SongData
                     b.PublicationYear AS publicationYear,
                     b.Copyright       AS copyright,
                     b.Affiliation     AS affiliation
+                    {$displayAbbrSelect}
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}
@@ -494,6 +496,36 @@ class SongData
         return $this->_bibSelectCache;
     }
     private ?string $_bibSelectCache = null;
+
+    /**
+     * Same probe-once pattern for the optional DisplayAbbr column (#1332) —
+     * a free-text label shown in place of the Abbreviation badge. The column
+     * is added by migrate-songbook-display-abbr.php; until that runs (migrations
+     * aren't auto-applied on deploy) the SELECT must not name it, or every
+     * getSongbooks() call 500s. `b.`-qualified for the parent self-join.
+     */
+    private function _songbookDisplayAbbrSelect(): string
+    {
+        if (isset($this->_displayAbbrSelectCache)) {
+            return $this->_displayAbbrSelectCache;
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'DisplayAbbr'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $has = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        $this->_displayAbbrSelectCache = $has ? ', b.DisplayAbbr AS displayAbbr' : '';
+        return $this->_displayAbbrSelectCache;
+    }
+    private ?string $_displayAbbrSelectCache = null;
 
     /**
      * Same shape as _songbookBibSelect() but for the optional Language
@@ -1206,6 +1238,7 @@ class SongData
         }
         $bibSelect    = $this->_songbookBibSelect();
         $langSelect   = $this->_songbookLanguageSelect();
+        $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
@@ -1216,6 +1249,7 @@ class SongData
                     b.PublicationYear AS publicationYear,
                     b.Copyright       AS copyright,
                     b.Affiliation     AS affiliation
+                    {$displayAbbrSelect}
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}

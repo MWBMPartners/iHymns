@@ -71,8 +71,9 @@ if ($book === null) {
             <h1 class="h4 mb-1">
                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($book['name']) ?>
-                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
-                <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
+                <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
+                <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($sbAbbr) ?></span>
                 <?php endif; ?>
                 <?php if (empty($book['isOfficial'])): ?>
                     <!-- #1223 — "Unofficial" badge on the songbook header so the

@@ -73,6 +73,17 @@ $homeCardEnd = '</div>';
         </div>
     </div>
 
+    <!-- Join a live service (#1335) — a congregant enters the rotating code shown
+         on their church's screen to follow the service in sync. Outside the
+         reorderable grid so it stays discoverable; service-follow.js wires the
+         [data-action="join-service"] click. -->
+    <div class="text-center mb-4">
+        <button type="button" class="btn btn-outline-success" data-action="join-service">
+            <i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>Join a live service
+        </button>
+        <div class="small text-muted mt-1">Enter the code shown on your church’s screen to follow along.</div>
+    </div>
+
     <!-- Customise-home toolbar (#448). Hidden until applyCardLayout()
          confirms the viewer may edit (canCustomiseOwn / canSetDefault),
          so the logged-out majority never sees a dead "Customise" button. -->
@@ -264,9 +275,10 @@ $homeCardEnd = '</div>';
                                 <h3 class="card-title h6 mb-1">
                                     <?= htmlspecialchars($book['name']) ?>
                                 </h3>
-                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
+                                <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
                                 <span class="badge bg-body-secondary rounded-pill">
-                                    <?= htmlspecialchars($book['id']) ?>
+                                    <?= htmlspecialchars($sbAbbr) ?>
                                 </span>
                                 <?php endif; ?>
                                 <?php if ($isUnofficial): ?>
