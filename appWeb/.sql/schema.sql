@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS tblPlaces (
 CREATE TABLE IF NOT EXISTS tblSongbooks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Abbreviation    VARCHAR(10)     NOT NULL UNIQUE,
+    DisplayAbbr     VARCHAR(30)     NULL DEFAULT NULL COMMENT 'Optional free-text display label shown in place of Abbreviation (any chars incl. - _ :); Abbreviation stays the alphanumeric SongId prefix. NULL = show Abbreviation (#1332).',
     Name            VARCHAR(255)    NOT NULL,
     SongCount       INT UNSIGNED    NOT NULL DEFAULT 0,
     DisplayOrder    INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Explicit sort order for listings / filter dropdowns',

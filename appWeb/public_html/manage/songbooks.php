@@ -884,6 +884,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
+                $displayAbbr = trim((string)($_POST['display_abbr']    ?? ''));
+                $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
                 /* Places adoption sweep — display string + FK. The
                    FK is populated by the place-search JS module when
                    the curator picks a candidate; free-typing leaves
@@ -1001,6 +1004,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute();
                     $stmt->close();
                 }
+                /* #1332 — display label in a schema-tolerant separate UPDATE
+                   (skipped pre-migration), same pattern as the place columns. */
+                if (placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')) {
+                    $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayAbbr = ? WHERE Id = ?');
+                    $stmt->bind_param('si', $displayAbbr, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -1058,6 +1069,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
+                $displayAbbr = trim((string)($_POST['display_abbr']     ?? ''));
+                $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
                 /* Places adoption sweep — display string + FK. */
                 $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
                 $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
@@ -1306,6 +1320,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                               WHERE Id = ?'
                         );
                         $stmt->bind_param('sii', $publicationCity, $publicationCityId, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
+                    /* #1332 — display label, schema-tolerant separate UPDATE. */
+                    if (placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayAbbr = ? WHERE Id = ?');
+                        $stmt->bind_param('si', $displayAbbr, $id);
                         $stmt->execute();
                         $stmt->close();
                     }
@@ -2352,6 +2374,12 @@ try {
         ? ', b.PublicationCity, b.PublicationCityId'
         : ', NULL AS PublicationCity, NULL AS PublicationCityId';
 
+    /* #1332 — optional free-text display label, shown in place of the
+       abbreviation. NULL AS … keeps $r['DisplayAbbr'] always set pre-migration. */
+    $displayAbbrSelect = placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')
+        ? ', b.DisplayAbbr'
+        : ', NULL AS DisplayAbbr';
+
     /* Same probe pattern for the #782 phase A parent columns. When
        the schema is live, also LEFT JOIN to the parent row so the
        list-page Parent column can render abbreviation + name in one
@@ -2381,7 +2409,7 @@ try {
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
@@ -2630,6 +2658,8 @@ $csrf = csrfToken();
                                         'viaf_id'             => $r['ViafId']             ?? '',
                                         'lccn'                => $r['Lccn']               ?? '',
                                         'lc_class'            => $r['LcClass']            ?? '',
+                                        /* #1332 — optional display label (free text shown in place of the abbreviation). */
+                                        'display_abbr'        => $r['DisplayAbbr']         ?? '',
                                         /* #782 phase B — parent fields. Defaults
                                            keep the modal openable on a pre-migration
                                            deployment (the LEFT JOIN above only
@@ -2943,6 +2973,17 @@ $csrf = csrfToken();
                 </div>
             </div>
 
+            <!-- #1332 — optional free-text display label (shown in place of the
+                 abbreviation; the abbreviation stays the letters/numbers song-URL code). -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-4">
+                    <label class="form-label small">Display label <span class="text-muted">(optional)</span></label>
+                    <input type="text" name="display_abbr" class="form-control form-control-sm"
+                           maxlength="30" placeholder="e.g. AH-OLD">
+                    <div class="form-text small">Shown to users instead of the abbreviation; any characters allowed.</div>
+                </div>
+            </div>
+
             <!-- #502 metadata -->
             <div class="row g-2 mt-2">
                 <div class="col-sm-3 d-flex align-items-end">
@@ -3113,6 +3154,12 @@ $csrf = csrfToken();
                         <div class="mb-3">
                             <label class="form-label">Name</label>
                             <input type="text" class="form-control" name="name" id="edit-name" maxlength="255" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Display label <span class="text-muted">(optional)</span></label>
+                            <input type="text" class="form-control" name="display_abbr" id="edit-display-abbr" maxlength="30"
+                                   placeholder="e.g. AH-OLD — shown instead of the abbreviation">
+                            <div class="form-text">Free text shown to users in place of the abbreviation (any characters). The abbreviation itself stays the song-URL code (letters/numbers only). Leave blank to show the abbreviation.</div>
                         </div>
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
@@ -3673,6 +3720,10 @@ $csrf = csrfToken();
             document.getElementById('edit-id').value                = row.id;
             document.getElementById('edit-abbr-label').textContent  = row.abbreviation;
             document.getElementById('edit-name').value              = row.name;
+            /* #1332 — pre-fill the optional display label so saving the form
+               doesn't blank it. Empty string when unset. */
+            var _editDisplayAbbr = document.getElementById('edit-display-abbr');
+            if (_editDisplayAbbr) { _editDisplayAbbr.value = row.display_abbr || ''; }
             /* The colour field is now wrapped in the shared colour-picker
                partial (#715), which gives the text input the id
                edit-songbook-colour-text and adds a sibling swatch.

@@ -331,8 +331,9 @@ try {
                         </p>
                     <?php endif; ?>
                     <p class="text-muted mb-0">
-                        <?php if (ihymns_songbook_show_abbr($bookName, $songbook)): ?>
-                        <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
+                        <?php $sbAbbr = ihymns_songbook_abbr_label($songbook, (is_array($bookData ?? null) ? ($bookData['displayAbbr'] ?? null) : null)); ?>
+                        <?php if (ihymns_songbook_show_abbr($bookName, $sbAbbr)): ?>
+                        <span class="badge bg-body-secondary"><?= htmlspecialchars($sbAbbr) ?></span>
                         <?php endif; ?>
                         <?= htmlspecialchars($bookName) ?>
                     </p>

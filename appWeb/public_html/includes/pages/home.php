@@ -264,9 +264,10 @@ $homeCardEnd = '</div>';
                                 <h3 class="card-title h6 mb-1">
                                     <?= htmlspecialchars($book['name']) ?>
                                 </h3>
-                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
+                                <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
                                 <span class="badge bg-body-secondary rounded-pill">
-                                    <?= htmlspecialchars($book['id']) ?>
+                                    <?= htmlspecialchars($sbAbbr) ?>
                                 </span>
                                 <?php endif; ?>
                                 <?php if ($isUnofficial): ?>

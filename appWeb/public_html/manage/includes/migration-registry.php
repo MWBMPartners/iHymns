@@ -2165,4 +2165,16 @@ return [
             !_migProbe_tableExists($db, 'tblOrgVenues')
             || !_migProbe_tableExists($db, 'tblOrgServiceSchedules'),
     ],
+    'songbook-display-abbr' => [
+        'script' => 'migrate-songbook-display-abbr.php',
+        'card' => [
+            'title'  => 'Songbook display label (#1332)',
+            'body'   => 'Adds <code>tblSongbooks.DisplayAbbr</code> — an optional free-text label'
+                      . ' shown to users in place of the Abbreviation (so a book can display'
+                      . ' &ldquo;AH-OLD&rdquo;, &ldquo;Psalty:Kids&rdquo;, …) while the Abbreviation stays'
+                      . ' the alphanumeric SongId prefix. Idempotent — safe to re-run.',
+            'button' => 'Run Songbook Display Label Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'DisplayAbbr'),
+    ],
 ];

@@ -112,9 +112,10 @@ $stats = $songData->getStats();
                                     <h2 class="h6 card-title mb-1">
                                         <?= htmlspecialchars($book['name']) ?>
                                     </h2>
-                                    <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $book['id'] ?? '')): ?>
+                                    <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                                    <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
                                     <span class="badge bg-body-secondary me-1">
-                                        <?= htmlspecialchars($book['id']) ?>
+                                        <?= htmlspecialchars($sbAbbr) ?>
                                     </span>
                                     <?php endif; ?>
                                     <?php if ($isUnofficial): ?>
