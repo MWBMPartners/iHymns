@@ -311,10 +311,10 @@ class SongData
                   JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
                  WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
             ';
+            /* prepare() throws under MYSQLI_REPORT_STRICT (includes/db_mysql.php),
+               so it never returns false — a real failure propagates to the caller's
+               try/catch, not a silent empty result. No false-guard needed (#1317). */
             $stmt = $this->db->prepare($sql);
-            if ($stmt === false) {
-                return [];
-            }
             $stmt->bind_param('sss', $songId, $songId, $songId);
             $stmt->execute();
             $res = $stmt->get_result();

@@ -161,7 +161,40 @@ $saveSetting = function (mysqli $db, string $key, string $value): void {
  * ---------------------------------------------------------------------- */
 $saveSuccess = '';
 $saveError   = '';
+$saveWarning = '';     /* #1304 — non-blocking SSRF heads-up (private/reserved SMTP host) */
 $testResult  = null;   /* ['ok' => bool, 'message' => string]|null */
+
+/* #1304 — defence-in-depth: does an SMTP host resolve to a private/reserved
+   network address? Used to WARN (never block) on save — an admin pointing the
+   "Send test email" connect at an internal host (e.g. 127.0.0.1, 169.254.169.254,
+   10.x) is a low-risk SSRF surface (admin-gated, SMTP-not-HTTP), so we surface a
+   heads-up rather than reject. Returns false for unresolvable hosts (don't warn on
+   a typo) and for the public provider endpoints (office365/gmail), so the common
+   case never trips. FILTER_VALIDATE_IP with NO_PRIV|NO_RES returns false when the
+   IP IS in a private/reserved range — see the PHP manual on filter flags. */
+$smtpHostIsPrivate = function (string $host): bool {
+    $host = trim($host);
+    if ($host === '') { return false; }
+    $ips = [];
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $ips[] = $host;                                  /* host is already a literal IP */
+    } else {
+        $v4 = @gethostbynamel($host);                    /* IPv4 A records, or false */
+        if (is_array($v4)) { $ips = array_merge($ips, $v4); }
+        $aaaa = @dns_get_record($host, DNS_AAAA);        /* IPv6 AAAA records, best-effort */
+        if (is_array($aaaa)) {
+            foreach ($aaaa as $rec) {
+                if (!empty($rec['ipv6'])) { $ips[] = (string)$rec['ipv6']; }
+            }
+        }
+    }
+    foreach ($ips as $ip) {
+        if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+            return true;                                 /* a private/reserved address among the resolutions */
+        }
+    }
+    return false;
+};
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
@@ -212,6 +245,23 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     );
                 }
                 $saveSuccess = 'Email configuration saved (' . count($changedKeys) . ' field' . (count($changedKeys) === 1 ? '' : 's') . ' updated).';
+                /* #1304 — SSRF heads-up (never blocks): if the EFFECTIVE SMTP host
+                   (posted host, or the preset default for office365/gmail) resolves
+                   to a private/reserved range, flag it. Public provider endpoints
+                   never trip this; only a custom internal host does. Plain text —
+                   the render escapes it. */
+                $svc = (string)($_POST['email_service'] ?? '');
+                if (in_array($svc, ['smtp', 'office365', 'gmail'], true)) {
+                    $effHost = trim((string)($_POST['email_smtp_host'] ?? ''));
+                    if ($effHost === '' && isset($SMTP_PRESETS[$svc])) {
+                        $effHost = (string)$SMTP_PRESETS[$svc]['host'];
+                    }
+                    if ($effHost !== '' && $smtpHostIsPrivate($effHost)) {
+                        $saveWarning = 'Heads-up: the SMTP host “' . $effHost . '” resolves to a '
+                            . 'private/reserved network address. That is allowed, but if it is not a '
+                            . 'deliberate internal relay, double-check it — “Send test email” will connect to it.';
+                    }
+                }
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_email] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -385,6 +435,11 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <?php if ($saveError !== ''): ?>
         <div class="alert alert-danger">
             <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($saveError, ENT_QUOTES, 'UTF-8') ?>
+        </div>
+    <?php endif; ?>
+    <?php if ($saveWarning !== ''): /* #1304 — non-blocking SSRF heads-up; host value escaped here */ ?>
+        <div class="alert alert-warning">
+            <i class="bi bi-shield-exclamation me-1"></i><?= htmlspecialchars($saveWarning, ENT_QUOTES, 'UTF-8') ?>
         </div>
     <?php endif; ?>
 
