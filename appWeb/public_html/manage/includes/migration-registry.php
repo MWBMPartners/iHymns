@@ -2177,4 +2177,52 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'DisplayAbbr'),
     ],
+    'external-systems' => [
+        'script' => 'migrate-external-systems.php',
+        'card' => [
+            'title'  => 'External-system integration hook (#1327)',
+            'body'   => 'Creates the DORMANT integration scaffold: <code>tblExternalSystems</code>'
+                      . ' (system registry, seeded with a paused <code>webms-intra</code> row) plus'
+                      . ' per-entity ref tables <code>tblOrganisationExternalRefs</code>,'
+                      . ' <code>tblOrgVenueExternalRefs</code> and'
+                      . ' <code>tblOrgServiceScheduleExternalRefs</code> — so orgs / venues / service'
+                      . ' times can be linked to WebMS-Intra (or another system) in future without a'
+                      . ' second migration. No read/write code consumes them yet. Runs after Org Venues.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run External-Systems Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until all four tables exist
+           AND the seeded webms-intra registry row is present (the tableExists
+           guards short-circuit before the SELECT, so it never runs against a
+           missing table under STRICT). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalSystems')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrganisationExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgVenueExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgServiceScheduleExternalRefs')) { return true; }
+            $r = $db->query("SELECT 1 FROM tblExternalSystems WHERE SystemKey = 'webms-intra' LIMIT 1");
+            $seeded = $r && $r->num_rows > 0;
+            if ($r) { $r->close(); }
+            return !$seeded;
+        },
+    ],
+    'service-mode-sessions' => [
+        'script' => 'migrate-service-mode-sessions.php',
+        'card' => [
+            'title'  => 'Service Mode sessions (#1335)',
+            'body'   => 'Extends <code>tblLiveFollowSessions</code> (NULL-able host + venue/schedule/'
+                      . 'occurrence/kind + the 3-docroot <code>Channel</code> discriminator) and creates'
+                      . ' <code>tblLiveFollowJoinCodes</code>, <code>tblServicePresence</code> and'
+                      . ' <code>tblServicePollCounters</code> — the dormant foundation for congregation'
+                      . ' &ldquo;Service Mode&rdquo; (#1323). Runs after Org Venues. Idempotent — safe to re-run.',
+            'button' => 'Run Service Mode Sessions Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the spine column AND all
+           three new tables exist. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'VenueId')
+            || !_migProbe_tableExists($db, 'tblLiveFollowJoinCodes')
+            || !_migProbe_tableExists($db, 'tblServicePresence')
+            || !_migProbe_tableExists($db, 'tblServicePollCounters'),
+    ],
 ];

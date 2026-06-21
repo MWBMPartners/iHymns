@@ -21,6 +21,18 @@ the licence's **non-transferable / no-sublicense** clause: if CCLI reads "lyrics
 installed app" as the church *authorising a third party* to display, the church's licence would
 **not** cover it. **Silence is not permission.** → **Do not ship the auto-unlock on assumption.**
 
+> **Owner decision (2026-06-21) — risk accepted; Phase 3 UNBLOCKED.** The owner assesses this as
+> low-risk on two grounds: (1) the CCL already covers **printed** song sheets the church gives
+> congregants — which *persist and go home* — so a **temporary, presence-gated, vanishes-on-leave**
+> per-device display is *more* restrictive, not less; (2) the unlock is bound to presence and revoked
+> on leaving (no take-home copy). This is sound and materially de-risks the premise. The **one** point
+> the printed-sheet analogy doesn't settle is the non-transferable/no-sublicense angle — whether the
+> text routed through the iHymns app is "the church's own electronic display" (fine — cf.
+> ProPresenter / Proclaim / SongSelect apps operating under a church licence) or "authorising a third
+> party". A one-line written confirmation from CCLI would make it airtight but is **optional**, not a
+> gate. **Build requirement that still stands:** each device MUST render the CCL copyright notice
+> (title · author · copyright owner · the church's CCLI licence number) per song, same as print/projection.
+
 ### Reframe 2 — geolocation can't prove "in this room for this service"; a venue code can
 Browser geolocation is the **wrong primary gate**: trivially spoofable (DevTools Sensors / one-click
 extensions, no native defence), **35–100 m indoors** (can't tell the car park or the back-to-back
@@ -113,3 +125,29 @@ free**. Geolocation/SSID/BLE can only ever *reduce friction*, never unlock.
 Worship team = **Live Follow** (shipped). Congregation = suggest **"Service Mode"** (or "Congregation
 Follow" / "Pew Mode") — clearly distinct, and it reads as *the church running the service*, which also
 aligns better with the CCLI "church operates it" framing.
+
+## External-system integration hook (#1327) — WebMS-Intra & beyond
+Owner asked (2026-06-21) that orgs / venues / etc be able to integrate with **WebMS-Intra** in
+future. Per rule #20 (design the family up front; don't ALTER later) this shipped **dormant** in the
+Phase-1 batch (PR #1326). A design workflow (`w0ktly3yn`) surveyed the codebase idioms and **rejected
+a generic polymorphic `EntityType+EntityId` table** — rule #15 forbids it, and a numeric `EntityId`
+can't address the `SongId VARCHAR(20)` / `Abbreviation` keys the codebase already FKs on, and a no-FK
+polymorphism orphan-rots on delete. The idiomatic shape, validated adversarially, is:
+- **`tblExternalSystems`** — a registry (sibling of `tblExternalLinkTypes`); system keys live in
+  **data, not PHP** (rule #15). Seeded with a **paused `webms-intra`** row so the per-entity FKs
+  (RESTRICT) have a target (the migration seeds it — else the first insert throws under STRICT).
+- **`tblOrganisationExternalRefs` / `tblOrgVenueExternalRefs` / `tblOrgServiceScheduleExternalRefs`** —
+  per-entity dedicated ref tables (rule #15). Each carries `(Source, SourceRef)` UNIQUE (idempotent
+  re-import), `(SystemId, ExternalId)` UNIQUE (one external record ↔ one iHymns row per system, and
+  `SystemId` in the key = a **second system never needs an ALTER**), plus reserved-dormant operator
+  columns: `SyncStatus` / `SyncDirection` (VARCHAR, not ENUM), `LocalHash` + `ExternalEtag`
+  (optimistic-concurrency conflict detection), `LastError` + `LastErrorAt`, `DeletedAt` (soft-unlink
+  vs FK-cascade hard delete), `MetaJson` (loss-free), `CreatedBy`. All three entities ship in **one
+  pass** so a schedule sync never forces a third migration.
+
+**Nothing reads/writes these yet** — the actual sync engine is future, **gated** work (#1327) that
+requires, before it goes live: a **DPA** + lawful basis (org/venue address + service times are
+GDPR Art. 9-adjacent — a faith community's presence pattern); **`inbound`-first** until an outbound
+DPA exists; **production-only** runs (the 3 docroots share one MySQL — alpha/beta must not exfiltrate
+real data; gate on a sandbox `BaseUrl`); credentials **never in the DB** (`AuthScope` = a secret
+*name* hint only); sync history → `tblActivityLog` **without raw PII payloads**.
