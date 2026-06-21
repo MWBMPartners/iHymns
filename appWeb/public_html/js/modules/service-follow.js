@@ -44,6 +44,7 @@ export class ServiceFollow {
                 if (saved && saved.token) {
                     this.token = saved.token;
                     this.rev = (typeof saved.rev === 'number') ? saved.rev : 0;
+                    this._setPresenceCookie(this.token);   /* re-assert for the gate after a reload */
                     this._showBanner();
                     this._startPolling();
                 }
@@ -91,6 +92,7 @@ export class ServiceFollow {
             this.token = r.data.presenceToken;
             this.rev = (typeof r.data.revision === 'number') ? r.data.revision : 0;
             try { sessionStorage.setItem(SF_PRESENCE_KEY, JSON.stringify({ token: this.token, rev: this.rev })); } catch (_e) {}
+            this._setPresenceCookie(this.token);
             this._showBanner();
             this._startPolling();
             this.app.showToast('You’re following the service.', 'success');
@@ -107,6 +109,7 @@ export class ServiceFollow {
         this._pendingScroll = null;
         this._stopPolling();
         try { sessionStorage.removeItem(SF_PRESENCE_KEY); } catch (_e) {}
+        this._clearPresenceCookie();
         this._removeBanner();
         if (token) { this._api('service_leave', { method: 'POST', body: { presenceToken: token } }).catch(() => {}); }
         if (!silent) { this.app.showToast('Left the service.', 'info'); }
@@ -199,6 +202,19 @@ export class ServiceFollow {
     _removeBanner() {
         const bar = document.getElementById('service-follow-banner');
         if (bar && bar.parentNode) { bar.parentNode.removeChild(bar); }
+    }
+
+    /* The Phase-3 content gate (song.php) reads this same-origin cookie to grant
+       a present congregant the org's CCLI unlock for gated lyrics. It's an opaque
+       presence nonce (not a credential); set on join, cleared on leave/end. */
+    _setPresenceCookie(token) {
+        try {
+            const secure = (location.protocol === 'https:') ? '; Secure' : '';
+            document.cookie = 'ihymns_sf_presence_token=' + encodeURIComponent(token) + '; path=/; SameSite=Lax' + secure;
+        } catch (_e) {}
+    }
+    _clearPresenceCookie() {
+        try { document.cookie = 'ihymns_sf_presence_token=; path=/; Max-Age=0; SameSite=Lax'; } catch (_e) {}
     }
 
     /* Anonymous same-origin call. X-Requested-With satisfies the api.php CSRF

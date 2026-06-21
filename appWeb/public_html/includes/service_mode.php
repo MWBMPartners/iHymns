@@ -189,3 +189,52 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
     $stmt->close();
     return $row ?: null;
 }
+
+/**
+ * Phase 3 gate read (#1335): does this presence token entitle the holder to the
+ * org's CCLI licence right now? Returns the org's CCLI LicenceNumber (a string;
+ * may be '' if the org left it blank) when the token resolves to an ACTIVE,
+ * unexpired presence on an ACTIVE service session whose org holds a LIVE 'ccli'
+ * licence — else null. Channel-scoped (3-docroot guard). This is what lets a
+ * present congregant pass a `require_licence: ccli` rule for the duration of the
+ * service (and revoked the instant they leave / it expires / the org's licence
+ * lapses). Caller (checkContentAccess) injects 'ccli' into the effective set
+ * when this returns non-null; song.php uses the number for the CCL notice.
+ *
+ * Presence/session freshness compares UTC (those rows are UTC); the org licence
+ * expiry uses NOW() to match the existing licence layer (licences.php).
+ */
+function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
+{
+    if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $presenceToken)) {
+        return null;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT o.LicenceNumber
+               FROM tblServicePresence p
+               JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+               JOIN tblOrganisations o      ON o.Id = s.OrgId
+              WHERE p.PresenceToken = ?
+                AND p.IsActive = 1
+                AND p.ExpiresAt > UTC_TIMESTAMP()
+                AND p.Channel = ?
+                AND s.IsActive = 1
+                AND o.LicenceType = 'ccli'
+                AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
+              LIMIT 1"
+        );
+        $stmt->bind_param('ss', $presenceToken, $channel);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row === null) {
+            return null;
+        }
+        return (string)($row['LicenceNumber'] ?? '');
+    } catch (\Throwable $e) {
+        /* Optional tables absent / probe failure → no grant (fail closed). */
+        error_log('[service_mode/presenceCcli] ' . $e->getMessage());
+        return null;
+    }
+}
