@@ -2225,4 +2225,18 @@ return [
             || !_migProbe_tableExists($db, 'tblServicePresence')
             || !_migProbe_tableExists($db, 'tblServicePollCounters'),
     ],
+
+    'song-link-origin' => [
+        'script' => 'migrate-song-link-origin.php',
+        'card' => [
+            'title'  => 'Song-link origin marker (#1125)',
+            'body'   => 'Adds <code>tblSongLinks.Origin</code> so a counterpart link records whether it'
+                      . ' was created by a curator (<code>manual</code>) or by the #1125 hard-key'
+                      . ' auto-promoter (<code>auto-iswc</code> / <code>auto-ccli</code> / <code>auto-isrc</code>).'
+                      . ' Keeps auto-links auditable + revertable. Additive, idempotent — safe to re-run;'
+                      . ' the auto-linker works without it (writes a Note tag instead) on an un-migrated install.',
+            'button' => 'Run Song-Link Origin Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinks', 'Origin'),
+    ],
 ];

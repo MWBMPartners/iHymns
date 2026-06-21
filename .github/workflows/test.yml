@@ -261,6 +261,11 @@ jobs:
           echo "Running tblSongComponents JSON-column guard..."
           php tests/php/test-component-json-guard.php
 
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: |
+          echo "Running auto-link hard-id planner test..."
+          php tests/php/test-auto-link-hard-id.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -407,3 +412,6 @@ jobs:
 
       - name: Component JSON-payload column guard (P4 C5)
         run: php tests/php/test-component-json-guard.php
+
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: php tests/php/test-auto-link-hard-id.php

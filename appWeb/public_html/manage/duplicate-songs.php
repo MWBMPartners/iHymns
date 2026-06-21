@@ -397,6 +397,37 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         exit;
     }
 
+    /* -------- auto_link (admin) — bulk-link cross-book songs sharing a hard id (#1125) --------
+       A shared ISWC/CCLI/ISRC across different songbooks is a certain same-hymn
+       signal, so we promote whole groups without a per-cluster click. Gated on
+       manage_duplicate_songs (a bulk, non-interactive write — stricter than the
+       interactive single-cluster `link`). The shared driver does the matching,
+       same-official-songbook exclusion, dismissal/existing-link respect + the
+       writes (includes/tools/auto-link-hard-id-counterparts.php). */
+    if ($action === 'auto_link') {
+        if (!$canMerge) {
+            http_response_code(403);
+            echo json_encode(['error' => 'Auto-link requires the manage_duplicate_songs entitlement.']);
+            exit;
+        }
+        try {
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                . DIRECTORY_SEPARATOR . 'tools'
+                . DIRECTORY_SEPARATOR . 'auto-link-hard-id-counterparts.php';
+            $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
+            $r = autoLinkHardIdCounterparts($db, $createdBy);
+            if (function_exists('logActivity')) {
+                try { logActivity('song.link.auto', 'song', '', $r); } catch (\Throwable $_e) {}
+            }
+            echo json_encode(['success' => true] + $r);
+            exit;
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Auto-link failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
     http_response_code(400);
     echo json_encode(['error' => 'Unknown action.']);
     exit;
@@ -804,10 +835,18 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 guarded section of their own (#1215).
             </p>
         </div>
-        <button type="button" class="btn btn-sm btn-outline-primary dup-rebuild-btn"
-                title="Re-run the fuzzy similarity engine across the whole catalogue">
-            <i class="bi bi-arrow-clockwise me-1"></i>Rebuild suggestions
-        </button>
+        <div class="d-flex flex-wrap gap-2">
+            <?php if ($canMerge): ?>
+            <button type="button" class="btn btn-sm btn-outline-success dup-autolink-btn"
+                    title="Link cross-book songs that share an exact ISWC / CCLI / ISRC code as counterparts. Respects dismissals and existing links; never merges.">
+                <i class="bi bi-magic me-1"></i>Auto-link by shared ID
+            </button>
+            <?php endif; ?>
+            <button type="button" class="btn btn-sm btn-outline-primary dup-rebuild-btn"
+                    title="Re-run the fuzzy similarity engine across the whole catalogue">
+                <i class="bi bi-arrow-clockwise me-1"></i>Rebuild suggestions
+            </button>
+        </div>
     </div>
 
     <?php if ($detectError !== null): ?>
@@ -1045,6 +1084,24 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 toast('Rebuilt: ' + (j.message || 'done') + '. Reloading…', true);
                 setTimeout(function () { location.reload(); }, 900);
             }).catch(function (e) { rb.disabled = false; rb.innerHTML = orig; toast(e.message || 'Rebuild failed.', false); });
+        });
+    }
+
+    /* Auto-link cross-book songs sharing an exact hard id (#1125), then reload. */
+    var al = document.querySelector('.dup-autolink-btn');
+    if (al) {
+        al.addEventListener('click', function () {
+            if (!confirm('Auto-link all cross-book songs that share an exact ISWC / CCLI / ISRC code as counterparts? This creates link groups (reversible). Dismissed pairs, same-songbook collisions and existing links are respected; nothing is merged.')) { return; }
+            var orig = al.innerHTML;
+            al.disabled = true; al.innerHTML = '<i class="bi bi-magic me-1"></i>Linking…';
+            postAction({ action: 'auto_link' }).then(function (j) {
+                var msg = 'Auto-linked ' + (j.songsLinked || 0) + ' song(s) into ' + (j.groupsCreated || 0) + ' new group(s)';
+                if (j.joined) { msg += ', ' + j.joined + ' joined existing'; }
+                if (j.skippedConflict) { msg += '; ' + j.skippedConflict + ' conflict(s) skipped'; }
+                if (j.skippedDismissed) { msg += '; ' + j.skippedDismissed + ' dismissed'; }
+                toast(msg + '. Reloading…', true);
+                setTimeout(function () { location.reload(); }, 1200);
+            }).catch(function (e) { al.disabled = false; al.innerHTML = orig; toast(e.message || 'Auto-link failed.', false); });
         });
     }
 })();

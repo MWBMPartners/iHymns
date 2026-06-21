@@ -1898,6 +1898,8 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
     Note         VARCHAR(255)  NOT NULL DEFAULT ''
                  COMMENT 'Optional curator-set annotation, e.g. "uses 1990 Wesley revision text"',
     Verified     TINYINT(1)    NOT NULL DEFAULT 0,
+    Origin       VARCHAR(20)   NOT NULL DEFAULT 'manual'
+                 COMMENT 'How this link was created: manual (curator click) or auto-iswc/auto-ccli/auto-isrc (#1125 hard-key auto-promotion). VARCHAR not ENUM (rule #20).',
     CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
                  COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
