@@ -3480,6 +3480,71 @@ switch ($action) {
      * Proclaim has no rich structured export, so one file = one song. Files
      * under a "Proclaim Import" (PC) songbook. Insert-only; honours #1051.
      * ----------------------------------------------------------------- */
+    /* -----------------------------------------------------------------
+     * BULK_IMPORT_CHORDPRO — single ChordPro (.cho/.pro/.chopro/.crd/.chord)
+     * song import (#1264). multipart field "chordpro" = one ChordPro document
+     * (covers WorshipTools' hand-copied-from-Chords-tab export shape, OnSong /
+     * OpenSong / SongBeamer / Planning Center interchange). Lyrics + section
+     * structure + header metadata; inline [chord] markers are parsed out (per-
+     * line chord STORAGE deferred to #299/#1094 — see
+     * _bulkImport_chordProStripChords()). One file = one song, filed under a
+     * "ChordPro Import" (CHORDPRO) book unless the filename uses the
+     * "<#> (<ABBR>) - <Title>" convention. Insert-only; honours #1051. Round-
+     * trips with the lyrics-only ChordPro exporter (PR #1277).
+     * ----------------------------------------------------------------- */
+    case 'bulk_import_chordpro':
+        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+            http_response_code(405);
+            echo json_encode(['error' => 'POST method required.']);
+            break;
+        }
+        _bulkImport_dedupeMode((string)($_POST['dedupeMode'] ?? 'off'));  /* #1051 */
+        if (!isset($_FILES['chordpro']) || ($_FILES['chordpro']['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $err = $_FILES['chordpro']['error'] ?? UPLOAD_ERR_NO_FILE;
+            $msg = 'Upload failed.';
+            if ($err === UPLOAD_ERR_INI_SIZE || $err === UPLOAD_ERR_FORM_SIZE) {
+                $msg = 'Uploaded file is larger than the server limit.';
+            } elseif ($err === UPLOAD_ERR_NO_FILE) {
+                $msg = 'No file received — expected a multipart upload with a "chordpro" field.';
+            }
+            http_response_code(400);
+            echo json_encode(['error' => $msg, 'phpError' => $err]);
+            break;
+        }
+        $sizeBytes = (int)($_FILES['chordpro']['size'] ?? 0);
+        if ($sizeBytes > 5 * 1024 * 1024) {
+            http_response_code(413);
+            echo json_encode(['error' => 'Uploaded ChordPro file exceeds the 5 MiB import limit.']);
+            break;
+        }
+        try {
+            $tmpPath  = (string)$_FILES['chordpro']['tmp_name'];
+            $origName = (string)($_FILES['chordpro']['name'] ?? 'song.cho');
+            $body     = (string)file_get_contents($tmpPath);
+            if (trim($body) === '') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Uploaded file is empty.']);
+                break;
+            }
+            $summary = _bulkImport_processChordPro($body, $origName);
+            if (!($summary['ok'] ?? false)) {
+                http_response_code(400);
+            } elseif (($summary['songs_created'] ?? 0) > 0) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                    . DIRECTORY_SEPARATOR . 'songbook_maintenance.php';
+                $_maint = songbookMaintenanceRun(getDbMysqli(), 'bulk_import_chordpro');
+                if ($_maint['rewritten'] > 0 || $_maint['deferred']) {
+                    $summary['maintenance'] = $_maint;
+                }
+            }
+            echo json_encode($summary, JSON_UNESCAPED_UNICODE);
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            error_log('[bulk_import_chordpro] ' . $e->getMessage());
+            echo json_encode(['error' => 'Import failed: ' . $e->getMessage()]);
+        }
+        break;
+
     case 'bulk_import_proclaim':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
             http_response_code(405);

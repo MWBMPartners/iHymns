@@ -3858,7 +3858,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3886,6 +3886,11 @@ function importJSON() {
             /* FreeShow single-song export (#884). A folder of .show files
                exported as a .zip uses the ZIP path above instead. */
             importFreeShow(file);
+        } else if (lower.endsWith('.cho') || lower.endsWith('.chopro') || lower.endsWith('.crd') || lower.endsWith('.chord') || lower.endsWith('.pro')) {
+            /* ChordPro single-song import (#1264) — .cho/.chopro/.crd/.chord/.pro.
+               Covers WorshipTools' hand-copied-from-Chords-tab export shape +
+               OnSong/OpenSong/SongBeamer interop. (.pro6 is matched earlier.) */
+            importChordPro(file);
         } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
             /* Proclaim text/RTF single-song export (#1062). */
             importProclaim(file);
@@ -3905,8 +3910,8 @@ function importJSON() {
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
                 'FreeShow / EasyWorship), an OpenLyrics .xml, a ProPresenter ' +
-                '.pro6, a FreeShow .show, an EasyWorship Songs.db, or a ' +
-                'Proclaim .txt/.rtf.',
+                '.pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
+                'Proclaim .txt/.rtf, or a ChordPro .cho/.pro/.chopro/.crd/.chord.',
                 'danger'
             );
         }
@@ -4110,6 +4115,22 @@ function importProclaim(file) {
         action:     'bulk_import_proclaim',
         field:      'proclaim',
         consoleTag: 'bulk_import_proclaim',
+    });
+}
+
+/**
+ * importChordPro(file) — single ChordPro (.cho/.pro/.chopro/.crd/.chord) import
+ * (#1264). One ChordPro document is one song; it files under a "ChordPro Import"
+ * (CHORDPRO) songbook unless the filename uses the "<#> (<ABBR>) - <Title>"
+ * convention. Lyrics + section structure + header metadata; inline [chord]
+ * markers are parsed out server-side (per-line chord storage deferred to
+ * #299/#1094). Round-trips with the lyrics-only ChordPro exporter (PR #1277).
+ */
+function importChordPro(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_chordpro',
+        field:      'chordpro',
+        consoleTag: 'bulk_import_chordpro',
     });
 }
 
