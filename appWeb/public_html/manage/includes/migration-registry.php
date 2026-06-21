@@ -2148,4 +2148,21 @@ return [
             return (int)($row['DATETIME_PRECISION'] ?? 0) < 6;
         },
     ],
+    'org-venues' => [
+        'script' => 'migrate-org-venues.php',
+        'card' => [
+            'title'  => 'Org Venues &amp; Service Schedules (#1325)',
+            'body'   => 'Creates <code>tblOrgVenues</code> (org physical venues — name, address,'
+                      . ' lat/lng + radius, timezone) and <code>tblOrgServiceSchedules</code>'
+                      . ' (recurring service times per venue). The forward-looking foundation for'
+                      . ' &ldquo;Service Mode&rdquo; (#1323); ships empty, populated by'
+                      . ' <code>/manage/venues</code>. Idempotent — safe to re-run.',
+            'button' => 'Run Org Venues Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until BOTH tables exist, so a
+           partial apply never shows the card green. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblOrgVenues')
+            || !_migProbe_tableExists($db, 'tblOrgServiceSchedules'),
+    ],
 ];
