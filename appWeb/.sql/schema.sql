@@ -3403,3 +3403,61 @@ CREATE TABLE IF NOT EXISTS tblPresentationFormatFidelity (
     CONSTRAINT fk_PresFidelity_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Round-trip fidelity carrier for source styling with no first-class column; (Source,SourceRef) UNIQUE = idempotent re-import (rule #20) (#1168).';
+
+-- ----------------------------------------------------------------------------
+-- tblOrgVenues (#1325) — org physical venues for "Service Mode" (#1323). lat/lng
+-- + radius are a CONVENIENCE geofence + map pin, NOT the presence gate (Service
+-- Mode gates on a venue rotating code). Mirror of migrate-org-venues.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrgVenues (
+    Id           INT UNSIGNED      AUTO_INCREMENT PRIMARY KEY,
+    OrgId        INT UNSIGNED      NOT NULL COMMENT 'FK to tblOrganisations.Id — the org this venue belongs to',
+    Name         VARCHAR(150)      NOT NULL COMMENT 'Venue display name (e.g. Main Sanctuary, Church Hall)',
+    AddressLine  VARCHAR(255)      NULL DEFAULT NULL COMMENT 'Street address (free text)',
+    City         VARCHAR(120)      NULL DEFAULT NULL,
+    Postcode     VARCHAR(20)       NULL DEFAULT NULL,
+    CountryCode  CHAR(2)           NULL DEFAULT NULL COMMENT 'ISO 3166-1 alpha-2',
+    PlaceId      INT UNSIGNED      NULL DEFAULT NULL COMMENT 'FK to tblPlaces.Id — geocoder-resolved place (optional)',
+    Latitude     DECIMAL(10,7)     NULL DEFAULT NULL COMMENT 'Venue centroid latitude — convenience geofence + map pin, NOT the presence gate',
+    Longitude    DECIMAL(10,7)     NULL DEFAULT NULL COMMENT 'Venue centroid longitude',
+    RadiusMetres SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Convenience geofence radius; presence gate is the venue rotating code (Phase 2)',
+    TimeZone     VARCHAR(40)       NOT NULL DEFAULT 'UTC' COMMENT 'IANA tz the schedules are interpreted in (e.g. Europe/London)',
+    IsActive     TINYINT(1)        NOT NULL DEFAULT 1,
+    SortOrder    INT UNSIGNED      NOT NULL DEFAULT 0,
+    CreatedAt    TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt    TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_Org   (OrgId, IsActive),
+    INDEX idx_Place (PlaceId),
+    CONSTRAINT fk_OrgVenues_Org   FOREIGN KEY (OrgId)   REFERENCES tblOrganisations(Id) ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_OrgVenues_Place FOREIGN KEY (PlaceId) REFERENCES tblPlaces(Id)        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Org physical venues — Service Mode Phase 1 (#1325). lat/lng/radius = convenience geofence + map pin; presence gate is the venue rotating code.';
+
+-- ----------------------------------------------------------------------------
+-- tblOrgServiceSchedules (#1325) — recurring service times per venue. The
+-- service-OCCURRENCE (scheduleId,date) is computed at read time; Phase-2
+-- sessions + Phase-3 CCLI unlock bind to it. RecurrenceKind is VARCHAR
+-- (app-validated) not ENUM (rule #20). Mirror of migrate-org-venues.php.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblOrgServiceSchedules (
+    Id             INT UNSIGNED      AUTO_INCREMENT PRIMARY KEY,
+    VenueId        INT UNSIGNED      NOT NULL COMMENT 'FK to tblOrgVenues.Id',
+    OrgId          INT UNSIGNED      NOT NULL COMMENT 'Denorm of the venue org (app-derived) for cheap org-scoped queries',
+    Title          VARCHAR(150)      NOT NULL DEFAULT 'Service' COMMENT 'e.g. Sunday Morning, Evening Service',
+    DayOfWeek      TINYINT UNSIGNED  NULL DEFAULT NULL COMMENT 'ISO-8601 1=Mon..7=Sun for recurring kinds; NULL for one_off (date in RecurrenceData)',
+    StartTime      TIME              NOT NULL COMMENT 'Local service start in the effective TimeZone',
+    DurationMins   SMALLINT UNSIGNED NOT NULL DEFAULT 90 COMMENT 'Service window length (drives the active-now check)',
+    RecurrenceKind VARCHAR(20)       NOT NULL DEFAULT 'weekly' COMMENT 'weekly|fortnightly|monthly_nth|one_off|custom — app-validated, VARCHAR not ENUM (rule #20)',
+    RecurrenceData JSON              NULL DEFAULT NULL COMMENT 'Kind-specific: {interval},{nth,dayOfWeek},{date} for one_off,{until},{exceptions:[dates]}',
+    TimeZone       VARCHAR(40)       NULL DEFAULT NULL COMMENT 'Override the venue tz for this schedule; NULL = inherit the venue tz',
+    IsActive       TINYINT(1)        NOT NULL DEFAULT 1,
+    SortOrder      INT UNSIGNED      NOT NULL DEFAULT 0,
+    CreatedAt      TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      TIMESTAMP         NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_Venue (VenueId, IsActive),
+    INDEX idx_Org   (OrgId, IsActive),
+    INDEX idx_Day   (DayOfWeek, StartTime),
+    CONSTRAINT fk_OrgSchedules_Venue FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id)     ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_OrgSchedules_Org   FOREIGN KEY (OrgId)   REFERENCES tblOrganisations(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Recurring service times per venue — Service Mode Phase 1 (#1325). The service-occurrence (scheduleId,date) is computed at read time; Phase-2 sessions + Phase-3 unlock bind to it.';
