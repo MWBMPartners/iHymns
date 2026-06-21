@@ -340,6 +340,13 @@ class iHymnsApp {
             this.userAuth?._ensureAppStatus?.().then((status) => {
                 if (!status || !status.maintenance) return;
                 if (document.getElementById('maintenance-banner')) return;
+                /* #1330 — an admin bypassing maintenance already sees the
+                   server-rendered amber admin-bypass banner (index.php
+                   #ihymns-maint-bypass). Don't stack this second brown banner
+                   on top of it (the redundant double-banner the owner spotted);
+                   the bypass notice is authoritative + more informative. Only
+                   non-admin returning PWA users (no bypass banner) see this. */
+                if (document.getElementById('ihymns-maint-bypass')) return;
                 const bar = document.createElement('div');
                 bar.id = 'maintenance-banner';
                 bar.setAttribute('role', 'status');
