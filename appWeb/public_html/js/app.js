@@ -31,6 +31,7 @@ import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
 import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
+import { LiveFollow } from './modules/live-follow.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
@@ -288,6 +289,11 @@ class iHymnsApp {
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
             this.display.init();
+
+            /* Live Follow — real-time leader→followers song sync (#1268).
+               After userAuth + display so isLoggedIn() + the song toolbar exist. */
+            this.liveFollow = new LiveFollow(this);
+            this.liveFollow.init();
 
             /* Side-by-side song comparison (#102) */
             this.compare = new Compare(this);
