@@ -2039,6 +2039,276 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
 }
 
 /* ===========================================================================
+ *  ChordPro import (#1264)  —  .cho / .pro / .chopro / .crd / .chord
+ *
+ * ChordPro is the lingua franca chart format (OnSong, OpenSong, SongBeamer,
+ * Planning Center / WorshipTools all import it), so one adapter is the
+ * realistic migration on-ramp OUT of WorshipTools' import-only lock-in (#1264).
+ * It is the inbound twin of the lyrics-only ChordPro EXPORT shipped in PR #1277.
+ *
+ * SCOPE — lyrics + section structure + header metadata (symmetric with the
+ * lyrics-only export). Inline `[chord]` markers are PARSED OUT to recover clean
+ * lyric lines; per-line CHORD STORAGE is deliberately deferred to when the
+ * per-line-chord read/render path lands (the same #299/#1094 keystone that
+ * blocks the export's inline-chord half) — see _bulkImport_chordProStripChords()
+ * for the one place that future work hooks in. Lyrics + structure flow through
+ * the SAME _bulkImport_saveSong() → lyricLinesWriteComponents() write path as
+ * every other importer (CLAUDE.md rule #25), so there is no new write surface.
+ * =========================================================================== */
+
+/**
+ * Strip inline ChordPro `[chord]` markers from one lyric line, returning the
+ * clean lyric text. This is the SINGLE place per-line chords are dropped today;
+ * when the per-line-chord read path (#299/#1094) lands, capture each marker's
+ * code-point offset here and emit a parallel `chords` array on the component
+ * (lyricLinesWriteComponents already accepts it) — do NOT add a second write path.
+ */
+function _bulkImport_chordProStripChords(string $line): string
+{
+    /* Remove [ ... ] chord tokens; ChordPro chords never contain ']' so the
+       negated class is safe. A mid-word chord rejoins cleanly ("won[D]derful"
+       → "wonderful"); the lyric is otherwise preserved verbatim (a chord-only
+       line collapses to whitespace and is dropped by the caller's trim check). */
+    return preg_replace('/\[[^\]]*\]/u', '', $line);
+}
+
+/**
+ * Derive a component {type, number} from a free-text section label
+ * ("Verse 2", "Chorus", "Bridge", "Refrão 1", …). Reuses the shared
+ * _bulkImport_componentTypeFor() vocabulary (unknown → 'refrain').
+ *
+ * @return array{type: string, number: int}
+ */
+function _bulkImport_chordProSectionFromLabel(string $label): array
+{
+    $l   = trim($label);
+    $num = 0;
+    if (preg_match('/(\d{1,3})\s*$/', $l, $m)) {
+        $num = (int)$m[1];
+    }
+    /* Strip a trailing number to isolate the type keyword: "Verse 2" → "verse". */
+    $key = strtolower(trim(preg_replace('/[\d]+\s*$/', '', $l)));
+    return ['type' => _bulkImport_componentTypeFor($key), 'number' => $num];
+}
+
+/**
+ * Parse one ChordPro document into the song-object shape _bulkImport_saveSong()
+ * consumes (identical to _bulkImport_parseTxt()). Returns [songObject, null] or
+ * [null, errorReason].
+ *
+ * @return array{0: ?array, 1: ?string}
+ */
+function _bulkImport_parseChordPro(string $body, string $abbrev, string $songbook, int $number): array
+{
+    $body  = str_replace(["\r\n", "\r"], "\n", $body);
+    $lines = explode("\n", $body);
+
+    $title      = '';
+    $copyright  = '';
+    $ccli       = '';
+    $writers    = [];
+    $composers  = [];
+    $components = [];
+    $current    = null;            // the section being built
+    $autoVerse  = 0;               // auto-numbering for unlabelled verses
+
+    $flush = static function () use (&$current, &$components): void {
+        if ($current !== null && !empty($current['lines'])) {
+            $components[] = $current;
+        }
+        $current = null;
+    };
+    $startSection = static function (string $type, int $num) use (&$current, $flush): void {
+        $flush();
+        $current = ['type' => $type, 'number' => $num, 'lines' => []];
+    };
+
+    foreach ($lines as $raw) {
+        $line = rtrim($raw);
+        $trim = trim($line);
+
+        if ($trim === '') {                       // blank line ends a section
+            $flush();
+            continue;
+        }
+        if ($trim[0] === '#') {                   // ChordPro comment line
+            continue;
+        }
+
+        /* Directive line: {name} or {name: value}. A line may be ONLY a
+           directive; inline directives mid-lyric are rare and treated as text. */
+        if ($trim[0] === '{' && substr($trim, -1) === '}') {
+            $inner = trim(substr($trim, 1, -1));
+            $name  = $inner;
+            $value = '';
+            $colon = strpos($inner, ':');
+            if ($colon !== false) {
+                $name  = trim(substr($inner, 0, $colon));
+                $value = trim(substr($inner, $colon + 1));
+            }
+            $name = strtolower($name);
+
+            switch ($name) {
+                case 'title': case 't':
+                    if ($title === '') { $title = $value; }
+                    break;
+                case 'copyright':
+                    $copyright = $value; break;
+                case 'ccli': case 'ccli_no': case 'ccli_number':
+                    $ccli = preg_replace('/\D+/', '', $value); break;
+                case 'author': case 'lyricist': case 'words': case 'writer':
+                    if ($value !== '') { $writers[] = $value; } break;
+                case 'artist': case 'composer': case 'music':
+                    if ($value !== '') { $composers[] = $value; } break;
+                case 'start_of_verse': case 'sov':
+                    $n = ($value !== '' && ctype_digit($value)) ? (int)$value : ++$autoVerse;
+                    $startSection('verse', $n); break;
+                case 'start_of_chorus': case 'soc':
+                    $startSection('chorus', 0); break;
+                case 'start_of_bridge': case 'sob':
+                    $startSection('bridge', 0); break;
+                case 'start_of_part': case 'sop':
+                    $sec = _bulkImport_chordProSectionFromLabel($value);
+                    $startSection($sec['type'], $sec['number']); break;
+                case 'comment': case 'c': case 'ci': case 'comment_italic':
+                    /* The export emits section labels as {comment:}; treat a
+                       comment as the start of a labelled section. */
+                    $sec = _bulkImport_chordProSectionFromLabel($value);
+                    if ($sec['type'] === 'verse' && $sec['number'] === 0) { $sec['number'] = ++$autoVerse; }
+                    $startSection($sec['type'], $sec['number']); break;
+                case 'end_of_verse': case 'eov':
+                case 'end_of_chorus': case 'eoc':
+                case 'end_of_bridge': case 'eob':
+                case 'end_of_part':  case 'eop':
+                    $flush(); break;
+                default:
+                    /* subtitle/key/capo/tempo/time/album/year/define/… — no
+                       target field in the song model; ignored (lossless for the
+                       fields we DO store). */
+                    break;
+            }
+            continue;
+        }
+
+        /* Lyric line. Strip inline [chord] markers → clean lyric. A line that
+           is chord-only (empty after stripping) is skipped in this lyrics-only
+           scope. Auto-open a verse if no section tag preceded the lyrics. */
+        $lyric = rtrim(_bulkImport_chordProStripChords($line));
+        if (trim($lyric) === '') { continue; }
+        if ($current === null) {
+            $startSection('verse', ++$autoVerse);
+        }
+        $current['lines'][] = $lyric;
+    }
+    $flush();
+
+    if ($title === '') {
+        return [null, 'no {title} directive'];
+    }
+    if (empty($components)) {
+        return [null, 'no lyric lines found'];
+    }
+
+    $songId = sprintf('%s-%04d', strtoupper($abbrev), $number);
+
+    return [[
+        'id'                 => $songId,
+        'title'              => $title,
+        'number'             => $number,
+        'songbook'           => $abbrev,
+        'songbookName'       => $songbook,
+        'language'           => 'en',
+        'ccli'               => $ccli,
+        'iswc'               => '',
+        'tuneName'           => '',
+        'copyright'          => $copyright,
+        'verified'           => 0,
+        'lyricsPublicDomain' => 0,
+        'musicPublicDomain'  => 0,
+        'hasAudio'           => 0,
+        'hasSheetMusic'      => 0,
+        'writers'            => $writers,
+        'composers'          => $composers,
+        'arrangers'          => [],
+        'adaptors'           => [],
+        'translators'        => [],
+        'components'         => $components,
+    ], null];
+}
+
+/**
+ * Single-file ChordPro processor — wraps the parser + the shared saver, mirroring
+ * _bulkImport_processVideoPsalm(). Songbook + number come from the filename hint
+ * ("<#> (<ABBR>) - <Title>.cho") when present, else a default "ChordPro Import"
+ * book with an auto-assigned next number.
+ */
+function _bulkImport_processChordPro(string $body, ?string $filenameHint = null): array
+{
+    $fail = static function (string $msg): array {
+        return [
+            'ok' => false, 'error' => $msg,
+            'songbooks_created' => [], 'songbooks_existing' => [],
+            'songs_created' => 0, 'songs_skipped_existing' => 0, 'songs_failed' => 0,
+            'parsed_by_format' => ['chordpro' => 0], 'errors' => [],
+        ];
+    };
+
+    $db   = getDbMysqli();
+    $base = $filenameHint !== null ? pathinfo($filenameHint, PATHINFO_FILENAME) : '';
+
+    /* Prefer the "<#> (<ABBR>) - <Title>" filename convention; else a default book. */
+    $abbr = 'CHORDPRO';
+    $book = 'ChordPro Import';
+    $num  = 0;
+    if ($base !== '' && preg_match('/^(?P<num>\d{1,5})\s*\((?P<abbr>[A-Za-z0-9_\-]+)\)\s*-\s*/u', $base, $m)) {
+        $abbr = strtoupper($m['abbr']);
+        $num  = (int)$m['num'];
+    }
+    if ($num <= 0) { $num = _bulkImport_nextSongNumberFor($db, $abbr); }
+
+    [$song, $reason] = _bulkImport_parseChordPro($body, $abbr, $book, $num);
+    if ($song === null) {
+        return $fail('ChordPro parse failed: ' . ($reason ?: 'unknown'));
+    }
+
+    $state = _bulkImport_upsertSongbook($db, $abbr, $book, 'en');
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $errors = [];
+    $created = 0; $skipped = 0; $failed = 0;
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create') {
+        $created++;
+    } elseif ($action === 'skipped') {
+        $skipped++;
+    } else {
+        $errors[] = ['entry' => ($filenameHint ?? 'chordpro') . ': ' . ($song['id'] ?? '?'), 'error' => 'save failed: ' . $saveErr];
+        $failed++;
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $created,
+        'songs_skipped_existing' => $skipped,
+        'songs_failed'           => $failed,
+        'parsed_by_format'       => ['chordpro' => $created + $skipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/* ===========================================================================
  *  OpenLP / OpenLyrics import (#1052)
  * ---------------------------------------------------------------------------
  * OpenLP exports each song as a standalone OpenLyrics XML file
