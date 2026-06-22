@@ -429,6 +429,23 @@ function _migProbe_columnExists(\mysqli $db, string $table, string $column): boo
     return $exists;
 }
 
+/** True if $table carries an index named $index. Used by migration probes that must
+ *  not flip to "done" until a UNIQUE / KEY has actually landed (#1343-B review) —
+ *  e.g. a backfill+ADD-UNIQUE migration interrupted after the last row but before
+ *  the index would otherwise show a green card with no constraint. */
+function _migProbe_indexExists(\mysqli $db, string $table, string $index): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $index);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
 /** True if tblSongs has any row still missing a PublicId (#1343-B) — drives the
  *  backfill probe so the "Song PublicId" card stays pending until every row is
  *  filled. False (done) when the column is absent (the column probe handles that). */

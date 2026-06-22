@@ -2265,9 +2265,15 @@ return [
                       . ' <strong>re-run until it reports 0 remaining</strong>, then the UNIQUE is added.',
             'button' => 'Run Song PublicId Migration',
         ],
-        /* Pending until the column exists AND every row is backfilled (#1343-B). */
+        /* Pending until the column exists AND every row is backfilled AND the UNIQUE
+           index has landed (#1343-B review wfgwvkokd). The index check is NOT redundant
+           with the NULL check: MySQL UNIQUE permits multiple NULLs, and an interrupted
+           Stage 3 (ADD UNIQUE after the final backfill batch) would otherwise leave the
+           card green with no uniqueness constraint — re-running adds it (Stage 3 is
+           idempotent), so the card must stay pending to signal the re-run. */
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_columnExists($db, 'tblSongs', 'PublicId')
-            || _migProbe_hasNullPublicId($db),
+            || _migProbe_hasNullPublicId($db)
+            || !_migProbe_indexExists($db, 'tblSongs', 'uniq_PublicId'),
     ],
 ];
