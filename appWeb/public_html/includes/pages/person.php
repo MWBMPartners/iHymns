@@ -379,6 +379,18 @@ foreach ($discography as $rk => $entry) {
                     Founded in <?= htmlspecialchars($person['BirthPlace']) ?>
                 </p>
             <?php endif; ?>
+            <?php if ($person && (int)$person['Id'] > 0): ?>
+                <!-- Edit (#1348). Hidden by default; revealed by JS for users with the
+                     manage_credit_people entitlement (admin / global_admin), mirroring
+                     the song page's #btn-edit-song. Server-side admin re-checks on the
+                     target page, so hiding the button is purely a UX affordance. -->
+                <a class="btn btn-sm btn-outline-secondary d-none mt-2"
+                   id="btn-edit-person"
+                   href="/manage/credit-people?id=<?= (int)$person['Id'] ?>"
+                   title="Edit this person in Credit People admin">
+                    <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>Edit
+                </a>
+            <?php endif; ?>
         </div>
     </div>
 

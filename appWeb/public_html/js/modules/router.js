@@ -625,6 +625,16 @@ export class Router {
                 }
             }
 
+            /* Edit button on the person page (#1348) — same affordance, gated on
+               manage_credit_people (admin / global_admin); the admin page re-checks. */
+            const editPersonBtn = document.getElementById('btn-edit-person');
+            if (editPersonBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('manage_credit_people', role)) {
+                    editPersonBtn.classList.remove('d-none');
+                }
+            }
+
             /* Save Offline button — check cache state and bind click */
             const saveOfflineBtn = document.querySelector('.btn-save-offline');
             if (saveOfflineBtn) {
