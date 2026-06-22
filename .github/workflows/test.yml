@@ -281,6 +281,11 @@ jobs:
           echo "Running OpenLyrics importer enrichment test..."
           php tests/php/test-openlyrics-parser.php
 
+      - name: Deploy-path smell guard (#1196)
+        run: |
+          echo "Running deploy-path (dirname/public_html) guard..."
+          php tests/php/test-deploy-paths.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -439,3 +444,6 @@ jobs:
 
       - name: OpenLyrics importer enrichment (#1130)
         run: php tests/php/test-openlyrics-parser.php
+
+      - name: Deploy-path smell guard (#1196)
+        run: php tests/php/test-deploy-paths.php

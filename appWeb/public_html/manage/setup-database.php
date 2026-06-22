@@ -2664,7 +2664,10 @@ if ($hasCredentials && defined('DB_HOST')) {
      the dashboard, so no single request hits a server-level
      timeout. Falls through to the legacy <a href> on no-JS. -->
 <?php
-    $_bulkRunnerPath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
+    /* From manage/, public_html is dirname(__DIR__, 1); dirname(__DIR__, 2) was
+       appWeb (one level too high), so is_file() always failed and the version
+       fell back to '1', defeating per-file cache-busting (#1196). */
+    $_bulkRunnerPath    = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
     $_bulkRunnerVersion = is_file($_bulkRunnerPath) ? (string)filemtime($_bulkRunnerPath) : '1';
 ?>
 <script type="module">
