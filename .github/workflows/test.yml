@@ -271,6 +271,11 @@ jobs:
           echo "Running ChordPro importer test..."
           php tests/php/test-chordpro-parser.php
 
+      - name: Per-action content-gating matcher (#1120)
+        run: |
+          echo "Running content-access action-matcher test..."
+          php tests/php/test-content-access-action.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -423,3 +428,6 @@ jobs:
 
       - name: ChordPro importer (incl. #1126 chord retention)
         run: php tests/php/test-chordpro-parser.php
+
+      - name: Per-action content-gating matcher (#1120)
+        run: php tests/php/test-content-access-action.php

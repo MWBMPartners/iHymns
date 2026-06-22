@@ -712,10 +712,11 @@ if ($action !== null) {
          * Public songbook export (#1166) — full records of ONE songbook's
          * songs for the end-user export UI (js/modules/export-ui.js). DB-direct,
          * scoped to one songbook (rule #17 — never the corpus); same shape the
-         * editor's songbook_export returns ({songs, songbook}). When content
-         * gating is enabled, export of copyrighted content is a gated action
-         * (#1141) — to wire here once gating ships; currently mirrors the public
-         * view (gating off → public-domain + open catalogue).
+         * editor's songbook_export returns ({songs, songbook}). EXPORT is a gated
+         * ACTION distinct from display (#1120/#1141): when content_gating_enabled
+         * is on, songs the requester can't EXPORT (a restriction whose
+         * AppliesToAction is export|reproduce|all) are filtered out. Dormant while
+         * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
@@ -728,6 +729,20 @@ if ($action !== null) {
             foreach ($songData->getSongbooks() as $b) {
                 $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
                 if ($bid === $abbr) { $sbSongbook = $b; break; }
+            }
+            /* #1120/#1141 — per-action EXPORT gating (dormant unless the flag is on). */
+            if ($sbSongs && function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+                if (function_exists('checkBulkAccess')) {
+                    $exAuth = getAuthenticatedUser();
+                    $exUid  = $exAuth ? (int)$exAuth['Id'] : null;
+                    $exPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                    $exKey  = static fn(array $s): string => (string)($s['id'] ?? $s['songId'] ?? $s['SongId'] ?? '');
+                    $exIds  = array_values(array_filter(array_map($exKey, $sbSongs), static fn($v) => $v !== ''));
+                    $exAllow = checkBulkAccess('song', $exIds, $exUid, $exPlat, 'export');
+                    $sbSongs = array_values(array_filter($sbSongs, static fn($s) => $exAllow[$exKey($s)] ?? true));
+                }
             }
             sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
             break;
