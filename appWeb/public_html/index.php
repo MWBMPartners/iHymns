@@ -900,7 +900,14 @@ if (!empty($breadcrumbItems)) {
             if (!bar) return;
             var h = bar.offsetHeight;                 /* live height incl. wrapped lines */
             var hdr = document.querySelector('.app-header');
-            if (hdr) { hdr.style.top = h + 'px'; }    /* push fixed header below the banner */
+            if (hdr) {
+                hdr.style.top = h + 'px';             /* push fixed header below the banner */
+                /* #1279 review — h already includes the iOS safe-area inset (the banner's
+                   own padding-top), and in a standalone PWA .app-header ALSO adds
+                   padding-top:env(safe-area-inset-top). Zero it here so the inset isn't
+                   counted twice (a visible gap above the navbar during maintenance bypass). */
+                hdr.style.paddingTop = '0px';
+            }
             var main = document.querySelector('.main-content');
             if (main) { main.style.paddingTop = 'calc(var(--header-height) + 8px + ' + h + 'px)'; }
         }

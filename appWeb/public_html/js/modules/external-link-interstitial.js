@@ -38,6 +38,8 @@ function markAcknowledged() {
 /* Is this an OUTBOUND http(s) link we should gate? */
 function isExternalHttpLink(anchor) {
     if (!anchor || anchor.dataset.noInterstitial !== undefined) { return false; }
+    /* An explicit download is the browser's job — don't hijack it (#1347 review). */
+    if (anchor.hasAttribute('download')) { return false; }
     const href = anchor.getAttribute('href') || '';
     if (!href || href.startsWith('#')) { return false; }
     let url;
@@ -87,14 +89,19 @@ function buildModal() {
     const cancelEl  = dialog.querySelector('.extlink-interstitial-cancel');
 
     let pendingProceed = null;
+    let lastFocus = null; /* element to restore focus to on close (the trigger) */
     function close() {
         overlay.style.display = 'none';
         overlay.hidden = true;
         pendingProceed = null;
+        /* a11y (#1347 review): return focus to whatever opened the dialog. */
+        if (lastFocus && typeof lastFocus.focus === 'function') { lastFocus.focus(); }
+        lastFocus = null;
     }
     function open(host, onProceed) {
         hostEl.textContent = host;
         pendingProceed = onProceed;
+        lastFocus = document.activeElement;
         overlay.hidden = false;
         overlay.style.display = 'flex';
         proceedEl.focus();
@@ -104,9 +111,13 @@ function buildModal() {
     cancelEl.addEventListener('click', close);
     /* Click on the backdrop (not the dialog) cancels. */
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); } });
-    /* ESC cancels. */
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && overlay.style.display === 'flex') { close(); }
+    /* ESC cancels; Tab/Shift-Tab stay trapped between the two buttons (#1347 review). */
+    overlay.addEventListener('keydown', (e) => {
+        if (overlay.style.display !== 'flex') { return; }
+        if (e.key === 'Escape') { close(); return; }
+        if (e.key !== 'Tab') { return; }
+        if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); proceedEl.focus(); }
+        else if (!e.shiftKey && document.activeElement === proceedEl) { e.preventDefault(); cancelEl.focus(); }
     });
 
     return { open };
@@ -140,9 +151,12 @@ export function bootExternalLinkInterstitial() {
         if (!modal) { modal = buildModal(); }
         modal.open(host, () => {
             markAcknowledged();
-            /* Honour the link's own target; default to a new tab with noopener. */
+            /* Honour the link's own target; default to a new tab with noopener.
+               If the popup is blocked despite the user gesture, fall back to
+               same-tab navigation so the click is never silently lost (#1347 review). */
             if (openInNewTab) {
-                window.open(dest, '_blank', 'noopener');
+                const w = window.open(dest, '_blank', 'noopener');
+                if (!w) { window.location.href = dest; }
             } else {
                 window.location.href = dest;
             }
