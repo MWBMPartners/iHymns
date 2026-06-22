@@ -1170,43 +1170,12 @@ function renderComponents(song) {
         chordsWrap.appendChild(chordsBox);
         body.appendChild(chordsWrap);
 
-        /* #1253 — optional per-line language overrides (collapsible). One BCP 47
-           tag per lyric line, parallel to the lyrics; a blank line inherits the
-           component language. Saved to LanguagesJson via comp.languages. Mirrors
-           the chords editor above exactly (same parallel-textarea idiom). */
-        var langsWrap = document.createElement('div');
-        langsWrap.className = 'mt-2';
-        var hasLineLangs = Array.isArray(comp.languages) && comp.languages.some(function (l) {
-            return l && String(l).trim();
-        });
-        var langsToggle = document.createElement('button');
-        langsToggle.type = 'button';
-        langsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-        langsToggle.innerHTML = '<i class="bi bi-translate me-1"></i>Per-line languages';
-        var langsBox = document.createElement('div');
-        langsBox.className = 'mt-1';
-        langsBox.style.display = hasLineLangs ? '' : 'none';
-        var langsArea = document.createElement('textarea');
-        langsArea.className = 'form-control form-control-sm component-line-languages font-monospace';
-        langsArea.rows = 2;
-        langsArea.placeholder = 'One BCP 47 tag per lyric line, e.g.  en  /  es  /  zh-Hans  (blank = same as the component)';
-        langsArea.value = componentLanguagesToText(comp);
-        langsArea.addEventListener('input', function () {
-            comp.languages = langsArea.value.split('\n').map(function (l) { return l.trim(); });
-            markModified(song.id);
-        });
-        langsToggle.addEventListener('click', function () {
-            langsBox.style.display = (langsBox.style.display === 'none') ? '' : 'none';
-            if (langsBox.style.display !== 'none') { langsArea.focus(); }
-        });
-        var langsHint = document.createElement('div');
-        langsHint.className = 'form-text small';
-        langsHint.textContent = 'Optional. Each line lines up with the lyric line above it; blank inherits the component language.';
-        langsBox.appendChild(langsArea);
-        langsBox.appendChild(langsHint);
-        langsWrap.appendChild(langsToggle);
-        langsWrap.appendChild(langsBox);
-        body.appendChild(langsWrap);
+        /* #1253 → #1345 — per-line language overrides MOVED out of this card body.
+           The old free-text monospace textarea ("one BCP 47 tag per line") was hard
+           to use; per-line language is now an INLINE control inside the per-line
+           translations/annotations panel below (a 🌐 chip + a structured IETF picker
+           per line, mirroring the translations UX). Storage is unchanged —
+           comp.languages[i] (parallel to comp.lines) → LanguagesJson on save. */
 
         /* #1235 P3 / #1088 — per-line translations + annotations editor
            (collapsible). Keys off the saved line Ids (comp.lineIds); writes to
@@ -1262,20 +1231,9 @@ function componentChordsToText(comp) {
     }).join('\n');
 }
 
-/**
- * componentLanguagesToText(comp) — render a component's per-line language
- * overrides (comp.languages, parallel to lines) back into the editable textarea:
- * one tag per lyric line, blank where the line inherits the component language.
- * (#1253)
- * @param {{languages?:Array}} comp
- * @returns {string}
- */
-function componentLanguagesToText(comp) {
-    if (!Array.isArray(comp.languages)) { return ''; }
-    return comp.languages.map(function (l) {
-        return (l == null) ? '' : String(l);
-    }).join('\n');
-}
+/* componentLanguagesToText() removed in #1345 — per-line language is no longer a
+   newline-joined textarea; it's edited inline per line via the IETF picker
+   (buildInlineIetfPicker) in the translations/annotations panel. */
 
 /**
  * ensureComponentLangDatalist() — create (once) a shared <datalist> of the active
@@ -1299,6 +1257,76 @@ function ensureComponentLangDatalist() {
     });
     document.body.appendChild(dl);
     return dl;
+}
+
+/* Monotonic id source so every dynamically-built IETF picker gets unique
+   datalist ids (the module resolves its lists by `getElementById(input.list)`,
+   so two instances sharing an id would clobber each other's suggestions). */
+var _ed2IetfPickerSeq = 0;
+
+/**
+ * buildInlineIetfPicker(initialTag) — construct a compact, structured IETF BCP 47
+ * picker (Language / Script / Region) on demand and boot it via the shared module
+ * (window.bootIetfLanguagePicker, exposed by editor/index.php). Used for per-line
+ * language overrides and the per-line translation language field (#1345), so a
+ * curator picks "Korean" + "Latin" → ko-Latn instead of typing a raw tag.
+ *
+ * Returns { el, booted, getTag() } where el is the picker root (append it into a
+ * form) and getTag() reads the composed BCP 47 tag. If the ES module hasn't loaded
+ * (it's deferred; pickers are only built on user interaction, long after) the
+ * helper DEGRADES to a single free-text input with the languages datalist so the
+ * field still works.
+ *
+ * @param {string} initialTag  saved BCP 47 tag to pre-fill (or '')
+ * @returns {{el:HTMLElement, booted:boolean, getTag:function():string}}
+ */
+function buildInlineIetfPicker(initialTag) {
+    var tag = (initialTag == null) ? '' : String(initialTag);
+
+    /* Graceful fallback — module not available: a single BCP 47 text input. */
+    if (typeof window.bootIetfLanguagePicker !== 'function') {
+        ensureComponentLangDatalist();
+        var fb = document.createElement('input');
+        fb.type = 'text';
+        fb.className = 'form-control form-control-sm';
+        fb.setAttribute('list', 'component-lang-datalist');
+        fb.setAttribute('autocomplete', 'off');
+        fb.placeholder = 'BCP 47 tag (e.g. ko-Latn)';
+        fb.style.maxWidth = '160px';
+        if (tag) { fb.value = tag; }
+        return { el: fb, booted: false, getTag: function () { return (fb.value || '').trim(); } };
+    }
+
+    var id = 'ed2-ietf-' + (++_ed2IetfPickerSeq);
+    var wrap = document.createElement('div');
+    wrap.className = 'ietf-picker';
+    wrap.setAttribute('data-ietf-picker-id', id);
+    if (tag) { wrap.setAttribute('data-initial-tag', tag); }  /* boot reads this → setTag() */
+    /* Static structure mirroring partials/ietf-language-picker.php. The only
+       interpolation is `id` (server-style generated, no user data) so innerHTML
+       is XSS-safe; the saved tag rides the data-initial-tag attribute above. */
+    wrap.innerHTML =
+        '<div class="row g-1">'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" list="ietf-lang-list-' + id + '" autocomplete="off" placeholder="Language"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-' + id + '" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-' + id + '" autocomplete="off" placeholder="Region"></div>'
+      + '</div>'
+      + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
+      + '<input type="hidden" class="ietf-tag-output" value="">'
+      + '<datalist id="ietf-lang-list-' + id + '"></datalist>'
+      + '<datalist id="ietf-script-list-' + id + '"></datalist>'
+      + '<datalist id="ietf-region-list-' + id + '"></datalist>';
+
+    var ctl = window.bootIetfLanguagePicker(wrap);
+    return {
+        el: wrap,
+        booted: !!ctl,
+        getTag: function () {
+            if (ctl && typeof ctl.getTag === 'function') { return (ctl.getTag() || '').trim(); }
+            var o = wrap.querySelector('.ietf-tag-output');
+            return o ? (o.value || '').trim() : '';
+        }
+    };
 }
 
 /* ====================================================================
@@ -1354,7 +1382,7 @@ function buildEnrichmentPanel(song, comp) {
     var toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
-    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Translations &amp; annotations';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Per-line language, translations &amp; annotations';
     var box = document.createElement('div');
     box.className = 'mt-1';
     box.style.display = 'none';
@@ -1400,23 +1428,61 @@ function buildEnrichmentPanel(song, comp) {
         }).catch(function (err) { showToast('Delete failed: ' + err.message, 'danger'); });
     }
 
-    function showTranslationForm(host, lineId) {
+    /* #1345 — per-line LANGUAGE override (index-keyed comp.languages[i], NOT a
+       lineId enrichment row). Overrides the component language, which overrides the
+       song language. Pad the parallel array so a later line can be set without
+       filling the earlier ones. */
+    function setLineLang(i, tag) {
+        if (!Array.isArray(comp.languages)) { comp.languages = []; }
+        while (comp.languages.length <= i) { comp.languages.push(''); }
+        comp.languages[i] = tag || '';
+        markModified(song.id);
+    }
+
+    /* Inline structured-picker form for one line's language override (#1345). */
+    function showLineLangForm(host, i) {
+        var cur = (Array.isArray(comp.languages) && comp.languages[i] != null)
+            ? String(comp.languages[i]).trim() : '';
         var form = document.createElement('div');
-        form.className = 'd-flex flex-wrap gap-1 align-items-center mt-1';
+        form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+        var picker = buildInlineIetfPicker(cur);
+        form.appendChild(picker.el);
+        var btnRow = document.createElement('div');
+        btnRow.className = 'mt-1';
+        var save = addBtn('Save', function () {
+            setLineLang(i, picker.getTag());
+            renderBody();
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        btnRow.appendChild(save);
+        btnRow.appendChild(cancel);
+        form.appendChild(btnRow);
+        host.appendChild(form);
+    }
+
+    function showTranslationForm(host, lineId) {
+        /* #1345 — structured IETF picker for the translation's language (full BCP 47:
+           ko-Latn, zh-Hans-CN). Multiple translations per line already work — each
+           "+ Translation" adds another row (the table is keyed per language+kind). */
+        var form = document.createElement('div');
+        form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+        var kindRow = document.createElement('div');
+        kindRow.className = 'd-flex gap-1 align-items-center mb-1';
+        var kindLbl = document.createElement('span');
+        kindLbl.className = 'small text-muted'; kindLbl.textContent = 'Kind:';
         var kind = document.createElement('select');
         kind.className = 'form-select form-select-sm w-auto';
         ED2_TRANSLATION_KINDS.forEach(function (k) {
             var o = document.createElement('option'); o.value = k; o.textContent = k; kind.appendChild(o);
         });
-        var lang = document.createElement('input');
-        lang.type = 'text'; lang.className = 'form-control form-control-sm w-auto';
-        lang.setAttribute('list', 'component-lang-datalist'); lang.placeholder = 'lang (e.g. es)';
-        lang.style.maxWidth = '110px';
+        kindRow.appendChild(kindLbl); kindRow.appendChild(kind);
+        var picker = buildInlineIetfPicker('');
         var text = document.createElement('input');
-        text.type = 'text'; text.className = 'form-control form-control-sm'; text.placeholder = 'Translated line text';
-        text.style.minWidth = '180px';
+        text.type = 'text'; text.className = 'form-control form-control-sm mt-1';
+        text.placeholder = 'Translated / romanized line text';
         var save = addBtn('Save', function () {
-            var payload = { lineId: lineId, kind: kind.value, targetLanguage: lang.value.trim(), text: text.value.trim() };
+            var payload = { lineId: lineId, kind: kind.value, targetLanguage: picker.getTag(), text: text.value.trim() };
             if (!payload.targetLanguage || !payload.text) { showToast('Language and text are required.', 'warning'); return; }
             ed2EnrichApi('line_translation_upsert', { songId: song.id, translation: payload }).then(function (d) {
                 if (d.translation) { song.lineTranslations.push(d.translation); }
@@ -1425,10 +1491,11 @@ function buildEnrichmentPanel(song, comp) {
         });
         save.className = 'btn btn-sm btn-primary py-0 px-2';
         var cancel = addBtn('Cancel', function () { renderBody(); });
-        form.appendChild(kind); form.appendChild(lang); form.appendChild(text);
-        form.appendChild(save); form.appendChild(cancel);
+        var btnRow = document.createElement('div');
+        btnRow.className = 'mt-1';
+        btnRow.appendChild(save); btnRow.appendChild(cancel);
+        form.appendChild(kindRow); form.appendChild(picker.el); form.appendChild(text); form.appendChild(btnRow);
         host.appendChild(form);
-        lang.focus();
     }
 
     function showAnnotationForm(host, lineId) {
@@ -1472,6 +1539,21 @@ function buildEnrichmentPanel(song, comp) {
             txt.className = 'text-muted';
             txt.textContent = (lineText && String(lineText).trim()) ? String(lineText) : '(blank line)';
             row.appendChild(txt);
+
+            /* #1345 — per-line LANGUAGE override (index-keyed comp.languages[i], so it
+               works even before the song is saved — unlike translations/annotations,
+               which need the saved lineId). 🌐 chip shows the current tag with a remove
+               control; the button opens the structured IETF picker. */
+            var curLang = (Array.isArray(comp.languages) && comp.languages[i] != null)
+                ? String(comp.languages[i]).trim() : '';
+            var langWrap = document.createElement('div');
+            langWrap.className = 'mb-1';
+            if (curLang) {
+                langWrap.appendChild(chip('🌐 ' + curLang, function () { setLineLang(i, ''); renderBody(); }));
+            }
+            langWrap.appendChild(addBtn(curLang ? '🌐 Change language' : '🌐 Set language',
+                function () { showLineLangForm(langWrap, i); }));
+            row.appendChild(langWrap);
 
             if (!lineId) {
                 var note = document.createElement('div');

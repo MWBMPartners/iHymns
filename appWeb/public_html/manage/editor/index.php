@@ -1998,6 +1998,11 @@ try {
         if (root) {
             window.editSongIetfPicker = bootIetfLanguagePicker(root);
         }
+        /* #1345 — also expose the boot function itself so editor.js (classic
+           script) can instantiate per-line / per-translation pickers on demand
+           (buildInlineIetfPicker). The structured picker replaces the old
+           free-text per-line language textarea. */
+        window.bootIetfLanguagePicker = bootIetfLanguagePicker;
     </script>
 
     <!-- Song Media editor boot (#853). Subscribes to the
