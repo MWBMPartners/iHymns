@@ -42,6 +42,7 @@ import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { bootOfflineUi } from './modules/offline-ui.js';
 import { bootExternalLinkInterstitial } from './modules/external-link-interstitial.js';
+import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
@@ -733,7 +734,10 @@ class iHymnsApp {
                 this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
                 break;
             case 'print':
-                window.print();
+                /* #1350 — clean, template-based print (lyrics / chords / large)
+                   instead of window.print() on the chromed page. Falls back to
+                   window.print() off a song page. */
+                openSongPrintDialog(this);
                 break;
         }
     }
