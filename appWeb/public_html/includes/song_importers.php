@@ -446,43 +446,47 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $arrProbe->close();
         } catch (\Throwable $_e) { /* default false */ }
 
+        /* #892 + #1343-B — ONE dynamic-column INSERT. ArrangementJson and
+           PublicId are each appended to the column / type / value lists only
+           when that column exists on this env, so a single prepared statement
+           covers every migration state. The base column names + type chars are
+           hardcoded constants and the placeholder string is built from a
+           constant count (rule #5 — the only legitimate interpolation into
+           SQL); every value is bound. SongbookName denorm column dropped
+           (WS-E #1013 ph2). */
+        $cols  = ['SongId', 'Number', 'Title', 'SongbookAbbr', 'Language',
+                  'Copyright', 'TuneName', 'Ccli', 'Iswc', 'Verified',
+                  'LyricsPublicDomain', 'MusicPublicDomain', 'HasAudio',
+                  'HasSheetMusic', 'LyricsText'];
+        $types = 'sisssssssiiiiis';
+        $vals  = [$songId, $number, $title, $songbookAbbr, $language,
+                  $copyright, $tuneName, $ccli, $iswc, $verified,
+                  $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText];
+
         if ($hasArrangementCol) {
             $arrangementJson = _sanitiseArrangement(
                 $song['arrangement'] ?? null,
                 count($song['components'] ?? [])
             );
-            $insert = $db->prepare(
-                'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, Language,
-                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
-                     ArrangementJson)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
-            $insert->bind_param(
-                'sisssssssiiiiiss',
-                $songId, $number, $title, $songbookAbbr,
-                $language, $copyright, $tuneName, $ccli, $iswc,
-                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
-                $arrangementJson
-            );
-        } else {
-            $insert = $db->prepare(
-                'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, Language,
-                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
-            $insert->bind_param(
-                'sisssssssiiiiis',
-                $songId, $number, $title, $songbookAbbr,
-                $language, $copyright, $tuneName, $ccli, $iswc,
-                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-            );
+            $cols[] = 'ArrangementJson';
+            $types .= 's';
+            $vals[] = $arrangementJson;
         }
+
+        /* #1343-B — mint a stable PublicId when the column is migrated. Gated so
+           an un-migrated install still inserts cleanly under STRICT mode. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_public_id.php';
+        if (songPublicId_columnReady($db)) {
+            $cols[] = 'PublicId';
+            $types .= 's';
+            $vals[] = songPublicId_mintUnique($db);
+        }
+
+        $ph     = implode(', ', array_fill(0, count($cols), '?'));
+        $insert = $db->prepare(
+            'INSERT INTO tblSongs (' . implode(', ', $cols) . ') VALUES (' . $ph . ')'
+        );
+        $insert->bind_param($types, ...$vals);
         $insert->execute();
         $insert->close();
 

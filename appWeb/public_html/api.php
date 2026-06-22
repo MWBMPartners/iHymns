@@ -161,6 +161,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
+   validators below can defensively resolve a PublicId passed by a non-web
+   client back to its underlying SongId before the existing allow-list regex
+   runs. Every read inside is gated on tblSongs.PublicId existing, so this is
+   a no-op on an un-migrated install. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
@@ -1254,8 +1260,21 @@ if ($action !== null) {
 
             /* Sanitise inputs */
             $setlistName  = mb_substr(trim($body['name']), 0, 200);
+            /* #1343-B — resolve any PublicId in the song list to its SongId before
+               the existing allow-list regex (unchanged), so a non-web client that
+               built the setlist from opaque permalinks stores canonical SongIds.
+               $db is needed by SharedSetlist downstream anyway; the resolve is gated
+               (no-op pre-migration) and only touches the DB for a PublicId-shaped
+               token, so SongId input is byte-identical to before. */
+            $db = getDbMysqli();
             $setlistSongs = array_values(array_filter(
-                array_map('trim', $body['songs']),
+                array_map(static function ($s) use ($db) {
+                    $s = trim($s);
+                    if (songPublicId_looksLikePublicId($s)) {
+                        $s = songPublicId_resolveToSongId($db, $s);
+                    }
+                    return $s;
+                }, $body['songs']),
                 fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
             ));
             $ownerId      = preg_replace('/[^a-f0-9\-]/', '', strtolower(trim($body['owner'])));
@@ -1301,7 +1320,14 @@ if ($action !== null) {
             $arrangements = [];
             if (isset($body['arrangements']) && is_array($body['arrangements'])) {
                 foreach ($body['arrangements'] as $sid => $arr) {
-                    if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                    if (!is_string($sid)) continue;
+                    /* #1343-B — resolve a PublicId key to its SongId so the
+                       arrangement map keys on the canonical SongId. Gated;
+                       no-op for a real SongId (which never looks like a PublicId). */
+                    if (songPublicId_looksLikePublicId($sid)) {
+                        $sid = songPublicId_resolveToSongId($db, $sid);
+                    }
+                    if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
                     if (count($validArr) > 0) {
@@ -2611,6 +2637,12 @@ if ($action !== null) {
                 } else {
                     continue;
                 }
+                /* #1343-B — resolve a PublicId to its SongId before the allow-list
+                   regex (unchanged). $db is in scope above; gated/no-op pre-migration
+                   and a real SongId never looks like a PublicId, so unchanged for it. */
+                if (songPublicId_looksLikePublicId($sid)) {
+                    $sid = songPublicId_resolveToSongId($db, $sid);
+                }
                 if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                 $localFavs[$sid] = $tags;
             }
@@ -2741,6 +2773,14 @@ if ($action !== null) {
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
             $removeSongId = trim($body['song_id'] ?? '');
+
+            /* #1343-B — a non-web client may pass a PublicId where a SongId is
+               expected; resolve it before the allow-list regex (unchanged).
+               getDbMysqli() is only touched for a PublicId-shaped token, so a
+               real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($removeSongId)) {
+                $removeSongId = songPublicId_resolveToSongId(getDbMysqli(), $removeSongId);
+            }
 
             if (!preg_match('/^[A-Za-z]+-\d+$/', $removeSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
@@ -5103,6 +5143,16 @@ if ($action !== null) {
             if (count($existIds) > 200) { $existIds = array_slice($existIds, 0, 200); }
             try {
                 $db = getDbMysqli();
+                /* #1343-B — resolve any PublicId in the batch to its SongId before
+                   the existence lookup, so a non-web client that cached the opaque
+                   permalink gets a truthful answer. Done here (inside the try, after
+                   the permissive regex filter which already accepts a PublicId) so a
+                   DB outage still degrades to {exists:null}. Gated/no-op pre-migration. */
+                foreach ($existIds as $i => $eid) {
+                    if (songPublicId_looksLikePublicId($eid)) {
+                        $existIds[$i] = songPublicId_resolveToSongId($db, $eid);
+                    }
+                }
                 /* Placeholder string built from a constant count (rule #5 —
                    the only legitimate interpolation into SQL); values bound. */
                 $ph    = implode(',', array_fill(0, count($existIds), '?'));
@@ -5159,6 +5209,12 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                /* #1343-B — resolve a PublicId to its SongId so the history row keys
+                   on the canonical SongId, not the opaque permalink. Inside the try
+                   so a DB outage still degrades gracefully. Gated/no-op pre-migration. */
+                if (songPublicId_looksLikePublicId($viewSongId)) {
+                    $viewSongId = songPublicId_resolveToSongId($db, $viewSongId);
+                }
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
                 );
@@ -5981,6 +6037,13 @@ if ($action !== null) {
         case 'related_songs':
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
+
+            /* #1343-B — resolve a PublicId to its SongId before the allow-list regex
+               (unchanged). getDbMysqli() is only touched for a PublicId-shaped token,
+               so a real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($songId)) {
+                $songId = songPublicId_resolveToSongId(getDbMysqli(), $songId);
+            }
 
             if ($songId === '' || !preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
                 sendJson(['error' => 'Valid song ID is required.'], 400);

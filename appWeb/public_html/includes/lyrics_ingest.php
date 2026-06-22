@@ -580,11 +580,26 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
             throw new \RuntimeException('could not allocate a SongId');
         }
 
-        $ins = $db->prepare(
-            'INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, Language, Isrc, Upc, Verified, LyricsText)
-             VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?)'
-        );
-        $ins->bind_param('sssssss', $songId, $title, $abbr, $language, $isrc, $upc, $lyricsText);
+        /* #1343-B — mint a stable PublicId (IHUID) for the new song when the
+           column has been migrated on this env. Gated so an un-migrated install
+           still inserts cleanly (the 3 docroots run un-migrated under STRICT).
+           Minted inside the open transaction so it commits / rolls back with the
+           song row. PublicId sits right after SongId in the column list. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_public_id.php';
+        $pubId = songPublicId_columnReady($db) ? songPublicId_mintUnique($db) : null;
+        if ($pubId !== null) {
+            $ins = $db->prepare(
+                'INSERT INTO tblSongs (SongId, PublicId, Number, Title, SongbookAbbr, Language, Isrc, Upc, Verified, LyricsText)
+                 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, 0, ?)'
+            );
+            $ins->bind_param('ssssssss', $songId, $pubId, $title, $abbr, $language, $isrc, $upc, $lyricsText);
+        } else {
+            $ins = $db->prepare(
+                'INSERT INTO tblSongs (SongId, Number, Title, SongbookAbbr, Language, Isrc, Upc, Verified, LyricsText)
+                 VALUES (?, NULL, ?, ?, ?, ?, ?, 0, ?)'
+            );
+            $ins->bind_param('sssssss', $songId, $title, $abbr, $language, $isrc, $upc, $lyricsText);
+        }
         $ins->execute();
         $ins->close();
 
