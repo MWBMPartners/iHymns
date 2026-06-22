@@ -387,9 +387,22 @@ function buildSongListRow(song) {
     /* Highlight the currently selected song. */
     if (song.id === currentSongId) { li.classList.add('active'); }
 
-    /* "number - Title Case Title" (#249). */
+    /* "<#>  Title" — the number sits in a fixed-width, right-aligned, tabular-nums
+       column so every title lines up regardless of a 1–4 digit number (or no
+       number for Misc / unofficial books, which show a muted dash). Tidies the
+       ragged sidebar left edge (#1344); replaces the old unpadded "number - title". */
     var label = document.createElement('span');
-    label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
+    label.className = 'd-flex align-items-baseline gap-2 text-truncate';
+    label.style.cssText = 'flex:1 1 auto; min-width:0;';
+    var numSpan = document.createElement('span');
+    var _hasNum = song.number != null && String(song.number).trim() !== '';
+    numSpan.textContent = _hasNum ? String(song.number) : '–';
+    numSpan.style.cssText = 'flex-shrink:0; min-width:3em; text-align:right; font-variant-numeric:tabular-nums; opacity:.6;';
+    var titleSpan = document.createElement('span');
+    titleSpan.className = 'text-truncate';
+    titleSpan.textContent = toTitleCase(song.title || 'Untitled');
+    label.appendChild(numSpan);
+    label.appendChild(titleSpan);
 
     /* Right-side badges: modified indicator + songbook abbreviation (#249). */
     var badges = document.createElement('span');
