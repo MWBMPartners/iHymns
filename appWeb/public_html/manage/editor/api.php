@@ -4571,14 +4571,18 @@ switch ($action) {
                 if ($delChk->get_result()->fetch_row() !== null) { $delTarget = $delRedirectTo; }
                 $delChk->close();
             }
+            /* Keep permalinks alive (#1343) — gated. When relinking, FORWARD any
+               redirects already pointing AT this song to the new target BEFORE the
+               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
+               (mirrors the merge path). Tombstone (null) lets inbound fall to "removed". */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            if ($delTarget !== null) { songRedirectRepoint($db, $delSongId, $delTarget); }
             /* Single cascade delete — see the block comment above. */
             $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $delStmt->bind_param('s', $delSongId);
             $delStmt->execute();
             $delCount = $delStmt->affected_rows;
             $delStmt->close();
-            /* Keep the permalink alive (#1343) — gated, no-op if unmigrated. */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
             songRedirectWrite($db, $delSongId, $delTarget, 'delete', (int)($currentUser['id'] ?? 0) ?: null);
             $db->commit();
             logActivity('song.delete', 'song', $delSongId, [

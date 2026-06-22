@@ -766,14 +766,20 @@ try {
                 $chk->close();
             }
 
+            /* #1343 — keep permalinks resolving (gated). When relinking, FORWARD any
+               redirects that already point AT this song to the new target BEFORE the
+               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
+               (mirrors the merge path). A tombstone (null target) intentionally lets
+               inbound chains fall to "removed". */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            if ($rTarget !== null) { songRedirectRepoint($db, $songId, $rTarget); }
+
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $del->bind_param('s', $songId);
             $del->execute();
             $deleted = $del->affected_rows;
             $del->close();
 
-            /* Leave a redirect/tombstone so the permalink survives (#1343). Gated. */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
             songRedirectWrite($db, $songId, $rTarget, 'delete', null);
 
             $db->commit();
