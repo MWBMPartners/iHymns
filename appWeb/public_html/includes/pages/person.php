@@ -519,9 +519,10 @@ foreach ($discography as $rk => $entry) {
                        data-navigate="song"
                        data-song-id="<?= htmlspecialchars($s['SongId']) ?>"
                        role="listitem">
-                        <span class="song-number-badge" data-songbook="<?= htmlspecialchars($s['SongbookAbbr']) ?>" aria-hidden="true">
-                            <?= (int)$s['Number'] ?>
-                        </span>
+<?php /* Unnumbered (Misc / unofficial) → emit a TRULY EMPTY badge (no whitespace)
+                           so the shared `.song-number-badge:empty::before` book glyph shows
+                           instead of a literal "0" (matches history.js:376). */ ?>
+                        <span class="song-number-badge" data-songbook="<?= htmlspecialchars($s['SongbookAbbr']) ?>" aria-hidden="true"><?= ((int)$s['Number'] > 0) ? (int)$s['Number'] : '' ?></span>
                         <div class="song-info flex-grow-1">
                             <span class="song-title"><?= htmlspecialchars(toTitleCase((string)$s['Title'])) ?></span>
                             <small class="text-muted d-block">
