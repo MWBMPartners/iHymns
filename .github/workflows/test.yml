@@ -291,6 +291,11 @@ jobs:
           echo "Running song-redirect follow test..."
           php tests/php/test-song-redirects.php
 
+      - name: Song PublicId helper (#1343-B)
+        run: |
+          echo "Running song-public-id helper test..."
+          php tests/php/test-song-public-id.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -455,3 +460,6 @@ jobs:
 
       - name: Song permalink redirect resolver (#1343)
         run: php tests/php/test-song-redirects.php
+
+      - name: Song PublicId helper (#1343-B)
+        run: php tests/php/test-song-public-id.php

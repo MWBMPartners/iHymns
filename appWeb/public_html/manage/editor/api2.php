@@ -723,8 +723,17 @@ try {
 
             $songId = ed2_allocateSongId($db, $abbr);
             $norm   = ed2_normalizeTitle($title);
-            $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-            $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
+            /* #1343-B — mint the opaque PublicId permalink at create (gated; an
+               un-migrated env omits the column and the backfill fills it later). */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            if (songPublicId_columnReady($db)) {
+                $pubId = songPublicId_mintUnique($db);
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
+                $ins->bind_param('sssss', $songId, $pubId, $title, $norm, $abbr);
+            } else {
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
+            }
             $ins->execute();
             $ins->close();
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');

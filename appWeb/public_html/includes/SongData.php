@@ -129,6 +129,9 @@ class SongData
     /** #892 — schema-probe result for tblSongs.ArrangementJson. */
     private bool $_arrangementColumn = false;
     private bool $_arrangementColumnChecked = false;
+    /** #1343-B — single-flight probe for tblSongs.PublicId (permalink id). */
+    private bool $_publicIdColumn = false;
+    private bool $_publicIdColumnChecked = false;
     /* Places adoption — single-flight probe for tblSongs.OriginCityId.
        Mirrors the ArrangementJson pattern so a pre-adoption install
        keeps the legacy SELECT shape (no extra columns) without a
@@ -1755,11 +1758,13 @@ class SongData
             throw new \RuntimeException('getSongsSlimIndex requires a live database connection.');
         }
 
-        /* No parameters — pure constant SQL, safe to run via query(). */
+        /* $pubCol is a hardcoded constant (allow-listed; rule #5) added only when
+           the column exists (#1343-B) so the PWA index carries the permalink id. */
+        $pubCol = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language,
-                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 ORDER BY s.SongbookAbbr ASC,
@@ -2043,8 +2048,21 @@ class SongData
             return null;
         }
 
-        /* Try exact match first (fast path) */
+        /* Try exact match first (fast path) — SongId is the PK; this runs FIRST so
+           legacy /song/<SongId> resolves even if every PublicId path below failed. */
         $song = $this->_fetchSongRow($id);
+
+        /* #1343-B — opaque PublicId (IHUID) permalink: uppercase, hyphen-less, not a
+           SongId. Gated on the column existing (un-migrated env skips it cleanly). */
+        if ($song === null
+            && strpos($id, '-') === false
+            && preg_match('/^[0-9A-Z]{6,32}$/', $id) === 1
+            && $this->_hasPublicIdColumn()) {
+            $resolvedSongId = $this->_songIdForPublicId($id);
+            if ($resolvedSongId !== null) {
+                $song = $this->_fetchSongRow($resolvedSongId);
+            }
+        }
 
         /* No exact match — try normalized matching */
         if ($song === null && preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $matches)) {
@@ -3197,6 +3215,7 @@ class SongData
         $placeSelect  = $this->_hasOriginPlaceColumn()
             ? ', OriginCity AS originCity, OriginCityId AS originCityId'
             : '';
+        $pubSelect    = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';   /* #1343-B (gated) */
         $stmt = $this->db->prepare(
             "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                     sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
@@ -3206,6 +3225,7 @@ class SongData
                     s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                     {$arrSelect}
                     {$placeSelect}
+                    {$pubSelect}
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
              WHERE s.SongId = ?
@@ -3457,6 +3477,41 @@ class SongData
             $this->_arrangementColumn = false;
         }
         return $this->_arrangementColumn;
+    }
+
+    /** #1343-B — single-flight probe for tblSongs.PublicId (gated reads/STRICT). */
+    private function _hasPublicIdColumn(): bool
+    {
+        if ($this->_publicIdColumnChecked) {
+            return $this->_publicIdColumn;
+        }
+        $this->_publicIdColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'PublicId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_publicIdColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_publicIdColumn = false;
+        }
+        return $this->_publicIdColumn;
+    }
+
+    /** #1343-B — resolve an opaque PublicId to its SongId (PK), or null. Bound;
+     *  caller has already gated on _hasPublicIdColumn(). */
+    private function _songIdForPublicId(string $publicId): ?string
+    {
+        $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
+        $stmt->bind_param('s', $publicId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null ? (string)$row['SongId'] : null;
     }
 
     /**

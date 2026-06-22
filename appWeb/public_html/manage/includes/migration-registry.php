@@ -2253,4 +2253,21 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongRedirects'),
     ],
+
+    'song-public-id' => [
+        'script' => 'migrate-song-public-id.php',
+        'card' => [
+            'title'  => 'Song PublicId / permalink id (#1343-B)',
+            'body'   => 'Adds <code>tblSongs.PublicId</code> — an opaque, stable, location-independent'
+                      . ' permalink id (Crockford base32) so a shared <code>/song/&lt;id&gt;</code> link'
+                      . ' survives the song moving songbook or being renumbered (the SongId stays the'
+                      . ' internal key). Backfills every existing song, then adds a UNIQUE index. Idempotent —'
+                      . ' <strong>re-run until it reports 0 remaining</strong>, then the UNIQUE is added.',
+            'button' => 'Run Song PublicId Migration',
+        ],
+        /* Pending until the column exists AND every row is backfilled (#1343-B). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongs', 'PublicId')
+            || _migProbe_hasNullPublicId($db),
+    ],
 ];

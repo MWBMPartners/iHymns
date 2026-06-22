@@ -429,6 +429,18 @@ function _migProbe_columnExists(\mysqli $db, string $table, string $column): boo
     return $exists;
 }
 
+/** True if tblSongs has any row still missing a PublicId (#1343-B) — drives the
+ *  backfill probe so the "Song PublicId" card stays pending until every row is
+ *  filled. False (done) when the column is absent (the column probe handles that). */
+function _migProbe_hasNullPublicId(\mysqli $db): bool
+{
+    if (!_migProbe_columnExists($db, 'tblSongs', 'PublicId')) { return false; }
+    $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
+    $has = $res && $res->fetch_row() !== null;
+    if ($res) { $res->free(); }
+    return $has;
+}
+
 /** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
 function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column): bool
 {
