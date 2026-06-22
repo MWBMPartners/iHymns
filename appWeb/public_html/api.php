@@ -1263,15 +1263,15 @@ if ($action !== null) {
             /* #1343-B — resolve any PublicId in the song list to its SongId before
                the existing allow-list regex (unchanged), so a non-web client that
                built the setlist from opaque permalinks stores canonical SongIds.
-               $db is needed by SharedSetlist downstream anyway; the resolve is gated
-               (no-op pre-migration) and only touches the DB for a PublicId-shaped
-               token, so SongId input is byte-identical to before. */
-            $db = getDbMysqli();
+               LAZY (#1343-B review): getDbMysqli() is touched only for a
+               PublicId-shaped token, so SongId-only input (the web app) adds no DB
+               dependency here and a malformed request still 400s before any DB hit.
+               Gated/no-op pre-migration. */
             $setlistSongs = array_values(array_filter(
-                array_map(static function ($s) use ($db) {
+                array_map(static function ($s) {
                     $s = trim($s);
                     if (songPublicId_looksLikePublicId($s)) {
-                        $s = songPublicId_resolveToSongId($db, $s);
+                        $s = songPublicId_resolveToSongId(getDbMysqli(), $s);
                     }
                     return $s;
                 }, $body['songs']),
@@ -1325,7 +1325,7 @@ if ($action !== null) {
                        arrangement map keys on the canonical SongId. Gated;
                        no-op for a real SongId (which never looks like a PublicId). */
                     if (songPublicId_looksLikePublicId($sid)) {
-                        $sid = songPublicId_resolveToSongId($db, $sid);
+                        $sid = songPublicId_resolveToSongId(getDbMysqli(), $sid);
                     }
                     if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
@@ -5143,16 +5143,11 @@ if ($action !== null) {
             if (count($existIds) > 200) { $existIds = array_slice($existIds, 0, 200); }
             try {
                 $db = getDbMysqli();
-                /* #1343-B — resolve any PublicId in the batch to its SongId before
-                   the existence lookup, so a non-web client that cached the opaque
-                   permalink gets a truthful answer. Done here (inside the try, after
-                   the permissive regex filter which already accepts a PublicId) so a
-                   DB outage still degrades to {exists:null}. Gated/no-op pre-migration. */
-                foreach ($existIds as $i => $eid) {
-                    if (songPublicId_looksLikePublicId($eid)) {
-                        $existIds[$i] = songPublicId_resolveToSongId($db, $eid);
-                    }
-                }
+                /* #1343-B review — songs_exist deliberately does NOT resolve PublicIds.
+                   Its contract is to echo back the subset of the CLIENT'S input ids that
+                   exist; resolving would return SongIds a PublicId-keyed caller can't
+                   match against its cache (and might wrongly prune a live song). Callers
+                   send canonical SongIds; the web app always does. */
                 /* Placeholder string built from a constant count (rule #5 —
                    the only legitimate interpolation into SQL); values bound. */
                 $ph    = implode(',', array_fill(0, count($existIds), '?'));
