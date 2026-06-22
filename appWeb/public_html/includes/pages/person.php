@@ -43,10 +43,22 @@ $db = getDbMysqli();
 /* 1. Look up the registry row (if the migration has been applied).       */
 /* ---------------------------------------------------------------------- */
 try {
+    /* #1348 — include the typed MusicBrainzArtistMBID column only if it exists
+       (#1090 may be un-migrated; an absent column would 1054 under STRICT and blank
+       the page). The other authority identifiers live in tblCreditPersonIdentifiers
+       (read separately below). $mbidCol is a hardcoded constant — the only
+       legitimate string interpolation into SQL (rule #5). */
+    $mbidCol = '';
+    try {
+        $pc = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPeople' AND COLUMN_NAME = 'MusicBrainzArtistMBID' LIMIT 1");
+        if ($pc && $pc->fetch_row() !== null) { $mbidCol = ', MusicBrainzArtistMBID'; }
+        if ($pc) { $pc->free(); }
+    } catch (\Throwable $_e) { $mbidCol = ''; }
+
     $stmt = $db->prepare(
         "SELECT Id, Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                 COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
-                COALESCE(IsGroup, 0)        AS IsGroup
+                COALESCE(IsGroup, 0)        AS IsGroup{$mbidCol}
            FROM tblCreditPeople
           WHERE Slug = ?
           LIMIT 1"
@@ -84,6 +96,38 @@ if ($person && isset($person['Id'])) {
         $personAliases = loadCreditPersonAliases($db, (int)$person['Id']);
     } catch (\Throwable $_e) {
         $personAliases = [];
+    }
+}
+
+/* External authority identifiers (#1348) — the key-value rows from
+   tblCreditPersonIdentifiers (ipi / isni / viaf / wikidata / orcid / …, the table
+   widened from ENUM in #1090 P6 so new types need no ALTER). Rendered as bare-code
+   chips in the header, mirroring a song's ISWC/CCLI. Schema-tolerant: empty on an
+   install without the table. The typed MusicBrainzArtistMBID column (from the SELECT
+   above) is folded in at render time. */
+$personIdentifiers = [];
+if ($person && isset($person['Id'])) {
+    try {
+        $pid = (int)$person['Id'];
+        $idStmt = $db->prepare(
+            'SELECT IdentifierType, IdentifierValue
+               FROM tblCreditPersonIdentifiers
+              WHERE CreditPersonId = ?
+              ORDER BY IdentifierType ASC, Id ASC'
+        );
+        if ($idStmt) {
+            $idStmt->bind_param('i', $pid);
+            $idStmt->execute();
+            $rs = $idStmt->get_result();
+            while ($r = $rs->fetch_assoc()) {
+                $t = strtolower(trim((string)$r['IdentifierType']));
+                $v = trim((string)$r['IdentifierValue']);
+                if ($t !== '' && $v !== '') { $personIdentifiers[] = ['type' => $t, 'value' => $v]; }
+            }
+            $idStmt->close();
+        }
+    } catch (\Throwable $_e) {
+        $personIdentifiers = []; /* table absent (un-migrated) — no chips */
     }
 }
 
@@ -393,6 +437,57 @@ foreach ($discography as $rk => $entry) {
             <?php endif; ?>
         </div>
     </div>
+
+    <!-- External authority identifiers (#1348) — bare-code chips, mirroring the
+         song page's ISWC/CCLI row (.song-meta-link styling). Sourced from
+         tblCreditPersonIdentifiers + the typed MusicBrainzArtistMBID column. Each
+         links to the provider where one exists; IPI/CAE have no public URL.
+         Outbound links pass the #1347 leaving-iHymns interstitial. -->
+    <?php
+    /* IdentifierType => [label, FontAwesome icon, printf URL template (rawurlencoded
+       value) or null]. Unknown/new types still render as a bare uppercased chip. */
+    $personIdMeta = [
+        'isni'     => ['ISNI',     'fa-fingerprint',  'https://isni.org/isni/%s'],
+        'viaf'     => ['VIAF',     'fa-id-card',      'https://viaf.org/viaf/%s/'],
+        'wikidata' => ['Wikidata', 'fa-database',     'https://www.wikidata.org/wiki/%s'],
+        'orcid'    => ['ORCID',    'fa-circle-nodes', 'https://orcid.org/%s'],
+        'ipi'      => ['IPI',      'fa-barcode',      null],
+        'ipi-base' => ['IPI Base', 'fa-barcode',      null],
+        'cae'      => ['CAE',      'fa-barcode',      null],
+    ];
+    $personIdChips = [];
+    /* MusicBrainz first — its own typed column (#1090). */
+    if ($person && !empty($person['MusicBrainzArtistMBID'])) {
+        $personIdChips[] = ['MusicBrainz', 'fa-compact-disc', 'https://musicbrainz.org/artist/%s', trim((string)$person['MusicBrainzArtistMBID'])];
+    }
+    foreach ($personIdentifiers as $pIdRow) {
+        $meta = $personIdMeta[$pIdRow['type']] ?? [strtoupper($pIdRow['type']), 'fa-barcode', null];
+        $personIdChips[] = [$meta[0], $meta[1], $meta[2], $pIdRow['value']];
+    }
+    ?>
+    <?php if (!empty($personIdChips)): ?>
+        <div class="card mb-4">
+            <div class="card-body">
+                <h2 class="h6 text-muted mb-2">
+                    <i class="fa-solid fa-fingerprint me-1" aria-hidden="true"></i>Identifiers
+                </h2>
+                <div class="d-flex flex-wrap column-gap-4 row-gap-1">
+                    <?php foreach ($personIdChips as [$idLabel, $idIcon, $idUrlTpl, $idVal]): ?>
+                        <span class="small text-muted">
+                            <i class="fa-solid <?= htmlspecialchars($idIcon) ?> me-2" aria-hidden="true"></i>
+                            <strong><?= htmlspecialchars($idLabel) ?>:</strong>&nbsp;<?php
+                            if ($idUrlTpl !== null): ?><a class="song-meta-link"
+                                   href="<?= htmlspecialchars(sprintf($idUrlTpl, rawurlencode($idVal))) ?>"
+                                   target="_blank" rel="noopener nofollow external"
+                                   title="<?= htmlspecialchars($idLabel) ?> — opens in a new tab"><?= htmlspecialchars($idVal) ?></a><?php
+                            else: ?><span title="No public lookup URL"><?= htmlspecialchars($idVal) ?></span><?php
+                            endif; ?>
+                        </span>
+                    <?php endforeach; ?>
+                </div>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <!-- Notes / bio -->
     <?php if ($person && !empty(trim((string)$person['Notes']))): ?>
