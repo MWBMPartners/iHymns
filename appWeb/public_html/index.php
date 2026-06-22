@@ -749,6 +749,16 @@ if (!empty($breadcrumbItems)) {
           id="fontawesome-css"
           onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
 
+    <!-- Bootstrap Icons (#1347) — the external-link registry (tblExternalLinkTypes.IconClass)
+         seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
+         otherwise only loads Font Awesome, so those provider icons rendered blank on the
+         song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
+         + font-src); decorative, so it degrades to text-only labels if the CDN is offline. -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+          crossorigin="anonymous"
+          id="bootstrap-icons-css">
+
     <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"

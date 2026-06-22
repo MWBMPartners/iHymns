@@ -41,6 +41,7 @@ import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { bootOfflineUi } from './modules/offline-ui.js';
+import { bootExternalLinkInterstitial } from './modules/external-link-interstitial.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
@@ -427,6 +428,11 @@ class iHymnsApp {
                rendered. Safe to call every route change because the
                helper only binds fresh nodes. */
             bootOfflineUi();
+
+            /* One-per-session "you're leaving iHymns" disclaimer on outbound links
+               (#1347). Delegated + idempotent, so booting once here covers every
+               page; safe to call again on later routes (no-op after the first). */
+            bootExternalLinkInterstitial();
 
             /* --- Hide the loading spinner --- */
             this.hideLoader();
