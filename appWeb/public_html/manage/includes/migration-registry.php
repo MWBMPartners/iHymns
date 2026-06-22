@@ -2276,4 +2276,16 @@ return [
             || _migProbe_hasNullPublicId($db)
             || !_migProbe_indexExists($db, 'tblSongs', 'uniq_PublicId'),
     ],
+    'print-templates' => [
+        'script' => 'migrate-print-templates.php',
+        'card' => [
+            'title'  => 'Print templates (#1350)',
+            'body'   => 'Creates <code>tblPrintTemplates</code> — curator-authored, block-based print'
+                      . ' layouts for the clean song-print path (the 3 built-ins ship in JS; this'
+                      . ' stores custom ones built in the <code>/manage/print-templates</code> editor).'
+                      . ' Layout is JSON blocks so new block types need no ALTER (rule #20). Idempotent.',
+            'button' => 'Run Print Templates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPrintTemplates'),
+    ],
 ];

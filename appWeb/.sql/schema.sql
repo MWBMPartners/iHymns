@@ -3688,3 +3688,31 @@ CREATE TABLE IF NOT EXISTS tblOrgServiceScheduleExternalRefs (
     CONSTRAINT fk_SchedExtRef_CreatedBy FOREIGN KEY (CreatedBy)  REFERENCES tblUsers(Id)             ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-service-schedule external-system identity map (rule #15 dedicated ref table). (Source,SourceRef) UNIQUE = idempotent re-import (rule #20); OrgId denorm mirrors tblOrgServiceSchedules.';
+
+-- ============================================================================
+-- Print templates (#1350 Phase 2) — curator-authored block-based print layouts
+-- for the clean song-print path. Layout is a JSON ordered block list so adding a
+-- block type / option never needs an ALTER (rule #20); Scope is VARCHAR not ENUM.
+-- The 3 built-ins live in js/modules/print.js (offline); this holds custom ones.
+-- Mirrors appWeb/.sql/migrate-print-templates.php (rule #19).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tblPrintTemplates (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(120)    NOT NULL COMMENT 'Curator-visible template name',
+    Scope           VARCHAR(20)     NOT NULL DEFAULT 'song' COMMENT 'song | setlist | … (VARCHAR not ENUM, rule #20 — new scopes need no ALTER)',
+    OwnerId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — NULL = global/curated template (reserves per-user templates without a second migration)',
+    BlocksJson      JSON            NOT NULL COMMENT 'Ordered block list: [{type, …options}] — title/subtitle/credits/lyrics/copyright/identifiers/spacer/pagebreak/text. Adding a block type needs no ALTER.',
+    PageOptionsJson JSON            NULL DEFAULT NULL COMMENT 'Page-level options (base font pt, columns, …)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = hidden from the picker without deleting',
+    IsDefault       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = pre-selected in the picker for its scope',
+    SortOrder       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Picker order',
+    CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — who created it',
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_ScopeActive (Scope, IsActive, SortOrder),
+    INDEX idx_Owner (OwnerId),
+
+    CONSTRAINT fk_PrintTemplate_Owner
+        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
