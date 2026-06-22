@@ -715,6 +715,49 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Print templates (#1350 Phase 2) — curated, block-based print
+         * layouts for the clean song-print picker (js/modules/print.js merges
+         * these after its 3 built-ins). Public read (anonymous can print);
+         * returns only active templates for the scope. Gated on the table
+         * existing so an un-migrated install returns [] and the built-ins
+         * still work — never a 500 under STRICT.
+         * ----------------------------------------------------------------- */
+        case 'print_templates':
+            $ptScope = isset($_GET['scope']) ? preg_replace('/[^a-z]/', '', strtolower((string)$_GET['scope'])) : 'song';
+            if ($ptScope === '') { $ptScope = 'song'; }
+            try {
+                $db = getDbMysqli();
+                $probe = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPrintTemplates' LIMIT 1");
+                if (!$probe || $probe->fetch_row() === null) { sendJson(['templates' => []]); break; }
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, BlocksJson, PageOptionsJson
+                       FROM tblPrintTemplates
+                      WHERE Scope = ? AND IsActive = 1
+                      ORDER BY SortOrder ASC, Id ASC'
+                );
+                $stmt->bind_param('s', $ptScope);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $ptOut = [];
+                while ($row = $res->fetch_assoc()) {
+                    $blocks = json_decode((string)$row['BlocksJson'], true);
+                    if (!is_array($blocks)) { continue; }
+                    $pageOpts = ($row['PageOptionsJson'] !== null) ? json_decode((string)$row['PageOptionsJson'], true) : null;
+                    $ptOut[] = [
+                        'id'          => (int)$row['Id'],
+                        'name'        => (string)$row['Name'],
+                        'blocks'      => $blocks,
+                        'pageOptions' => is_array($pageOpts) ? $pageOpts : (object)[],
+                    ];
+                }
+                $stmt->close();
+                sendJson(['templates' => $ptOut]);
+            } catch (\Throwable $e) {
+                sendJson(['templates' => []]); /* graceful — built-ins still work */
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Public songbook export (#1166) — full records of ONE songbook's
          * songs for the end-user export UI (js/modules/export-ui.js). DB-direct,
          * scoped to one songbook (rule #17 — never the corpus); same shape the
