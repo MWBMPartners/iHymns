@@ -2058,10 +2058,8 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
 
 /**
  * Strip inline ChordPro `[chord]` markers from one lyric line, returning the
- * clean lyric text. This is the SINGLE place per-line chords are dropped today;
- * when the per-line-chord read path (#299/#1094) lands, capture each marker's
- * code-point offset here and emit a parallel `chords` array on the component
- * (lyricLinesWriteComponents already accepts it) — do NOT add a second write path.
+ * clean lyric text. Retained as the lyric-only helper; the chord-RETAINING path
+ * (#1126) is _bulkImport_chordProSplitLine() below.
  */
 function _bulkImport_chordProStripChords(string $line): string
 {
@@ -2070,6 +2068,38 @@ function _bulkImport_chordProStripChords(string $line): string
        → "wonderful"); the lyric is otherwise preserved verbatim (a chord-only
        line collapses to whitespace and is dropped by the caller's trim check). */
     return preg_replace('/\[[^\]]*\]/u', '', $line);
+}
+
+/**
+ * Split one ChordPro lyric line into its clean lyric + the chord symbols it
+ * carried, IN ORDER (#1126). Returns ['lyric' => string, 'chords' => string]
+ * where `chords` is the space-separated chord symbols for that line ('' when the
+ * line had none) — exactly the per-line cell shape the editor's manual chord
+ * input (#1094) writes and componentChordsToText() renders, so an imported song
+ * round-trips through the editor + the chord-chart toggle (#299) unchanged.
+ *
+ * The chords flow onto the component as a `chords` array parallel to `lines`,
+ * which _bulkImport_saveSong() persists via the SANCTIONED lyricLinesWriteComponents()
+ * write path — never a direct ChordsJson write (rule #25). NB: this captures the
+ * chords present, not their inline character offset (the app's chord model is a
+ * chord line per lyric line, not a positioned overlay); positional fidelity is a
+ * separate render concern. A pure chord-only line (no lyric) is still dropped by
+ * the caller's empty-lyric check — there is no lyric line to anchor it to.
+ */
+function _bulkImport_chordProSplitLine(string $line): array
+{
+    $chords = [];
+    /* Capture each [chord] token's symbol in document order. */
+    if (preg_match_all('/\[([^\]]*)\]/u', $line, $mm)) {
+        foreach ($mm[1] as $sym) {
+            $sym = trim($sym);
+            if ($sym !== '') { $chords[] = $sym; }
+        }
+    }
+    return [
+        'lyric'  => preg_replace('/\[[^\]]*\]/u', '', $line),
+        'chords' => implode(' ', $chords),
+    ];
 }
 
 /**
@@ -2114,13 +2144,18 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
 
     $flush = static function () use (&$current, &$components): void {
         if ($current !== null && !empty($current['lines'])) {
+            /* Keep chordless components byte-identical to the pre-#1126 shape:
+               only carry a `chords` array when at least one line had chords. */
+            $hasChords = false;
+            foreach (($current['chords'] ?? []) as $c) { if ($c !== '') { $hasChords = true; break; } }
+            if (!$hasChords) { unset($current['chords']); }
             $components[] = $current;
         }
         $current = null;
     };
     $startSection = static function (string $type, int $num) use (&$current, $flush): void {
         $flush();
-        $current = ['type' => $type, 'number' => $num, 'lines' => []];
+        $current = ['type' => $type, 'number' => $num, 'lines' => [], 'chords' => []];
     };
 
     foreach ($lines as $raw) {
@@ -2190,15 +2225,19 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
             continue;
         }
 
-        /* Lyric line. Strip inline [chord] markers → clean lyric. A line that
-           is chord-only (empty after stripping) is skipped in this lyrics-only
-           scope. Auto-open a verse if no section tag preceded the lyrics. */
-        $lyric = rtrim(_bulkImport_chordProStripChords($line));
+        /* Lyric line. Split into clean lyric + its [chord] symbols (#1126); the
+           chords ride a `chords` array parallel to `lines` and persist via the
+           sanctioned write path. A chord-only line (empty after stripping) has no
+           lyric to anchor to and is skipped. Auto-open a verse if no section tag
+           preceded the lyrics. */
+        $parsed = _bulkImport_chordProSplitLine($line);
+        $lyric  = rtrim($parsed['lyric']);
         if (trim($lyric) === '') { continue; }
         if ($current === null) {
             $startSection('verse', ++$autoVerse);
         }
-        $current['lines'][] = $lyric;
+        $current['lines'][]  = $lyric;
+        $current['chords'][] = $parsed['chords'];   /* parallel to lines; '' when the line had no chords */
     }
     $flush();
 

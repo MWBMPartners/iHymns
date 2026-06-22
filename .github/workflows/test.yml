@@ -266,6 +266,11 @@ jobs:
           echo "Running auto-link hard-id planner test..."
           php tests/php/test-auto-link-hard-id.php
 
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: |
+          echo "Running ChordPro importer test..."
+          php tests/php/test-chordpro-parser.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -415,3 +420,6 @@ jobs:
 
       - name: Hard-key counterpart auto-promoter planner (#1125)
         run: php tests/php/test-auto-link-hard-id.php
+
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: php tests/php/test-chordpro-parser.php
