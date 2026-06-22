@@ -889,7 +889,7 @@ if (!empty($breadcrumbItems)) {
        message wraps to 2–3 lines on narrow viewports; re-measured on resize.
        The PWA install banner is suppressed during maintenance (pwa.js #1301),
        so the single-banner layout is the only case to handle here. */ ?>
-    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;line-height:1.3;">
+    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:calc(0.5rem + env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px)) 0.5rem max(1rem, env(safe-area-inset-left, 0px));font-size:0.85rem;line-height:1.3;"><!-- #1279: pad past the iOS safe area (Dynamic Island / clock) so the text isn't occluded; applyMaintBypassOffset() measures offsetHeight, so the header/content offset follows automatically -->
         🔧 <strong>Maintenance mode is ON</strong> for this environment — visitors see a maintenance page; you have admin access.
         <a href="/manage/configuration" style="color:#000;text-decoration:underline;font-weight:600;">Turn it off</a>.
     </div>
