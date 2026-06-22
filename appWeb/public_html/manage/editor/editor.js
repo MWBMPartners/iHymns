@@ -1105,11 +1105,60 @@ function renderComponents(song) {
             markModified(song.id);
         });
 
+        /* #1345 — a structured-picker affordance beside the free-text input so a
+           curator can compose language + script + region (→ ko-Latn) by picking,
+           instead of knowing the raw tag. Directly answers "where do I set Verse 2 =
+           Korean in Latin script?". The text input stays for quick entry / power
+           users; the picker writes its composed tag back into it on Save. */
+        var compLangPickBtn = document.createElement('button');
+        compLangPickBtn.type = 'button';
+        compLangPickBtn.className = 'btn btn-sm btn-outline-secondary';
+        compLangPickBtn.innerHTML = '<i class="bi bi-translate" aria-hidden="true"></i>';
+        compLangPickBtn.title = 'Pick language with script / region (e.g. ko-Latn)';
+        compLangPickBtn.setAttribute('aria-label', 'Pick component language with script / region');
+        compLangPickBtn.addEventListener('click', function () {
+            /* Toggle: a second click (or Cancel) closes the open form. */
+            var existing = body.querySelector('.cp-complang-form');
+            if (existing) { existing.remove(); return; }
+            var form = document.createElement('div');
+            form.className = 'cp-complang-form mb-2 p-2 border rounded bg-body-tertiary';
+            var picker = buildInlineIetfPicker(comp.language || '');
+            form.appendChild(picker.el);
+            var btnRow = document.createElement('div');
+            btnRow.className = 'mt-1 d-flex gap-1';
+            var saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'btn btn-sm btn-primary py-0 px-2';
+            saveBtn.textContent = 'Save';
+            /* Editing an existing tag: block Save until the async pre-fill resolves,
+               so a fast click can't read '' and clear it (mirrors the per-line form). */
+            if (comp.language) {
+                saveBtn.disabled = true;
+                picker.ready.then(function () { saveBtn.disabled = false; });
+            }
+            saveBtn.addEventListener('click', function () {
+                comp.language = picker.getTag() || null;
+                langSelect.value = comp.language || '';
+                markModified(song.id);
+                form.remove();
+            });
+            var cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-sm btn-outline-secondary py-0 px-2';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', function () { form.remove(); });
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+            form.appendChild(btnRow);
+            body.insertBefore(form, body.firstChild);
+        });
+
         /* Assemble the header. */
         header.appendChild(typeLabel);
         header.appendChild(typeSelect);
         header.appendChild(numInput);
         header.appendChild(langSelect);
+        header.appendChild(compLangPickBtn);
         header.appendChild(btnGroup);
 
         /* ---- Card body with lyrics textarea ---- */
