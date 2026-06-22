@@ -276,6 +276,11 @@ jobs:
           echo "Running content-access action-matcher test..."
           php tests/php/test-content-access-action.php
 
+      - name: OpenLyrics importer enrichment (#1130)
+        run: |
+          echo "Running OpenLyrics importer enrichment test..."
+          php tests/php/test-openlyrics-parser.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -431,3 +436,6 @@ jobs:
 
       - name: Per-action content-gating matcher (#1120)
         run: php tests/php/test-content-access-action.php
+
+      - name: OpenLyrics importer enrichment (#1130)
+        run: php tests/php/test-openlyrics-parser.php

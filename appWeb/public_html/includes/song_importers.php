@@ -2428,6 +2428,69 @@ function _bulkImport_openLyricsLinesToArray(\SimpleXMLElement $linesNode): array
 }
 
 /**
+ * Rich per-line parse of an OpenLyrics <lines> node (#1130) — preserves the
+ * enrichment the flat _bulkImport_openLyricsLinesToArray() discards. Returns a
+ * list of ['text','chords','note'] (one per physical <br>-separated line), where
+ *   - chords = space-separated symbols from inline <chord …> (the editor #1094
+ *     per-line cell shape — name= for OpenLyrics 0.8, root[+structure][/bass] for 0.9);
+ *   - note   = the line's <comment> text (joined if several).
+ * These ride the component `chords` / `notes` arrays through the SANCTIONED
+ * lyricLinesWriteComponents() write path (rule #25 — no direct ChordsJson/NotesJson
+ * write). Per-verse translation/transliteration is handled by the CALLER setting
+ * the component's `language` from the verse's lang attribute (OpenLyrics models a
+ * translation as a separate <verse lang="…">, not inline) — so no per-line
+ * tblLyricLineTranslations / Id-threading is needed for the OpenLyrics shape.
+ */
+function _bulkImport_openLyricsParseLines(\SimpleXMLElement $linesNode): array
+{
+    $inner = (string)$linesNode->asXML();
+    $inner = (string)preg_replace('#^<lines\b[^>]*>#i', '', $inner);
+    $inner = (string)preg_replace('#</lines>\s*$#i', '', $inner);
+
+    /* <br> is the OpenLyrics physical line separator. */
+    $segments = preg_split('#<br\s*/?>#i', $inner) ?: [];
+    $out = [];
+    foreach ($segments as $seg) {
+        /* Inline chords: <chord name="G"/> (0.8) | <chord root="C" structure="m7" bass="E"/> (0.9). */
+        $chords = [];
+        if (preg_match_all('#<chord\b([^>]*?)/?>#i', $seg, $cm)) {
+            foreach ($cm[1] as $attrs) {
+                $sym = '';
+                if (preg_match('#\bname\s*=\s*("|\')(.*?)\1#i', $attrs, $a)) {
+                    $sym = trim($a[2]);
+                } elseif (preg_match('#\broot\s*=\s*("|\')(.*?)\1#i', $attrs, $r)) {
+                    $sym = trim($r[2]);
+                    if (preg_match('#\bstructure\s*=\s*("|\')(.*?)\1#i', $attrs, $s)) { $sym .= trim($s[2]); }
+                    if (preg_match('#\bbass\s*=\s*("|\')(.*?)\1#i', $attrs, $b))      { $sym .= '/' . trim($b[2]); }
+                }
+                if ($sym !== '') { $chords[] = $sym; }
+            }
+        }
+        /* Per-line comment → presenter note. */
+        $notes = [];
+        if (preg_match_all('#<comment\b[^>]*>(.*?)</comment>#is', $seg, $nm)) {
+            foreach ($nm[1] as $c) {
+                $c = trim(html_entity_decode((string)preg_replace('#<[^>]+>#', '', $c), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+                if ($c !== '') { $notes[] = $c; }
+            }
+        }
+        /* Bare lyric text: drop comments wholesale, then all tags; collapse any
+           source newline whitespace inside the segment to a single space. */
+        $bare = (string)preg_replace('#<comment\b[^>]*>.*?</comment>#is', '', $seg);
+        $bare = (string)preg_replace('#<[^>]+>#', '', $bare);
+        $bare = html_entity_decode($bare, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        $bare = (string)preg_replace('#\s*\n\s*#u', ' ', $bare);
+        $out[] = ['text' => rtrim($bare), 'chords' => implode(' ', $chords), 'note' => implode(' · ', $notes)];
+    }
+
+    /* Trim leading / trailing FULLY-blank lines (no text AND no chords/notes). */
+    $blank = static fn(array $l): bool => trim($l['text']) === '' && $l['chords'] === '' && $l['note'] === '';
+    while (!empty($out) && $blank($out[0]))                 { array_shift($out); }
+    while (!empty($out) && $blank((array)end($out)))        { array_pop($out); }
+    return $out;
+}
+
+/**
  * Parse one OpenLyrics XML document into a neutral structure (no songbook
  * abbreviation / number / SongId resolution — the caller does that, since it
  * depends on the live DB auto-increment).
@@ -2501,17 +2564,28 @@ function _bulkImport_parseOpenLyrics(string $body): array
     if (isset($xml->lyrics->verse)) {
         foreach ($xml->lyrics->verse as $verse) {
             [$type, $num] = _bulkImport_openLyricsVerseType((string)($verse['name'] ?? 'v'));
-            if ($language === '' && isset($verse['lang'])) {
-                $language = trim((string)$verse['lang']);
+            /* Per-verse language = the translation/transliteration signal (#1130):
+               OpenLyrics models a translated verse as a separate <verse lang="…">. */
+            $verseLang = isset($verse['lang']) ? trim((string)$verse['lang']) : '';
+            if ($language === '' && $verseLang !== '') {
+                $language = $verseLang;
             }
-            $lines = [];
+            $lines = []; $chords = []; $notes = [];
             foreach (($verse->lines ?? []) as $linesNode) {
-                foreach (_bulkImport_openLyricsLinesToArray($linesNode) as $ln) {
-                    $lines[] = $ln;
+                foreach (_bulkImport_openLyricsParseLines($linesNode) as $ln) {
+                    $lines[]  = $ln['text'];
+                    $chords[] = $ln['chords'];
+                    $notes[]  = $ln['note'];
                 }
             }
             if (!empty($lines)) {
-                $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+                $comp = ['type' => $type, 'number' => $num, 'lines' => $lines];
+                /* Carry enrichment only when present (chordless/noteless/mono-lingual
+                   verses stay byte-identical to the pre-#1130 component shape). */
+                if ($verseLang !== '') { $comp['language'] = $verseLang; }
+                foreach ($chords as $c) { if ($c !== '') { $comp['chords'] = $chords; break; } }
+                foreach ($notes as $n)  { if ($n !== '') { $comp['notes']  = $notes;  break; } }
+                $components[] = $comp;
             }
         }
     }
