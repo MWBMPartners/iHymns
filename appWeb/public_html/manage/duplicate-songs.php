@@ -44,6 +44,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'title_normalize.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';   /* #1343 */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -208,6 +209,15 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $d->close();
                 }
             }
+            /* #1343 — keep the duplicate's permalink alive: forward any redirects
+               that already pointed AT the duplicate to the survivor (so they aren't
+               nulled by the FK cascade when the row goes), then add the duplicate ->
+               survivor redirect itself. Gated — no-ops if tblSongRedirects isn't
+               migrated. Done before the delete so the cascade can't strand a chain. */
+            $mergeBy = (int)($currentUser['id'] ?? 0) ?: null;
+            songRedirectRepoint($db, $duplicate, $survivor);
+            songRedirectWrite($db, $duplicate, $survivor, 'merge', $mergeBy);
+
             /* Finally remove the duplicate song. */
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $del->bind_param('s', $duplicate);

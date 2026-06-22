@@ -1912,6 +1912,33 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
 
 
 -- ----------------------------------------------------------------------------
+-- tblSongRedirects (#1343) — keep a shared permalink (/song/<SongId>) alive
+-- after a song is merged, deleted or renamed, instead of a dead 404 (the
+-- "Here To Stay" problem). OldSongId is the dead id (PK, NOT an FK — the row is
+-- gone); NewSongId is the 301 target (FK->tblSongs ON DELETE SET NULL) or NULL
+-- for a tombstone ("removed"). Merge auto-writes duplicate->survivor; delete
+-- offers relink-or-tombstone. Resolution is transitive + cycle-guarded.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongRedirects (
+    OldSongId  VARCHAR(20)  NOT NULL
+               COMMENT 'The dead/merged/renamed SongId whose permalink must keep resolving (#1343). PK; NOT an FK — the old song row is gone.',
+    NewSongId  VARCHAR(20)  NULL DEFAULT NULL
+               COMMENT 'Resolve target (FK->tblSongs); NULL = tombstone (removed, no replacement).',
+    Reason     VARCHAR(20)  NOT NULL DEFAULT 'merge'
+               COMMENT 'merge | delete | rename — VARCHAR not ENUM (rule #20).',
+    Note       VARCHAR(255) NOT NULL DEFAULT '',
+    CreatedBy  INT UNSIGNED NULL DEFAULT NULL
+               COMMENT 'tblUsers.Id of the curator who created the redirect, if signed in',
+    CreatedAt  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (OldSongId),
+    KEY idx_NewSongId (NewSongId),
+    CONSTRAINT fk_SongRedirect_New
+        FOREIGN KEY (NewSongId) REFERENCES tblSongs(SongId)
+        ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
 -- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php; consumed by the
 -- /manage/song-link-suggestions admin page. Pairs are stored canonically

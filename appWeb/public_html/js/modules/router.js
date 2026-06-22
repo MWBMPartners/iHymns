@@ -117,7 +117,7 @@ export class Router {
      *
      * @param {string} path URL path to navigate to (e.g., '/song/CP-0001')
      */
-    async navigate(path) {
+    async navigate(path, opts = {}) {
         /* Normalise path */
         path = path || '/';
         if (path !== '/' && path.endsWith('/')) {
@@ -133,10 +133,16 @@ export class Router {
             this._scrollByPath.set(this.currentPath, window.scrollY || 0);
         }
 
-        /* Push new state to browser history with an incremented
-           counter so popstate can detect direction. (#752) */
+        /* Push (or REPLACE, for a permalink redirect — #1343 — so the dead
+           /song/<old> URL doesn't linger in history and cause a back-button loop)
+           new state with an incremented counter so popstate can detect direction. */
         this._navCounter += 1;
-        window.history.pushState({ path, counter: this._navCounter }, '', path);
+        const _state = { path, counter: this._navCounter };
+        if (opts.replace) {
+            window.history.replaceState(_state, '', path);
+        } else {
+            window.history.pushState(_state, '', path);
+        }
         document.body.dataset.navDirection = 'forward';
 
         /* Load the page content */
@@ -566,6 +572,14 @@ export class Router {
 
         /* Initialise favourites state on song pages */
         if (page === 'song') {
+            /* #1343 — a merged/deleted/renamed permalink renders a redirect marker
+               instead of the song; navigate to the canonical song (history-replaced
+               so the dead URL leaves no back-button trap) and skip the song inits. */
+            const _redirect = document.querySelector('[data-song-redirect]');
+            if (_redirect) {
+                const _to = _redirect.getAttribute('data-song-redirect');
+                if (_to) { this.navigate(_to, { replace: true }); return; }
+            }
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
             this.app.setList.initSongPage();

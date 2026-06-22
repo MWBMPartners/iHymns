@@ -2239,4 +2239,18 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinks', 'Origin'),
     ],
+
+    'song-redirects' => [
+        'script' => 'migrate-song-redirects.php',
+        'card' => [
+            'title'  => 'Song permalink redirects (#1343)',
+            'body'   => 'Creates <code>tblSongRedirects</code> so a shared permalink'
+                      . ' (<code>/song/&lt;SongId&gt;</code>) keeps resolving after a song is merged,'
+                      . ' deleted or renamed — a 301 to the replacement, or a friendly &ldquo;removed&rdquo;'
+                      . ' tombstone, instead of a dead 404 (the &ldquo;Here To Stay&rdquo; problem). Merge'
+                      . ' auto-populates it; delete offers relink-or-tombstone. Idempotent — safe to re-run.',
+            'button' => 'Run Song Permalink Redirects Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongRedirects'),
+    ],
 ];

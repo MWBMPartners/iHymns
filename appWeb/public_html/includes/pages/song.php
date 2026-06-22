@@ -22,13 +22,32 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 /* Fetch the full song data */
 $song = $songData->getSongById($songId);
 
-/* Handle song not found — themed error card (unified renderer). */
+/* Handle song not found. */
 if ($song === null) {
-    http_response_code(404);
+    /* #1343 — a merged/deleted/renamed permalink should RESOLVE, not 404. Try the
+       redirect layer before giving up. A server fragment can't usefully 301 (the
+       Location would point at the /api?page=song fragment URL, not the SPA route),
+       so on a live replacement we emit a [data-song-redirect] marker the SPA
+       router reads in afterPageLoad('song') and navigates to (history-replaced). */
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_redirects.php';
+    $rd = songRedirectResolve(getDbMysqli(), (string)$songId);
+    if ($rd['redirected'] && $rd['target'] !== null && $songData->getSongById($rd['target']) !== null) {
+        $rdTarget = '/song/' . rawurlencode((string)$rd['target']);
+        echo '<div data-song-redirect="' . htmlspecialchars($rdTarget, ENT_QUOTES) . '" class="text-secondary small p-4 text-center">'
+           . '<i class="fa-solid fa-arrow-right-arrow-left me-2" aria-hidden="true"></i>This song moved — taking you to its current page…</div>';
+        return;
+    }
+
+    /* No live target — a tombstone (removed/merged with no replacement) reads as
+       "removed" (410 Gone) rather than the generic "not found" (404). */
+    $rdGone = (bool)$rd['redirected'];
+    http_response_code($rdGone ? 410 : 404);
     if (function_exists('renderErrorFragment')) {
         echo renderErrorFragment(404, [
-            'title'   => 'Song not found',
-            'message' => 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
+            'title'   => $rdGone ? 'Song removed' : 'Song not found',
+            'message' => $rdGone
+                ? 'This song has been removed — it may have been a duplicate that was merged, or withdrawn. Try a search for the title.'
+                : 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
             'fa'      => 'fa-music',
             'actions' => [
                 ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
@@ -36,7 +55,8 @@ if ($song === null) {
             ],
         ]);
     } else {
-        echo '<div class="alert alert-warning" role="alert">Song not found: <strong>'
+        echo '<div class="alert alert-warning" role="alert">'
+           . ($rdGone ? 'Song removed: ' : 'Song not found: ') . '<strong>'
            . htmlspecialchars($songId) . '</strong></div>';
     }
     return;

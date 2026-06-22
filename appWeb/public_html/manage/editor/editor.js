@@ -5176,6 +5176,17 @@ function deleteSong() {
 
     var idToDelete = currentSongId;
 
+    /* #1343 — keep the shared permalink alive. Offer to redirect the deleted
+       song's old link to another song; blank/Cancel leaves a friendly "removed"
+       page (the server validates the target and tombstones a blank/unknown id).
+       For a genuine duplicate, Merge on Duplicate & Counterpart Review is better —
+       it auto-redirects without this prompt. */
+    var redirectTo = (window.prompt(
+        'Optional: keep this song’s shared link working by redirecting it to another song.\n\n' +
+        'Enter the Song ID to redirect to (e.g. MP-0001), or leave blank for a “removed” page.',
+        ''
+    ) || '').trim();
+
     /* SERVER-BACKED delete (#1200 / #1290). The legacy implementation only
        filtered the in-memory songData.songs array and toasted "deleted" — the
        DB row was never touched, so the song reappeared on reload (and still
@@ -5186,7 +5197,7 @@ function deleteSong() {
     var btn = document.getElementById('btn-delete-song');
     if (btn) { btn.disabled = true; }
 
-    ed2EnrichApi('delete_song', { songId: idToDelete })
+    ed2EnrichApi('delete_song', { songId: idToDelete, redirectTo: redirectTo })
         .then(function (res) {
             /* Server confirmed the cascade delete — sync local state now. */
             songData.songs = songData.songs.filter(function (s) { return s.id !== idToDelete; });

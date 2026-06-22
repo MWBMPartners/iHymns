@@ -743,6 +743,10 @@ try {
     case 'delete_song': {
         $songId = trim((string)($body['songId'] ?? $body['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        /* #1343 — optional relink: where should the deleted song's permalink point?
+           A valid other SongId → 301 redirect; blank/invalid → a "removed" tombstone.
+           Either way the old /song/<id> resolves instead of 404ing. */
+        $redirectTo = trim((string)($body['redirectTo'] ?? ''));
         $db->begin_transaction();
         try {
             $prev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -752,17 +756,33 @@ try {
             $prev->close();
             if ($prevRow === null) { $db->rollback(); ed2_respond(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0], 404); }
 
+            /* Resolve the relink target (must be a different, existing song). */
+            $rTarget = null;
+            if ($redirectTo !== '' && $redirectTo !== $songId) {
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chk->bind_param('s', $redirectTo);
+                $chk->execute();
+                if ($chk->get_result()->fetch_row() !== null) { $rTarget = $redirectTo; }
+                $chk->close();
+            }
+
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $del->bind_param('s', $songId);
             $del->execute();
             $deleted = $del->affected_rows;
             $del->close();
+
+            /* Leave a redirect/tombstone so the permalink survives (#1343). Gated. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            songRedirectWrite($db, $songId, $rTarget, 'delete', null);
+
             $db->commit();
             logActivity('song.delete', 'song', $songId, [
-                'title'    => (string)($prevRow['Title'] ?? ''),
-                'songbook' => (string)($prevRow['SongbookAbbr'] ?? ''),
+                'title'       => (string)($prevRow['Title'] ?? ''),
+                'songbook'    => (string)($prevRow['SongbookAbbr'] ?? ''),
+                'redirect_to' => $rTarget ?? '(tombstone)',
             ]);
-            ed2_respond(['ok' => true, 'deleted' => (int)$deleted, 'songId' => $songId]);
+            ed2_respond(['ok' => true, 'deleted' => (int)$deleted, 'songId' => $songId, 'redirectTo' => $rTarget]);
         } catch (\Throwable $e) {
             $db->rollback();
             throw $e;

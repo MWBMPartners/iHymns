@@ -286,6 +286,11 @@ jobs:
           echo "Running deploy-path (dirname/public_html) guard..."
           php tests/php/test-deploy-paths.php
 
+      - name: Song permalink redirect resolver (#1343)
+        run: |
+          echo "Running song-redirect follow test..."
+          php tests/php/test-song-redirects.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -447,3 +452,6 @@ jobs:
 
       - name: Deploy-path smell guard (#1196)
         run: php tests/php/test-deploy-paths.php
+
+      - name: Song permalink redirect resolver (#1343)
+        run: php tests/php/test-song-redirects.php
