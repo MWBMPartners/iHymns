@@ -134,9 +134,10 @@ function ptSanitisePageOptions($raw): ?array
     if (isset($raw['fontPt'])) {
         $out['fontPt'] = max(6, min(72, (int)$raw['fontPt']));
     }
-    if (isset($raw['columns'])) {
-        $out['columns'] = ((int)$raw['columns'] === 2) ? 2 : 1;
-    }
+    /* NB: no page-level `columns` here (#1350 Phase 2 review) — the renderer
+       (print.js) only reads pageOptions.fontPt, and column layout is a per-LYRICS
+       block option, so a page-level columns key would be unreachable + unused.
+       Re-add here only alongside an editor control + renderer support. */
     return $out ?: null;
 }
 
@@ -247,8 +248,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         }
     } catch (\Throwable $e) {
+        /* Log the detail; show a generic message so raw SQL/table names never
+           surface in the curator UI (#1350 Phase 2 review). */
         error_log('[print-templates POST] ' . $e->getMessage());
-        $error = 'Could not save changes: ' . $e->getMessage();
+        $error = 'Could not save changes — please try again.';
     }
 }
 
@@ -292,7 +295,7 @@ if ($hasSchema) {
         if ($res) { $res->close(); }
     } catch (\Throwable $e) {
         error_log('[print-templates read] ' . $e->getMessage());
-        $error = $error ?: 'Could not load templates: ' . $e->getMessage();
+        $error = $error ?: 'Could not load templates — please try again.';
     }
 }
 
