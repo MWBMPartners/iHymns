@@ -95,7 +95,9 @@ $mode        = 'generic';
 try {
     $songData = new SongData();
 
-    if ($songId !== null && preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
+    /* #1343-B — accept a SongId OR the opaque PublicId permalink (widen-only);
+       getSongById() resolves either, so a shared /song/<PublicId> link unfurls rich. */
+    if ($songId !== null && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $songId)) {
         $songInfo = $songData->getSongById($songId);
         if ($songInfo !== null) $mode = 'song';
     } elseif ($songbookId !== null && preg_match('/^[A-Za-z]+$/', $songbookId)) {

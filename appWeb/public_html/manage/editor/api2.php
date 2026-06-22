@@ -781,6 +781,17 @@ try {
                (mirrors the merge path). A tombstone (null target) intentionally lets
                inbound chains fall to "removed". */
             require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            /* Capture the PublicId BEFORE the delete so a shared /song/<PublicId> also
+               resolves afterward (#1343-B). Gated. */
+            $delPubId = '';
+            if (songPublicId_columnReady($db)) {
+                $pp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $pp->bind_param('s', $songId);
+                $pp->execute();
+                $delPubId = (string)($pp->get_result()->fetch_assoc()['PublicId'] ?? '');
+                $pp->close();
+            }
             if ($rTarget !== null) { songRedirectRepoint($db, $songId, $rTarget); }
 
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
@@ -790,6 +801,7 @@ try {
             $del->close();
 
             songRedirectWrite($db, $songId, $rTarget, 'delete', null);
+            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $rTarget, 'delete', null); }
 
             $db->commit();
             logActivity('song.delete', 'song', $songId, [

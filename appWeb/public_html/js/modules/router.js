@@ -580,6 +580,18 @@ export class Router {
                 const _to = _redirect.getAttribute('data-song-redirect');
                 if (_to) { this.navigate(_to, { replace: true }); return; }
             }
+            /* #1343-B — the CORRECT song rendered, but via a non-canonical id (a
+               legacy SongId / alias). Soft-canonicalise the URL bar to its PublicId
+               WITHOUT reloading (content is already right); mirrors the zero-pad
+               canonicalise at handleCurrentRoute. */
+            const _canonical = document.querySelector('[data-song-canonical]');
+            if (_canonical) {
+                const _cto = _canonical.getAttribute('data-song-canonical');
+                if (_cto && _cto !== window.location.pathname) {
+                    window.history.replaceState({ path: _cto }, '', _cto);
+                    this.currentPath = _cto;
+                }
+            }
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
             this.app.setList.initSongPage();

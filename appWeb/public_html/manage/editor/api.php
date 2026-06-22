@@ -4576,6 +4576,16 @@ switch ($action) {
                delete, so the FK ON DELETE SET NULL cascade can't strand a chain
                (mirrors the merge path). Tombstone (null) lets inbound fall to "removed". */
             require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            /* Capture PublicId before the delete so a shared /song/<PublicId> resolves too (#1343-B). */
+            $delPubId = '';
+            if (songPublicId_columnReady($db)) {
+                $dpp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $dpp->bind_param('s', $delSongId);
+                $dpp->execute();
+                $delPubId = (string)($dpp->get_result()->fetch_assoc()['PublicId'] ?? '');
+                $dpp->close();
+            }
             if ($delTarget !== null) { songRedirectRepoint($db, $delSongId, $delTarget); }
             /* Single cascade delete — see the block comment above. */
             $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
@@ -4583,7 +4593,9 @@ switch ($action) {
             $delStmt->execute();
             $delCount = $delStmt->affected_rows;
             $delStmt->close();
-            songRedirectWrite($db, $delSongId, $delTarget, 'delete', (int)($currentUser['id'] ?? 0) ?: null);
+            $delBy = (int)($currentUser['id'] ?? 0) ?: null;
+            songRedirectWrite($db, $delSongId, $delTarget, 'delete', $delBy);
+            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $delTarget, 'delete', $delBy); }
             $db->commit();
             logActivity('song.delete', 'song', $delSongId, [
                 'title'       => (string)($delPrevRow['Title'] ?? ''),

@@ -238,11 +238,17 @@ $hreflangSongLang = '';
 try {
     $songData = new SongData();
 
-    /* Song page: /song/CP-0001 */
-    if (preg_match('#^/song/([A-Za-z]+-\d+)$#', $requestPath, $matches)) {
+    /* Song page: /song/CP-0001 OR /song/<PublicId> (#1343-B — widen-only; getSongById resolves either). */
+    if (preg_match('#^/song/([A-Za-z0-9_-]{1,32})$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
             $pageType = 'song';
+
+            /* #1343-B — canonical/og:url is the opaque PublicId permalink (the
+               stable form), even when a crawler hit a legacy /song/<SongId>. */
+            if (!empty($ogSong['publicId'])) {
+                $canonicalUrl = getCanonicalUrl('/song/' . rawurlencode((string)$ogSong['publicId']));
+            }
 
             /* #1206 — translation-cluster hreflang alternates (SEO: marks these
                as language variants of one work). Only when the song has

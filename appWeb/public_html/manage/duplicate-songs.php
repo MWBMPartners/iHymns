@@ -217,6 +217,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $mergeBy = (int)($currentUser['id'] ?? 0) ?: null;
             songRedirectRepoint($db, $duplicate, $survivor);
             songRedirectWrite($db, $duplicate, $survivor, 'merge', $mergeBy);
+            /* #1343-B — also keep the duplicate's opaque PublicId permalink alive
+               (a shared /song/<PublicId> must survive the merge). Gated. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            if (songPublicId_columnReady($db)) {
+                $mp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $mp->bind_param('s', $duplicate);
+                $mp->execute();
+                $dupPubId = (string)($mp->get_result()->fetch_assoc()['PublicId'] ?? '');
+                $mp->close();
+                if ($dupPubId !== '') { songRedirectWrite($db, $dupPubId, $survivor, 'merge', $mergeBy); }
+            }
 
             /* Finally remove the duplicate song. */
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');

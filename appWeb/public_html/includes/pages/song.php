@@ -62,6 +62,16 @@ if ($song === null) {
     return;
 }
 
+/* #1343-B — the canonical permalink is the opaque PublicId (if backfilled). When
+   the visitor arrived via a NON-canonical id (a legacy SongId, a padding alias, or
+   a resolved redirect), emit a [data-song-canonical] marker so the SPA router
+   history-REPLACES the URL to /song/<PublicId> (soft canonicalise, same vehicle as
+   the #1343-A redirect marker). No marker when already canonical or un-backfilled. */
+$songPublicId  = (string)($song['publicId'] ?? '');
+$songCanonical = ($songPublicId !== '' && strtoupper((string)$songId) !== strtoupper($songPublicId))
+    ? ('/song/' . rawurlencode($songPublicId))
+    : '';
+
 /* Extract metadata for convenience — Number is NULL for Misc songs and
    for any custom-songbook entry that wasn't given a position (#392, #797).
    Treat null, '', '0' and 0 as equivalent — the canonical "unnumbered"
@@ -294,7 +304,7 @@ try {
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -694,7 +704,8 @@ try {
                 <!-- Share button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-share"
-                        data-song-id="<?= htmlspecialchars($song['id']) ?>"
+                        data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?>
+                        data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?>
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Share this song">
                     <i class="fa-solid fa-share-nodes me-1" aria-hidden="true"></i>

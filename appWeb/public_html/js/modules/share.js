@@ -51,11 +51,14 @@ export class Share {
         const modal = document.getElementById('share-modal');
         if (!modal) return;
 
-        /* Build the permalink URL */
-        const permalink = window.location.origin + '/song/' + songId;
-
         /* Extract rich metadata from the current song page (#123) */
         const songPage = document.querySelector('.page-song');
+
+        /* #1343-B — share the CANONICAL PublicId permalink when the page carries one
+           (data-song-public-id); fall back to the SongId on un-backfilled rows. */
+        const publicId = (songPage && songPage.dataset && songPage.dataset.songPublicId) || '';
+        const permalink = window.location.origin + '/song/' + (publicId || songId);
+
         const metadata = this.extractSongMetadata(songPage, title);
         const richText = this.buildShareText(metadata, permalink);
 
