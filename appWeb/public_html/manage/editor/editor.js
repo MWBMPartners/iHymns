@@ -1294,17 +1294,20 @@ function buildInlineIetfPicker(initialTag) {
         fb.placeholder = 'BCP 47 tag (e.g. ko-Latn)';
         fb.style.maxWidth = '160px';
         if (tag) { fb.value = tag; }
-        return { el: fb, booted: false, getTag: function () { return (fb.value || '').trim(); } };
+        return { el: fb, booted: false, ready: Promise.resolve(), getTag: function () { return (fb.value || '').trim(); } };
     }
 
     var id = 'ed2-ietf-' + (++_ed2IetfPickerSeq);
     var wrap = document.createElement('div');
     wrap.className = 'ietf-picker';
     wrap.setAttribute('data-ietf-picker-id', id);
-    if (tag) { wrap.setAttribute('data-initial-tag', tag); }  /* boot reads this → setTag() */
-    /* Static structure mirroring partials/ietf-language-picker.php. The only
-       interpolation is `id` (server-style generated, no user data) so innerHTML
-       is XSS-safe; the saved tag rides the data-initial-tag attribute above. */
+    /* Deliberately NOT setting data-initial-tag: we pre-fill via ctl.setTag(tag)
+       below so we can expose its async completion as `ready` (#1345 review). The
+       module's setTag awaits the languages/script/region fetches before it
+       populates the inputs + hidden output; reading getTag() before that resolves
+       would mis-report '' and a fast Save could blank an existing tag.
+       Static structure mirroring partials/ietf-language-picker.php — the only
+       interpolation is `id` (generated, no user data) so innerHTML is XSS-safe. */
     wrap.innerHTML =
         '<div class="row g-1">'
       +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" list="ietf-lang-list-' + id + '" autocomplete="off" placeholder="Language"></div>'
@@ -1318,9 +1321,15 @@ function buildInlineIetfPicker(initialTag) {
       + '<datalist id="ietf-region-list-' + id + '"></datalist>';
 
     var ctl = window.bootIetfLanguagePicker(wrap);
+    /* Pre-fill the seed tag and expose the async completion. Callers gate Save on
+       this so a too-fast click can't read '' and clear an existing tag (#1345 review). */
+    var ready = (ctl && tag && typeof ctl.setTag === 'function')
+        ? Promise.resolve(ctl.setTag(tag)).catch(function () { /* degrade silently */ })
+        : Promise.resolve();
     return {
         el: wrap,
         booted: !!ctl,
+        ready: ready,
         getTag: function () {
             if (ctl && typeof ctl.getTag === 'function') { return (ctl.getTag() || '').trim(); }
             var o = wrap.querySelector('.ietf-tag-output');
@@ -1454,6 +1463,13 @@ function buildEnrichmentPanel(song, comp) {
             renderBody();
         });
         save.className = 'btn btn-sm btn-primary py-0 px-2';
+        /* Editing an EXISTING tag: the picker pre-fills asynchronously, so block Save
+           until it's ready — otherwise a fast click reads '' and clears the tag
+           (#1345 review). A fresh (empty) seed has nothing to lose, so leave it live. */
+        if (cur) {
+            save.disabled = true;
+            picker.ready.then(function () { save.disabled = false; });
+        }
         var cancel = addBtn('Cancel', function () { renderBody(); });
         btnRow.appendChild(save);
         btnRow.appendChild(cancel);
@@ -1542,18 +1558,23 @@ function buildEnrichmentPanel(song, comp) {
 
             /* #1345 — per-line LANGUAGE override (index-keyed comp.languages[i], so it
                works even before the song is saved — unlike translations/annotations,
-               which need the saved lineId). 🌐 chip shows the current tag with a remove
-               control; the button opens the structured IETF picker. */
+               which need the saved lineId). 🔤 chip shows the current tag with a remove
+               control; the button opens the structured IETF picker. Distinct glyph from
+               the 🌐 translation chip / 📝 annotation chip (#1345 review). Skipped on
+               blank separator lines unless one already carries a tag. */
             var curLang = (Array.isArray(comp.languages) && comp.languages[i] != null)
                 ? String(comp.languages[i]).trim() : '';
-            var langWrap = document.createElement('div');
-            langWrap.className = 'mb-1';
-            if (curLang) {
-                langWrap.appendChild(chip('🌐 ' + curLang, function () { setLineLang(i, ''); renderBody(); }));
+            var lineHasText = !!(lineText && String(lineText).trim());
+            if (lineHasText || curLang) {
+                var langWrap = document.createElement('div');
+                langWrap.className = 'mb-1';
+                if (curLang) {
+                    langWrap.appendChild(chip('🔤 ' + curLang, function () { setLineLang(i, ''); renderBody(); }));
+                }
+                langWrap.appendChild(addBtn(curLang ? '🔤 Change language' : '🔤 Set language',
+                    function () { showLineLangForm(langWrap, i); }));
+                row.appendChild(langWrap);
             }
-            langWrap.appendChild(addBtn(curLang ? '🌐 Change language' : '🌐 Set language',
-                function () { showLineLangForm(langWrap, i); }));
-            row.appendChild(langWrap);
 
             if (!lineId) {
                 var note = document.createElement('div');
