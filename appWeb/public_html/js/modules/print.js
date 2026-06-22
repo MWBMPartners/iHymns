@@ -90,7 +90,7 @@ function buildPrintDoc(song, tplKey) {
 <html lang="${esc(song.language || 'en')}">
 <head>
 <meta charset="utf-8">
-<title>${esc(title)}${subtitle ? ' — ' + (book ? esc(book) : '') : ''}</title>
+<title>${esc(title)}${book ? ' — ' + esc(book) : ''}</title>
 <style>
     * { box-sizing: border-box; }
     body { font-family: Georgia, 'Times New Roman', serif; color: #000; background: #fff;
