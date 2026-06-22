@@ -58,6 +58,10 @@ $_adminLinks = [
     ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Collections',           'manage_songbooks',            'Catalogue'  ],
     ['works',                '/manage/works',                  'bi-diagram-3',       'Works',                 'manage_works',                'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
+    /* Print templates (#1350 Phase 2) — curator-authored block-based song-print
+       layouts (tblPrintTemplates). Curator-level, same entitlement as the other
+       Catalogue metadata surfaces. */
+    ['print-templates',      '/manage/print-templates',        'bi-printer',         'Print templates',       'manage_songbooks',            'Catalogue'  ],
     ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],
     ['languages',            '/manage/languages',              'bi-translate',       'Languages',             'manage_languages',            'Catalogue'  ],
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
