@@ -1058,11 +1058,28 @@ if ($action !== null) {
             $ingestDb = getDbMysqli();
             $ingestKey = apiKeyAuthorize($ingestDb, 'lyrics:ingest');
             if ($ingestKey === null) { break; } /* 401 already emitted */
+            /* #1066 Theme B — enforce the per-key rate limit (429 + Retry-After if
+               exceeded; no-op when the key has no limit / the schema is un-migrated). */
+            if (!apiKeyEnforceRateLimit($ingestDb, $ingestKey, 'lyrics:ingest')) { break; }
 
             $rawBody = (string)file_get_contents('php://input');
             if (strlen($rawBody) > 4 * 1024 * 1024) {
                 sendJson(['error' => 'Payload exceeds the 4 MiB ingest limit.'], 413);
                 break;
+            }
+            /* #1066 Theme B — idempotent replay: a retry carrying the same
+               Idempotency-Key header AND the same body returns the cached response
+               WITHOUT re-ingesting. Captured on the success path below. */
+            $idemKey = apiKeyIdempotencyKey();
+            if ($idemKey !== null) {
+                $replay = apiKeyIdempotencyReplay($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody);
+                if ($replay !== null) {
+                    http_response_code($replay['status']);
+                    header('Content-Type: application/json; charset=UTF-8');
+                    header('Idempotency-Replayed: true');
+                    echo $replay['data'];
+                    break;
+                }
             }
             $payload   = json_decode($rawBody, true);
             $songId    = '';
@@ -1136,7 +1153,7 @@ if ($action !== null) {
                         'status'    => $status,
                     ]);
                 }
-                sendJson([
+                $ingestResponse = [
                     'ok'                => true,
                     'songId'            => $songId,
                     'matched'           => $resolved['matched'],
@@ -1151,7 +1168,13 @@ if ($action !== null) {
                     'hasSyllableTiming' => $parsed['hasSyllableTiming'],
                     'language'          => $parsed['language'],
                     'status'            => $status,
-                ]);
+                ];
+                /* #1066 Theme B — cache the success under the Idempotency-Key so a
+                   client retry replays it instead of re-ingesting (24h TTL). */
+                if ($idemKey !== null) {
+                    apiKeyIdempotencyStore($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody, 200, (string)json_encode($ingestResponse));
+                }
+                sendJson($ingestResponse);
             } catch (\RuntimeException $e) {
                 sendJson(['error' => 'Ingest failed: ' . $e->getMessage()], 422);
             }
