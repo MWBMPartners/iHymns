@@ -3271,6 +3271,25 @@ class SongData
         $row['adaptors']     = $this->_getAdaptors($songId);
         $row['translators']  = $this->_getTranslators($songId);
         $row['artists']      = $this->_getArtists($songId);    /* #587 */
+        /* #1355 — de-duplicate each people-credit list case-insensitively (order
+           preserved, first occurrence wins). A person credited twice in the same
+           role (a duplicate tblSong<Role> row) must surface ONCE — both in each row
+           and in the song-view "Words & Music" combine (#603). Fixed at the source so
+           the public song page, print (song_data) and export all dedupe alike. */
+        foreach (['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'] as $_creditKey) {
+            if (empty($row[$_creditKey]) || !is_array($row[$_creditKey])) { continue; }
+            $_seenCredit = [];
+            $row[$_creditKey] = array_values(array_filter(
+                array_map(static fn($n) => trim((string)$n), $row[$_creditKey]),
+                static function (string $n) use (&$_seenCredit): bool {
+                    if ($n === '') { return false; }
+                    $k = mb_strtolower($n);
+                    if (isset($_seenCredit[$k])) { return false; }
+                    $_seenCredit[$k] = true;
+                    return true;
+                }
+            ));
+        }
         $row['components']   = $this->_getComponents($songId);
         /* Tags attached here too so the single-song read path matches
            the bulk getSongs() shape (#496 follow-up). Uses the same
