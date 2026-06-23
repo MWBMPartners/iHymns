@@ -383,7 +383,7 @@ if ($hasSchema && !empty($catalogues)) {
                 </div>
                 <div class="col-md-1">
                     <label class="form-label small mb-0">Sort</label>
-                    <input type="number" name="sort_order" class="form-control form-control-sm" value="0">
+                    <input type="number" name="sort_order" class="form-control form-control-sm" min="0" value="0">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small mb-0">Visibility</label>
@@ -481,7 +481,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         <div class="col-md-1">
                                             <label class="form-label small mb-0">Sort</label>
                                             <input type="number" name="sort_order" class="form-control form-control-sm"
-                                                   value="<?= (int)$c['SortOrder'] ?>">
+                                                   min="0" value="<?= (int)$c['SortOrder'] ?>">
                                         </div>
                                         <div class="col-md-2">
                                             <label class="form-label small mb-0">Visibility</label>
