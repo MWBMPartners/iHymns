@@ -429,6 +429,35 @@ function _migProbe_columnExists(\mysqli $db, string $table, string $column): boo
     return $exists;
 }
 
+/** True if $table carries an index named $index. Used by migration probes that must
+ *  not flip to "done" until a UNIQUE / KEY has actually landed (#1343-B review) —
+ *  e.g. a backfill+ADD-UNIQUE migration interrupted after the last row but before
+ *  the index would otherwise show a green card with no constraint. */
+function _migProbe_indexExists(\mysqli $db, string $table, string $index): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $index);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
+/** True if tblSongs has any row still missing a PublicId (#1343-B) — drives the
+ *  backfill probe so the "Song PublicId" card stays pending until every row is
+ *  filled. False (done) when the column is absent (the column probe handles that). */
+function _migProbe_hasNullPublicId(\mysqli $db): bool
+{
+    if (!_migProbe_columnExists($db, 'tblSongs', 'PublicId')) { return false; }
+    $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
+    $has = $res && $res->fetch_row() !== null;
+    if ($res) { $res->free(); }
+    return $has;
+}
+
 /** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
 function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column): bool
 {
@@ -2664,7 +2693,10 @@ if ($hasCredentials && defined('DB_HOST')) {
      the dashboard, so no single request hits a server-level
      timeout. Falls through to the legacy <a href> on no-JS. -->
 <?php
-    $_bulkRunnerPath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
+    /* From manage/, public_html is dirname(__DIR__, 1); dirname(__DIR__, 2) was
+       appWeb (one level too high), so is_file() always failed and the version
+       fell back to '1', defeating per-file cache-busting (#1196). */
+    $_bulkRunnerPath    = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
     $_bulkRunnerVersion = is_file($_bulkRunnerPath) ? (string)filemtime($_bulkRunnerPath) : '1';
 ?>
 <script type="module">

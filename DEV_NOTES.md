@@ -383,7 +383,7 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 ### Recommended Setup
 
 - **Editor**: VS Code or Xcode (for Apple development)
-- **PHP**: 8.5+ (target version)
+- **PHP**: 8.1–8.5 (8.1 minimum, tested through 8.5)
 - **Node.js**: v22+ (LTS)
 - **npm**: v10+
 - **Xcode**: 16+ (for Swift 6.3)
@@ -441,12 +441,12 @@ test: add or update tests          → patch version bump
 
 ## MySQL Database Setup (v0.10.0+)
 
-Starting with v0.10.0, iHymns uses MySQL as the primary data store, with JSON fallback for environments without a database. MySQL provides full-text search indexing, concurrent write safety, user accounts, and features like popular songs, song tags, and translation linking.
+Starting with v0.10.0, iHymns uses MySQL as the data store. Since the DB-direct rewrite (epic #1010), MySQL is the **single source of truth** for all song reads and writes — there is no JSON corpus fallback (a DB outage returns a themed 503). MySQL provides full-text search indexing, concurrent write safety, user accounts, and features like popular songs, song tags, and translation linking.
 
 ### Prerequisites
 
 - **MySQL 5.7+** or **MariaDB 10.3+** with InnoDB support
-- **PHP 8.1+** with the `mysqli` extension enabled
+- **PHP 8.1–8.5** (8.1 minimum, tested through 8.5) with the `mysqli` extension enabled
 - A MySQL database created for iHymns:
   ```sql
   CREATE DATABASE ihymns CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -475,7 +475,7 @@ The installer will:
 
 1. Test the connection before writing anything
 2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
-3. Create all 30+ tables from `schema.sql` (idempotent — safe to re-run)
+3. Create all tables from `schema.sql` (~131 `CREATE TABLE` statements; idempotent — safe to re-run)
 4. Seed default data: user groups, 14 languages, 5 access tiers, app settings
 
 > **Manual setup:** Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php`, edit it, then re-run the installer.
@@ -521,22 +521,24 @@ For shared hosting without SSH:
 mysql -u user -p ihymns < appWeb/.sql/.fulldata/ihymns-full.sql
 ```
 
-### JSON Fallback Mode
+### DB-Direct Reads (epic #1010, WS-J #1020)
 
-When MySQL is unavailable, the application automatically falls back to reading `data/songs.json`:
+Song reads are **live MySQL** — there is NO `songs.json` corpus cache, no
+`songs_json` endpoint, and no server-side JSON fallback for reads. The whole-corpus
+materialiser (`SongData::exportAsJson()` / `songsCacheServe()`) and the
+`?action=songs_json` endpoint were all **removed in WS-J #1020**. Reads are always
+scoped: `getSongsSlimIndex()` (lightweight id/number/title/songbook index, served by
+`?action=songs_index`), `getSongs($abbr)` (one songbook, editor `?action=songbook_export`),
+`getSongById()` (one full record, `?action=song_detail`).
 
-| Feature | MySQL Mode | JSON Fallback |
-| --- | --- | --- |
-| Song browsing & search | FULLTEXT index | Fuse.js client-side |
-| Popular songs | Server view counts | Client localStorage history |
-| Browse by theme (tags) | Tag tables | Hidden (no data) |
-| Song view tracking | tblSongHistory | Silently skipped |
-| User accounts | Full auth system | Not available |
-| Translation links | tblSongTranslations | From songs.json |
-| Song editor | Full CRUD | Read-only |
-| Offline downloads | Bulk API | Per-song fallback |
+`data/songs.json` is now a **migration INPUT only** (consumed by `migrate-json.php`),
+never a runtime read source.
 
-API endpoints gracefully return empty arrays with `fallback: true` flag when the database is unavailable.
+When MySQL is unavailable, the server returns a **themed 503 maintenance page**
+(WS-K #1021, `includes/maintenance.php` + the `api.php` `isDbConnectionFailure()`
+503 path) — a graceful outage, never stale data. The ONLY offline fallback is the
+**client PWA offline cache** (service-worker-cached song pages + the slim index for
+client-side Fuse.js search).
 
 ### Database Schema Overview
 
@@ -548,8 +550,9 @@ API endpoints gracefully return empty arrays with `fallback: true` flag when the
 | `tblSongs` | Core metadata + `LyricsText` for FULLTEXT search |
 | `tblSongWriters` | Lyricist credits (many-to-one) |
 | `tblSongComposers` | Composer credits (many-to-one) |
-| `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
-| `tblSongTranslations` | Links songs to translations in other languages |
+| `tblSongComponents` | Verse/chorus/bridge component metadata (the `LinesJson`/`ChordsJson`/`NotesJson` columns are a gated shadow being retired — see below) |
+| `tblLyricLines` | **Source of truth for lyric lines** (#1235) — normalised one-row-per-line, the single read + write path |
+| `tblSongTranslations` | Links songs to whole-song translations in other languages |
 
 **Discovery & Community (4 tables):**
 
@@ -578,14 +581,32 @@ API endpoints gracefully return empty arrays with `fallback: true` flag when the
 | `tblUserSetlists` | Cross-device setlist sync |
 | `tblActivityLog` | Audit trail |
 
-Full schema: `appWeb/.sql/schema.sql` (30+ tables, ~50 KB)
+**Post-2026-05 schema families (added since the original 6+ table model):**
+
+| Family | Key tables | Notes |
+| --- | --- | --- |
+| **Per-line lyric enrichment** | `tblLyricLineTranslations`, `tblLyricLineAnnotations` | Per-line translations/romanizations + Genius-style annotations anchored on `tblLyricLines.Id` (#1088) |
+| **Works** (#840) | `tblWorks`, `tblWorkSongs`, `tblWorkExternalLinks` | Composition grouping across songbooks (`/manage/works`, public `/work/<slug>`) |
+| **External-links registry** (#833/#845) | `tblExternalLinkTypes`, `tblExternalLinkPatterns`, `tblSongExternalLinks`, `tblSongbookExternalLinks`, `tblCreditPersonExternalLinks`, `tblWorkExternalLinks` | Controlled provider vocabulary + URL→provider auto-detect |
+| **Duplicate / counterpart linking** (#1215/#1216) | `tblSongLinks`, `tblSongLinkSuggestions`, `tblSongLinkSuggestionsDismissed` | Scored fuzzy + curator-confirmed cross-book links (`/manage/duplicate-songs`) |
+| **Service Mode / Live-Follow** (#1323/#1335) | `tblLiveFollowSessions`, `tblLiveFollowJoinCodes`, `tblServicePresence`, `tblOrgVenues`, recurring-schedule tables | Congregation live-follow via venue rotating code (dormant behind `content_gating_enabled='0'`) |
+| **Arrangements** | `tblSongArrangements` | One-pass forward-looking arrangement schema (#1066) |
+| **Interchange / identity** (#1066) | `tblSongIdentityMap`, `tblApiKeyUsage`, `tblApiKeyIdempotency`, `tblLyricsConflicts`, `tblLyricsReviewQueue`, … | Dormant interchange / ingest / identity batch |
+| **Catalogues** (user-labelled "Collections") | `tblCatalogues`, `tblCatalogueSongs` | Curated groupings; internal name stays `catalogue` (#1223) |
+
+Full schema: `appWeb/.sql/schema.sql` (~131 `CREATE TABLE` statements). Migrations
+are NOT auto-applied on deploy — they are run via the web runner at
+`/manage/setup-database` (registry-driven "Apply all pending"; the operator is
+web-only, no CLI/SSH on the shared host).
 
 ### Key API Endpoints
 
 | Endpoint | Description |
 | --- | --- |
 | `?action=bulk_songs&songbook=X` | Bulk download: all rendered HTML for a songbook in one response |
-| `?action=songs_json` | Full songs.json export with ETag caching |
+| `?action=songs_index` | Slim id/number/title/songbook index (served to the PWA for client-side search) |
+| `?action=songbook_export&songbook=X` | One songbook's full records (editor read path) |
+| `?action=song_detail&id=X` | One full song record (DB-direct) |
 | `?action=song_translations&id=X` | Bidirectional translation lookup |
 | `?action=popular_songs&period=month` | Popular songs by view count |
 | `?action=tags` | All thematic tags |
@@ -612,7 +633,7 @@ appWeb/
 └── public_html/
     ├── includes/
     │   ├── db_mysql.php               # MySQLi connection factory
-    │   └── SongData.php               # Song data (MySQL + JSON fallback)
+    │   └── SongData.php               # Song data — DB-direct, scoped reads (no JSON corpus cache)
     └── manage/
         ├── setup.php                  # Initial admin setup
         └── setup-database.php         # Web DB admin dashboard
@@ -630,20 +651,21 @@ appWeb/
 | Popular Songs shows "Loading..." | Database required for server-side view tracking; falls back to localStorage |
 | Browse by Theme missing | Tags must be populated in `tblSongTags` via the admin tools |
 
-### Architecture: Why MySQL + JSON Fallback?
+### Architecture: Why MySQL (DB-direct)?
 
-MySQL is the primary store for:
+MySQL is the single source of truth for **all** reads and writes (epic #1010):
 1. **Full-text search** — FULLTEXT indexes on title and lyrics
 2. **Concurrent writes** — Multiple editors can safely modify data
 3. **User accounts** — Relational storage for users, groups, permissions
 4. **View tracking** — Popular songs ranking from `tblSongHistory`
 5. **Tags & translations** — Structured relational data
 
-JSON fallback ensures the app works everywhere:
-- Shared hosting without MySQL
-- Development without database setup
-- Offline via service worker cached `songs.json`
-- The PWA client always has `songs.json` for Fuse.js fuzzy search
+There is **no server-side JSON fallback** for reads. A DB outage returns a
+themed 503 maintenance page (#1021), never stale data. Offline support is the
+**client PWA cache**:
+- Service-worker-cached song pages for offline viewing
+- The slim song index (`?action=songs_index`) cached client-side for Fuse.js fuzzy search
+- `data/songs.json` is a migration input only, not a runtime read source
 
 ### User Groups & Version Access
 
@@ -785,11 +807,19 @@ Tier management is restricted to **Admin** and **Global Admin** roles only.
 | --- | --- | --- |
 | `/manage/` | Dashboard (library + activity stats) | `view_admin_dashboard` |
 | `/manage/editor/` | Song editor | `edit_songs` |
+| `/manage/duplicate-songs` | Duplicate & counterpart detection / cross-book linking / merge (absorbed the old `/manage/song-link-suggestions`, now a 302) | `edit_songs` (Merge = `manage_duplicate_songs`) |
+| `/manage/works` | Works (composition grouping across songbooks) | `edit_songs` |
+| `/manage/external-link-types` | External-link provider registry + URL patterns | `manage_songbooks` |
+| `/manage/catalogues` | Catalogues — user-labelled "Collections" (internal name stays `catalogue`) | `manage_songbooks` |
+| `/manage/tags` | Theme/tag vocabulary + canonicalisation merge (CCLI/OpenLyrics standard themes) | `edit_songs` |
+| `/manage/venues` | Org venues + recurring service schedules (Service Mode) | org-admin |
+| `/manage/service-projection.php` | Service Mode projector page (rotating join code + broadcast) | org-admin |
+| `/manage/service-lead.php` | Service Mode leader device (connect-and-drive broadcaster) | org-admin |
 | `/manage/users` | Users + roles | `view_users` / `edit_users` |
 | `/manage/requests` | Song-request triage queue | `review_song_requests` |
 | `/manage/analytics` | Usage analytics with CSV export | `view_analytics` |
 | `/manage/entitlements` | Reassign capabilities to roles | `manage_entitlements` |
-| `/manage/setup-database` | Install, migrate, backup, restore | `run_db_install` etc. |
+| `/manage/setup-database` | Install, migrate (registry-driven "Apply all pending"), backup, restore | `run_db_install` etc. |
 | `/manage/login` · `/manage/logout` · `/manage/setup` | Auth flow (session-based) | — |
 
 ### Entitlements
@@ -1016,4 +1046,10 @@ Works.
 
 ---
 
-Last updated: 2026-05-04
+> **Platform status:** Web/PWA is the active production app. The Apple
+> (~14 Swift files) and Android (~12 Kotlin files) targets are
+> **scaffold / in-progress**, not code-complete — the deployment-secrets and
+> store-submission sections above describe the intended CI/CD pipeline for when
+> those targets ship.
+
+Last updated: 2026-06-21

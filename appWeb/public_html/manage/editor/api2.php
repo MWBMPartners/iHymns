@@ -723,8 +723,17 @@ try {
 
             $songId = ed2_allocateSongId($db, $abbr);
             $norm   = ed2_normalizeTitle($title);
-            $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
-            $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
+            /* #1343-B — mint the opaque PublicId permalink at create (gated; an
+               un-migrated env omits the column and the backfill fills it later). */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            if (songPublicId_columnReady($db)) {
+                $pubId = songPublicId_mintUnique($db);
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, PublicId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?, ?)');
+                $ins->bind_param('sssss', $songId, $pubId, $title, $norm, $abbr);
+            } else {
+                $ins = $db->prepare('INSERT INTO tblSongs (SongId, Title, NormalizedTitle, SongbookAbbr) VALUES (?, ?, ?, ?)');
+                $ins->bind_param('ssss', $songId, $title, $norm, $abbr);
+            }
             $ins->execute();
             $ins->close();
             ed2_touchRevision($db, $songId, $ed2UserId, 'create');
@@ -743,6 +752,10 @@ try {
     case 'delete_song': {
         $songId = trim((string)($body['songId'] ?? $body['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        /* #1343 — optional relink: where should the deleted song's permalink point?
+           A valid other SongId → 301 redirect; blank/invalid → a "removed" tombstone.
+           Either way the old /song/<id> resolves instead of 404ing. */
+        $redirectTo = trim((string)($body['redirectTo'] ?? ''));
         $db->begin_transaction();
         try {
             $prev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -752,17 +765,51 @@ try {
             $prev->close();
             if ($prevRow === null) { $db->rollback(); ed2_respond(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0], 404); }
 
+            /* Resolve the relink target (must be a different, existing song). */
+            $rTarget = null;
+            if ($redirectTo !== '' && $redirectTo !== $songId) {
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chk->bind_param('s', $redirectTo);
+                $chk->execute();
+                if ($chk->get_result()->fetch_row() !== null) { $rTarget = $redirectTo; }
+                $chk->close();
+            }
+
+            /* #1343 — keep permalinks resolving (gated). When relinking, FORWARD any
+               redirects that already point AT this song to the new target BEFORE the
+               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
+               (mirrors the merge path). A tombstone (null target) intentionally lets
+               inbound chains fall to "removed". */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            /* Capture the PublicId BEFORE the delete so a shared /song/<PublicId> also
+               resolves afterward (#1343-B). Gated. */
+            $delPubId = '';
+            if (songPublicId_columnReady($db)) {
+                $pp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $pp->bind_param('s', $songId);
+                $pp->execute();
+                $delPubId = (string)($pp->get_result()->fetch_assoc()['PublicId'] ?? '');
+                $pp->close();
+            }
+            if ($rTarget !== null) { songRedirectRepoint($db, $songId, $rTarget); }
+
             $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $del->bind_param('s', $songId);
             $del->execute();
             $deleted = $del->affected_rows;
             $del->close();
+
+            songRedirectWrite($db, $songId, $rTarget, 'delete', null);
+            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $rTarget, 'delete', null); }
+
             $db->commit();
             logActivity('song.delete', 'song', $songId, [
-                'title'    => (string)($prevRow['Title'] ?? ''),
-                'songbook' => (string)($prevRow['SongbookAbbr'] ?? ''),
+                'title'       => (string)($prevRow['Title'] ?? ''),
+                'songbook'    => (string)($prevRow['SongbookAbbr'] ?? ''),
+                'redirect_to' => $rTarget ?? '(tombstone)',
             ]);
-            ed2_respond(['ok' => true, 'deleted' => (int)$deleted, 'songId' => $songId]);
+            ed2_respond(['ok' => true, 'deleted' => (int)$deleted, 'songId' => $songId, 'redirectTo' => $rTarget]);
         } catch (\Throwable $e) {
             $db->rollback();
             throw $e;

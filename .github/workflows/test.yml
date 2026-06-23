@@ -261,6 +261,41 @@ jobs:
           echo "Running tblSongComponents JSON-column guard..."
           php tests/php/test-component-json-guard.php
 
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: |
+          echo "Running auto-link hard-id planner test..."
+          php tests/php/test-auto-link-hard-id.php
+
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: |
+          echo "Running ChordPro importer test..."
+          php tests/php/test-chordpro-parser.php
+
+      - name: Per-action content-gating matcher (#1120)
+        run: |
+          echo "Running content-access action-matcher test..."
+          php tests/php/test-content-access-action.php
+
+      - name: OpenLyrics importer enrichment (#1130)
+        run: |
+          echo "Running OpenLyrics importer enrichment test..."
+          php tests/php/test-openlyrics-parser.php
+
+      - name: Deploy-path smell guard (#1196)
+        run: |
+          echo "Running deploy-path (dirname/public_html) guard..."
+          php tests/php/test-deploy-paths.php
+
+      - name: Song permalink redirect resolver (#1343)
+        run: |
+          echo "Running song-redirect follow test..."
+          php tests/php/test-song-redirects.php
+
+      - name: Song PublicId helper (#1343-B)
+        run: |
+          echo "Running song-public-id helper test..."
+          php tests/php/test-song-public-id.php
+
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
@@ -407,3 +442,24 @@ jobs:
 
       - name: Component JSON-payload column guard (P4 C5)
         run: php tests/php/test-component-json-guard.php
+
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: php tests/php/test-auto-link-hard-id.php
+
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: php tests/php/test-chordpro-parser.php
+
+      - name: Per-action content-gating matcher (#1120)
+        run: php tests/php/test-content-access-action.php
+
+      - name: OpenLyrics importer enrichment (#1130)
+        run: php tests/php/test-openlyrics-parser.php
+
+      - name: Deploy-path smell guard (#1196)
+        run: php tests/php/test-deploy-paths.php
+
+      - name: Song permalink redirect resolver (#1343)
+        run: php tests/php/test-song-redirects.php
+
+      - name: Song PublicId helper (#1343-B)
+        run: php tests/php/test-song-public-id.php

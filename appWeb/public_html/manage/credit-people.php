@@ -105,6 +105,36 @@ $ALIAS_TYPES         = CREDIT_PERSON_ALIAS_TYPES;
 $normaliseLinks      = static fn(\mysqli $db, mixed $raw): array => normaliseCreditPersonLinks($db, $raw);
 $normaliseIpi        = static fn(mixed $raw): array => normaliseCreditPersonIpi($raw);
 $normaliseIsni       = static fn(mixed $raw): array => normaliseCreditPersonIsni($raw);
+/* #1348 — generic "Other identifiers" sub-form (VIAF / Wikidata / ORCID).
+   Unlike IPI/ISNI (each its own dedicated section) these share ONE
+   repeatable section with a per-row type picker, so the normaliser
+   validates each row's type against a fixed allow-list (rule #20 — never
+   insert an arbitrary IdentifierType) and returns rows in the exact shape
+   the INSERT loops below bind: ['type','value','name_used','notes']. */
+$normaliseOtherId = static function (mixed $raw): array {
+    if (!is_array($raw)) return [];
+    /* App-level allow-list — anything else is silently dropped so a
+       hand-crafted POST can't smuggle an unrecognised IdentifierType. */
+    $allowed = ['viaf', 'wikidata', 'orcid'];
+    $out = [];
+    foreach ($raw as $row) {
+        if (!is_array($row)) continue;
+        /* Lowercase + trim the type, then gate on the allow-list. */
+        $type = strtolower(trim((string)($row['type'] ?? '')));
+        if (!in_array($type, $allowed, true)) continue;
+        /* Skip rows with no identifier value — an empty row is just an
+           unfilled template the curator left behind. */
+        $value = trim((string)($row['value'] ?? ''));
+        if ($value === '') continue;
+        $out[] = [
+            'type'      => $type,
+            'value'     => $value,
+            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
+            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+        ];
+    }
+    return $out;
+};
 $normaliseAliases    = static fn(mixed $raw): array => normaliseCreditPersonAliases($raw);
 
 /* External-link type registry — pulled inside each action handler
@@ -244,6 +274,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
                 $isni        = $normaliseIsni($_POST['isni']        ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
+                $otherId     = $normaliseOtherId($_POST['otherid'] ?? null); // #1348
                 /* #584 / #585 — classification flags. The two are
                    mutually exclusive in the UI; if both arrive we
                    prefer special-case (it's the more constraining
@@ -403,7 +434,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $linkStmt->close();
                     }
-                    if ($ipi || $isni) {
+                    if ($ipi || $isni || $otherId) {
                         $idStmt = $db->prepare(
                             'INSERT INTO tblCreditPersonIdentifiers
                                 (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
@@ -419,6 +450,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         foreach ($isni as $r) {
                             $idStmt->bind_param('issss',
                                 $newId, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        /* #1348 — generic identifiers (VIAF / Wikidata / ORCID).
+                           The IdentifierType comes from each row (already
+                           allow-list-validated by $normaliseOtherId), not a
+                           fixed $type — every value is still bound. */
+                        foreach ($otherId as $r) {
+                            $idStmt->bind_param('issss',
+                                $newId, $r['type'], $r['value'], $r['name_used'], $r['notes']);
                             $idStmt->execute();
                         }
                         $idStmt->close();
@@ -476,6 +516,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $ipi         = $normaliseIpi($_POST['ipi']         ?? null);
                 $isni        = $normaliseIsni($_POST['isni']        ?? null);
                 $aliases     = $normaliseAliases($_POST['aliases'] ?? null);
+                $otherId     = $normaliseOtherId($_POST['otherid'] ?? null); // #1348
                 $isSpecialCase = !empty($_POST['is_special_case']) ? 1 : 0;
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
@@ -610,7 +651,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
-                    if ($ipi || $isni) {
+                    if ($ipi || $isni || $otherId) {
                         $idStmt = $db->prepare(
                             'INSERT INTO tblCreditPersonIdentifiers
                                 (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
@@ -626,6 +667,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         foreach ($isni as $r) {
                             $idStmt->bind_param('issss',
                                 $id, $type, $r['number'], $r['name_used'], $r['notes']);
+                            $idStmt->execute();
+                        }
+                        /* #1348 — generic identifiers (VIAF / Wikidata / ORCID).
+                           Clean re-insert (the DELETE above cleared the set);
+                           the IdentifierType comes from each allow-list-validated
+                           row, every value bound. */
+                        foreach ($otherId as $r) {
+                            $idStmt->bind_param('issss',
+                                $id, $r['type'], $r['value'], $r['name_used'], $r['notes']);
                             $idStmt->execute();
                         }
                         $idStmt->close();
@@ -1196,6 +1246,9 @@ try {
            FROM tblCreditPersonIdentifiers
           ORDER BY CreditPersonId ASC, IdentifierType ASC, Id ASC'
     );
+    /* #1348 — bucket for the generic "Other identifiers" rows (VIAF /
+       Wikidata / ORCID), populated alongside isni/ipi from the same query. */
+    $otherIdByPerson = [];
     $stmt->execute();
     foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
         $row = [
@@ -1204,10 +1257,17 @@ try {
             'name_used' => $r['NameUsed'],
             'notes'     => $r['Notes'],
         ];
+        /* #1348 — three-way bucketing. The old else-branch swept EVERY
+           non-isni type into the ipi bucket, mis-filing VIAF/Wikidata/ORCID
+           rows; split them so each surfaces in its own sub-form. The generic
+           bucket carries the row's type so the drawer can pre-select it. */
         if ($r['IdentifierType'] === 'isni') {
             $isniByPerson[(int)$r['CreditPersonId']][] = $row;
-        } else {
+        } elseif ($r['IdentifierType'] === 'ipi') {
             $ipiByPerson[(int)$r['CreditPersonId']][] = $row;
+        } else {
+            $row['type'] = (string)$r['IdentifierType'];
+            $otherIdByPerson[(int)$r['CreditPersonId']][] = $row;
         }
     }
     $stmt->close();
@@ -1248,6 +1308,7 @@ try {
             'is_group'        => 0,   /* #585 */
             'links'       => [],
             'ipi'         => [],
+            'otherid'     => [],   // #1348
             'aliases'     => [],
         ];
     }
@@ -1307,6 +1368,7 @@ try {
         $byName[$name]['links']   = $linksByPerson[(int)$r['Id']]   ?? [];
         $byName[$name]['ipi']     = $ipiByPerson[(int)$r['Id']]     ?? [];
         $byName[$name]['isni']    = $isniByPerson[(int)$r['Id']]    ?? [];
+        $byName[$name]['otherid'] = $otherIdByPerson[(int)$r['Id']] ?? []; // #1348
         $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
     }
 
@@ -2127,6 +2189,23 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="form-text small">ISNI is a 16-character ISO 27729 identifier (look it up at <a href="https://isni.org" target="_blank" rel="noopener">isni.org</a>). Paste any separator style — "0000 0001 2103 2683", "0000-0001-2103-2683", or just "0000000121032683" — it's normalised to the canonical "NNNN NNNN NNNN NNNX" form on save.</div>
             </div>
 
+            <!-- #1348 — generic "Other identifiers" repeating sub-form.
+                 VIAF / Wikidata / ORCID share ONE section with a per-row
+                 type picker (the dedicated IPI + ISNI sections above stay
+                 unchanged). Each row stores its IdentifierType discriminator
+                 in tblCreditPersonIdentifiers alongside IPI/ISNI; the type
+                 is allow-list-validated server-side ($normaliseOtherId). -->
+            <div>
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                    <label class="form-label small mb-0">Other identifiers</label>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" id="cp-add-otherid-btn">
+                        <i class="bi bi-plus me-1"></i>Add identifier
+                    </button>
+                </div>
+                <div id="cp-otherid-container" class="d-flex flex-column gap-2"></div>
+                <div class="form-text small">VIAF, Wikidata (Q-number) or ORCID. Stored as a typed identifier and shown as a chip on the public people page.</div>
+            </div>
+
             <!-- AKA / aliases — repeating sub-form. Mirrors the
                  MusicBrainz alias model in a slimmed-down shape: each
                  row carries a Name, a Type (legal / artist / pseudonym /
@@ -2315,6 +2394,51 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             </div>
         </div>
     </template>
+    <!-- #1348 — generic other-identifier row: type picker + value +
+         name-used + notes, mirroring the ISNI template's markup. The type
+         <select> is constrained to the same allow-list the server validates
+         against ($normaliseOtherId): viaf / wikidata / orcid. -->
+    <template id="cp-otherid-row-template">
+        <div class="card bg-dark border-secondary cp-otherid-row" data-row-kind="otherid">
+            <div class="card-body py-2">
+                <div class="d-flex align-items-start gap-2">
+                    <div class="flex-grow-1">
+                        <div class="row g-2 mb-1">
+                            <div class="col-12 col-md-4">
+                                <select class="form-control form-control-sm cp-otherid-type"
+                                        name="otherid[{i}][type]">
+                                    <option value="viaf">VIAF</option>
+                                    <option value="wikidata">Wikidata</option>
+                                    <option value="orcid">ORCID</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-8">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="otherid[{i}][value]" placeholder="Identifier value"
+                                       required>
+                            </div>
+                        </div>
+                        <div class="row g-2 mb-1">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="otherid[{i}][name_used]" placeholder="Name used (optional)">
+                            </div>
+                        </div>
+                        <div class="row g-2">
+                            <div class="col-12">
+                                <input type="text" class="form-control form-control-sm"
+                                       name="otherid[{i}][notes]" placeholder="Notes (optional)">
+                            </div>
+                        </div>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-danger cp-row-remove"
+                            title="Remove this identifier" aria-label="Remove this identifier">
+                        <i class="bi bi-x" aria-hidden="true"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </template>
     <template id="cp-alias-row-template">
         <div class="card bg-dark border-secondary cp-alias-row" data-row-kind="alias">
             <div class="card-body py-2">
@@ -2470,10 +2594,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const linksBox  = document.getElementById('cp-links-container');
             const ipiBox    = document.getElementById('cp-ipi-container');
             const isniBox   = document.getElementById('cp-isni-container');
+            const otherIdBox = document.getElementById('cp-otherid-container'); // #1348
             const aliasBox  = document.getElementById('cp-aliases-container');
             const linkTpl   = document.getElementById('cp-link-row-template');
             const ipiTpl    = document.getElementById('cp-ipi-row-template');
             const isniTpl   = document.getElementById('cp-isni-row-template');
+            const otherIdTpl = document.getElementById('cp-otherid-row-template'); // #1348
             const aliasTpl  = document.getElementById('cp-alias-row-template');
             const addBtn    = document.getElementById('cp-add-btn');
             const addLinkBtn= document.getElementById('cp-add-link-btn');
@@ -2486,6 +2612,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let linkIndex  = 0;
             let ipiIndex   = 0;
             let isniIndex  = 0;
+            let otherIdIndex = 0; // #1348
             let aliasIndex = 0;
 
             /* Wire each credit-people link row to the shared
@@ -2591,6 +2718,25 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
+            /* #1348 — append a generic other-identifier row, optionally
+               pre-filled. The loaded row's value arrives as prefill.number
+               (the shared load shape maps IdentifierValue → 'number'), so we
+               fall back through .number → .value; the type drives the
+               <select> (defaults to viaf when absent). */
+            function addOtherIdRow(prefill) {
+                const html = otherIdTpl.innerHTML.replaceAll('{i}', String(otherIdIndex++));
+                otherIdBox.insertAdjacentHTML('beforeend', html);
+                const row = otherIdBox.lastElementChild;
+                if (prefill) {
+                    const t = row.querySelector('select[name$="[type]"]');
+                    if (t) t.value = prefill.type || 'viaf';
+                    row.querySelector('input[name$="[value]"]').value     = prefill.number || prefill.value || '';
+                    row.querySelector('input[name$="[name_used]"]').value = prefill.name_used || '';
+                    row.querySelector('input[name$="[notes]"]').value     = prefill.notes || '';
+                }
+                if (typeof applyFlagLabels === 'function') applyFlagLabels();
+                return row;
+            }
             function addAliasRow(prefill) {
                 if (!aliasTpl) return null;
                 const html = aliasTpl.innerHTML.replaceAll('{i}', String(aliasIndex++));
@@ -2615,10 +2761,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 linksBox.innerHTML  = '';
                 ipiBox.innerHTML    = '';
                 if (isniBox)  isniBox.innerHTML  = '';
+                if (otherIdBox) otherIdBox.innerHTML = ''; // #1348
                 if (aliasBox) aliasBox.innerHTML = '';
                 linkIndex  = 0;
                 ipiIndex   = 0;
                 isniIndex  = 0;
+                otherIdIndex = 0; // #1348
                 aliasIndex = 0;
                 /* form.reset() doesn't reset hidden inputs whose
                    default value is empty — explicitly clear the
@@ -2713,6 +2861,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 (person.links   || []).forEach(l => addLinkRow(l));
                 (person.ipi     || []).forEach(r => addIpiRow(r));
                 (person.isni    || []).forEach(r => addIsniRow(r));
+                (person.otherid || []).forEach(r => addOtherIdRow(r)); // #1348
                 (person.aliases || []).forEach(a => addAliasRow(a));
                 drawer.show();
             });
@@ -2878,13 +3027,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             addLinkBtn?.addEventListener('click',  () => addLinkRow());
             addIpiBtn?.addEventListener('click',   () => addIpiRow());
             addIsniBtn?.addEventListener('click',  () => addIsniRow());
+            document.getElementById('cp-add-otherid-btn')?.addEventListener('click', () => addOtherIdRow()); // #1348
             addAliasBtn?.addEventListener('click', () => addAliasRow());
 
             /* Remove-row delegation. */
             drawerEl.addEventListener('click', (ev) => {
                 const remove = ev.target.closest('.cp-row-remove');
                 if (!remove) return;
-                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-alias-row');
+                const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-otherid-row, .cp-alias-row'); // #1348
                 if (row) row.remove();
             });
         })();

@@ -446,43 +446,47 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
             $arrProbe->close();
         } catch (\Throwable $_e) { /* default false */ }
 
+        /* #892 + #1343-B — ONE dynamic-column INSERT. ArrangementJson and
+           PublicId are each appended to the column / type / value lists only
+           when that column exists on this env, so a single prepared statement
+           covers every migration state. The base column names + type chars are
+           hardcoded constants and the placeholder string is built from a
+           constant count (rule #5 — the only legitimate interpolation into
+           SQL); every value is bound. SongbookName denorm column dropped
+           (WS-E #1013 ph2). */
+        $cols  = ['SongId', 'Number', 'Title', 'SongbookAbbr', 'Language',
+                  'Copyright', 'TuneName', 'Ccli', 'Iswc', 'Verified',
+                  'LyricsPublicDomain', 'MusicPublicDomain', 'HasAudio',
+                  'HasSheetMusic', 'LyricsText'];
+        $types = 'sisssssssiiiiis';
+        $vals  = [$songId, $number, $title, $songbookAbbr, $language,
+                  $copyright, $tuneName, $ccli, $iswc, $verified,
+                  $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText];
+
         if ($hasArrangementCol) {
             $arrangementJson = _sanitiseArrangement(
                 $song['arrangement'] ?? null,
                 count($song['components'] ?? [])
             );
-            $insert = $db->prepare(
-                'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, Language,
-                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
-                     ArrangementJson)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
-            $insert->bind_param(
-                'sisssssssiiiiiss',
-                $songId, $number, $title, $songbookAbbr,
-                $language, $copyright, $tuneName, $ccli, $iswc,
-                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText,
-                $arrangementJson
-            );
-        } else {
-            $insert = $db->prepare(
-                'INSERT INTO tblSongs
-                    (SongId, Number, Title, SongbookAbbr, Language,
-                     Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                     MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            );
-            /* SongbookName denorm column dropped (WS-E #1013 ph2). */
-            $insert->bind_param(
-                'sisssssssiiiiis',
-                $songId, $number, $title, $songbookAbbr,
-                $language, $copyright, $tuneName, $ccli, $iswc,
-                $verified, $lyricsPD, $musicPD, $hasAudio, $hasSheet, $lyricsText
-            );
+            $cols[] = 'ArrangementJson';
+            $types .= 's';
+            $vals[] = $arrangementJson;
         }
+
+        /* #1343-B — mint a stable PublicId when the column is migrated. Gated so
+           an un-migrated install still inserts cleanly under STRICT mode. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_public_id.php';
+        if (songPublicId_columnReady($db)) {
+            $cols[] = 'PublicId';
+            $types .= 's';
+            $vals[] = songPublicId_mintUnique($db);
+        }
+
+        $ph     = implode(', ', array_fill(0, count($cols), '?'));
+        $insert = $db->prepare(
+            'INSERT INTO tblSongs (' . implode(', ', $cols) . ') VALUES (' . $ph . ')'
+        );
+        $insert->bind_param($types, ...$vals);
         $insert->execute();
         $insert->close();
 
@@ -2058,10 +2062,8 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
 
 /**
  * Strip inline ChordPro `[chord]` markers from one lyric line, returning the
- * clean lyric text. This is the SINGLE place per-line chords are dropped today;
- * when the per-line-chord read path (#299/#1094) lands, capture each marker's
- * code-point offset here and emit a parallel `chords` array on the component
- * (lyricLinesWriteComponents already accepts it) — do NOT add a second write path.
+ * clean lyric text. Retained as the lyric-only helper; the chord-RETAINING path
+ * (#1126) is _bulkImport_chordProSplitLine() below.
  */
 function _bulkImport_chordProStripChords(string $line): string
 {
@@ -2070,6 +2072,38 @@ function _bulkImport_chordProStripChords(string $line): string
        → "wonderful"); the lyric is otherwise preserved verbatim (a chord-only
        line collapses to whitespace and is dropped by the caller's trim check). */
     return preg_replace('/\[[^\]]*\]/u', '', $line);
+}
+
+/**
+ * Split one ChordPro lyric line into its clean lyric + the chord symbols it
+ * carried, IN ORDER (#1126). Returns ['lyric' => string, 'chords' => string]
+ * where `chords` is the space-separated chord symbols for that line ('' when the
+ * line had none) — exactly the per-line cell shape the editor's manual chord
+ * input (#1094) writes and componentChordsToText() renders, so an imported song
+ * round-trips through the editor + the chord-chart toggle (#299) unchanged.
+ *
+ * The chords flow onto the component as a `chords` array parallel to `lines`,
+ * which _bulkImport_saveSong() persists via the SANCTIONED lyricLinesWriteComponents()
+ * write path — never a direct ChordsJson write (rule #25). NB: this captures the
+ * chords present, not their inline character offset (the app's chord model is a
+ * chord line per lyric line, not a positioned overlay); positional fidelity is a
+ * separate render concern. A pure chord-only line (no lyric) is still dropped by
+ * the caller's empty-lyric check — there is no lyric line to anchor it to.
+ */
+function _bulkImport_chordProSplitLine(string $line): array
+{
+    $chords = [];
+    /* Capture each [chord] token's symbol in document order. */
+    if (preg_match_all('/\[([^\]]*)\]/u', $line, $mm)) {
+        foreach ($mm[1] as $sym) {
+            $sym = trim($sym);
+            if ($sym !== '') { $chords[] = $sym; }
+        }
+    }
+    return [
+        'lyric'  => preg_replace('/\[[^\]]*\]/u', '', $line),
+        'chords' => implode(' ', $chords),
+    ];
 }
 
 /**
@@ -2114,13 +2148,18 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
 
     $flush = static function () use (&$current, &$components): void {
         if ($current !== null && !empty($current['lines'])) {
+            /* Keep chordless components byte-identical to the pre-#1126 shape:
+               only carry a `chords` array when at least one line had chords. */
+            $hasChords = false;
+            foreach (($current['chords'] ?? []) as $c) { if ($c !== '') { $hasChords = true; break; } }
+            if (!$hasChords) { unset($current['chords']); }
             $components[] = $current;
         }
         $current = null;
     };
     $startSection = static function (string $type, int $num) use (&$current, $flush): void {
         $flush();
-        $current = ['type' => $type, 'number' => $num, 'lines' => []];
+        $current = ['type' => $type, 'number' => $num, 'lines' => [], 'chords' => []];
     };
 
     foreach ($lines as $raw) {
@@ -2190,15 +2229,19 @@ function _bulkImport_parseChordPro(string $body, string $abbrev, string $songboo
             continue;
         }
 
-        /* Lyric line. Strip inline [chord] markers → clean lyric. A line that
-           is chord-only (empty after stripping) is skipped in this lyrics-only
-           scope. Auto-open a verse if no section tag preceded the lyrics. */
-        $lyric = rtrim(_bulkImport_chordProStripChords($line));
+        /* Lyric line. Split into clean lyric + its [chord] symbols (#1126); the
+           chords ride a `chords` array parallel to `lines` and persist via the
+           sanctioned write path. A chord-only line (empty after stripping) has no
+           lyric to anchor to and is skipped. Auto-open a verse if no section tag
+           preceded the lyrics. */
+        $parsed = _bulkImport_chordProSplitLine($line);
+        $lyric  = rtrim($parsed['lyric']);
         if (trim($lyric) === '') { continue; }
         if ($current === null) {
             $startSection('verse', ++$autoVerse);
         }
-        $current['lines'][] = $lyric;
+        $current['lines'][]  = $lyric;
+        $current['chords'][] = $parsed['chords'];   /* parallel to lines; '' when the line had no chords */
     }
     $flush();
 
@@ -2389,6 +2432,69 @@ function _bulkImport_openLyricsLinesToArray(\SimpleXMLElement $linesNode): array
 }
 
 /**
+ * Rich per-line parse of an OpenLyrics <lines> node (#1130) — preserves the
+ * enrichment the flat _bulkImport_openLyricsLinesToArray() discards. Returns a
+ * list of ['text','chords','note'] (one per physical <br>-separated line), where
+ *   - chords = space-separated symbols from inline <chord …> (the editor #1094
+ *     per-line cell shape — name= for OpenLyrics 0.8, root[+structure][/bass] for 0.9);
+ *   - note   = the line's <comment> text (joined if several).
+ * These ride the component `chords` / `notes` arrays through the SANCTIONED
+ * lyricLinesWriteComponents() write path (rule #25 — no direct ChordsJson/NotesJson
+ * write). Per-verse translation/transliteration is handled by the CALLER setting
+ * the component's `language` from the verse's lang attribute (OpenLyrics models a
+ * translation as a separate <verse lang="…">, not inline) — so no per-line
+ * tblLyricLineTranslations / Id-threading is needed for the OpenLyrics shape.
+ */
+function _bulkImport_openLyricsParseLines(\SimpleXMLElement $linesNode): array
+{
+    $inner = (string)$linesNode->asXML();
+    $inner = (string)preg_replace('#^<lines\b[^>]*>#i', '', $inner);
+    $inner = (string)preg_replace('#</lines>\s*$#i', '', $inner);
+
+    /* <br> is the OpenLyrics physical line separator. */
+    $segments = preg_split('#<br\s*/?>#i', $inner) ?: [];
+    $out = [];
+    foreach ($segments as $seg) {
+        /* Inline chords: <chord name="G"/> (0.8) | <chord root="C" structure="m7" bass="E"/> (0.9). */
+        $chords = [];
+        if (preg_match_all('#<chord\b([^>]*?)/?>#i', $seg, $cm)) {
+            foreach ($cm[1] as $attrs) {
+                $sym = '';
+                if (preg_match('#\bname\s*=\s*("|\')(.*?)\1#i', $attrs, $a)) {
+                    $sym = trim($a[2]);
+                } elseif (preg_match('#\broot\s*=\s*("|\')(.*?)\1#i', $attrs, $r)) {
+                    $sym = trim($r[2]);
+                    if (preg_match('#\bstructure\s*=\s*("|\')(.*?)\1#i', $attrs, $s)) { $sym .= trim($s[2]); }
+                    if (preg_match('#\bbass\s*=\s*("|\')(.*?)\1#i', $attrs, $b))      { $sym .= '/' . trim($b[2]); }
+                }
+                if ($sym !== '') { $chords[] = $sym; }
+            }
+        }
+        /* Per-line comment → presenter note. */
+        $notes = [];
+        if (preg_match_all('#<comment\b[^>]*>(.*?)</comment>#is', $seg, $nm)) {
+            foreach ($nm[1] as $c) {
+                $c = trim(html_entity_decode((string)preg_replace('#<[^>]+>#', '', $c), ENT_QUOTES | ENT_XML1, 'UTF-8'));
+                if ($c !== '') { $notes[] = $c; }
+            }
+        }
+        /* Bare lyric text: drop comments wholesale, then all tags; collapse any
+           source newline whitespace inside the segment to a single space. */
+        $bare = (string)preg_replace('#<comment\b[^>]*>.*?</comment>#is', '', $seg);
+        $bare = (string)preg_replace('#<[^>]+>#', '', $bare);
+        $bare = html_entity_decode($bare, ENT_QUOTES | ENT_XML1, 'UTF-8');
+        $bare = (string)preg_replace('#\s*\n\s*#u', ' ', $bare);
+        $out[] = ['text' => rtrim($bare), 'chords' => implode(' ', $chords), 'note' => implode(' · ', $notes)];
+    }
+
+    /* Trim leading / trailing FULLY-blank lines (no text AND no chords/notes). */
+    $blank = static fn(array $l): bool => trim($l['text']) === '' && $l['chords'] === '' && $l['note'] === '';
+    while (!empty($out) && $blank($out[0]))                 { array_shift($out); }
+    while (!empty($out) && $blank((array)end($out)))        { array_pop($out); }
+    return $out;
+}
+
+/**
  * Parse one OpenLyrics XML document into a neutral structure (no songbook
  * abbreviation / number / SongId resolution — the caller does that, since it
  * depends on the live DB auto-increment).
@@ -2462,17 +2568,28 @@ function _bulkImport_parseOpenLyrics(string $body): array
     if (isset($xml->lyrics->verse)) {
         foreach ($xml->lyrics->verse as $verse) {
             [$type, $num] = _bulkImport_openLyricsVerseType((string)($verse['name'] ?? 'v'));
-            if ($language === '' && isset($verse['lang'])) {
-                $language = trim((string)$verse['lang']);
+            /* Per-verse language = the translation/transliteration signal (#1130):
+               OpenLyrics models a translated verse as a separate <verse lang="…">. */
+            $verseLang = isset($verse['lang']) ? trim((string)$verse['lang']) : '';
+            if ($language === '' && $verseLang !== '') {
+                $language = $verseLang;
             }
-            $lines = [];
+            $lines = []; $chords = []; $notes = [];
             foreach (($verse->lines ?? []) as $linesNode) {
-                foreach (_bulkImport_openLyricsLinesToArray($linesNode) as $ln) {
-                    $lines[] = $ln;
+                foreach (_bulkImport_openLyricsParseLines($linesNode) as $ln) {
+                    $lines[]  = $ln['text'];
+                    $chords[] = $ln['chords'];
+                    $notes[]  = $ln['note'];
                 }
             }
             if (!empty($lines)) {
-                $components[] = ['type' => $type, 'number' => $num, 'lines' => $lines];
+                $comp = ['type' => $type, 'number' => $num, 'lines' => $lines];
+                /* Carry enrichment only when present (chordless/noteless/mono-lingual
+                   verses stay byte-identical to the pre-#1130 component shape). */
+                if ($verseLang !== '') { $comp['language'] = $verseLang; }
+                foreach ($chords as $c) { if ($c !== '') { $comp['chords'] = $chords; break; } }
+                foreach ($notes as $n)  { if ($n !== '') { $comp['notes']  = $notes;  break; } }
+                $components[] = $comp;
             }
         }
     }

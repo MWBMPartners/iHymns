@@ -92,7 +92,7 @@ export class StorageBridge {
                         .then((result) => {
                             if (result === 'pong') {
                                 this.connected = true;
-                                console.log('[StorageBridge] Connected to sync domain');
+                                console.debug('[StorageBridge] Connected to sync domain');
                                 /* Sync local data to bridge on first connect */
                                 this._syncLocalToBridge();
                                 resolve(true);

@@ -1,0 +1,335 @@
+/* ============================================================================
+ * iHymns — Song print templates (#1350)
+ *
+ * Replaces window.print() on the chromed song page with a CLEAN standalone print
+ * document built from the song's structured data (?action=song_data), in a
+ * user-chosen template.
+ *
+ * Phase 1: built-in templates + picker. Phase 2 (this): templates are an ordered
+ * BLOCK LIST so curators can compose their own in the WYSIWYG editor at
+ * /manage/print-templates (saved to tblPrintTemplates, fetched via
+ * ?action=print_templates and merged into the picker). The 3 built-ins below stay
+ * in JS so printing always works offline. The block renderer is EXPORTED so the
+ * admin editor's live preview is byte-identical to the printed page (one source of
+ * truth).
+ *
+ * A template = { id?, name, blocks: [{type, …options}], pageOptions: {fontPt, columns} }.
+ *
+ * Docs: https://developer.mozilla.org/en-US/docs/Web/API/Window/print
+ * ========================================================================== */
+
+/* Block-type registry — drives BOTH the renderer (below) and the editor's palette.
+   `label` = editor display; `options` = editable per-block option keys + defaults. */
+export const PRINT_BLOCK_TYPES = {
+    title:       { label: 'Title',           options: {} },
+    subtitle:    { label: 'Songbook + number', options: { showBook: true, showNumber: true } },
+    credits:     { label: 'Credits (authors)', options: {} },
+    lyrics:      { label: 'Lyrics',          options: { showLabels: true, showChords: false, columns: 1 } },
+    copyright:   { label: 'Copyright',       options: {} },
+    identifiers: { label: 'CCLI / ISWC',     options: { ccli: true, iswc: true } },
+    text:        { label: 'Custom text',     options: { content: '' } },
+    permalink:   { label: 'Permalink (URL)', options: {} },
+    spacer:      { label: 'Spacer',          options: { size: 'md' } },
+    pagebreak:   { label: 'Page break',      options: {} },
+};
+
+/* The 3 built-ins, expressed as block templates (so built-in + custom unify). */
+export const PRINT_BUILTIN_TEMPLATES = [
+    { id: 'builtin:lyrics', name: 'Lyrics only', builtin: true, pageOptions: { fontPt: 12, columns: 1 },
+      blocks: [ { type: 'title' }, { type: 'subtitle', showBook: true, showNumber: true },
+                { type: 'lyrics', showLabels: true, showChords: false, columns: 1 },
+                { type: 'copyright' }, { type: 'identifiers', ccli: true, iswc: true } ] },
+    { id: 'builtin:chords', name: 'Lyrics + chords', builtin: true, pageOptions: { fontPt: 12, columns: 1 },
+      blocks: [ { type: 'title' }, { type: 'subtitle', showBook: true, showNumber: true },
+                { type: 'lyrics', showLabels: true, showChords: true, columns: 1 },
+                { type: 'copyright' }, { type: 'identifiers', ccli: true, iswc: true } ] },
+    { id: 'builtin:large', name: 'Large print', builtin: true, pageOptions: { fontPt: 18, columns: 1 },
+      blocks: [ { type: 'title' }, { type: 'subtitle', showBook: true, showNumber: true },
+                { type: 'lyrics', showLabels: true, showChords: false, columns: 1 },
+                { type: 'copyright' } ] },
+];
+
+/* A representative song for the editor's live preview (no fetch needed). */
+export const PRINT_SAMPLE_SONG = {
+    id: 'SAMPLE-1', publicId: 'SAMPLEQR01',
+    title: 'Amazing Grace', songbookName: 'Sample Hymnal', songbook: 'SAMPLE', number: 1,
+    language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',
+    writers: ['John Newton'], composers: ['Traditional'],
+    components: [
+        { type: 'verse', number: 1, lines: ['Amazing grace! how sweet the sound', 'That saved a wretch like me!'], chords: ['G        G7       C   G', 'G            D'] },
+        { type: 'chorus', number: 0, lines: ['Praise God, praise God'], chords: ['C    G'] },
+    ],
+};
+
+/* Minimal HTML escape — the print window/preview is assembled as a string, so every
+   interpolated value MUST be escaped. */
+function esc(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function componentLabel(comp) {
+    const type = String(comp.type || 'verse');
+    const cap = type.charAt(0).toUpperCase() + type.slice(1);
+    const n = comp.number;
+    const num = (n != null && n !== '' && !isNaN(n) && parseInt(n, 10) > 0) ? parseInt(n, 10) : null;
+    return num != null ? `${cap} ${num}` : cap;
+}
+
+/* Collect formatted credit lines from whatever credit arrays the song carries. */
+function creditsLines(song) {
+    const map = [['writers', 'Words'], ['composers', 'Music'], ['arrangers', 'Arr.'],
+                ['adaptors', 'Adapt.'], ['translators', 'Trans.'], ['artists', 'Artist']];
+    const out = [];
+    map.forEach(([key, label]) => {
+        const arr = Array.isArray(song[key]) ? song[key].filter(Boolean) : [];
+        if (arr.length) {
+            const names = arr.map(v => (typeof v === 'string') ? v : (v.name || '')).filter(Boolean);
+            if (names.length) { out.push(`${label}: ${names.join(', ')}`); }
+        }
+    });
+    return out;
+}
+
+/* ---- Per-block renderers. Each returns an HTML string (or '' to render nothing). ---- */
+function renderLyrics(song, block) {
+    const components = Array.isArray(song.components) ? song.components : [];
+    const order = (Array.isArray(song.arrangement) && song.arrangement.length)
+        ? song.arrangement.map(i => components[i]).filter(Boolean) : components;
+    const cols = parseInt(block.columns, 10) === 2 ? 2 : 1;
+    const body = order.map((comp) => {
+        const lines = Array.isArray(comp.lines) ? comp.lines : [];
+        const chords = Array.isArray(comp.chords) ? comp.chords : [];
+        const typeClass = 'lyric-' + esc(String(comp.type || 'verse'));
+        const label = (block.showLabels !== false)
+            ? `<div class="print-label">${esc(componentLabel(comp))}</div>` : '';
+        const linesHtml = lines.map((line, i) => {
+            const chord = (block.showChords && chords[i])
+                ? String(Array.isArray(chords[i]) ? chords[i].join(' ') : chords[i]).trim() : '';
+            const chordHtml = chord ? `<div class="print-chord">${esc(chord)}</div>` : '';
+            const text = (line && String(line).trim()) ? esc(line) : '&nbsp;';
+            return `${chordHtml}<div class="print-line">${text}</div>`;
+        }).join('');
+        return `<div class="print-component ${typeClass}">${label}${linesHtml}</div>`;
+    }).join('');
+    return `<div class="print-lyrics" style="columns:${cols};column-gap:1.5em">${body || '<p>(No lyrics)</p>'}</div>`;
+}
+
+function renderBlock(song, block) {
+    switch (block.type) {
+        case 'title':
+            return `<h1 class="print-title">${esc(song.title || 'Untitled')}</h1>`;
+        case 'subtitle': {
+            const bits = [];
+            if (block.showBook !== false && (song.songbookName || song.songbook)) {
+                bits.push(esc(song.songbookName || song.songbook));
+            }
+            if (block.showNumber !== false && song.number != null && parseInt(song.number, 10) > 0) {
+                bits.push('#' + parseInt(song.number, 10));
+            }
+            return bits.length ? `<div class="print-subtitle">${bits.join(' · ')}</div>` : '';
+        }
+        case 'credits': {
+            const lines = creditsLines(song);
+            return lines.length ? `<div class="print-credits">${lines.map(esc).join('<br>')}</div>` : '';
+        }
+        case 'lyrics':
+            return renderLyrics(song, block);
+        case 'copyright':
+            return song.copyright ? `<div class="print-footer">${esc(song.copyright)}</div>` : '';
+        case 'identifiers': {
+            const bits = [];
+            if (block.ccli !== false && song.ccli) { bits.push('CCLI Song #' + esc(song.ccli)); }
+            if (block.iswc !== false && song.iswc) { bits.push('ISWC ' + esc(song.iswc)); }
+            return bits.length ? `<div class="print-footer">${bits.join('<br>')}</div>` : '';
+        }
+        case 'text':
+            return block.content ? `<div class="print-text">${esc(block.content)}</div>` : '';
+        case 'permalink': {
+            /* The canonical short permalink (#1343-B PublicId when present) printed as
+               text so a reader can type it to open the song — and the natural payload
+               for a future QR-image upgrade of this block.
+               Base = window.location.origin BY DESIGN: a real printout is produced from
+               the public song page, so the origin IS the public host. (The /manage
+               editor's live preview runs on the admin host, so its sample URL shows that
+               host — illustrative only; the actual handout uses the public origin.) */
+            const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+            const pid = song.publicId || song.id || '';
+            if (!pid) { return ''; }
+            const url = origin + '/song/' + encodeURIComponent(pid);
+            return `<div class="print-permalink">Find this song online:<br>`
+                + `<span class="print-permalink-url">${esc(url)}</span></div>`;
+        }
+        case 'spacer': {
+            const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
+            return `<div style="height:${h}"></div>`;
+        }
+        case 'pagebreak':
+            return '<div style="break-after:page;page-break-after:always"></div>';
+        default:
+            return '';
+    }
+}
+
+/* Render the BODY (no <html>/<head>) — used by the editor's live preview. */
+export function renderTemplateBodyHtml(song, template) {
+    const blocks = Array.isArray(template && template.blocks) ? template.blocks : [];
+    return blocks.map(b => renderBlock(song, b)).join('\n');
+}
+
+/* The print CSS, parameterised by the template's page options. */
+function printCss(pageOptions) {
+    const fontPt = parseInt((pageOptions && pageOptions.fontPt), 10) || 12;
+    return `
+    * { box-sizing: border-box; }
+    body { font-family: Georgia, 'Times New Roman', serif; color: #000; background: #fff;
+           margin: 1.5cm; font-size: ${fontPt}pt; line-height: 1.35; }
+    .print-title { font-size: ${fontPt + 6}pt; font-weight: bold; margin: 0 0 0.1em; }
+    .print-subtitle { font-size: ${fontPt - 2}pt; color: #555; margin: 0 0 0.6em; }
+    .print-credits { font-size: ${fontPt - 2}pt; color: #444; margin: 0 0 0.8em; }
+    .print-component { margin: 0 0 0.9em; break-inside: avoid; }
+    .print-label { font-weight: bold; font-size: ${fontPt - 2}pt; color: #444; margin-bottom: 0.2em; }
+    .lyric-chorus .print-line, .lyric-refrain .print-line { font-style: italic; }
+    .print-line { margin: 0.05em 0; }
+    .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: 0.15em 0 0; }
+    .print-text { margin: 0 0 0.8em; }
+    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: #444; }
+    .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
+    .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: #777; }
+    @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
+}
+
+/* Assemble the full standalone print document. */
+export function buildPrintDoc(song, template) {
+    const title = song.title || 'Untitled';
+    const book  = song.songbookName || song.songbook || '';
+    return `<!DOCTYPE html>
+<html lang="${esc(song.language || 'en')}">
+<head>
+<meta charset="utf-8">
+<title>${esc(title)}${book ? ' — ' + esc(book) : ''}</title>
+<style>${printCss(template.pageOptions)}</style>
+</head>
+<body>
+${renderTemplateBodyHtml(song, template)}
+</body>
+</html>`;
+}
+
+function printDoc(html) {
+    const w = window.open('', '_blank');
+    if (!w) { return false; }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+    w.onload = () => { try { w.focus(); w.print(); } catch (_e) { /* user can print manually */ } };
+    return true;
+}
+
+async function fetchSong(app, songId) {
+    try {
+        const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+        const res = await fetch(`${base}?action=song_data&id=${encodeURIComponent(songId)}`,
+            { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
+        if (!res.ok) { return null; }
+        const json = await res.json();
+        return json.song || null;
+    } catch (_e) { return null; }
+}
+
+/* Fetch curated custom templates (scope=song); merge after the built-ins. Failure or
+   an un-migrated install yields just the built-ins (graceful). */
+async function loadTemplates(app) {
+    let custom = [];
+    try {
+        const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
+        const res = await fetch(`${base}?action=print_templates&scope=song`,
+            { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
+        if (res.ok) {
+            const json = await res.json();
+            if (Array.isArray(json.templates)) {
+                custom = json.templates
+                    .filter(t => t && Array.isArray(t.blocks) && t.name)
+                    .map(t => ({ id: 'db:' + t.id, name: String(t.name), blocks: t.blocks, pageOptions: t.pageOptions || {} }));
+            }
+        }
+    } catch (_e) { /* built-ins only */ }
+    return PRINT_BUILTIN_TEMPLATES.concat(custom);
+}
+
+/* The template-picker overlay — self-built, focus-trapped, ESC/backdrop to cancel. */
+function showPicker(app, songId, templates) {
+    const overlay = document.createElement('div');
+    overlay.className = 'print-picker-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2000;display:flex;align-items:center;'
+        + 'justify-content:center;background:rgba(0,0,0,.55);padding:1rem;';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'print-picker-title');
+
+    const opts = templates.map((t, i) => `
+        <label class="list-group-item d-flex gap-2 align-items-center">
+            <input class="form-check-input flex-shrink-0" type="radio" name="print-template"
+                   value="${i}" ${i === 0 ? 'checked' : ''}>
+            <span><strong>${esc(t.name)}</strong>${t.builtin ? '' : ' <span class="badge bg-secondary-subtle text-secondary-emphasis">custom</span>'}</span>
+        </label>`).join('');
+
+    const dialog = document.createElement('div');
+    dialog.className = 'card shadow-lg';
+    dialog.style.cssText = 'max-width:30rem;width:100%;';
+    dialog.innerHTML = `
+        <div class="card-body">
+            <h2 class="h5 card-title d-flex align-items-center gap-2" id="print-picker-title">
+                <i class="fa-solid fa-print" aria-hidden="true"></i>Print song</h2>
+            <p class="card-text small text-muted">Choose a layout — a clean, printer-friendly page (no app buttons).</p>
+            <div class="list-group mb-3" style="max-height:18rem;overflow:auto">${opts}</div>
+            <div class="d-flex justify-content-end gap-2">
+                <button type="button" class="btn btn-outline-secondary btn-sm print-picker-cancel">Cancel</button>
+                <button type="button" class="btn btn-primary btn-sm print-picker-go">
+                    Print <i class="fa-solid fa-arrow-right ms-1" aria-hidden="true"></i></button>
+            </div>
+        </div>`;
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const goEl     = dialog.querySelector('.print-picker-go');
+    const cancelEl = dialog.querySelector('.print-picker-cancel');
+    const lastFocus = document.activeElement;
+    function close() { overlay.remove(); if (lastFocus && lastFocus.focus) { lastFocus.focus(); } }
+    goEl.focus();
+
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { close(); } });
+    overlay.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { close(); return; }
+        if (e.key === 'Tab') {
+            if (e.shiftKey && document.activeElement === cancelEl) { e.preventDefault(); goEl.focus(); }
+            else if (!e.shiftKey && document.activeElement === goEl) { e.preventDefault(); cancelEl.focus(); }
+        }
+    });
+    cancelEl.addEventListener('click', close);
+    goEl.addEventListener('click', async () => {
+        const sel = overlay.querySelector('input[name="print-template"]:checked');
+        const tpl = templates[sel ? parseInt(sel.value, 10) : 0] || templates[0];
+        close();
+        app.showToast?.('Preparing print…', 'info', 1500);
+        const song = await fetchSong(app, songId);
+        if (!song) { app.showToast?.('Could not load the song to print.', 'danger', 3000); return; }
+        if (!printDoc(buildPrintDoc(song, tpl))) {
+            app.showToast?.('Pop-up blocked — allow pop-ups to print.', 'warning', 4000);
+        }
+    });
+}
+
+/**
+ * openSongPrintDialog(app) — entry point for the song page's Print action. Loads the
+ * available templates (built-in + curated) then shows the picker for the current
+ * song. Falls back to window.print() if we can't identify a song.
+ */
+export async function openSongPrintDialog(app) {
+    const page = document.querySelector('.page-song');
+    const songId = page && page.dataset ? page.dataset.songId : '';
+    if (!songId) { window.print(); return; }
+    const templates = await loadTemplates(app);
+    showPicker(app, songId, templates);
+}

@@ -4539,6 +4539,9 @@ switch ($action) {
         }
         $delBody   = json_decode(file_get_contents('php://input') ?: '', true);
         $delSongId = trim((string)(is_array($delBody) ? ($delBody['songId'] ?? $delBody['id'] ?? '') : ($_GET['id'] ?? '')));
+        /* #1343 — optional relink target for the deleted song's permalink (blank =
+           "removed" tombstone). Either way the old /song/<id> resolves, not 404s. */
+        $delRedirectTo = trim((string)(is_array($delBody) ? ($delBody['redirectTo'] ?? '') : ''));
         if ($delSongId === '') {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'songId is required.']);
@@ -4559,18 +4562,47 @@ switch ($action) {
                 echo json_encode(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0]);
                 break;
             }
+            /* Resolve the relink target (a different, existing song) else tombstone. */
+            $delTarget = null;
+            if ($delRedirectTo !== '' && $delRedirectTo !== $delSongId) {
+                $delChk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $delChk->bind_param('s', $delRedirectTo);
+                $delChk->execute();
+                if ($delChk->get_result()->fetch_row() !== null) { $delTarget = $delRedirectTo; }
+                $delChk->close();
+            }
+            /* Keep permalinks alive (#1343) — gated. When relinking, FORWARD any
+               redirects already pointing AT this song to the new target BEFORE the
+               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
+               (mirrors the merge path). Tombstone (null) lets inbound fall to "removed". */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+            /* Capture PublicId before the delete so a shared /song/<PublicId> resolves too (#1343-B). */
+            $delPubId = '';
+            if (songPublicId_columnReady($db)) {
+                $dpp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $dpp->bind_param('s', $delSongId);
+                $dpp->execute();
+                $delPubId = (string)($dpp->get_result()->fetch_assoc()['PublicId'] ?? '');
+                $dpp->close();
+            }
+            if ($delTarget !== null) { songRedirectRepoint($db, $delSongId, $delTarget); }
             /* Single cascade delete — see the block comment above. */
             $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
             $delStmt->bind_param('s', $delSongId);
             $delStmt->execute();
             $delCount = $delStmt->affected_rows;
             $delStmt->close();
+            $delBy = (int)($currentUser['id'] ?? 0) ?: null;
+            songRedirectWrite($db, $delSongId, $delTarget, 'delete', $delBy);
+            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $delTarget, 'delete', $delBy); }
             $db->commit();
             logActivity('song.delete', 'song', $delSongId, [
-                'title'    => (string)($delPrevRow['Title'] ?? ''),
-                'songbook' => (string)($delPrevRow['SongbookAbbr'] ?? ''),
+                'title'       => (string)($delPrevRow['Title'] ?? ''),
+                'songbook'    => (string)($delPrevRow['SongbookAbbr'] ?? ''),
+                'redirect_to' => $delTarget ?? '(tombstone)',
             ]);
-            echo json_encode(['ok' => true, 'deleted' => (int)$delCount, 'songId' => $delSongId]);
+            echo json_encode(['ok' => true, 'deleted' => (int)$delCount, 'songId' => $delSongId, 'redirectTo' => $delTarget]);
         } catch (\Throwable $e) {
             if (isset($db)) { try { $db->rollback(); } catch (\Throwable $_e) {} }
             error_log('[delete_song] ' . $e->getMessage());

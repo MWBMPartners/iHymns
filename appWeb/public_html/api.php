@@ -161,6 +161,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
+   validators below can defensively resolve a PublicId passed by a non-web
+   client back to its underlying SongId before the existing allow-list regex
+   runs. Every read inside is gated on tblSongs.PublicId existing, so this is
+   a no-op on an un-migrated install. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
@@ -709,13 +715,57 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Print templates (#1350 Phase 2) — curated, block-based print
+         * layouts for the clean song-print picker (js/modules/print.js merges
+         * these after its 3 built-ins). Public read (anonymous can print);
+         * returns only active templates for the scope. Gated on the table
+         * existing so an un-migrated install returns [] and the built-ins
+         * still work — never a 500 under STRICT.
+         * ----------------------------------------------------------------- */
+        case 'print_templates':
+            $ptScope = isset($_GET['scope']) ? preg_replace('/[^a-z]/', '', strtolower((string)$_GET['scope'])) : 'song';
+            if ($ptScope === '') { $ptScope = 'song'; }
+            try {
+                $db = getDbMysqli();
+                $probe = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPrintTemplates' LIMIT 1");
+                if (!$probe || $probe->fetch_row() === null) { sendJson(['templates' => []]); break; }
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, BlocksJson, PageOptionsJson
+                       FROM tblPrintTemplates
+                      WHERE Scope = ? AND IsActive = 1
+                      ORDER BY SortOrder ASC, Id ASC'
+                );
+                $stmt->bind_param('s', $ptScope);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $ptOut = [];
+                while ($row = $res->fetch_assoc()) {
+                    $blocks = json_decode((string)$row['BlocksJson'], true);
+                    if (!is_array($blocks)) { continue; }
+                    $pageOpts = ($row['PageOptionsJson'] !== null) ? json_decode((string)$row['PageOptionsJson'], true) : null;
+                    $ptOut[] = [
+                        'id'          => (int)$row['Id'],
+                        'name'        => (string)$row['Name'],
+                        'blocks'      => $blocks,
+                        'pageOptions' => is_array($pageOpts) ? $pageOpts : (object)[],
+                    ];
+                }
+                $stmt->close();
+                sendJson(['templates' => $ptOut]);
+            } catch (\Throwable $e) {
+                sendJson(['templates' => []]); /* graceful — built-ins still work */
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Public songbook export (#1166) — full records of ONE songbook's
          * songs for the end-user export UI (js/modules/export-ui.js). DB-direct,
          * scoped to one songbook (rule #17 — never the corpus); same shape the
-         * editor's songbook_export returns ({songs, songbook}). When content
-         * gating is enabled, export of copyrighted content is a gated action
-         * (#1141) — to wire here once gating ships; currently mirrors the public
-         * view (gating off → public-domain + open catalogue).
+         * editor's songbook_export returns ({songs, songbook}). EXPORT is a gated
+         * ACTION distinct from display (#1120/#1141): when content_gating_enabled
+         * is on, songs the requester can't EXPORT (a restriction whose
+         * AppliesToAction is export|reproduce|all) are filtered out. Dormant while
+         * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
@@ -728,6 +778,20 @@ if ($action !== null) {
             foreach ($songData->getSongbooks() as $b) {
                 $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
                 if ($bid === $abbr) { $sbSongbook = $b; break; }
+            }
+            /* #1120/#1141 — per-action EXPORT gating (dormant unless the flag is on). */
+            if ($sbSongs && function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+                if (function_exists('checkBulkAccess')) {
+                    $exAuth = getAuthenticatedUser();
+                    $exUid  = $exAuth ? (int)$exAuth['Id'] : null;
+                    $exPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                    $exKey  = static fn(array $s): string => (string)($s['id'] ?? $s['songId'] ?? $s['SongId'] ?? '');
+                    $exIds  = array_values(array_filter(array_map($exKey, $sbSongs), static fn($v) => $v !== ''));
+                    $exAllow = checkBulkAccess('song', $exIds, $exUid, $exPlat, 'export');
+                    $sbSongs = array_values(array_filter($sbSongs, static fn($s) => $exAllow[$exKey($s)] ?? true));
+                }
             }
             sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
             break;
@@ -994,11 +1058,28 @@ if ($action !== null) {
             $ingestDb = getDbMysqli();
             $ingestKey = apiKeyAuthorize($ingestDb, 'lyrics:ingest');
             if ($ingestKey === null) { break; } /* 401 already emitted */
+            /* #1066 Theme B — enforce the per-key rate limit (429 + Retry-After if
+               exceeded; no-op when the key has no limit / the schema is un-migrated). */
+            if (!apiKeyEnforceRateLimit($ingestDb, $ingestKey, 'lyrics:ingest')) { break; }
 
             $rawBody = (string)file_get_contents('php://input');
             if (strlen($rawBody) > 4 * 1024 * 1024) {
                 sendJson(['error' => 'Payload exceeds the 4 MiB ingest limit.'], 413);
                 break;
+            }
+            /* #1066 Theme B — idempotent replay: a retry carrying the same
+               Idempotency-Key header AND the same body returns the cached response
+               WITHOUT re-ingesting. Captured on the success path below. */
+            $idemKey = apiKeyIdempotencyKey();
+            if ($idemKey !== null) {
+                $replay = apiKeyIdempotencyReplay($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody);
+                if ($replay !== null) {
+                    http_response_code($replay['status']);
+                    header('Content-Type: application/json; charset=UTF-8');
+                    header('Idempotency-Replayed: true');
+                    echo $replay['data'];
+                    break;
+                }
             }
             $payload   = json_decode($rawBody, true);
             $songId    = '';
@@ -1072,7 +1153,7 @@ if ($action !== null) {
                         'status'    => $status,
                     ]);
                 }
-                sendJson([
+                $ingestResponse = [
                     'ok'                => true,
                     'songId'            => $songId,
                     'matched'           => $resolved['matched'],
@@ -1087,7 +1168,13 @@ if ($action !== null) {
                     'hasSyllableTiming' => $parsed['hasSyllableTiming'],
                     'language'          => $parsed['language'],
                     'status'            => $status,
-                ]);
+                ];
+                /* #1066 Theme B — cache the success under the Idempotency-Key so a
+                   client retry replays it instead of re-ingesting (24h TTL). */
+                if ($idemKey !== null) {
+                    apiKeyIdempotencyStore($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody, 200, (string)json_encode($ingestResponse));
+                }
+                sendJson($ingestResponse);
             } catch (\RuntimeException $e) {
                 sendJson(['error' => 'Ingest failed: ' . $e->getMessage()], 422);
             }
@@ -1239,8 +1326,21 @@ if ($action !== null) {
 
             /* Sanitise inputs */
             $setlistName  = mb_substr(trim($body['name']), 0, 200);
+            /* #1343-B — resolve any PublicId in the song list to its SongId before
+               the existing allow-list regex (unchanged), so a non-web client that
+               built the setlist from opaque permalinks stores canonical SongIds.
+               LAZY (#1343-B review): getDbMysqli() is touched only for a
+               PublicId-shaped token, so SongId-only input (the web app) adds no DB
+               dependency here and a malformed request still 400s before any DB hit.
+               Gated/no-op pre-migration. */
             $setlistSongs = array_values(array_filter(
-                array_map('trim', $body['songs']),
+                array_map(static function ($s) {
+                    $s = trim($s);
+                    if (songPublicId_looksLikePublicId($s)) {
+                        $s = songPublicId_resolveToSongId(getDbMysqli(), $s);
+                    }
+                    return $s;
+                }, $body['songs']),
                 fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
             ));
             $ownerId      = preg_replace('/[^a-f0-9\-]/', '', strtolower(trim($body['owner'])));
@@ -1286,7 +1386,14 @@ if ($action !== null) {
             $arrangements = [];
             if (isset($body['arrangements']) && is_array($body['arrangements'])) {
                 foreach ($body['arrangements'] as $sid => $arr) {
-                    if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                    if (!is_string($sid)) continue;
+                    /* #1343-B — resolve a PublicId key to its SongId so the
+                       arrangement map keys on the canonical SongId. Gated;
+                       no-op for a real SongId (which never looks like a PublicId). */
+                    if (songPublicId_looksLikePublicId($sid)) {
+                        $sid = songPublicId_resolveToSongId(getDbMysqli(), $sid);
+                    }
+                    if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
                     if (count($validArr) > 0) {
@@ -2596,6 +2703,12 @@ if ($action !== null) {
                 } else {
                     continue;
                 }
+                /* #1343-B — resolve a PublicId to its SongId before the allow-list
+                   regex (unchanged). $db is in scope above; gated/no-op pre-migration
+                   and a real SongId never looks like a PublicId, so unchanged for it. */
+                if (songPublicId_looksLikePublicId($sid)) {
+                    $sid = songPublicId_resolveToSongId($db, $sid);
+                }
                 if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                 $localFavs[$sid] = $tags;
             }
@@ -2726,6 +2839,14 @@ if ($action !== null) {
             $rawBody = file_get_contents('php://input');
             $body = json_decode($rawBody, true);
             $removeSongId = trim($body['song_id'] ?? '');
+
+            /* #1343-B — a non-web client may pass a PublicId where a SongId is
+               expected; resolve it before the allow-list regex (unchanged).
+               getDbMysqli() is only touched for a PublicId-shaped token, so a
+               real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($removeSongId)) {
+                $removeSongId = songPublicId_resolveToSongId(getDbMysqli(), $removeSongId);
+            }
 
             if (!preg_match('/^[A-Za-z]+-\d+$/', $removeSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
@@ -5088,6 +5209,11 @@ if ($action !== null) {
             if (count($existIds) > 200) { $existIds = array_slice($existIds, 0, 200); }
             try {
                 $db = getDbMysqli();
+                /* #1343-B review — songs_exist deliberately does NOT resolve PublicIds.
+                   Its contract is to echo back the subset of the CLIENT'S input ids that
+                   exist; resolving would return SongIds a PublicId-keyed caller can't
+                   match against its cache (and might wrongly prune a live song). Callers
+                   send canonical SongIds; the web app always does. */
                 /* Placeholder string built from a constant count (rule #5 —
                    the only legitimate interpolation into SQL); values bound. */
                 $ph    = implode(',', array_fill(0, count($existIds), '?'));
@@ -5144,6 +5270,12 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                /* #1343-B — resolve a PublicId to its SongId so the history row keys
+                   on the canonical SongId, not the opaque permalink. Inside the try
+                   so a DB outage still degrades gracefully. Gated/no-op pre-migration. */
+                if (songPublicId_looksLikePublicId($viewSongId)) {
+                    $viewSongId = songPublicId_resolveToSongId($db, $viewSongId);
+                }
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
                 );
@@ -5966,6 +6098,13 @@ if ($action !== null) {
         case 'related_songs':
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
+
+            /* #1343-B — resolve a PublicId to its SongId before the allow-list regex
+               (unchanged). getDbMysqli() is only touched for a PublicId-shaped token,
+               so a real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($songId)) {
+                $songId = songPublicId_resolveToSongId(getDbMysqli(), $songId);
+            }
 
             if ($songId === '' || !preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
                 sendJson(['error' => 'Valid song ID is required.'], 400);

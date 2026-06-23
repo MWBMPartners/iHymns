@@ -2225,4 +2225,67 @@ return [
             || !_migProbe_tableExists($db, 'tblServicePresence')
             || !_migProbe_tableExists($db, 'tblServicePollCounters'),
     ],
+
+    'song-link-origin' => [
+        'script' => 'migrate-song-link-origin.php',
+        'card' => [
+            'title'  => 'Song-link origin marker (#1125)',
+            'body'   => 'Adds <code>tblSongLinks.Origin</code> so a counterpart link records whether it'
+                      . ' was created by a curator (<code>manual</code>) or by the #1125 hard-key'
+                      . ' auto-promoter (<code>auto-iswc</code> / <code>auto-ccli</code> / <code>auto-isrc</code>).'
+                      . ' Keeps auto-links auditable + revertable. Additive, idempotent — safe to re-run;'
+                      . ' the auto-linker works without it (writes a Note tag instead) on an un-migrated install.',
+            'button' => 'Run Song-Link Origin Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinks', 'Origin'),
+    ],
+
+    'song-redirects' => [
+        'script' => 'migrate-song-redirects.php',
+        'card' => [
+            'title'  => 'Song permalink redirects (#1343)',
+            'body'   => 'Creates <code>tblSongRedirects</code> so a shared permalink'
+                      . ' (<code>/song/&lt;SongId&gt;</code>) keeps resolving after a song is merged,'
+                      . ' deleted or renamed — a 301 to the replacement, or a friendly &ldquo;removed&rdquo;'
+                      . ' tombstone, instead of a dead 404 (the &ldquo;Here To Stay&rdquo; problem). Merge'
+                      . ' auto-populates it; delete offers relink-or-tombstone. Idempotent — safe to re-run.',
+            'button' => 'Run Song Permalink Redirects Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongRedirects'),
+    ],
+
+    'song-public-id' => [
+        'script' => 'migrate-song-public-id.php',
+        'card' => [
+            'title'  => 'Song PublicId / permalink id (#1343-B)',
+            'body'   => 'Adds <code>tblSongs.PublicId</code> — an opaque, stable, location-independent'
+                      . ' permalink id (Crockford base32) so a shared <code>/song/&lt;id&gt;</code> link'
+                      . ' survives the song moving songbook or being renumbered (the SongId stays the'
+                      . ' internal key). Backfills every existing song, then adds a UNIQUE index. Idempotent —'
+                      . ' <strong>re-run until it reports 0 remaining</strong>, then the UNIQUE is added.',
+            'button' => 'Run Song PublicId Migration',
+        ],
+        /* Pending until the column exists AND every row is backfilled AND the UNIQUE
+           index has landed (#1343-B review wfgwvkokd). The index check is NOT redundant
+           with the NULL check: MySQL UNIQUE permits multiple NULLs, and an interrupted
+           Stage 3 (ADD UNIQUE after the final backfill batch) would otherwise leave the
+           card green with no uniqueness constraint — re-running adds it (Stage 3 is
+           idempotent), so the card must stay pending to signal the re-run. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongs', 'PublicId')
+            || _migProbe_hasNullPublicId($db)
+            || !_migProbe_indexExists($db, 'tblSongs', 'uniq_PublicId'),
+    ],
+    'print-templates' => [
+        'script' => 'migrate-print-templates.php',
+        'card' => [
+            'title'  => 'Print templates (#1350)',
+            'body'   => 'Creates <code>tblPrintTemplates</code> — curator-authored, block-based print'
+                      . ' layouts for the clean song-print path (the 3 built-ins ship in JS; this'
+                      . ' stores custom ones built in the <code>/manage/print-templates</code> editor).'
+                      . ' Layout is JSON blocks so new block types need no ALTER (rule #20). Idempotent.',
+            'button' => 'Run Print Templates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPrintTemplates'),
+    ],
 ];

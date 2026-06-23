@@ -162,6 +162,7 @@ CREATE TABLE IF NOT EXISTS tblSongbookAffiliations (
 CREATE TABLE IF NOT EXISTS tblSongs (
     Id                  INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     SongId              VARCHAR(20)     NOT NULL UNIQUE COMMENT 'Canonical ID, e.g. CP-0001',
+    PublicId            VARCHAR(16)     NULL DEFAULT NULL COMMENT 'Opaque stable permalink id (IHUID, #1343-B); Crockford base32, uppercase, no I/L/O/U/0/1. Location-independent — survives songbook move/renumber. SongId stays the PK; this is additive.',
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
     NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title (iconv ASCII//TRANSLIT + mb_strtolower + unicode-property strip via ihymns_normalize_title()) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL 8 cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
@@ -201,6 +202,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
+    UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
@@ -1898,6 +1900,8 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
     Note         VARCHAR(255)  NOT NULL DEFAULT ''
                  COMMENT 'Optional curator-set annotation, e.g. "uses 1990 Wesley revision text"',
     Verified     TINYINT(1)    NOT NULL DEFAULT 0,
+    Origin       VARCHAR(20)   NOT NULL DEFAULT 'manual'
+                 COMMENT 'How this link was created: manual (curator click) or auto-iswc/auto-ccli/auto-isrc (#1125 hard-key auto-promotion). VARCHAR not ENUM (rule #20).',
     CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
                  COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1906,6 +1910,33 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
     CONSTRAINT fk_SongLinks_Song
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongRedirects (#1343) — keep a shared permalink (/song/<SongId>) alive
+-- after a song is merged, deleted or renamed, instead of a dead 404 (the
+-- "Here To Stay" problem). OldSongId is the dead id (PK, NOT an FK — the row is
+-- gone); NewSongId is the 301 target (FK->tblSongs ON DELETE SET NULL) or NULL
+-- for a tombstone ("removed"). Merge auto-writes duplicate->survivor; delete
+-- offers relink-or-tombstone. Resolution is transitive + cycle-guarded.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongRedirects (
+    OldSongId  VARCHAR(20)  NOT NULL
+               COMMENT 'The dead/merged/renamed SongId whose permalink must keep resolving (#1343). PK; NOT an FK — the old song row is gone.',
+    NewSongId  VARCHAR(20)  NULL DEFAULT NULL
+               COMMENT 'Resolve target (FK->tblSongs); NULL = tombstone (removed, no replacement).',
+    Reason     VARCHAR(20)  NOT NULL DEFAULT 'merge'
+               COMMENT 'merge | delete | rename — VARCHAR not ENUM (rule #20).',
+    Note       VARCHAR(255) NOT NULL DEFAULT '',
+    CreatedBy  INT UNSIGNED NULL DEFAULT NULL
+               COMMENT 'tblUsers.Id of the curator who created the redirect, if signed in',
+    CreatedAt  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (OldSongId),
+    KEY idx_NewSongId (NewSongId),
+    CONSTRAINT fk_SongRedirect_New
+        FOREIGN KEY (NewSongId) REFERENCES tblSongs(SongId)
+        ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -3657,3 +3688,31 @@ CREATE TABLE IF NOT EXISTS tblOrgServiceScheduleExternalRefs (
     CONSTRAINT fk_SchedExtRef_CreatedBy FOREIGN KEY (CreatedBy)  REFERENCES tblUsers(Id)             ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-service-schedule external-system identity map (rule #15 dedicated ref table). (Source,SourceRef) UNIQUE = idempotent re-import (rule #20); OrgId denorm mirrors tblOrgServiceSchedules.';
+
+-- ============================================================================
+-- Print templates (#1350 Phase 2) — curator-authored block-based print layouts
+-- for the clean song-print path. Layout is a JSON ordered block list so adding a
+-- block type / option never needs an ALTER (rule #20); Scope is VARCHAR not ENUM.
+-- The 3 built-ins live in js/modules/print.js (offline); this holds custom ones.
+-- Mirrors appWeb/.sql/migrate-print-templates.php (rule #19).
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS tblPrintTemplates (
+    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+    Name            VARCHAR(120)    NOT NULL COMMENT 'Curator-visible template name',
+    Scope           VARCHAR(20)     NOT NULL DEFAULT 'song' COMMENT 'song | setlist | … (VARCHAR not ENUM, rule #20 — new scopes need no ALTER)',
+    OwnerId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — NULL = global/curated template (reserves per-user templates without a second migration)',
+    BlocksJson      JSON            NOT NULL COMMENT 'Ordered block list: [{type, …options}] — title/subtitle/credits/lyrics/copyright/identifiers/spacer/pagebreak/text. Adding a block type needs no ALTER.',
+    PageOptionsJson JSON            NULL DEFAULT NULL COMMENT 'Page-level options (base font pt, columns, …)',
+    IsActive        TINYINT(1)      NOT NULL DEFAULT 1 COMMENT '0 = hidden from the picker without deleting',
+    IsDefault       TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = pre-selected in the picker for its scope',
+    SortOrder       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Picker order',
+    CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblUsers.Id — who created it',
+    CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_ScopeActive (Scope, IsActive, SortOrder),
+    INDEX idx_Owner (OwnerId),
+
+    CONSTRAINT fk_PrintTemplate_Owner
+        FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

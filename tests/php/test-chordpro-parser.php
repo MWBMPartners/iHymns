@@ -72,6 +72,28 @@ assertEq(
 assertEq($song['components'][1]['type'] ?? null, 'chorus', 'comp 1 is a chorus');
 assertEq($song['components'][1]['lines'] ?? null, ['Praise the Lord'], 'chorus lyric stripped');
 
+/* #1126 — chords RETAINED parallel to lines (space-separated symbols per line). */
+assertEq(
+    $song['components'][0]['chords'] ?? null,
+    ['G G7 C G', 'G D G'],
+    'verse chords captured parallel to lines (#1126)'
+);
+assertEq(
+    $song['components'][1]['chords'] ?? null,
+    ['C G'],
+    'chorus chords captured (#1126)'
+);
+/* A component with NO chords must NOT carry a `chords` key (byte-identical to pre-#1126). */
+$cpNoChords = "{title: Plain}\n{start_of_verse}\nNo chords here\nNor here\n{end_of_verse}";
+[$songNC] = _bulkImport_parseChordPro($cpNoChords, 'TEST', 'Test Book', 1);
+assertTrue(!array_key_exists('chords', $songNC['components'][0] ?? []), 'chordless component omits the chords key (#1126)');
+/* The split helper directly. */
+$split = _bulkImport_chordProSplitLine('[G]Amazing [C7]grace [D/F#]how');
+assertEq($split['lyric'], 'Amazing grace how', 'splitLine strips to clean lyric');
+assertEq($split['chords'], 'G C7 D/F#', 'splitLine joins symbols (compound chords preserved)');
+$splitNone = _bulkImport_chordProSplitLine('Just words');
+assertEq($splitNone['chords'], '', 'splitLine returns empty chords for a plain line');
+
 /* -------------------------------------------------------------------- */
 /* Fixture 2: {comment:} section labels + blank-line breaks (OnSong /     */
 /* WorshipTools hand-copied shape) + a chord-only line.                   */

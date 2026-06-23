@@ -41,6 +41,8 @@ import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { bootOfflineUi } from './modules/offline-ui.js';
+import { bootExternalLinkInterstitial } from './modules/external-link-interstitial.js';
+import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
@@ -356,8 +358,12 @@ class iHymnsApp {
                 const bar = document.createElement('div');
                 bar.id = 'maintenance-banner';
                 bar.setAttribute('role', 'status');
+                /* #1279 — pad past the iOS safe area (Dynamic Island / status bar)
+                   so the text isn't hidden in a standalone PWA. */
                 bar.style.cssText = 'position:sticky;top:0;z-index:1080;background:#b45309;'
-                    + 'color:#fff;padding:.5rem 1rem;text-align:center;font-size:.9rem';
+                    + 'color:#fff;padding:calc(.5rem + env(safe-area-inset-top, 0px)) '
+                    + 'max(1rem, env(safe-area-inset-right, 0px)) .5rem '
+                    + 'max(1rem, env(safe-area-inset-left, 0px));text-align:center;font-size:.9rem';
                 const icon = document.createElement('i');
                 icon.className = 'fa-solid fa-screwdriver-wrench me-2';
                 icon.setAttribute('aria-hidden', 'true');
@@ -427,6 +433,11 @@ class iHymnsApp {
                rendered. Safe to call every route change because the
                helper only binds fresh nodes. */
             bootOfflineUi();
+
+            /* One-per-session "you're leaving iHymns" disclaimer on outbound links
+               (#1347). Delegated + idempotent, so booting once here covers every
+               page; safe to call again on later routes (no-op after the first). */
+            bootExternalLinkInterstitial();
 
             /* --- Hide the loading spinner --- */
             this.hideLoader();
@@ -723,7 +734,10 @@ class iHymnsApp {
                 this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
                 break;
             case 'print':
-                window.print();
+                /* #1350 — clean, template-based print (lyrics / chords / large)
+                   instead of window.print() on the chromed page. Falls back to
+                   window.print() off a song page. */
+                openSongPrintDialog(this);
                 break;
         }
     }

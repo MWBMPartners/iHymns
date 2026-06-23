@@ -151,7 +151,11 @@ function renderPopularRow(s, opts = {}) {
        was deleted — drop the row rather than render a bare ID. */
     if (!id || !s.title) return '';
     const title    = toTitleCase(s.title);
-    const book     = s.songbook || id.split('-')[0] || '';
+    /* #1343-B — only derive the songbook abbreviation from the id when it has the
+       <letters>-<digits> SongId shape. A PublicId (IHUID) is opaque with no hyphen,
+       so it carries no songbook prefix; fall back to '' (the empty badge renders the
+       book-glyph) rather than mis-using the whole PublicId as an abbreviation. */
+    const book     = s.songbook || (id.includes('-') ? id.split('-')[0] : '') || '';
     const bookName = s.songbookName || SONGBOOK_NAMES[book] || book;
     const number   = s.number ?? '';
     const views    = s.views ?? 0;

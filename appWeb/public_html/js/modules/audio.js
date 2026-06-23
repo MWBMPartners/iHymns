@@ -230,7 +230,7 @@ export class Audio {
             if (window.Tone) {
                 this.Tone = window.Tone;
                 this.toneLoaded = true;
-                console.log('[Audio] Tone.js loaded from CDN');
+                console.debug('[Audio] Tone.js loaded from CDN');
                 return true;
             }
         } catch {
@@ -243,7 +243,7 @@ export class Audio {
             if (window.Tone) {
                 this.Tone = window.Tone;
                 this.toneLoaded = true;
-                console.log('[Audio] Tone.js loaded from local');
+                console.debug('[Audio] Tone.js loaded from local');
                 return true;
             }
         } catch {

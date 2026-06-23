@@ -238,11 +238,17 @@ $hreflangSongLang = '';
 try {
     $songData = new SongData();
 
-    /* Song page: /song/CP-0001 */
-    if (preg_match('#^/song/([A-Za-z]+-\d+)$#', $requestPath, $matches)) {
+    /* Song page: /song/CP-0001 OR /song/<PublicId> (#1343-B — widen-only; getSongById resolves either). */
+    if (preg_match('#^/song/([A-Za-z0-9_-]{1,32})$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
             $pageType = 'song';
+
+            /* #1343-B — canonical/og:url is the opaque PublicId permalink (the
+               stable form), even when a crawler hit a legacy /song/<SongId>. */
+            if (!empty($ogSong['publicId'])) {
+                $canonicalUrl = getCanonicalUrl('/song/' . rawurlencode((string)$ogSong['publicId']));
+            }
 
             /* #1206 — translation-cluster hreflang alternates (SEO: marks these
                as language variants of one work). Only when the song has
@@ -743,6 +749,16 @@ if (!empty($breadcrumbItems)) {
           id="fontawesome-css"
           onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
 
+    <!-- Bootstrap Icons (#1347) — the external-link registry (tblExternalLinkTypes.IconClass)
+         seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
+         otherwise only loads Font Awesome, so those provider icons rendered blank on the
+         song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
+         + font-src); decorative, so it degrades to text-only labels if the CDN is offline. -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+          crossorigin="anonymous"
+          id="bootstrap-icons-css">
+
     <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
           href="<?= $libs['animatecss']['css_cdn'] ?>"
@@ -873,7 +889,7 @@ if (!empty($breadcrumbItems)) {
        message wraps to 2–3 lines on narrow viewports; re-measured on resize.
        The PWA install banner is suppressed during maintenance (pwa.js #1301),
        so the single-banner layout is the only case to handle here. */ ?>
-    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;line-height:1.3;">
+    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:calc(0.5rem + env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px)) 0.5rem max(1rem, env(safe-area-inset-left, 0px));font-size:0.85rem;line-height:1.3;"><!-- #1279: pad past the iOS safe area (Dynamic Island / clock) so the text isn't occluded; applyMaintBypassOffset() measures offsetHeight, so the header/content offset follows automatically -->
         🔧 <strong>Maintenance mode is ON</strong> for this environment — visitors see a maintenance page; you have admin access.
         <a href="/manage/configuration" style="color:#000;text-decoration:underline;font-weight:600;">Turn it off</a>.
     </div>
@@ -884,7 +900,14 @@ if (!empty($breadcrumbItems)) {
             if (!bar) return;
             var h = bar.offsetHeight;                 /* live height incl. wrapped lines */
             var hdr = document.querySelector('.app-header');
-            if (hdr) { hdr.style.top = h + 'px'; }    /* push fixed header below the banner */
+            if (hdr) {
+                hdr.style.top = h + 'px';             /* push fixed header below the banner */
+                /* #1279 review — h already includes the iOS safe-area inset (the banner's
+                   own padding-top), and in a standalone PWA .app-header ALSO adds
+                   padding-top:env(safe-area-inset-top). Zero it here so the inset isn't
+                   counted twice (a visible gap above the navbar during maintenance bypass). */
+                hdr.style.paddingTop = '0px';
+            }
             var main = document.querySelector('.main-content');
             if (main) { main.style.paddingTop = 'calc(var(--header-height) + 8px + ' + h + 'px)'; }
         }

@@ -248,7 +248,7 @@ export class SheetMusic {
             this.pdfjsLib = pdfjsModule;
             this.pdfjsLib.GlobalWorkerOptions.workerSrc = this.app.config.pdfjsWorkerCdn;
             this.pdfjsLoaded = true;
-            console.log('[SheetMusic] PDF.js loaded from CDN');
+            console.debug('[SheetMusic] PDF.js loaded from CDN');
             return true;
         } catch {
             console.warn('[SheetMusic] PDF.js CDN failed, trying local fallback');
@@ -260,7 +260,7 @@ export class SheetMusic {
             this.pdfjsLib = pdfjsLocal;
             this.pdfjsLib.GlobalWorkerOptions.workerSrc = '/' + this.app.config.pdfjsWorkerLocal;
             this.pdfjsLoaded = true;
-            console.log('[SheetMusic] PDF.js loaded from local');
+            console.debug('[SheetMusic] PDF.js loaded from local');
             return true;
         } catch {
             console.error('[SheetMusic] PDF.js failed to load from both CDN and local');

@@ -117,7 +117,7 @@ export class Router {
      *
      * @param {string} path URL path to navigate to (e.g., '/song/CP-0001')
      */
-    async navigate(path) {
+    async navigate(path, opts = {}) {
         /* Normalise path */
         path = path || '/';
         if (path !== '/' && path.endsWith('/')) {
@@ -133,10 +133,16 @@ export class Router {
             this._scrollByPath.set(this.currentPath, window.scrollY || 0);
         }
 
-        /* Push new state to browser history with an incremented
-           counter so popstate can detect direction. (#752) */
+        /* Push (or REPLACE, for a permalink redirect — #1343 — so the dead
+           /song/<old> URL doesn't linger in history and cause a back-button loop)
+           new state with an incremented counter so popstate can detect direction. */
         this._navCounter += 1;
-        window.history.pushState({ path, counter: this._navCounter }, '', path);
+        const _state = { path, counter: this._navCounter };
+        if (opts.replace) {
+            window.history.replaceState(_state, '', path);
+        } else {
+            window.history.pushState(_state, '', path);
+        }
         document.body.dataset.navDirection = 'forward';
 
         /* Load the page content */
@@ -566,6 +572,26 @@ export class Router {
 
         /* Initialise favourites state on song pages */
         if (page === 'song') {
+            /* #1343 — a merged/deleted/renamed permalink renders a redirect marker
+               instead of the song; navigate to the canonical song (history-replaced
+               so the dead URL leaves no back-button trap) and skip the song inits. */
+            const _redirect = document.querySelector('[data-song-redirect]');
+            if (_redirect) {
+                const _to = _redirect.getAttribute('data-song-redirect');
+                if (_to) { this.navigate(_to, { replace: true }); return; }
+            }
+            /* #1343-B — the CORRECT song rendered, but via a non-canonical id (a
+               legacy SongId / alias). Soft-canonicalise the URL bar to its PublicId
+               WITHOUT reloading (content is already right); mirrors the zero-pad
+               canonicalise at handleCurrentRoute. */
+            const _canonical = document.querySelector('[data-song-canonical]');
+            if (_canonical) {
+                const _cto = _canonical.getAttribute('data-song-canonical');
+                if (_cto && _cto !== window.location.pathname) {
+                    window.history.replaceState({ path: _cto }, '', _cto);
+                    this.currentPath = _cto;
+                }
+            }
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
             this.app.setList.initSongPage();
@@ -596,6 +622,16 @@ export class Router {
                 const role = this.app.userAuth?.getUser()?.role;
                 if (userHasEntitlement('edit_songs', role)) {
                     editBtn.classList.remove('d-none');
+                }
+            }
+
+            /* Edit button on the person page (#1348) — same affordance, gated on
+               manage_credit_people (admin / global_admin); the admin page re-checks. */
+            const editPersonBtn = document.getElementById('btn-edit-person');
+            if (editPersonBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('manage_credit_people', role)) {
+                    editPersonBtn.classList.remove('d-none');
                 }
             }
 
