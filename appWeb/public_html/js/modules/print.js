@@ -149,7 +149,11 @@ function renderBlock(song, block) {
         case 'permalink': {
             /* The canonical short permalink (#1343-B PublicId when present) printed as
                text so a reader can type it to open the song — and the natural payload
-               for a future QR-image upgrade of this block. */
+               for a future QR-image upgrade of this block.
+               Base = window.location.origin BY DESIGN: a real printout is produced from
+               the public song page, so the origin IS the public host. (The /manage
+               editor's live preview runs on the admin host, so its sample URL shows that
+               host — illustrative only; the actual handout uses the public origin.) */
             const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
             const pid = song.publicId || song.id || '';
             if (!pid) { return ''; }
