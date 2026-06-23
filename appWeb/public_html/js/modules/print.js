@@ -28,6 +28,7 @@ export const PRINT_BLOCK_TYPES = {
     copyright:   { label: 'Copyright',       options: {} },
     identifiers: { label: 'CCLI / ISWC',     options: { ccli: true, iswc: true } },
     text:        { label: 'Custom text',     options: { content: '' } },
+    permalink:   { label: 'Permalink (URL)', options: {} },
     spacer:      { label: 'Spacer',          options: { size: 'md' } },
     pagebreak:   { label: 'Page break',      options: {} },
 };
@@ -50,6 +51,7 @@ export const PRINT_BUILTIN_TEMPLATES = [
 
 /* A representative song for the editor's live preview (no fetch needed). */
 export const PRINT_SAMPLE_SONG = {
+    id: 'SAMPLE-1', publicId: 'SAMPLEQR01',
     title: 'Amazing Grace', songbookName: 'Sample Hymnal', songbook: 'SAMPLE', number: 1,
     language: 'en', copyright: 'Public Domain', ccli: '22025', iswc: '',
     writers: ['John Newton'], composers: ['Traditional'],
@@ -144,6 +146,17 @@ function renderBlock(song, block) {
         }
         case 'text':
             return block.content ? `<div class="print-text">${esc(block.content)}</div>` : '';
+        case 'permalink': {
+            /* The canonical short permalink (#1343-B PublicId when present) printed as
+               text so a reader can type it to open the song — and the natural payload
+               for a future QR-image upgrade of this block. */
+            const origin = (typeof window !== 'undefined' && window.location) ? window.location.origin : '';
+            const pid = song.publicId || song.id || '';
+            if (!pid) { return ''; }
+            const url = origin + '/song/' + encodeURIComponent(pid);
+            return `<div class="print-permalink">Find this song online:<br>`
+                + `<span class="print-permalink-url">${esc(url)}</span></div>`;
+        }
         case 'spacer': {
             const h = block.size === 'lg' ? '2.5em' : block.size === 'sm' ? '0.6em' : '1.2em';
             return `<div style="height:${h}"></div>`;
@@ -177,6 +190,8 @@ function printCss(pageOptions) {
     .print-line { margin: 0.05em 0; }
     .print-chord { font-family: 'Courier New', monospace; font-weight: bold; color: #555; white-space: pre-wrap; margin: 0.15em 0 0; }
     .print-text { margin: 0 0 0.8em; }
+    .print-permalink { margin: 0.8em 0; font-size: ${fontPt - 2}pt; color: #444; }
+    .print-permalink-url { font-family: 'Courier New', monospace; font-weight: bold; }
     .print-footer { margin-top: 1em; font-size: ${Math.max(8, fontPt - 3)}pt; color: #777; }
     @media print { body { margin: 1.2cm; -webkit-print-color-adjust: exact; print-color-adjust: exact; } }`;
 }

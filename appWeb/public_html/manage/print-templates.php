@@ -59,6 +59,7 @@ $BLOCK_SCHEMA = [
     'copyright'   => [],
     'identifiers' => ['ccli' => 'bool', 'iswc' => 'bool'],
     'text'        => ['content' => 'str'],
+    'permalink'   => [],
     'spacer'      => ['size' => 'size'],
     'pagebreak'   => [],
 ];
