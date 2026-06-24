@@ -2207,6 +2207,19 @@ try {
         break;
     }
 
+    /* ---- save_song (POST) — the legacy whole-song save, now SHARED ---- */
+    /* The Song Editor's primary save path. Extracted VERBATIM into the shared
+       editorSaveSongCore() (#1200) so this v2 API and the legacy api.php run the
+       SAME save logic — the migration off the legacy api.php that does NOT risk
+       the primary save path by re-implementing it. The CSRF gate + auth/role
+       checks above already protect this POST; the core returns the HTTP status +
+       body, which ed2_respond() emits in the v2 house style. */
+    case 'save_song': {
+        require_once __DIR__ . '/save_song_core.php';
+        $r = editorSaveSongCore();
+        ed2_respond($r['body'], $r['status']);
+    }
+
     default:
         ed2_respond(['ok' => false, 'error' => 'Unknown action.'], 400);
     }

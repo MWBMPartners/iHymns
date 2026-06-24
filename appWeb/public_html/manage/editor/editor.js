@@ -4864,8 +4864,15 @@ function serialiseSongForSave(song) {
 /**
  * autoSaveSongsPerSong(ids)
  * -------------------------
- * POST each song in `ids` to /api?action=save_song sequentially.
- * Returns a summary { saved: [ids], failed: [{id, error}] }.
+ * POST each song in `ids` to the v2 editor API (?action=save_song)
+ * sequentially. Returns a summary { saved: [ids], failed: [{id, error}] }.
+ *
+ * #1200 — the whole-song save was relocated from the legacy
+ * /manage/editor/api.php to the v2 /manage/editor/api2.php. Both endpoints
+ * call the SAME shared editorSaveSongCore() (no forked save logic), so the
+ * wire request/response is identical; the only client change is the base URL
+ * and the v2 same-origin CSRF defence (the X-Requested-With header the v2 API
+ * requires on every POST). serialiseSongForSave() output is unchanged.
  *
  * Sequential (not Promise.all) so we stay polite to the DB and can
  * short-circuit on the first persistent error.
@@ -4879,9 +4886,12 @@ function autoSaveSongsPerSong(ids) {
         chain = chain.then(function () {
             var song = (songData.songs || []).find(function (s) { return s.id === id; });
             if (!song) { failed.push({ id: id, error: 'not found locally' }); return; }
-            return fetch(EDITOR_API_URL + '?action=save_song', {
+            return fetch((window.IHYMNS_EDITOR_API2 || '/manage/editor/api2') + '?action=save_song', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
                 body: JSON.stringify(serialiseSongForSave(song)),
             }).then(function (res) {
                 return res.json().then(function (data) {
