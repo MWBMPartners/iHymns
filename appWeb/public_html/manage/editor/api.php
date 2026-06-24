@@ -103,6 +103,17 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 header('Content-Type: application/json; charset=UTF-8');
 header('Cache-Control: no-cache, no-store, must-revalidate');
 
+/* CSRF: every state-changing POST must be a same-origin request (security sweep).
+   validateCsrfRequest (auth.php) accepts a valid token OR the X-Requested-With
+   same-origin signal — robust + never stale. GET reads are unaffected. */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && !validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+    header('Content-Type: application/json; charset=UTF-8');
+    http_response_code(403);
+    echo json_encode(['error' => 'CSRF check failed — please retry.']);
+    exit;
+}
+
 $action = $_GET['action'] ?? '';
 
 switch ($action) {

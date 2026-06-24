@@ -2649,7 +2649,7 @@ function addSongTag(song, tagName) {
 
     fetch(EDITOR_API_URL + '?action=bulk_tag', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ songIds: [song.id], add: [tagName], remove: [] }),
     })
     .then(function (r) { return r.json(); })
@@ -2707,7 +2707,7 @@ function removeSongTag(song, tagName) {
     if (!song || !song.id || !tagName) return;
     fetch(EDITOR_API_URL + '?action=bulk_tag', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ songIds: [song.id], add: [], remove: [tagName] }),
     })
     .then(function (r) { return r.json(); })
@@ -3262,7 +3262,7 @@ function addSongLinkClickHandler() {
 
     fetch('api.php?action=add_song_link', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ sourceSongId: currentSongId, targetSongId: targetId }),
     })
         .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
@@ -3292,7 +3292,7 @@ function addSongLinkClickHandler() {
 function removeSongLink(currentId, targetSongId) {
     fetch('api.php?action=remove_song_link', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ songId: targetSongId }),
     })
         .then(function (r) { return r.json(); })
@@ -3367,7 +3367,7 @@ function renderSongLinkSuggestions(song) {
                 linkBtn.addEventListener('click', function () {
                     fetch('api.php?action=add_song_link', {
                         method:  'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({
                             sourceSongId: song.id,
                             targetSongId: sg.other.songId,
@@ -3397,7 +3397,7 @@ function renderSongLinkSuggestions(song) {
                 dismissBtn.addEventListener('click', function () {
                     fetch('api.php?action=dismiss_song_link_suggestion', {
                         method:  'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({
                             songIdA: song.id,
                             songIdB: sg.other.songId,
@@ -4157,6 +4157,7 @@ function importSingleFileFormat(file, opts) {
 
     fetch(EDITOR_API_URL + '?action=' + encodeURIComponent(opts.action), {
         method:      'POST',
+        headers:     { 'X-Requested-With': 'XMLHttpRequest' },
         body:        fd,
         credentials: 'same-origin',
     }).then(function (res) {
@@ -4360,6 +4361,7 @@ function importBulkZip(file) {
        xhr.upload.onprogress fires every ~50ms with byte counts. */
     var uploadXhr = new XMLHttpRequest();
     uploadXhr.open('POST', EDITOR_API_URL + '?action=bulk_import_zip', true);
+    uploadXhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     uploadXhr.withCredentials = true;
     uploadXhr.upload.onprogress = function (ev) {
         if (!ev.lengthComputable) return;
@@ -6262,7 +6264,7 @@ function bindMultiSelectListeners() {
 
         fetch(EDITOR_API_URL + '?action=bulk_tag', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: JSON.stringify({ songIds: ids, add: add, remove: rem })
         })
@@ -6443,7 +6445,7 @@ function triggerRevisionRestore(rev) {
     }
     fetch(EDITOR_API_URL + '?action=restore_revision', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'same-origin',
         body: JSON.stringify({ revisionId: rev.id }),
     })
