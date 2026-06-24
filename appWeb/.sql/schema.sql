@@ -3717,3 +3717,25 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
     CONSTRAINT fk_PrintTemplate_Owner
         FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblReadRateLimit (#1354) — public-read fixed-window rate-limit counters,
+-- keyed by token-or-IP (not an API key id — that's tblApiKeyUsage). Backs the
+-- lightweight limiter on the heaviest sessionless reads in api.php. The Scope
+-- column reserves per-endpoint limits without a future migration (rule #20);
+-- the limiter (includes/read_rate_limit.php) is FAIL-OPEN, so an un-migrated
+-- install is a clean no-op (#1228 white-screen lesson).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblReadRateLimit (
+    Id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    RateKey      VARCHAR(72)     NOT NULL COMMENT 'sha256 hex of the bearer token, or ip:<addr>',
+    Scope        VARCHAR(40)     NOT NULL DEFAULT '' COMMENT 'endpoint group, so different reads can have different limits without a 2nd migration',
+    WindowType   VARCHAR(10)     NOT NULL COMMENT 'minute | day',
+    WindowStart  DATETIME        NOT NULL COMMENT 'fixed-window start (UTC, minute- or day-truncated)',
+    RequestCount INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'requests counted in this (key, scope, window) bucket',
+
+    UNIQUE KEY uq_read_rl (RateKey, Scope, WindowType, WindowStart),
+    INDEX      idx_WindowStart (WindowStart)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Public-read fixed-window rate-limit counters, keyed by token-or-IP (#1354).';

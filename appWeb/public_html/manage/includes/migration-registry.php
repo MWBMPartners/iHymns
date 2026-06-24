@@ -2304,4 +2304,21 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblAccessTiers', 'Capabilities'),
     ],
+    'read-rate-limit' => [
+        'script' => 'migrate-add-read-rate-limit.php',
+        'card' => [
+            'title'  => 'Public-read rate-limit counters (#1354)',
+            'body'   => 'Creates <code>tblReadRateLimit</code> — fixed-window request counters'
+                      . ' keyed by <em>token-or-IP</em> (not an API key id — that is'
+                      . ' <code>tblApiKeyUsage</code>). Backs the lightweight per-requester'
+                      . ' rate limiter on the heaviest <strong>public</strong> reads in'
+                      . ' <code>api.php</code> (<code>song_detail</code> / <code>search</code> /'
+                      . ' <code>bulk_songs</code> / <code>songs_index</code> /'
+                      . ' <code>related_songs</code> …) to blunt scraping. The limiter is'
+                      . ' <strong>fail-open</strong> — until this runs it is a clean no-op, so'
+                      . ' the reads behave exactly as today. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Public-Read Rate-Limit Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblReadRateLimit'),
+    ],
 ];
