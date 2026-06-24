@@ -1313,6 +1313,38 @@ if ($action !== null) {
                 ];
             }
 
+            /* #1353 media protection — when content gating is ON, drop the audio
+               of songs the requester can't access (the ENTITY model, mirroring
+               the gated song-media.php route this offline manifest sidesteps).
+               NO-OP when content_gating_enabled='0' (default), so the offline
+               audio bundle is byte-identical to today on every live env. The SW
+               fetches anonymously → userId resolves null → anonymous entity gate.
+               Fail-open on any error (the master switch is the real gate). NOTE:
+               this stops a RESTRICTED song's audio being PRE-CACHED, but the
+               static /data/audio/*.mp3 file itself is still directly fetchable —
+               sealing that needs the signed-URL / move-behind-song-media work
+               tracked separately (it must not break browser <audio>). */
+            if (function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1'
+                && function_exists('checkBulkAccess')) {
+                try {
+                    $audioAuth = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+                    $audioUid  = isset($audioAuth['Id']) ? (int)$audioAuth['Id'] : null;
+                    $audioIds  = array_column($manifest, 'songId');
+                    if ($audioIds) {
+                        $audioAcc = checkBulkAccess('song', $audioIds, $audioUid, 'PWA', 'display');
+                        $manifest = array_values(array_filter(
+                            $manifest,
+                            /* keep when allowed; an id missing from the map (unknown)
+                               is kept — fail-open, consistent with content_gating.php. */
+                            static fn($m) => !array_key_exists($m['songId'], $audioAcc) || $audioAcc[$m['songId']] === true
+                        ));
+                    }
+                } catch (\Throwable $_e) {
+                    error_log('[bulk_audio] gating failed: ' . $_e->getMessage());
+                }
+            }
+
             sendJson([
                 'songbook' => $audioBook ?: 'all',
                 'count'    => count($manifest),
