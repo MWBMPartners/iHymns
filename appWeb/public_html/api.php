@@ -636,6 +636,15 @@ if ($action !== null) {
             if ($song === null) {
                 sendJson(['error' => 'No songs available.'], 404);
             } else {
+                /* #1353 — `random` emits the SAME full song payload (lyric body
+                   + media) as song_detail, so it gets the SAME tier gate or it
+                   would be a trivial bypass. NO-OP unless content_gating_enabled
+                   === '1' (rule A). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $rndAuth = getAuthenticatedUser();
+                $rndUid  = $rndAuth ? (int)$rndAuth['Id'] : null;
+                $rndPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song    = contentGatingApply($song, $rndUid, $rndPlat);
                 sendJson(['song' => $song]);
             }
             break;
@@ -710,6 +719,17 @@ if ($action !== null) {
                         }
                     }
                 }
+                /* #1353 — server-side content-gating enforcement. NO-OP (returns
+                   $song byte-identical) unless content_gating_enabled === '1';
+                   when on, strips the lyric body / media / offline affordance the
+                   requester's tier may not access (caps resolved from the live
+                   tblAccessTiers registry, #1352). Applied AFTER the payload is
+                   fully built (incl. include= extras) and BEFORE it is emitted. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $sdAuth = getAuthenticatedUser();
+                $sdUid  = $sdAuth ? (int)$sdAuth['Id'] : null;
+                $sdPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song   = contentGatingApply($song, $sdUid, $sdPlat);
                 sendJson(['song' => $song]);
             }
             break;

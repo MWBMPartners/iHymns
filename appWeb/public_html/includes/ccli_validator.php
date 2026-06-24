@@ -205,9 +205,167 @@ function resolveEffectiveTier(int $userId): string
         : $orgTier;
 }
 
+/**
+ * Map the eight action strings checkTierAccess understands to the
+ * tblAccessTiers capability key that grants them. Six map to a real
+ * cap (column- or json-backed, read via tierCapRead); api_access /
+ * bulk_export have no cap row yet (#1353) so they stay matrix-only and
+ * are intentionally ABSENT here.
+ *
+ * The registry resolver (capsForTierFromRegistry) also accepts an action
+ * that IS a cap key directly — either the camelCase form (lcfirst of the
+ * PascalCase TIER_CAPS key, e.g. `canRequestSongs`) or the exact PascalCase
+ * column/json key (e.g. `CanRequestSongs`). That lets a NEW json cap added
+ * by #1352 be enforced as soon as a caller passes its name, with zero edit
+ * to this map.
+ */
+const TIER_ACTION_CAP_MAP = [
+    'view_lyrics'      => 'CanViewLyrics',
+    'view_copyrighted' => 'CanViewCopyrighted',
+    'play_audio'       => 'CanPlayAudio',
+    'download_midi'    => 'CanDownloadMidi',
+    'download_pdf'     => 'CanDownloadPdf',
+    'offline_save'     => 'CanOfflineSave',
+];
+
+/**
+ * Resolve a tier's allowed-action map from the LIVE tblAccessTiers
+ * registry, so the caps a curator edits (and any new one-line json cap
+ * added per #1352) drive enforcement automatically instead of the
+ * hardcoded matrix below.
+ *
+ * Returns `null` to signal "fall back to the matrix" whenever the DB is
+ * un-migrated, the tier row is missing, or any read throws — so an edge
+ * / un-migrated env behaves EXACTLY as it did before this change
+ * (rule #C: never let an optional read throw; STRICT mode means a bad
+ * SELECT throws, so every read is wrapped).
+ *
+ * Shape on success: `['view_lyrics' => true, 'play_audio' => false, ...]`
+ * — one entry per action in TIER_ACTION_CAP_MAP, value = the tier's cap.
+ * Request-cached per tier name (the registry is stable within a request).
+ *
+ * @param string $userTier Tier name (public/free/ccli/premium/pro/…).
+ * @return array<string,bool>|null Allowed-action map, or null to fall back.
+ */
+function capsForTierFromRegistry(string $userTier): ?array
+{
+    /* ELI5: remember each tier's answer for the rest of this request.
+       WHY: song_detail can call checkTierAccess up to 6× per song (one
+       per cap); caching the per-tier SELECT keeps it to one round-trip. */
+    static $cache = [];
+    if (array_key_exists($userTier, $cache)) {
+        return $cache[$userTier];
+    }
+
+    /* The shared cap registry + storage helpers (column vs json, defaults,
+       the migration probe). Required lazily so the matrix-only callers
+       (tier_check on an un-migrated DB) never pay for it. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+    try {
+        $db = getDbMysqli();
+
+        /* Pull the json column ONLY when it has been migrated — selecting a
+           non-existent column THROWS under STRICT (rule #C). The 7 column
+           caps are always present (they ship in the base schema). */
+        $hasCaps   = function_exists('tierCapsColumnExists') && tierCapsColumnExists($db);
+        $capsCol   = $hasCaps ? ', Capabilities' : '';
+        $stmt = $db->prepare(
+            'SELECT Name, CanViewLyrics, CanViewCopyrighted, CanPlayAudio,
+                    CanDownloadMidi, CanDownloadPdf, CanOfflineSave, RequiresCcli'
+            . $capsCol .
+            ' FROM tblAccessTiers WHERE Name = ? LIMIT 1'
+        );
+        $stmt->bind_param('s', $userTier);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+
+        if ($row === null) {
+            /* Unknown tier — let the caller fall back to the matrix so an
+               unexpected tier name degrades to public-tier behaviour. */
+            return $cache[$userTier] = null;
+        }
+
+        $out = [];
+        foreach (TIER_ACTION_CAP_MAP as $action => $capKey) {
+            /* tierCapRead handles column vs json + the per-cap default when
+               a json key is absent / the column is un-migrated. */
+            $out[$action] = tierCapRead($row, $capKey) === 1;
+        }
+        return $cache[$userTier] = $out;
+    } catch (\Throwable $_e) {
+        /* Any failure (un-migrated table, DB blip) → fall back to matrix. */
+        return $cache[$userTier] = null;
+    }
+}
+
+/**
+ * Resolve a SINGLE cap value for a tier when the action passed to
+ * checkTierAccess is itself a capability key — either the camelCase API
+ * shape (`canRequestSongs`) or the exact PascalCase TIER_CAPS key
+ * (`CanRequestSongs`). Returns the bool value off the live tier row, or
+ * null when the action isn't a known cap key / the row can't be read
+ * (caller then leaves the matrix value untouched).
+ *
+ * This is what lets a #1352 one-line json cap be ENFORCED the moment any
+ * caller passes its name, with zero edit to TIER_ACTION_CAP_MAP.
+ *
+ * @param string $userTier Tier name.
+ * @param string $action   A cap key (camelCase or PascalCase) OR a plain action.
+ * @return bool|null true/false when $action resolved to a cap; null otherwise.
+ */
+function capValueForTierAction(string $userTier, string $action): ?bool
+{
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+
+    /* Resolve $action → a TIER_CAPS key. Accept the exact PascalCase key,
+       OR find the key whose lcfirst (the camelCase API shape) matches. */
+    $capKey = null;
+    if (defined('TIER_CAPS') && array_key_exists($action, TIER_CAPS)) {
+        $capKey = $action;                      /* PascalCase column/json key */
+    } elseif (defined('TIER_CAPS')) {
+        foreach (array_keys(TIER_CAPS) as $k) {
+            if (lcfirst($k) === $action) { $capKey = $k; break; }
+        }
+    }
+    if ($capKey === null) {
+        return null;   /* not a cap key — caller keeps the matrix value */
+    }
+    /* RequiresCcli is a tier PROPERTY, not a grantable action — never treat
+       passing it as an "allow" check. */
+    if ($capKey === 'RequiresCcli') {
+        return null;
+    }
+
+    try {
+        $db      = getDbMysqli();
+        $hasCaps = function_exists('tierCapsColumnExists') && tierCapsColumnExists($db);
+        $capsCol = $hasCaps ? ', Capabilities' : '';
+        $stmt = $db->prepare(
+            'SELECT Name, CanViewLyrics, CanViewCopyrighted, CanPlayAudio,
+                    CanDownloadMidi, CanDownloadPdf, CanOfflineSave, RequiresCcli'
+            . $capsCol .
+            ' FROM tblAccessTiers WHERE Name = ? LIMIT 1'
+        );
+        $stmt->bind_param('s', $userTier);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if ($row === null) {
+            return null;
+        }
+        return tierCapRead($row, $capKey) === 1;
+    } catch (\Throwable $_e) {
+        return null;
+    }
+}
+
 function checkTierAccess(string $userTier, string $action, bool $hasCcli = false): array
 {
-    /* Tier capability matrix */
+    /* Tier capability matrix — the FALLBACK source of truth. Used verbatim
+       when the registry can't answer (un-migrated DB / unknown tier) and for
+       the two actions with no cap column yet (api_access / bulk_export). */
     $tiers = [
         'public'  => ['view_lyrics' => true],
         'free'    => ['view_lyrics' => true, 'view_copyrighted' => true],
@@ -218,7 +376,34 @@ function checkTierAccess(string $userTier, string $action, bool $hasCcli = false
 
     $capabilities = $tiers[$userTier] ?? $tiers['public'];
 
-    /* CCLI tier requires a verified CCLI number */
+    /* #1353 — registry-drive the six cap-backed actions. capsForTierFromRegistry
+       reads the LIVE tblAccessTiers row (incl. #1352 json caps); when it returns
+       a map we OVERLAY it onto the matrix capabilities so a curator's edits +
+       any new json cap are enforced without touching this matrix. A null return
+       (un-migrated DB / unknown tier / read threw) leaves $capabilities exactly
+       as the matrix had it — byte-identical to pre-#1353 behaviour. The action
+       may also BE a cap key directly (camelCase or PascalCase) so a new json cap
+       is enforceable the moment a caller passes its name (see TIER_ACTION_CAP_MAP). */
+    $registry = capsForTierFromRegistry($userTier);
+    if ($registry !== null) {
+        /* Overlay the six mapped actions. */
+        foreach ($registry as $regAction => $allowed) {
+            $capabilities[$regAction] = $allowed;
+        }
+        /* Accept an action that is itself a cap key — camelCase (the API emit
+           shape) or PascalCase (the TIER_CAPS key). Resolve it against the live
+           row so a #1352 json cap is enforced with no matrix/map edit. */
+        if (!isset($capabilities[$action]) || !array_key_exists($action, TIER_ACTION_CAP_MAP)) {
+            $directVal = capValueForTierAction($userTier, $action);
+            if ($directVal !== null) {
+                $capabilities[$action] = $directVal;
+            }
+        }
+    }
+
+    /* CCLI tier requires a verified CCLI number — UNCHANGED gate. A ccli-tier
+       user without a live verified CCLI licence is still denied the copyrighted
+       + audio actions regardless of what the registry says. */
     if ($userTier === 'ccli' && !$hasCcli) {
         if ($action === 'view_copyrighted' || $action === 'play_audio') {
             return [
