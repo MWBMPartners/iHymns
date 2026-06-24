@@ -2329,7 +2329,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
          default slugToOptionValue lookup can resolve detected slugs
          to the numeric option values in the template above. -->
     <script>
-        window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
     <template id="cp-ipi-row-template">
         <div class="card bg-dark border-secondary cp-ipi-row" data-row-kind="ipi">

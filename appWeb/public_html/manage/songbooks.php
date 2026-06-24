@@ -3510,7 +3510,7 @@ $csrf = csrfToken();
                             <!-- Curated link-type registry (#833 seed list). Pre-loaded so
                                  the shared row-builder doesn't need an AJAX round-trip. -->
                             <script>
-                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
                             </script>
                         </div>
                         <?php endif; ?>

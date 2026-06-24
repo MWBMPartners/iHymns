@@ -678,7 +678,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <script>
 (function () {
     'use strict';
-    const CSRF = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES) ?>;
+    const CSRF = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     const URL_ = window.location.pathname;
 
     /* Add / Edit modal */
