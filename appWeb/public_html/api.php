@@ -6847,6 +6847,10 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'access_tiers':
             $db = getDbMysqli();
+            /* PRIMARY SELECT — byte-identical to the original so the 7
+               camelCase keys (canViewLyrics … requiresCcli) that form the
+               native-app contract are unchanged. New json-backed caps are
+               merged in below, never by editing this list. */
             $stmt = $db->prepare(
                 'SELECT Name AS name, DisplayName AS displayName, Level AS level,
                         Description AS description, CanViewLyrics AS canViewLyrics,
@@ -6865,6 +6869,36 @@ if ($action !== null) {
                 }
             }
             unset($t);
+
+            /* JSON-backed caps (#1352): append each registered json cap to
+               every tier under its camelCase key (lcfirst of the PascalCase
+               TIER_CAPS key) so a NEW gated cap appears in the API exactly
+               like the column ones — no edit to the SELECT or the contract.
+               Entirely skipped (zero extra query) when no json cap is
+               registered or the Capabilities column hasn't been migrated,
+               so today's response is unchanged. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+            $jsonKeys = tierCapJsonKeys();
+            if ($jsonKeys && tierCapsColumnExists($db)) {
+                /* One extra query: Name → its decoded Capabilities blob. */
+                $capByName = [];
+                try {
+                    $capRes = $db->query('SELECT Name, Capabilities FROM tblAccessTiers');
+                    while ($capRes && ($row = $capRes->fetch_assoc())) {
+                        $capByName[(string)$row['Name']] = $row;
+                    }
+                    if ($capRes) { $capRes->close(); }
+                } catch (\Throwable $_e) { $capByName = []; }
+                foreach ($tiers as &$t) {
+                    $rowForTier = $capByName[(string)($t['name'] ?? '')] ?? [];
+                    foreach ($jsonKeys as $capKey) {
+                        /* lcfirst(PascalCase) → the same camelCase shape the
+                           column caps use (CanViewLyrics → canViewLyrics). */
+                        $t[lcfirst($capKey)] = (bool)tierCapRead($rowForTier, $capKey);
+                    }
+                }
+                unset($t);
+            }
             sendJson(['tiers' => $tiers]);
             break;
 
@@ -9450,27 +9484,50 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
+                /* Split caps by storage (#1352). Column-backed caps (the 7
+                   originals) bind to their own TINYINT columns exactly as
+                   before; json-backed caps (every new one) are assembled
+                   into the single Capabilities JSON column. Default to 0
+                   when a key is unspecified. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
                     /* Accept the camelCase or PascalCase form clients
                        might use; the canonical key is the exact column
-                       name. Default to 0 when unspecified. */
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                       name. */
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+                $jsonKeys = tierCapJsonKeys();
+                /* Only touch the Capabilities column when there ARE json caps
+                   registered AND the migration has landed — keeps an
+                   un-migrated install (or the all-column state shipped with
+                   this change) byte-identical to the old INSERT. */
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
+                $jsonCaps  = [];
+                foreach ($jsonKeys as $col) {
+                    $jsonCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
 
-                $cols         = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $cols   = array_merge(['Name','DisplayName','Level','Description'], array_keys($columnCaps));
+                $types  = 'ssis' . str_repeat('i', count($columnCaps));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($columnCaps));
+                if ($writeJson) {
+                    /* One extra column + one extra bound 's' param carrying
+                       the json_encode'd caps. Placeholder/type/value counts
+                       stay in lockstep (rule #5). */
+                    $cols[]   = 'Capabilities';
+                    $types   .= 's';
+                    $values[] = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                }
                 $placeholders = implode(', ', array_fill(0, count($cols), '?'));
                 $sql          = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
-                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
-                   each TIER_CAPS column as int. Built dynamically so a new
-                   capability column auto-extends the bind without an edit. */
-                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
-                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
                 $stmt   = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* For the activity log, present the full cap set (column +
+                   json) the same way regardless of storage. */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.create', 'access_tier', (string)$newId, [
                     'name'         => $name,
@@ -9536,27 +9593,70 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                /* Split caps by storage (#1352), mirroring admin_tier_create.
+                   Column caps SET their own TINYINT column; json caps merge
+                   into the Capabilities JSON column. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
+                $jsonKeys  = tierCapJsonKeys();
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
 
                 $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
                 $args = [$displayName, $level, $description];
-                foreach ($caps as $col => $val) {
-                    $sets[] = "$col = ?";
-                    $args[] = $val;
+                $types = 'sis';
+                foreach ($columnCaps as $col => $val) {
+                    $sets[]  = "$col = ?";
+                    $args[]  = $val;
+                    $types  .= 'i';
                 }
-                $args[] = $id;
-                /* Type string: DisplayName(s), Level(i), Description(s),
-                   each TIER_CAPS column as int, then Id(i). */
-                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $jsonCaps = [];
+                if ($writeJson) {
+                    /* Merge submitted json caps over the row's existing
+                       Capabilities so a partial update never drops caps the
+                       caller didn't send. */
+                    $existing = [];
+                    try {
+                        $stmtCap = $db->prepare('SELECT Capabilities FROM tblAccessTiers WHERE Id = ?');
+                        $stmtCap->bind_param('i', $id);
+                        $stmtCap->execute();
+                        $rowCap = $stmtCap->get_result()->fetch_row();
+                        $stmtCap->close();
+                        $rawCap = $rowCap[0] ?? null;
+                        if ($rawCap !== null && $rawCap !== '') {
+                            $decodedCap = json_decode((string)$rawCap, true);
+                            if (is_array($decodedCap)) { $existing = $decodedCap; }
+                        }
+                    } catch (\Throwable $_e) { /* degrade to empty existing */ }
+                    /* Only overwrite json caps the caller ACTUALLY submitted —
+                       the API body is genuinely sparse (a client may PATCH a
+                       single cap), so iterating every registered key would force
+                       omitted caps to 0 and clobber a stored 1, defeating the
+                       read-existing merge above (#1352 review finding). An explicit
+                       0 still clears a cap; an absent key is preserved. (The web
+                       form in tiers.php always submits the full set, so it keeps
+                       the simpler all-keys write.) */
+                    foreach ($jsonKeys as $col) {
+                        if (array_key_exists($col, $capsInput)) {
+                            $existing[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                        }
+                    }
+                    $jsonCaps = $existing;
+                    $sets[]   = 'Capabilities = ?';
+                    $args[]   = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                    $types   .= 's';
+                }
+                $args[]  = $id;
+                $types  .= 'i';
                 $stmt  = $db->prepare(
                     'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
                 );
                 $stmt->bind_param($types, ...$args);
                 $stmt->execute();
                 $stmt->close();
+                /* Full cap set for the activity log (column + json). */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.update', 'access_tier', (string)$id, [
                     'name'         => $name,

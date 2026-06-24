@@ -2288,4 +2288,20 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPrintTemplates'),
     ],
+    'tier-capabilities-json' => [
+        'script' => 'migrate-add-tier-capabilities-json.php',
+        'card' => [
+            'title'  => 'JSON-backed tier capabilities',
+            'body'   => 'Adds <code>tblAccessTiers.Capabilities</code> (JSON) — the additive,'
+                      . ' schema-free home for NEW gated tier capabilities. The 7 original caps'
+                      . ' (<code>CanViewLyrics</code> … <code>RequiresCcli</code>) stay as their own'
+                      . ' TINYINT columns (the native-app API contract reads them); future caps live'
+                      . ' as named keys inside this one JSON column, so adding a gated feature is a'
+                      . ' ONE-LINE change in <code>TIER_CAPS</code> (storage <code>json</code>) — no'
+                      . ' further ALTER (rule #20). NULL = no json caps set → each falls back to its'
+                      . ' TIER_CAPS default. Idempotent — column-existence guarded, safe to re-run.',
+            'button' => 'Run JSON Tier Capabilities Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblAccessTiers', 'Capabilities'),
+    ],
 ];

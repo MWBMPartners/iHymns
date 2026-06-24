@@ -80,19 +80,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->close();
                 if ($exists) { $error = 'A tier with that name already exists.'; break; }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
-                    $caps[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
+                /* Split caps by storage (#1352), mirroring api.php's
+                   admin_tier_create. Column caps (the 7 originals) bind to
+                   their own TINYINT columns; json caps go into the single
+                   Capabilities JSON column (only when registered AND the
+                   migration has landed). */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
+                    $columnCaps[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
+                }
+                $jsonKeys  = tierCapJsonKeys();
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
+                $jsonCaps  = [];
+                foreach ($jsonKeys as $col) {
+                    $jsonCaps[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
                 }
 
-                $cols = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $cols   = array_merge(['Name','DisplayName','Level','Description'], array_keys($columnCaps));
+                $types  = 'ssis' . str_repeat('i', count($columnCaps));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($columnCaps));
+                if ($writeJson) {
+                    /* One extra column + one bound 's' param — placeholder /
+                       type / value counts stay in lockstep (rule #5). */
+                    $cols[]   = 'Capabilities';
+                    $types   .= 's';
+                    $values[] = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                }
                 $placeholders = implode(', ', array_fill(0, count($cols), '?'));
                 $sql = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
-                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
-                   each TIER_CAPS column as int. Built dynamically so a new
-                   capability column auto-extends the bind without code change. */
-                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
-                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
                 $stmt = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
@@ -111,22 +126,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($displayName === '')         { $error = 'Display name is required.'; break; }
                 if ($level < 0 || $level > 1000) { $error = 'Level must be between 0 and 1000.'; break; }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
-                    $caps[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
+                /* Split caps by storage (#1352), mirroring api.php's
+                   admin_tier_update. Column caps SET their own column; json
+                   caps merge into the Capabilities JSON column. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
+                    $columnCaps[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
                 }
+                $jsonKeys  = tierCapJsonKeys();
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
 
-                $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
-                $args = [$displayName, $level, $description];
-                foreach ($caps as $col => $val) {
-                    $sets[] = "$col = ?";
-                    $args[] = $val;
+                $sets  = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
+                $args  = [$displayName, $level, $description];
+                $types = 'sis';
+                foreach ($columnCaps as $col => $val) {
+                    $sets[]  = "$col = ?";
+                    $args[]  = $val;
+                    $types  .= 'i';
                 }
-                $args[] = $id;
-
-                /* Type string: DisplayName(s), Level(i), Description(s),
-                   each TIER_CAPS column as int, and finally Id(i). */
-                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                if ($writeJson) {
+                    /* Merge submitted json caps over the row's existing
+                       Capabilities so caps the form didn't carry aren't lost. */
+                    $existing = [];
+                    try {
+                        $stmtCap = $db->prepare('SELECT Capabilities FROM tblAccessTiers WHERE Id = ?');
+                        $stmtCap->bind_param('i', $id);
+                        $stmtCap->execute();
+                        $rowCap = $stmtCap->get_result()->fetch_row();
+                        $stmtCap->close();
+                        $rawCap = $rowCap[0] ?? null;
+                        if ($rawCap !== null && $rawCap !== '') {
+                            $decodedCap = json_decode((string)$rawCap, true);
+                            if (is_array($decodedCap)) { $existing = $decodedCap; }
+                        }
+                    } catch (\Throwable $_e) { /* degrade to empty existing */ }
+                    foreach ($jsonKeys as $col) {
+                        $existing[$col] = !empty($_POST['cap_' . $col]) ? 1 : 0;
+                    }
+                    $sets[]  = 'Capabilities = ?';
+                    $args[]  = json_encode($existing, JSON_UNESCAPED_SLASHES);
+                    $types  .= 's';
+                }
+                $args[]  = $id;
+                $types  .= 'i';
                 $stmt  = $db->prepare(
                     'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
                 );
@@ -183,13 +225,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* ----- GET: tiers + per-tier user counts ----- */
 $tiers = [];
 try {
-    /* $capsCols is built from TIER_CAPS keys (a file-scope const), so the
-       interpolated identifier list cannot be user-influenced. SQL identifiers
-       can't be parameterised — this is the correct pattern for trusted
-       internal-source identifier lists. */
-    $capsCols = implode(', ', array_keys(TIER_CAPS));
+    /* $capsCols is built from tierCapColumnKeys() (file-scope const-derived,
+       column-backed caps only), so the interpolated identifier list cannot be
+       user-influenced. SQL identifiers can't be parameterised — this is the
+       correct pattern for trusted internal-source identifier lists. JSON-backed
+       caps are NOT columns, so they're read from the Capabilities blob (selected
+       only when migrated) via tierCapRead() in the render below. */
+    $capColumnKeys = tierCapColumnKeys();
+    $capsCols      = implode(', ', $capColumnKeys);
+    $hasCapsCol    = tierCapsColumnExists($db);
+    $capsJsonSel   = $hasCapsCol ? ', t.Capabilities' : '';
     $stmt = $db->prepare(
-        "SELECT t.Id, t.Name, t.DisplayName, t.Level, t.Description, $capsCols,
+        "SELECT t.Id, t.Name, t.DisplayName, t.Level, t.Description, $capsCols$capsJsonSel,
                 (SELECT COUNT(*) FROM tblUsers u WHERE u.AccessTier = t.Name) AS UserCount
            FROM tblAccessTiers t
           ORDER BY t.Level ASC, t.Name ASC"
@@ -260,13 +307,25 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                     </thead>
                     <tbody>
                         <?php foreach ($tiers as $t): ?>
+                            <?php
+                                /* Resolve every cap (column + json) to a flat 0/1 map
+                                   so the edit modal's JS reads one uniform object
+                                   regardless of storage (#1352) — json caps live inside
+                                   t.Capabilities, which the JS can't index by cap key. */
+                                $t['_caps'] = [];
+                                foreach (array_keys(TIER_CAPS) as $capCol) {
+                                    $t['_caps'][$capCol] = tierCapRead($t, $capCol);
+                                }
+                            ?>
                             <tr>
                                 <td><code><?= htmlspecialchars($t['Name']) ?></code></td>
                                 <td><?= htmlspecialchars($t['DisplayName']) ?></td>
                                 <td class="text-center"><?= (int)$t['Level'] ?></td>
                                 <?php foreach (array_keys(TIER_CAPS) as $col): ?>
                                     <td class="text-center">
-                                        <?= (int)$t[$col]
+                                        <?php /* tierCapRead() reads the column for column-backed caps,
+                                                 else decodes Capabilities — so json caps render too. */ ?>
+                                        <?= tierCapRead($t, $col)
                                             ? '<i class="bi bi-check-circle text-success"></i>'
                                             : '<i class="bi bi-dash text-muted"></i>' ?>
                                     </td>
@@ -420,7 +479,12 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
             document.getElementById('edit-tier-description').value = t.Description ?? '';
             document.querySelectorAll('.edit-cap').forEach(cb => {
                 const col = cb.dataset.cap;
-                cb.checked = Number(t[col]) === 1;
+                /* Read the server-resolved flat caps map (#1352) so json-backed
+                   caps (stored inside t.Capabilities, not as a top-level key)
+                   set their checkbox correctly. Falls back to the legacy
+                   top-level key for safety. */
+                const caps = (t && t._caps) ? t._caps : t;
+                cb.checked = Number(caps[col]) === 1;
             });
             new bootstrap.Modal(document.getElementById('editTierModal')).show();
         }
