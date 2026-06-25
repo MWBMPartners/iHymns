@@ -1457,13 +1457,25 @@ foreach ($sections as $s) {
                     <h3 class="h6">How a key works</h3>
                     <ul>
                         <li><strong>Shown once.</strong> The raw key is generated server-side and displayed a single time in the create response &mdash; copy it then. iHymns stores only its SHA-256 hash plus a short non-secret prefix, so it can never show you the key again. Lost it? Revoke and mint a new one.</li>
-                        <li><strong>Scoped.</strong> Each key carries a scope that limits what it can do &mdash; today the platform authorises <code>lyrics:ingest</code> (the lyrics-ingest endpoint). The scope is recorded on the key and checked on every call.</li>
+                        <li><strong>Scoped.</strong> Each key carries one or more space-separated scopes that limit what it can do, checked on every call. Today: <code>lyrics:ingest</code> (write &mdash; the lyrics-ingest endpoint) and <code>catalogue:read</code> (read &mdash; lets a trusted integrator read the public catalogue at the key's <em>own</em> rate limit instead of the tighter anonymous limit; it does <strong>not</strong> unlock gated/copyrighted content). More scopes can be added later without re-issuing existing keys.</li>
                         <li><strong>Revocable.</strong> Toggle a key <em>inactive</em> to suspend it, or delete it outright. Both actions are written to the <a href="#activity-log">Activity Log</a>.</li>
                     </ul>
                     <h3 class="h6">Rate limits</h3>
                     <p>
                         API-key calls are rate-limited per key against a windowed usage counter, so one integration can't starve the others. (This is separate from the per-token / per-IP limiter that protects the heavy <em>public</em> reads &mdash; <code>song_detail</code>, search, the slim index, related songs and bulk endpoints each carry a generous per-minute ceiling and answer <code>429</code> with a <code>Retry-After</code> header when a single requester floods them. Real clients never trip it; it fails open if its counter table isn't present.)
                     </p>
+                    <h3 class="h6">Usage &amp; per-key limits</h3>
+                    <p>
+                        The key list shows each key's <strong>requests today</strong> and its <strong>per-minute&nbsp;&middot;&nbsp;per-day</strong> ceilings. Click <em>Limits</em> on a key to set them (blank&nbsp;=&nbsp;no limit). A key over its window gets a <code>429</code> + <code>Retry-After</code>. Setting a daily cap also makes that key's usage visible here.
+                    </p>
+                    <h3 class="h6">Developer quickstart</h3>
+                    <ul>
+                        <li><strong>Authenticate</strong> &mdash; send the key as <code>Authorization: Bearer ihk_live_&hellip;</code> (or the <code>X-API-Key</code> header) on every request.</li>
+                        <li><strong>Read the catalogue</strong> &mdash; a <code>catalogue:read</code> key calling <code>/api?action=song_detail&amp;id=&hellip;</code> (or <code>songs_index</code>, <code>search</code>, <code>songs_list</code>, <code>bulk_songs</code>) is metered against the key's own limit; without a key the same reads work but on the anonymous per-IP limit.</li>
+                        <li><strong>Watch the headers</strong> &mdash; rate-limited responses carry <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Window</code>; a <code>429</code> adds <code>Retry-After</code> (seconds). Honour them to self-throttle.</li>
+                        <li><strong>Idempotency</strong> &mdash; for writes, send an <code>Idempotency-Key</code> header so a retried request isn't applied twice.</li>
+                        <li><strong>Explore live</strong> &mdash; the <a href="/manage/api-docs">API docs (Swagger UI)</a> have <em>Try it out</em> enabled; the full OpenAPI spec is at <code>/api-docs.yaml</code>.</li>
+                    </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Treat a minted key like a password &mdash; it grants its scope to anyone holding it, with no user behind it. If a key leaks, revoke it immediately and re-issue; never paste a raw key into a ticket, chat or log.
                     </div>
