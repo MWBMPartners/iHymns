@@ -198,6 +198,12 @@ function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0): void
             $count = (int)($cs->get_result()->fetch_assoc()['RequestCount'] ?? 0);
             $cs->close();
 
+            /* Surface the remaining quota for the minute window so a well-behaved
+               client can self-throttle (paired with X-RateLimit-Limit on a trip). */
+            if ($wtype === 'minute' && !headers_sent()) {
+                header('X-RateLimit-Remaining: ' . max(0, $limit - $count));
+            }
+
             if ($count > $limit) {
                 /* Tripped: tell the client to back off and STOP processing.
                    Retry-After is the seconds to the next fixed window (a

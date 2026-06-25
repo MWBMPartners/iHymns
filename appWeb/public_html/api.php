@@ -1009,10 +1009,17 @@ if ($action !== null) {
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'songs':
-            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            /* rule #17 — MUST be scoped to one songbook. getSongs(null) applies no
+               SongbookAbbr filter and materialises the WHOLE ~3,600-song corpus in
+               PHP-array memory (the #929 OOM, the same hole bulk_songs was hardened
+               against). No client — web OR native — uses the unscoped form; the
+               full catalogue is served lightweight via songs_index / songs_list. */
             if ($bookId === '') {
-                $bookId = null;
+                sendJson(['error' => 'A songbook parameter is required (use songs_index for the full catalogue).'], 400);
+                break;
             }
+            enforceReadRateLimit('bulk', 60);
 
             $songs = $songData->getSongs($bookId);
             $_langPred = makeLanguageFilterPredicate(
@@ -1040,6 +1047,7 @@ if ($action !== null) {
             if ($bookId === '') {
                 $bookId = null;
             }
+            enforceReadRateLimit('songs_list', 120);
             $listLimit  = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
             $listOffset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
             $listLangs  = resolvePreferredLanguagesForRequest(getAuthenticatedUser());

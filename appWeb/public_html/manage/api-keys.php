@@ -55,9 +55,12 @@ $logKey = static function (string $action, string $id, array $details): void {
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     header('Content-Type: application/json; charset=UTF-8');
 
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* Robust same-origin check (not the stale-prone baked token) so a long-open
+       API-keys page never sporadically 403s a create/toggle/delete; the client
+       sends X-Requested-With. A valid token still passes. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
-        echo json_encode(['error' => 'CSRF token invalid — refresh the page.']);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
         exit;
     }
     $action = (string)($_POST['action'] ?? '');
@@ -276,7 +279,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     function post(data) {
         var body = new URLSearchParams(data);
         body.append('csrf_token', CSRF);
-        return fetch('/manage/api-keys', { method: 'POST', body: body, credentials: 'same-origin' })
+        return fetch('/manage/api-keys', { method: 'POST', body: body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
     }
     function toast(msg, ok) { if (window.showToast) { window.showToast(msg, ok ? 'success' : 'error'); } else { alert(msg); } }
