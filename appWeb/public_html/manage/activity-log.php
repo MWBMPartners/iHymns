@@ -92,7 +92,9 @@ function _activityFlagEmoji(string $cc): string
 if ($hasObsCols && ($_GET['action'] ?? '') === 'geo') {
     header('Content-Type: application/json');
     $token = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf'] ?? '');
-    if (!validateCsrf($token)) {
+    /* Robust same-origin check — the client sends X-Requested-With, so a stale
+       baked token on a long-open Activity Log no longer 403s the AJAX calls. */
+    if (!validateCsrfRequest($token)) {
         http_response_code(403);
         echo json_encode(['ok' => false, 'error' => 'csrf']);
         exit;

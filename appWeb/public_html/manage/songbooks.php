@@ -653,7 +653,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
 ) {
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store');
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo json_encode(['error' => 'Invalid CSRF token.']);
         exit;
@@ -861,7 +861,7 @@ try {
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
