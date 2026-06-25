@@ -131,6 +131,22 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 exit;
             }
 
+            case 'set_limits': {
+                $id = (int)($_POST['id'] ?? 0);
+                if ($id <= 0) { http_response_code(400); echo json_encode(['error' => 'Invalid id.']); exit; }
+                /* Empty string → NULL (no limit). Otherwise a non-negative int.
+                   mysqli binds a NULL PHP var as SQL NULL even on an 'i' slot. */
+                $perMin = (($_POST['per_min'] ?? '') === '') ? null : max(0, (int)$_POST['per_min']);
+                $perDay = (($_POST['per_day'] ?? '') === '') ? null : max(0, (int)$_POST['per_day']);
+                $stmt = $db->prepare('UPDATE tblApiKeys SET RateLimitPerMin = ?, RateLimitPerDay = ? WHERE Id = ?');
+                $stmt->bind_param('iii', $perMin, $perDay, $id);
+                $stmt->execute();
+                $stmt->close();
+                $logKey('set_limits', (string)$id, ['perMin' => $perMin, 'perDay' => $perDay]);
+                echo json_encode(['success' => true, 'id' => $id, 'perMin' => $perMin, 'perDay' => $perDay]);
+                exit;
+            }
+
             default:
                 http_response_code(400);
                 echo json_encode(['error' => 'Unknown action.']);
@@ -149,6 +165,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $keys = [];
 $res = $db->query(
     'SELECT k.Id, k.Label, k.KeyPrefix, k.Scope, k.Active, k.LastUsedAt, k.LastUsedIp, k.CreatedAt,
+            k.RateLimitPerMin, k.RateLimitPerDay,
             u.Username AS CreatedByName
        FROM tblApiKeys k
        LEFT JOIN tblUsers u ON u.Id = k.CreatedBy
@@ -157,6 +174,30 @@ $res = $db->query(
 if ($res) {
     while ($row = $res->fetch_assoc()) { $keys[] = $row; }
 }
+
+/* Today's request count per key from the #1066 usage counters (Theme B). The
+   table is existence-gated (it may not be migrated on every env — STRICT mode
+   throws on a missing table) and wrapped, so an un-migrated install just shows
+   no usage rather than white-screening. WindowStart is computed SQL-side. */
+$usageToday = [];   // [ApiKeyId => requests today]
+try {
+    $hasUsage = $db->query(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblApiKeyUsage' LIMIT 1"
+    );
+    if ($hasUsage && $hasUsage->fetch_row() !== null) {
+        $ures = $db->query(
+            "SELECT ApiKeyId, SUM(RequestCount) AS Today
+               FROM tblApiKeyUsage
+              WHERE WindowType = 'day'
+                AND WindowStart = DATE_FORMAT(UTC_TIMESTAMP(), '%Y-%m-%d 00:00:00')
+              GROUP BY ApiKeyId"
+        );
+        if ($ures) {
+            while ($u = $ures->fetch_assoc()) { $usageToday[(int)$u['ApiKeyId']] = (int)$u['Today']; }
+        }
+    }
+} catch (\Throwable $_e) { /* un-migrated / DB blip — no usage shown */ }
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -194,6 +235,8 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <th data-col-priority="secondary">Prefix</th>
                     <th data-col-priority="secondary">Scope</th>
                     <th data-col-priority="primary">Status</th>
+                    <th data-col-priority="secondary">Usage today</th>
+                    <th data-col-priority="secondary">Limits (min&nbsp;&middot;&nbsp;day)</th>
                     <th data-col-priority="tertiary">Last used</th>
                     <th data-col-priority="tertiary">Created</th>
                     <th data-col-priority="primary" class="text-end">Actions</th>
@@ -201,7 +244,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </thead>
             <tbody>
             <?php if (empty($keys)): ?>
-                <tr><td colspan="7" class="text-center text-secondary py-4">No API keys yet. Mint one for your external service.</td></tr>
+                <tr><td colspan="9" class="text-center text-secondary py-4">No API keys yet. Mint one for your external service.</td></tr>
             <?php else: foreach ($keys as $k): ?>
                 <tr data-id="<?= (int)$k['Id'] ?>">
                     <td data-col-priority="primary"><?= htmlspecialchars((string)$k['Label'], ENT_QUOTES) ?></td>
@@ -214,9 +257,27 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                             <span class="badge bg-secondary">revoked</span>
                         <?php endif; ?>
                     </td>
+                    <td data-col-priority="secondary">
+                        <?php $ut = $usageToday[(int)$k['Id']] ?? null; ?>
+                        <?= $ut === null
+                            ? '<span class="text-secondary small">&mdash;</span>'
+                            : '<span class="badge bg-light text-dark" title="Requests so far today (UTC)">' . number_format($ut) . '</span>' ?>
+                    </td>
+                    <td data-col-priority="secondary" class="small font-monospace">
+                        <?php
+                            $pm = $k['RateLimitPerMin']; $pd = $k['RateLimitPerDay'];
+                            echo ($pm === null ? '<span class="text-secondary" title="no limit">&infin;</span>' : (int)$pm)
+                               . '&nbsp;&middot;&nbsp;'
+                               . ($pd === null ? '<span class="text-secondary" title="no limit">&infin;</span>' : (int)$pd);
+                        ?>
+                    </td>
                     <td data-col-priority="tertiary"><?= $k['LastUsedAt'] ? htmlspecialchars((string)$k['LastUsedAt'], ENT_QUOTES) : '<span class="text-secondary">never</span>' ?></td>
                     <td data-col-priority="tertiary"><?= htmlspecialchars((string)$k['CreatedAt'], ENT_QUOTES) ?></td>
                     <td data-col-priority="primary" class="text-end">
+                        <button type="button" class="btn btn-sm btn-outline-primary" data-edit-limits
+                                data-per-min="<?= $k['RateLimitPerMin'] === null ? '' : (int)$k['RateLimitPerMin'] ?>"
+                                data-per-day="<?= $k['RateLimitPerDay'] === null ? '' : (int)$k['RateLimitPerDay'] ?>"
+                                data-label="<?= htmlspecialchars((string)$k['Label'], ENT_QUOTES) ?>">Limits</button>
                         <button type="button" class="btn btn-sm btn-outline-secondary" data-toggle-key data-active="<?= (int)$k['Active'] ?>">
                             <?= (int)$k['Active'] === 1 ? 'Revoke' : 'Reactivate' ?>
                         </button>
@@ -266,6 +327,38 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" data-bs-dismiss="modal" id="keyCloseBtn">Cancel</button>
           <button type="submit" class="btn btn-primary" id="keySubmitBtn">Mint key</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Edit rate-limits modal -->
+<div class="modal fade" id="limitsModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <form id="limitsForm">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-speedometer2 me-2"></i>Rate limits &mdash; <span id="limitsLabel"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="small text-secondary">Per-key request ceilings (#1066). Leave a field <strong>blank</strong> for no limit. The key gets a <code>429</code> + <code>Retry-After</code> once a window is exceeded.</p>
+          <input type="hidden" id="limitsId">
+          <div class="row g-3">
+            <div class="col">
+              <label class="form-label" for="limitsPerMin">Per minute</label>
+              <input type="number" min="0" step="1" class="form-control" id="limitsPerMin" placeholder="&infin;">
+            </div>
+            <div class="col">
+              <label class="form-label" for="limitsPerDay">Per day (UTC)</label>
+              <input type="number" min="0" step="1" class="form-control" id="limitsPerDay" placeholder="&infin;">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="limitsSubmitBtn">Save limits</button>
         </div>
       </form>
     </div>
@@ -348,6 +441,39 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             });
         });
     });
+
+    /* --- Rate-limit editor (Phase B): per-key RateLimitPerMin/PerDay --- */
+    var limitsEl = document.getElementById('limitsModal');
+    var limitsModal = (limitsEl && window.bootstrap) ? new bootstrap.Modal(limitsEl) : null;
+    document.querySelectorAll('[data-edit-limits]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var tr = btn.closest('tr');
+            document.getElementById('limitsId').value      = tr.getAttribute('data-id');
+            document.getElementById('limitsLabel').textContent = btn.getAttribute('data-label') || '';
+            document.getElementById('limitsPerMin').value   = btn.getAttribute('data-per-min') || '';
+            document.getElementById('limitsPerDay').value   = btn.getAttribute('data-per-day') || '';
+            if (limitsModal) { limitsModal.show(); }
+        });
+    });
+    var limitsForm = document.getElementById('limitsForm');
+    if (limitsForm) {
+        limitsForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var sbtn = document.getElementById('limitsSubmitBtn');
+            sbtn.disabled = true;
+            post({
+                action:  'set_limits',
+                id:      document.getElementById('limitsId').value,
+                per_min: document.getElementById('limitsPerMin').value,
+                per_day: document.getElementById('limitsPerDay').value
+            }).then(function (res) {
+                sbtn.disabled = false;
+                if (!res.ok || !res.j.success) { toast((res.j && res.j.error) || 'Failed to save limits.', false); return; }
+                toast('Limits saved.', true);
+                window.location.reload();
+            }).catch(function () { sbtn.disabled = false; toast('Network error.', false); });
+        });
+    }
 })();
 </script>
 
