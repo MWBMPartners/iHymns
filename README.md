@@ -120,6 +120,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 - **Offline downloads** — individual songbooks or all at once.
 - **Bulk download API** — optimised endpoint fetches entire songbooks in a handful of requests.
+- **Rate-limited public reads** — the heaviest sessionless reads (`song_detail`, `search`, `songs_index`, `related_songs`, bulk) carry a fixed-window per-requester limit (per token where present, else per IP) that returns `429` + `Retry-After`; generous enough that real clients never trip it, fail-open and dormant until `migrate-add-read-rate-limit.php` runs (#1354).
 - **Offline audio** — opt-in pre-cache so playback works without a connection (#401).
 - **Per-songbook size readout + eviction** — Settings shows actual cached bytes per songbook with a remove-from-offline button (#401).
 - **Background downloads** — continue when navigating away from Settings.
@@ -145,6 +146,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 - **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
+- **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
 - **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page.
 
 ### Community
@@ -176,7 +178,7 @@ Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate r
 | **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · Database Setup · Configuration · Notifications |
 | **Help** | Help / Guides |
 
-Every write on these pages is CSRF-protected. DB error messages are never leaked to clients (see server error log).
+Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
 
 ---
 

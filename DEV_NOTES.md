@@ -13,6 +13,11 @@
 - [Development Environment](#-development-environment)
 - [Commit Message Conventions](#-commit-message-conventions)
 - [Auto-Merge for Alpha PRs](#-auto-merge-for-alpha-prs)
+- [Gating Registry — adding a gateable feature (#1352)](#-gating-registry--adding-a-gateable-feature-1352)
+- [Content-Gating Enforcement (#1353)](#-content-gating-enforcement-1353)
+- [Read Rate Limiting (#1354)](#-read-rate-limiting-1354)
+- [API CSRF Model — `validateCsrfRequest()`](#-api-csrf-model--validatecsrfrequest)
+- [`save_song` → v2 Editor API (shared core)](#-save_song--v2-editor-api-shared-core)
 
 ---
 
@@ -801,6 +806,261 @@ Tier management is restricted to **Admin** and **Global Admin** roles only.
 
 ---
 
+## 🧩 Gating Registry — adding a gateable feature (#1352)
+
+`tblAccessTiers` capabilities used to be **one TINYINT column per feature** — adding a
+new gated capability meant an `ALTER TABLE` plus edits in the admin form, both API CRUD
+endpoints, the API emit and the content-gating resolver. As of #1352 the capability set
+is an **extensible registry**: `TIER_CAPS` in
+`appWeb/public_html/includes/access_tier_validation.php` is the single source of truth,
+and **new caps live in a `Capabilities` JSON column** (added by the additive
+`migrate-add-tier-capabilities-json.php`) rather than getting their own column. The **7
+original caps stay as TINYINT columns** because the native-app API contract reads them
+straight off their own columns (their camelCase emit keys are the contract — never
+re-home an existing column cap into JSON).
+
+### ⭐ The canonical how-to
+
+> **To add a new gateable feature, add ONE line to `TIER_CAPS` in
+> `includes/access_tier_validation.php`**, e.g.
+>
+> ```php
+> 'CanRequestSongs' => ['Requests', 'Submit song requests', 'json', 0],
+> ```
+>
+> **then run the JSON-backed tier-capabilities card on `/manage/setup-database`** (the
+> `migrate-add-tier-capabilities-json.php` migration). The admin checkbox
+> (`manage/tiers.php`), both API CRUD endpoints (`admin_tier_create` /
+> `admin_tier_update`), the `access_tiers` API emit (as `canRequestSongs`) and content
+> gating (`checkTierAccess`) **all pick it up with NO schema change**.
+
+That's the whole change — one array line plus running an already-shipped migration card.
+No `ALTER`, no per-surface edits, no new column.
+
+### Tuple shape
+
+Each `TIER_CAPS` entry is a 4-tuple `[short_label, full_description, storage, default]`:
+
+| Element | Meaning |
+| --- | --- |
+| `short_label` | Column header on `/manage/tiers.php` |
+| `full_description` | Tooltip / checkbox hint |
+| `storage` | `'column'` (own TINYINT — the 7 originals) or `'json'` (a key in `tblAccessTiers.Capabilities`) |
+| `default` | `0` / `1` — value assumed when the JSON key is absent or the `Capabilities` column hasn't been migrated yet |
+
+`tiers.php` destructures only `[$lbl, $hint]` from each tuple — PHP list-destructuring
+binds the first two and ignores the rest, so widening originals to 4-tuples was a no-op.
+
+### Why JSON, not ENUM or one-column-per-feature
+
+This follows **CLAUDE.md rule #20** (a growable vocabulary is JSON/VARCHAR, app-validated
+against a central map — never an `ENUM`, never an `ALTER` per value). A new cap is an
+additive JSON key, so it works on every env the moment the (single, one-time)
+`Capabilities`-column migration has run — and **degrades to its declared default on an
+un-migrated install**, never throwing under STRICT.
+
+### Helpers
+
+`access_tier_validation.php` exposes the registry plumbing every surface uses:
+`tierCapStorage()` / `tierCapDefault()` (read the 3rd/4th tuple slot), `tierCapColumnKeys()`
+/ `tierCapJsonKeys()` (split the registry by storage), `tierCapRead($tierRow, $key)`
+(read a cap's effective 0/1 off a fetched row — column-backed reads its own field,
+JSON-backed decodes `Capabilities` and falls back to the default), and
+`tierCapsColumnExists($db)` (request-cached `INFORMATION_SCHEMA` probe — the CRUD writers
+and the emit gate every read/write of the `Capabilities` column on this, because mysqli
+runs under STRICT so touching a non-existent column **throws**).
+
+---
+
+## 🔒 Content-Gating Enforcement (#1353)
+
+The gating **tiers** (public/free/ccli/premium/pro) were **advisory** until #1353 — the
+API emitted full song data regardless of tier and the native apps were trusted to
+self-enforce. #1353 makes the **server** the enforcement point.
+
+### `contentGatingApply()` — the strip
+
+`appWeb/public_html/includes/content_gating.php` exposes
+`contentGatingApply($song, $userId, $platform)`, called on the built
+`song_detail` / `song_data` / `random` payloads **immediately before they are emitted**
+(api.php `song_detail`, `song_data`, and the `random` song path). Given a requester's
+effective tier (anonymous → `public`) it strips fields the tier may not see/use:
+
+| Denied cap | What it strips |
+| --- | --- |
+| `!view_lyrics` (or copyrighted song + `!view_copyrighted`) | the lyric **body** (`components`) + per-line/whole-song `translations` + `annotations` + `vocalParts`; adds `contentRestricted=true` + `restrictionReason`. Metadata (id/number/title/songbook/credits) is **kept** so the client can show a locked card + upgrade prompt |
+| `!play_audio` | drops `audio`-kind media; `hasAudio=false` |
+| `!download_midi` | drops `midi`-kind media |
+| `!download_pdf` | drops `sheet-music` + `musicxml` media; `hasSheetMusic=false` |
+| `!offline_save` | `offlineAllowed=false` |
+
+"Copyrighted" keys on the **lyrics axis only** (`lyricsPublicDomain === false`) — never
+AND-ed with the music axis (PD gating is per-axis; see MEMORY).
+
+### Registry-driven, not a hardcoded matrix
+
+Per-cap decisions go through `checkTierAccess()` in `ccli_validator.php`, which
+**since #1353 resolves caps from the LIVE `tblAccessTiers` row** (via
+`capsForTierFromRegistry()`) and overlays them on the fallback matrix. So a curator's edits **and** any new one-line
+JSON cap (#1352) are enforced automatically, with no edit to the matrix. A `null` return
+(un-migrated DB / unknown tier / read threw) leaves the fallback matrix exactly as before
+— byte-identical to pre-#1353. The CCLI-tier gate (verified CCLI number required for
+`view_copyrighted` / `play_audio`) is unchanged.
+
+### Entirely dormant + STRICT-safe
+
+Three locked rules (do not relax):
+
+1. **Master switch.** Every public function is a verified **NO-OP** — returns byte-identical
+   data — unless `getAppSetting('content_gating_enabled','0') === '1'`. The flag is `'0'`
+   by default, so shipping this changed **nothing** on any live env.
+2. **Caps come from the registry** (above) — never a hardcoded tier→cap matrix here.
+3. **Fail-open.** The 3 docroots share one MySQL and migrations are NOT auto-applied, so a
+   request can hit a half-migrated env; every optional read is wrapped and the helper
+   returns the song **unchanged** on any uncertainty (the master switch is the real gate —
+   this module only trims within an already-opted-in deployment). Failing open here beats
+   white-screening a public read (the #1228 lesson).
+
+### `bulk_audio` offline manifest
+
+The PWA offline-audio manifest (api.php `bulk_audio`) is **also entity-gated** when the
+flag is on: a restricted song's audio is dropped from the manifest via
+`checkBulkAccess('song', …, 'display')` (the entity model, mirroring the gated
+`song-media.php` route the manifest sidesteps). NO-OP + fail-open when the flag is off.
+
+### ⚠ Known follow-ups (not yet sealed)
+
+- **`song.php` is entity-model-only.** The server-rendered `/song` page enforces access
+  via the **entity** content-restriction model, not the tier-cap field-strip that
+  `contentGatingApply()` applies to the API payloads. The two enforcement surfaces aren't
+  yet unified.
+- **The static `/data/audio/<SongId>.mp3` file is directly fetchable.** Gating the
+  `bulk_audio` manifest stops a restricted song's audio being **pre-cached**, but the
+  static MP3 itself is still served directly by Apache. Sealing it needs the signed-URL /
+  move-behind-`song-media.php` work (tracked separately) — and that must not break the
+  browser `<audio>` element.
+
+---
+
+## 🚦 Read Rate Limiting (#1354)
+
+The heavy **public** reads are sessionless and were uncapped, so a scraper could hammer
+them. #1354 adds a cheap fixed-window counter.
+
+### `enforceReadRateLimit()` + `tblReadRateLimit`
+
+`appWeb/public_html/includes/read_rate_limit.php` exposes
+`enforceReadRateLimit($scope, $perMin, $perDay = 0)`, called at the top of the heaviest
+public read actions in `api.php`. It counts the request in a per-minute (and optional
+per-day) bucket in `tblReadRateLimit` (added by `migrate-add-read-rate-limit.php`); over
+the limit it emits **429 + `Retry-After`** (plus `X-RateLimit-Limit` / `X-RateLimit-Window`)
+and `exit`s. Each `$scope` is an independent budget sharing one table, so new endpoint
+limits need **no further migration** (rule #20).
+
+### Per-endpoint limits (per UTC minute)
+
+| Endpoint | Scope | Limit |
+| --- | --- | --- |
+| `song_detail` | `song_detail` | 240/min |
+| search | `search` | 120/min |
+| `songs_index` | `songs_index` | 120/min |
+| `related_songs` | `related_songs` | 240/min |
+| bulk (`bulk_songs` / `bulk_audio` / …) | `bulk` | 60/min |
+
+Limits are deliberately **generous** — real clients never trip them; abusive volume does.
+
+### Keyed per token-or-IP
+
+The bucket key is **per session token where one is present** (`tok:<sha256hex>`), else
+**per IP** (`ip:<REMOTE_ADDR>`). Per-token-first because a congregation of native apps
+behind one NAT egresses as **one IP** — bucketing those by IP would throttle the whole
+room like a single scraper (same NAT lesson as Service Mode rule #26's per-presence
+limiting); a per-device token gives each its own budget. The token is accepted only in the
+strict 64-hex shape `getAuthBearerToken()` uses and is **not** validated against the
+sessions table (that would cost a query per request) — a forged 64-hex token simply gets
+its own generous bucket, and the per-IP backstop still covers the no-/junk-token scraper.
+`REMOTE_ADDR` only (never `X-Forwarded-For`, which a client can forge to mint unlimited
+buckets); the raw token is hashed, never stored.
+
+### Fail-open + dormant until migrated
+
+Every DB touch is `try/catch`'d and the table is existence-gated (request-cached): if
+`tblReadRateLimit` is absent (un-migrated install) or **any** error occurs, the request is
+**allowed**. A rate limiter must never take the site down (#1228). Window boundaries are
+computed **SQL-side** (`DATE_FORMAT(UTC_TIMESTAMP(), …)`), not PHP `time()`, so there's no
+per-node clock skew between truncation and comparison. Mirrors `apiKeyEnforceRateLimit()`
+in `includes/api_keys.php` (the API-key-auth variant against `tblApiKeyUsage`).
+
+---
+
+## 🛡 API CSRF Model — `validateCsrfRequest()`
+
+The page-form model (`csrfToken()` + `validateCsrf()`, a token baked into the rendered
+page and compared against `$_SESSION['csrf_token']`) is fine for short-lived admin
+**forms** but went **stale** on long-lived AJAX surfaces — the song editor and the
+duplicate-songs page. On those pages the baked token can rotate / be GC'd / differ across
+tabs while the page stays open, so a perfectly legitimate POST then carries a stale token
+and is rejected. **That is the sporadic "CSRF error" the owner saw on merge / delete /
+edits.**
+
+### `validateCsrfRequest(?string $token = null)`
+
+New in `appWeb/public_html/manage/includes/auth.php`. It accepts the request when
+**EITHER**:
+
+- **(a)** a valid session token was supplied (back-compat — existing form callers still
+  work), **OR**
+- **(b)** it is a genuine **same-origin AJAX** request: the custom header
+  `X-Requested-With` is present (a browser **cannot** set it on a cross-origin request
+  without a CORS preflight this server never grants), **AND** any present `Origin` / `Referer`
+  host matches this site (an explicit cross-origin host is rejected; an **absent**
+  Origin/Referer is allowed, since the custom header already proves same-origin and some
+  privacy setups strip Referer).
+
+Either signal alone is an OWASP-recognised CSRF mitigation; together they're robust and —
+crucially — **never go stale**. State-changing AJAX endpoints call this instead of
+`validateCsrf()` directly.
+
+### Where it's wired
+
+- **Duplicate-songs** merge / delete handlers (`manage/duplicate-songs.php`).
+- **Places API** (`manage/places-api.php`).
+- A **top-level POST gate on ALL legacy `/manage/editor/api.php` writes** — every
+  state-changing POST must pass `validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)`
+  or it 403s; GET reads are unaffected. The editor clients already send `X-Requested-With`.
+- The **v2 editor `api2.php`** uses the same same-origin signal directly
+  (`X-Requested-With: XMLHttpRequest` required on every POST) — which is why `save_song`
+  over there always worked, and the model #1289 ("Here to Stay" 403s) generalised.
+
+---
+
+## 💾 `save_song` → v2 Editor API (shared core)
+
+The whole-song save (the legacy `save_song` action, #394) was extracted out of the legacy
+editor `api.php` into a **shared core** so the v2 API and the legacy API run the **same**
+save code — no forked save logic, no drift in the project's primary write path (CLAUDE.md
+modularity rule).
+
+- **The core:** `editorSaveSongCore()` in
+  `appWeb/public_html/manage/editor/save_song_core.php`. A behaviour-preserving extraction
+  of the legacy `case 'save_song':` — the SQL, transaction, component/credit/revision/ISWC-Works
+  write logic is byte-for-byte the original; the **only** change is response **emission**:
+  every inline `http_response_code(N); echo …; break;` now `return`s
+  `['status' => N, 'body' => X]` so each caller emits in its own house style.
+- **Both APIs serve it:** the legacy `api.php` keeps a back-compat shim, and `api2.php`
+  routes `?action=save_song` through `editorSaveSongCore()` (then `ed2_respond()`).
+- **The editor POSTs the save to api2** (`window.IHYMNS_EDITOR_API2 + '?action=save_song'`)
+  under its `X-Requested-With` CSRF gate — so the save rides the never-stale same-origin
+  check (above) rather than the page-baked token.
+
+The core stays Id-stable for lyric lines (`lyricLinesWriteComponents()`, the #1235 P4/C5
+inverted write path: `tblLyricLines` authoritative, JSON columns a gated shadow) and
+remains schema-tolerant (probes for `ArrangementJson`, `tblSongArtists`, places columns,
+the credit-people name-parts columns, etc.) so a partly-migrated install never 500s the
+save.
+
+---
+
 ## Admin Portal (`/manage/` + `/admin/` alias)
 
 | Route | Purpose | Entitlement |
@@ -1052,4 +1312,4 @@ Works.
 > store-submission sections above describe the intended CI/CD pipeline for when
 > those targets ship.
 
-Last updated: 2026-06-21
+Last updated: 2026-06-24
