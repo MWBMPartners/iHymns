@@ -162,7 +162,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
 /* #1354 — lightweight per-requester (token-or-IP) rate limiting for the
-   heaviest PUBLIC read actions. enforceReadRateLimit() is FAIL-OPEN and
+   heaviest PUBLIC read actions. enforceReadRateLimitKeyed() is FAIL-OPEN and
    table-existence-gated, so it is a clean no-op until the migration runs and
    never trips a legitimate native-app sync (limits are generous). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
@@ -537,7 +537,7 @@ if ($action !== null) {
             /* #1354 — search runs a lyrics-wide scan, so it's a prime scrape
                target. 120/min ≈ 2 req/s sustained: far above any human or the
                PWA's debounced typeahead, but caps a scraper. Fail-open. */
-            enforceReadRateLimit('search', 120);
+            enforceReadRateLimitKeyed('search', 120);
             $query    = isset($_GET['q']) ? trim($_GET['q']) : '';
             $bookId   = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
             $limit    = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
@@ -708,7 +708,7 @@ if ($action !== null) {
                deliberately generous; it still stops a corpus-walking scraper.
                Fail-open + per-token, so a NAT-shared congregation isn't capped
                as one IP. */
-            enforceReadRateLimit('song_detail', 240);
+            enforceReadRateLimitKeyed('song_detail', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($songId === '') {
                 sendJson(['error' => 'Song ID is required.'], 400);
@@ -806,7 +806,7 @@ if ($action !== null) {
             /* #1354 — whole-songbook payload (heavy). Shares the 'bulk' budget
                with bulk_songs/bulk_audio at 60/min: a full offline sync touches
                each songbook a handful of times, well under the cap. Fail-open. */
-            enforceReadRateLimit('bulk', 60);
+            enforceReadRateLimitKeyed('bulk', 60);
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
             if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
                 sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
@@ -1019,7 +1019,7 @@ if ($action !== null) {
                 sendJson(['error' => 'A songbook parameter is required (use songs_index for the full catalogue).'], 400);
                 break;
             }
-            enforceReadRateLimit('bulk', 60);
+            enforceReadRateLimitKeyed('bulk', 60);
 
             $songs = $songData->getSongs($bookId);
             $_langPred = makeLanguageFilterPredicate(
@@ -1047,7 +1047,7 @@ if ($action !== null) {
             if ($bookId === '') {
                 $bookId = null;
             }
-            enforceReadRateLimit('songs_list', 120);
+            enforceReadRateLimitKeyed('songs_list', 120);
             $listLimit  = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
             $listOffset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
             $listLangs  = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
@@ -1072,7 +1072,7 @@ if ($action !== null) {
             /* #1354 — the full slim corpus in one response (a few hundred KB).
                The SW precaches it once and rarely refetches, so 120/min is far
                above any real client yet caps a scraper polling it. Fail-open. */
-            enforceReadRateLimit('songs_index', 120);
+            enforceReadRateLimitKeyed('songs_index', 120);
             sendJson(['songs' => $songData->getSongsSlimIndex()]);
             break;
 
@@ -1270,7 +1270,7 @@ if ($action !== null) {
                60/min on the shared 'bulk' scope: the SW fetches one songbook at
                a time, so this caps a scraper looping every songbook without
                ever blocking a normal offline sync. Fail-open. */
-            enforceReadRateLimit('bulk', 60);
+            enforceReadRateLimitKeyed('bulk', 60);
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
                single songbook. The old unscoped fallback materialised AND
@@ -1332,7 +1332,7 @@ if ($action !== null) {
             /* #1354 — whole-songbook audio manifest. Shares the 'bulk' 60/min
                budget with bulk_songs/songbook_export (the SW fetches them
                together per songbook). Fail-open. */
-            enforceReadRateLimit('bulk', 60);
+            enforceReadRateLimitKeyed('bulk', 60);
             $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — must be scoped to one songbook
                (see bulk_songs above). The SW always passes &songbook=. */
@@ -6192,7 +6192,7 @@ if ($action !== null) {
                it's high-volume for real users; 240/min ≈ 4 req/s matches the
                song_detail budget and won't trip normal browsing while still
                capping a scraper enumerating relationships. Fail-open. */
-            enforceReadRateLimit('related_songs', 240);
+            enforceReadRateLimitKeyed('related_songs', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
 

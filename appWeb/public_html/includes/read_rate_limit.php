@@ -228,3 +228,50 @@ function enforceReadRateLimit(string $scope, int $perMin, int $perDay = 0): void
         return;
     }
 }
+
+/**
+ * Key-aware read gate (API platform, Phase A) — the read endpoints call THIS.
+ *
+ * ELI5: "if the caller sent a valid API key with the catalogue:read scope, count
+ * them against THEIR own generous per-key budget; otherwise fall back to the
+ * anonymous per-IP/token limit."
+ *
+ * Why: it lets a trusted integrator (a sibling project / a native app issued a key)
+ * sync at a higher, per-key ceiling while a keyless scraper stays on the tight
+ * anonymous limit — WITHOUT locking the catalogue down (no key → today's public
+ * behaviour, unchanged). A coarse `catalogue:read` scope (rule #20, growable) keeps
+ * issuance simple. apiKeyVerify() records LastUsedAt and apiKeyEnforceRateLimit()
+ * records usage (when a limit is set) for the /manage/api-keys dashboard.
+ *
+ * FAIL-OPEN + dependency-soft: if the key helpers aren't loaded, or anything throws,
+ * it degrades to the anonymous limit. An anonymous caller pays only a cheap header
+ * parse (no DB) — the key DB lookup happens ONLY when a key is actually presented.
+ *
+ * @param string $scope      The endpoint group (shared with enforceReadRateLimit).
+ * @param int    $anonPerMin The anonymous per-minute ceiling when no valid key.
+ */
+function enforceReadRateLimitKeyed(string $scope, int $anonPerMin): void
+{
+    if (function_exists('apiKeyFromRequest') && function_exists('apiKeyVerify')
+        && function_exists('apiKeyEnforceRateLimit') && function_exists('getDbMysqli')) {
+        try {
+            $raw = apiKeyFromRequest();
+            /* Only an API-key-shaped token (ihk_…) hits tblApiKeys; a session-token
+               Bearer (64-hex, the PWA / native apps) fails the prefix test and falls
+               straight through to the anonymous limit — no wasted key lookup per read. */
+            if ($raw !== null && $raw !== '' && strncmp($raw, 'ihk_', 4) === 0) {
+                $db  = getDbMysqli();
+                $key = apiKeyVerify($db, $raw, 'catalogue:read');
+                if (is_array($key)) {
+                    /* Valid keyed reader → per-key budget. Returns false AFTER
+                       emitting a 429, so stop the request. */
+                    if (!apiKeyEnforceRateLimit($db, $key, $scope)) { exit; }
+                    return;   /* keyed reader handled — skip the anonymous limit */
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* key path failed — fall through to the anonymous limit (fail-open) */
+        }
+    }
+    enforceReadRateLimit($scope, $anonPerMin);
+}

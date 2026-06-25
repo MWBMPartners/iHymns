@@ -8427,9 +8427,13 @@ components:
         Machine-to-machine API key (#1064) for external services (e.g.
         MeedyaDL) — NOT a user token. A global admin mints it at
         `/manage/api-keys`; it is stored only as a SHA-256 hash + a short
-        prefix (`tblApiKeys`) and carries a space-separated scope (today
-        `lyrics:ingest`). Send it as `Authorization: Bearer ihk_live_…` or,
-        equivalently, the `X-API-Key` header.
+        prefix (`tblApiKeys`) and carries a space-separated scope. Scopes:
+        `lyrics:ingest` (write — the lyrics-ingest endpoint) and
+        `catalogue:read` (read — the public catalogue reads at the key's own
+        per-key rate limit instead of the anonymous IP limit; it does NOT
+        unlock gated/copyrighted content). Per-key limits + usage are managed
+        at `/manage/api-keys`. Send it as `Authorization: Bearer ihk_live_…`
+        or, equivalently, the `X-API-Key` header.
     ingestApiKeyHeader:
       type: apiKey
       in: header

@@ -39,8 +39,12 @@ $db   = getDbMysqli();
 $csrf = csrfToken();
 
 /* Known scopes the UI offers; free-form is still allowed but these are the
-   ones the platform currently authorises. */
-$KNOWN_SCOPES = ['lyrics:ingest'];
+   ones the platform currently authorises:
+     - lyrics:ingest  (write) — the MeedyaDL-style lyrics ingest endpoint (#1064)
+     - catalogue:read (read)  — read the public catalogue at the key's per-key
+                                rate limit instead of the anonymous IP limit
+                                (API platform Phase A; does NOT unlock gated content). */
+$KNOWN_SCOPES = ['lyrics:ingest', 'catalogue:read'];
 
 $logKey = static function (string $action, string $id, array $details): void {
     if (function_exists('logActivity')) {
@@ -319,8 +323,12 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             </div>
             <div class="mb-3">
               <label class="form-label" for="keyScope">Scope</label>
-              <input type="text" class="form-control font-monospace" id="keyScope" maxlength="255" value="lyrics:ingest">
-              <div class="form-text">Space-separated scope tokens. Currently: <code>lyrics:ingest</code>.</div>
+              <input type="text" class="form-control font-monospace" id="keyScope" maxlength="255" value="lyrics:ingest" list="scopeOptions">
+              <datalist id="scopeOptions">
+                <option value="lyrics:ingest"></option>
+                <option value="catalogue:read"></option>
+              </datalist>
+              <div class="form-text">Space-separated scope tokens: <code>lyrics:ingest</code> (write), <code>catalogue:read</code> (read the public catalogue at this key's rate limit; does not unlock gated content).</div>
             </div>
           </div>
         </div>
