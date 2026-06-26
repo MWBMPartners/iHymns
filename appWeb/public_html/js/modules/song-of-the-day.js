@@ -84,6 +84,7 @@ export class SongOfTheDay {
             const url = new URL(this.app.config.apiUrl, window.location.origin);
             url.searchParams.set('action', 'song_of_the_day');
             url.searchParams.set('date', this._localDateStr());
+            url.searchParams.set('hemisphere', this._hemisphere());
             const subtags = this.getActiveSubtags();
             if (subtags.length) url.searchParams.set('lang', subtags.join(','));
 
@@ -149,5 +150,24 @@ export class SongOfTheDay {
         const d = new Date();
         const pad = (n) => String(n).padStart(2, '0');
         return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    /**
+     * The user's hemisphere ('n' default | 's'), derived from their IANA timezone so
+     * the southern hemisphere gets Harvest in its own autumn (#1374). Privacy-friendly
+     * + cache-safe — no GeoIP, mirrors how the local date is already client-supplied.
+     * Anything not on the southern allow-list (incl. errors) → 'n', the prior behaviour.
+     *
+     * @returns {'n'|'s'}
+     */
+    _hemisphere() {
+        try {
+            const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
+            /* Populous southern-hemisphere zones with distinct autumn timing. */
+            const SOUTH = /^(Australia\/|Antarctica\/|Atlantic\/Stanley|Pacific\/(Auckland|Chatham|Fiji|Noumea|Port_Moresby|Guadalcanal|Tongatapu|Norfolk|Easter|Apia|Pago_Pago)|Indian\/(Mauritius|Reunion|Antananarivo)|Africa\/(Johannesburg|Maseru|Mbabane|Windhoek|Gaborone|Harare|Lusaka|Maputo|Luanda|Antananarivo)|America\/(Argentina\/|Sao_Paulo|Bahia|Fortaleza|Recife|Maceio|Cuiaba|Campo_Grande|Manaus|Santiago|Punta_Arenas|Montevideo|Asuncion|La_Paz|Lima))/;
+            return SOUTH.test(tz) ? 's' : 'n';
+        } catch (_e) {
+            return 'n';
+        }
     }
 }

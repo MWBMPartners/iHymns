@@ -23,7 +23,7 @@
  */
 
 const LF_POLL_MS      = 2500;   // follower poll cadence
-const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 90 s freshness window
+const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
 const LF_HOST_KEY     = 'ihymns_lf_host';     // sessionStorage: active host session code
 const LF_FOLLOW_KEY   = 'ihymns_lf_follow';   // sessionStorage: joined follower session code
 const LF_CODE_RE      = /^[A-Z0-9]{4,12}$/;
@@ -181,15 +181,33 @@ export class LiveFollow {
 
     _startHeartbeat() {
         this._stopHeartbeat();
-        this._hbTimer = setInterval(async () => {
-            if (!this.hostCode) { this._stopHeartbeat(); return; }
-            try {
-                const r = await this._api('live_follow_heartbeat', { method: 'POST', auth: true, body: { code: this.hostCode } });
-                if (r.data && r.data.ok === false) { this.endHost(true); }
-            } catch (_e) { /* transient */ }
-        }, LF_HEARTBEAT_MS);
+        this._hbTimer = setInterval(() => this._beatNow(), LF_HEARTBEAT_MS);
+        /* Mobile browsers throttle/pause setInterval in a backgrounded tab, so the
+           30s beat can miss the freshness window while the leader is on another app
+           or the screen sleeps — the session then goes "stale" and followers can't
+           join. Fire an immediate beat whenever the page returns to the foreground so
+           a briefly-backgrounded session recovers instead of dying. */
+        if (!this._hbVisBound) {
+            this._hbVisBound = () => { if (!document.hidden && this.hostCode) { this._beatNow(); } };
+            document.addEventListener('visibilitychange', this._hbVisBound);
+            window.addEventListener('focus', this._hbVisBound);
+        }
     }
-    _stopHeartbeat() { if (this._hbTimer) { clearInterval(this._hbTimer); this._hbTimer = null; } }
+    async _beatNow() {
+        if (!this.hostCode) { this._stopHeartbeat(); return; }
+        try {
+            const r = await this._api('live_follow_heartbeat', { method: 'POST', auth: true, body: { code: this.hostCode } });
+            if (r.data && r.data.ok === false) { this.endHost(true); }
+        } catch (_e) { /* transient */ }
+    }
+    _stopHeartbeat() {
+        if (this._hbTimer) { clearInterval(this._hbTimer); this._hbTimer = null; }
+        if (this._hbVisBound) {
+            document.removeEventListener('visibilitychange', this._hbVisBound);
+            window.removeEventListener('focus', this._hbVisBound);
+            this._hbVisBound = null;
+        }
+    }
 
     /* ------------------------------------------------------------- FOLLOWER -- */
 
@@ -199,10 +217,14 @@ export class LiveFollow {
             return;
         }
         const raw = await this.app.showPrompt('Enter the live session code:', '', {
-            title: 'Join Live Follow', placeholder: 'e.g. ABC234',
+            title: 'Join Live Follow', placeholder: 'e.g. ABC234', codeEntry: true,
         });
         if (raw === null) { return; }
-        const code = raw.trim().toUpperCase();
+        /* Strip-then-validate. Codes are read off a screen and re-typed on a phone,
+           so tolerate spaces, hyphens, NBSP and iOS smart-punctuation ("ABC 234",
+           "abc-234") instead of rejecting them before we ever try. Case is already
+           folded server-side + by the CI collation; we upper here for a clean match. */
+        const code = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
         if (!LF_CODE_RE.test(code)) {
             this.app.showToast('That doesn’t look like a valid session code.', 'warning');
             return;
@@ -213,8 +235,17 @@ export class LiveFollow {
     async _doJoin(code) {
         try {
             const r = await this._api('live_follow_join', { method: 'GET', query: '&code=' + encodeURIComponent(code) });
+            /* An env in maintenance answers 503 ({maintenance:true} from the gate).
+               The follower is anonymous and does NOT bypass maintenance, so without
+               this branch they'd see the leader's perfectly-good code blamed as wrong.
+               Distinct, non-blaming copy; keep them able to retry. */
+            if (r.status === 503 || (r.data && r.data.maintenance)) {
+                const why = (r.data && r.data.maintenance) ? 'down for maintenance' : 'briefly unavailable';
+                this.app.showToast('iHymns is ' + why + ' — try the code again in a minute. The leader’s code is fine.', 'warning', 6000);
+                return;
+            }
             if (!r.httpOk || !r.data.ok) {
-                this.app.showToast(r.data.error || 'Session not found or ended.', 'danger');
+                this.app.showToast(r.data.error || 'Session not found. Check the code, and that the leader’s screen still shows “Live”.', 'danger');
                 return;
             }
             this.followCode = code;
@@ -257,6 +288,17 @@ export class LiveFollow {
                 method: 'GET',
                 query: '&code=' + encodeURIComponent(this.followCode) + '&since=' + this.followRev,
             });
+            /* Env went into maintenance mid-session — tell the follower ONCE (not every
+               2.5s tick) and keep the session so updates resume when the site returns,
+               instead of silently freezing. */
+            if (r.status === 503 || (r.data && r.data.maintenance)) {
+                if (!this._maintNotified) {
+                    this._maintNotified = true;
+                    this.app.showToast('Live updates paused — iHymns is briefly down for maintenance.', 'warning', 5000);
+                }
+                return;
+            }
+            this._maintNotified = false;
             const d = r.data || {};
             if (d.active === false) {
                 this.app.showToast('The live session has ended.', 'info');

@@ -693,8 +693,16 @@ if ($action !== null) {
                 }
             }
 
+            /* Hemisphere signal (#1374) — the client sends 'n'|'s' derived from its
+               own timezone so the Southern hemisphere gets Harvest in its autumn, not
+               the Northern October window. Liturgical themes (Advent/Easter/...) are
+               globally synchronous and stay identical. Absent/invalid → 'n' (the prior
+               behaviour), so an old client is a verified no-op. */
+            $sotdHemi = (isset($_GET['hemisphere']) && in_array($_GET['hemisphere'], ['n', 's'], true))
+                ? (string)$_GET['hemisphere'] : 'n';
+
             $sotd = new SongOfTheDay(getDbMysqli());
-            $pick = $sotd->pickForDate($sotdDate, $sotdLangs);
+            $pick = $sotd->pickForDate($sotdDate, $sotdLangs, $sotdHemi);
 
             if ($pick === null) {
                 sendJson(['song' => null, 'themeLabel' => '', 'firstLine' => '']);
@@ -12029,7 +12037,7 @@ if ($action !== null) {
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
 
-            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
 
             /* The host broadcasts its FULL current context each update. */
@@ -12082,7 +12090,7 @@ if ($action !== null) {
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
-            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
 
             $db = getDbMysqli();
@@ -12121,7 +12129,7 @@ if ($action !== null) {
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
-            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
 
             $db = getDbMysqli();
@@ -12135,7 +12143,7 @@ if ($action !== null) {
         }
 
         case 'live_follow_join': {
-            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['ok' => false, 'error' => 'Invalid session code.'], 400); break; }
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -12151,7 +12159,7 @@ if ($action !== null) {
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
                   WHERE s.SessionCode = ? AND s.IsActive = 1
-                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)'
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)'
             );
             $stmt->bind_param('s', $code);
             $stmt->execute();
@@ -12175,7 +12183,7 @@ if ($action !== null) {
         }
 
         case 'live_follow_poll': {
-            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['active' => false], 400); break; }
             $since = (int)($_GET['since'] ?? 0);
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -12193,7 +12201,7 @@ if ($action !== null) {
             $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
-                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)) AS Fresh
+                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)) AS Fresh
                    FROM tblLiveFollowSessions
                   WHERE SessionCode = ?'
             );

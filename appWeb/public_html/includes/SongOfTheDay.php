@@ -32,6 +32,15 @@ final class SongOfTheDay
     /** @var array<int,array{name:string,keywords:string[],check:callable}> */
     private array $calendarThemes;
 
+    /**
+     * Hemisphere of the requesting user ('n' default | 's'). Set per-call by
+     * pickForDate() and read by the theme check closures (they capture $this), so
+     * the ONLY hemisphere-sensitive theme — Harvest — fires in each hemisphere's
+     * own autumn. Liturgical themes (Advent/Easter/...) are globally synchronous
+     * and ignore it. (#1374)
+     */
+    private string $hemisphere = 'n';
+
     public function __construct(\mysqli $db)
     {
         $this->db = $db;
@@ -52,10 +61,14 @@ final class SongOfTheDay
      *   5. unfiltered    → deterministic pick
      *
      * @param string[] $langSubtags Lowercase primary subtags ([] = no filter)
+     * @param string   $hemisphere  'n' (default) | 's' — shifts the Harvest theme
+     *                               into the southern autumn; 's' only when explicitly
+     *                               passed, so existing callers are unchanged.
      * @return array{song:array<string,mixed>,themeLabel:string,firstLine:string}|null
      */
-    public function pickForDate(\DateTimeImmutable $date, array $langSubtags): ?array
+    public function pickForDate(\DateTimeImmutable $date, array $langSubtags, string $hemisphere = 'n'): ?array
     {
+        $this->hemisphere = ($hemisphere === 's') ? 's' : 'n';
         $seed  = $this->dateSeed($date);
         $theme = $this->activeTheme($date);
 
@@ -370,8 +383,15 @@ final class SongOfTheDay
             [
                 'name' => 'Harvest',
                 'keywords' => ['harvest', 'thanksgiving', 'thank', 'grateful', 'bountiful', 'sow', 'reap', 'fields', 'provision', 'all good gifts', 'come ye thankful', 'fruit'],
+                /* The ONLY hemisphere-sensitive theme (#1374). Harvest is a natural-
+                   season festival, so the southern hemisphere celebrates it in THEIR
+                   autumn (≈ March), not the northern October. Northern / unknown =
+                   Oct 1–14 (unchanged); southern = Mar 1–14. The closure reads the
+                   live $this->hemisphere set by pickForDate(). */
                 'check' => fn(\DateTimeImmutable $d): bool =>
-                    (int)$d->format('n') === 10 && (int)$d->format('j') >= 1 && (int)$d->format('j') <= 14,
+                    $this->hemisphere === 's'
+                        ? ((int)$d->format('n') === 3  && (int)$d->format('j') >= 1 && (int)$d->format('j') <= 14)
+                        : ((int)$d->format('n') === 10 && (int)$d->format('j') >= 1 && (int)$d->format('j') <= 14),
             ],
             [
                 'name' => 'Remembrance',

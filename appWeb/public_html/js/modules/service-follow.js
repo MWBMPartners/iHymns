@@ -71,10 +71,12 @@ export class ServiceFollow {
             return;
         }
         const raw = await this.app.showPrompt('Enter the code shown on the screen:', '', {
-            title: 'Join the service', placeholder: 'e.g. ABC234',
+            title: 'Join the service', placeholder: 'e.g. ABC234', codeEntry: true,
         });
         if (raw === null) { return; }
-        const code = raw.trim().toUpperCase();
+        /* Strip-then-validate (see live-follow.js): tolerate spaces, hyphens, NBSP
+           and iOS smart-punctuation in a re-typed code rather than rejecting it. */
+        const code = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
         if (!SF_CODE_RE.test(code)) {
             this.app.showToast('That doesn’t look like a valid service code.', 'warning');
             return;
@@ -85,6 +87,13 @@ export class ServiceFollow {
     async _doJoin(code) {
         try {
             const r = await this._api('service_join', { method: 'POST', body: { code: code, presenceDeviceId: this._deviceId() } });
+            /* Maintenance/unavailable env (503) — the anonymous congregant doesn't
+               bypass maintenance, so distinguish "site down" from "wrong code". */
+            if (r.status === 503 || (r.data && r.data.maintenance)) {
+                const why = (r.data && r.data.maintenance) ? 'down for maintenance' : 'briefly unavailable';
+                this.app.showToast('iHymns is ' + why + ' — try the code again in a minute. The code is fine.', 'warning', 6000);
+                return;
+            }
             if (!r.httpOk || !r.data || !r.data.ok) {
                 this.app.showToast((r.data && r.data.error) || 'That code isn’t active right now.', 'danger');
                 return;
@@ -126,6 +135,15 @@ export class ServiceFollow {
         this._polling = true;
         try {
             const r = await this._api('service_poll', { method: 'GET', query: '&presenceToken=' + encodeURIComponent(this.token) + '&since=' + this.rev });
+            /* Mid-service maintenance — notify once, keep following so updates resume. */
+            if (r.status === 503 || (r.data && r.data.maintenance)) {
+                if (!this._maintNotified) {
+                    this._maintNotified = true;
+                    this.app.showToast('Live updates paused — iHymns is briefly down for maintenance.', 'warning', 5000);
+                }
+                return;
+            }
+            this._maintNotified = false;
             const d = r.data || {};
             if (d.active === false) {
                 this.app.showToast('The service has ended.', 'info');
