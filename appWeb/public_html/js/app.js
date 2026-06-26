@@ -1225,7 +1225,16 @@ class iHymnsApp {
                 okText = 'OK',
                 cancelText = 'Cancel',
                 placeholder = '',
+                codeEntry = false,
             } = opts;
+
+            /* codeEntry: a short alphanumeric token (e.g. a Live-Follow session code)
+               typed on a phone. Turn OFF iOS autocorrect / smart-punctuation / spellcheck
+               and autocapitalise to UPPERCASE, so the keyboard can't rewrite the token or
+               inject curly quotes / stray spaces that would break an exact-match lookup. */
+            const codeAttrs = codeEntry
+                ? 'inputmode="text" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false"'
+                : '';
 
             const id = 'ihymns-prompt-' + Date.now();
             const modal = document.createElement('div');
@@ -1244,7 +1253,7 @@ class iHymnsApp {
                             <label for="${id}-input" class="form-label">${escapeHtml(message)}</label>
                             <input type="text" class="form-control" id="${id}-input"
                                    value="${escapeHtml(defaultValue)}"
-                                   placeholder="${escapeHtml(placeholder)}">
+                                   placeholder="${escapeHtml(placeholder)}" ${codeAttrs}>
                         </div>
                         <div class="modal-footer">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">${escapeHtml(cancelText)}</button>
