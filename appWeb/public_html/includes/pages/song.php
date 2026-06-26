@@ -196,6 +196,33 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
                 function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
             );
         }
+
+        /* #1357 — TIER gate, composed with the entity model above so the web page
+           (and the offline bundle, which renders THROUGH this file) gate consistently
+           with the song_detail API (#1353). The two axes are independent:
+             • ENTITY (require_licence rows) — the per-song legal restriction, handled
+               above ($lyricsGated from checkContentAccess); a denial here is authoritative.
+             • TIER — the viewer's PLAN axis, which always governs COPYRIGHTED lyrics.
+           A valid Service-Mode presence unlock ($serviceCcliNumber) overrides the tier
+           (the rule #26 in-service exception). So a copyrighted song is additionally
+           gated when the viewer's tier can't view copyrighted AND there is no presence
+           unlock. Still entirely dormant behind content_gating_enabled; fail-open via the
+           catch below (a thrown tier lookup leaves the entity verdict untouched). */
+        if (!$lyricsGated && !$lyricsPublicDomain && $serviceCcliNumber === null) {
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+            if (function_exists('resolveEffectiveTier') && function_exists('checkTierAccess')) {
+                $tierViewerId  = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
+                $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
+                $viewerHasCcli = function_exists('contentGating_userHasCcli')
+                    ? contentGating_userHasCcli($tierViewerId)
+                    : false;
+                $tierVerdict   = checkTierAccess($viewerTier ?: 'public', 'view_copyrighted', $viewerHasCcli);
+                if (empty($tierVerdict['allowed'])) {
+                    $lyricsGated = true;
+                    $gateReason  = 'A higher access tier is required to view these lyrics.';
+                }
+            }
+        }
     } catch (\Throwable $_e) {
         /* Gating must never break a song render — fail open (show lyrics). */
         error_log('[song.php] content-gate check failed: ' . $_e->getMessage());
