@@ -3925,7 +3925,12 @@ function validateSongsByIds(ids) {
             errors.push(label + ': missing or empty "title".');
         }
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
-            errors.push(label + ': missing or empty "songbook".');
+            /* NOT a hard error any more: the server coerces a blank songbook to the
+               generic "Misc" collection on save (and new drafts now default to Misc
+               client-side), so a missing songbook must never BLOCK the save and lose
+               the curator's edits. Surface it as a non-blocking warning, like the
+               number (#961) — the save still proceeds, filing the song under Misc. */
+            warnings.push(label + ': no songbook chosen — saved under "Misc". Pick a songbook to file it correctly.');
         }
         /* #961 — a missing number on an Official songbook is a
            non-blocking warning, not a hard error. The server accepts
@@ -5264,12 +5269,23 @@ function addNewSong() {
        'e.g. 42' shows in greyed form and the curator has to enter
        a real value (which the validator then enforces only when
        the chosen songbook is IsOfficial=1, per #392 / PR #740). */
+    /* Default a new draft's songbook to the generic "Misc" collection (when it
+       exists) so auto-save works IMMEDIATELY — otherwise a draft with no songbook
+       silently fails to save (the SongbookAbbr is mandatory) and the curator loses
+       their edits believing auto-save worked. The server already coerces a blank
+       songbook to Misc on save; mirroring it here means the dropdown shows Misc,
+       BOTH the 3-second auto-save and the Save-button validator pass, and the
+       curator can switch to the real songbook at any time (the next save just
+       reassigns SongbookAbbr). */
+    var _miscBook = (songData.songbooks || []).find(function (b) {
+        return b && typeof b.id === 'string' && b.id.toLowerCase() === 'misc';
+    });
     var newSong = {
         id: newId,
         title: 'New Song',
         number: null,
-        songbook: '',
-        songbookName: '',
+        songbook: _miscBook ? _miscBook.id : '',
+        songbookName: _miscBook ? (_miscBook.name || _miscBook.id) : '',
         language: 'en',
         ccli: '',
         iswc: '',           /* #497 */
