@@ -147,6 +147,21 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA')
 
     /* (C) Resolve the tier + caps inside try/catch — never throw out of here. */
     try {
+        /* content-via-key — a vetted API key explicitly granted the separate
+           `content:gated` scope reads gated content UNSTRIPPED. DORMANT twice over:
+           it needs content_gating_enabled='1' AND a key actually carrying that scope.
+           The per-partner decision to ISSUE such a key is the operator's licensing
+           call — this is redistribution of gated/copyrighted content to an EXTERNAL
+           system, broader than the #1324 in-service presence-gated basis, so the scope
+           is kept SEPARATE from catalogue:read (a plain read key never unlocks it). */
+        if (function_exists('apiKeyFromRequest') && function_exists('apiKeyVerify')) {
+            $gatedKeyRaw = apiKeyFromRequest();
+            if ($gatedKeyRaw !== null && strncmp($gatedKeyRaw, 'ihk_', 4) === 0
+                && apiKeyVerify(getDbMysqli(), $gatedKeyRaw, 'content:gated') !== null) {
+                return $song;   /* authorised for gated content → strip nothing */
+            }
+        }
+
         /* Effective tier: anonymous → 'public'; else highest of personal/org. */
         $tier = ($userId === null) ? 'public' : resolveEffectiveTier($userId);
         if ($tier === '') { $tier = 'public'; }

@@ -43,8 +43,13 @@ $csrf = csrfToken();
      - lyrics:ingest  (write) — the MeedyaDL-style lyrics ingest endpoint (#1064)
      - catalogue:read (read)  — read the public catalogue at the key's per-key
                                 rate limit instead of the anonymous IP limit
-                                (API platform Phase A; does NOT unlock gated content). */
-$KNOWN_SCOPES = ['lyrics:ingest', 'catalogue:read'];
+                                (API platform Phase A; does NOT unlock gated content).
+     - content:gated  (read)  — DELIBERATE, separate grant: read gated/copyrighted
+                                content unstripped. DORMANT (needs content_gating_enabled
+                                + this scope). Issuing it is a per-partner LICENSING
+                                decision (redistribution to an external system; broader
+                                than the #1324 in-service basis). Grant sparingly. */
+$KNOWN_SCOPES = ['lyrics:ingest', 'catalogue:read', 'content:gated'];
 
 $logKey = static function (string $action, string $id, array $details): void {
     if (function_exists('logActivity')) {
@@ -327,8 +332,9 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
               <datalist id="scopeOptions">
                 <option value="lyrics:ingest"></option>
                 <option value="catalogue:read"></option>
+                <option value="content:gated"></option>
               </datalist>
-              <div class="form-text">Space-separated scope tokens: <code>lyrics:ingest</code> (write), <code>catalogue:read</code> (read the public catalogue at this key's rate limit; does not unlock gated content).</div>
+              <div class="form-text">Space-separated scope tokens: <code>lyrics:ingest</code> (write), <code>catalogue:read</code> (read the public catalogue at this key's rate limit; does not unlock gated content), <code>content:gated</code> (read gated/copyrighted content unstripped &mdash; a deliberate per-partner licensing grant; dormant until content gating is on).</div>
             </div>
           </div>
         </div>
