@@ -40,12 +40,16 @@ $appUrl = $app["Application"]["Website"]["URL"];
             <p>
                 <strong><?= htmlspecialchars($appName) ?></strong> is committed to protecting
                 your privacy. This policy explains what information we collect, how we use it,
-                and your rights regarding your data when using the
-                <?= htmlspecialchars($appName) ?> web application and progressive web app (PWA).
+                and your rights when using the <?= htmlspecialchars($appName) ?> web application,
+                progressive web app (PWA), and the <?= htmlspecialchars($appName) ?> API.
             </p>
             <p>
-                <strong>In summary:</strong> We collect minimal data, store preferences locally
-                on your device, and respect Do Not Track (DNT) signals.
+                <strong>In summary:</strong> you can browse and search <strong>anonymously</strong>,
+                with your preferences and history kept on your device. If you choose to
+                <strong>create an account</strong> (optional — e.g. to sync favourites and set lists
+                across devices), we store the limited account data described below on our servers.
+                We keep server-side collection to the minimum needed to run and secure the service,
+                we do not sell your data, and we respect Do Not Track (DNT) signals.
             </p>
         </div>
     </div>
@@ -55,22 +59,39 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">2. Data We Collect</h2>
 
-            <h3 class="small fw-bold mt-3">2.1 Data Stored Locally on Your Device</h3>
-            <p>The following data is stored in your browser's local storage and <strong>never</strong> sent to our servers:</p>
+            <h3 class="small fw-bold mt-3">2.1 Account Data (only if you create an account)</h3>
+            <p>
+                Accounts are <strong>optional</strong> — you can browse, search, and use offline
+                features without one. If you choose to sign in (via a magic email link, or a
+                password where one has been set), we store the following on our servers:
+            </p>
             <ul>
-                <li><strong>Favourites:</strong> Your saved favourite songs and any tags/categories you assign</li>
-                <li><strong>Set Lists:</strong> Custom song collections you create for worship services</li>
-                <li><strong>Browsing History:</strong> Recently viewed songs (for quick access on the home page)</li>
-                <li><strong>Search History:</strong> Recent search queries (for search suggestions)</li>
-                <li><strong>Display Settings:</strong> Theme preference, font size, motion/transparency preferences, and other display options</li>
-                <li><strong>Recent Songbooks:</strong> Which songbooks you have recently browsed</li>
-                <li><strong>Analytics Consent:</strong> Your choice to accept or decline analytics tracking</li>
-                <li><strong>PWA Install Banner:</strong> Whether you have dismissed the install prompt</li>
-                <li><strong>Disclaimer Acceptance:</strong> Whether you have accepted the terms of use disclaimer</li>
+                <li><strong>Email address</strong> — used to sign you in (we email you a one-time code/link) and for essential service messages. It is never sold, and not used for marketing without your consent.</li>
+                <li><strong>Profile</strong> — an optional display name, your chosen avatar source, and your preferred-languages filter.</li>
+                <li><strong>Role &amp; access tier</strong> — your permission level and content-access tier; for organisation members, your organisation membership and any licence (e.g. CCLI) held by that organisation.</li>
+                <li><strong>Synced content</strong> — favourites and set lists you save are synchronised to your account so they follow you across devices. Set lists may be shared via a link or collaborated on if you choose to.</li>
             </ul>
-            <p>This data remains entirely on your device. You can clear it at any time via the Settings page or by clearing your browser data.</p>
+            <p>You can export or delete your account data — see <em>Your Rights</em> below.</p>
 
-            <h3 class="small fw-bold mt-3">2.2 Analytics Consent</h3>
+            <h3 class="small fw-bold mt-3">2.2 Data Stored Locally on Your Device</h3>
+            <p>Whether or not you have an account, the following is kept in your browser. It is not sent to our servers unless you are signed in and syncing:</p>
+            <ul>
+                <li><strong>Recently viewed songs</strong> and <strong>recent searches</strong> (for quick access + search suggestions)</li>
+                <li><strong>Display settings</strong> — theme, font size, motion/transparency, and other display options</li>
+                <li><strong>Recent songbooks</strong>, your analytics-consent choice, the PWA-install-banner and disclaimer-acceptance flags</li>
+                <li>For <strong>signed-out</strong> users, your <strong>favourites and set lists</strong> are stored only on your device</li>
+            </ul>
+            <p>You can clear this at any time via the Settings page or by clearing your browser data.</p>
+
+            <h3 class="small fw-bold mt-3">2.3 Server Logs &amp; Security Data</h3>
+            <p>To keep the service secure and available, our servers process a limited amount of technical data:</p>
+            <ul>
+                <li><strong>IP address</strong> — used transiently for abuse-prevention and <strong>rate-limiting</strong> of heavy or automated requests. It is not used to build a profile of you, and is retained only as long as needed for security.</li>
+                <li><strong>Request metadata</strong> — timestamps and the requested URL, in ordinary web-server logs.</li>
+                <li><strong>Administrative audit log</strong> — for signed-in administrators, significant actions (logins, content edits, restores, media uploads) are recorded for accountability.</li>
+            </ul>
+
+            <h3 class="small fw-bold mt-3">2.4 Analytics Consent</h3>
             <p>
                 Analytics tracking is <strong>disabled by default</strong>. When you first visit
                 <?= htmlspecialchars($appName) ?>, you may be shown a consent banner asking whether
@@ -85,7 +106,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 section. Your consent choice is stored locally in your browser and is never sent to our servers.
             </p>
 
-            <h3 class="small fw-bold mt-3">2.3 Data Collected via Analytics (When Consented)</h3>
+            <h3 class="small fw-bold mt-3">2.5 Data Collected via Analytics (When Consented)</h3>
             <p>If analytics services are enabled, we may collect:</p>
             <ul>
                 <li>Pages visited and general usage patterns (aggregate, non-personal)</li>
@@ -95,12 +116,28 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li>Referring website</li>
                 <li>Country/region (derived from IP, not stored individually)</li>
             </ul>
-            <p>We do <strong>not</strong> collect or store:</p>
+            <p>Our <strong>analytics</strong> do <strong>not</strong> capture your name, email, account contents, favourites, or search queries — analytics data is aggregate and non-identifiable, and is separate from the account data in 2.1.</p>
+
+            <h3 class="small fw-bold mt-3">2.6 API Access (Developers)</h3>
+            <p>
+                <?= htmlspecialchars($appName) ?> offers an API that approved developers may use with an
+                <strong>API key</strong> (issued or approved by an administrator). If you hold a key:
+            </p>
             <ul>
-                <li>Your name, email, or any personally identifiable information</li>
-                <li>Your favourites, search queries, or browsing history</li>
-                <li>Any form of user account data (there are no user accounts)</li>
+                <li>The key is stored only as a <strong>hash</strong> with a short non-secret prefix, a label, and the scopes it is granted — never in plain text.</li>
+                <li>We log per-key <strong>usage counts</strong> and the <strong>last-used time and IP</strong> for security, abuse-prevention, and rate-limiting.</li>
+                <li>A key grants access only to the data its scopes allow — by default, the <strong>public catalogue</strong>. Copyrighted or otherwise gated content is never available through the public scopes; any access to gated content requires a separate, explicitly-granted scope under an appropriate licence.</li>
             </ul>
+
+            <h3 class="small fw-bold mt-3">2.7 Service Mode (Live-Follow)</h3>
+            <p>
+                When a congregation uses <strong>Service Mode</strong> to follow a live service, a
+                participant's device is identified only by an <strong>opaque presence token</strong>
+                (plus a device-generated id) so the song display can stay in sync. This involves
+                <strong>no personal information</strong> and no location tracking — presence is proven by
+                the venue's rotating code, not by your location. The token expires automatically when the
+                service ends or you leave.
+            </p>
         </div>
     </div>
 
@@ -131,12 +168,12 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">4. Cookies &amp; Cross-Domain Synchronisation</h2>
             <p>
-                <?= htmlspecialchars($appName) ?> uses <strong>one first-party cookie</strong>
-                (<code>ihymns_sync</code>) solely for synchronising your display preferences
-                (theme, font size, motion settings) across <?= htmlspecialchars($appName) ?>
-                subdomains (e.g., <code>beta.ihymns.net</code>, <code>ihymns.app</code>). This
-                cookie contains only your settings preferences — no personal or tracking data.
+                <?= htmlspecialchars($appName) ?> uses first-party cookies sparingly:
             </p>
+            <ul>
+                <li><strong>Sign-in cookie</strong> (<code>ihymns_auth</code>) — set <strong>only when you sign in</strong>. It keeps you signed in across <?= htmlspecialchars($appName) ?> subdomains (on <code>.ihymns.app</code>); it is <code>HttpOnly</code>, <code>Secure</code>, and <code>SameSite=Lax</code>, has a sliding 30-day expiry, and holds only an opaque session token — no personal data.</li>
+                <li><strong>Preferences sync</strong> (<code>ihymns_sync</code>) — synchronises your display preferences (theme, font size, motion settings) across subdomains. It contains only your settings — no personal or tracking data.</li>
+            </ul>
             <p>
                 Additionally, a lightweight cross-domain storage bridge (using a hidden iframe)
                 may be used to keep your localStorage preferences in sync if you access
@@ -201,7 +238,8 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Content Security Policy (CSP):</strong> Restricts which scripts, styles, and connections are allowed, preventing cross-site scripting attacks</li>
                 <li><strong>Subresource Integrity (SRI):</strong> Verifies that third-party libraries loaded from CDNs have not been tampered with</li>
                 <li><strong>HTTPS:</strong> All data in transit is encrypted via TLS</li>
-                <li><strong>No Server-Side Storage:</strong> No personal data is stored on our servers — all user data remains in your browser</li>
+                <li><strong>Database security:</strong> Account data is stored in a database accessed exclusively through parameterised (prepared) statements; passwords (where set) are hashed, and session / API tokens are stored only as hashes — never in plain text.</li>
+                <li><strong>Access control &amp; CSRF protection:</strong> Account and administrative actions are gated by role-based permissions and same-origin CSRF checks; database error details are never exposed to clients.</li>
             </ul>
         </div>
     </div>
@@ -245,12 +283,19 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">9. Data Retention</h2>
             <p>
-                Since <?= htmlspecialchars($appName) ?> does not collect personal data,
-                there is no personal data to retain or delete on our servers.
+                We retain <strong>account data</strong> (Section 2.1) only for as long as your
+                account is active. If you delete your account, your account record and synced
+                content are removed from our live database; some entries may persist briefly in
+                encrypted backups before those are rotated.
             </p>
             <p>
-                Analytics data (if collected) is retained by the respective analytics
-                provider in accordance with their retention policies and is aggregated
+                <strong>Security &amp; rate-limiting data</strong> (Section 2.3), including IP
+                addresses, is retained only as long as needed for abuse-prevention and is then
+                discarded; administrative audit-log entries are kept for accountability.
+            </p>
+            <p>
+                <strong>Analytics data</strong> (if collected) is retained by the respective
+                analytics provider in accordance with their retention policies and is aggregated
                 and non-identifiable.
             </p>
         </div>
@@ -266,7 +311,8 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Clear your data:</strong> All locally stored data can be cleared via Settings &gt; Data &amp; Storage</li>
                 <li><strong>Enable DNT:</strong> Activate Do Not Track in your browser to anonymise any analytics</li>
                 <li><strong>Block analytics:</strong> Use browser extensions (e.g., uBlock Origin) to block analytics entirely</li>
-                <li><strong>Export your data:</strong> Export all locally stored data via Settings</li>
+                <li><strong>Access &amp; export your data:</strong> Export your locally stored data — and, if you have an account, your profile, favourites, and set lists — via Settings</li>
+                <li><strong>Delete your account:</strong> Delete your account and its synced data at any time from Settings; this removes your account record from our live database</li>
                 <li><strong>Uninstall:</strong> Remove the PWA from your device at any time</li>
             </ul>
         </div>
