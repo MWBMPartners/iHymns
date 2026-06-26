@@ -445,16 +445,28 @@ foreach ($discography as $rk => $entry) {
          Outbound links pass the #1347 leaving-iHymns interstitial. -->
     <?php
     /* IdentifierType => [label, FontAwesome icon, printf URL template (rawurlencoded
-       value) or null]. Unknown/new types still render as a bare uppercased chip. */
-    $personIdMeta = [
-        'isni'     => ['ISNI',     'fa-fingerprint',  'https://isni.org/isni/%s'],
-        'viaf'     => ['VIAF',     'fa-id-card',      'https://viaf.org/viaf/%s/'],
-        'wikidata' => ['Wikidata', 'fa-database',     'https://www.wikidata.org/wiki/%s'],
-        'orcid'    => ['ORCID',    'fa-circle-nodes', 'https://orcid.org/%s'],
-        'ipi'      => ['IPI',      'fa-barcode',      null],
-        'ipi-base' => ['IPI Base', 'fa-barcode',      null],
-        'cae'      => ['CAE',      'fa-barcode',      null],
-    ];
+       value) or null]. Unknown/new types still render as a bare uppercased chip.
+
+       #1367 — the authority-control entries (ISNI / VIAF / Wikidata / GND /
+       FAST / WorldCat / LoC / ORCID / IdRef / Trove / LibraryThing /
+       Open Library / CiNii) are now DERIVED from the central registry, so every
+       provider a curator can save renders a chip with NO per-page edit. The
+       IPI / IPI-base / CAE rows below live OUTSIDE the registry (they're
+       rights-society numbers with no public look-up URL), so they're appended
+       explicitly after the registry-built map. */
+    if (!function_exists('creditIdentifierTypes')) {
+        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+    }
+    $personIdMeta = [];
+    foreach (creditIdentifierTypes() as $cpIdSlug => $cpIdDef) {
+        /* The registry's `url` is already a "%s"-templated printf string the
+           chip render below feeds through sprintf(rawurlencode(...)). */
+        $personIdMeta[$cpIdSlug] = [$cpIdDef['label'], $cpIdDef['icon'], $cpIdDef['url']];
+    }
+    /* Non-registry rights-society identifiers — no public look-up URL. */
+    $personIdMeta['ipi']      = ['IPI',      'fa-barcode', null];
+    $personIdMeta['ipi-base'] = ['IPI Base', 'fa-barcode', null];
+    $personIdMeta['cae']      = ['CAE',      'fa-barcode', null];
     $personIdChips = [];
     /* MusicBrainz first — its own typed column (#1090). */
     if ($person && !empty($person['MusicBrainzArtistMBID'])) {
