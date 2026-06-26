@@ -10746,9 +10746,7 @@ if ($action !== null) {
             $name        = trim((string)($body['name']         ?? ''));
             $notesRaw    = trim((string)($body['notes']        ?? ''));
             $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
-            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
-            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
@@ -10760,14 +10758,22 @@ if ($action !== null) {
                special-case (more constraining). */
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+            /* Partial birth/death dates — accept the flexible curator form
+               (YYYY / MM/YYYY / DD/MM/YYYY, plus ISO) via the shared
+               partial_date helper, same as /manage/credit-people. The
+               INSERT below writes the normalised DATE; the precision flag is
+               persisted separately, gated on the column existing. */
+            $pb = partialDateParse((string)($body['birth_date'] ?? ''));
+            $pd = partialDateParse((string)($body['death_date'] ?? ''));
+
             if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
             if (mb_strlen($name) > 255) { sendJson(['error' => 'Name must be 255 characters or fewer.'], 400); break; }
-            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
-                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
-            }
-            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
-                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
-            }
+            if (!$pb['ok']) { sendJson(['error' => 'birth_date: ' . $pb['error']], 400); break; }
+            if (!$pd['ok']) { sendJson(['error' => 'death_date: ' . $pd['error']], 400); break; }
+            $birthDate = $pb['date'];
+            $birthPrec = $pb['precision'];
+            $deathDate = $pd['date'];
+            $deathPrec = $pd['precision'];
 
             try {
                 $db = getDbMysqli();
@@ -10840,6 +10846,11 @@ if ($action !== null) {
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+
+                    /* Date precision flags — separate, column-gated UPDATE
+                       (no-op on an un-migrated install; the date itself
+                       already landed in the INSERT above). */
+                    creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
 
                     if ($links) {
                         $linkStmt = $db->prepare(
@@ -10939,9 +10950,7 @@ if ($action !== null) {
             $name        = trim((string)($body['name']         ?? ''));
             $notesRaw    = trim((string)($body['notes']        ?? ''));
             $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
-            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
-            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
@@ -10951,14 +10960,19 @@ if ($action !== null) {
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+            /* Partial birth/death dates — same flexible-input parse as the
+               add endpoint (YYYY / MM/YYYY / DD/MM/YYYY → DATE + precision). */
+            $pb = partialDateParse((string)($body['birth_date'] ?? ''));
+            $pd = partialDateParse((string)($body['death_date'] ?? ''));
+
             if ($id <= 0)               { sendJson(['error' => 'Person id required.'], 400); break; }
             if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
-            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
-                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
-            }
-            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
-                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
-            }
+            if (!$pb['ok']) { sendJson(['error' => 'birth_date: ' . $pb['error']], 400); break; }
+            if (!$pd['ok']) { sendJson(['error' => 'death_date: ' . $pd['error']], 400); break; }
+            $birthDate = $pb['date'];
+            $birthPrec = $pb['precision'];
+            $deathDate = $pd['date'];
+            $deathPrec = $pd['precision'];
 
             try {
                 $db = getDbMysqli();
@@ -11009,6 +11023,11 @@ if ($action !== null) {
                     }
                     $stmt->execute();
                     $stmt->close();
+
+                    /* Date precision flags — column-gated UPDATE, written
+                       unconditionally so clearing a date also clears its
+                       precision back to NULL. No-op on an un-migrated install. */
+                    creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small

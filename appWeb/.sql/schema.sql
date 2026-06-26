@@ -408,9 +408,11 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
        and read paths don't need a JOIN. */
     BirthPlaceId    INT UNSIGNED    NULL,
     BirthDate       DATE            NULL,
+    BirthDatePrecision VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of BirthDate is real: year | month | day (partial historical dates)',
     DeathPlace      VARCHAR(255)    NULL,
     DeathPlaceId    INT UNSIGNED    NULL,
     DeathDate       DATE            NULL,
+    DeathDatePrecision VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of DeathDate is real: year | month | day (partial historical dates)',
     CreatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,

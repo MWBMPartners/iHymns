@@ -2337,4 +2337,19 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeyRequests'),
     ],
+
+    'creditpeople-date-precision' => [
+        'script' => 'migrate-add-creditpeople-date-precision.php',
+        'card' => [
+            'title'  => 'Credit-people partial dates',
+            'body'   => 'Adds <code>tblCreditPeople.BirthDatePrecision</code> + '
+                      . '<code>DeathDatePrecision</code> (VARCHAR <code>year|month|day</code>) so a '
+                      . 'historical writer with only a known <strong>year</strong> (or month + year) of '
+                      . 'birth/death can be recorded — the <code>DATE</code> column stays (partial dates '
+                      . 'normalise to the first of the period; existing full dates backfill to '
+                      . '<code>day</code>). Additive, idempotent — safe to re-run.',
+            'button' => 'Run Credit-People Partial Dates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'BirthDatePrecision'),
+    ],
 ];
