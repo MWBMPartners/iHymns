@@ -105,6 +105,7 @@ See `.claude/CLAUDE.md` for the full policy. Summary: don't duplicate — extrac
 - **Don't scatter auth checks.** One helper call; never `$u['role'] === 'admin'` in business logic.
 - **Don't commit stacked PRs that re-implement work already in a parallel branch.** Rebase and reuse.
 - **Don't write literal `<?=` / `<?php` / `<?` inside HTML comments or backticks in `.php` files.** PHP doesn't respect HTML-comment boundaries — it parses every `<?` open-tag it finds, regardless of surrounding `<!-- ... -->`. On PHP 8.1+, `func(...)` is first-class callable syntax, so a comment that says `<?= json_encode(...) ?>` evaluates `json_encode(...)` (returns a Closure), then `<?=` tries to echo it → runtime fatal `Object of class Closure could not be converted to string` → output halts mid-stream → browser receives a truncated HTML response → the SPA shell renders but `app.js` is never reached and the loading spinner hangs forever. This took down alpha in PR #536 (commit `96cd14a`). If you need to reference PHP code in a comment, omit the open tag (`echo json_encode() call` not `<?= json_encode() ?>`). CI now greps for this pattern in `.github/workflows/test.yml`.
+- **Don't assume `$db->query()` / `$db->prepare()` return `false` on error.** `getDbMysqli()` sets `mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT)`, so a failing statement **throws `mysqli_sql_exception`** — `if ($res = $db->query(...))` is dead code, and an uncaught throw discards the output buffer and white-screens the page. For reads touching a table/column that may be **unmigrated on a given environment**, gate them with an INFORMATION_SCHEMA existence probe, and wrap page-load detection in `try/catch` that degrades to a themed error card pointing at `/manage/setup-database`. This blanked `/manage/duplicate-songs` when only the newer `tblSongLinkSuggestionsDismissed` table was unmigrated (#1228 → fixed #1229; `$suggTableExists` was even probing the *wrong* table). **Migrations are not auto-applied on deploy**, so "the column is in `schema.sql`" does not mean it exists on alpha — code that queries a freshly-added object must tolerate its absence.
 
 ## 10. Conventions established in the 2026-04 batch
 
@@ -260,7 +261,9 @@ iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihym
 - **Client-side bearer token in localStorage** is per-origin by W3C spec — each subdomain has its own. The frontend reads `localStorage.getItem('ihymns_auth_token')` and attaches it as `Authorization: Bearer …`. If main's localStorage is empty, the JS sets no Authorization header, but the browser still sends the `ihymns_auth` cookie automatically (default `credentials: 'same-origin'`), so the server still authenticates via the cookie fallback in `getAuthBearerToken()`.
 - **Cross-subdomain settings sync** (theme, font size, default songbook, etc.) goes via the `ihymns_sync` cookie at `.ihymns.app` scope — see `js/modules/subdomain-sync.js`. This is the ONLY lightweight-settings sharing mechanism; large data (setlists, favourites) is excluded by design.
 - **Service-worker caches** are per-origin too. A stale `?action=user_setlists` GET response on main can persist after the alpha-side sync wrote the new row to the shared DB. **Per-origin SW cache is the most common cause of "alpha data not appearing on main" symptoms** when the underlying DB row is verified-present.
-- **localStorage data** (setlists, favourites, history) is per-origin; sharing across subdomains requires explicit DB sync via the auth flow, not magic.
+- **localStorage data** (setlists, favourites, history) is per-origin; for **signed-in** users it is now a mirror of DB-first auto-sync (see Section 15), not the source of truth. For anonymous users it remains local-only.
+
+> **Update (2026-06, epic #1010):** The structural root cause behind most "subdomain X has the data but Y doesn't" reports was that **song reads served a per-environment `songs.json` file cache, never live MySQL** — so a write on alpha was invisible on main until that env's file regenerated. The DB-direct rewrite (Section 15) removed that cache entirely; song reads are now live on every subdomain. The diagnostic below still applies to *signed-in user data* (setlists/favourites) where a stale per-origin SW GET response can briefly lag the shared DB.
 
 **Diagnostic sequence when "subdomain X has the data but Y doesn't":**
 
@@ -268,3 +271,118 @@ iHymns runs at `dev.ihymns.app` (alpha), `beta.ihymns.app` (beta), and `www.ihym
 2. On Y, DevTools → Application → check `ihymns_auth` cookie (Domain should be `.ihymns.app`, not the subdomain).
 3. On Y, run `fetch('/api?action=user_setlists').then(r=>r.json())` in the console — if it returns the data fresh, the SW cache is the culprit; unregister via DevTools → Application → Service Workers → Unregister, reload.
 4. Only after steps 1–3 rule everything out, suspect a server-side bug.
+
+## 15. DB-direct data layer (epic #1010 / WS-A–WS-K, 2026-06)
+
+The defining architecture rule post-rewrite: **every runtime read hits live MySQL; nothing materialises the whole corpus; a DB outage is a graceful 503, never stale data.**
+
+### 15.1 Reads are scoped — never whole-corpus
+
+`SongData::exportAsJson()`, `includes/songs_cache.php` / `songsCacheServe()`, the `?action=songs_json` endpoint and the editor `?action=load` corpus serve were **all removed in WS-J #1020**. Use the scoped readers instead:
+
+- `SongData::getSongsSlimIndex()` — lightweight id/number/title/songbook index (served by `/api?action=songs_index` to the PWA for offline + search).
+- `SongData::getSongs($abbr)` — one songbook (served by the editor's `?action=songbook_export`).
+- `SongData::getSongById()` — one full record (`?action=song_detail`, editor `load_song`).
+
+`SongData`'s constructor **throws** if there is no DB connection — there is no JSON fallback to silently fall back to. Reintroducing a whole-corpus loader (~140 MB PHP-array memory, the #929 OOM) or a server-side `songs.json` cache is a regression CLAUDE.md red-flags.
+
+### 15.2 Signed-in user data is DB-first auto-sync
+
+Setlists, favourites (+ their `Tags`), custom tags, and view-history sync to MySQL on every edit (WS-F/G, #1011/#1012):
+
+- **Authoritative-replace per edit** — the client sends its full current set; the server replaces and deletes-absent so deletions propagate (last-writer-wins).
+- **First-login MERGE backfill** — on a new device the client sends `mode=merge`; the server unions (no loss) and, for favourites, server-side `array_unique(array_merge(serverTags, incoming))` so cross-device tags survive.
+- The client `_syncReady` gate arms the destructive replace **only after** the merge has hydrated the local cache, so a fresh device can't clobber the server with its empty set.
+- localStorage is the **offline mirror**, not the source of truth. Anonymous users stay local-only.
+
+### 15.3 Maintenance mode + DB-down = themed 503 (never stale)
+
+`includes/maintenance.php` gates `index.php` + `api.php`. The `/manage/*` entry point, `app_status`, and `auth_*` are **structurally exempt** so an admin can never lock themselves out. `isDbConnectionFailure()` (in `db_mysql.php`) converts an unreachable DB into the same themed 503. The service worker caches only 2xx, so a 503 page is never cached → clean recovery once the DB/maintenance flag clears. Error surfaces render through `includes/error_page.php` (theme-aware, PWA-offline-capable).
+
+## 16. Deploy + migration include-path gotchas (2026-06, lyrics-mirror saga)
+
+### 16.1 A `.sql/` migration requiring a NEW `public_html/includes/` file MUST resolve it `DOCUMENT_ROOT`-first
+
+`appWeb/.sql/migrate-*.php` scripts compute paths to `public_html/includes/` helpers. The intuitive `dirname(__DIR__) . '/public_html/includes/foo.php'` (treating `.sql/` and `public_html/` as siblings) **works for long-lived files like `db_mysql.php` but silently 500s on a brand-new include** — on the server the SERVED web docroot is a *different tree* from that sibling path, and the sibling carries old files but not the newest ones. This cost hours on `migrate-lyric-lines-mirror.php` (`Failed opening required …/public_html/includes/lyric_lines_sync.php`, even though the deploy DID upload it).
+
+**Pattern (use this for any migration that requires a new public_html include):** try the live docroot first, sibling as the CLI fallback, error clearly if neither exists:
+
+```php
+$cands = [];
+$dr = rtrim((string)($_SERVER['DOCUMENT_ROOT'] ?? ''), '/');
+if ($dr !== '') { $cands[] = $dr . '/includes/foo.php'; }
+$cands[] = dirname(__DIR__) . '/public_html/includes/foo.php';
+foreach ($cands as $c) { if (is_file($c)) { require_once $c; $found = true; break; } }
+```
+
+(`db_mysql.php`-only migrations can keep the simple sibling path — it happens to be present in the stale tree. The hazard is specifically NEW includes.)
+
+### 16.2 The SFTP deploy content-compares; new files no longer silently strand
+
+`deploy.yml`'s normal path used `--only-newer`, which — because `actions/checkout` stamps every file with the checkout mtime — **silently skipped files** whose remote copy had a later (prior-deploy) mtime. It stranded `lyric_lines_sync.php` (and #919/#920 before it). Now the normal path **content-compares** (size+content); `[deploy all]` in the commit/PR-title still forces a full sweep; the deploy job has a `timeout-minutes: 20` cap + `~/.lftprc` net timeouts so a stalled mirror can't hang the 6h Actions ceiling (it did, twice). When you add a NEW file a deploy must pick up, a `[deploy all]` PR title is the belt-and-braces guarantee.
+
+## 17. Model-tier selection — match the model to the task complexity
+
+**Standing rule:** when delegating to subagents (the Agent tool) or to a workflow stage, **match the model tier to the complexity of the work.** Don't default everything to the top tier (wasteful on cost + latency); don't hand hard reasoning to a weak tier (risky for correctness). Spread the work across the tiers available to you so each task runs on the cheapest model that can still do it well.
+
+The mapping:
+
+- **Fast / cheap tier (e.g. Haiku)** → mechanical, low-reasoning work: renames, formatting, import sorting, doc-blocks + comment annotation, boilerplate, simple find-and-replace, trivial config edits, simple `grep`/`glob` sweeps, syntax-only fixes.
+- **Mid tier (e.g. Sonnet)** → standard implementation: a self-contained feature, a single-page handler, a focused bugfix in code you already understand, writing tests against a clear spec.
+- **Top tier (e.g. Opus)** → genuinely hard reasoning: architecture + data-model decisions, subtle multi-file bugs, large cross-cutting refactors, adversarial review / verification, security-sensitive changes (auth, CSRF, SQL-binding, secrets), ambiguous trade-offs with no obvious right answer.
+
+The aim is cost/latency efficiency **without sacrificing quality where it matters**. **When unsure, prefer the more capable tier for anything correctness-critical** — a wrong auth check or a missed SQL-injection vector costs far more than the extra tokens. Tier-down only when the task is unambiguously mechanical.
+
+This repo already ships matching agent types as the natural vehicles — use them rather than reinventing the routing:
+
+- **`quick-edits`** (`.claude/agents/quick-edits.md`, fast/cheap tier) — the low-reasoning mechanical lane.
+- **`deep-architect`** (`.claude/agents/deep-architect.md`, top tier) — the hard-reasoning / review / security lane.
+
+Standard mid-tier implementation work needs no special agent — run it on the default model. Reserve the two named agents for the ends of the spectrum.
+
+## 18. Extensible gating registry + native-API gating (#1352 / #1353 / #1354, branch `feat/api-native-gating`)
+
+The expanded detail behind CLAUDE.md rules #28 and #29. This whole family is **additive, web-run, and dormant by default**: the 3 docroots (alpha / beta / prod) share ONE MySQL and migrations are NOT auto-applied on deploy — they are run from `/manage/setup-database` — so every new read MUST tolerate the un-migrated shape (STRICT-mode mysqli throws on a missing column/table; gate or try/catch it), and content gating is a verified no-op until an operator flips `tblAppSettings.content_gating_enabled=1`.
+
+### 18.1 The capability registry — `TIER_CAPS`
+
+- **One registry, one place.** `TIER_CAPS` in `includes/access_tier_validation.php` is the single source of truth for the `tblAccessTiers` capability set. Each entry is a 4-tuple `[short_label, full_description, storage, default]` keyed by the exact capability key.
+- **`storage` decides where the cap lives:** `'column'` = the cap has its own `TINYINT` column on `tblAccessTiers`; `'json'` = the cap is a key inside the single additive `tblAccessTiers.Capabilities` JSON column (`migrate-add-tier-capabilities-json.php`).
+- **The 7 originals stay `'column'`** (`CanViewLyrics` / `CanViewCopyrighted` / `CanPlayAudio` / `CanDownloadMidi` / `CanDownloadPdf` / `CanOfflineSave` / `RequiresCcli`). Their camelCase emit keys (`canViewLyrics`, …) ARE the native-app API contract — **never re-home an existing column cap into JSON** (it would silently break that contract).
+- **Every NEW cap is `'json'`** — one line, no `ALTER`, no new column. This is rule #19/#20 applied to gating vocab: a growable cap set is JSON-backed and app-validated, never an ENUM and never one-column-per-feature.
+- **Reads go through the ONE registry**, never a forked matrix: `tierCapStorage()` (where a cap lives), `tierCapDefault()` (assumed 0/1 when absent/unmigrated), `tierCapColumnKeys()` / `tierCapJsonKeys()` (split for the dynamic SQL + the emit), and `tierCapRead($tierRow, $key)` (effective 0/1 off a fetched row — column-backed reads its field, json-backed decodes `Capabilities` and falls back to the default on absent/NULL/malformed JSON). The Capabilities column is existence-gated by `tierCapsColumnExists($db)` (request-cached INFORMATION_SCHEMA probe, bound param) because STRICT mysqli throws on selecting a column that doesn't exist yet on this env.
+
+### 18.2 Canonical how-to — adding a gateable feature
+
+To add a new gateable feature:
+
+1. Add ONE line to `TIER_CAPS` in `includes/access_tier_validation.php`, e.g.
+   `'CanRequestSongs' => ['Requests', 'Submit song requests', 'json', 0]`.
+2. Run the JSON-backed tier-capabilities card on `/manage/setup-database` (`migrate-add-tier-capabilities-json.php`) on each env that needs it.
+
+That's it — there is **no schema change** and **no per-surface edit**. The admin checkbox (`manage/tiers.php`), both API CRUD endpoints (`admin_tier_create` / `admin_tier_update`), the public `access_tiers` API emit (as `canRequestSongs`) and content gating (`checkTierAccess`) all pick the cap up from the registry. Never add a cap as a new column, and never hand-roll a per-tier matrix to express it.
+
+### 18.3 Registry-driven `checkTierAccess()`
+
+`checkTierAccess($userTier, $action, $hasCcli)` in `includes/ccli_validator.php` is the per-cap resolver (#1353). It still contains the legacy `['public' => [...], 'free' => [...]]` matrix, but that survives ONLY as the **fallback** for an un-migrated DB / unknown tier / a read that threw — it is no longer the source of truth. On a migrated env, `capsForTierFromRegistry($userTier)` reads the LIVE `tblAccessTiers` row (incl. any #1352 json cap) and the result is OVERLAID onto the matrix, so a curator's edits + any new json cap are enforced with no edit to this function. An action that is itself a cap key (camelCase emit shape or PascalCase `TIER_CAPS` key) is resolved directly against the live row, so a brand-new json cap is enforceable the moment a caller passes its name. **The CCLI gate is unchanged:** a `ccli`-tier user without a verified live CCLI licence is still denied `view_copyrighted` / `play_audio` regardless of what the registry says.
+
+### 18.4 Enforcement — `contentGatingApply()` (dormant)
+
+`contentGatingApply($song, $userId, $platform)` in `includes/content_gating.php` (#1353) is the server-side enforcement point for the public / native read API. It strips the fields a tier may not see/use from a built `song_detail` / `song_data` / `random` payload immediately before emit; the `bulk_audio` offline manifest is entity-gated the same way. Three LOCKED rules (do not relax):
+
+- **(A) Master switch — dormant by default.** Every public function returns byte-identical data unless `getAppSetting('content_gating_enabled','0') === '1'`. Shipping this changes NOTHING on any live env until an operator flips the flag. Any change here MUST stay a verified no-op when the flag is `'0'`.
+- **(B) Caps come from the registry.** No hardcoded tier→field matrix in this module — per-cap decisions go through `checkTierAccess()` (§18.3), so a new one-line json cap is enforced automatically.
+- **(C) STRICT-safe + fail-open.** Migrations aren't auto-applied and the 3 docroots share one MySQL, so a request can hit a half-migrated env. Every optional read is wrapped; on ANY uncertainty the helper returns the song UNCHANGED (the master switch is the real gate — this module only trims within an already-opted-in deployment), and logs for an operator.
+
+What it trims when on: lyric BODY (`components`) + per-line / whole-song `translations` / `annotations` + `vocalParts` when the tier can't `view_lyrics`, OR the song is copyrighted (lyrics NOT public domain — the LYRICS axis only, never AND-ed with the music PD flag) and the tier can't `view_copyrighted` — adding `contentRestricted=true` + a `restrictionReason` while keeping the metadata so the client can show a locked card; media rows by kind (`audio`→`play_audio`, `midi`→`download_midi`, `sheet-music`/`musicxml`→`download_pdf`) are dropped (not nulled) so the affordance disappears; `hasAudio` / `hasSheetMusic` are kept consistent with what survived; `offlineAllowed` reflects `offline_save`. `contentGating_userHasCcli($userId)` mirrors the `tier_check` endpoint (non-empty `CcliNumber` AND truthy `CcliVerified`; anonymous → false; DB blip → deny the unlock).
+
+### 18.5 Read rate limiting — `enforceReadRateLimit()` (#1354)
+
+The heaviest sessionless public reads are throttled by `enforceReadRateLimit($scope, $perMin, $perDay = 0)` in `includes/read_rate_limit.php` against the additive `tblReadRateLimit` fixed-window counter (`migrate-add-read-rate-limit.php`). Call sites + ceilings: `song_detail` 240/min, `search` 120/min, `songs_index` 120/min, `related_songs` 240/min, `bulk` 60/min. Key design points:
+
+- **Keyed per-token-then-IP.** A native-app bearer token (accepted only in the strict 64-hex shape `getAuthBearerToken()` uses, then hashed — the raw token is never stored) buckets per device; absent/junk token falls back to `REMOTE_ADDR` (never `X-Forwarded-For`, which a client can forge). This is the same NAT lesson as Service Mode rule #26: a congregation behind one NAT egresses as one IP, so per-IP alone would throttle the whole room. The token is NOT validated against the sessions table (that would cost a query per request and defeat the low-overhead goal) — a forged 64-hex token just gets its own generous bucket; the per-IP backstop still covers the no-token scraper.
+- **FAIL-OPEN + dormant.** The table is existence-gated (request-cached INFORMATION_SCHEMA probe) and every DB touch is try/catch'd — an un-migrated install or any error ALLOWS the request. A rate limiter must never take the site down (the #1228 white-screen lesson). Window boundaries are computed SQL-side (`DATE_FORMAT(UTC_TIMESTAMP(), …)`, a hardcoded constant — rule-#5-legitimate) so there's no PHP-vs-SQL clock skew. On a trip it emits 429 + `Retry-After` + `X-RateLimit-*` and `exit`s. Per-endpoint `$scope` reserves room for new endpoint limits with no further migration.
+
+### 18.6 CSRF — `validateCsrfRequest()` for state-changing AJAX
+
+`validateCsrfRequest(?string $token)` in `manage/includes/auth.php` is the robust CSRF check for same-origin writes (#1352). It accepts the request when EITHER (a) a valid session token was supplied (back-compat with `validateCsrf()`), OR (b) it is a genuine same-origin AJAX request: `X-Requested-With` is present (a browser cannot set it cross-origin without a CORS preflight this server never grants) AND any present `Origin`/`Referer` host matches `HTTP_HOST` (explicit cross-origin host rejected; absent header allowed, since the custom header already proves same-origin and some privacy setups strip Referer). The `X-Requested-With` route **never goes stale**, which fixes the SPORADIC "CSRF error" on long-lived editor pages — a baked `$_SESSION['csrf_token']` rotates / GCs / changes across multi-tab sessions while the page stays open, so a legitimate merge/delete/save then carries a stale token and is rejected. Wired into `/manage/duplicate-songs` merge/delete, `/manage/places-api.php`, and a top-level POST gate on ALL legacy `/manage/editor/api.php` writes (clients send `X-Requested-With`). The whole-song save moved to the v2 editor API: it is now `editorSaveSongCore()` in `manage/editor/save_song_core.php`, served by BOTH `manage/editor/api.php` (back-compat shim) and `manage/editor/api2.php`, and the editor POSTs the save to api2 under its `X-Requested-With` CSRF gate. New state-changing AJAX endpoints call `validateCsrfRequest()` — never re-bake a per-render session token into a long-lived page and compare with `validateCsrf()` alone, and don't hand-roll a bespoke same-origin check inline instead of calling the shared helper.

@@ -67,14 +67,67 @@ function resolveLanguageName(string $code): string
 }
 
 /**
+ * Resolve a language code/tag to its full display metadata — English
+ * name, native endonym and text direction — for the language-picker UI
+ * (#1149). Same full-tag → primary-subtag fallback as
+ * resolveLanguageName(); on a complete miss / pre-migration deploy the
+ * name degrades to the uppercased code, native to '' and dir to 'ltr'.
+ *
+ * @param string $code Language code or tag (e.g. 'en', 'pt-BR', 'AF').
+ * @return array{name:string,nativeName:string,dir:string}
+ */
+function resolveLanguageMeta(string $code): array
+{
+    $code = trim($code);
+    $fallback = [
+        'name'       => $code === '' ? '' : strtoupper($code),
+        'nativeName' => '',
+        'dir'        => 'ltr',
+    ];
+    if ($code === '') return $fallback;
+
+    $key = strtolower($code);
+    $map = getLanguageMetaMap();
+
+    if (isset($map[$key])) return $map[$key];
+
+    if (str_contains($key, '-')) {
+        $primary = explode('-', $key, 2)[0];
+        if (isset($map[$primary])) return $map[$primary];
+    }
+
+    return $fallback;
+}
+
+/**
  * Return the full code → name map, statically cached for the
- * request. Best-effort: probe tblLanguages first; if absent
- * (pre-#738 deploy), return an empty map and let resolveLanguageName
- * fall back to identity.
+ * request. A back-compat projection of getLanguageMetaMap() — every
+ * existing caller that only wants the English name keeps working.
  *
  * @return array<string, string> Lowercase code → English Name.
  */
 function getLanguageNamesMap(): array
+{
+    $out = [];
+    foreach (getLanguageMetaMap() as $code => $meta) {
+        $out[$code] = $meta['name'];
+    }
+    return $out;
+}
+
+/**
+ * Return the full code → metadata map (name + native endonym + text
+ * direction), statically cached for the request. Best-effort: probe
+ * tblLanguages first; if absent (pre-#738 deploy) or the read fails,
+ * return an empty map and let the resolvers fall back to identity.
+ *
+ * NativeName + TextDirection were added in the same #738 migration that
+ * created tblLanguages, so a table-existence probe is sufficient — if
+ * the table exists, the columns exist.
+ *
+ * @return array<string, array{name:string,nativeName:string,dir:string}>
+ */
+function getLanguageMetaMap(): array
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -101,7 +154,7 @@ function getLanguageNamesMap(): array
         }
 
         $res = $db->query(
-            'SELECT Code, Name FROM tblLanguages
+            'SELECT Code, Name, NativeName, TextDirection FROM tblLanguages
               WHERE COALESCE(IsActive, 1) = 1'
         );
         $out = [];
@@ -109,9 +162,15 @@ function getLanguageNamesMap(): array
             while ($row = $res->fetch_assoc()) {
                 $code = strtolower((string)$row['Code']);
                 $name = (string)$row['Name'];
-                if ($code !== '' && $name !== '') {
-                    $out[$code] = $name;
+                if ($code === '' || $name === '') {
+                    continue;
                 }
+                $dir = strtolower(trim((string)($row['TextDirection'] ?? 'ltr')));
+                $out[$code] = [
+                    'name'       => $name,
+                    'nativeName' => (string)($row['NativeName'] ?? ''),
+                    'dir'        => $dir === 'rtl' ? 'rtl' : 'ltr',
+                ];
             }
             $res->close();
         }

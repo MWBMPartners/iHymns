@@ -159,6 +159,25 @@
             inputEl.setAttribute('aria-expanded', 'true');
         }
 
+        /* Show a single non-interactive info row in the panel. Used to
+           SURFACE a failed/empty lookup instead of silently showing nothing
+           (#1180) — a 404/401/blocked-geocoder used to leave the curator
+           typing into a dead field with no clue why no suggestions appeared. */
+        function renderHint(text) {
+            candidates = [];
+            highlight = -1;
+            panel.innerHTML = '';
+            const item = document.createElement('div');
+            item.style.padding = '0.4rem 0.6rem';
+            item.style.fontSize = '0.8rem';
+            item.style.opacity = '0.7';
+            item.textContent = text;
+            panel.appendChild(item);
+            positionPanel();
+            panel.style.display = 'block';
+            inputEl.setAttribute('aria-expanded', 'true');
+        }
+
         async function runSearch(query) {
             const requestId = ++currentRequest;
             const url = settings.endpoint + '?action=search&q=' + encodeURIComponent(query) + '&limit=' + settings.maxResults;
@@ -169,16 +188,32 @@
                     headers: { 'Accept': 'application/json' },
                 });
             } catch (_e) {
-                /* Network blip — leave the panel closed, the curator
-                   can retry by editing the input. */
+                if (requestId === currentRequest) renderHint('Place lookup unavailable (offline?). Your text is saved as typed.');
                 return;
             }
             if (requestId !== currentRequest) return; /* superseded */
-            if (!resp.ok) return;
+            if (!resp.ok) {
+                /* Pull the server's `detail` (admins get the real error message)
+                   so the curator/dev sees WHY, not just the status (#1180). */
+                let detail = '';
+                try {
+                    const errBody = await resp.json();
+                    if (errBody && errBody.detail) { detail = ' — ' + errBody.detail; }
+                } catch (_e) { /* no JSON body */ }
+                renderHint('Place lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
+                return;
+            }
             const data = await resp.json().catch(() => null);
-            if (!data || !Array.isArray(data.results)) return;
+            if (!data || !Array.isArray(data.results)) {
+                renderHint('Place lookup returned no data. Your text is saved as typed.');
+                return;
+            }
             candidates = data.results;
             highlight = candidates.length ? 0 : -1;
+            if (!candidates.length) {
+                renderHint('No matching places — your text is saved as typed.');
+                return;
+            }
             renderPanel();
         }
 
@@ -195,8 +230,9 @@
                     method: 'POST',
                     credentials: 'same-origin',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Accept':       'application/json',
+                        'Content-Type':     'application/json',
+                        'Accept':           'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
                     },
                     body: JSON.stringify(c),
                 });

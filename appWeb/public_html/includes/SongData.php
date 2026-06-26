@@ -120,10 +120,18 @@ class SongData
     /** #858 — schema-probe result for tblSongComponents.Language. */
     private bool $_componentLangColumn = false;
     private bool $_componentLangColumnChecked = false;
+    private bool $_componentChordsColumn = false;
+    private bool $_componentChordsColumnChecked = false;
+    /** #1235 P2a — schema-probe result for the tblLyricLines mirror (read source). */
+    private bool $_lyricLinesMirror = false;
+    private bool $_lyricLinesMirrorChecked = false;
 
     /** #892 — schema-probe result for tblSongs.ArrangementJson. */
     private bool $_arrangementColumn = false;
     private bool $_arrangementColumnChecked = false;
+    /** #1343-B — single-flight probe for tblSongs.PublicId (permalink id). */
+    private bool $_publicIdColumn = false;
+    private bool $_publicIdColumnChecked = false;
     /* Places adoption — single-flight probe for tblSongs.OriginCityId.
        Mirrors the ArrangementJson pattern so a pre-adoption install
        keeps the legacy SELECT shape (no extra columns) without a
@@ -188,50 +196,22 @@ class SongData
     }
 
     /**
-     * Constructor — connects to MySQL, or falls back to JSON file.
+     * Constructor — connects to live MySQL.
      *
-     * When MySQL credentials are not configured (e.g., fresh deployment
-     * before database setup), the class falls back to reading songs.json
-     * so the app remains functional.
+     * WS-J #1020: DB-direct only. MySQL is the single source of truth. The
+     * old JSON-file fallback — which served a STALE songs.json corpus when the
+     * live DB was unreachable — was removed per the governing rule "server
+     * DB-down = graceful error, never stale". getDbMysqli() throws when MySQL
+     * is unavailable and we let that propagate; callers surface a clean error
+     * and WS-K's maintenance mode provides the user-facing UX.
+     *
+     * The $jsonMode / $jsonData members and their guards remain in the read
+     * methods as inert dead code (jsonMode can never become true now); a
+     * follow-up can strip the branches purely for tidiness.
      */
     public function __construct()
     {
-        try {
-            $this->db = getDbMysqli();
-        } catch (\Throwable $e) {
-            /* MySQL not available — fall back to JSON file. Logged
-               (#534) so admins notice when the live DB is unreachable;
-               otherwise the app degrades to read-only JSON without
-               any signal. Fresh-install case is handled by the broader
-               install-detection logic in includes/db_mysql.php. */
-            error_log('[SongData] MySQL unavailable, using JSON fallback: ' . $e->getMessage());
-            $this->jsonMode = true;
-            $this->_loadJsonFallback();
-        }
-    }
-
-    /**
-     * Load song data from the JSON file as a fallback.
-     */
-    private function _loadJsonFallback(): void
-    {
-        $candidates = [
-            defined('APP_DATA_FILE') ? APP_DATA_FILE : '',
-            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'song_data' . DIRECTORY_SEPARATOR . 'songs.json',
-            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'data' . DIRECTORY_SEPARATOR . 'songs.json',
-        ];
-
-        foreach ($candidates as $path) {
-            if ($path !== '' && file_exists($path)) {
-                $json = file_get_contents($path);
-                if ($json !== false) {
-                    $this->jsonData = json_decode($json, true, 512, JSON_THROW_ON_ERROR);
-                    return;
-                }
-            }
-        }
-
-        throw new \RuntimeException('Song data not available: MySQL not configured and songs.json not found.');
+        $this->db = getDbMysqli();
     }
 
     /* =====================================================================
@@ -289,6 +269,69 @@ class SongData
      *
      * @return array List of songbook objects (id, name, songCount)
      */
+    /**
+     * Other-language versions of a song (#281) — the translation cluster: songs
+     * THIS one translates to (outward), the source it translates FROM (inward),
+     * and that source's other translations (siblings). Used by the song page's
+     * language picker AND the song page's hreflang alternates (#1206). Wrapped so
+     * a missing table / DB hiccup yields an empty list, never a fatal.
+     *
+     * @return array<int, array<string, mixed>> rows: song_id, target_language,
+     *         language_name, native_name, text_direction, translator, verified
+     */
+    public function getSongTranslations(string $songId): array
+    {
+        if ($songId === '' || $this->jsonMode || !($this->db instanceof \mysqli)) {
+            return [];
+        }
+        try {
+            $sql = '
+                /* Outward — this song has translations to other languages */
+                SELECT t.TranslatedSongId AS song_id, t.TargetLanguage AS target_language,
+                       l.Name AS language_name, l.NativeName AS native_name,
+                       l.TextDirection AS text_direction, t.Translator AS translator, t.Verified AS verified
+                  FROM tblSongTranslations t
+                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
+                 WHERE t.SourceSongId = ? AND l.IsActive = 1
+                UNION
+                /* Inward — this song IS a translation; surface the source. */
+                SELECT src.SongId AS song_id, srcLang.Code AS target_language,
+                       srcLang.Name AS language_name, srcLang.NativeName AS native_name,
+                       srcLang.TextDirection AS text_direction, "" AS translator, 1 AS verified
+                  FROM tblSongTranslations selfT
+                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId
+                  JOIN tblLanguages srcLang ON srcLang.Code = src.Language
+                 WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
+                UNION
+                /* Siblings — the source\'s OTHER translations. */
+                SELECT sibling.TranslatedSongId AS song_id, sibling.TargetLanguage AS target_language,
+                       l2.Name AS language_name, l2.NativeName AS native_name,
+                       l2.TextDirection AS text_direction, sibling.Translator AS translator, sibling.Verified AS verified
+                  FROM tblSongTranslations selfT2
+                  JOIN tblSongTranslations sibling
+                       ON sibling.SourceSongId = selfT2.SourceSongId
+                      AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                  JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
+                 WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
+            ';
+            /* prepare() throws under MYSQLI_REPORT_STRICT (includes/db_mysql.php),
+               so it never returns false — a real failure propagates to the caller's
+               try/catch, not a silent empty result. No false-guard needed (#1317). */
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('sss', $songId, $songId, $songId);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            $rows = [];
+            while ($row = $res->fetch_assoc()) {
+                $rows[] = $row;
+            }
+            $stmt->close();
+            return $rows;
+        } catch (\Throwable $_e) {
+            return [];   // missing table / DB hiccup → no alternates, never fatal
+        }
+    }
+
     public function getSongbooks(): array
     {
         if ($this->jsonMode) {
@@ -299,6 +342,7 @@ class SongData
 
         $bibSelect    = $this->_songbookBibSelect();
         $langSelect   = $this->_songbookLanguageSelect();
+        $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
@@ -309,6 +353,7 @@ class SongData
                     b.PublicationYear AS publicationYear,
                     b.Copyright       AS copyright,
                     b.Affiliation     AS affiliation
+                    {$displayAbbrSelect}
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}
@@ -342,6 +387,15 @@ class SongData
                 $_b['compilers']        = $compilersMap[(string)$_b['id']] ?? [];
                 $_b['alternativeNames'] = $altNamesMap[(string)$_b['id']]  ?? [];
                 $_b['links']            = $linksMap[(string)$_b['id']]     ?? [];
+
+                /* #1181 — effective badge colour: own → first member series
+                   that defines a colour → theme default. Lets a series share
+                   ONE colour across all its songbooks (mirrors getSongbook()). */
+                if (($_b['colour'] ?? '') === '') {
+                    foreach ($_b['series'] as $_ser) {
+                        if (!empty($_ser['colour'])) { $_b['colour'] = $_ser['colour']; break; }
+                    }
+                }
 
                 /* #857 — union of: (a) the songbook's own primary
                    subtag, and (b) every distinct primary subtag
@@ -445,6 +499,36 @@ class SongData
         return $this->_bibSelectCache;
     }
     private ?string $_bibSelectCache = null;
+
+    /**
+     * Same probe-once pattern for the optional DisplayAbbr column (#1332) —
+     * a free-text label shown in place of the Abbreviation badge. The column
+     * is added by migrate-songbook-display-abbr.php; until that runs (migrations
+     * aren't auto-applied on deploy) the SELECT must not name it, or every
+     * getSongbooks() call 500s. `b.`-qualified for the parent self-join.
+     */
+    private function _songbookDisplayAbbrSelect(): string
+    {
+        if (isset($this->_displayAbbrSelectCache)) {
+            return $this->_displayAbbrSelectCache;
+        }
+        $has = false;
+        try {
+            $probe = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongbooks'
+                    AND COLUMN_NAME  = 'DisplayAbbr'
+                  LIMIT 1"
+            );
+            $probe->execute();
+            $has = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+        } catch (\Throwable $_e) { /* probe failure → fall through to empty tail */ }
+        $this->_displayAbbrSelectCache = $has ? ', b.DisplayAbbr AS displayAbbr' : '';
+        return $this->_displayAbbrSelectCache;
+    }
+    private ?string $_displayAbbrSelectCache = null;
 
     /**
      * Same shape as _songbookBibSelect() but for the optional Language
@@ -566,6 +650,7 @@ class SongData
                                s.Id           AS sid,
                                s.Name         AS sname,
                                s.Slug         AS sslug,
+                               s.Colour       AS scolour,
                                m.SortOrder    AS sortOrder
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbookSeries s ON s.Id = m.SeriesId
@@ -583,6 +668,7 @@ class SongData
                                s.Id           AS sid,
                                s.Name         AS sname,
                                s.Slug         AS sslug,
+                               s.Colour       AS scolour,
                                m.SortOrder    AS sortOrder
                           FROM tblSongbookSeriesMembership m
                           JOIN tblSongbookSeries s ON s.Id = m.SeriesId
@@ -600,9 +686,10 @@ class SongData
                 $abbr = (string)$row['abbr'];
                 if (!isset($out[$abbr])) $out[$abbr] = [];
                 $out[$abbr][] = [
-                    'id'   => (int)$row['sid'],
-                    'name' => (string)$row['sname'],
-                    'slug' => (string)$row['sslug'],
+                    'id'     => (int)$row['sid'],
+                    'name'   => (string)$row['sname'],
+                    'slug'   => (string)$row['sslug'],
+                    'colour' => (string)($row['scolour'] ?? ''),  // #1181 — series badge colour
                 ];
             }
             $stmt->close();
@@ -1154,6 +1241,7 @@ class SongData
         }
         $bibSelect    = $this->_songbookBibSelect();
         $langSelect   = $this->_songbookLanguageSelect();
+        $displayAbbrSelect = $this->_songbookDisplayAbbrSelect();
         $parentSelect = $this->_songbookParentSelect();
         $parentJoin   = $this->_songbookParentJoin();
         $stmt = $this->db->prepare(
@@ -1164,6 +1252,7 @@ class SongData
                     b.PublicationYear AS publicationYear,
                     b.Copyright       AS copyright,
                     b.Affiliation     AS affiliation
+                    {$displayAbbrSelect}
                     {$langSelect}
                     {$bibSelect}
                     {$parentSelect}
@@ -1196,6 +1285,14 @@ class SongData
         $row['compilers']        = $compilersMap[(string)$row['id']] ?? [];
         $row['alternativeNames'] = $altNamesMap[(string)$row['id']]  ?? [];
         $row['links']            = $linksMap[(string)$row['id']]     ?? [];
+        /* #1181 — effective badge colour resolves own → first member series
+           that defines a colour → theme default (empty). So a series can give
+           ONE shared colour to all its songbooks without each being set. */
+        if (($row['colour'] ?? '') === '') {
+            foreach ($row['series'] as $ser) {
+                if (!empty($ser['colour'])) { $row['colour'] = $ser['colour']; break; }
+            }
+        }
         return $row;
     }
 
@@ -1549,6 +1646,147 @@ class SongData
      * ===================================================================== */
 
     /**
+     * Lightweight, paginated song index — DB-direct, NO relation loads.
+     *
+     * Returns ONLY the columns a browse / list / editor-sidebar needs
+     * (id, number, title, songbook, songbookName, language, has-media
+     * flags). Built for WS-A (#1012): list surfaces no longer materialise
+     * the whole corpus, so read memory stays flat regardless of catalogue
+     * size. Full song detail is fetched per-record via getSongById().
+     *
+     * songbookName comes from a JOIN to tblSongbooks (the LIVE name), not
+     * the denormalised tblSongs.SongbookName — forward-compatible with the
+     * de-normalisation in WS-E (#1013).
+     *
+     * The language filter is pushed into SQL (applyLanguageFilterSql) so
+     * pagination stays correct (post-fetch filtering would drop rows from
+     * the page). A missing DB is an error, never a stale-file fallback —
+     * per the live/online-first governing rule.
+     *
+     * @param string|null  $bookId      Optional songbook abbreviation filter.
+     * @param int          $limit       Page size (clamped 1..500).
+     * @param int          $offset      Row offset (>= 0).
+     * @param list<string> $langSubtags Preferred-language subtags ([] = no filter).
+     * @return array{songs: list<array>, total: int, offset: int, limit: int}
+     */
+    public function getSongsIndex(?string $bookId = null, int $limit = 50, int $offset = 0, array $langSubtags = []): array
+    {
+        if ($this->jsonMode || !($this->db instanceof \mysqli)) {
+            throw new \RuntimeException('getSongsIndex requires a live database connection.');
+        }
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_filter.php';
+
+        $limit  = max(1, min(500, $limit));
+        $offset = max(0, $offset);
+
+        $where  = [];
+        $params = [];
+        $types  = '';
+        if ($bookId !== null && $bookId !== '') {
+            $bookId   = strtoupper(trim($bookId));
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $bookId;
+            $types   .= 's';
+        }
+        if (APP_CONFIG['features']['public_domain_only'] ?? false) {
+            $where[] = 's.LyricsPublicDomain = 1';
+        }
+
+        [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
+
+        $whereClause  = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : 'WHERE 1=1';
+        $whereClause .= $langWhere; /* ' AND (...)' or ' AND 1=1' */
+
+        $allTypes  = $types . $langTypes;
+        $allParams = array_merge($params, $langParams);
+
+        /* total (for pagination) */
+        $cStmt = $this->db->prepare("SELECT COUNT(*) FROM tblSongs s {$whereClause}");
+        if ($allTypes !== '') {
+            $cStmt->bind_param($allTypes, ...$allParams);
+        }
+        $cStmt->execute();
+        $total = (int)($cStmt->get_result()->fetch_row()[0] ?? 0);
+        $cStmt->close();
+
+        /* page rows — lightweight projection only, canonical ordering
+           (mirrors getSongs: songbook → numbered-first → number → title). */
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, b.Name AS songbookName,
+                       s.Language AS language,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
+                {$whereClause}
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE WHEN b.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC
+                LIMIT ? OFFSET ?";
+        $rowTypes  = $allTypes . 'ii';
+        $rowParams = array_merge($allParams, [$limit, $offset]);
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($rowTypes, ...$rowParams);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $songs = [];
+        while ($row = $res->fetch_assoc()) {
+            $row['number']        = normaliseSongNumber($row['number']);
+            $row['hasAudio']      = (bool)$row['hasAudio'];
+            $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+            $songs[] = $row;
+        }
+        $stmt->close();
+
+        return ['songs' => $songs, 'total' => $total, 'offset' => $offset, 'limit' => $limit];
+    }
+
+    /**
+     * Slim index of EVERY song — lightweight fields only (no lyrics,
+     * components, or credits). Powers the Song Editor sidebar (WS-D
+     * #1016): one query returns id/number/title/songbook/songbookName per
+     * song so the editor lists the whole catalogue without downloading
+     * the ~140 MB corpus; the full editable record is fetched per song on
+     * open via getSongById(). songbookName is the LIVE tblSongbooks.Name
+     * (WS-E #1013). Canonical order mirrors getSongsIndex/getSongs.
+     *
+     * @return array<int,array<string,mixed>>
+     */
+    public function getSongsSlimIndex(): array
+    {
+        if (!$this->db) {
+            throw new \RuntimeException('getSongsSlimIndex requires a live database connection.');
+        }
+
+        /* $pubCol is a hardcoded constant (allow-listed; rule #5) added only when
+           the column exists (#1343-B) so the PWA index carries the permalink id. */
+        $pubCol = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                ORDER BY s.SongbookAbbr ASC,
+                         CASE WHEN sb.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
+                         s.Number ASC,
+                         LOWER(s.Title) ASC";
+
+        $res  = $this->db->query($sql);
+        $rows = [];
+        if ($res instanceof \mysqli_result) {
+            while ($row = $res->fetch_assoc()) {
+                $row['number']        = normaliseSongNumber($row['number']);
+                $row['hasAudio']      = (bool)$row['hasAudio'];
+                $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
+                $rows[] = $row;
+            }
+            $res->free();
+        }
+        return $rows;
+    }
+
+    /**
      * Get all songs, optionally filtered by songbook.
      *
      * When the hidden 'public_domain_only' feature flag is enabled,
@@ -1614,8 +1852,11 @@ class SongData
            round-trip surfaces the persisted custom order. Pre-
            migration deploys keep the legacy column list. */
         $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
+        /* WS-E (#1013): songbookName from the LIVE tblSongbooks JOIN (b),
+           not the denormalised s.SongbookName, so songbook renames
+           propagate immediately. (b is LEFT JOINed below.) */
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
-                       s.SongbookName AS songbookName, s.Language AS language, s.Copyright AS copyright,
+                       b.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
                        s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
@@ -1714,6 +1955,77 @@ class SongData
     }
 
     /**
+     * Get the full records of every song on which a person is credited as a
+     * writer OR composer, matching any of the supplied name variants
+     * (compared case-insensitively).
+     *
+     * Scoped replacement for the old whole-corpus `getSongs()` scan in
+     * writer.php: the catalogue must NEVER materialise in full (CLAUDE.md
+     * rule #17 / the #929 OOM). The match is pushed into SQL using the same
+     * IN-subquery shape already used by searchSongs() and the credit→songs
+     * JOIN in person.php; only the (small) matched set is then hydrated, one
+     * record at a time, via the canonical getSongById().
+     *
+     * @param string[] $nameVariants Candidate names in any case; matched
+     *                 case-insensitively against tblSongWriters /
+     *                 tblSongComposers `.Name`.
+     * @return array<int,array> Full song records (same shape as getSongs()).
+     */
+    public function getSongsByCreditName(array $nameVariants): array
+    {
+        /* Normalise to a unique, lower-cased, non-empty set. */
+        $variants = [];
+        foreach ($nameVariants as $n) {
+            $n = mb_strtolower(trim((string)$n));
+            if ($n !== '') {
+                $variants[$n] = true;
+            }
+        }
+        $variants = array_keys($variants);
+        if ($variants === []) {
+            return [];
+        }
+
+        /* Matched song IDs where the person is a writer OR composer. The
+           placeholder string is built from a hardcoded count() (never from
+           user input) and every value is bound (CLAUDE.md SQL rule). */
+        $placeholders = implode(',', array_fill(0, count($variants), '?'));
+        $sql = "SELECT DISTINCT s.SongId
+                  FROM tblSongs s
+                 WHERE s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
+                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders))";
+        $stmt = $this->db->prepare($sql);
+        /* Variants are bound twice — once for each subquery. */
+        $types  = str_repeat('s', count($variants) * 2);
+        $values = array_merge($variants, $variants);
+        $stmt->bind_param($types, ...$values);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $ids = [];
+        while ($row = $result->fetch_assoc()) {
+            $ids[] = $row['SongId'];
+        }
+        $stmt->close();
+        if ($ids === []) {
+            return [];
+        }
+
+        /* Hydrate only the matched set — bounded by the person's catalogue,
+           never O(corpus) — reusing the canonical per-record path. The
+           writer page is ETag-cached (api.php $_cacheablePages) so this cost
+           amortises; a batch hydrator (cf. _getWritersMap) is a possible
+           future optimisation for very prolific writers. */
+        $songs = [];
+        foreach ($ids as $songId) {
+            $rec = $this->getSongById($songId);
+            if ($rec !== null) {
+                $songs[] = $rec;
+            }
+        }
+        return $songs;
+    }
+
+    /**
      * Get a single song by its unique ID (e.g., 'CP-0001').
      *
      * Supports flexible ID formats: 'MP-1', 'MP-01', 'MP-001', and 'MP-0001'
@@ -1736,8 +2048,21 @@ class SongData
             return null;
         }
 
-        /* Try exact match first (fast path) */
+        /* Try exact match first (fast path) — SongId is the PK; this runs FIRST so
+           legacy /song/<SongId> resolves even if every PublicId path below failed. */
         $song = $this->_fetchSongRow($id);
+
+        /* #1343-B — opaque PublicId (IHUID) permalink: uppercase, hyphen-less, not a
+           SongId. Gated on the column existing (un-migrated env skips it cleanly). */
+        if ($song === null
+            && strpos($id, '-') === false
+            && preg_match('/^[0-9A-Z]{6,32}$/', $id) === 1
+            && $this->_hasPublicIdColumn()) {
+            $resolvedSongId = $this->_songIdForPublicId($id);
+            if ($resolvedSongId !== null) {
+                $song = $this->_fetchSongRow($resolvedSongId);
+            }
+        }
 
         /* No exact match — try normalized matching */
         if ($song === null && preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $matches)) {
@@ -1782,6 +2107,198 @@ class SongData
         return $this->_fetchSongRow($row['SongId']);
     }
 
+    /**
+     * The block names a song_detail `include=` request may ask for (#1099).
+     * Allow-list — anything outside this is ignored, never interpolated.
+     *
+     * @return string[]
+     */
+    public static function songDetailIncludeBlocks(): array
+    {
+        return [
+            'tune', 'media', 'arrangements', 'royaltyIds', 'scriptureRefs',
+            'vocalParts', 'translations', 'annotations',
+        ];
+    }
+
+    /**
+     * Optional, scoped enrichment blocks for the song_detail API (#1099 — the
+     * native/casting "technical gate"). Each block is computed ONLY when asked
+     * for via the include-list AND its table exists (un-migrated deployments get
+     * a clean omission, never a 500), reads one song's rows (never the corpus),
+     * and binds every value. Returns a map of present blocks; absent/empty
+     * blocks are omitted so clients tolerate partial payloads.
+     *
+     * @param string   $songId  Canonical SongId, e.g. CP-0001
+     * @param string[] $include Requested block names (already allow-list filtered)
+     * @return array<string,mixed>
+     */
+    public function getSongDetailExtras(string $songId, array $include): array
+    {
+        if ($this->jsonMode || $this->db === null || $include === []) {
+            return [];
+        }
+        $songId = strtoupper(trim($songId));
+        $want = array_intersect($include, self::songDetailIncludeBlocks());
+        if ($want === []) {
+            return [];
+        }
+
+        /* Resolve the song's primary lyrics version once (for per-line blocks). */
+        $needsLyrics = (bool)array_intersect($want, ['vocalParts', 'translations', 'annotations']);
+        $lyricsId = $needsLyrics ? $this->_primaryLyricsId($songId) : 0;
+
+        $out = [];
+        foreach ($want as $block) {
+            try {
+                switch ($block) {
+                    case 'tune':
+                        $row = $this->_extrasRow(
+                            'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug, t.MeterCode AS meter, '
+                          . 't.MusicBrainzWorkMBID AS musicBrainzWorkMbid '
+                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? LIMIT 1',
+                            's', [$songId]
+                        );
+                        if ($row !== null) { $out['tune'] = $row; }
+                        break;
+
+                    case 'media':
+                        $rows = $this->_extrasRows(
+                            'SELECT Id AS id, Kind AS kind, MimeType AS mimeType, FileName AS fileName, '
+                          . 'SizeBytes AS sizeBytes FROM tblSongMedia WHERE SongId = ? ORDER BY Id',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['media'] = $rows; }
+                        break;
+
+                    case 'arrangements':
+                        $rows = $this->_extrasRows(
+                            'SELECT Name AS name, IsDefault AS isDefault, KeySignature AS keySignature, '
+                          . 'CapoFret AS capoFret, ComponentOrderJson AS componentOrder '
+                          . 'FROM tblSongArrangements WHERE SongId = ? ORDER BY IsDefault DESC, Name',
+                            's', [$songId]
+                        );
+                        foreach ($rows as &$r) {
+                            $r['isDefault'] = (bool)$r['isDefault'];
+                            $r['componentOrder'] = $r['componentOrder'] !== null
+                                ? json_decode((string)$r['componentOrder'], true) : null;
+                        }
+                        unset($r);
+                        if ($rows) { $out['arrangements'] = $rows; }
+                        break;
+
+                    case 'royaltyIds':
+                        $rows = $this->_extrasRows(
+                            'SELECT Authority AS authority, AuthorityId AS authorityId, Note AS note '
+                          . 'FROM tblSongRoyaltyIds WHERE SongId = ? ORDER BY SortOrder, Authority',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['royaltyIds'] = $rows; }
+                        break;
+
+                    case 'scriptureRefs':
+                        $rows = $this->_extrasRows(
+                            'SELECT Book AS book, Chapter AS chapter, VerseStart AS verseStart, '
+                          . 'VerseEnd AS verseEnd, OsisRef AS osisRef FROM tblSongScriptureRefs '
+                          . 'WHERE SongId = ? ORDER BY SortOrder, Id',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['scriptureRefs'] = $rows; }
+                        break;
+
+                    case 'vocalParts':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT Id AS id, PartKind AS partKind, Label AS label, '
+                              . 'SingerName AS singerName, Gender AS gender, CreditPersonId AS creditPersonId '
+                              . 'FROM tblVocalParts WHERE LyricsId = ? ORDER BY SortOrder, Id',
+                                'i', [$lyricsId]
+                            );
+                            if ($rows) { $out['vocalParts'] = $rows; }
+                        }
+                        break;
+
+                    case 'translations':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT tr.LineId AS lineId, tr.Kind AS kind, tr.TargetLanguage AS targetLanguage, '
+                              . 'tr.Text AS text, tr.IsPrimary AS isPrimary '
+                              . 'FROM tblLyricLineTranslations tr WHERE tr.LyricsId = ? AND tr.Status = ? '
+                              . 'ORDER BY tr.LineId, tr.SortOrder',
+                                'is', [$lyricsId, 'approved']
+                            );
+                            foreach ($rows as &$r) { $r['isPrimary'] = (bool)$r['isPrimary']; }
+                            unset($r);
+                            if ($rows) { $out['translations'] = $rows; }
+                        }
+                        break;
+
+                    case 'annotations':
+                        if ($lyricsId > 0) {
+                            $rows = $this->_extrasRows(
+                                'SELECT a.StartLineId AS startLineId, a.EndLineId AS endLineId, '
+                              . 'a.AnnotationType AS annotationType, a.Body AS body, a.BodyFormat AS bodyFormat, '
+                              . 'a.IsVerified AS isVerified FROM tblLyricLineAnnotations a '
+                              . 'WHERE a.LyricsId = ? AND a.Status = ? ORDER BY a.StartLineId, a.SortOrder',
+                                'is', [$lyricsId, 'approved']
+                            );
+                            foreach ($rows as &$r) { $r['isVerified'] = (bool)$r['isVerified']; }
+                            unset($r);
+                            if ($rows) { $out['annotations'] = $rows; }
+                        }
+                        break;
+                }
+            } catch (\Throwable $e) {
+                /* Table missing on an un-migrated deployment (or any read error):
+                   omit the block rather than fail the whole song_detail. */
+                continue;
+            }
+        }
+        return $out;
+    }
+
+    /** Resolve a song's primary (or sole approved) lyrics version Id, or 0. */
+    private function _primaryLyricsId(string $songId): int
+    {
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT Id FROM tblLyrics WHERE SongId = ? AND Status = 'approved' "
+              . "ORDER BY IsPrimary DESC, Id ASC LIMIT 1"
+            );
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return $row ? (int)$row['Id'] : 0;
+        } catch (\Throwable $e) {
+            return 0;
+        }
+    }
+
+    /** Run a single-row enrichment query (bound) → assoc row or null. */
+    private function _extrasRow(string $sql, string $types, array $params): ?array
+    {
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row ?: null;
+    }
+
+    /** Run a multi-row enrichment query (bound) → list of assoc rows. */
+    private function _extrasRows(string $sql, string $types, array $params): array
+    {
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $rows = [];
+        while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+        $stmt->close();
+        return $rows;
+    }
+
     /* =====================================================================
      * SEARCH METHODS
      * ===================================================================== */
@@ -1792,16 +2309,23 @@ class SongData
      * Uses MySQL FULLTEXT search on title and lyrics_text for relevance-ranked
      * results, with a fallback to LIKE for short queries.
      *
-     * @param string      $query      Search query string
-     * @param string|null $songbookId Limit search to a specific songbook
-     * @param int         $limit      Maximum results to return (0 = no limit)
+     * @param string      $query         Search query string
+     * @param string|null $songbookId    Limit search to a specific songbook
+     * @param int         $limit         Maximum results to return (0 = no limit)
+     * @param int         $offset        Pagination offset into the result set
+     * @param bool        $includeLyrics Search (and snippet) song bodies too,
+     *                                   not just titles — mirrors the public
+     *                                   "search within lyrics" toggle
      * @return array Matching song objects
      */
-    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50): array
+    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true): array
     {
         $query = trim($query);
         if ($query === '') {
             return [];
+        }
+        if ($offset < 0) {
+            $offset = 0;
         }
 
         /* Scripture-reference awareness (#397): if the query looks like a
@@ -1820,128 +2344,373 @@ class SongData
                 if (mb_stripos($song['title'] ?? '', $q) !== false) { $results[] = $song; continue; }
                 foreach ($song['writers'] ?? [] as $w) { if (mb_stripos($w, $q) !== false) { $results[] = $song; continue 2; } }
                 foreach ($song['composers'] ?? [] as $c) { if (mb_stripos($c, $q) !== false) { $results[] = $song; continue 2; } }
-                foreach ($song['components'] ?? [] as $comp) {
-                    foreach ($comp['lines'] ?? [] as $line) {
-                        if (mb_stripos($line, $q) !== false) { $results[] = $song; continue 3; }
+                if ($includeLyrics) {
+                    foreach ($song['components'] ?? [] as $comp) {
+                        foreach ($comp['lines'] ?? [] as $line) {
+                            if (mb_stripos($line, $q) !== false) { $results[] = $song; continue 3; }
+                        }
                     }
                 }
             }
-            return $limit > 0 ? array_slice($results, 0, $limit) : $results;
+            return $limit > 0 ? array_slice($results, $offset, $limit) : array_slice($results, $offset);
         }
+
+        if ($songbookId !== null) {
+            $songbookId = strtoupper(trim($songbookId));
+            if ($songbookId === '') {
+                $songbookId = null;
+            }
+        }
+
+        /* Which columns participate in the FULLTEXT match — title-only
+           when the caller hasn't opted into lyrics search (mirrors the
+           public "search within lyrics" toggle, off by default), and
+           title + lyrics when they have. Both column sets are backed by
+           a dedicated FULLTEXT index (idx_TitleFt / idx_TitleLyricsFt). */
+        $matchCols = $includeLyrics ? 's.Title, s.LyricsText' : 's.Title';
 
         $results = [];
+        $tokens  = self::_tokenizeSearch($query);
 
-        /* For short queries (< 3 chars), use LIKE — FULLTEXT has min word length */
-        if (mb_strlen($query) < 3) {
-            $likeQuery = '%' . $query . '%';
-
-            $where = ["(s.Title LIKE ? OR s.LyricsText LIKE ?)"];
-            $params = [$likeQuery, $likeQuery];
-            $types = 'ss';
-
-            if ($songbookId !== null) {
-                $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.SongbookAbbr = ?";
-                $params[] = $songbookId;
-                $types .= 's';
-            }
-
-            $limitClause = $limit > 0 ? "LIMIT ?" : "";
-            if ($limit > 0) {
-                $params[] = $limit;
-                $types .= 'i';
-            }
-
-            $whereClause = implode(' AND ', $where);
-
-            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
-                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
-                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
-                           s.MusicPublicDomain AS musicPublicDomain,
-                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
-                    FROM tblSongs s
-                    WHERE {$whereClause}
-                    ORDER BY s.SongbookAbbr, s.Number
-                    {$limitClause}";
+        /* Very short queries (< 3 chars) sit below InnoDB's FULLTEXT
+           minimum token length, so a LIKE scan is the only option. */
+        if (mb_strlen($query) < 3 || empty($tokens)) {
+            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics);
         } else {
-            /* FULLTEXT search for longer queries.
-               If the query looked like a scripture reference, OR in the
-               canonical expansion via BOOLEAN MODE so "Ps 23" also
-               matches "Psalm 23" and vice versa (#397). */
-            $ftQuery = $query;
+            /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
+               term prefix-matched AND required (+term*). Catches partial
+               words ("amaz grac" → "Amazing Grace") the way the old Fuse
+               index did, while staying a live, indexed MySQL query.
+               A scripture reference ORs in its canonical expansion so
+               "Ps 23" still reaches "Psalm 23" (#397). */
+            $primary = self::_booleanPrefixExpr($tokens, true);
             if ($scriptureExpansion !== null && $scriptureExpansion !== $query) {
-                $ftQuery = '(' . $query . ') (' . $scriptureExpansion . ')';
+                $expExpr = self::_booleanPrefixExpr(self::_tokenizeSearch($scriptureExpansion), true);
+                if ($expExpr !== '') {
+                    $primary = '(' . $primary . ') (' . $expExpr . ')';
+                }
             }
+            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset);
 
-            $where = ["MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE)"];
-            $params = [$ftQuery];
-            $types = 's';
-
-            if ($songbookId !== null) {
-                $songbookId = strtoupper(trim($songbookId));
-                $where[] = "s.SongbookAbbr = ?";
-                $params[] = $songbookId;
-                $types .= 's';
+            /* D2 hybrid — step 2: if requiring every term found nothing,
+               broaden to ANY term (drop the +) so a single mistyped
+               token doesn't sink the whole query. */
+            if (empty($results)) {
+                $loose   = self::_booleanPrefixExpr($tokens, false);
+                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset);
             }
-
-            $limitClause = $limit > 0 ? "LIMIT ?" : "";
-            if ($limit > 0) {
-                $params[] = $limit;
-                $types .= 'i';
-            }
-
-            $whereClause = implode(' AND ', $where);
-
-            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                           s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
-                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
-                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
-                           s.MusicPublicDomain AS musicPublicDomain,
-                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
-                           MATCH(s.Title, s.LyricsText) AGAINST(? IN BOOLEAN MODE) AS relevance
-                    FROM tblSongs s
-                    WHERE {$whereClause}
-                    ORDER BY relevance DESC, s.SongbookAbbr, s.Number
-                    {$limitClause}";
-
-            /* Add the MATCH param again for SELECT (relevance score) */
-            $params = array_merge([$ftQuery], $params);
-            $types = 's' . $types;
         }
-
-        $stmt = $this->db->prepare($sql);
-        $stmt->bind_param($types, ...$params);
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        while ($row = $result->fetch_assoc()) {
-            unset($row['relevance']);
-            $row['number'] = normaliseSongNumber($row['number']);
-            $row['verified'] = (bool)$row['verified'];
-            $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
-            $row['musicPublicDomain'] = (bool)$row['musicPublicDomain'];
-            $row['hasAudio'] = (bool)$row['hasAudio'];
-            $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
-            $results[] = $row;
-        }
-        $stmt->close();
 
         /* Bulk-attach writers / composers / components — was 3 queries
            per matched row, now one per side table (#533). */
         $this->_attachSearchResultCredits($results);
 
-        /* If FULLTEXT returned no results, fall back to LIKE search on writers/composers */
+        /* Server-side lyrics snippet (replaces the old client-side Fuse
+           snippet) — only when lyrics search is on and the hit is in the
+           body rather than the title. */
+        if ($includeLyrics) {
+            $this->_attachLyricsSnippets($results, $tokens);
+        }
+
+        /* D2 hybrid — step 3: writer/composer LIKE fallback when the
+           text passes came up empty. */
         if (empty($results) && mb_strlen($query) >= 3) {
             $results = $this->_searchByWriterComposer($query, $songbookId, $limit);
         }
 
-        /* Alternative-title matches (#832) — also surface songs whose
-           tblSongAlternativeTitles row matches the query. Merges
-           de-duplicated into the existing result list AT THE TOP so
-           a curator-flagged alt match outranks a body-text fuzzy hit
-           (a search for "Faith's Review and Expectation" should put
-           Amazing Grace first, not buried below lyrics matches). */
+        /* D2 hybrid — step 4: phonetic (SOUNDEX) last resort, so an
+           "Halleluyah"/"Hallelujah"-style misspelling still lands
+           something. Only runs when every other pass came up empty, so
+           the unindexed SOUNDEX scan stays a rare cost. */
+        if (empty($results) && mb_strlen($query) >= 3) {
+            $results = $this->_searchBySoundex($query, $songbookId, $limit);
+        }
+
+        /* Curated merges (alt-title #832, scripture-tag #397) belong at
+           the TOP of the FIRST page only — re-prepending them on every
+           "load more" page would duplicate them. */
+        if ($offset === 0) {
+            $results = $this->_mergeCuratedHits($results, $query, $scriptureExpansion, $songbookId, $limit);
+        }
+
+        return $results;
+    }
+
+    /**
+     * Split a user query into FULLTEXT-safe tokens. Strips the
+     * characters that carry meaning in BOOLEAN mode (+ - > < ( ) ~ * "
+     * @) so a raw user string can never inject operators or break the
+     * parser; we re-add our own operators in _booleanPrefixExpr().
+     *
+     * @return string[]
+     */
+    private static function _tokenizeSearch(string $query): array
+    {
+        $clean = preg_replace('/[+\-><()~*"@]+/u', ' ', $query);
+        $parts = preg_split('/\s+/u', trim((string)$clean), -1, PREG_SPLIT_NO_EMPTY);
+        return $parts ?: [];
+    }
+
+    /**
+     * Build a BOOLEAN-mode expression with every token prefix-matched.
+     * $require = true  → "+amaz* +grac*" (all terms required),
+     * $require = false → "amaz* grac*"   (any term, used to broaden).
+     */
+    private static function _booleanPrefixExpr(array $tokens, bool $require): string
+    {
+        $op = $require ? '+' : '';
+        $terms = [];
+        foreach ($tokens as $t) {
+            $t = trim((string)$t);
+            if ($t === '') continue;
+            $terms[] = $op . $t . '*';
+        }
+        return implode(' ', $terms);
+    }
+
+    /**
+     * Run a single FULLTEXT BOOLEAN-mode pass and return lightweight,
+     * relevance-ordered rows (credits are bulk-attached by the caller).
+     * songbookName comes from the LIVE tblSongbooks JOIN, not the
+     * denormalised tblSongs.SongbookName (WS-E #1013).
+     */
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset): array
+    {
+        if (trim($ftQuery) === '') {
+            return [];
+        }
+
+        $where  = ["MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE)"];
+        $params = [$ftQuery];
+        $types  = 's';
+
+        if ($songbookId !== null) {
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $songbookId;
+            $types   .= 's';
+        }
+
+        $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
+        $whereClause = implode(' AND ', $where);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic,
+                       MATCH({$matchCols}) AGAINST(? IN BOOLEAN MODE) AS relevance
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE {$whereClause}
+                ORDER BY relevance DESC, s.SongbookAbbr, s.Number
+                {$limitClause}";
+
+        /* MATCH appears in SELECT (relevance) and WHERE — bind twice. */
+        array_unshift($params, $ftQuery);
+        $types = 's' . $types;
+        if ($limit > 0) {
+            $params[] = $limit;  $types .= 'i';
+            $params[] = $offset; $types .= 'i';
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $rows = $this->_hydrateSearchRows($stmt->get_result());
+        $stmt->close();
+        return $rows;
+    }
+
+    /**
+     * Substring (LIKE) search — used for sub-3-char queries below the
+     * FULLTEXT minimum token length. Returns lightweight rows; credits
+     * are bulk-attached by the caller.
+     */
+    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics): array
+    {
+        $like = '%' . $query . '%';
+
+        if ($includeLyrics) {
+            $where  = ['(s.Title LIKE ? OR s.LyricsText LIKE ?)'];
+            $params = [$like, $like];
+            $types  = 'ss';
+        } else {
+            $where  = ['s.Title LIKE ?'];
+            $params = [$like];
+            $types  = 's';
+        }
+
+        if ($songbookId !== null) {
+            $where[]  = 's.SongbookAbbr = ?';
+            $params[] = $songbookId;
+            $types   .= 's';
+        }
+
+        $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
+        $whereClause = implode(' AND ', $where);
+
+        $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                       s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                       s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                       s.MusicPublicDomain AS musicPublicDomain,
+                       s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE {$whereClause}
+                ORDER BY s.SongbookAbbr, s.Number
+                {$limitClause}";
+
+        if ($limit > 0) {
+            $params[] = $limit;  $types .= 'i';
+            $params[] = $offset; $types .= 'i';
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $rows = $this->_hydrateSearchRows($stmt->get_result());
+        $stmt->close();
+        return $rows;
+    }
+
+    /**
+     * Phonetic (SOUNDEX) last-resort search. Unindexed — kept cheap by
+     * only ever running when every other search pass came up empty.
+     * Attaches its own credits because it is a terminal fallback.
+     */
+    private function _searchBySoundex(string $query, ?string $songbookId, int $limit): array
+    {
+        try {
+            $where  = ['SOUNDEX(s.Title) = SOUNDEX(?)'];
+            $params = [$query];
+            $types  = 's';
+
+            if ($songbookId !== null) {
+                $where[]  = 's.SongbookAbbr = ?';
+                $params[] = $songbookId;
+                $types   .= 's';
+            }
+
+            $limitClause = $limit > 0 ? 'LIMIT ?' : '';
+            $whereClause = implode(' AND ', $where);
+
+            $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
+                           s.SongbookAbbr AS songbook, sb.Name AS songbookName,
+                           s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                           s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                           s.MusicPublicDomain AS musicPublicDomain,
+                           s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+                    FROM tblSongs s
+                    LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                    WHERE {$whereClause}
+                    ORDER BY s.SongbookAbbr, s.Number
+                    {$limitClause}";
+
+            if ($limit > 0) {
+                $params[] = $limit;
+                $types   .= 'i';
+            }
+
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param($types, ...$params);
+            $stmt->execute();
+            $rows = $this->_hydrateSearchRows($stmt->get_result());
+            $stmt->close();
+            $this->_attachSearchResultCredits($rows);
+            return $rows;
+        } catch (\Throwable $e) {
+            error_log('[SongData::_searchBySoundex] ' . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Normalise a raw search result row into the lightweight summary
+     * shape the API returns. Shared by every search SQL path.
+     */
+    private function _hydrateSearchRows(\mysqli_result $res): array
+    {
+        $rows = [];
+        while ($row = $res->fetch_assoc()) {
+            unset($row['relevance']);
+            $row['number']             = normaliseSongNumber($row['number']);
+            $row['verified']           = (bool)$row['verified'];
+            $row['lyricsPublicDomain'] = (bool)$row['lyricsPublicDomain'];
+            $row['musicPublicDomain']  = (bool)$row['musicPublicDomain'];
+            $row['hasAudio']           = (bool)$row['hasAudio'];
+            $row['hasSheetMusic']      = (bool)$row['hasSheetMusic'];
+            /* Every search path LEFT JOINs tblSongbooks, so an orphan /
+               FK-less song yields a NULL songbookName. Coerce to '' so the
+               API contract never leaks a literal null (mirrors the
+               tuneName/iswc coercion in getSongById). */
+            $row['songbookName']       = $row['songbookName'] ?? '';
+            $rows[] = $row;
+        }
+        return $rows;
+    }
+
+    /**
+     * Attach a `lyricsSnippet` (first body line containing a query
+     * token) to each row whose match is in the body, not the title —
+     * the server-side replacement for the old Fuse match-snippet.
+     * Requires components to have been attached already.
+     *
+     * @param string[] $tokens
+     */
+    private function _attachLyricsSnippets(array &$rows, array $tokens): void
+    {
+        if (empty($rows) || empty($tokens)) {
+            return;
+        }
+        $needles = [];
+        foreach ($tokens as $t) {
+            $t = mb_strtolower(trim((string)$t));
+            if ($t !== '') $needles[] = $t;
+        }
+        if (empty($needles)) {
+            return;
+        }
+
+        foreach ($rows as &$row) {
+            /* Snippet is only useful when the hit is NOT already in the
+               title — a title match is its own context. */
+            $title = mb_strtolower($row['title'] ?? '');
+            $inTitle = false;
+            foreach ($needles as $n) {
+                if (mb_stripos($title, $n) !== false) { $inTitle = true; break; }
+            }
+            if ($inTitle) continue;
+
+            foreach (($row['components'] ?? []) as $comp) {
+                foreach (($comp['lines'] ?? []) as $line) {
+                    $ll = mb_strtolower($line);
+                    foreach ($needles as $n) {
+                        if (mb_stripos($ll, $n) !== false) {
+                            $row['lyricsSnippet'] = $line;
+                            break 3;
+                        }
+                    }
+                }
+            }
+        }
+        unset($row);
+    }
+
+    /**
+     * Prepend curator-priority matches — alternative titles (#832) and
+     * scripture-reference tags (#397) — to the result list, de-duped by
+     * SongId. Applied to the first page only (offset 0). Extracted from
+     * searchSongs() so the page-1 merge stays one self-contained step.
+     */
+    private function _mergeCuratedHits(array $results, string $query, ?string $scriptureExpansion, ?string $songbookId, int $limit): array
+    {
+        /* Alternative-title matches (#832) — surface songs whose
+           tblSongAlternativeTitles row matches, AT THE TOP so a
+           curator-flagged alt match outranks a body-text fuzzy hit
+           (search "Faith's Review and Expectation" → Amazing Grace
+           first, not buried below lyrics matches). */
         $altHits = $this->_searchByAlternativeTitle($query, $songbookId, $limit);
         if (!empty($altHits)) {
             $seenAlt = [];
@@ -1953,27 +2722,22 @@ class SongData
                     $seenAlt[$hit['id']] = true;
                 }
             }
-            foreach ($results as $r) {
-                $merged[] = $r;
-            }
+            foreach ($results as $r) { $merged[] = $r; }
             $results = $merged;
             if ($limit > 0) $results = array_slice($results, 0, $limit);
         }
 
-        /* Scripture-reference tag matches (#397 follow-up) — if the query
-           looked like a scripture reference, ALSO surface songs that have
-           been tagged with the canonical book or full reference. Merges
-           de-duplicated into the existing result list at the top so
-           curated matches outrank text matches. */
+        /* Scripture-reference tag matches (#397 follow-up) — surface
+           songs tagged with the canonical book or full reference, at
+           the top, de-duped against the existing list. */
         if ($scriptureExpansion !== null) {
             $tagHits = $this->_searchByScriptureTag($scriptureExpansion, $songbookId);
             if (!empty($tagHits)) {
-                $seen = [];
-                foreach ($results as $r) { $seen[$r['id']] = true; }
+                $tagIds = [];
+                foreach ($tagHits as $th) { $tagIds[$th['id']] = true; }
                 $merged = $tagHits;
                 foreach ($results as $r) {
-                    if (!isset($seen[$r['id']])) $merged[] = $r; /* already seen via tag hit */
-                    elseif (!isset($tagHits[$r['id'] ?? ''])) $merged[] = $r;
+                    if (!isset($tagIds[$r['id']])) $merged[] = $r;
                 }
                 $results = array_values($merged);
                 if ($limit > 0) $results = array_slice($results, 0, $limit);
@@ -1981,6 +2745,81 @@ class SongData
         }
 
         return $results;
+    }
+
+    /**
+     * Lightweight autocomplete/typeahead suggestions (#307). Returns at
+     * most $limit minimal rows (id / title / songbook / number / language)
+     * ordered by relevance, deliberately skipping the heavy searchSongs()
+     * pipeline (credits, components, curated merges, snippets) so header
+     * typeahead stays snappy as a live MySQL query.
+     *
+     * Same D2 prefix strategy as searchSongs: FULLTEXT BOOLEAN +term* on
+     * Title, with a LIKE fallback for sub-3-char queries (below the
+     * FULLTEXT minimum token length) or when FULLTEXT finds nothing.
+     * `language` rides along so the caller can language-filter; the
+     * client ignores it.
+     */
+    public function suggestSongs(string $query, int $limit = 8): array
+    {
+        $query = trim($query);
+        if ($query === '' || $this->jsonMode || !$this->db) {
+            return [];
+        }
+        if ($limit <= 0) {
+            $limit = 8;
+        }
+
+        $tokens = self::_tokenizeSearch($query);
+        $rows   = [];
+
+        $collect = function (\mysqli_result $res) use (&$rows): void {
+            while ($row = $res->fetch_assoc()) {
+                $rows[] = [
+                    'id'       => $row['id'],
+                    'title'    => $row['title'],
+                    'songbook' => $row['songbook'],
+                    'number'   => normaliseSongNumber($row['number']),
+                    'language' => $row['language'] ?? '',
+                ];
+            }
+        };
+
+        if (mb_strlen($query) >= 3 && !empty($tokens)) {
+            $expr = self::_booleanPrefixExpr($tokens, true);
+            $sql  = "SELECT s.SongId AS id, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.Number AS number,
+                            s.Language AS language,
+                            MATCH(s.Title) AGAINST(? IN BOOLEAN MODE) AS relevance
+                     FROM tblSongs s
+                     WHERE MATCH(s.Title) AGAINST(? IN BOOLEAN MODE)
+                     ORDER BY relevance DESC, s.SongbookAbbr, s.Number
+                     LIMIT ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('ssi', $expr, $expr, $limit);
+            $stmt->execute();
+            $collect($stmt->get_result());
+            $stmt->close();
+        }
+
+        /* LIKE fallback — short queries, or FULLTEXT came up empty. */
+        if (empty($rows)) {
+            $like = '%' . $query . '%';
+            $sql  = "SELECT s.SongId AS id, s.Title AS title,
+                            s.SongbookAbbr AS songbook, s.Number AS number,
+                            s.Language AS language
+                     FROM tblSongs s
+                     WHERE s.Title LIKE ?
+                     ORDER BY s.SongbookAbbr, s.Number
+                     LIMIT ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('si', $like, $limit);
+            $stmt->execute();
+            $collect($stmt->get_result());
+            $stmt->close();
+        }
+
+        return $rows;
     }
 
     /**
@@ -2026,7 +2865,7 @@ class SongData
         try {
             $like = '%' . $query . '%';
             $sql  = 'SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                            s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                            s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                             s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                             s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                             s.MusicPublicDomain AS musicPublicDomain,
@@ -2034,6 +2873,7 @@ class SongData
                             a.Title AS matchedAltTitle
                        FROM tblSongAlternativeTitles a
                        JOIN tblSongs s ON s.SongId = a.SongId
+                       LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE a.Title LIKE ?';
             $params = [$like];
             $types  = 's';
@@ -2093,7 +2933,7 @@ class SongData
         $slugBook = self::_tagSlug($book);
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
@@ -2101,6 +2941,7 @@ class SongData
                   FROM tblSongs s
                   JOIN tblSongTagMap m ON m.SongId = s.SongId
                   JOIN tblSongTags   t ON t.Id = m.TagId
+                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
         $types  = 'ssss';
         $params = [$scriptureRef, $book, $slugRef, $slugBook];
@@ -2170,14 +3011,15 @@ class SongData
         /* Use LIKE for prefix matching on the number cast to string */
         $likeNumber = $number . '%';
         $stmt = $this->db->prepare(
-            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
-                    SongbookName AS songbookName, Language AS language, Copyright AS copyright, Ccli AS ccli,
-                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
-                    MusicPublicDomain AS musicPublicDomain,
-                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
-             FROM tblSongs
-             WHERE SongbookAbbr = ? AND CAST(Number AS CHAR) LIKE ?
-             ORDER BY Number"
+            "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
+                    sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
+                    s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                    s.MusicPublicDomain AS musicPublicDomain,
+                    s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
+             FROM tblSongs s
+             LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+             WHERE s.SongbookAbbr = ? AND CAST(s.Number AS CHAR) LIKE ?
+             ORDER BY s.Number"
         );
         $stmt->bind_param('ss', $songbookId, $likeNumber);
         $stmt->execute();
@@ -2347,22 +3189,11 @@ class SongData
      * EXPORT METHOD — Generate full JSON for client-side caching / PWA
      * ===================================================================== */
 
-    /**
-     * Export the complete song database as a JSON-compatible array.
-     *
-     * Reproduces the same structure as the original songs.json for
-     * backward compatibility with the PWA client-side cache and Fuse.js.
-     *
-     * @return array Full data array with meta, songbooks, and songs
-     */
-    public function exportAsJson(): array
-    {
-        return [
-            'meta'      => $this->getMeta(),
-            'songbooks' => $this->getSongbooks(),
-            'songs'     => $this->getSongs(),
-        ];
-    }
+    /* WS-J #1020: exportAsJson() — the whole-corpus materialiser that fed the
+       songs.json file cache (~140 MB of PHP-array memory, #929 OOM) — was
+       removed with the cache itself. Reads are live MySQL now: getSongsSlimIndex()
+       for the lightweight index, getSongs($abbr) for a single songbook bundle,
+       getSongById() for one full record. Nothing materialises the whole corpus. */
 
     /* =====================================================================
      * PRIVATE HELPER METHODS
@@ -2384,17 +3215,20 @@ class SongData
         $placeSelect  = $this->_hasOriginPlaceColumn()
             ? ', OriginCity AS originCity, OriginCityId AS originCityId'
             : '';
+        $pubSelect    = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';   /* #1343-B (gated) */
         $stmt = $this->db->prepare(
-            "SELECT SongId AS id, Number AS number, Title AS title, SongbookAbbr AS songbook,
-                    SongbookName AS songbookName, Language AS language, Copyright AS copyright,
-                    TuneName AS tuneName, Ccli AS ccli, Iswc AS iswc,
-                    Verified AS verified, LyricsPublicDomain AS lyricsPublicDomain,
-                    MusicPublicDomain AS musicPublicDomain,
-                    HasAudio AS hasAudio, HasSheetMusic AS hasSheetMusic
+            "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
+                    sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
+                    s.TuneName AS tuneName, s.Ccli AS ccli, s.Iswc AS iswc,
+                    s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
+                    s.MusicPublicDomain AS musicPublicDomain,
+                    s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                     {$arrSelect}
                     {$placeSelect}
-             FROM tblSongs
-             WHERE SongId = ?
+                    {$pubSelect}
+             FROM tblSongs s
+             LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+             WHERE s.SongId = ?
              LIMIT 1"
         );
         $stmt->bind_param('s', $songId);
@@ -2437,6 +3271,25 @@ class SongData
         $row['adaptors']     = $this->_getAdaptors($songId);
         $row['translators']  = $this->_getTranslators($songId);
         $row['artists']      = $this->_getArtists($songId);    /* #587 */
+        /* #1355 — de-duplicate each people-credit list case-insensitively (order
+           preserved, first occurrence wins). A person credited twice in the same
+           role (a duplicate tblSong<Role> row) must surface ONCE — both in each row
+           and in the song-view "Words & Music" combine (#603). Fixed at the source so
+           the public song page, print (song_data) and export all dedupe alike. */
+        foreach (['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'] as $_creditKey) {
+            if (empty($row[$_creditKey]) || !is_array($row[$_creditKey])) { continue; }
+            $_seenCredit = [];
+            $row[$_creditKey] = array_values(array_filter(
+                array_map(static fn($n) => trim((string)$n), $row[$_creditKey]),
+                static function (string $n) use (&$_seenCredit): bool {
+                    if ($n === '') { return false; }
+                    $k = mb_strtolower($n);
+                    if (isset($_seenCredit[$k])) { return false; }
+                    $_seenCredit[$k] = true;
+                    return true;
+                }
+            ));
+        }
         $row['components']   = $this->_getComponents($songId);
         /* Tags attached here too so the single-song read path matches
            the bulk getSongs() shape (#496 follow-up). Uses the same
@@ -2593,6 +3446,29 @@ class SongData
         return $this->_componentLangColumn;
     }
 
+    /** Cached probe for the optional tblSongComponents.ChordsJson column (#1066/#1094). */
+    private function _hasComponentChordsColumn(): bool
+    {
+        if ($this->_componentChordsColumnChecked) {
+            return $this->_componentChordsColumn;
+        }
+        $this->_componentChordsColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongComponents'
+                    AND COLUMN_NAME  = 'ChordsJson' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_componentChordsColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_componentChordsColumn = false;
+        }
+        return $this->_componentChordsColumn;
+    }
+
     /**
      * #892 — schema-probe for tblSongs.ArrangementJson. Same caching
      * pattern as the component-language probe so editor-load (which
@@ -2620,6 +3496,41 @@ class SongData
             $this->_arrangementColumn = false;
         }
         return $this->_arrangementColumn;
+    }
+
+    /** #1343-B — single-flight probe for tblSongs.PublicId (gated reads/STRICT). */
+    private function _hasPublicIdColumn(): bool
+    {
+        if ($this->_publicIdColumnChecked) {
+            return $this->_publicIdColumn;
+        }
+        $this->_publicIdColumnChecked = true;
+        try {
+            $stmt = $this->db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblSongs'
+                    AND COLUMN_NAME  = 'PublicId' LIMIT 1"
+            );
+            $stmt->execute();
+            $this->_publicIdColumn = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $this->_publicIdColumn = false;
+        }
+        return $this->_publicIdColumn;
+    }
+
+    /** #1343-B — resolve an opaque PublicId to its SongId (PK), or null. Bound;
+     *  caller has already gated on _hasPublicIdColumn(). */
+    private function _songIdForPublicId(string $publicId): ?string
+    {
+        $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
+        $stmt->bind_param('s', $publicId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        return $row !== null ? (string)$row['SongId'] : null;
     }
 
     /**
@@ -2682,28 +3593,57 @@ class SongData
      */
     private function _getComponents(string $songId): array
     {
+        /* #1235 P4b (read switch) — the normalised tblLyricLines mirror is now
+           AUTHORITATIVE for reads: assemble components from it via the shared
+           line-first reader (no LinesJson read). Component metadata
+           (type/number/language) still comes from the THIN tblSongComponents inside
+           the assembler (C-variant); chords are recomposed from the per-line mirror.
+           Output is byte-identical to the P2a path — proven corpus-wide by the G2
+           cutover gate (appWeb/.sql/verify-lyrics-cutover.php). The LinesJson path survives
+           ONLY as the un-migrated-install fallback (no mirror table yet). */
+        if ($this->_hasLyricLinesMirror()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+            return lyricLinesAssembleComponents($this->db, $songId);
+        }
+        return $this->_getComponentsFromJson($songId);
+    }
+
+    /**
+     * Legacy fallback for an un-migrated install with no tblLyricLines mirror: build
+     * components straight from tblSongComponents.LinesJson (no per-line Ids — there is
+     * no stable line identity without the mirror). Once the P1 mirror exists this is
+     * never reached; the column-existence guard means the same deployed code keeps
+     * working before and after the P4d JSON-column drop.
+     */
+    private function _getComponentsFromJson(string $songId): array
+    {
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
+        $chordsSelect = $this->_hasComponentChordsColumn()
+            ? ', ChordsJson AS chords_json'
+            : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
+            "SELECT Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId = ?
              ORDER BY SortOrder"
         );
         $stmt->bind_param('s', $songId);
         $stmt->execute();
-        $result = $stmt->get_result();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
         $components = [];
-        while ($row = $result->fetch_assoc()) {
+        foreach ($rows as $row) {
             $components[] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
-        $stmt->close();
         return $components;
     }
 
@@ -2775,32 +3715,78 @@ class SongData
     private function _getComponentsMap(array $songIds): array
     {
         if (empty($songIds)) return [];
+        /* #1235 P4b (read switch) — assemble from the authoritative tblLyricLines
+           mirror (batched + chunked) when present; LinesJson only for an un-migrated
+           install. Kept in lockstep with _getComponents() so getSongs() and
+           getSongById() agree. */
+        if ($this->_hasLyricLinesMirror()) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+            return lyricLinesAssembleComponentsMap($this->db, $songIds);
+        }
+        return $this->_getComponentsMapFromJson($songIds);
+    }
+
+    /** Legacy no-mirror fallback for _getComponentsMap(); see _getComponentsFromJson(). */
+    private function _getComponentsMapFromJson(array $songIds): array
+    {
+        if (empty($songIds)) return [];
         $placeholders = implode(',', array_fill(0, count($songIds), '?'));
         $types = str_repeat('s', count($songIds));
         $langSelect = $this->_hasComponentLanguageColumn()
             ? ', Language AS language'
             : ', NULL AS language';
+        $chordsSelect = $this->_hasComponentChordsColumn()
+            ? ', ChordsJson AS chords_json'
+            : ', NULL AS chords_json';
         $stmt = $this->db->prepare(
-            "SELECT SongId, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}
+            "SELECT SongId, Id AS component_id, Type AS type, Number AS number, LinesJson AS lines_json{$langSelect}{$chordsSelect}
              FROM tblSongComponents
              WHERE SongId IN ($placeholders)
              ORDER BY SongId, SortOrder"
         );
         $stmt->bind_param($types, ...$songIds);
         $stmt->execute();
-        $result = $stmt->get_result();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
         $map = [];
-        while ($row = $result->fetch_assoc()) {
-            $map[$row['SongId']][] = [
+        foreach ($rows as $row) {
+            $sid = $row['SongId'];
+            $map[$sid][] = [
                 'type'     => $row['type'],
                 'number'   => (int)$row['number'],
                 'lines'    => json_decode($row['lines_json'], true) ?? [],
+                'chords'   => (isset($row['chords_json']) && $row['chords_json'] !== null) ? (json_decode($row['chords_json'], true) ?: null) : null,
                 'language' => $row['language'] !== null ? (string)$row['language'] : null,
             ];
         }
-        $stmt->close();
         return $map;
     }
+
+    /**
+     * #1235 P2a — cached probe: is the normalised tblLyricLines mirror present?
+     * When true, the component builders source line text from it (with a
+     * per-component LinesJson fallback); when false (un-migrated install) every
+     * component falls back to tblSongComponents.LinesJson, so reads never break.
+     */
+    private function _hasLyricLinesMirror(): bool
+    {
+        if ($this->_lyricLinesMirrorChecked) {
+            return $this->_lyricLinesMirror;
+        }
+        $this->_lyricLinesMirrorChecked = true;
+        /* Delegate the actual probe to the shared assembler helper so the
+           INFORMATION_SCHEMA query lives in ONE place (modularity rule); the
+           instance flag above keeps it a thin per-request cache. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+        $this->_lyricLinesMirror = lyricLinesMirrorPresent($this->db);
+        return $this->_lyricLinesMirror;
+    }
+
+    /* #1235 P4b — _mirrorLinesByComponent[Map]() were REMOVED here: the shared
+       assembler in includes/lyric_lines_read.php (lyricLinesAssembleComponents / …Map)
+       is now the ONE line reader, and the read switch above delegates to it. The
+       _hasLyricLinesMirror() probe above stays — it gates that delegation. */
 
     /* --------------------------------------------------------------
      * Arrangers / Adaptors / Translators (#497)
@@ -3112,12 +4098,13 @@ class SongData
         $whereClause = implode(' AND ', $where);
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName,
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName,
                        s.Language AS language, s.Copyright AS copyright, s.Ccli AS ccli,
                        s.Verified AS verified, s.LyricsPublicDomain AS lyricsPublicDomain,
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                 FROM tblSongs s
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                 WHERE {$whereClause}
                 ORDER BY s.SongbookAbbr, s.Number
                 {$limitClause}";
@@ -3256,9 +4243,10 @@ class SongData
                                s.Title AS title,
                                s.Number AS number,
                                s.SongbookAbbr AS songbook,
-                               s.SongbookName AS songbookName
+                               sb.Name AS songbookName
                           FROM tblWorkSongs ws
                           JOIN tblSongs s ON s.SongId = ws.SongId
+                          LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                          WHERE ws.WorkId IN ($ph2)
                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
             $stmt2 = $this->db->prepare($sql2);
@@ -3436,10 +4424,13 @@ class SongData
 
             /* Members */
             $stmt = $this->db->prepare(
+                /* WS-E (#1013): live songbook name via JOIN, not the
+                   denormalised s.SongbookName. */
                 'SELECT ws.SongId, ws.IsCanonical, ws.SortOrder, ws.Note,
-                        s.Title, s.Number, s.SongbookAbbr, s.SongbookName
+                        s.Title, s.Number, s.SongbookAbbr, sb.Name AS SongbookName
                    FROM tblWorkSongs ws
                    JOIN tblSongs s ON s.SongId = ws.SongId
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                   WHERE ws.WorkId = ?
                   ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
             );

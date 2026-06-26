@@ -125,6 +125,11 @@ export class UserAuth {
     saveCredentials(token, user) {
         localStorage.setItem(STORAGE_AUTH_TOKEN, token);
         localStorage.setItem(STORAGE_AUTH_USER, JSON.stringify(user));
+        /* A fresh sign-in must re-run the one-time user-data backfill for the
+           new session AND re-gate destructive 'replace' pushes until that new
+           merge reconcile has hydrated the cache (a different account's data
+           must not be authoritatively replaced by the prior session's). */
+        this._resetUserDataSyncState();
         this._broadcastAuthChanged();
     }
 
@@ -134,7 +139,25 @@ export class UserAuth {
     clearCredentials() {
         localStorage.removeItem(STORAGE_AUTH_TOKEN);
         localStorage.removeItem(STORAGE_AUTH_USER);
+        this._resetUserDataSyncState();
         this._broadcastAuthChanged();
+    }
+
+    /**
+     * Reset the per-session user-data sync state on any auth transition:
+     * clear the once-per-session guard + in-progress latch, and DISARM each
+     * store's _syncReady so no per-edit 'replace' can fire until the next
+     * merge reconcile re-hydrates the cache for the (possibly different)
+     * account. (review #1 / #6)
+     */
+    _resetUserDataSyncState() {
+        this._userDataSynced = false;
+        this._userDataSyncing = false;
+        if (this.app.setList) this.app.setList._syncReady = false;
+        if (this.app.favorites) this.app.favorites._syncReady = false;
+        /* Don't let a clear's one-cycle pull-suppression leak across an auth
+           transition into a fresh login's legitimate cross-device pull. */
+        if (this.app.history) this.app.history._clearedLocally = false;
     }
 
     /**
@@ -347,10 +370,13 @@ export class UserAuth {
      * Sync local setlists with the server.
      * Sends all local setlists, receives the merged result.
      *
-     * @param {Array} localSetlists Array of local setlist objects
+     * @param {Array}  localSetlists Array of local setlist objects
+     * @param {string} [mode='replace'] 'replace' (authoritative — per-edit
+     *   auto-sync; deletions propagate) or 'merge' (union — first-login
+     *   backfill; never deletes). See the server contract in api.php.
      * @returns {Promise<Array|null>} Merged setlists from server, or null on failure
      */
-    async syncSetlists(localSetlists) {
+    async syncSetlists(localSetlists, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
 
         /* Offline → mark a pending sync in the queue. bindOfflineDrains()
@@ -369,7 +395,7 @@ export class UserAuth {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
                 },
-                body: JSON.stringify({ setlists: localSetlists }),
+                body: JSON.stringify({ setlists: localSetlists, mode }),
             });
 
             if (!res.ok) {
@@ -396,10 +422,15 @@ export class UserAuth {
      * bindOfflineDrains replays with the latest localStorage state
      * when connectivity returns (#338).
      *
-     * @param {string[]} localFavoriteIds Array of "CP-0001"-style song ids
-     * @returns {Promise<string[]|null>} Merged list from server, or null on failure/queued
+     * @param {Array<{id:string,tags:string[]}>|string[]} localFavorites
+     *   Favourite objects (preferred, carries per-song tags) or legacy bare
+     *   "CP-0001"-style ids — the server accepts both.
+     * @param {string} [mode='replace'] 'replace' (authoritative — per-edit;
+     *   removals + tag edits propagate) or 'merge' (first-login backfill).
+     * @returns {Promise<Array<{id:string,tags:string[]}>|null>} Merged list
+     *   of {id, tags} objects from the server, or null on failure/queued.
      */
-    async syncFavorites(localFavoriteIds) {
+    async syncFavorites(localFavorites, mode = 'replace') {
         if (!this.isLoggedIn()) return null;
 
         if (!navigator.onLine) {
@@ -415,7 +446,7 @@ export class UserAuth {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
                 },
-                body: JSON.stringify({ favorites: localFavoriteIds }),
+                body: JSON.stringify({ favorites: localFavorites, mode }),
             });
 
             if (!res.ok) {
@@ -428,6 +459,49 @@ export class UserAuth {
         } catch (err) {
             if (err instanceof TypeError) {
                 try { await offlineQueue.enqueue('favorites-sync', { ts: Date.now() }); } catch (_e) {}
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Sync the per-user custom-tag pool (WS-G #1019). Same offline /
+     * mode semantics as syncFavorites; queues under its own 'custom-tags-sync'
+     * type so it drains independently on reconnect.
+     *
+     * @param {string[]} localTags
+     * @param {string}   [mode='replace']
+     * @returns {Promise<string[]|null>} Merged tag list, or null on failure/queued.
+     */
+    async syncCustomTags(localTags, mode = 'replace') {
+        if (!this.isLoggedIn()) return null;
+
+        if (!navigator.onLine) {
+            try { await offlineQueue.enqueue('custom-tags-sync', { ts: Date.now() }); } catch (_e) {}
+            return null;
+        }
+
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=custom_tags_sync`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({ tags: localTags, mode }),
+            });
+
+            if (!res.ok) {
+                if (res.status === 401) this.clearCredentials();
+                return null;
+            }
+
+            const data = await res.json();
+            return Array.isArray(data.tags) ? data.tags : null;
+        } catch (err) {
+            if (err instanceof TypeError) {
+                try { await offlineQueue.enqueue('custom-tags-sync', { ts: Date.now() }); } catch (_e) {}
             }
             return null;
         }
@@ -449,9 +523,16 @@ export class UserAuth {
 
         offlineQueue.bindAutoDrainLatest('setlists-sync', async () => {
             if (!this.isLoggedIn() || !this.app.setList) return false;
-            const merged = await this.syncSetlists(this.app.setList.getAll());
+            /* Don't replay a (possibly cross-session-persisted) replace until
+               this session's merge reconcile has hydrated the cache — else the
+               drain could push a pre-reconcile list and wipe the server
+               (review #1). Keep the marker queued; the post-reconcile flush
+               already pushes the latest state. */
+            if (!this.app.setList._syncReady) return false;
+            /* Replay offline edits authoritatively (deletions included). */
+            const merged = await this.syncSetlists(this.app.setList.getAll(), 'replace');
             if (merged && Array.isArray(merged)) {
-                this.app.setList.saveAll(merged);
+                this.app.setList.saveAll(merged, { sync: false });
                 this.app.showToast?.(`Synced ${merged.length} setlist${merged.length === 1 ? '' : 's'}`, 'success', 2000);
                 return true;
             }
@@ -460,20 +541,94 @@ export class UserAuth {
 
         offlineQueue.bindAutoDrainLatest('favorites-sync', async () => {
             if (!this.isLoggedIn() || !this.app.favorites) return false;
-            const localIds = (this.app.favorites.getAll() || []).map(f => f.id);
-            const merged = await this.syncFavorites(localIds);
+            if (!this.app.favorites._syncReady) return false; /* see setlists drain (review #1) */
+            const local = this.app.favorites.getAll() || [];
+            const payload = local.map(f => ({ id: f.id, tags: f.tags || [] }));
+            const merged = await this.syncFavorites(payload, 'replace');
             if (merged && Array.isArray(merged)) {
-                /* Favourites module stores objects {id, title, songbook, number, tags, addedAt};
-                   the server sends only ids. Union IDs preserving local metadata where we have it. */
-                const byId = new Map((this.app.favorites.getAll() || []).map(f => [f.id, f]));
-                const rebuilt = merged.map(id => byId.get(id) || {
-                    id, title: '', songbook: '', number: 0, tags: [], addedAt: new Date().toISOString(),
-                });
-                this.app.favorites.saveAll(rebuilt);
+                this.app.favorites.saveAll(this._mergeFavorites(local, merged), { sync: false });
                 return true;
             }
             return false;
         });
+
+        offlineQueue.bindAutoDrainLatest('custom-tags-sync', async () => {
+            if (!this.isLoggedIn() || !this.app.favorites) return false;
+            /* MERGE, not replace: custom tags are add-only today (no removal
+               UI), so union is correct and needs no _syncReady gate — it can
+               never wipe another device's tags (review #4). */
+            const merged = await this.syncCustomTags(this.app.favorites.getCustomTags(), 'merge');
+            if (merged && Array.isArray(merged)) {
+                this.app.favorites.saveCustomTags(merged);
+                return true;
+            }
+            return false;
+        });
+
+        /* First sign-in of the session (email login, magic link, OR a
+           cross-subdomain bridged token that never went through
+           _onLoginSuccess) → one-time DB-first backfill of every user-data
+           store. The router re-dispatches ihymns:auth-changed on each page
+           load with the current state, so the first loggedIn one fires this;
+           the per-session guard inside triggerUserDataSync makes repeats a
+           no-op. */
+        document.addEventListener('ihymns:auth-changed', (e) => {
+            if (e?.detail?.loggedIn) this.triggerUserDataSync();
+        });
+
+        /* On reconnect, re-run the reconcile so a session that began OFFLINE
+           (the merges returned null → _syncReady never armed) un-blocks
+           promptly instead of waiting for the next SPA navigation. Idempotent
+           + guarded by _userDataSynced/_userDataSyncing (review: offline
+           first-login deferral). */
+        window.addEventListener('online', () => this.triggerUserDataSync());
+    }
+
+    /**
+     * Union a local favourites array (rich objects with title/songbook/
+     * number/addedAt) with the server's {id, tags} list for a first-login
+     * MERGE reconcile. Both sides are kept: server-listed favourites take
+     * local metadata where available, and any LOCAL-ONLY favourite (e.g.
+     * added during the reconcile window, not yet on the server) is appended
+     * so it isn't lost (review #3). Tags are the UNION of both sides so
+     * neither device's tags are dropped (review #3 / #7).
+     *
+     * @param {Array} local   Current local favourite objects
+     * @param {Array<{id:string,tags:string[]}>} server  Server list
+     * @returns {Array} Rebuilt favourite objects
+     */
+    _mergeFavorites(local, server) {
+        const byIdLocal = new Map((local || []).map(f => [f.id, f]));
+        const seen = new Set();
+        const result = (server || []).map(s => {
+            seen.add(s.id);
+            const l = byIdLocal.get(s.id);
+            const tags = [...new Set([
+                ...(Array.isArray(s.tags) ? s.tags : []),
+                ...((l && Array.isArray(l.tags)) ? l.tags : []),
+            ])];
+            return {
+                id:       s.id,
+                title:    l?.title || '',
+                songbook: l?.songbook || '',
+                number:   l?.number || 0,
+                tags,
+                addedAt:  l?.addedAt || new Date().toISOString(),
+            };
+        });
+        /* Local-only favourites the server doesn't know yet (in-flight adds). */
+        for (const l of (local || [])) {
+            if (!l || !l.id || seen.has(l.id)) continue;
+            result.push({
+                id:       l.id,
+                title:    l.title || '',
+                songbook: l.songbook || '',
+                number:   l.number || 0,
+                tags:     Array.isArray(l.tags) ? l.tags : [],
+                addedAt:  l.addedAt || new Date().toISOString(),
+            });
+        }
+        return result;
     }
 
     /**
@@ -1493,7 +1648,7 @@ export class UserAuth {
                     toastMsg = 'Signed in! Syncing setlists...';
                 }
                 this.app.showToast(toastMsg, 'success', 4000);
-                this.triggerSetlistSync();
+                this.triggerUserDataSync();
             } else {
                 errorEl.textContent = result.error;
                 errorEl.classList.remove('d-none');
@@ -1515,24 +1670,143 @@ export class UserAuth {
         bsModal.hide();
         this._updateHeaderState();
         this.app.setList?.renderSyncBar();
-        this.app.showToast('Signed in! Syncing setlists...', 'success', 3000);
-        this.triggerSetlistSync();
+        this.app.showToast('Signed in! Syncing your data...', 'success', 3000);
+        this.triggerUserDataSync();
     }
 
     /**
-     * Trigger a setlist sync after login/register.
-     * Merges local setlists with server and updates localStorage.
+     * Trigger a setlist sync (login / register / manual "Sync Now").
+     * MERGE mode — unions local + server so neither side loses a setlist on
+     * a first-login reconcile. (Per-edit auto-sync uses 'replace'.)
+     *
+     * The server result is unioned with the CURRENT cache (re-read AFTER the
+     * network round-trip) rather than the pre-await snapshot, so an edit made
+     * during the reconcile window survives instead of being clobbered by the
+     * write-back (review #3). The post-await same-user re-check stops a
+     * logout/account-switch mid-flight from repopulating the cache with the
+     * old account's data (review #4).
      */
-    async triggerSetlistSync() {
-        if (!this.app.setList) return;
+    async triggerSetlistSync(silent = false) {
+        if (!this.app.setList) return false;
 
-        const localLists = this.app.setList.getAll();
-        const merged = await this.syncSetlists(localLists);
+        const uid = this.getUser()?.id;
+        const merged = await this.syncSetlists(this.app.setList.getAll(), 'merge');
+        if (!merged || !Array.isArray(merged)) return false;
+        if (!this.isLoggedIn() || this.getUser()?.id !== uid) return false;
+
+        /* Union with the CURRENT cache (current local wins for shared ids —
+           it carries any in-flight edit), then persist + arm replace. The
+           post-reconcile flush pushes this union as an authoritative replace,
+           so the in-flight edit reaches the server too. */
+        const final = this._unionSetlists(this.app.setList.getAll(), merged);
+        this.app.setList.saveAll(final, { sync: false });
+        this.app.setList._syncReady = true;
+        /* Only announce when the user did something deliberate (login, the
+           "Sync Now" button, a settings action). The automatic per-boot
+           reconcile passes silent=true so a routine reload doesn't pop a
+           "Synced N setlists" toast every time — favourites/tags already
+           reconcile silently on that path. */
+        if (!silent) {
+            this.app.showToast(`Synced ${final.length} setlist${final.length !== 1 ? 's' : ''}`, 'success', 2000);
+        }
+        return true;
+    }
+
+    /** Union setlists by id; `current` (local, with in-flight edits) wins. */
+    _unionSetlists(current, server) {
+        const byId = new Map();
+        for (const s of (server || [])) if (s && s.id) byId.set(s.id, s);
+        for (const c of (current || [])) if (c && c.id) byId.set(c.id, c);
+        return [...byId.values()];
+    }
+
+    /**
+     * Trigger a favourites reconcile (first login). MERGE mode: pull the
+     * server's {id, tags} list, union it with the CURRENT local favourites
+     * (preserving local title/songbook/number metadata + UNIONING tags from
+     * both sides so neither device's tags are lost), write the union back to
+     * the cache, and arm replace so the post-reconcile flush pushes any
+     * local-only favourites + in-flight edits to the server. Fixes the prior
+     * gap where favourites were push-only and never appeared on a second
+     * device (WS-G #1019), the in-flight-edit clobber (review #3), and the
+     * cross-device tag loss (review #3 / #7).
+     */
+    async triggerFavoritesSync() {
+        if (!this.app.favorites) return false;
+
+        const uid = this.getUser()?.id;
+        const payload = (this.app.favorites.getAll() || []).map(f => ({ id: f.id, tags: f.tags || [] }));
+        const merged = await this.syncFavorites(payload, 'merge');
+        if (!merged || !Array.isArray(merged)) return false;
+        if (!this.isLoggedIn() || this.getUser()?.id !== uid) return false;
+
+        this.app.favorites.saveAll(this._mergeFavorites(this.app.favorites.getAll(), merged), { sync: false });
+        this.app.favorites._syncReady = true;
+        return true;
+    }
+
+    /**
+     * Trigger a custom-tag-pool reconcile (first login). MERGE mode: union
+     * the server pool with the local pool and write the union back locally.
+     */
+    async triggerCustomTagsSync() {
+        if (!this.app.favorites?.getCustomTags) return false;
+
+        const local = this.app.favorites.getCustomTags();
+        const merged = await this.syncCustomTags(local, 'merge');
 
         if (merged && Array.isArray(merged)) {
-            /* Save the merged result to localStorage */
-            this.app.setList.saveAll(merged);
-            this.app.showToast(`Synced ${merged.length} setlist${merged.length !== 1 ? 's' : ''}`, 'success', 2000);
+            this.app.favorites.saveCustomTags(merged);
+            return true;
         }
+        return false;
+    }
+
+    /**
+     * One-time, once-per-session DB-first backfill of every user-data store
+     * (WS-F/G #1018 / #1019). Reconciles setlists, favourites and the
+     * custom-tag pool (all MERGE so nothing is lost on the first device
+     * hand-off), and pushes the local recently-viewed backlog into
+     * tblSongHistory.
+     *
+     * AWAITS the three merges before returning, and only latches the
+     * once-per-session guard when ALL succeed — a transient failure (offline
+     * at login, 500) therefore RETRIES on the next ihymns:auth-changed
+     * navigation instead of being permanently suppressed (review #6). The
+     * stores' _syncReady flags are set by the individual merges on success,
+     * which is what unblocks the destructive 'replace' auto-sync; after the
+     * merges land we flush each store's _scheduleSync so an edit made DURING
+     * the reconcile window still propagates (review #1 / #9).
+     */
+    async triggerUserDataSync() {
+        if (this._userDataSynced || this._userDataSyncing) return;
+        if (!this.isLoggedIn()) return;
+        this._userDataSyncing = true;
+
+        let allOk = false;
+        try {
+            const results = await Promise.all([
+                this.triggerSetlistSync(true), /* silent — routine per-boot reconcile */
+                this.triggerFavoritesSync(),
+                this.triggerCustomTagsSync(),
+            ]);
+            allOk = results.every(Boolean);
+        } catch {
+            allOk = false;
+        } finally {
+            this._userDataSyncing = false;
+        }
+
+        /* History backlog — independent + self-guarded (durable flag). */
+        this.app.history?.backfillToServer?.();
+
+        /* Flush edits made while the reconcile was in flight; _scheduleSync
+           is now armed (for any store whose merge succeeded) and a no-op for
+           the rest. */
+        this.app.setList?._scheduleSync?.();
+        this.app.favorites?._scheduleSync?.();
+
+        /* Latch only on full success so failures retry next navigation. */
+        if (allOk) this._userDataSynced = true;
     }
 }

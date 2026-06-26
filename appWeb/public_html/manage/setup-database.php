@@ -87,6 +87,82 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* -------------------------------------------------------------------------
+ * DOWNLOAD A BACKUP — stream a server-side backup file to a Global Admin for
+ * off-site archival. Backups live OUTSIDE the web root
+ * (appWeb/data_share/backups/ + a deny-all .htaccess), so there is no direct
+ * URL; PHP reads + streams them here, behind this page's global_admin gate +
+ * CSRF (validated above). Defence in depth: the requested name is basename()'d,
+ * matched against the SAME strict backup-file pattern the list/restore/upload
+ * use, and its realpath must resolve INSIDE the backups dir (no traversal). The
+ * dump contains every table incl. credentials/PII, so each download is
+ * audit-logged. Must run BEFORE any HTML is emitted — it streams binary + exits.
+ * ------------------------------------------------------------------------- */
+if (!$isInitialSetup
+    && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && ($_POST['action'] ?? '') === 'download-backup') {
+
+    $backupDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
+    $reqName   = basename((string)($_POST['file'] ?? ''));
+
+    if (!preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $reqName)) {
+        http_response_code(400);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Invalid backup filename.';
+        exit;
+    }
+
+    /* The resolved path MUST live inside the backups dir (belt-and-braces against
+       any traversal surviving basename()). */
+    $real    = realpath($backupDir . DIRECTORY_SEPARATOR . $reqName);
+    $realDir = realpath($backupDir);
+    if ($real === false || $realDir === false || !is_file($real)
+        || strncmp($real, $realDir . DIRECTORY_SEPARATOR, strlen($realDir) + 1) !== 0) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=UTF-8');
+        echo 'Backup not found.';
+        exit;
+    }
+
+    /* Audit-log the download (sensitive). Same idiom as the upload handler;
+       best-effort — never block the download on a log failure. */
+    try {
+        $auditDb = getDbMysqli();
+        $stmt = $auditDb->prepare(
+            'INSERT INTO tblActivityLog
+                (UserId, Action, EntityType, EntityId, Details, IpAddress)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        if ($stmt) {
+            $uid        = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
+            $action     = 'backup.download';
+            $entityType = 'backup';
+            $entityId   = $reqName;
+            $details    = json_encode([
+                'filename'   => $reqName,
+                'size_bytes' => (int)@filesize($real),
+                'by'         => $currentUser['username'] ?? 'unknown',
+            ], JSON_UNESCAPED_SLASHES);
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            $stmt->bind_param('isssss', $uid, $action, $entityType, $entityId, $details, $ip);
+            @$stmt->execute();
+            $stmt->close();
+        }
+    } catch (\Throwable $_e) { /* best effort */ }
+
+    /* Stream verbatim as an attachment. Do NOT set Content-Encoding for a .gz —
+       that makes the browser transparently decompress it; we want the .gz saved
+       as-is. Drop any output buffering first so the binary stream is clean. */
+    while (ob_get_level() > 0) { ob_end_clean(); }
+    header('Content-Type: ' . (str_ends_with($real, '.gz') ? 'application/gzip' : 'application/sql'));
+    header('Content-Disposition: attachment; filename="' . $reqName . '"');
+    header('Content-Length: ' . (string)filesize($real));
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+    readfile($real);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'save-credentials') {
     $host   = trim((string)($_POST['host']    ?? ''));
     $port   = trim((string)($_POST['port']    ?? '3306'));
@@ -197,6 +273,9 @@ $friendlyTitles = [
     'restore'                          => 'Restore from Backup',
     'drop-legacy'                      => 'Drop Legacy Tables',
     'apply-all-migrations'             => 'Apply All Pending Migrations',
+    'verify-cutover'                   => 'Verify Lyrics-Cutover Gate (#1235)',
+    'opcache-reset'                    => 'Reset PHP OPcache (runtime code cache)',
+    'deploy-forensics'                 => 'Deployment Forensics (read-only diagnostics)',
     /* Per-migration cards (label = card title minus the legacy
        alphabetic prefix; #816 standardised this on the issue
        number as the primary identifier). */
@@ -310,6 +389,32 @@ function _migProbe_tableExists(\mysqli $db, string $table): bool
     return $exists;
 }
 
+/**
+ * Truthful-completion check: re-evaluate a migration's registry probe AFTER its
+ * script ran, on a fresh connection. Every migrate-*.php catches its OWN
+ * \Throwable internally (prints "[ERROR] …" then returns normally), so the
+ * dashboard's "require didn't throw" is NOT proof the schema landed — a CREATE
+ * TABLE / ALTER can fail (timeout, bad FK, unsupported DDL on the host) and the
+ * script swallows it. Only the probe flipping to applied is real success. This
+ * is what stops the misleading "✓ completed" while the pending counter stays
+ * stuck at the same number (the recurring confusion this fixes).
+ *
+ * @return bool|null  true = STILL pending (apply did not take), false = applied
+ *                    (verified success), null = could not verify (no DB / probe)
+ *                    — caller must NOT hard-fail on null.
+ */
+function _migVerify_stillPending(?\mysqli $conn, ?callable $probe): ?bool
+{
+    if (!($conn instanceof \mysqli) || !is_callable($probe)) {
+        return null;
+    }
+    try {
+        return ($probe($conn) === true);
+    } catch (\Throwable) {
+        return null;
+    }
+}
+
 /** Returns true when an INFORMATION_SCHEMA COLUMNS row exists for $table.$column. */
 function _migProbe_columnExists(\mysqli $db, string $table, string $column): bool
 {
@@ -322,6 +427,35 @@ function _migProbe_columnExists(\mysqli $db, string $table, string $column): boo
     $exists = (bool)$stmt->get_result()->fetch_row();
     $stmt->close();
     return $exists;
+}
+
+/** True if $table carries an index named $index. Used by migration probes that must
+ *  not flip to "done" until a UNIQUE / KEY has actually landed (#1343-B review) —
+ *  e.g. a backfill+ADD-UNIQUE migration interrupted after the last row but before
+ *  the index would otherwise show a green card with no constraint. */
+function _migProbe_indexExists(\mysqli $db, string $table, string $index): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND INDEX_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $index);
+    $stmt->execute();
+    $exists = (bool)$stmt->get_result()->fetch_row();
+    $stmt->close();
+    return $exists;
+}
+
+/** True if tblSongs has any row still missing a PublicId (#1343-B) — drives the
+ *  backfill probe so the "Song PublicId" card stays pending until every row is
+ *  filled. False (done) when the column is absent (the column probe handles that). */
+function _migProbe_hasNullPublicId(\mysqli $db): bool
+{
+    if (!_migProbe_columnExists($db, 'tblSongs', 'PublicId')) { return false; }
+    $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
+    $has = $res && $res->fetch_row() !== null;
+    if ($res) { $res->free(); }
+    return $has;
 }
 
 /** Returns true when $table.$column is currently nullable per INFORMATION_SCHEMA. */
@@ -373,10 +507,13 @@ $MIGRATIONS = require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 $migrationOrder  = array_keys($MIGRATIONS);
 $migrationCards  = [];
 $migrationProbes = [];
+$migrationManual = [];   /* #1235 P4/C6 — slugs flagged 'manual' (destructive, gated): excluded
+                            from "Apply all" + the pending counter; single-run needs confirm=1. */
 foreach ($MIGRATIONS as $_slug => $_entry) {
     $scriptMap[$_slug]       = $_entry['script'];
     $migrationCards[$_slug]  = $_entry['card'];
     $migrationProbes[$_slug] = $_entry['probe'];
+    if (!empty($_entry['manual'])) { $migrationManual[$_slug] = true; }
 }
 unset($_slug, $_entry);
 /* Captured during bulk-run so the failure can be surfaced as a visible
@@ -387,6 +524,10 @@ $bulkFirstFailFile    = '';
 $bulkFirstFailLine    = 0;
 $bulkTotalRan         = 0;
 $bulkTotalFailed      = 0;
+/* Set when the automatic pre-migration backup failed and the bulk run was
+   aborted before any migration ran (so no schema change happened without a
+   recovery point). Surfaced as its own banner below the panel. */
+$bulkBackupFailed     = false;
 
 /* Page-render sentinel + emergency chrome closer (#817).
    "Apply all" was reported as rendering "in its own raw HTML page,
@@ -601,6 +742,18 @@ if ($action !== '') {
         echo "---\n";
         echo $migOutput;
 
+        /* Activity Log (#1282) — per-run status for the JS per-card / bulk-runner
+           path (the bulk runner runs PENDING migrations only, so low volume).
+           Covers migrations + the install/migrate/users/cleanup/backup ops. */
+        if (function_exists('logActivity')) {
+            $logDetails = ['script' => $scriptName, 'elapsedMs' => (int)$elapsed, 'via' => 'ajax'];
+            if (!$migOk) {
+                $logDetails['error'] = $migErr;
+                if ($migErrFile !== '') { $logDetails['at'] = basename($migErrFile) . ':' . $migErrLine; }
+            }
+            logActivity('setup.run', 'database', $action, $logDetails, $migOk ? 'success' : 'error', null, (int)$elapsed);
+        }
+
         $pageRenderedCleanly = true;
         exit;
     }
@@ -708,6 +861,59 @@ if ($action !== '') {
             echo "ERROR: Database credentials not configured.\n";
             echo "Configure appWeb/.auth/db_credentials.php first, or run Install.\n";
         } else {
+            /* AUTOMATIC PRE-MIGRATION BACKUP (#322 backup.php, on the bulk
+               path). Some migrations are destructive (e.g.
+               migrate-drop-songbook-name DROPs a column), and the bulk run
+               is the deploy-time "push the new schema" action — so snapshot
+               the whole DB to data_share/backups/ BEFORE running anything,
+               giving a restore.php recovery point if a run fails or
+               half-applies. Two guards keep it sane:
+                 - only back up when something is actually PENDING (a no-op
+                   "Apply all" must not churn a full dump every click), and
+                 - ABORT the whole run if the backup didn't complete — never
+                   migrate without a recovery point. */
+            $proceedBulk = true;
+            $_anyPending = true;   /* default-pending = safe (back up) if we can't check */
+            try {
+                $_probeConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                $_probeConn->set_charset('utf8mb4');
+                $_anyPending = false;
+                foreach ($migrationOrder as $_mig) {
+                    $_p = $migrationProbes[$_mig] ?? null;
+                    if (!is_callable($_p)) { $_anyPending = true; break; }  /* unknown → pending */
+                    try {
+                        if ($_p($_probeConn) === true) { $_anyPending = true; break; }
+                    } catch (\Throwable $_e) {
+                        $_anyPending = true; break;  /* probe threw → assume pending */
+                    }
+                }
+                $_probeConn->close();
+            } catch (\Throwable $_e) {
+                $_anyPending = true;  /* couldn't connect to check → back up to be safe */
+            }
+
+            if ($_anyPending) {
+                echo "═══════════════════════════════════════════════════════\n";
+                echo "▶ Automatic pre-migration backup\n";
+                echo "═══════════════════════════════════════════════════════\n";
+                $finalFile = null;  /* backup.php sets this to the .sql.gz path on success */
+                try {
+                    require $scriptDir . 'backup.php';
+                } catch (\Throwable $_e) {
+                    echo "\n  ✗ Backup script threw: " . htmlspecialchars($_e->getMessage()) . "\n";
+                }
+                $_backupOk = is_string($finalFile ?? null) && $finalFile !== '' && is_file($finalFile);
+                if (!$_backupOk) {
+                    echo "\n  ✗ Pre-migration backup did NOT complete — ABORTING the run.\n";
+                    echo "    No migrations were applied. Run a manual Backup (or fix the\n";
+                    echo "    cause — disk space / DB connection), then retry.\n\n";
+                    $proceedBulk      = false;
+                    $bulkBackupFailed = true;  /* surfaced as a banner below */
+                } else {
+                    echo "\n  ✓ Backup written: " . htmlspecialchars(basename((string)$finalFile)) . " — proceeding.\n\n";
+                }
+            }
+
             $totalRan = 0;
             $totalFailed = 0;
             $startedAt = microtime(true);
@@ -741,7 +947,30 @@ if ($action !== '') {
                 echo "══════════════════════════════════════════════════════\n";
             });
 
-            foreach ($migrationOrder as $migAction) {
+            /* One reusable connection for the post-run probe verification (see
+               _migVerify_stillPending). DDL auto-commits, so a single connection
+               sees each migration's new tables/columns as the loop progresses. */
+            $verifyConn = null;
+            try {
+                $verifyConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                $verifyConn->set_charset('utf8mb4');
+            } catch (\Throwable $_e) {
+                $verifyConn = null;  /* can't verify → completions reported unverified, never falsely failed */
+            }
+
+            /* $proceedBulk is false only when the auto pre-migration backup
+               above failed — in that case iterate nothing so no migration
+               runs without a recovery point. */
+            foreach (($proceedBulk ? $migrationOrder : []) as $migAction) {
+                /* #1235 P4/C6 — never run a DESTRUCTIVE manual-only migration (e.g. the JSON-
+                   column drop) from "Apply all": it is gated + run by hand with confirm=1.
+                   Skipping here (and excluding it from the pending counter / bulk-runner list
+                   below) is what keeps the irreversible drop OUT of routine bulk runs and stops
+                   its perpetually-pending probe from hard-failing this no-JS loop. */
+                if (!empty($migrationManual[$migAction])) {
+                    echo "  ⏭ {$migAction} — manual/destructive (run by hand with confirm=1); skipped by Apply all.\n\n";
+                    continue;
+                }
                 /* #862 — reset the execution-time alarm before EACH
                    migration in case the host enforces a per-script
                    limit that survives the require() boundary. Cheap
@@ -765,9 +994,38 @@ if ($action !== '') {
                 echo "═══════════════════════════════════════════════════════\n";
                 try {
                     require $migPath;
-                    $totalRan++;
                     $elapsed = round((microtime(true) - $migStart) * 1000);
-                    echo "\n  ✓ {$migAction} completed in {$elapsed} ms\n\n";
+                    /* TRUTHFUL completion: the script returned without throwing,
+                       but it may have caught its OWN DDL error internally. Only
+                       the probe flipping to applied is real success — otherwise
+                       we'd print "✓ completed" while the pending counter stays
+                       stuck (the confusion this fixes). */
+                    $verifyPending = _migVerify_stillPending($verifyConn, $migrationProbes[$migAction] ?? null);
+                    if ($verifyPending === true) {
+                        $totalFailed++;
+                        $actionSuccess = false;
+                        if ($firstFailStep === null) {
+                            $firstFailStep    = $migAction;
+                            $firstFailMessage = 'ran but its probe still reports PENDING — the migration script caught an internal error (see its [ERROR] output above); nothing was applied for this step.';
+                            $firstFailFile    = basename((string)$migScript);
+                            $firstFailLine    = 0;
+                        }
+                        echo "\n  ✗ {$migAction} ran but is STILL PENDING after {$elapsed} ms — its objects were NOT created (the script swallowed an error above). Stopping so you can resolve it.\n";
+                        if (function_exists('logActivity')) {
+                            logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'reason' => 'ran but probe still PENDING'], 'error', null, (int)$elapsed);
+                        }
+                        break;
+                    }
+                    $totalRan++;
+                    $verifiedNote = ($verifyPending === false) ? ' + verified' : '';  /* null = unverifiable */
+                    echo "\n  ✓ {$migAction} completed{$verifiedNote} in {$elapsed} ms\n\n";
+                    /* Activity Log (#1282) — log EVERY migration run in the no-JS bulk
+                       path, success included, so the audit trail is complete in every
+                       path (the JS per-card runner already logs each). A no-JS Apply-all
+                       therefore writes one row per migration in $migrationOrder. */
+                    if (function_exists('logActivity')) {
+                        logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'verified' => ($verifyPending === false)], 'success', null, (int)$elapsed);
+                    }
                 } catch (\Throwable $e) {
                     $totalFailed++;
                     $actionSuccess = false;
@@ -782,9 +1040,13 @@ if ($action !== '') {
                         echo "    File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
                     }
                     echo "\n  Stopping the bulk run so you can resolve this before continuing.\n";
+                    if (function_exists('logActivity')) {
+                        logActivity('setup.run', 'database', $migAction, ['script' => $migScript, 'bulk' => true, 'error' => $e->getMessage(), 'at' => basename((string)$e->getFile()) . ':' . $e->getLine()], 'error');
+                    }
                     break;
                 }
             }
+            if ($verifyConn instanceof \mysqli) { $verifyConn->close(); }
             /* Promote captured failure data to the outer scope so the
                render below can surface a visible "Failed at" banner. */
             $bulkFirstFailStep    = $firstFailStep;
@@ -802,6 +1064,494 @@ if ($action !== '') {
                 echo ", {$totalFailed} failed";
             }
             echo " in {$totalElapsed} ms.\n";
+            /* Activity Log (#1282) — one summary row per Apply-all, on top of the
+               per-migration rows (success + failure) logged inline above. */
+            if (function_exists('logActivity')) {
+                logActivity('setup.apply_all', 'database', '', ['ran' => $totalRan, 'failed' => $totalFailed, 'firstFailStep' => $firstFailStep], $totalFailed > 0 ? 'failure' : 'success', null, (int)$totalElapsed);
+            }
+        }
+    } elseif ($action === 'verify-cutover') {
+        /* #1235 lyrics-cutover GATE runner — the WEB path for the verification
+           gate (the owner is web-only on shared DreamHost). The verify script
+           (appWeb/.sql/verify-lyrics-cutover.php) reads ?phase= directly in
+           dashboard mode, emits via its out() helper (captured into the panel
+           below) and sets $allGreen, then returns (never exit()s in web mode).
+           pre/soak are read-only except writing the green sentinel row;
+           pre-drop/post-drop are the drop-day gates. */
+        $vfPhase = (string)($_GET['phase'] ?? '');
+        if (!in_array($vfPhase, ['pre', 'soak', 'pre-drop', 'post-drop'], true)) {
+            echo "ERROR: phase must be pre | soak | pre-drop | post-drop.\n";
+            $actionSuccess = false;
+        } elseif (!$hasCredentials) {
+            echo "ERROR: Database credentials not configured.\n";
+            $actionSuccess = false;
+        } else {
+            $vfScript = $scriptDir . 'verify-lyrics-cutover.php';
+            if (!is_file($vfScript)) {
+                echo "ERROR: verify-lyrics-cutover.php not found in .sql/.\n";
+                $actionSuccess = false;
+            } else {
+                $allGreen = false;   /* the script sets this true on an all-green run */
+                try {
+                    require $vfScript;
+                    $actionSuccess = ($allGreen === true);
+                } catch (\Throwable $e) {
+                    $actionSuccess = false;
+                    echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
+                    if ($e->getFile()) {
+                        echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
+                    }
+                }
+            }
+        }
+    } elseif ($action === 'opcache-reset') {
+        /* #1290 — diagnose + reset the PHP OPcache. Stale compiled bytecode is the
+           leading cause of "deployed code isn't running" on shared hosting — e.g.
+           the songs_json 's.SongbookName' flood, where the column is dropped + the
+           repo SongData.php is correct (b.Name JOIN), but the live runtime executes
+           an OLD compiled copy. Resetting forces every PHP file to recompile from
+           disk on the next request. */
+        if (!function_exists('opcache_get_status')) {
+            echo "OPcache is NOT available on this PHP runtime (opcache_get_status missing).\n";
+            echo "Nothing to reset — if stale code persists, it's a deploy-upload issue, not OPcache.\n";
+            $actionSuccess = false;
+        } else {
+            $cfg    = function_exists('opcache_get_configuration') ? @opcache_get_configuration() : [];
+            $status = @opcache_get_status(false);
+            $vt     = $cfg['directives']['opcache.validate_timestamps'] ?? null;
+            $freq   = $cfg['directives']['opcache.revalidate_freq']     ?? null;
+            echo "=== OPcache status (before reset) ===\n";
+            echo "  enabled:             " . (($status && !empty($status['opcache_enabled'])) ? 'yes' : 'no') . "\n";
+            echo "  validate_timestamps: " . ($vt === null ? 'unknown'
+                : ($vt ? 'on (changed files auto-reload)'
+                       : 'OFF — never auto-reloads; deployed changes stay STALE until a reset')) . "\n";
+            echo "  revalidate_freq:     " . ($freq === null ? 'unknown' : ((int)$freq) . 's') . "\n";
+            if ($status && isset($status['opcache_statistics']['num_cached_scripts'])) {
+                echo "  cached scripts:      " . (int)$status['opcache_statistics']['num_cached_scripts'] . "\n";
+            }
+            $reset = function_exists('opcache_reset') ? @opcache_reset() : false;
+            clearstatcache(true);
+            echo "\n" . ($reset
+                ? "  ✓ OPcache reset — every PHP file recompiles from disk on the next request.\n"
+                : "  ✗ opcache_reset() returned false (disabled or restricted on this host).\n");
+            $actionSuccess = (bool)$reset;
+            echo "\nNow reload the public site (or wait for the next crawler hit) and re-check the Activity\n";
+            echo "Log. If the 'Unknown column s.SongbookName' errors STOP, stale OPcache was the cause\n";
+            echo "(the deployed code is already correct). If they persist, the deploy didn't upload the\n";
+            echo "current SongData.php — tell me and we'll fix the deploy itself.\n";
+        }
+    } elseif ($action === 'deploy-forensics') {
+        /* #1295 — READ-ONLY deploy forensics. The live site INTERMITTENTLY throws
+           "Unknown column 's.SongbookName'" from SongData.php even though the repo
+           SongData.php uses a `b.Name` JOIN (no `s.SongbookName`) and the column is
+           dropped; an OPcache reset stops it, then it RETURNS. Separately, an editor
+           CSRF early-mint fix was deployed but delete_song still 403s. Competing
+           hypotheses: (1) the live DISK files aren't the repo versions; (2) a SECOND
+           stale copy is loaded; (3) opcache.file_cache resurrects stale bytecode
+           across resets; (4) multiple app servers each with independent OPcache.
+           This action emits a plain-text report that definitively reveals WHICH —
+           and it does so WITHOUT writing anything: no opcache_reset, no file writes,
+           no DB mutations. Every section is wrapped in its own try/catch so one
+           failing probe never aborts the rest, and every directory walk / loop is
+           bounded (file count + depth + a wall-time budget). */
+
+        $sec = static function (string $letter, string $title, callable $body): void {
+            echo "\n=== [{$letter}] {$title} ===\n";
+            try {
+                $body();
+            } catch (\Throwable $e) {
+                /* basename() the file so we never leak the absolute server path of an
+                   internal include into the panel; the message is already operator-safe. */
+                echo "  (section failed — continuing) " . $e->getMessage()
+                   . " @ " . basename((string)$e->getFile()) . ":" . $e->getLine() . "\n";
+            }
+        };
+
+        $fmtTime = static function ($ts): string {
+            $ts = (int)$ts;
+            return $ts > 0 ? date('Y-m-d H:i:s', $ts) : '(none)';
+        };
+
+        echo "iHymns DEPLOYMENT FORENSICS (read-only) — generated " . date('Y-m-d H:i:s') . "\n";
+        echo "Run this TWICE: if [A] hostname / SERVER_ADDR / PID differ between runs,\n";
+        echo "you are hitting MULTIPLE app servers, each with its own OPcache.\n";
+
+        /* ---- [A] SERVER IDENTITY ---------------------------------------- */
+        $sec('A', 'SERVER IDENTITY', function () {
+            echo "  gethostname():     " . (gethostname() ?: '?') . "\n";
+            echo "  php_uname('n'):    " . (php_uname('n') ?: '?') . "\n";
+            echo "  SERVER_ADDR:       " . ($_SERVER['SERVER_ADDR'] ?? '?') . "\n";
+            echo "  getmypid():        " . getmypid() . "\n";
+            echo "  php_sapi_name():   " . php_sapi_name() . "\n";
+            echo "  PHP_VERSION:       " . PHP_VERSION . "\n";
+        });
+
+        /* ---- [B] LOADED SongData.php ------------------------------------ */
+        /* Resolve the file the autoloader/require ACTUALLY loaded (not a guessed
+           path) via reflection on the loaded class, then fingerprint it and print
+           the exact lines + a substring tally so staleness is unambiguous. */
+        $loadedSongData = null;
+        $sec('B', 'LOADED SongData.php', function () use ($fmtTime, &$loadedSongData) {
+            if (!class_exists('SongData')) {
+                /* Force the include using the same require the app uses, so we report
+                   the file that WOULD load on a real request. */
+                $candidate = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                           . DIRECTORY_SEPARATOR . 'SongData.php';
+                if (is_file($candidate)) { require_once $candidate; }
+            }
+            if (!class_exists('SongData')) {
+                echo "  class SongData is NOT loadable — cannot reflect its file.\n";
+                return;
+            }
+            $ref  = new \ReflectionClass('SongData');
+            $path = $ref->getFileName();
+            $real = $path !== false ? (realpath($path) ?: $path) : '(unknown)';
+            $loadedSongData = $real;
+            echo "  ReflectionClass file: {$real}\n";
+            if (is_file($real)) {
+                echo "  filesize:  " . filesize($real) . " bytes\n";
+                echo "  filemtime: " . $fmtTime(filemtime($real)) . "\n";
+                echo "  sha1_file: " . sha1_file($real) . "\n";
+                $contents = file_get_contents($real);
+                if ($contents !== false) {
+                    $lines = preg_split('/\r\n|\r|\n/', $contents);
+                    $dump  = static function (int $from, int $to) use ($lines) {
+                        $max = count($lines);
+                        for ($i = $from; $i <= $to && $i <= $max; $i++) {
+                            /* $lines is 0-indexed; print human (1-based) line numbers. */
+                            echo "    " . str_pad((string)$i, 5, ' ', STR_PAD_LEFT)
+                               . " | " . ($lines[$i - 1] ?? '') . "\n";
+                        }
+                    };
+                    echo "  --- lines 360-372 ---\n";
+                    $dump(360, 372);
+                    echo "  --- lines 1628-1640 ---\n";
+                    $dump(1628, 1640);
+                    /* The stale-code smoking gun: the dropped column should appear ZERO
+                       times in SQL string literals; the correct JOIN alias should appear. */
+                    echo "  substr_count('s.SongbookName'):      "
+                       . substr_count($contents, 's.SongbookName') . "\n";
+                    echo "  substr_count('b.Name AS songbookName'): "
+                       . substr_count($contents, 'b.Name AS songbookName') . "\n";
+                    echo "  substr_count('b.Name'):              "
+                       . substr_count($contents, 'b.Name') . "\n";
+                    echo "  NOTE: any 's.SongbookName' hits here may be in COMMENTS; the SQL\n";
+                    echo "        itself should read 'b.Name AS songbookName' / 'sb.Name AS songbookName'.\n";
+                } else {
+                    echo "  (could not read file contents)\n";
+                }
+            } else {
+                echo "  reflected path is not a readable file.\n";
+            }
+        });
+
+        /* ---- [C] ALL COPIES on disk ------------------------------------- */
+        /* Walk the deploy root (parent of DOCUMENT_ROOT — holds public_html +
+           .sql / .auth / data_share / private_html siblings) for (1) every file
+           literally named SongData.php and (2) every *.php that CONTAINS the dropped
+           column string. A second docroot or a #1250 sibling-tree copy shows up here.
+           Bounded by file-count, depth and a wall-time budget so a pathological tree
+           never hangs the page; any cap hit is printed, never silent. */
+        $sec('C', 'ALL COPIES on disk (bounded scan)', function () use ($fmtTime, $loadedSongData) {
+            $docRoot    = $_SERVER['DOCUMENT_ROOT'] ?? '';
+            $deployRoot = $docRoot !== '' ? dirname($docRoot) : dirname(__DIR__, 3);
+            $deployRoot = realpath($deployRoot) ?: $deployRoot;
+            echo "  scan root: {$deployRoot}\n";
+
+            $maxFiles = 20000;
+            $maxDepth = 12;
+            $budget   = 5.0;            // seconds of wall-time
+            /* Skip VCS, deps, backups AND credential dirs (.auth/.env): the scan
+               must never even READ a credential file into memory (#1295 safety
+               review). SongData.php never lives in those dirs, so coverage of the
+               real deploy tree (public_html + .sql / private_html / data_share
+               siblings) is unaffected. */
+            $skipDirs = ['.git', '.auth', '.env', 'node_modules', 'vendor', '_backups', 'backups'];
+            $start    = microtime(true);
+
+            $seen     = 0;
+            $capped   = false;
+            $reason   = '';
+            $songData = [];            // files named exactly SongData.php
+            $colHits  = [];            // *.php whose contents contain s.SongbookName
+
+            /* Iterative stack walk (no recursion) so depth + budget are trivially
+               enforceable; each frame is [path, depth]. */
+            $stack = [[$deployRoot, 0]];
+            while ($stack !== []) {
+                if ((microtime(true) - $start) > $budget) { $capped = true; $reason = 'wall-time budget (~5s)'; break; }
+                if ($seen >= $maxFiles)                   { $capped = true; $reason = "file cap ({$maxFiles})"; break; }
+                [$dir, $depth] = array_pop($stack);
+                if ($depth > $maxDepth) { $capped = true; $reason = "depth cap ({$maxDepth})"; continue; }
+
+                $entries = @scandir($dir);
+                if ($entries === false) { continue; }
+                foreach ($entries as $entry) {
+                    if ($entry === '.' || $entry === '..') { continue; }
+                    $full = $dir . DIRECTORY_SEPARATOR . $entry;
+                    if (is_dir($full)) {
+                        if (in_array($entry, $skipDirs, true)) { continue; }
+                        if (is_link($full)) { continue; }      // don't follow symlinks (loop/escape guard)
+                        $stack[] = [$full, $depth + 1];
+                        continue;
+                    }
+                    if (!is_file($full)) { continue; }
+                    $seen++;
+                    if ($seen >= $maxFiles) { $capped = true; $reason = "file cap ({$maxFiles})"; break 2; }
+
+                    $isSongData = ($entry === 'SongData.php');
+                    $isPhp      = (substr($entry, -4) === '.php');
+                    if (!$isSongData && !$isPhp) { continue; }
+
+                    /* Only read contents for .php files (the column string only lives
+                       in PHP source); cap individual reads implicitly via is_file. */
+                    $hasCol = false;
+                    if ($isPhp) {
+                        $c = @file_get_contents($full);
+                        if ($c !== false && strpos($c, 's.SongbookName') !== false) { $hasCol = true; }
+                    }
+                    if ($isSongData) {
+                        $songData[] = [
+                            'path' => $full,
+                            'mtime' => $fmtTime(@filemtime($full)),
+                            'size' => @filesize($full),
+                            'sha1' => @sha1_file($full) ?: '?',
+                            'col'  => $hasCol ? 'YES' : 'no',
+                        ];
+                    }
+                    if ($hasCol) {
+                        $colHits[] = [
+                            'path' => $full,
+                            'mtime' => $fmtTime(@filemtime($full)),
+                            'size' => @filesize($full),
+                            'sha1' => @sha1_file($full) ?: '?',
+                        ];
+                    }
+                }
+            }
+
+            echo "  files examined: {$seen}" . ($capped ? "  *** SCAN CAPPED: {$reason} (results below are PARTIAL) ***" : "") . "\n";
+
+            echo "  -- files named 'SongData.php' (" . count($songData) . ") --\n";
+            if ($songData === []) {
+                echo "    (none found under scan root)\n";
+            }
+            foreach ($songData as $f) {
+                $isLoaded = ($loadedSongData !== null && (realpath($f['path']) ?: $f['path']) === $loadedSongData) ? '  <== the LOADED one' : '';
+                echo "    {$f['path']}{$isLoaded}\n";
+                echo "      mtime={$f['mtime']}  size={$f['size']}  sha1={$f['sha1']}  contains-s.SongbookName={$f['col']}\n";
+            }
+            if (count($songData) > 1) {
+                echo "  *** MORE THAN ONE SongData.php ON DISK — a second copy may be shadowing the repo file. ***\n";
+            }
+
+            echo "  -- *.php containing 's.SongbookName' (" . count($colHits) . ") --\n";
+            if ($colHits === []) {
+                echo "    (none — no source on disk references the dropped column)\n";
+            }
+            foreach ($colHits as $f) {
+                echo "    {$f['path']}\n";
+                echo "      mtime={$f['mtime']}  size={$f['size']}  sha1={$f['sha1']}\n";
+            }
+        });
+
+        /* ---- [D] OPCACHE CONFIG + FILE_CACHE ---------------------------- */
+        /* opcache.file_cache is the dangerous one: a SECONDARY on-disk bytecode
+           store that survives opcache_reset() and can resurrect stale code. Flag
+           it loudly and, if set, scan it for any blob that mentions SongData. */
+        $sec('D', 'OPCACHE CONFIG + FILE_CACHE', function () use ($fmtTime) {
+            if (!function_exists('opcache_get_configuration')) {
+                echo "  opcache_get_configuration() unavailable — OPcache not loaded.\n";
+                return;
+            }
+            $cfg = @opcache_get_configuration();
+            $d   = (is_array($cfg) && isset($cfg['directives'])) ? $cfg['directives'] : [];
+            $show = static function (string $k) use ($d) {
+                if (!array_key_exists($k, $d)) { return '(unset)'; }
+                $v = $d[$k];
+                if (is_bool($v)) { return $v ? 'true' : 'false'; }
+                if ($v === '' || $v === null) { return '(empty)'; }
+                return (string)$v;
+            };
+            echo "  opcache.enable:                        " . $show('opcache.enable') . "\n";
+            echo "  opcache.validate_timestamps:           " . $show('opcache.validate_timestamps') . "\n";
+            echo "  opcache.revalidate_freq:               " . $show('opcache.revalidate_freq') . "\n";
+            echo "  opcache.file_cache:                    " . $show('opcache.file_cache') . "\n";
+            echo "  opcache.file_cache_only:               " . $show('opcache.file_cache_only') . "\n";
+            echo "  opcache.file_cache_consistency_checks: " . $show('opcache.file_cache_consistency_checks') . "\n";
+
+            $fileCache = $d['opcache.file_cache'] ?? '';
+            if (is_string($fileCache) && $fileCache !== '') {
+                echo "  *** opcache.file_cache IS SET ({$fileCache}) — a secondary on-disk\n";
+                echo "      bytecode cache that can RESURRECT stale code ACROSS opcache_reset(). ***\n";
+                if (is_dir($fileCache)) {
+                    $found = 0;
+                    $cnt   = 0;
+                    $it = null;
+                    try {
+                        $it = new \RecursiveIteratorIterator(
+                            new \RecursiveDirectoryIterator($fileCache, \FilesystemIterator::SKIP_DOTS),
+                            \RecursiveIteratorIterator::LEAVES_ONLY
+                        );
+                    } catch (\Throwable) { $it = null; }
+                    if ($it !== null) {
+                        foreach ($it as $p) {
+                            if (++$cnt > 20000) { echo "      (file_cache scan capped at 20000 entries)\n"; break; }
+                            $ps = (string)$p;
+                            if (stripos($ps, 'SongData') !== false) {
+                                $found++;
+                                echo "      cached blob mentions SongData: {$ps}  mtime=" . $fmtTime(@filemtime($ps)) . "\n";
+                            }
+                        }
+                    }
+                    if ($found === 0) {
+                        echo "      (scanned {$cnt} cached entries — none mention SongData)\n";
+                    }
+                } else {
+                    echo "      (file_cache path is not a readable directory from this process)\n";
+                }
+            } else {
+                echo "  opcache.file_cache is empty — no secondary bytecode store to resurrect stale code.\n";
+            }
+        });
+
+        /* ---- [E] OPCACHE SCRIPT TABLE ----------------------------------- */
+        /* The interned script table is the ground truth for "what bytecode is the
+           runtime actually executing." Two distinct SongData paths cached = two
+           copies being executed (multi-docroot or shadow file confirmed). */
+        $sec('E', 'OPCACHE SCRIPT TABLE', function () use ($fmtTime) {
+            if (!function_exists('opcache_get_status')) {
+                echo "  opcache_get_status() unavailable — OPcache not loaded.\n";
+                return;
+            }
+            $st = @opcache_get_status(true);
+            if (!is_array($st)) {
+                echo "  opcache_get_status(true) returned no data (restricted or disabled).\n";
+                return;
+            }
+            echo "  opcache_enabled:   " . (!empty($st['opcache_enabled']) ? 'yes' : 'no') . "\n";
+            echo "  num_cached_scripts: " . (int)($st['opcache_statistics']['num_cached_scripts'] ?? 0) . "\n";
+            $scripts = $st['scripts'] ?? [];
+            if (!is_array($scripts) || $scripts === []) {
+                echo "  (no per-script table available — opcache.restrict_api may hide it, or list was not requested)\n";
+                return;
+            }
+            $songPaths = [];
+            $shown = 0;
+            foreach ($scripts as $key => $info) {
+                if (stripos((string)$key, 'SongData') === false) { continue; }
+                if ($shown++ > 200) { echo "  (script-table SongData matches capped at 200)\n"; break; }
+                $fp = $info['full_path'] ?? (string)$key;
+                $songPaths[$fp] = true;
+                echo "  SongData script: {$fp}\n";
+                echo "    compiled(timestamp)=" . $fmtTime($info['timestamp'] ?? 0)
+                   . "  last_used=" . (isset($info['last_used']) ? (string)$info['last_used'] : '?') . "\n";
+            }
+            if ($songPaths === []) {
+                echo "  (no cached script path contains 'SongData')\n";
+            } elseif (count($songPaths) > 1) {
+                echo "  *** " . count($songPaths) . " DISTINCT SongData paths are cached — MORE THAN ONE COPY\n";
+                echo "      IS BEING EXECUTED (multi-docroot or a shadow file). ***\n";
+            }
+        });
+
+        /* ---- [F] CSRF / index.php DEPLOY CHECK -------------------------- */
+        /* The editor's #1294 fix is an early $editorCsrf mint near the top of
+           manage/editor/index.php. If that token is ABSENT from the file on disk,
+           the deploy did NOT land this file — deploy-staleness confirmed, NOT a
+           CSRF-logic bug. Also surface the session config that governs whether the
+           token's cookie survives the editor's cross-page POST. */
+        $sec('F', 'CSRF / editor index.php DEPLOY CHECK', function () use ($fmtTime) {
+            $idx  = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
+                  . 'editor' . DIRECTORY_SEPARATOR . 'index.php';
+            $real = realpath($idx) ?: $idx;
+            echo "  editor index.php: {$real}\n";
+            if (is_file($real)) {
+                echo "  filemtime: " . $fmtTime(filemtime($real)) . "\n";
+                echo "  sha1_file: " . sha1_file($real) . "\n";
+                $c = file_get_contents($real);
+                if ($c !== false) {
+                    $lines = preg_split('/\r\n|\r|\n/', $c);
+                    $grep  = static function (string $needle) use ($lines) {
+                        $hits = [];
+                        foreach ($lines as $i => $ln) {
+                            if (strpos($ln, $needle) !== false) { $hits[] = $i + 1; }
+                        }
+                        return $hits;
+                    };
+                    $csrfVar  = $grep('$editorCsrf');
+                    $csrfCall = $grep('csrfToken()');
+                    echo "  '\$editorCsrf' lines: " . ($csrfVar === [] ? '(NONE)' : implode(', ', $csrfVar)) . "\n";
+                    echo "  'csrfToken()' lines: " . ($csrfCall === [] ? '(none)' : implode(', ', $csrfCall)) . "\n";
+                    if ($csrfVar === []) {
+                        echo "  *** '\$editorCsrf' early-mint is ABSENT — the #1294 deploy did NOT land\n";
+                        echo "      this file. DEPLOY-STALENESS CONFIRMED for editor/index.php. ***\n";
+                    } else {
+                        echo "  '\$editorCsrf' early-mint IS present — this file is the #1294 version.\n";
+                    }
+                } else {
+                    echo "  (could not read editor index.php contents)\n";
+                }
+            } else {
+                echo "  editor index.php not found on disk at the expected path.\n";
+            }
+
+            $savePath = ini_get('session.save_path');
+            echo "  session.cookie_samesite: " . (ini_get('session.cookie_samesite') ?: '(unset)') . "\n";
+            echo "  session.save_path:       " . ($savePath !== false && $savePath !== '' ? $savePath : '(default/unset)') . "\n";
+            if (is_string($savePath) && $savePath !== '') {
+                /* save_path may carry an "N;/path" prefix; take the trailing path segment. */
+                $sp = $savePath;
+                if (strpos($sp, ';') !== false) { $sp = substr($sp, strrpos($sp, ';') + 1); }
+                echo "  is_writable(save_path):  " . (@is_writable($sp) ? 'yes' : 'NO — session writes may be failing') . "\n";
+            }
+            $ss = session_status();
+            echo "  session_status():        "
+               . ($ss === PHP_SESSION_DISABLED ? 'DISABLED'
+                  : ($ss === PHP_SESSION_NONE ? 'none (not started)'
+                     : 'active')) . "\n";
+        });
+
+        /* ---- [G] BUILD MARKER ------------------------------------------- */
+        /* The deploy pipeline sed-injects the commit SHA + date into infoAppVer.php.
+           Reading it here tells the operator which commit the LIVE bytecode claims to
+           be — cross-check against [B]/[F] file mtimes + the expected SHA. */
+        $sec('G', 'BUILD MARKER (infoAppVer.php)', function () {
+            $verPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
+                     . DIRECTORY_SEPARATOR . 'infoAppVer.php';
+            $real = realpath($verPath) ?: $verPath;
+            echo "  infoAppVer.php: {$real}\n";
+            if (!is_file($real)) {
+                echo "  (not found on disk)\n";
+                return;
+            }
+            $app = [];
+            /* Loaded in an isolated scope: the file just assigns into $app. */
+            require $real;
+            $get = static function (array $keys) use ($app) {
+                $v = $app;
+                foreach ($keys as $k) {
+                    if (!is_array($v) || !array_key_exists($k, $v)) { return null; }
+                    $v = $v[$k];
+                }
+                return $v;
+            };
+            $version  = $get(['Application', 'Version', 'Number']);
+            $shaFull  = $get(['Application', 'Version', 'Repo', 'Commit', 'SHA', 'Full']);
+            $shaShort = $get(['Application', 'Version', 'Repo', 'Commit', 'SHA', 'Short']);
+            $date     = $get(['Application', 'Version', 'Repo', 'Commit', 'Date']);
+            $url      = $get(['Application', 'Version', 'Repo', 'Commit', 'URL']);
+            echo "  version:     " . ($version ?? '(unset)') . "\n";
+            echo "  commit SHA:  " . ($shaFull ?? '(NULL — not injected; running from un-deployed source?)') . "\n";
+            echo "  commit short:" . ($shaShort ?? '(NULL)') . "\n";
+            echo "  commit date: " . ($date ?? '(NULL — deploy sed did not run)') . "\n";
+            echo "  commit URL:  " . ($url ?? '(NULL)') . "\n";
+        });
+
+        echo "\n=== END OF FORENSICS REPORT ===\n";
+        $actionSuccess = true;
+        if (function_exists('logActivity')) {
+            logActivity('setup.deploy-forensics', 'database', 'deploy-forensics', ['via' => 'web'], 'success');
         }
     } else {
         $scriptName = $scriptMap[$action] ?? null;
@@ -815,6 +1565,7 @@ if ($action !== '') {
             if (!file_exists($scriptPath)) {
                 echo "ERROR: Script not found: {$scriptName}\n";
             } else {
+                $singleErr = null;
                 try {
                     /* Run the script in an isolated scope via an anonymous function.
                      * The scripts detect $isCli and adapt output accordingly.
@@ -823,12 +1574,41 @@ if ($action !== '') {
                      * buffer is flushed to the browser before exit. */
                     $actionSuccess = true;
                     require $scriptPath;
+                    /* TRUTHFUL completion (same as the bulk path): the script may
+                       have caught its OWN DDL error internally and returned. For a
+                       migration action, verify via its registry probe — if still
+                       pending, the apply did NOT take, so don't report success.
+                       (Non-migration actions — install/backup/cleanup — have no
+                       probe and are unaffected.) */
+                    $singleProbe = $migrationProbes[$action] ?? null;
+                    if (is_callable($singleProbe)) {
+                        $singleConn = null;
+                        try {
+                            $singleConn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, (int)DB_PORT);
+                            $singleConn->set_charset('utf8mb4');
+                        } catch (\Throwable) { $singleConn = null; }
+                        if (_migVerify_stillPending($singleConn, $singleProbe) === true) {
+                            $actionSuccess = false;
+                            echo "\n⚠ This migration ran but is STILL PENDING — its objects were not created"
+                               . " (the script caught an internal error above). Nothing was applied; see the"
+                               . " [ERROR] line in the output above for the cause.\n";
+                        }
+                        if ($singleConn instanceof \mysqli) { $singleConn->close(); }
+                    }
                 } catch (\Throwable $e) {
                     $actionSuccess = false;
+                    $singleErr = $e->getMessage();
                     echo "\nERROR: " . htmlspecialchars($e->getMessage()) . "\n";
                     if ($e->getFile()) {
                         echo "File: " . htmlspecialchars(basename($e->getFile())) . ":" . $e->getLine() . "\n";
                     }
+                }
+                /* Activity Log (#1282) — per-run status for the no-JS single-action path
+                   (migrations + install/migrate/users/cleanup/backup/restore). */
+                if (function_exists('logActivity')) {
+                    $d = ['script' => $scriptName, 'via' => 'no-js'];
+                    if ($singleErr !== null) { $d['error'] = $singleErr; }
+                    logActivity('setup.run', 'database', $action, $d, $actionSuccess ? 'success' : 'error');
                 }
             }
         }
@@ -855,6 +1635,24 @@ if ($action !== '') {
             badge.className   = <?= $actionSuccess ? "'badge bg-success'" : "'badge bg-danger'" ?>;
         })();
     </script>
+
+    <?php if ($action === 'apply-all-migrations' && $bulkBackupFailed): ?>
+        <!-- Auto pre-migration backup failed → the run was aborted before
+             any migration executed, so the schema is untouched. -->
+        <div class="alert alert-danger mt-3" role="alert">
+            <h5 class="alert-heading mb-2">
+                <i class="bi bi-shield-exclamation me-1"></i>
+                Aborted — automatic pre-migration backup did not complete
+            </h5>
+            <p class="mb-0">
+                No migrations were applied; your database is unchanged. The bulk
+                run refuses to alter the schema without a recovery point. Run a
+                manual <strong>Backup Database</strong> (or fix the cause — disk
+                space / DB connection), then click <em>Apply all pending
+                migrations</em> again.
+            </p>
+        </div>
+    <?php endif; ?>
 
     <?php if ($action === 'apply-all-migrations' && $bulkFirstFailStep !== null): ?>
         <!-- Failure summary BELOW the panel (#817 round 2 — moved from
@@ -1121,7 +1919,10 @@ if ($hasCredentials && defined('DB_HOST')) {
                skip-only entries (or not yet defined). */
             $_pendingCardCount = count(array_filter(
                 $pendingActions,
-                static fn(string $slug): bool => isset($migrationCards[$slug])
+                /* #1235 P4/C6 — exclude manual/destructive migrations (the JSON-column drop is
+                   pending-by-design until a human runs it): so the counter still reaches zero
+                   once all AUTO migrations are applied. */
+                static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
             ));
             $_alertVariant = $_pendingCardCount > 0 ? 'alert-primary' : 'alert-success';
         ?>
@@ -1165,7 +1966,8 @@ if ($hasCredentials && defined('DB_HOST')) {
                    handle the timeout edge case). */
                 $bulkRunnerPending = array_values(array_filter(
                     $pendingActions,
-                    static fn(string $slug): bool => isset($migrationCards[$slug])
+                    /* #1235 P4/C6 — manual/destructive migrations are NEVER bulk-run targets. */
+                    static fn(string $slug): bool => isset($migrationCards[$slug]) && empty($migrationManual[$slug])
                 ));
             ?>
             <a href="?action=apply-all-migrations"
@@ -1176,6 +1978,72 @@ if ($hasCredentials && defined('DB_HOST')) {
                 Apply all
             </a>
         </div>
+
+        <?php if (!empty($pendingActions)): ?>
+            <!-- ============================================================
+                 PENDING-MIGRATION LIST (#1200)
+                 Lists EVERY migration whose probe currently reports pending —
+                 including any that have NO card (so they're invisible in the
+                 grid AND skipped by the bulk runner, which both filter to
+                 isset($migrationCards[...])). A migration that runs but whose
+                 probe never flips, or one with no card, is exactly what keeps
+                 the counter stuck above zero. Each row has a "Run & show
+                 output" link: a single-migration run renders its full output
+                 INLINE (no auto-refresh), so the curator can read the
+                 "[warn] … manual merge / skipped" lines that explain why a
+                 probe stays pending.
+                 ============================================================ -->
+            <details class="mb-4">
+                <summary class="text-secondary small" style="cursor:pointer;">
+                    Show the <?= count($pendingActions) ?> pending migration<?= count($pendingActions) === 1 ? '' : 's' ?>
+                    (which, and why each is still pending)
+                </summary>
+                <ul class="list-group list-group-flush mt-2">
+                    <?php foreach ($pendingActions as $_pa): ?>
+                        <?php $_paCard = $migrationCards[$_pa] ?? null; ?>
+                        <li class="list-group-item bg-transparent d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                            <span>
+                                <code class="text-info"><?= htmlspecialchars($_pa) ?></code>
+                                <?php if ($_paCard): ?>
+                                    <span class="ms-2"><?= htmlspecialchars(strip_tags((string)$_paCard['title'])) ?></span>
+                                <?php else: ?>
+                                    <span class="badge bg-warning text-dark ms-2">
+                                        no card — hidden from the grid &amp; skipped by &ldquo;Apply all&rdquo;
+                                    </span>
+                                <?php endif; ?>
+                                <?php if (!empty($migrationManual[$_pa])): ?>
+                                    <span class="badge bg-danger ms-2">manual &amp; destructive — run by hand, not by &ldquo;Apply all&rdquo;</span>
+                                <?php endif; ?>
+                            </span>
+                            <?php
+                                /* #1235 P4/C6 — a manual/destructive migration's run link carries
+                                   confirm=1 (the script refuses without it) + a confirm() dialog.
+                                   #1298 — plus the type-to-confirm speed-bump (data attribute carries
+                                   the exact slug the operator must type). Layered on top of the
+                                   server-side confirm=1 / sentinel gate, never instead of it. */
+                                $_paManual  = !empty($migrationManual[$_pa]);
+                                $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
+                                $_paOnclick = $_paManual
+                                    ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds behind the pre-drop verification gate. Continue?\');"'
+                                    : '';
+                                $_paType    = $_paManual
+                                    ? ' data-type-to-confirm="' . htmlspecialchars($_pa, ENT_QUOTES) . '"'
+                                    : '';
+                            ?>
+                            <a href="<?= $_paHref ?>"<?= $_paOnclick ?><?= $_paType ?>
+                               class="btn btn-sm <?= $_paManual ? 'btn-danger' : 'btn-outline-info' ?> flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run &amp; show output
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+                <p class="text-muted small mt-2 mb-0">
+                    A single-migration run shows its full output here without auto-refreshing, so you can read
+                    exactly what it did &mdash; including any <code>[warn]</code> lines (e.g. &ldquo;manual merge needed&rdquo;
+                    or &ldquo;skipped&rdquo;) that leave a probe reporting pending even though the script ran cleanly.
+                </p>
+            </details>
+        <?php endif; ?>
 
         <!-- ============================================================
              ACTION CARDS
@@ -1225,6 +2093,56 @@ if ($hasCredentials && defined('DB_HOST')) {
                 </div>
             </div>
 
+            <!-- #1235 lyrics-cutover verification gate — web runner (the owner is
+                 web-only on shared DreamHost, so the gate that arms the drop must be
+                 runnable here, not just from the CLI). -->
+            <div class="col-12">
+                <div class="card bg-dark border-info h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
+                            Verify Lyrics-Cutover Gate
+                            <span class="badge bg-info-subtle text-info-emphasis">#1235</span>
+                        </h5>
+                        <p class="card-text text-secondary small mb-3">
+                            Runs <code>verify-lyrics-cutover.php</code> against the live corpus — the
+                            losslessness proof (10 gates incl. the byte-identical <strong>G2</strong>)
+                            that ARMS the destructive JSON-column drop. <strong>pre</strong> establishes
+                            the baseline and writes the green sentinel the drop requires; run
+                            <strong>soak</strong> repeatedly during the soak (parity must stay 0).
+                            <strong>pre-drop</strong> / <strong>post-drop</strong> are for the
+                            maintenance-freeze drop day only. A full-corpus run can take a minute or two.
+                        </p>
+                        <p class="card-text small mb-3">
+                            <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                            <strong>A complete run ends with</strong> a <code>== GREEN — phase … passed ==</code>
+                            (or <code>RED</code>) line, and <code>pre</code>/<code>pre-drop</code> add
+                            <code>sentinel: lyrics_cutover_gate written (green)</code>. If you don't see that
+                            trailer, the request was cut short (a shared-host timeout) — nothing was armed;
+                            just run it again. Use <em>Smoke test</em> first to confirm the path in seconds.
+                        </p>
+                        <div class="d-flex flex-wrap gap-2">
+                            <a href="?action=verify-cutover&amp;phase=pre&amp;limit=50" class="btn btn-outline-info btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Smoke test <span class="small ms-1">(first 50 songs — no sentinel)</span>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=pre" class="btn btn-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=pre</code> <span class="small ms-1">(baseline + sentinel)</span>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=soak" class="btn btn-outline-success btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=soak</code>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=pre-drop" class="btn btn-outline-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
+                               onclick="return confirm('pre-drop writes the sentinel that ARMS the irreversible JSON-column drop. Only run this inside the maintenance freeze, immediately before the drop. Continue?');">
+                                Run <code>--phase=pre-drop</code>
+                            </a>
+                            <a href="?action=verify-cutover&amp;phase=post-drop" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
+                                Run <code>--phase=post-drop</code>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ============================================================
                  PER-MIGRATION CARDS (#816)
 
@@ -1250,15 +2168,35 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php
                 /* Render helper — single card markup reused for both
                    the pending grid and the inside-expander grid. */
-                $_renderCard = static function (string $migAction, array $card, bool $hasCreds): void {
+                $_renderCard = static function (string $migAction, array $card, bool $hasCreds, bool $isManual = false): void {
+                    /* #1235 P4/C6 — a manual/destructive migration's run link carries confirm=1
+                       (the script REFUSES a web run without it) + a JS confirm() dialog, mirroring
+                       the drop-legacy pattern; the button is danger-styled and the card flagged.
+                       ADDITIONAL client speed-bump (#1298): the anchor also carries
+                       data-type-to-confirm="<slug>" so the shared inline JS forces the operator to
+                       type the exact migration slug before the destructive request fires. This is
+                       layered ON TOP of the server-side confirm=1 / sentinel gate — never instead. */
+                    $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
+                    $btnClass = $isManual ? 'btn-danger' : 'btn-info';
+                    $onclick = $isManual
+                        ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds if the pre-drop verification gate is green and &lt;24h old. Continue?\');"'
+                        : '';
+                    /* The required phrase IS the migration slug — shown to the operator in the
+                       prompt and matched case-sensitively. htmlspecialchars guards the attribute. */
+                    $typeToConfirm = $isManual
+                        ? ' data-type-to-confirm="' . htmlspecialchars($migAction, ENT_QUOTES) . '"'
+                        : '';
                     ?>
                     <div class="col-md-6">
-                        <div class="card bg-dark border-secondary h-100">
+                        <div class="card bg-dark <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
                             <div class="card-body">
                                 <h5 class="card-title"><?= $card['title'] ?></h5>
+                                <?php if ($isManual): ?>
+                                    <span class="badge bg-danger mb-2">Manual &amp; destructive — NOT run by &ldquo;Apply all&rdquo;</span>
+                                <?php endif; ?>
                                 <p class="card-text text-secondary small"><?= $card['body'] ?></p>
-                                <a href="?action=<?= htmlspecialchars($migAction) ?>"
-                                   class="btn btn-info btn-action <?= $hasCreds ? '' : 'disabled' ?>">
+                                <a href="<?= $href ?>"<?= $onclick ?><?= $typeToConfirm ?>
+                                   class="btn <?= $btnClass ?> btn-action <?= $hasCreds ? '' : 'disabled' ?>">
                                     <?= htmlspecialchars($card['button']) ?>
                                 </a>
                                 <?php if (!empty($card['extra_html'])): ?>
@@ -1275,7 +2213,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 <?php
                     $_card = $migrationCards[$_migAction] ?? null;
                     if (!$_card) continue;     /* slug in $migrationOrder but no card body */
-                    $_renderCard($_migAction, $_card, $hasCredentials);
+                    $_renderCard($_migAction, $_card, $hasCredentials, !empty($migrationManual[$_migAction]));
                 ?>
             <?php endforeach; ?>
 
@@ -1306,7 +2244,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <div class="card-body">
                             <div class="row g-3">
                                 <?php foreach ($_appliedRenderable as $_appliedAction): ?>
-                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials); ?>
+                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials, !empty($migrationManual[$_appliedAction])); ?>
                                 <?php endforeach; ?>
                             </div>
                         </div>
@@ -1324,6 +2262,54 @@ if ($hasCredentials && defined('DB_HOST')) {
                         </p>
                         <a href="?action=cleanup" class="btn btn-outline-secondary btn-action <?= $hasCredentials ? '' : 'disabled' ?>">
                             Run Cleanup
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- #1290 — reset the PHP runtime code cache. The fix for "deployed code
+                 isn't running" on shared hosting (stale OPcache). -->
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-cpu me-1" aria-hidden="true"></i>
+                            Reset PHP OPcache
+                        </h5>
+                        <p class="card-text text-secondary small">
+                            Forces every PHP file to recompile from disk. Use after a deploy when the
+                            live site runs <strong>stale code</strong> (e.g. errors that reference a
+                            column already dropped). Reports the OPcache status — incl.
+                            <code>validate_timestamps</code> — before resetting. No DB needed.
+                        </p>
+                        <a href="?action=opcache-reset" class="btn btn-outline-warning btn-action">
+                            Reset OPcache
+                        </a>
+                    </div>
+                </div>
+            </div>
+
+            <!-- #1295 — READ-ONLY deploy forensics. Definitively reveals WHY deployed
+                 code isn't running: stale disk files, a second/shadow SongData.php,
+                 an opcache.file_cache resurrecting bytecode, or multiple app servers.
+                 Writes nothing — no reset, no DB mutation. Run twice to spot multi-server. -->
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-search me-1" aria-hidden="true"></i>
+                            Deployment Forensics
+                        </h5>
+                        <p class="card-text text-secondary small">
+                            <strong>Read-only.</strong> Fingerprints the SongData.php the runtime
+                            actually loaded, scans the deploy tree for shadow copies, dumps the
+                            OPcache script table + <code>file_cache</code>, checks the editor
+                            CSRF deploy and reports the live build SHA. Use to diagnose
+                            "deployed code isn't running" — writes nothing. Run twice to detect
+                            multiple app servers.
+                        </p>
+                        <a href="?action=deploy-forensics" class="btn btn-outline-warning btn-action">
+                            Run Forensics
                         </a>
                     </div>
                 </div>
@@ -1438,6 +2424,30 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <?php endif; ?>
 
                         <?php if ($backupFiles): ?>
+                            <!-- Download a backup to keep off-site (#1255). Streams the
+                                 server-side .sql.gz from data_share/backups/ (outside the
+                                 web root) via the gated download-backup handler at the top
+                                 of this page. No DB connection needed, so it stays enabled
+                                 even when credentials are unset. -->
+                            <label class="form-label small text-secondary mb-1">
+                                <i class="bi bi-download me-1"></i>Download a backup (to archive off-site):
+                            </label>
+                            <form action="" method="post" class="d-flex gap-2 flex-wrap mb-3">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+                                <input type="hidden" name="action" value="download-backup">
+                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                    <?php foreach ($backupFiles as $f): ?>
+                                        <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-success">
+                                    Download
+                                </button>
+                            </form>
+
+                            <label class="form-label small text-secondary mb-1">
+                                <i class="bi bi-arrow-counterclockwise me-1"></i>Restore the database from a backup:
+                            </label>
                             <form action="" method="get" class="d-flex gap-2 flex-wrap mb-2">
                                 <input type="hidden" name="action" value="restore">
                                 <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
@@ -1495,6 +2505,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                                 Preview
                             </a>
                             <a href="?action=drop-legacy&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                               data-type-to-confirm="drop-legacy"
                                onclick="return confirm('This will DROP all tables in the database that are not defined in schema.sql.\n\nThis cannot be undone. Run a Backup first.\n\nContinue?')">
                                 Drop Them
                             </a>
@@ -1570,6 +2581,51 @@ if ($hasCredentials && defined('DB_HOST')) {
 </div>
 
 <script>
+/* Type-to-confirm speed-bump for DESTRUCTIVE / irreversible actions (#1298).
+
+   Any anchor tagged data-type-to-confirm="<phrase>" (the migration slug, e.g.
+   "retire-component-lines-json", or the "drop-legacy" action) forces the operator
+   to type that EXACT phrase before the request is allowed to fire. An exact,
+   case-sensitive match navigates; anything else cancels the click.
+
+   This is an ADDITIONAL client speed-bump only — it does NOT replace any
+   server-side guard. The destructive request still carries confirm=1 (the
+   migration / drop script refuses without it), the existing native confirm()
+   dialog still runs, the verifier-sentinel / parity preconditions still apply,
+   and the whole page is still behind the global_admin gate. We bind in the
+   CAPTURE phase so this runs BEFORE the anchor's inline onclick confirm(): on a
+   mismatch we preventDefault() + stopImmediatePropagation() so neither the inline
+   confirm nor the navigation proceeds. Vanilla JS, no dependencies. */
+(() => {
+    document.addEventListener('click', (ev) => {
+        const link = ev.target.closest('a[data-type-to-confirm]');
+        if (!link) return;
+        /* Respect the page's own disabled-state convention (no credentials). */
+        if (link.classList.contains('disabled')) return;
+
+        const phrase = link.getAttribute('data-type-to-confirm') || '';
+        if (phrase === '') return;
+
+        const typed = window.prompt(
+            'DESTRUCTIVE, irreversible action.\n\n' +
+            'To confirm, type the following EXACTLY (case-sensitive):\n\n' +
+            phrase
+        );
+
+        /* Exact, case-sensitive match required. Cancel / mismatch aborts the
+           click entirely — stopImmediatePropagation() prevents the inline
+           onclick confirm() from also running, preventDefault() blocks nav. */
+        if (typed !== phrase) {
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+        }
+        /* On an exact match we fall through: the inline onclick confirm()
+           (if any) runs next, then the browser follows the href. */
+    }, true /* capture */);
+})();
+</script>
+
+<script>
 /* IANA + CLDR live refresh button (#738).
    Posts to /api?action=admin_refresh_iana_cldr, swaps the status
    line for a live progress / result message, and on success
@@ -1637,7 +2693,10 @@ if ($hasCredentials && defined('DB_HOST')) {
      the dashboard, so no single request hits a server-level
      timeout. Falls through to the legacy <a href> on no-JS. -->
 <?php
-    $_bulkRunnerPath    = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
+    /* From manage/, public_html is dirname(__DIR__, 1); dirname(__DIR__, 2) was
+       appWeb (one level too high), so is_file() always failed and the version
+       fell back to '1', defeating per-file cache-busting (#1196). */
+    $_bulkRunnerPath    = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'js' . DIRECTORY_SEPARATOR . 'modules' . DIRECTORY_SEPARATOR . 'setup-bulk-runner.js';
     $_bulkRunnerVersion = is_file($_bulkRunnerPath) ? (string)filemtime($_bulkRunnerPath) : '1';
 ?>
 <script type="module">

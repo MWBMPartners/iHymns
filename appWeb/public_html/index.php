@@ -44,6 +44,10 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'debug_mode.php';
 enableDebugModeIfRequested();
 
+/* Themed error-page renderer — loaded BEFORE the bootstrap safety net below so
+   it's available even if a later require fails. Self-contained, no deps. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';
+
 /* =========================================================================
  * BOOTSTRAP SAFETY NET (#811)
  *
@@ -63,46 +67,39 @@ enableDebugModeIfRequested();
 set_exception_handler(function (\Throwable $e): void {
     error_log('[index.php bootstrap] uncaught ' . get_class($e) . ': ' . $e->getMessage()
             . ' at ' . basename($e->getFile()) . ':' . $e->getLine());
-    if (!headers_sent()) {
-        http_response_code(503);
-        header('Content-Type: text/html; charset=UTF-8');
-        header('Retry-After: 30');
-    }
-    /* Best-effort: if we can detect Alpha/Beta from the server path, give
-       the admin a direct link to fix it. Production keeps the message
+
+    /* Pre-prod surfaces the exception + a setup link; production stays
        generic so a casual visitor isn't shown internals. */
     $serverPath = (string)($_SERVER['SCRIPT_FILENAME'] ?? '');
     $isPreProd  = str_contains($serverPath, 'public_html_dev')
                || str_contains($serverPath, 'public_html_beta');
-    $detail = '';
+
+    $opts = [
+        'title'      => 'iHymns is starting up',
+        'message'    => 'The service is initialising. Please retry in a moment.',
+        'code'       => '',
+        'retryAfter' => 30,
+        'actions'    => [['label' => 'Try again', 'href' => '/', 'primary' => true]],
+    ];
     if ($isPreProd) {
-        $detail = '<p class="muted">'
-                . htmlspecialchars(get_class($e) . ': ' . $e->getMessage())
-                . '</p><p>Admins: visit '
-                . '<a href="/manage/setup-database">/manage/setup-database</a> '
-                . 'and click <strong>Apply all pending migrations</strong>.</p>';
+        $opts['detail']    = get_class($e) . ': ' . $e->getMessage();
+        $opts['message']   = 'The service is initialising. Admins: open Setup database and apply any pending migrations.';
+        $opts['actions'][] = ['label' => 'Setup database', 'href' => '/manage/setup-database'];
     }
-    echo <<<HTML
-<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>iHymns — Service starting</title>
-<style>
- body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#1a1d21;color:#e8e6e3;
-      margin:0;padding:2rem;display:flex;min-height:100vh;align-items:center;justify-content:center}
- main{max-width:480px;text-align:center}
- h1{font-size:1.5rem;margin:0 0 .75rem}
- p{line-height:1.5;margin:.5rem 0}
- .muted{color:#888;font-size:.85rem;font-family:ui-monospace,monospace;text-align:left;
-        background:#0f1115;padding:.75rem;border-radius:6px;overflow-wrap:break-word}
- a{color:#67aaff}
-</style></head>
-<body><main>
- <h1>iHymns is starting up</h1>
- <p>The service is initialising. Please retry in a moment.</p>
- {$detail}
-</main></body></html>
-HTML;
+
+    if (function_exists('renderErrorPage')) {
+        renderErrorPage(503, $opts);          /* themed, theme-aware (no dark flash) */
+    } else {
+        /* error_page.php somehow unavailable — last-resort minimal fallback. */
+        if (!headers_sent()) {
+            http_response_code(503);
+            header('Content-Type: text/html; charset=UTF-8');
+            header('Retry-After: 30');
+            header('Cache-Control: no-store');
+        }
+        echo '<!DOCTYPE html><title>iHymns</title><p style="font-family:system-ui;padding:2rem">'
+           . 'iHymns is starting up. Please retry in a moment.</p>';
+    }
 });
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
@@ -122,6 +119,16 @@ installGlobalActivityLogHandlers('index');
    thanks to the root .htaccess). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'channel_gate.php';
 enforceChannelGate($app["Application"]["Version"]["Development"]["Status"] ?? null);
+
+/* System maintenance mode (WS-K #1021) — admin-toggled in
+   /manage/configuration. When on, the public SPA serves a branded
+   maintenance landing page (503 + Retry-After) to everyone. /manage/* is a
+   separate entry point (not routed through index.php), so admins keep access
+   to turn it off. A returning PWA user's service worker treats the 503 like a
+   network error and serves the cached shell, preserving their offline-capable
+   experience; the app shows a maintenance banner from ?action=app_status. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+enforceMaintenanceForPublicSite();
 
 /* =========================================================================
  * APPLICATION METADATA — accessed directly via $app array
@@ -186,6 +193,11 @@ $cspDirectives = [
 
 header("Content-Security-Policy: " . implode('; ', $cspDirectives));
 
+/* #1206 — declare the page's primary (UI) language. The actual content languages
+   on a song page are carried per-component via lang/dir tags (#858/#1205); this
+   header + <html lang> stay the UI language by design. */
+header('Content-Language: ' . $locale);
+
 /* =========================================================================
  * OPEN GRAPH META TAGS — Dynamic per-page social sharing previews
  *
@@ -217,15 +229,47 @@ $jsonLdScripts   = [];
 $breadcrumbItems = [];
 $pageType        = 'home'; /* 'home', 'song', 'songbook', or 'other' */
 
+/* #1206 — hreflang alternates for a song's translation cluster. Filled in the
+   song route below (empty for every other page); emitted in <head>. */
+$hreflangLinks    = [];
+$hreflangSongLang = '';
+
 /* Detect specific page routes for customised OG tags */
 try {
     $songData = new SongData();
 
-    /* Song page: /song/CP-0001 */
-    if (preg_match('#^/song/([A-Za-z]+-\d+)$#', $requestPath, $matches)) {
+    /* Song page: /song/CP-0001 OR /song/<PublicId> (#1343-B — widen-only; getSongById resolves either). */
+    if (preg_match('#^/song/([A-Za-z0-9_-]{1,32})$#', $requestPath, $matches)) {
         $ogSong = $songData->getSongById($matches[1]);
         if ($ogSong !== null) {
             $pageType = 'song';
+
+            /* #1343-B — canonical/og:url is the opaque PublicId permalink (the
+               stable form), even when a crawler hit a legacy /song/<SongId>. */
+            if (!empty($ogSong['publicId'])) {
+                $canonicalUrl = getCanonicalUrl('/song/' . rawurlencode((string)$ogSong['publicId']));
+            }
+
+            /* #1206 — translation-cluster hreflang alternates (SEO: marks these
+               as language variants of one work). Only when the song has
+               other-language versions. Self + each alternate (+ x-default in the
+               head). Shares SongData::getSongTranslations() with the picker. */
+            $hreflangSongLang = trim((string)($ogSong['language'] ?? ''));
+            $_cluster = $songData->getSongTranslations($matches[1]);
+            if (!empty($_cluster)) {
+                $_seen = [];
+                if ($hreflangSongLang !== '') {
+                    $hreflangLinks[$hreflangSongLang] = $canonicalUrl;   // self
+                    $_seen[strtolower($hreflangSongLang)] = true;
+                }
+                foreach ($_cluster as $_c) {
+                    $_lang = trim((string)($_c['target_language'] ?? ''));
+                    $_sid  = (string)($_c['song_id'] ?? '');
+                    if ($_lang === '' || $_sid === '' || isset($_seen[strtolower($_lang)])) { continue; }
+                    $hreflangLinks[$_lang] = getCanonicalUrl('/song/' . rawurlencode($_sid));
+                    $_seen[strtolower($_lang)] = true;
+                }
+            }
             $ogTitle = htmlspecialchars($ogSong['title']) . ' — '
                      . htmlspecialchars($ogSong['songbookName'])
                      . ' #' . (int)$ogSong['number'];
@@ -626,6 +670,14 @@ if (!empty($breadcrumbItems)) {
 
     <!-- Canonical URL — prevents duplicate content for search engines -->
     <link rel="canonical" href="<?= htmlspecialchars($canonicalUrl) ?>">
+<?php /* #1206 — hreflang alternates: language variants of this song (only when a
+         translation cluster exists). x-default points at the current page. */ ?>
+<?php foreach ($hreflangLinks as $_hl => $_hurl): ?>
+    <link rel="alternate" hreflang="<?= htmlspecialchars($_hl, ENT_QUOTES, 'UTF-8') ?>" href="<?= htmlspecialchars($_hurl, ENT_QUOTES, 'UTF-8') ?>">
+<?php endforeach; ?>
+<?php if (!empty($hreflangLinks)): ?>
+    <link rel="alternate" hreflang="x-default" href="<?= htmlspecialchars($canonicalUrl, ENT_QUOTES, 'UTF-8') ?>">
+<?php endif; ?>
 
     <!-- Open Graph Protocol (Facebook, LinkedIn, Slack, Discord, etc.) -->
     <meta property="og:type" content="<?= htmlspecialchars($ogType) ?>">
@@ -696,6 +748,16 @@ if (!empty($breadcrumbItems)) {
           crossorigin="anonymous"
           id="fontawesome-css"
           onerror="this.onerror=null;this.removeAttribute('integrity');this.removeAttribute('crossorigin');this.href='/<?= $libs['fontawesome']['css_local'] ?>';">
+
+    <!-- Bootstrap Icons (#1347) — the external-link registry (tblExternalLinkTypes.IconClass)
+         seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
+         otherwise only loads Font Awesome, so those provider icons rendered blank on the
+         song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
+         + font-src); decorative, so it degrades to text-only labels if the CDN is offline. -->
+    <link rel="stylesheet"
+          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+          crossorigin="anonymous"
+          id="bootstrap-icons-css">
 
     <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"
@@ -817,6 +879,46 @@ if (!empty($breadcrumbItems)) {
 </head>
 
 <body class="d-flex flex-column min-vh-100">
+<?php if (!empty($GLOBALS['_ihymnsMaintenanceBypass'])): /* #1233 — admin is bypassing maintenance; make that obvious. Self-contained styles (no icon/CSS deps). */ ?>
+    <?php /* #1308 — was position:sticky;z-index:1080, which painted OVER the
+       position:fixed .app-header (z-1030) and hid the nav brand / profile
+       controls. Now position:fixed at the very top, and the nonce'd script
+       below pushes BOTH the fixed header (.app-header top) and the scrollable
+       content (.main-content padding-top) down by the banner's MEASURED height
+       so nothing is occluded. Height is measured (not hard-coded) because the
+       message wraps to 2–3 lines on narrow viewports; re-measured on resize.
+       The PWA install banner is suppressed during maintenance (pwa.js #1301),
+       so the single-banner layout is the only case to handle here. */ ?>
+    <div id="ihymns-maint-bypass" role="status" style="position:fixed;top:0;left:0;right:0;z-index:1040;background:#ffc107;color:#000;text-align:center;padding:calc(0.5rem + env(safe-area-inset-top, 0px)) max(1rem, env(safe-area-inset-right, 0px)) 0.5rem max(1rem, env(safe-area-inset-left, 0px));font-size:0.85rem;line-height:1.3;"><!-- #1279: pad past the iOS safe area (Dynamic Island / clock) so the text isn't occluded; applyMaintBypassOffset() measures offsetHeight, so the header/content offset follows automatically -->
+        🔧 <strong>Maintenance mode is ON</strong> for this environment — visitors see a maintenance page; you have admin access.
+        <a href="/manage/configuration" style="color:#000;text-decoration:underline;font-weight:600;">Turn it off</a>.
+    </div>
+    <script nonce="<?= $cspNonce ?>">
+    (function () {
+        function applyMaintBypassOffset() {
+            var bar = document.getElementById('ihymns-maint-bypass');
+            if (!bar) return;
+            var h = bar.offsetHeight;                 /* live height incl. wrapped lines */
+            var hdr = document.querySelector('.app-header');
+            if (hdr) {
+                hdr.style.top = h + 'px';             /* push fixed header below the banner */
+                /* #1279 review — h already includes the iOS safe-area inset (the banner's
+                   own padding-top), and in a standalone PWA .app-header ALSO adds
+                   padding-top:env(safe-area-inset-top). Zero it here so the inset isn't
+                   counted twice (a visible gap above the navbar during maintenance bypass). */
+                hdr.style.paddingTop = '0px';
+            }
+            var main = document.querySelector('.main-content');
+            if (main) { main.style.paddingTop = 'calc(var(--header-height) + 8px + ' + h + 'px)'; }
+        }
+        /* .app-header / .main-content are emitted AFTER this script, so wait for
+           the DOM before measuring; also re-run on resize (width → wrap → height). */
+        if (document.readyState !== 'loading') { applyMaintBypassOffset(); }
+        else { document.addEventListener('DOMContentLoaded', applyMaintBypassOffset); }
+        window.addEventListener('resize', applyMaintBypassOffset);
+    })();
+    </script>
+<?php endif; ?>
     <!-- ================================================================
          SKIP NAVIGATION LINK — Accessibility: allows keyboard users
          to skip directly to main content.
@@ -997,6 +1099,7 @@ if (!empty($breadcrumbItems)) {
                         </button>
                         <div class="dropdown-menu dropdown-menu-end p-0"
                              id="header-notifications-panel"
+                             role="group"
                              aria-labelledby="header-notifications-btn"
                              style="width: 320px; max-width: 90vw;">
                             <div class="d-flex align-items-center justify-content-between px-3 py-2 border-bottom">
@@ -1178,15 +1281,14 @@ if (!empty($breadcrumbItems)) {
         </nav>
 
         <!-- Copyright & Version info -->
-        <div class="footer-info" aria-label="Application information">
+        <div class="footer-info" role="group" aria-label="Application information">
             <small>
                 <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
                 v<?= htmlspecialchars($versionDisplay) ?><?php
-                    /* Subtle data source indicator — Alpha/Beta only */
-                    if ($app["Application"]["Version"]["Development"]["Status"] !== null && isset($songData) && $songData->isJsonFallback()) {
-                        echo ' <span title="Using JSON fallback (MySQL not configured)" style="opacity:0.4;cursor:help">&#9679; json</span>';
-                    }
+                    /* WS-J #1020: the "● json" data-source indicator is gone —
+                       there is no JSON fallback any more (DB-direct only), so
+                       it could never light up. */
                 ?>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
@@ -1200,7 +1302,7 @@ if (!empty($breadcrumbItems)) {
          NUMERIC KEYPAD MODAL — For searching by song number.
          Provides a touch-friendly number pad on all devices.
          ================================================================ -->
-    <div class="modal fade" id="numpad-modal" tabindex="-1" aria-labelledby="numpad-modal-label" aria-hidden="true">
+    <div class="modal fade" id="numpad-modal" tabindex="-1" role="dialog" aria-labelledby="numpad-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content numpad-modal-content">
                 <div class="modal-header">
@@ -1252,7 +1354,7 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SHUFFLE MODAL — Options for random song selection.
          ================================================================ -->
-    <div class="modal fade" id="shuffle-modal" tabindex="-1" aria-labelledby="shuffle-modal-label" aria-hidden="true">
+    <div class="modal fade" id="shuffle-modal" tabindex="-1" role="dialog" aria-labelledby="shuffle-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1287,6 +1389,7 @@ if (!empty($breadcrumbItems)) {
          a valid CCLI licence. Stored in localStorage after acceptance.
          ================================================================ -->
     <div class="modal fade" id="disclaimer-modal" tabindex="-1"
+         role="dialog"
          aria-labelledby="disclaimer-modal-label"
          aria-hidden="true"
          data-bs-backdrop="static"
@@ -1340,7 +1443,7 @@ if (!empty($breadcrumbItems)) {
     <!-- ================================================================
          SHARE MODAL — For sharing/copying song permalink
          ================================================================ -->
-    <div class="modal fade" id="share-modal" tabindex="-1" aria-labelledby="share-modal-label" aria-hidden="true">
+    <div class="modal fade" id="share-modal" tabindex="-1" role="dialog" aria-labelledby="share-modal-label" aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered modal-sm">
             <div class="modal-content">
                 <div class="modal-header">
@@ -1505,7 +1608,10 @@ if (!empty($breadcrumbItems)) {
             'devStatus'       => $app["Application"]["Version"]["Development"]["Status"],
             'appUrl'          => $app["Application"]["Website"]["URL"],
             'apiUrl'          => '/api',
-            'dataUrl'         => '/api?action=songs_json',
+            /* Slim catalogue index for offline browse/search + the offline-
+               download enumerator (WS-I #1017) — replaces the ~5.7 MB
+               whole-song corpus. Online reads are always the live API. */
+            'dataUrl'         => '/api?action=songs_index',
             'nativeApps'      => [
                 'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
                 'iosVerified'     => $iosApp['verified'],
@@ -1513,8 +1619,6 @@ if (!empty($breadcrumbItems)) {
                 'androidVerified' => $androidApp['verified'],
             ],
             'features'        => APP_CONFIG['features'],
-            'fuseJsCdn'       => $libs['fusejs']['js_cdn'],
-            'fuseJsLocal'     => $libs['fusejs']['js_local'],
             'toneJsCdn'       => $libs['tonejs']['js_cdn'],
             'toneJsLocal'     => $libs['tonejs']['js_local'],
             'pdfjsCdn'        => $libs['pdfjs']['js_cdn'],
@@ -1546,7 +1650,7 @@ if (!empty($breadcrumbItems)) {
             $iHymnsConfigJson = json_encode([
                 'appName'    => 'iHymns',
                 'apiUrl'     => '/api',
-                'dataUrl'    => '/api?action=songs_json',
+                'dataUrl'    => '/api?action=songs_index',
                 'songbooks'  => [],
                 'features'   => [],
                 'analytics'  => ['hasGa4' => false, 'hasClarity' => false, 'hasPlausible' => false],

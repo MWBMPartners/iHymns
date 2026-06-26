@@ -176,7 +176,10 @@ if ($_serverError !== '') {
            in that case render `?v=false` would still parse but break
            cache-busting — fall back to the app version stamp instead
            so a deploy still busts the cache. (#526) */
-        $_offlineQueuePath = dirname(__DIR__, 2) . '/public_html/js/modules/offline-queue.js';
+        /* dirname(__DIR__, 2) from includes/pages/ IS public_html — the extra
+           /public_html doubled it, so filemtime() always failed and silently fell
+           back to the version stamp, defeating per-file cache-busting (#1196). */
+        $_offlineQueuePath = dirname(__DIR__, 2) . '/js/modules/offline-queue.js';
         $_offlineQueueVer  = @filemtime($_offlineQueuePath);
         if ($_offlineQueueVer === false) {
             $_offlineQueueVer = $app['Application']['Version']['Number'] ?? '0';

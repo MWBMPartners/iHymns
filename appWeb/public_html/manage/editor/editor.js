@@ -36,23 +36,33 @@ var songData = {
 var EDITOR_API_URL = '/manage/editor/api';
 
 /**
- * Fallback relative paths for loading songs.json when the PHP API
- * is not available (e.g., running the editor without PHP).
+ * WS-D #1016 — the editor loads a LIGHTWEIGHT slim index of every song
+ * (id/number/title/songbook, no lyrics/components) live from MySQL via
+ * ?action=load_index, then fetches each song's full editable record on
+ * demand when it is opened (?action=load_song). The legacy whole-corpus
+ * load (?action=load → songs.json) and its static-file fallbacks are
+ * gone — the editor never holds the corpus in memory. SONGS_URL_CANDIDATES
+ * stays a (now single-entry) list because the post-import reload reuses
+ * SONGS_URL_CANDIDATES[0] to refresh the sidebar index.
  */
-var SONGS_URL_CANDIDATES = [
-    'api?action=load',                        /* Primary: PHP API reads from data_share/ */
-    '../data/songs.json',                     /* Deployed server: data/ inside private_html/ */
-    '../../data/songs.json',                  /* Alternative: data/ one up from private_html/ */
-    '../../../data/songs.json',               /* Local dev: relative to appWeb/private_html/editor/ → appWeb/data/ */
-    '../../../../data/songs.json',            /* Local dev: relative to editor/ → project root data/ */
-    'data/songs.json'                         /* Fallback: same directory */
-];
+var SONGS_URL_CANDIDATES = [EDITOR_API_URL + '?action=load_index'];
 
-/** Default URL shown in the manual load prompt. */
+/** Slim-index load endpoint (all songs, lightweight). */
 var DEFAULT_SONGS_URL = SONGS_URL_CANDIDATES[0];
 
-/** ID of the song currently loaded into the edit form (null when nothing selected). */
+/** Per-record full-song load endpoint, hit when a song is opened. */
+var LOAD_SONG_URL = EDITOR_API_URL + '?action=load_song';
+
+/** ID of the song the user has SELECTED (null when nothing selected). May
+ *  briefly differ from the song actually rendered in the form while that
+ *  song's full record is being fetched (WS-D #1016). */
 var currentSongId = null;
+
+/** ID of the song whose full record is actually RENDERED in the form right
+ *  now (null when the form is empty/loading). Distinct from currentSongId:
+ *  external-links flushing keys off this so a rapid A→B→A switch can't write
+ *  the displayed song's DOM into a different song's record (WS-D #1016). */
+var _renderedSongId = null;
 
 /** Set of song IDs that have been modified since last save. */
 var modifiedSongIds = new Set();
@@ -66,61 +76,6 @@ var currentSortMode = 'title';
 /* ========================================================================
  *  SECTION 2 — Data Management (#53, #58)
  * ======================================================================== */
-
-/**
- * loadSongsFromFile(file)
- * -----------------------
- * Reads a File object (from an <input type="file">) as text, parses it as JSON,
- * and stores the result in the global `songData` object.
- *
- * @param {File} file - A File reference chosen by the user.
- * @returns {Promise<void>}
- */
-function loadSongsFromFile(file) {
-    return new Promise(function (resolve, reject) {
-        /* Create a FileReader to read the file contents as a UTF-8 string. */
-        var reader = new FileReader();
-
-        /* When the read completes successfully, parse the JSON string. */
-        reader.onload = function (event) {
-            try {
-                /* Parse the raw text into a JavaScript object. */
-                var parsed = JSON.parse(event.target.result);
-
-                /* Store each top-level key into the global songData. */
-                songData.meta      = parsed.meta      || {};
-                songData.songbooks = parsed.songbooks  || [];
-                songData.songs     = parsed.songs      || [];
-
-                /* Reset modification tracking because we just loaded fresh data. */
-                modifiedSongIds.clear();
-                currentSongId = null;
-
-                /* Re-render the UI to reflect the newly loaded data. */
-                renderSongList();      // rebuild sidebar
-                clearEditForm();       // nothing selected yet
-                updateStatusBar();     // refresh counts
-
-                /* Notify the user that loading succeeded. */
-                showToast('Loaded ' + songData.songs.length + ' song(s) from file.', 'success');
-                resolve();
-            } catch (err) {
-                /* JSON parsing failed — inform the user. */
-                showToast('Failed to parse JSON: ' + err.message, 'danger');
-                reject(err);
-            }
-        };
-
-        /* If the FileReader itself errors, reject the promise. */
-        reader.onerror = function () {
-            showToast('Failed to read file.', 'danger');
-            reject(reader.error);
-        };
-
-        /* Start reading the file as a text string. */
-        reader.readAsText(file);
-    });
-}
 
 /**
  * loadSongsFromURL(url)
@@ -208,6 +163,7 @@ function _fetchAndParseSongs(target) {
             songData.meta      = parsed.meta      || {};
             songData.songbooks = parsed.songbooks  || [];
             songData.songs     = parsed.songs      || [];
+            rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
 
             /* Reset tracking state. */
             modifiedSongIds.clear();
@@ -219,7 +175,7 @@ function _fetchAndParseSongs(target) {
             updateStatusBar();
 
             /* Notify the user. */
-            showToast('Loaded ' + songData.songs.length + ' song(s) from URL.', 'success');
+            showToast('Loaded ' + songData.songs.length + ' song(s).', 'success');
         })
         .catch(function (err) {
             /* Network or parse error — inform the user but don't crash. */
@@ -276,12 +232,8 @@ function saveSongs() {
         /* fall through — warnings are informational, save proceeds */
     }
 
-    /* Refresh the generatedAt timestamp so any subsequent export
-       reflects the save time. */
-    songData.meta.generatedAt = new Date().toISOString();
-
     /* Stream each song to the per-song endpoint. */
-    autoSaveSongsPerSong(ids).then(function (summary) {
+    enqueueSave(ids).then(function (summary) {
         if (summary.saved.length > 0) {
             lastSaveTime = new Date();
             summary.saved.forEach(function (id) { modifiedSongIds.delete(id); });
@@ -299,45 +251,6 @@ function saveSongs() {
             });
         }
     });
-}
-
-/* Backwards-compatible alias for the old function name. */
-var saveSongsToFile = saveSongs;
-
-/**
- * downloadSongsJson(jsonString)
- * -----------------------------
- * Fallback: triggers a browser download of the songs.json data when the
- * server-side save is not available.
- *
- * @param {string} jsonString - The JSON string to download.
- */
-function downloadSongsJson(jsonString) {
-    /* Create a Blob (binary large object) from the JSON string. */
-    var blob = new Blob([jsonString], { type: 'application/json' });
-
-    /* Build a temporary object URL that points to the Blob. */
-    var url = URL.createObjectURL(blob);
-
-    /* Create a hidden <a> element, set its href to the blob URL, and click it. */
-    var anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = 'songs.json';      // suggested file name
-    document.body.appendChild(anchor);    // must be in DOM for Firefox
-    anchor.click();                       // trigger the download
-    document.body.removeChild(anchor);    // clean up the DOM
-    URL.revokeObjectURL(url);             // free the blob memory
-
-    /* Record the save time and clear modification flags. */
-    lastSaveTime = new Date();
-    modifiedSongIds.clear();
-
-    /* Refresh UI to reflect saved state. */
-    renderSongList();
-    updateStatusBar();
-
-    /* Confirm to the user. */
-    showToast('songs.json downloaded (manual placement required).', 'info');
 }
 
 /* ========================================================================
@@ -367,10 +280,9 @@ function renderSongList(filter) {
     /* Read the songbook filter dropdown value. */
     var songbookFilter = filter !== undefined ? filter : getSelectedSongbookFilter();
 
-    /* Count how many songs pass the filters (for the badge). */
-    var visibleCount = 0;
-
-    /* Sort songs according to the current sort mode (#251). */
+    /* Build the FULL filtered + sorted list. Search + songbook filters run over
+       the WHOLE corpus — only the DOM RENDER is incremental. The result is kept
+       on the module so the scroll handler can append more rows on demand. */
     var sortedSongs = songData.songs.slice().sort(function (a, b) {
         if (currentSortMode === 'title') {
             return (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
@@ -384,97 +296,141 @@ function renderSongList(filter) {
         return 0;
     });
 
-    /* Iterate over sorted songs. */
-    sortedSongs.forEach(function (song) {
-        /* ---- Songbook filter ---- */
-        if (songbookFilter && song.songbook !== songbookFilter) {
-            return; // skip songs not in the selected songbook
-        }
-
-        /* ---- Text search filter ---- */
+    _sidebarVisible = sortedSongs.filter(function (song) {
+        if (songbookFilter && song.songbook !== songbookFilter) { return false; }
         if (searchTerm) {
-            /* Match against title and number (both lowercased). */
             var titleMatch  = (song.title  || '').toLowerCase().indexOf(searchTerm) !== -1;
             var numberMatch = String(song.number || '').toLowerCase().indexOf(searchTerm) !== -1;
-            if (!titleMatch && !numberMatch) {
-                return; // skip songs that don't match the search
-            }
+            if (!titleMatch && !numberMatch) { return false; }
         }
-
-        /* This song passed all filters — render it. */
-        visibleCount++;
-
-        /* Create the list-group-item element. */
-        var li = document.createElement('a');
-        li.href = '#';
-        li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
-
-        /* Multi-select mode (#399): prepend a checkbox that mirrors
-           the selected state and clicking it toggles selection without
-           navigating to the song. */
-        if (window._selectMode) {
-            var cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.className = 'form-check-input me-2 flex-shrink-0';
-            cb.dataset.songId = song.id;
-            cb.checked = window._selectedIds && window._selectedIds.has(song.id);
-            cb.addEventListener('click', function (e) {
-                e.stopPropagation();
-            });
-            cb.addEventListener('change', function () {
-                if (!window._selectedIds) window._selectedIds = new Set();
-                if (cb.checked) window._selectedIds.add(song.id);
-                else window._selectedIds.delete(song.id);
-                updateBulkActionsBar();
-            });
-            li.appendChild(cb);
-        }
-
-        /* Highlight the currently selected song. */
-        if (song.id === currentSongId) {
-            li.classList.add('active');
-        }
-
-        /* Build the display text: "number - Title Case Title" (#249). */
-        var label = document.createElement('span');
-        label.textContent = (song.number || '?') + ' - ' + toTitleCase(song.title || 'Untitled');
-
-        /* Right-side badges: songbook abbreviation + modified indicator (#249). */
-        var badges = document.createElement('span');
-        badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
-        if (modifiedSongIds.has(song.id)) {
-            var modBadge = document.createElement('span');
-            modBadge.className = 'badge bg-warning text-dark';
-            modBadge.style.fontSize = '0.65rem';
-            modBadge.textContent = 'modified';
-            badges.appendChild(modBadge);
-        }
-        if (song.songbook) {
-            var sbBadge = document.createElement('span');
-            sbBadge.className = 'badge rounded-pill';
-            sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
-            sbBadge.textContent = song.songbook;
-            badges.appendChild(sbBadge);
-        }
-
-        li.appendChild(label);
-        li.appendChild(badges);
-
-        /* When the user clicks this item, load the song into the editor. */
-        li.addEventListener('click', function (e) {
-            e.preventDefault(); // prevent default anchor behaviour
-            selectSong(song.id);
-        });
-
-        /* Add the item to the list. */
-        listEl.appendChild(li);
+        return true;
     });
+    _sidebarRendered = 0;
 
-    /* Update the song-count badge in the sidebar header. */
+    /* Infinite scroll (#1180-B1): bind once. As the user nears the bottom of the
+       sidebar we append the next batch, so the editor never builds all ~16k rows
+       up front (the slow-open / slow-Edit cause) yet the WHOLE filtered list is
+       reachable by scrolling — and search/filter still span the full corpus. */
+    if (!_sidebarScrollBound) {
+        _sidebarScrollBound = true;
+        listEl.addEventListener('scroll', function () {
+            if (_sidebarRendered >= _sidebarVisible.length) { return; }
+            if (listEl.scrollTop + listEl.clientHeight >= listEl.scrollHeight - 300) {
+                renderSidebarBatch();
+            }
+        });
+    }
+
+    renderSidebarBatch();   /* first batch */
+
+    /* If the first batch is shorter than the viewport, keep loading until it
+       fills (so there is something to scroll on, and the scroll handler can fire). */
+    var _fillGuard = 0;
+    while (_sidebarRendered < _sidebarVisible.length
+           && listEl.clientHeight > 0
+           && listEl.scrollHeight <= listEl.clientHeight + 4
+           && _fillGuard++ < 80) {
+        renderSidebarBatch();
+    }
+
+    /* Update the song-count badge in the sidebar header (full match count). */
     var countEl = document.getElementById('song-count');
     if (countEl) {
-        countEl.textContent = visibleCount + ' / ' + songData.songs.length;
+        countEl.textContent = _sidebarVisible.length + ' / ' + songData.songs.length;
     }
+}
+
+/* Sidebar incremental-render state (#1180-B1). */
+var SIDEBAR_BATCH       = 200;   /* rows built per batch */
+var _sidebarVisible     = [];    /* the full filtered+sorted song list */
+var _sidebarRendered    = 0;     /* how many rows are currently in the DOM */
+var _sidebarScrollBound = false;
+
+/* Append the next batch of sidebar rows from _sidebarVisible (#1180-B1). */
+function renderSidebarBatch() {
+    var listEl = document.getElementById('song-list');
+    if (!listEl) { return; }
+    var end  = Math.min(_sidebarRendered + SIDEBAR_BATCH, _sidebarVisible.length);
+    var frag = document.createDocumentFragment();
+    for (var i = _sidebarRendered; i < end; i++) {
+        frag.appendChild(buildSongListRow(_sidebarVisible[i]));
+    }
+    listEl.appendChild(frag);
+    _sidebarRendered = end;
+}
+
+/* Build one sidebar row <a> for a song — extracted so the initial render and the
+   scroll-loaded batches share identical markup + behaviour (#1180-B1). */
+function buildSongListRow(song) {
+    var li = document.createElement('a');
+    li.href = '#';
+    li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+
+    /* Multi-select mode (#399): a checkbox that toggles selection without
+       navigating to the song. */
+    if (window._selectMode) {
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.className = 'form-check-input me-2 flex-shrink-0';
+        cb.dataset.songId = song.id;
+        cb.checked = window._selectedIds && window._selectedIds.has(song.id);
+        cb.addEventListener('click', function (e) { e.stopPropagation(); });
+        cb.addEventListener('change', function () {
+            if (!window._selectedIds) window._selectedIds = new Set();
+            if (cb.checked) window._selectedIds.add(song.id);
+            else window._selectedIds.delete(song.id);
+            updateBulkActionsBar();
+        });
+        li.appendChild(cb);
+    }
+
+    /* Highlight the currently selected song. */
+    if (song.id === currentSongId) { li.classList.add('active'); }
+
+    /* "<#>  Title" — the number sits in a fixed-width, right-aligned, tabular-nums
+       column so every title lines up regardless of a 1–4 digit number (or no
+       number for Misc / unofficial books, which show a muted dash). Tidies the
+       ragged sidebar left edge (#1344); replaces the old unpadded "number - title". */
+    var label = document.createElement('span');
+    label.className = 'd-flex align-items-baseline gap-2 text-truncate';
+    label.style.cssText = 'flex:1 1 auto; min-width:0;';
+    var numSpan = document.createElement('span');
+    var _hasNum = song.number != null && String(song.number).trim() !== '';
+    numSpan.textContent = _hasNum ? String(song.number) : '–';
+    numSpan.style.cssText = 'flex-shrink:0; min-width:3em; text-align:right; font-variant-numeric:tabular-nums; opacity:.6;';
+    var titleSpan = document.createElement('span');
+    titleSpan.className = 'text-truncate';
+    titleSpan.textContent = toTitleCase(song.title || 'Untitled');
+    label.appendChild(numSpan);
+    label.appendChild(titleSpan);
+
+    /* Right-side badges: modified indicator + songbook abbreviation (#249). */
+    var badges = document.createElement('span');
+    badges.className = 'd-flex align-items-center gap-1 flex-shrink-0';
+    if (modifiedSongIds.has(song.id)) {
+        var modBadge = document.createElement('span');
+        modBadge.className = 'badge bg-warning text-dark';
+        modBadge.style.fontSize = '0.65rem';
+        modBadge.textContent = 'modified';
+        badges.appendChild(modBadge);
+    }
+    if (song.songbook) {
+        var sbBadge = document.createElement('span');
+        sbBadge.className = 'badge rounded-pill';
+        sbBadge.style.cssText = 'background-color: rgba(245,158,11,0.15); color: #f59e0b; font-size: 0.65rem; font-weight: 600;';
+        sbBadge.textContent = song.songbook;
+        badges.appendChild(sbBadge);
+    }
+
+    li.appendChild(label);
+    li.appendChild(badges);
+
+    /* Clicking a row loads the song into the editor. */
+    li.addEventListener('click', function (e) {
+        e.preventDefault();
+        selectSong(song.id);
+    });
+    return li;
 }
 
 /**
@@ -570,26 +526,181 @@ function populateSongbookFilterDropdown() {
  * @param {string} songId - The unique ID of the song to select.
  */
 function selectSong(songId) {
-    /* Find the song object in the data array. */
+    /* Find the song stub in the slim index. */
     var song = songData.songs.find(function (s) { return s.id === songId; });
     if (!song) {
         showToast('Song not found: ' + songId, 'danger');
         return;
     }
 
-    /* #833 — flush any pending External-Links DOM changes back into
-       the previously-open song before we navigate away. Without this
-       a user who edits links on song A and clicks song B in the
-       sidebar would lose the in-flight edits when the rows get
-       replaced. syncSongExternalLinksFromDom() reads the current
-       DOM state into the open song's `.links` and re-arms auto-save. */
-    if (typeof currentSongId !== 'undefined' && currentSongId && currentSongId !== songId) {
+    /* #833 — flush any pending External-Links DOM changes back into the
+       song that is actually RENDERED before we navigate away. Keyed off
+       _renderedSongId (not currentSongId) so a rapid A→B→A switch can't
+       flush the displayed song's DOM into a different song (WS-D #1016). */
+    if (typeof _renderedSongId !== 'undefined' && _renderedSongId && _renderedSongId !== songId) {
         try { syncSongExternalLinksFromDom(); } catch (_e) { /* defensive — must not block navigation */ }
     }
 
-    /* Store the selection globally. */
+    /* Store the selection globally + highlight it in the sidebar right
+       away, so the active state and the currentSongId async-guards engage
+       even while the full record is still loading. */
     currentSongId = songId;
     updateHistoryButtonState();
+    renderSongList();
+
+    /* WS-D #1016 — the sidebar carries only the slim index, so fetch the
+       full editable record per song on open. Songs already loaded
+       (_full), freshly added, or imported are populated straight from
+       memory; everything else is fetched live from MySQL. */
+    if (song._full) {
+        _populateSongForm(song);
+        return;
+    }
+
+    /* Clear the form to a loading state so the previous song's data isn't
+       left on screen (mismatching the sidebar highlight) during the fetch. */
+    clearEditForm();
+    _setEditorLoading(true);
+
+    _loadSongFull(songId).then(function (full) {
+        if (currentSongId !== songId) return; /* user switched away mid-fetch */
+        _setEditorLoading(false);
+        if (!full) {
+            /* Deleted / not found — keep the form empty rather than
+               populating a slim stub (which would look like an empty song
+               and, if saved, wipe its DB rows). currentSongId is reset so
+               a subsequent Save can't write under this id. */
+            currentSongId = null;
+            renderSongList();
+            updateStatusBar();
+            showToast('Song not found: ' + songId, 'danger');
+            return;
+        }
+        Object.assign(song, full);
+        song._full = true;
+        _populateSongForm(song);
+    }).catch(function (err) {
+        if (currentSongId !== songId) return;
+        _setEditorLoading(false);
+        /* Fetch failed (offline / 500). Leave the form empty + deselect so
+           the form never misrepresents another song under this id. */
+        currentSongId = null;
+        clearEditForm();
+        renderSongList();
+        updateStatusBar();
+        showToast('Could not load song ' + songId + ': ' +
+                  (err && err.message ? err.message : err), 'danger');
+    });
+}
+
+/**
+ * _setEditorLoading(on)
+ * ---------------------
+ * Toggles a lightweight "loading song" hint in the status bar while a
+ * per-record fetch is in flight (WS-D #1016). Kept minimal — the form is
+ * already cleared, so there is no stale data; this just signals progress.
+ */
+function _setEditorLoading(on) {
+    var statusEl = document.getElementById('status-text');
+    if (!statusEl) return;
+    /* Restore the resting "Ready" text on clear so the indicator can't get
+       stuck (e.g. when a quick switch to an already-loaded song renders
+       synchronously and never re-runs the fetch path). */
+    statusEl.textContent = on ? 'Loading song…' : 'Ready';
+}
+
+/**
+ * _loadSongFull(songId)
+ * ---------------------
+ * Fetches ONE song's full editable record from MySQL (WS-D #1016) — the
+ * per-record replacement for reading it out of the old in-memory corpus.
+ *
+ * @param {string} songId
+ * @returns {Promise<object|null>} The full song, or null if not found.
+ */
+function _loadSongFull(songId) {
+    return fetch(LOAD_SONG_URL + '&id=' + encodeURIComponent(songId), {
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin'
+    }).then(function (r) {
+        if (!r.ok) {
+            return r.text().then(function (body) {
+                var detail = '';
+                try {
+                    var p = body ? JSON.parse(body) : null;
+                    if (p && typeof p === 'object') detail = p.detail || p.error || '';
+                } catch (_e) { /* not JSON */ }
+                throw new Error('HTTP ' + r.status + (detail ? ' — ' + detail : ''));
+            });
+        }
+        return r.json();
+    }).then(function (d) { return d && d.song ? d.song : null; });
+}
+
+/**
+ * _loadSongsFull(ids)
+ * -------------------
+ * Batch-fetches the full editable records for the given song IDs (WS-D
+ * #1016) and merges them into their slim sidebar stubs, marking each
+ * _full. Used by the multi-select bulk operations (verify / move /
+ * export) so they never mutate or persist a slim stub — which would make
+ * save_song DELETE-then-INSERT empty credits/components and wipe the
+ * song's lyrics. Only fetches the stubs that aren't already _full.
+ *
+ * @param {string[]} ids
+ * @returns {Promise<void>}
+ */
+function _loadSongsFull(ids) {
+    var need = (ids || []).filter(function (id) {
+        var s = (songData.songs || []).find(function (x) { return x.id === id; });
+        return s && !s._full;
+    });
+    if (!need.length) return Promise.resolve();
+
+    return fetch(EDITOR_API_URL + '?action=load_songs', {
+        method:      'POST',
+        headers:     { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'same-origin',
+        body:        JSON.stringify({ ids: need })
+    }).then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+    }).then(function (d) {
+        var byId = Object.create(null);
+        (d && d.songs || []).forEach(function (full) {
+            if (full && full.id) byId[full.id] = full;
+        });
+        (songData.songs || []).forEach(function (s) {
+            if (byId[s.id]) {
+                Object.assign(s, byId[s.id]);
+                s._full = true;
+            }
+        });
+        /* Any id we asked for but didn't get back no longer exists in the
+           DB — surface it rather than silently bulk-editing a ghost. */
+        var missing = need.filter(function (id) { return !byId[id]; });
+        if (missing.length) {
+            throw new Error(missing.length + ' selected song(s) could not be loaded.');
+        }
+    });
+}
+
+/**
+ * _populateSongForm(song)
+ * -----------------------
+ * Renders an open song's full record into the edit form. Split out of
+ * selectSong() (WS-D #1016) so the per-record fetch can populate the form
+ * once the data arrives.
+ *
+ * @param {object} song Full editable song record
+ */
+function _populateSongForm(song) {
+    /* This song's full record is now the one on screen — track it so the
+       external-links flush keys off the displayed song (WS-D #1016). */
+    _renderedSongId = song.id;
+    /* A song is rendering — clear any "Loading song…" indicator. Covers the
+       synchronous _full path (no fetch) and the async success path. */
+    _setEditorLoading(false);
 
     /* Enable the toolbar's Export-current-song button (#883 follow-up).
        Stays disabled while no song is open so the user can't trigger
@@ -604,7 +715,7 @@ function selectSong(songId) {
        for late-joiners that miss the event. */
     try {
         document.dispatchEvent(new CustomEvent('iHymns:song-loaded', {
-            detail: { songId: songId }
+            detail: { songId: song.id }
         }));
     } catch (_e) { /* IE11 polyfill territory; harmless to skip */ }
 
@@ -970,49 +1081,76 @@ function renderComponents(song) {
         btnGroup.appendChild(btnDown);
         btnGroup.appendChild(btnRemove);
 
-        /* #858 — per-component language override. NULL / empty value
-           means "inherit from the parent song's language"; an explicit
-           pick overrides for this component only. The dropdown is
-           populated from window.iHymnsLanguageOptions which is
-           pre-loaded at editor boot from /api?action=languages.
-           Disabled when the schema column is absent (pre-migration);
-           the boot script sets dataset.componentLangColumn = '0' in
-           that case so this just becomes a no-op. */
-        var langSelect = document.createElement('select');
-        langSelect.className = 'form-select form-select-sm component-language-select';
+        /* #858 / #1253 — per-component language override. A TEXT input with a
+           shared languages datalist (not a fixed <select>) so a curator can enter
+           a FULL BCP 47 tag — base language plus optional script / region /
+           variant (pt-BR, zh-Hans-CN, es-419) — not just a seeded base language.
+           Empty = inherit from the parent song's language. The datalist offers
+           the active languages as suggestions; any valid tag may be typed
+           directly and is validated server-side on save (_ietfBcp47Validate).
+           A previously-saved tag that isn't in the suggestion list is preserved
+           because it's simply the input's current value, never silently reverted. */
+        ensureComponentLangDatalist();
+        var langSelect = document.createElement('input');
+        langSelect.type = 'text';
+        langSelect.className = 'form-control form-control-sm component-language-select';
         langSelect.style.maxWidth = '160px';
-        langSelect.title = 'Language override (optional) — defaults to the song language';
-        var langInherit = document.createElement('option');
-        langInherit.value = '';
-        langInherit.textContent = 'Same as song';
-        langSelect.appendChild(langInherit);
-        var languageOptions = Array.isArray(window.iHymnsLanguageOptions)
-            ? window.iHymnsLanguageOptions : [];
-        var currentLang = comp.language ? String(comp.language) : '';
-        var sawCurrent = false;
-        languageOptions.forEach(function (opt) {
-            var o = document.createElement('option');
-            o.value = opt.code;
-            o.textContent = opt.name + ' (' + opt.code + ')';
-            if (currentLang && currentLang.toLowerCase() === String(opt.code).toLowerCase()) {
-                o.selected = true;
-                sawCurrent = true;
-            }
-            langSelect.appendChild(o);
-        });
-        /* If the saved tag isn't in the registry (pt-BR when only pt
-           is seeded, or a brand-new tag), surface it as an extra
-           option so it doesn't silently revert on save. */
-        if (currentLang && !sawCurrent) {
-            var oExtra = document.createElement('option');
-            oExtra.value = currentLang;
-            oExtra.textContent = currentLang;
-            oExtra.selected = true;
-            langSelect.appendChild(oExtra);
-        }
-        langSelect.addEventListener('change', function () {
-            comp.language = langSelect.value || null;
+        langSelect.setAttribute('list', 'component-lang-datalist');
+        langSelect.setAttribute('autocomplete', 'off');
+        langSelect.placeholder = 'Same as song';
+        langSelect.title = 'Language override (optional) — a BCP 47 tag like en, pt-BR, zh-Hans. Blank = same as the song.';
+        langSelect.value = comp.language ? String(comp.language) : '';
+        langSelect.addEventListener('input', function () {
+            comp.language = langSelect.value.trim() || null;
             markModified(song.id);
+        });
+
+        /* #1345 — a structured-picker affordance beside the free-text input so a
+           curator can compose language + script + region (→ ko-Latn) by picking,
+           instead of knowing the raw tag. Directly answers "where do I set Verse 2 =
+           Korean in Latin script?". The text input stays for quick entry / power
+           users; the picker writes its composed tag back into it on Save. */
+        var compLangPickBtn = document.createElement('button');
+        compLangPickBtn.type = 'button';
+        compLangPickBtn.className = 'btn btn-sm btn-outline-secondary';
+        compLangPickBtn.innerHTML = '<i class="bi bi-translate" aria-hidden="true"></i>';
+        compLangPickBtn.title = 'Pick language with script / region (e.g. ko-Latn)';
+        compLangPickBtn.setAttribute('aria-label', 'Pick component language with script / region');
+        compLangPickBtn.addEventListener('click', function () {
+            /* Toggle: a second click (or Cancel) closes the open form. */
+            var existing = body.querySelector('.cp-complang-form');
+            if (existing) { existing.remove(); return; }
+            var form = document.createElement('div');
+            form.className = 'cp-complang-form mb-2 p-2 border rounded bg-body-tertiary';
+            var picker = buildInlineIetfPicker(comp.language || '');
+            form.appendChild(picker.el);
+            var btnRow = document.createElement('div');
+            btnRow.className = 'mt-1 d-flex gap-1';
+            var saveBtn = document.createElement('button');
+            saveBtn.type = 'button';
+            saveBtn.className = 'btn btn-sm btn-primary py-0 px-2';
+            saveBtn.textContent = 'Save';
+            /* Editing an existing tag: block Save until the async pre-fill resolves,
+               so a fast click can't read '' and clear it (mirrors the per-line form). */
+            if (comp.language) {
+                saveBtn.disabled = true;
+                picker.ready.then(function () { saveBtn.disabled = false; });
+            }
+            saveBtn.addEventListener('click', function () {
+                comp.language = picker.getTag() || null;
+                langSelect.value = comp.language || '';
+                markModified(song.id);
+                form.remove();
+            });
+            var cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-sm btn-outline-secondary py-0 px-2';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', function () { form.remove(); });
+            btnRow.appendChild(saveBtn);
+            btnRow.appendChild(cancelBtn);
+            form.appendChild(btnRow);
+            body.insertBefore(form, body.firstChild);
         });
 
         /* Assemble the header. */
@@ -1020,6 +1158,7 @@ function renderComponents(song) {
         header.appendChild(typeSelect);
         header.appendChild(numInput);
         header.appendChild(langSelect);
+        header.appendChild(compLangPickBtn);
         header.appendChild(btnGroup);
 
         /* ---- Card body with lyrics textarea ---- */
@@ -1036,11 +1175,61 @@ function renderComponents(song) {
         textarea.addEventListener('input', function () {
             comp.lines = textarea.value.split('\n');
             markModified(song.id);
-            autoResizeTextarea(textarea); // re-fit height
-            renderPreview(song);
+            autoResizeTextarea(textarea); // re-fit height (cheap, keep immediate)
+            schedulePreview(song);        // debounced full preview rebuild (#1180-A3)
         });
 
         body.appendChild(textarea);
+
+        /* #1094 — optional manual per-line chords (collapsible). One line of
+           space-separated chord symbols per lyric line; saved to ChordsJson
+           (parallel to the lyrics). Hidden until the curator opens it, or shown
+           when the component already has chords. */
+        var chordsWrap = document.createElement('div');
+        chordsWrap.className = 'mt-2';
+        var hasChords = Array.isArray(comp.chords) && comp.chords.some(function (c) {
+            return c && (Array.isArray(c) ? c.length : String(c).trim());
+        });
+        var chordsToggle = document.createElement('button');
+        chordsToggle.type = 'button';
+        chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        var chordsBox = document.createElement('div');
+        chordsBox.className = 'mt-1';
+        chordsBox.style.display = hasChords ? '' : 'none';
+        var chordsArea = document.createElement('textarea');
+        chordsArea.className = 'form-control form-control-sm component-chords font-monospace';
+        chordsArea.rows = 2;
+        chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
+        chordsArea.value = componentChordsToText(comp);
+        chordsArea.addEventListener('input', function () {
+            comp.chords = chordsArea.value.split('\n').map(function (l) { return l.trim(); });
+            markModified(song.id);
+        });
+        chordsToggle.addEventListener('click', function () {
+            chordsBox.style.display = (chordsBox.style.display === 'none') ? '' : 'none';
+            if (chordsBox.style.display !== 'none') { chordsArea.focus(); }
+        });
+        var chordsHint = document.createElement('div');
+        chordsHint.className = 'form-text small';
+        chordsHint.textContent = 'Optional. Each chord line lines up with the lyric line above it.';
+        chordsBox.appendChild(chordsArea);
+        chordsBox.appendChild(chordsHint);
+        chordsWrap.appendChild(chordsToggle);
+        chordsWrap.appendChild(chordsBox);
+        body.appendChild(chordsWrap);
+
+        /* #1253 → #1345 — per-line language overrides MOVED out of this card body.
+           The old free-text monospace textarea ("one BCP 47 tag per line") was hard
+           to use; per-line language is now an INLINE control inside the per-line
+           translations/annotations panel below (a 🌐 chip + a structured IETF picker
+           per line, mirroring the translations UX). Storage is unchanged —
+           comp.languages[i] (parallel to comp.lines) → LanguagesJson on save. */
+
+        /* #1235 P3 / #1088 — per-line translations + annotations editor
+           (collapsible). Keys off the saved line Ids (comp.lineIds); writes to
+           the CSRF-protected v2 API. */
+        body.appendChild(buildEnrichmentPanel(song, comp));
 
         /* Assemble the full card. */
         card.appendChild(header);
@@ -1076,6 +1265,398 @@ function renderComponents(song) {
  * @param {{type:string, number:(number|null|string)}} comp
  * @returns {string}
  */
+/**
+ * componentChordsToText(comp) — render a component's ChordsJson back into the
+ * editable textarea: one line per lyric line, chords space-separated. Loaded
+ * chords are arrays (["C","G"]); freshly-typed lines are strings ("C G"). (#1094)
+ * @param {{chords?:Array}} comp
+ * @returns {string}
+ */
+function componentChordsToText(comp) {
+    if (!Array.isArray(comp.chords)) { return ''; }
+    return comp.chords.map(function (c) {
+        if (Array.isArray(c)) { return c.join(' '); }
+        return (c == null) ? '' : String(c);
+    }).join('\n');
+}
+
+/* componentLanguagesToText() removed in #1345 — per-line language is no longer a
+   newline-joined textarea; it's edited inline per line via the IETF picker
+   (buildInlineIetfPicker) in the translations/annotations panel. */
+
+/**
+ * ensureComponentLangDatalist() — create (once) a shared <datalist> of the active
+ * languages that every per-component language input references via list=. Built
+ * from window.iHymnsLanguageOptions (pre-loaded at editor boot from
+ * /api?action=languages). Idempotent — returns the existing node on re-render so
+ * we don't rebuild it per component card. (#1253)
+ * @returns {HTMLDataListElement}
+ */
+function ensureComponentLangDatalist() {
+    var dl = document.getElementById('component-lang-datalist');
+    if (dl) { return dl; }
+    dl = document.createElement('datalist');
+    dl.id = 'component-lang-datalist';
+    var opts = Array.isArray(window.iHymnsLanguageOptions) ? window.iHymnsLanguageOptions : [];
+    opts.forEach(function (opt) {
+        var o = document.createElement('option');
+        o.value = opt.code;
+        o.label = opt.name + ' (' + opt.code + ')';
+        dl.appendChild(o);
+    });
+    document.body.appendChild(dl);
+    return dl;
+}
+
+/* Monotonic id source so every dynamically-built IETF picker gets unique
+   datalist ids (the module resolves its lists by `getElementById(input.list)`,
+   so two instances sharing an id would clobber each other's suggestions). */
+var _ed2IetfPickerSeq = 0;
+
+/**
+ * buildInlineIetfPicker(initialTag) — construct a compact, structured IETF BCP 47
+ * picker (Language / Script / Region) on demand and boot it via the shared module
+ * (window.bootIetfLanguagePicker, exposed by editor/index.php). Used for per-line
+ * language overrides and the per-line translation language field (#1345), so a
+ * curator picks "Korean" + "Latin" → ko-Latn instead of typing a raw tag.
+ *
+ * Returns { el, booted, getTag() } where el is the picker root (append it into a
+ * form) and getTag() reads the composed BCP 47 tag. If the ES module hasn't loaded
+ * (it's deferred; pickers are only built on user interaction, long after) the
+ * helper DEGRADES to a single free-text input with the languages datalist so the
+ * field still works.
+ *
+ * @param {string} initialTag  saved BCP 47 tag to pre-fill (or '')
+ * @returns {{el:HTMLElement, booted:boolean, getTag:function():string}}
+ */
+function buildInlineIetfPicker(initialTag) {
+    var tag = (initialTag == null) ? '' : String(initialTag);
+
+    /* Graceful fallback — module not available: a single BCP 47 text input. */
+    if (typeof window.bootIetfLanguagePicker !== 'function') {
+        ensureComponentLangDatalist();
+        var fb = document.createElement('input');
+        fb.type = 'text';
+        fb.className = 'form-control form-control-sm';
+        fb.setAttribute('list', 'component-lang-datalist');
+        fb.setAttribute('autocomplete', 'off');
+        fb.placeholder = 'BCP 47 tag (e.g. ko-Latn)';
+        fb.style.maxWidth = '160px';
+        if (tag) { fb.value = tag; }
+        return { el: fb, booted: false, ready: Promise.resolve(), getTag: function () { return (fb.value || '').trim(); } };
+    }
+
+    var id = 'ed2-ietf-' + (++_ed2IetfPickerSeq);
+    var wrap = document.createElement('div');
+    wrap.className = 'ietf-picker';
+    wrap.setAttribute('data-ietf-picker-id', id);
+    /* Deliberately NOT setting data-initial-tag: we pre-fill via ctl.setTag(tag)
+       below so we can expose its async completion as `ready` (#1345 review). The
+       module's setTag awaits the languages/script/region fetches before it
+       populates the inputs + hidden output; reading getTag() before that resolves
+       would mis-report '' and a fast Save could blank an existing tag.
+       Static structure mirroring partials/ietf-language-picker.php — the only
+       interpolation is `id` (generated, no user data) so innerHTML is XSS-safe. */
+    wrap.innerHTML =
+        '<div class="row g-1">'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-language" list="ietf-lang-list-' + id + '" autocomplete="off" placeholder="Language"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-script" list="ietf-script-list-' + id + '" autocomplete="off" placeholder="Script (e.g. Latin)"></div>'
+      +   '<div class="col"><input type="text" class="form-control form-control-sm ietf-picker-region" list="ietf-region-list-' + id + '" autocomplete="off" placeholder="Region"></div>'
+      + '</div>'
+      + '<div class="form-text small mt-1">IETF tag: <code class="ietf-tag-preview">—</code> <span class="ietf-tag-display fst-italic ms-1"></span></div>'
+      + '<input type="hidden" class="ietf-tag-output" value="">'
+      + '<datalist id="ietf-lang-list-' + id + '"></datalist>'
+      + '<datalist id="ietf-script-list-' + id + '"></datalist>'
+      + '<datalist id="ietf-region-list-' + id + '"></datalist>';
+
+    var ctl = window.bootIetfLanguagePicker(wrap);
+    /* Pre-fill the seed tag and expose the async completion. Callers gate Save on
+       this so a too-fast click can't read '' and clear an existing tag (#1345 review). */
+    var ready = (ctl && tag && typeof ctl.setTag === 'function')
+        ? Promise.resolve(ctl.setTag(tag)).catch(function () { /* degrade silently */ })
+        : Promise.resolve();
+    return {
+        el: wrap,
+        booted: !!ctl,
+        ready: ready,
+        getTag: function () {
+            if (ctl && typeof ctl.getTag === 'function') { return (ctl.getTag() || '').trim(); }
+            var o = wrap.querySelector('.ietf-tag-output');
+            return o ? (o.value || '').trim() : '';
+        }
+    };
+}
+
+/* ====================================================================
+ * Per-line translation + annotation editor (#1235 P3 / #1088)
+ *
+ * The legacy editor edits lyrics as a textarea, so per-line enrichment is keyed
+ * off the SAVED line Ids (tblLyricLines.Id), exposed parallel to the lines as
+ * comp.lineIds. Existing enrichment arrives on song.lineTranslations /
+ * song.lineAnnotations (api.php load_song). Writes go to the v2 API (api2.php),
+ * which validates the CSRF token — the legacy api.php deliberately hosts no
+ * enrichment endpoints. A line with no saved Id (freshly typed, or edited since
+ * the last save) shows a "save first" hint instead of add controls; the
+ * Id-preserving diff keeps a line's Id (and its enrichment) across later edits.
+ * ==================================================================== */
+
+var ED2_TRANSLATION_KINDS = ['translation', 'transliteration'];
+var ED2_ANNOTATION_TYPES  = ['explanation', 'reference', 'scripture', 'history', 'translation', 'trivia'];
+
+/* POST to the v2 API with the CSRF header. Resolves to the parsed JSON or
+   rejects with a useful message. */
+function ed2EnrichApi(action, body) {
+    var base = window.IHYMNS_EDITOR_API2 || '/manage/editor/api2';
+    return fetch(base + '?action=' + encodeURIComponent(action), {
+        method:      'POST',
+        headers:     {
+            'Content-Type':     'application/json',
+            'X-CSRF-Token':     window.IHYMNS_EDITOR_CSRF || '',
+            'X-Requested-With': 'XMLHttpRequest'
+        },
+        credentials: 'same-origin',
+        body:        JSON.stringify(body || {})
+    }).then(function (r) {
+        return r.json().catch(function () { return null; }).then(function (d) {
+            if (!r.ok || !d || d.ok === false) {
+                throw new Error((d && d.error) ? d.error : ('HTTP ' + r.status));
+            }
+            return d;
+        });
+    });
+}
+
+/**
+ * buildEnrichmentPanel(song, comp) — a collapsible per-component panel listing
+ * each lyric line with its translations + annotations and add/delete controls.
+ * Returns the wrapper element. (#1235 P3 / #1088)
+ */
+function buildEnrichmentPanel(song, comp) {
+    if (!Array.isArray(song.lineTranslations)) { song.lineTranslations = []; }
+    if (!Array.isArray(song.lineAnnotations))  { song.lineAnnotations  = []; }
+
+    var wrap = document.createElement('div');
+    wrap.className = 'mt-2';
+    var toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+    toggle.innerHTML = '<i class="bi bi-card-text me-1"></i>Per-line language, translations &amp; annotations';
+    var box = document.createElement('div');
+    box.className = 'mt-1';
+    box.style.display = 'none';
+    toggle.addEventListener('click', function () {
+        var show = (box.style.display === 'none');
+        box.style.display = show ? '' : 'none';
+        if (show) { renderBody(); }
+    });
+
+    function lineIdAt(i) {
+        return (Array.isArray(comp.lineIds) && comp.lineIds[i] != null) ? Number(comp.lineIds[i]) : 0;
+    }
+    function forLine(list, key, lineId) {
+        return list.filter(function (e) { return Number(e[key]) === lineId; });
+    }
+    function chip(label, onRemove) {
+        var c = document.createElement('span');
+        c.className = 'badge bg-secondary-subtle text-secondary-emphasis me-1 mb-1 fw-normal';
+        c.style.whiteSpace = 'normal';
+        c.textContent = label + '  ';
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'btn-close btn-close-sm align-middle';
+        x.style.fontSize = '0.6rem';
+        x.title = 'Remove';
+        x.addEventListener('click', onRemove);
+        c.appendChild(x);
+        return c;
+    }
+    function addBtn(label, onClick) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-sm btn-outline-secondary py-0 px-1 me-1';
+        b.textContent = label;
+        b.addEventListener('click', onClick);
+        return b;
+    }
+
+    function deleteEnrichment(action, id, listKey) {
+        ed2EnrichApi(action, { songId: song.id, id: id }).then(function () {
+            song[listKey] = song[listKey].filter(function (e) { return Number(e.id) !== Number(id); });
+            renderBody();
+        }).catch(function (err) { showToast('Delete failed: ' + err.message, 'danger'); });
+    }
+
+    /* #1345 — per-line LANGUAGE override (index-keyed comp.languages[i], NOT a
+       lineId enrichment row). Overrides the component language, which overrides the
+       song language. Pad the parallel array so a later line can be set without
+       filling the earlier ones. */
+    function setLineLang(i, tag) {
+        if (!Array.isArray(comp.languages)) { comp.languages = []; }
+        while (comp.languages.length <= i) { comp.languages.push(''); }
+        comp.languages[i] = tag || '';
+        markModified(song.id);
+    }
+
+    /* Inline structured-picker form for one line's language override (#1345). */
+    function showLineLangForm(host, i) {
+        var cur = (Array.isArray(comp.languages) && comp.languages[i] != null)
+            ? String(comp.languages[i]).trim() : '';
+        var form = document.createElement('div');
+        form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+        var picker = buildInlineIetfPicker(cur);
+        form.appendChild(picker.el);
+        var btnRow = document.createElement('div');
+        btnRow.className = 'mt-1';
+        var save = addBtn('Save', function () {
+            setLineLang(i, picker.getTag());
+            renderBody();
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        /* Editing an EXISTING tag: the picker pre-fills asynchronously, so block Save
+           until it's ready — otherwise a fast click reads '' and clears the tag
+           (#1345 review). A fresh (empty) seed has nothing to lose, so leave it live. */
+        if (cur) {
+            save.disabled = true;
+            picker.ready.then(function () { save.disabled = false; });
+        }
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        btnRow.appendChild(save);
+        btnRow.appendChild(cancel);
+        form.appendChild(btnRow);
+        host.appendChild(form);
+    }
+
+    function showTranslationForm(host, lineId) {
+        /* #1345 — structured IETF picker for the translation's language (full BCP 47:
+           ko-Latn, zh-Hans-CN). Multiple translations per line already work — each
+           "+ Translation" adds another row (the table is keyed per language+kind). */
+        var form = document.createElement('div');
+        form.className = 'mt-1 p-2 border rounded bg-body-tertiary';
+        var kindRow = document.createElement('div');
+        kindRow.className = 'd-flex gap-1 align-items-center mb-1';
+        var kindLbl = document.createElement('span');
+        kindLbl.className = 'small text-muted'; kindLbl.textContent = 'Kind:';
+        var kind = document.createElement('select');
+        kind.className = 'form-select form-select-sm w-auto';
+        ED2_TRANSLATION_KINDS.forEach(function (k) {
+            var o = document.createElement('option'); o.value = k; o.textContent = k; kind.appendChild(o);
+        });
+        kindRow.appendChild(kindLbl); kindRow.appendChild(kind);
+        var picker = buildInlineIetfPicker('');
+        var text = document.createElement('input');
+        text.type = 'text'; text.className = 'form-control form-control-sm mt-1';
+        text.placeholder = 'Translated / romanized line text';
+        var save = addBtn('Save', function () {
+            var payload = { lineId: lineId, kind: kind.value, targetLanguage: picker.getTag(), text: text.value.trim() };
+            if (!payload.targetLanguage || !payload.text) { showToast('Language and text are required.', 'warning'); return; }
+            ed2EnrichApi('line_translation_upsert', { songId: song.id, translation: payload }).then(function (d) {
+                if (d.translation) { song.lineTranslations.push(d.translation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        var btnRow = document.createElement('div');
+        btnRow.className = 'mt-1';
+        btnRow.appendChild(save); btnRow.appendChild(cancel);
+        form.appendChild(kindRow); form.appendChild(picker.el); form.appendChild(text); form.appendChild(btnRow);
+        host.appendChild(form);
+    }
+
+    function showAnnotationForm(host, lineId) {
+        var form = document.createElement('div');
+        form.className = 'd-flex flex-wrap gap-1 align-items-start mt-1';
+        var type = document.createElement('select');
+        type.className = 'form-select form-select-sm w-auto';
+        ED2_ANNOTATION_TYPES.forEach(function (t) {
+            var o = document.createElement('option'); o.value = t; o.textContent = t; type.appendChild(o);
+        });
+        var body = document.createElement('textarea');
+        body.className = 'form-control form-control-sm'; body.rows = 2; body.placeholder = 'Annotation (markdown)';
+        body.style.minWidth = '220px';
+        var save = addBtn('Save', function () {
+            var payload = { startLineId: lineId, annotationType: type.value, body: body.value.trim() };
+            if (!payload.body) { showToast('Annotation body is required.', 'warning'); return; }
+            ed2EnrichApi('line_annotation_upsert', { songId: song.id, annotation: payload }).then(function (d) {
+                if (d.annotation) { song.lineAnnotations.push(d.annotation); }
+                renderBody();
+            }).catch(function (err) { showToast('Save failed: ' + err.message, 'danger'); });
+        });
+        save.className = 'btn btn-sm btn-primary py-0 px-2';
+        var cancel = addBtn('Cancel', function () { renderBody(); });
+        form.appendChild(type); form.appendChild(body); form.appendChild(save); form.appendChild(cancel);
+        host.appendChild(form);
+        body.focus();
+    }
+
+    function renderBody() {
+        box.innerHTML = '';
+        var lines = Array.isArray(comp.lines) ? comp.lines : [];
+        if (!lines.length) {
+            box.innerHTML = '<div class="text-muted small fst-italic">No lines yet.</div>';
+            return;
+        }
+        lines.forEach(function (lineText, i) {
+            var lineId = lineIdAt(i);
+            var row = document.createElement('div');
+            row.className = 'border-start border-2 ps-2 mb-2 small';
+            var txt = document.createElement('div');
+            txt.className = 'text-muted';
+            txt.textContent = (lineText && String(lineText).trim()) ? String(lineText) : '(blank line)';
+            row.appendChild(txt);
+
+            /* #1345 — per-line LANGUAGE override (index-keyed comp.languages[i], so it
+               works even before the song is saved — unlike translations/annotations,
+               which need the saved lineId). 🔤 chip shows the current tag with a remove
+               control; the button opens the structured IETF picker. Distinct glyph from
+               the 🌐 translation chip / 📝 annotation chip (#1345 review). Skipped on
+               blank separator lines unless one already carries a tag. */
+            var curLang = (Array.isArray(comp.languages) && comp.languages[i] != null)
+                ? String(comp.languages[i]).trim() : '';
+            var lineHasText = !!(lineText && String(lineText).trim());
+            if (lineHasText || curLang) {
+                var langWrap = document.createElement('div');
+                langWrap.className = 'mb-1';
+                if (curLang) {
+                    langWrap.appendChild(chip('🔤 ' + curLang, function () { setLineLang(i, ''); renderBody(); }));
+                }
+                langWrap.appendChild(addBtn(curLang ? '🔤 Change language' : '🔤 Set language',
+                    function () { showLineLangForm(langWrap, i); }));
+                row.appendChild(langWrap);
+            }
+
+            if (!lineId) {
+                var note = document.createElement('div');
+                note.className = 'fst-italic text-secondary';
+                note.textContent = 'Save the song first to add translations or annotations to this line.';
+                row.appendChild(note);
+                box.appendChild(row);
+                return;
+            }
+
+            forLine(song.lineTranslations, 'lineId', lineId).forEach(function (t) {
+                row.appendChild(chip('🌐 ' + t.kind + ' · ' + t.targetLanguage + ': ' + t.text,
+                    function () { deleteEnrichment('line_translation_delete', t.id, 'lineTranslations'); }));
+            });
+            forLine(song.lineAnnotations, 'startLineId', lineId).forEach(function (a) {
+                row.appendChild(chip('📝 ' + a.annotationType + ': ' + a.body,
+                    function () { deleteEnrichment('line_annotation_delete', a.id, 'lineAnnotations'); }));
+            });
+
+            var btns = document.createElement('div');
+            btns.className = 'mt-1';
+            btns.appendChild(addBtn('+ Translation', function () { showTranslationForm(row, lineId); }));
+            btns.appendChild(addBtn('+ Annotation',  function () { showAnnotationForm(row, lineId); }));
+            row.appendChild(btns);
+            box.appendChild(row);
+        });
+    }
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(box);
+    return wrap;
+}
+
 function componentHeaderLabel(comp) {
     var type = (comp && comp.type) ? String(comp.type) : 'verse';
     var cap = type.charAt(0).toUpperCase() + type.slice(1);
@@ -1169,10 +1750,13 @@ function removeComponent(song, index) {
     /* Mark as modified. */
     markModified(song.id);
 
-    /* Re-render. */
+    /* Re-render. The component cards + arrangement must rebuild now (the deleted
+       card has to disappear), but the PREVIEW is debounced (#1180) — rebuilding
+       the whole slide preview synchronously on every delete is what made a
+       single delete feel like it took seconds. */
     renderComponents(song);
     renderArrangement(song);
-    renderPreview(song);
+    schedulePreview(song);
 }
 
 /**
@@ -2065,7 +2649,7 @@ function addSongTag(song, tagName) {
 
     fetch(EDITOR_API_URL + '?action=bulk_tag', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ songIds: [song.id], add: [tagName], remove: [] }),
     })
     .then(function (r) { return r.json(); })
@@ -2123,7 +2707,7 @@ function removeSongTag(song, tagName) {
     if (!song || !song.id || !tagName) return;
     fetch(EDITOR_API_URL + '?action=bulk_tag', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ songIds: [song.id], add: [], remove: [tagName] }),
     })
     .then(function (r) { return r.json(); })
@@ -2459,12 +3043,16 @@ function captureSongExternalLinksFromDom() {
  * mark the song as modified so the auto-save flow ships the change.
  */
 function syncSongExternalLinksFromDom() {
-    if (typeof currentSongId === 'undefined' || !currentSongId) return;
-    var song = (songData && songData.songs || []).find(function (s) { return s.id === currentSongId; });
+    /* Key off the RENDERED song, not currentSongId (WS-D #1016): during an
+       async open, currentSongId may already point at the song being
+       fetched while the DOM still shows the previous one — keying off
+       currentSongId would write the displayed links into the wrong song. */
+    if (typeof _renderedSongId === 'undefined' || !_renderedSongId) return;
+    var song = (songData && songData.songs || []).find(function (s) { return s.id === _renderedSongId; });
     if (!song) return;
     song.links = captureSongExternalLinksFromDom();
     if (typeof modifiedSongIds !== 'undefined' && modifiedSongIds && typeof modifiedSongIds.add === 'function') {
-        modifiedSongIds.add(currentSongId);
+        modifiedSongIds.add(_renderedSongId);
     }
     if (typeof scheduleAutoSave === 'function') scheduleAutoSave();
     if (typeof updateStatusBar === 'function') updateStatusBar();
@@ -2674,7 +3262,7 @@ function addSongLinkClickHandler() {
 
     fetch('api.php?action=add_song_link', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ sourceSongId: currentSongId, targetSongId: targetId }),
     })
         .then(function (r) { return r.json().then(function (j) { return { status: r.status, body: j }; }); })
@@ -2704,7 +3292,7 @@ function addSongLinkClickHandler() {
 function removeSongLink(currentId, targetSongId) {
     fetch('api.php?action=remove_song_link', {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify({ songId: targetSongId }),
     })
         .then(function (r) { return r.json(); })
@@ -2779,7 +3367,7 @@ function renderSongLinkSuggestions(song) {
                 linkBtn.addEventListener('click', function () {
                     fetch('api.php?action=add_song_link', {
                         method:  'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({
                             sourceSongId: song.id,
                             targetSongId: sg.other.songId,
@@ -2809,7 +3397,7 @@ function renderSongLinkSuggestions(song) {
                 dismissBtn.addEventListener('click', function () {
                     fetch('api.php?action=dismiss_song_link_suggestion', {
                         method:  'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                         body:    JSON.stringify({
                             songIdA: song.id,
                             songIdB: sg.other.songId,
@@ -3296,92 +3884,22 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
  *  SECTION 7 — JSON Validation & Save (#58)
  * ======================================================================== */
 
-/**
- * validateSongData()
- * ------------------
- * Checks every song in songData.songs for required fields:
- *   - id (non-empty string)
- *   - title (non-empty string)
- *   - number (must exist)
- *   - songbook (non-empty string)
- *   - components (must be an array with at least one entry)
- *
- * @returns {string[]} An array of human-readable error messages. Empty = valid.
- */
-/* #961 — both validateSongData() and validateSongsByIds() now return
-   { errors: [...], warnings: [...] }. The split lets the save handlers
-   block on genuine integrity problems (missing id / title / songbook /
-   components) while passing along soft cautions (e.g. missing number
-   on an official songbook) as informational toasts that DON'T block
-   the save. The server's save_song handler already accepts NULL number
-   when no value is provided, so the warning is purely user-facing —
-   the data path remains correct either way. */
-function validateSongData() {
-    /* Accumulator for error messages. */
-    var errors = [];
-
-    /* IsOfficial lookup by songbook abbreviation. Songs in non-
-       official songbooks (Misc, custom collections, etc.) don't
-       have a meaningful per-songbook number — the internal Song ID
-       (`song-<ts>-<rand>`) is the cross-record link instead. Per
-       #392 / #738 follow-up: number is required ONLY when the
-       songbook is flagged IsOfficial=1. */
-    var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
-        if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
-        return map;
-    }, Object.create(null));
-
-    /* Iterate over every song. */
-    var warnings = [];
-    songData.songs.forEach(function (song, i) {
-        /* Build a label for this song to make errors identifiable. */
-        var label = 'Song [' + i + '] (' + (song.title || 'no title') + ')';
-
-        /* id is required. */
-        if (!song.id || typeof song.id !== 'string' || song.id.trim() === '') {
-            errors.push(label + ': missing or empty "id".');
-        }
-
-        /* title is required. */
-        if (!song.title || typeof song.title !== 'string' || song.title.trim() === '') {
-            errors.push(label + ': missing or empty "title".');
-        }
-
-        /* songbook is required. */
-        if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
-            errors.push(label + ': missing or empty "songbook".');
-        }
-
-        /* #961 — number is WARNING-only when the songbook is flagged
-           IsOfficial=1 and no number is supplied. The save proceeds
-           (server accepts NULL number gracefully), and a non-blocking
-           toast surfaces the gap so the curator notices. Previously
-           this was a hard error that blocked the save entirely —
-           unhelpful when the curator legitimately doesn't have the
-           number yet, or when the songbook is flagged Official by
-           mistake. The "official requires number" expectation lives
-           in the songbook's metadata, not in this validator. (#392) */
-        var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
-        if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
-            warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
-        }
-
-        /* components must be a non-empty array. */
-        if (!Array.isArray(song.components) || song.components.length === 0) {
-            errors.push(label + ': must have at least one component.');
-        }
-    });
-
-    return { errors: errors, warnings: warnings };
-}
+/* #961 — validateSongsByIds() returns { errors: [...], warnings: [...] }.
+   Hard errors (missing id / title / songbook / components) block the save;
+   soft cautions (e.g. a missing number on an Official songbook, which the
+   server stores as NULL) surface as non-blocking toasts. The whole-corpus
+   validateSongData() was removed in WS-D (#1016): with the catalogue in
+   MySQL the DB enforces these constraints, /manage/data-health owns
+   catalogue-wide checks, and the editor only ever holds the songs it has
+   actually opened — so there is no in-memory corpus to scan. */
 
 /**
  * validateSongsByIds(ids)
  * -----------------------
- * Same validation rules as validateSongData(), but scoped to a specific
- * list of song IDs. Used by the manual Save button so that missing
- * fields on a song the admin never touched don't block a save of the
- * song they actually edited.
+ * Validation rules for the per-song Save, scoped to a specific list of
+ * song IDs. Used by the manual Save button so that missing fields on a
+ * song the admin never touched don't block a save of the song they
+ * actually edited.
  *
  * @param {string[]} ids Song IDs to validate
  * @returns {string[]} Human-readable error messages; empty if all valid
@@ -3390,7 +3908,7 @@ function validateSongsByIds(ids) {
     var wanted = new Set(ids);
     var errors = [];
     var warnings = [];
-    /* Same IsOfficial map as validateSongData() — number is required
+    /* IsOfficial map by songbook abbreviation — number is required
        only when the song's songbook is flagged IsOfficial=1. (#392) */
     var officialByAbbr = (songData.songbooks || []).reduce(function (map, b) {
         if (b && typeof b.id === 'string') map[b.id] = !!b.isOfficial;
@@ -3407,11 +3925,16 @@ function validateSongsByIds(ids) {
             errors.push(label + ': missing or empty "title".');
         }
         if (!song.songbook || typeof song.songbook !== 'string' || song.songbook.trim() === '') {
-            errors.push(label + ': missing or empty "songbook".');
+            /* NOT a hard error any more: the server coerces a blank songbook to the
+               generic "Misc" collection on save (and new drafts now default to Misc
+               client-side), so a missing songbook must never BLOCK the save and lose
+               the curator's edits. Surface it as a non-blocking warning, like the
+               number (#961) — the save still proceeds, filing the song under Misc. */
+            warnings.push(label + ': no songbook chosen — saved under "Misc". Pick a songbook to file it correctly.');
         }
-        /* #961 — see validateSongData() for the rationale. Missing
-           number on an official songbook is now a non-blocking
-           warning, not a hard error. The server accepts NULL. */
+        /* #961 — a missing number on an Official songbook is a
+           non-blocking warning, not a hard error. The server accepts
+           NULL, so the save still proceeds. */
         var isOfficial = !!officialByAbbr[(song.songbook || '').trim()];
         if (isOfficial && (song.number == null || String(song.number).trim() === '')) {
             warnings.push(label + ': no "number" supplied. The songbook is flagged Official — saved as NULL.');
@@ -3483,90 +4006,29 @@ function exportCurrentSong() {
 }
 
 /**
- * exportJSON()
- * ------------
- * Downloads the full songs.json file. This is essentially the same as
- * saveSongsToFile() but exposed under a distinct name for the toolbar.
- */
-function exportJSON() {
-    saveSongsToFile(); // delegate to the existing save logic
-}
-
-/**
- * exportCSV()
- * -----------
- * Builds a CSV string with the columns:
- *   id, number, title, songbook, writers, composers, ccli, componentCount
- * and triggers a file download.
- */
-function exportCSV() {
-    /* CSV header row. */
-    var rows = ['id,number,title,songbook,writers,composers,ccli,componentCount'];
-
-    /* One row per song. */
-    songData.songs.forEach(function (song) {
-        var cols = [
-            csvEscape(song.id || ''),
-            csvEscape(String(song.number || '')),
-            csvEscape(song.title || ''),
-            csvEscape(song.songbook || ''),
-            csvEscape((song.writers   || []).map(creditEntryAsString).join('; ')),
-            csvEscape((song.composers || []).map(creditEntryAsString).join('; ')),
-            csvEscape(song.ccli || ''),
-            String((song.components || []).length)
-        ];
-        rows.push(cols.join(','));
-    });
-
-    /* Join all rows with newlines. */
-    var csvString = rows.join('\r\n');
-
-    /* Trigger download. */
-    downloadBlob(csvString, 'songs.csv', 'text/csv');
-
-    /* Notify the user. */
-    showToast('CSV exported (' + songData.songs.length + ' songs).', 'success');
-}
-
-/**
- * csvEscape(value)
- * ----------------
- * Wraps a value in double-quotes and escapes internal double-quotes,
- * making it safe for inclusion in a CSV cell.
- *
- * @param {string} value - The raw cell value.
- * @returns {string} The escaped CSV cell.
- */
-function csvEscape(value) {
-    /* Replace any double-quote with two double-quotes (CSV escaping rule). */
-    var escaped = String(value).replace(/"/g, '""');
-    /* Wrap the whole thing in double-quotes. */
-    return '"' + escaped + '"';
-}
-
-/**
  * importJSON()
  * ------------
- * Opens a file picker that accepts a JSON corpus or a .zip bulk
- * archive, then routes the picked file to the right handler:
- *
- *   .json — In-memory merge into the editor's loaded catalogue.
- *           Songs with matching IDs replace the loaded copy; new IDs
- *           are appended. The curator must hit Save to persist.
+ * Opens a file picker for a server-side bulk import, then routes the
+ * picked file:
  *
  *   .zip  — Streamed straight to /manage/editor/api.php?action=
  *           bulk_import_zip, which inserts directly into MySQL.
  *           INSERT-ONLY semantics: existing songbook + song rows are
  *           NEVER overwritten. After a successful zip import, the
- *           editor reloads its catalogue so newly inserted rows
- *           appear in the song list immediately. (#664)
+ *           editor reloads its (slim) song index so newly inserted rows
+ *           appear in the list immediately. (#664)
+ *
+ *   .json — VideoPsalm whole-hymnal payload (top-level `Songs[]`),
+ *           uploaded to the bulk-import endpoint. The historic iHymns
+ *           full-corpus JSON merge was retired in WS-D (#1016) — songs
+ *           are edited live in the database now.
  *
  * Anything else surfaces a "use .json or .zip" toast.
  */
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,application/json,application/zip';
+    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -3577,10 +4039,49 @@ function importJSON() {
             importBulkZip(file);
         } else if (lower.endsWith('.json')) {
             importJsonCorpus(file);
+        } else if (lower.endsWith('.xml')) {
+            /* OpenLyrics / OpenLP single-song export (#1052). A folder of
+               these exported as a .zip uses the ZIP path above instead. */
+            importOpenLp(file);
+        } else if (lower.endsWith('.pro6')) {
+            /* ProPresenter 6 single-song export (#1057). A folder of .pro6
+               files exported as a .zip uses the ZIP path above instead. */
+            importPro6(file);
+        } else if (lower.endsWith('.db')) {
+            /* EasyWorship Songs.db (#1058). A two-file EW export (Songs.db +
+               SongWords.db) is zipped and uses the ZIP path above, which the
+               server auto-routes to EasyWorship on detecting a Songs.db. */
+            importEasyWorship(file);
+        } else if (lower.endsWith('.show')) {
+            /* FreeShow single-song export (#884). A folder of .show files
+               exported as a .zip uses the ZIP path above instead. */
+            importFreeShow(file);
+        } else if (lower.endsWith('.cho') || lower.endsWith('.chopro') || lower.endsWith('.crd') || lower.endsWith('.chord') || lower.endsWith('.pro')) {
+            /* ChordPro single-song import (#1264) — .cho/.chopro/.crd/.chord/.pro.
+               Covers WorshipTools' hand-copied-from-Chords-tab export shape +
+               OnSong/OpenSong/SongBeamer interop. (.pro6 is matched earlier.) */
+            importChordPro(file);
+        } else if (lower.endsWith('.rtf') || lower.endsWith('.txt')) {
+            /* Proclaim text/RTF single-song export (#1062). */
+            importProclaim(file);
+        } else if (lower.endsWith('.pptx')) {
+            /* PowerPoint worship deck (#1095). Slides are segmented into songs
+               by their "# <num>-<Songbook>" title slides; existing songs dedup. */
+            importPptx(file);
+        } else if (lower.endsWith('.ppt')) {
+            /* Legacy binary .ppt is a different (OLE) format — guide, don't upload. */
+            showToast(
+                'Legacy .ppt files aren’t supported. Re-save the deck as .pptx ' +
+                '(PowerPoint / Keynote / Google Slides → export as .pptx) and try again.',
+                'warning'
+            );
         } else {
             showToast(
-                'Unsupported file type. Choose a .json corpus file or a .zip ' +
-                'archive in .SourceSongData/ layout.',
+                'Unsupported file type. Choose a .json corpus, a .zip archive ' +
+                '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
+                'FreeShow / EasyWorship), an OpenLyrics .xml, a ProPresenter ' +
+                '.pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
+                'Proclaim .txt/.rtf, or a ChordPro .cho/.pro/.chopro/.crd/.chord.',
                 'danger'
             );
         }
@@ -3592,16 +4093,15 @@ function importJSON() {
 /**
  * importJsonCorpus(file)
  * ----------------------
- * Routes a picked .json file to the right handler based on its shape:
- *
- *   - iHymns full-corpus (lowercase `songs[]`): in-memory merge into
- *     the loaded catalogue. The curator must hit Save afterwards to
- *     persist.
+ * Inspects a picked .json file:
  *
  *   - VideoPsalm songbook (top-level `Songs[]` with capital S, #883):
  *     uploaded straight to the bulk-import endpoint, which writes
- *     directly to MySQL. No in-memory merge step — VideoPsalm files
- *     are whole-hymnal payloads, not corpus diffs.
+ *     directly to MySQL.
+ *
+ *   - Anything else (the historic iHymns lowercase `songs[]` corpus):
+ *     rejected with a notice — the whole-corpus in-memory merge was
+ *     retired in WS-D (#1016).
  */
 function importJsonCorpus(file) {
     var reader = new FileReader();
@@ -3620,43 +4120,17 @@ function importJsonCorpus(file) {
                 return;
             }
 
-            var importedSongs = imported.songs || [];
-
-            var added = 0;
-            var updated = 0;
-
-            importedSongs.forEach(function (incoming) {
-                var existingIndex = songData.songs.findIndex(function (s) {
-                    return s.id === incoming.id;
-                });
-
-                if (existingIndex !== -1) {
-                    songData.songs[existingIndex] = incoming;
-                    markModified(incoming.id);
-                    updated++;
-                } else {
-                    songData.songs.push(incoming);
-                    markModified(incoming.id);
-                    added++;
-                }
-            });
-
-            if (imported.songbooks && Array.isArray(imported.songbooks)) {
-                imported.songbooks.forEach(function (sb) {
-                    var exists = songData.songbooks.some(function (existing) {
-                        return existing.id === sb.id;
-                    });
-                    if (!exists) {
-                        songData.songbooks.push(sb);
-                    }
-                });
-            }
-
-            populateSongbookFilterDropdown();
-            renderSongList();
-            updateStatusBar();
-
-            showToast('Import complete: ' + added + ' added, ' + updated + ' updated. Hit Save to persist.', 'success');
+            /* WS-D #1016 — the historic iHymns whole-corpus JSON merge is
+               retired. Songs are edited live in the database; there is no
+               in-memory corpus to merge into. Bulk imports go through the
+               server: a VideoPsalm .json (handled above) or a .zip archive,
+               both of which INSERT directly into MySQL. */
+            showToast(
+                'Importing a full songs.json corpus is no longer supported — ' +
+                'songs are edited live in the database. For bulk import use a ' +
+                '.zip archive or a VideoPsalm .json songbook.',
+                'warning'
+            );
         } catch (err) {
             showToast('Import failed: ' + err.message, 'danger');
         }
@@ -3665,25 +4139,30 @@ function importJsonCorpus(file) {
 }
 
 /**
- * importVideoPsalmSongbook(file)
- * ------------------------------
- * Server-side single-file VideoPsalm import (#883). Streams the
- * picked .json document straight to the bulk_import_videopsalm
- * endpoint, which parses the whole-hymnal payload and inserts each
- * song under a (possibly new) songbook in one round-trip. Insert-
- * only — existing rows are reported as "skipped (existing)" and the
- * database is never overwritten.
+ * importSingleFileFormat(file, opts)
+ * ----------------------------------
+ * Shared single-file server-side import used by the VideoPsalm (#883)
+ * and OpenLyrics / OpenLP (#1052) paths. Streams `file` as multipart to
+ * `opts.action` under field `opts.field`, attaches the #1051 dedupe flag
+ * from the toolbar checkbox, and surfaces the standard summary toast.
+ * Insert-only by contract — existing rows report as "skipped (existing)".
  *
- * VideoPsalm files are tiny (a whole hymnal is well under a MiB), so
- * the endpoint runs synchronously and returns the summary in one go;
- * no async / progress-widget machinery needed.
+ * These single-song / single-songbook files are tiny, so the endpoints
+ * run synchronously and return the summary in one round-trip; no async /
+ * progress-widget machinery needed (that's reserved for large ZIPs).
+ *
+ * opts: { action, field, consoleTag }
  */
-function importVideoPsalmSongbook(file) {
+function importSingleFileFormat(file, opts) {
     var fd = new FormData();
-    fd.append('videopsalm', file, file.name);
+    fd.append(opts.field, file, file.name);
+    /* #1051 — opt-in title dedupe from the toolbar checkbox. */
+    var _dd = document.getElementById('import-dedupe-title');
+    fd.append('dedupeMode', (_dd && _dd.checked) ? 'skip-title' : 'off');
 
-    fetch(EDITOR_API_URL + '?action=bulk_import_videopsalm', {
+    fetch(EDITOR_API_URL + '?action=' + encodeURIComponent(opts.action), {
         method:      'POST',
+        headers:     { 'X-Requested-With': 'XMLHttpRequest' },
         body:        fd,
         credentials: 'same-origin',
     }).then(function (res) {
@@ -3714,13 +4193,131 @@ function importVideoPsalmSongbook(file) {
                 ' failed during import — see browser console for details.',
                 'warning'
             );
-            try { console.warn('[bulk_import_videopsalm] errors:', d.errors); } catch (_e) {}
+            try { console.warn('[' + opts.consoleTag + '] errors:', d.errors); } catch (_e) {}
         }
         if (typeof loadSongsFromURL === 'function' && typeof SONGS_URL_CANDIDATES !== 'undefined') {
             loadSongsFromURL(SONGS_URL_CANDIDATES[0]);
         }
     }).catch(function (err) {
         showToast('Import failed: ' + (err && err.message ? err.message : err), 'danger');
+    });
+}
+
+/**
+ * importVideoPsalmSongbook(file) — VideoPsalm single-file import (#883).
+ * Thin wrapper over importSingleFileFormat().
+ */
+function importVideoPsalmSongbook(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_videopsalm',
+        field:      'videopsalm',
+        consoleTag: 'bulk_import_videopsalm',
+    });
+}
+
+/**
+ * importPptx(file) — PowerPoint worship-deck import (#1095). The server
+ * segments slides into songs by their "Title + # <num>-<Songbook>" title
+ * slides and resolves each song's songbook from that reference (existing
+ * catalogue songs are skipped, not duplicated). Decks that don't use that
+ * layout come back with a warning so they can be submitted for analysis (#1109).
+ */
+function importPptx(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_pptx',
+        field:      'pptx',
+        consoleTag: 'bulk_import_pptx',
+    });
+}
+
+/**
+ * importOpenLp(file) — OpenLyrics / OpenLP single-song .xml import (#1052).
+ * Each OpenLyrics file carries its own <songbook> metadata, so the server
+ * derives the songbook from the file. A whole exported FOLDER of OpenLyrics
+ * files goes through importBulkZip() instead (the ZIP path content-sniffs
+ * .xml entries and routes OpenLyrics ones to the same parser).
+ */
+function importOpenLp(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_openlp',
+        field:      'openlp',
+        consoleTag: 'bulk_import_openlp',
+    });
+}
+
+/**
+ * importPro6(file) — ProPresenter 6 single-song .pro6 import (#1057).
+ * A .pro6 is one presentation/song with no songbook, so the server files it
+ * under a "ProPresenter Import" (PP6) songbook. A folder of .pro6 files
+ * exported as a .zip goes through importBulkZip() instead (the ZIP path
+ * recognises .pro6 entries and groups them by their containing folder).
+ */
+function importPro6(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_pro6',
+        field:      'pro6',
+        consoleTag: 'bulk_import_pro6',
+    });
+}
+
+/**
+ * importEasyWorship(file) — EasyWorship 6/7 SQLite import (#1058).
+ * Accepts a Songs.db directly. An EW export that ships Songs.db +
+ * SongWords.db as a .zip goes through importBulkZip() instead — the server
+ * detects a Songs.db inside the archive and routes it here automatically.
+ * Lyrics are RTF inside the SQLite db; songs file under an "EasyWorship
+ * Import" (EW) songbook.
+ */
+function importEasyWorship(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_easyworship',
+        field:      'easyworship',
+        consoleTag: 'bulk_import_easyworship',
+    });
+}
+
+/**
+ * importProclaim(file) — Proclaim text/RTF single-song import (#1062).
+ * Proclaim has no rich structured export, so one .txt/.rtf file = one song
+ * (RTF is decoded server-side); files under a "Proclaim Import" (PC) songbook.
+ */
+function importProclaim(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_proclaim',
+        field:      'proclaim',
+        consoleTag: 'bulk_import_proclaim',
+    });
+}
+
+/**
+ * importChordPro(file) — single ChordPro (.cho/.pro/.chopro/.crd/.chord) import
+ * (#1264). One ChordPro document is one song; it files under a "ChordPro Import"
+ * (CHORDPRO) songbook unless the filename uses the "<#> (<ABBR>) - <Title>"
+ * convention. Lyrics + section structure + header metadata; inline [chord]
+ * markers are parsed out server-side (per-line chord storage deferred to
+ * #299/#1094). Round-trips with the lyrics-only ChordPro exporter (PR #1277).
+ */
+function importChordPro(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_chordpro',
+        field:      'chordpro',
+        consoleTag: 'bulk_import_chordpro',
+    });
+}
+
+/**
+ * importFreeShow(file) — FreeShow .show single-song import (#884).
+ * One .show is one song with no songbook, so the server files it under a
+ * "FreeShow Import" (FS) songbook. A folder of .show files exported as a .zip
+ * goes through importBulkZip() instead (the ZIP path recognises .show entries
+ * and groups them by their containing folder). Round-trips with the FreeShow
+ * exporter (#1056).
+ */
+function importFreeShow(file) {
+    importSingleFileFormat(file, {
+        action:     'bulk_import_freeshow',
+        field:      'freeshow',
+        consoleTag: 'bulk_import_freeshow',
     });
 }
 
@@ -3744,6 +4341,9 @@ function importBulkZip(file) {
        (broken deploy / offline / etc.) we fall through to a toast. */
     var fd = new FormData();
     fd.append('zip', file, file.name);
+    /* #1051 — opt-in title dedupe from the toolbar checkbox. */
+    var _ddZip = document.getElementById('import-dedupe-title');
+    fd.append('dedupeMode', (_ddZip && _ddZip.checked) ? 'skip-title' : 'off');
 
     /* Hand the widget a synthetic "uploading" job up-front so it can
        mount, start showing progress, and switch to real polling once
@@ -3766,6 +4366,7 @@ function importBulkZip(file) {
        xhr.upload.onprogress fires every ~50ms with byte counts. */
     var uploadXhr = new XMLHttpRequest();
     uploadXhr.open('POST', EDITOR_API_URL + '?action=bulk_import_zip', true);
+    uploadXhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
     uploadXhr.withCredentials = true;
     uploadXhr.upload.onprogress = function (ev) {
         if (!ev.lengthComputable) return;
@@ -4011,6 +4612,7 @@ function updateStatusBar() {
        ensures every meaningful state change (load, save, select,
        deselect, add, delete) refreshes the buttons too. */
     updateHistoryButtonState();
+    updateSaveUiState();   /* #1180 — Save button enabled/label + status text */
 }
 
 /* ========================================================================
@@ -4025,11 +4627,42 @@ function updateStatusBar() {
  * @param {string} id - The song ID to search for.
  * @returns {Object|undefined} The matching song object, or undefined.
  */
-function findSongById(id) {
-    return songData.songs.find(function (s) {
-        return s.id === id;
+/* O(1) id→song index (perf #1180-A1) — replaces the O(N) linear scan that ran
+   on every interaction over the ~16k-song corpus (17 call sites). Rebuilt on
+   load + bulk mutations, updated incrementally on add, and SELF-HEALING on any
+   miss / stale id, so it can never return a wrong or ghost row. */
+var songById = new Map();
+function rebuildSongIndex() {
+    songById = new Map();
+    (songData.songs || []).forEach(function (s) {
+        if (s && s.id != null) { songById.set(s.id, s); }
     });
 }
+function findSongById(id) {
+    var hit = songById.get(id);
+    if (hit !== undefined && hit.id === id) { return hit; }
+    /* Map miss or a mutated/removed id — fall back to a scan + reindex. */
+    var s = songData.songs.find(function (x) { return x.id === id; });
+    if (s) { songById.set(id, s); }
+    return s;
+}
+
+/* Shared debounce (#1180-A2/A3/A4) — coalesce burst events (keystrokes) into a
+   single trailing call so the heavy re-renders don't fire on every key. */
+function debounce(fn, ms) {
+    var t = null;
+    return function () {
+        var ctx = this, args = arguments;
+        if (t) { clearTimeout(t); }
+        t = setTimeout(function () { t = null; fn.apply(ctx, args); }, ms);
+    };
+}
+/* Debounced wrappers for the per-keystroke hot paths (renderPreview rebuilds the
+   whole preview; updateStatusBar repaints the footer). Both are non-authoritative,
+   so a short trailing delay is invisible to the user but removes O(components)
+   work from every keypress. */
+var schedulePreview   = debounce(function (song) { renderPreview(song); }, 350);
+var scheduleStatusBar = debounce(function () { updateStatusBar(); }, 350);
 
 /**
  * markModified(songId)
@@ -4042,8 +4675,13 @@ function markModified(songId) {
     /* Add the ID to the Set (duplicates are automatically ignored). */
     modifiedSongIds.add(songId);
 
-    /* Refresh the status bar to reflect the new count. */
-    updateStatusBar();
+    /* Enable the Save button + flip the status to "Unsaved changes" IMMEDIATELY
+       (not debounced) so the editor feels responsive the instant you type (#1180). */
+    updateSaveUiState();
+
+    /* Refresh the rest of the status bar — debounced (#1180-A4) so it doesn't
+       repaint on every keystroke. */
+    scheduleStatusBar();
 
     /* Schedule a debounced auto-save (#394). */
     scheduleAutoSave();
@@ -4065,6 +4703,60 @@ var _autoSaveTimer   = null;
 var _autoSaveDelayMs = 3000;
 var _autoSaveRunning = false;
 
+/* #1178 — SINGLE serial save queue shared by BOTH the manual Save button and
+   the auto-save timer. The corruption root cause was a race: clicking Save while
+   an auto-save was in flight fired two concurrent save_song POSTs for the SAME
+   song, whose server-side DELETE-then-INSERT transactions interleaved and left
+   BOTH sets of child rows (duplicated components/credits). Routing every save
+   through this promise chain guarantees they run strictly one-at-a-time, so each
+   save's DELETE always clears the previous save's rows before its INSERT. */
+var _saveQueue = Promise.resolve();
+var _saveBusy  = 0;   /* >0 while any save (auto or manual) is queued or running */
+function enqueueSave(ids) {
+    /* Both fulfil + reject handlers re-arm the chain so one failed save can't
+       wedge every subsequent save. */
+    var run = function () { return autoSaveSongsPerSong(ids); };
+    var next = _saveQueue.then(run, run);
+    _saveQueue = next.catch(function () { /* swallow so the chain survives */ });
+    /* Drive the Save-button + status-bar state off an in-flight count so the
+       button disables while saving and the status text never sticks (#1180). */
+    _saveBusy++;
+    updateSaveUiState();
+    next.then(function () {}, function () {}).then(function () {
+        _saveBusy = Math.max(0, _saveBusy - 1);
+        updateSaveUiState();
+    });
+    return next;
+}
+
+/**
+ * updateSaveUiState()
+ * -------------------
+ * Single source of truth for the Save button + the status-bar text (#1180).
+ * Auto-save is the primary persistence path, so the Save button is a manual
+ * BACKUP — disabled while a save is in flight OR when there's nothing to save
+ * (the owner's request). The status text reflects the real state instead of
+ * getting stuck on "Auto-saving…".
+ */
+function updateSaveUiState() {
+    var dirty  = modifiedSongIds.size > 0;
+    var saving = _saveBusy > 0;
+    var saveBtn = document.getElementById('btn-save');
+    if (saveBtn) {
+        saveBtn.disabled = saving || !dirty;
+        var lbl = saveBtn.querySelector('.btn-save-label');
+        if (lbl) { lbl.textContent = saving ? 'Saving…' : 'Save'; }
+        saveBtn.title = saving ? 'Saving…'
+                      : (dirty ? 'Save changes now (auto-save also runs)'
+                               : 'All changes saved');
+    }
+    var statusEl = document.getElementById('status-text');
+    if (statusEl) {
+        statusEl.textContent = saving ? 'Auto-saving…'
+                             : (dirty ? 'Unsaved changes' : 'All changes saved');
+    }
+}
+
 function scheduleAutoSave() {
     /* Drop any pending save; each edit resets the timer. */
     if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
@@ -4076,12 +4768,15 @@ function scheduleAutoSave() {
         /* #961 — auto-save only blocks on hard errors; warnings are
            informational (and we don't surface them on auto-save to
            avoid toast spam when the user pauses on an in-progress
-           edit). The user gets the warning on manual Save instead. */
-        if (validateSongData().errors.length > 0) return;
+           edit). The user gets the warning on manual Save instead.
+           Scoped to the modified set (WS-D #1016) — there is no whole
+           corpus in memory to validate. */
+        if (validateSongsByIds(Array.from(modifiedSongIds)).errors.length > 0) return;
 
         _autoSaveRunning = true;
-        var text = document.getElementById('status-text');
-        if (text) text.textContent = 'Auto-saving…';
+        /* Status text is driven centrally by updateSaveUiState() via the
+           _saveBusy counter (in enqueueSave) — no manual set here, so it can no
+           longer get stuck on "Auto-saving…" after the save completes (#1180). */
 
         /* Per-song endpoint (#394). Walk the modified set and POST each
            song individually to /api?action=save_song. Much cheaper than
@@ -4089,7 +4784,7 @@ function scheduleAutoSave() {
            per actual edit (#400). Falls back to saveSongs() (full save)
            if the per-song endpoint returns a non-ok status. */
         var ids = Array.from(modifiedSongIds);
-        autoSaveSongsPerSong(ids).then(function (summary) {
+        enqueueSave(ids).then(function (summary) {
             if (summary.failed.length > 0) {
                 /* Something wasn't UPSERT-friendly — fall back to full save so
                    the user never ends up stuck with un-persistable diffs. */
@@ -4123,8 +4818,11 @@ function serialiseSongForSave(song) {
        'input' listener syncs them eagerly on every keystroke, but
        capturing here too is cheap and protects against any race where
        a save fires before the listener has flushed. Off-screen songs
-       send whatever was already in their `.links`. */
-    if (typeof currentSongId !== 'undefined' && song && song.id === currentSongId) {
+       send whatever was already in their `.links`. Keyed off the RENDERED
+       song (WS-D #1016), not currentSongId, so we only ever read live DOM
+       for the song actually displayed — never capture it into a different
+       song that happens to be mid-load. */
+    if (typeof _renderedSongId !== 'undefined' && song && song.id === _renderedSongId) {
         try {
             out.externalLinks = captureSongExternalLinksFromDom();
         } catch (_e) {
@@ -4173,8 +4871,15 @@ function serialiseSongForSave(song) {
 /**
  * autoSaveSongsPerSong(ids)
  * -------------------------
- * POST each song in `ids` to /api?action=save_song sequentially.
- * Returns a summary { saved: [ids], failed: [{id, error}] }.
+ * POST each song in `ids` to the v2 editor API (?action=save_song)
+ * sequentially. Returns a summary { saved: [ids], failed: [{id, error}] }.
+ *
+ * #1200 — the whole-song save was relocated from the legacy
+ * /manage/editor/api.php to the v2 /manage/editor/api2.php. Both endpoints
+ * call the SAME shared editorSaveSongCore() (no forked save logic), so the
+ * wire request/response is identical; the only client change is the base URL
+ * and the v2 same-origin CSRF defence (the X-Requested-With header the v2 API
+ * requires on every POST). serialiseSongForSave() output is unchanged.
  *
  * Sequential (not Promise.all) so we stay polite to the DB and can
  * short-circuit on the first persistent error.
@@ -4188,9 +4893,12 @@ function autoSaveSongsPerSong(ids) {
         chain = chain.then(function () {
             var song = (songData.songs || []).find(function (s) { return s.id === id; });
             if (!song) { failed.push({ id: id, error: 'not found locally' }); return; }
-            return fetch(EDITOR_API_URL + '?action=save_song', {
+            return fetch((window.IHYMNS_EDITOR_API2 || '/manage/editor/api2') + '?action=save_song', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
                 body: JSON.stringify(serialiseSongForSave(song)),
             }).then(function (res) {
                 return res.json().then(function (data) {
@@ -4389,6 +5097,10 @@ function toTitleCase(str) {
  * Called when no song is selected or data is freshly loaded.
  */
 function clearEditForm() {
+    /* No song rendered any more — clear the displayed-song tracker so a
+       stray external-links flush can't target a now-blank form (WS-D #1016). */
+    _renderedSongId = null;
+
     /* Hide the editor form, show the empty state (#246). */
     var editorEmpty = document.getElementById('editorEmpty');
     var editorForm = document.getElementById('editorForm');
@@ -4538,8 +5250,15 @@ function showToast(message, type) {
  * songData.songs, and selects it in the editor.
  */
 function addNewSong() {
-    /* Generate a simple unique ID (timestamp + random suffix). */
-    var newId = 'song-' + Date.now() + '-' + Math.random().toString(36).substring(2, 8);
+    /* Generate a unique draft ID that fits tblSongs.SongId (VARCHAR(20)) (#1180).
+       The old 'song-' + Date.now() + '-' + 6-random form was ~25 chars, so MySQL
+       SILENTLY TRUNCATED it on save — dropping most of the random suffix, risking
+       UNIQUE-key collisions (a clash → ON DUPLICATE KEY UPDATE could overwrite a
+       different draft) and producing the ugly ids the owner spotted
+       (song-1780869822259-d). base36 timestamp (~8 chars) + 4 random fits with
+       room; the 'song-' prefix is preserved (it's how unsaved drafts are
+       detected). [Tracked: server should assign a canonical SongId on first save.] */
+    var newId = ('song-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 20);
 
     /* Build the blank song object with all required fields. The
        Song Number starts as null rather than (songs.length + 1) —
@@ -4550,12 +5269,23 @@ function addNewSong() {
        'e.g. 42' shows in greyed form and the curator has to enter
        a real value (which the validator then enforces only when
        the chosen songbook is IsOfficial=1, per #392 / PR #740). */
+    /* Default a new draft's songbook to the generic "Misc" collection (when it
+       exists) so auto-save works IMMEDIATELY — otherwise a draft with no songbook
+       silently fails to save (the SongbookAbbr is mandatory) and the curator loses
+       their edits believing auto-save worked. The server already coerces a blank
+       songbook to Misc on save; mirroring it here means the dropdown shows Misc,
+       BOTH the 3-second auto-save and the Save-button validator pass, and the
+       curator can switch to the real songbook at any time (the next save just
+       reassigns SongbookAbbr). */
+    var _miscBook = (songData.songbooks || []).find(function (b) {
+        return b && typeof b.id === 'string' && b.id.toLowerCase() === 'misc';
+    });
     var newSong = {
         id: newId,
         title: 'New Song',
         number: null,
-        songbook: '',
-        songbookName: '',
+        songbook: _miscBook ? _miscBook.id : '',
+        songbookName: _miscBook ? (_miscBook.name || _miscBook.id) : '',
         language: 'en',
         ccli: '',
         iswc: '',           /* #497 */
@@ -4579,11 +5309,15 @@ function addNewSong() {
                 number: 1,
                 lines: ['']
             }
-        ]
+        ],
+        /* WS-D #1016 — a new draft is fully in memory; mark it so
+           selectSong() doesn't try to fetch (and overwrite) it. */
+        _full: true
     };
 
     /* Append to the songs array. */
     songData.songs.push(newSong);
+    songById.set(newSong.id, newSong);   /* keep the O(1) id index in sync (#1180-A1) */
 
     /* Mark the new song as modified (it hasn't been saved yet). */
     markModified(newId);
@@ -4612,32 +5346,66 @@ function deleteSong() {
     }
 
     /* Find the song to show its title in the confirmation dialog. */
-    var song = findSongById(currentSongId);
+    var song  = findSongById(currentSongId);
     var title = song ? song.title : currentSongId;
 
     /* Ask for confirmation. */
-    if (!confirm('Delete "' + title + '"? This cannot be undone.')) {
+    if (!confirm('Delete "' + title + '"?\n\nThis permanently removes the song and ALL its data (components, lyric lines, credits, links, media) from the database. This cannot be undone.')) {
         return;
     }
 
-    /* Remove the song from the array. */
-    songData.songs = songData.songs.filter(function (s) {
-        return s.id !== currentSongId;
-    });
+    var idToDelete = currentSongId;
 
-    /* Remove from modified set if present. */
-    modifiedSongIds.delete(currentSongId);
+    /* #1343 — keep the shared permalink alive. Offer to redirect the deleted
+       song's old link to another song; blank/Cancel leaves a friendly "removed"
+       page (the server validates the target and tombstones a blank/unknown id).
+       For a genuine duplicate, Merge on Duplicate & Counterpart Review is better —
+       it auto-redirects without this prompt. */
+    var redirectTo = (window.prompt(
+        'Optional: keep this song’s shared link working by redirecting it to another song.\n\n' +
+        'Enter the Song ID to redirect to (e.g. MP-0001), or leave blank for a “removed” page.',
+        ''
+    ) || '').trim();
 
-    /* Clear the selection. */
-    currentSongId = null;
+    /* SERVER-BACKED delete (#1200 / #1290). The legacy implementation only
+       filtered the in-memory songData.songs array and toasted "deleted" — the
+       DB row was never touched, so the song reappeared on reload (and still
+       loaded in Song View). We now POST delete_song to the v2 API (cascade
+       delete + CSRF) and ONLY mutate local state + toast once the server
+       confirms. On failure nothing is removed locally and the error is shown,
+       so the toast can never lie again. */
+    var btn = document.getElementById('btn-delete-song');
+    if (btn) { btn.disabled = true; }
 
-    /* Refresh UI. */
-    clearEditForm();
-    renderSongList();
-    updateStatusBar();
-
-    /* Notify. */
-    showToast('Song deleted.', 'info');
+    ed2EnrichApi('delete_song', { songId: idToDelete, redirectTo: redirectTo })
+        .then(function (res) {
+            /* Server confirmed the cascade delete — sync local state now. */
+            songData.songs = songData.songs.filter(function (s) { return s.id !== idToDelete; });
+            rebuildSongIndex();           /* keep the O(1) id index in sync (#1180-A1) */
+            modifiedSongIds.delete(idToDelete);
+            if (currentSongId === idToDelete) {
+                currentSongId = null;
+                clearEditForm();
+            }
+            renderSongList();
+            updateStatusBar();
+            var n = (res && typeof res.deleted === 'number') ? res.deleted : null;
+            showToast(
+                'Deleted "' + title + '" from the database'
+                    + (n !== null ? ' (' + n + ' row' + (n === 1 ? '' : 's') + ' removed).' : '.'),
+                'success'
+            );
+        })
+        .catch(function (err) {
+            showToast(
+                'Delete failed: ' + (err && err.message ? err.message : 'unknown error')
+                    + '. The song was NOT removed.',
+                'danger'
+            );
+        })
+        .finally(function () {
+            if (btn) { btn.disabled = false; }
+        });
 }
 
 /* ========================================================================
@@ -4654,10 +5422,12 @@ function bindGlobalEventListeners() {
     /* ---- Sidebar search input ---- */
     var searchEl = document.getElementById('song-search');
     if (searchEl) {
-        /* Re-render the song list on every keystroke for instant filtering. */
-        searchEl.addEventListener('input', function () {
+        /* Re-render the song list as the user types — debounced (#1180-A2) so a
+           burst of keystrokes runs ONE sort+filter pass over the ~16k-song
+           corpus instead of one per key. */
+        searchEl.addEventListener('input', debounce(function () {
             renderSongList();
-        });
+        }, 200));
     }
 
     /* ---- Sort order dropdown (#251) ---- */
@@ -4692,23 +5462,7 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Export JSON button (#235) ---- */
-    var jsonExportBtn = document.getElementById('btn-export-json');
-    if (jsonExportBtn) {
-        jsonExportBtn.addEventListener('click', function () {
-            exportJSON();
-        });
-    }
-
-    /* ---- Export CSV button ---- */
-    var csvBtn = document.getElementById('btn-export-csv');
-    if (csvBtn) {
-        csvBtn.addEventListener('click', function () {
-            exportCSV();
-        });
-    }
-
-    /* ---- Import / Merge JSON button ---- */
+    /* ---- Import button (server-side bulk import: .zip / VideoPsalm) ---- */
     var importBtn = document.getElementById('btn-import');
     if (importBtn) {
         importBtn.addEventListener('click', function () {
@@ -4738,7 +5492,10 @@ function bindGlobalEventListeners() {
        its disabled state as part of the existing select-song flow. */
     var exportSongBtn = document.getElementById('btn-export-song');
     if (exportSongBtn) {
-        exportSongBtn.addEventListener('click', function () {
+        exportSongBtn.addEventListener('click', function (e) {
+            /* Now a dropdown <a href="#"> inside the consolidated Export menu —
+               stop the hash navigation (#1166 polish). */
+            if (e && e.preventDefault) { e.preventDefault(); }
             exportCurrentSong();
         });
     }
@@ -4751,30 +5508,369 @@ function bindGlobalEventListeners() {
         });
     }
 
-    /* ---- Validate button (optional standalone trigger) ---- */
-    var validateBtn = document.getElementById('btn-validate');
-    if (validateBtn) {
-        validateBtn.addEventListener('click', function () {
-            /* #961 — split errors (toast danger) from warnings
-               (toast warning). The standalone Validate button is the
-               one place where surfacing warnings is unambiguously
-               useful — the curator explicitly asked for a check. */
-            var validation = validateSongData();
-            if (validation.errors.length === 0 && validation.warnings.length === 0) {
-                showToast('All songs are valid.', 'success');
-            } else {
-                validation.errors.forEach(function (msg) {
-                    showToast(msg, 'danger');
-                });
-                validation.warnings.forEach(function (msg) {
-                    showToast(msg, 'warning');
-                });
-            }
-        });
-    }
+    /* ---- Paste & Reflow modal controls (#1043) ---- */
+    initReflowControls();
 
     /* ---- Bind metadata form field live-sync listeners ---- */
     bindMetadataListeners();
+}
+
+/* ========================================================================
+ *  SECTION — Paste & Reflow (ProPresenter-style bulk section entry) (#1043)
+ *
+ *  Lets a curator paste a WHOLE lyrics block and split it into song
+ *  components in one pass, instead of adding Verse 1 / Chorus / … one card
+ *  at a time. Pure client-side text processing; "Apply" appends real
+ *  components ({type, number, lines}) onto the current song and re-renders
+ *  through the normal renderComponents() / save_song path — no new endpoint.
+ *  Inspired by ProPresenter's Reflow editor.
+ *  https://support.renewedvision.com/hc/en-us/articles/34513457866899
+ * ======================================================================== */
+
+/* Working set of parsed sections while the modal is open. */
+var REFLOW_BLOCKS = [];
+
+/* A line that is ONLY a section label — e.g. "Chorus", "Verse 2",
+ * "Pre-Chorus:", "Bridge 1." — optionally a number and a trailing
+ * separator. Never matches a real lyric line (which has more words). */
+var REFLOW_LABEL_RE = /^[ \t]*(verses?|chorus(?:es)?|refrains?|bridges?|pre[ \t-]?chorus|tags?|coda|intro|outro|interlude|vamp|ad[ \t-]?lib)\.?[ \t]*(\d+)?[ \t]*[:.)\-–]?[ \t]*$/i;
+
+/* Map a detected label word to a canonical COMPONENT_TYPES value (the type
+ * dropdown only offers those, so anything else falls back sensibly). */
+function reflowNormalizeType(raw) {
+    var t = String(raw || '').toLowerCase().trim().replace(/[ \t]+/g, '-');
+    if (t === 'verses') { t = 'verse'; }
+    if (t === 'choruses') { t = 'chorus'; }
+    if (t === 'bridges') { t = 'bridge'; }
+    if (t === 'tags') { t = 'tag'; }
+    if (t === 'prechorus') { t = 'pre-chorus'; }
+    if (t === 'adlib') { t = 'ad-lib'; }
+    if (t === 'refrain' || t === 'refrains') { t = 'chorus'; } /* no distinct 'refrain' component type */
+    return (COMPONENT_TYPES.indexOf(t) !== -1) ? t : 'verse';
+}
+
+/* Whitespace-normalised text key, for detecting repeated (chorus) blocks. */
+function reflowBlockKey(block) {
+    return block.lines.join('\n').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/* Split raw pasted text into classified section blocks. */
+function reflowParseText(rawText) {
+    var text = String(rawText || '').replace(/\r\n?/g, '\n');
+    /* One or more blank lines separate sections. */
+    var chunks = text.split(/\n[ \t]*\n+/);
+    var blocks = [];
+    chunks.forEach(function (chunk) {
+        var lines = chunk.split('\n');
+        while (lines.length && lines[0].trim() === '') { lines.shift(); }
+        while (lines.length && lines[lines.length - 1].trim() === '') { lines.pop(); }
+        if (!lines.length) { return; }
+
+        var type = null;
+        var number = null;
+        var m = lines[0].match(REFLOW_LABEL_RE);
+        /* Only treat the first line as a label when there's a lyric body after
+           it — a one-line block that merely looks like a label is kept as
+           lyrics, not silently dropped. */
+        if (m && lines.length > 1) {
+            type = reflowNormalizeType(m[1]);
+            number = m[2] ? parseInt(m[2], 10) : null;
+            lines = lines.slice(1);
+            while (lines.length && lines[0].trim() === '') { lines.shift(); }
+        }
+        blocks.push({ type: type, number: number, lines: lines });
+    });
+    reflowApplySmartDefaults(blocks);
+    return blocks;
+}
+
+/* Fill in the types/numbers the paste didn't label explicitly. */
+function reflowApplySmartDefaults(blocks) {
+    /* Repeated identical blocks are almost always the chorus. */
+    var counts = {};
+    blocks.forEach(function (b) {
+        var k = reflowBlockKey(b);
+        counts[k] = (counts[k] || 0) + 1;
+    });
+    blocks.forEach(function (b) {
+        if (!b.type && counts[reflowBlockKey(b)] > 1) { b.type = 'chorus'; }
+    });
+    /* Anything still unclassified is a verse. */
+    blocks.forEach(function (b) { if (!b.type) { b.type = 'verse'; } });
+    reflowAutoNumber(blocks);
+}
+
+/* Auto-number repeated types (Verse 1, Verse 2, …); single-instance types
+ * stay unnumbered. Respects a number already set from an explicit label. */
+function reflowAutoNumber(blocks) {
+    var totals = {};
+    blocks.forEach(function (b) { totals[b.type] = (totals[b.type] || 0) + 1; });
+    var seen = {};
+    blocks.forEach(function (b) {
+        if (totals[b.type] > 1) {
+            seen[b.type] = (seen[b.type] || 0) + 1;
+            if (b.number == null) { b.number = seen[b.type]; }
+        }
+    });
+}
+
+/* Render the parsed sections as editable cards inside the modal. */
+function reflowRender() {
+    var container = document.getElementById('reflow-blocks');
+    var applyBtn = document.getElementById('reflow-apply-btn');
+    var countEl = document.getElementById('reflow-count');
+    if (!container) { return; }
+    container.innerHTML = '';
+
+    if (!REFLOW_BLOCKS.length) {
+        container.innerHTML = '<p class="text-muted small mb-0">Paste lyrics above and click '
+                            + '<strong>Parse into sections</strong>.</p>';
+        if (applyBtn) { applyBtn.disabled = true; }
+        if (countEl) { countEl.textContent = ''; }
+        return;
+    }
+    if (applyBtn) { applyBtn.disabled = false; }
+    if (countEl) {
+        countEl.textContent = REFLOW_BLOCKS.length + ' section'
+                            + (REFLOW_BLOCKS.length === 1 ? '' : 's') + ' detected';
+    }
+
+    REFLOW_BLOCKS.forEach(function (block, index) {
+        var card = document.createElement('div');
+        card.className = 'card mb-2 reflow-block-card';
+        card.style.backgroundColor = 'var(--ih-bg-card)';
+        card.style.borderColor = 'var(--ih-border)';
+
+        var header = document.createElement('div');
+        header.className = 'card-header d-flex align-items-center gap-2 flex-wrap py-2';
+
+        /* The label badge updates live as the type/number change. */
+        var label = document.createElement('span');
+        label.className = 'badge bg-secondary reflow-label';
+        label.textContent = componentHeaderLabel(block);
+
+        /* Type picker — reuses the canonical COMPONENT_TYPES list. */
+        var typeSel = document.createElement('select');
+        typeSel.className = 'form-select form-select-sm reflow-type';
+        typeSel.style.width = 'auto';
+        typeSel.setAttribute('aria-label', 'Section type');
+        COMPONENT_TYPES.forEach(function (t) {
+            var opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+            if (t === block.type) { opt.selected = true; }
+            typeSel.appendChild(opt);
+        });
+        typeSel.addEventListener('change', function () {
+            block.type = typeSel.value;
+            label.textContent = componentHeaderLabel(block);
+        });
+
+        var numInput = document.createElement('input');
+        numInput.type = 'number';
+        numInput.min = '1';
+        numInput.className = 'form-control form-control-sm reflow-number';
+        numInput.style.width = '5rem';
+        numInput.placeholder = '#';
+        numInput.setAttribute('aria-label', 'Section number');
+        numInput.value = (block.number != null && block.number > 0) ? block.number : '';
+        numInput.addEventListener('input', function () {
+            block.number = numInput.value ? parseInt(numInput.value, 10) : null;
+            label.textContent = componentHeaderLabel(block);
+        });
+
+        var actions = document.createElement('div');
+        actions.className = 'ms-auto d-flex gap-1';
+
+        var mergeBtn = document.createElement('button');
+        mergeBtn.type = 'button';
+        mergeBtn.className = 'btn btn-sm btn-outline-secondary';
+        mergeBtn.title = 'Merge into the previous section';
+        mergeBtn.innerHTML = '<i class="bi bi-arrow-up-square" aria-hidden="true"></i>';
+        mergeBtn.disabled = (index === 0);
+        mergeBtn.addEventListener('click', function () { reflowMergeUp(index); });
+
+        var bodyTextarea = document.createElement('textarea');
+
+        var splitBtn = document.createElement('button');
+        splitBtn.type = 'button';
+        splitBtn.className = 'btn btn-sm btn-outline-secondary';
+        splitBtn.title = 'Split this section at the cursor';
+        splitBtn.innerHTML = '<i class="bi bi-scissors" aria-hidden="true"></i>';
+        splitBtn.addEventListener('click', function () { reflowSplitAtCursor(index, bodyTextarea); });
+
+        var delBtn = document.createElement('button');
+        delBtn.type = 'button';
+        delBtn.className = 'btn btn-sm btn-outline-danger';
+        delBtn.title = 'Remove this section';
+        delBtn.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
+        delBtn.addEventListener('click', function () { reflowRemove(index); });
+
+        actions.appendChild(mergeBtn);
+        actions.appendChild(splitBtn);
+        actions.appendChild(delBtn);
+
+        header.appendChild(typeSel);
+        header.appendChild(numInput);
+        header.appendChild(label);
+        header.appendChild(actions);
+
+        var body = document.createElement('div');
+        body.className = 'card-body py-2';
+        bodyTextarea.className = 'form-control form-control-sm bg-dark text-light border-secondary reflow-text';
+        bodyTextarea.rows = Math.min(Math.max(block.lines.length, 2), 12);
+        bodyTextarea.value = block.lines.join('\n');
+        bodyTextarea.setAttribute('aria-label', 'Section lyrics');
+        bodyTextarea.addEventListener('input', function () {
+            block.lines = bodyTextarea.value.split('\n');
+        });
+        body.appendChild(bodyTextarea);
+
+        card.appendChild(header);
+        card.appendChild(body);
+        container.appendChild(card);
+    });
+}
+
+/* Merge a section into the one before it (a blank line between). */
+function reflowMergeUp(index) {
+    if (index <= 0 || index >= REFLOW_BLOCKS.length) { return; }
+    var prev = REFLOW_BLOCKS[index - 1];
+    var cur = REFLOW_BLOCKS[index];
+    prev.lines = prev.lines.concat(['']).concat(cur.lines);
+    REFLOW_BLOCKS.splice(index, 1);
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Split a section at the textarea cursor (or, failing that, at its first
+ * internal blank line). The new lower half inherits the type. */
+function reflowSplitAtCursor(index, textarea) {
+    var block = REFLOW_BLOCKS[index];
+    var text = textarea ? textarea.value : block.lines.join('\n');
+    var pos = textarea ? textarea.selectionStart : null;
+    var before;
+    var after;
+    if (pos != null && pos > 0 && pos < text.length) {
+        before = text.slice(0, pos);
+        after = text.slice(pos);
+    } else {
+        var bi = text.indexOf('\n\n');
+        if (bi === -1) { return; } /* nothing sensible to split on */
+        before = text.slice(0, bi);
+        after = text.slice(bi + 2);
+    }
+    var beforeLines = before.replace(/\s+$/, '').split('\n');
+    var afterLines = after.replace(/^\s+/, '').split('\n');
+    if (!beforeLines.join('').trim() || !afterLines.join('').trim()) { return; }
+    block.lines = beforeLines;
+    REFLOW_BLOCKS.splice(index + 1, 0, { type: block.type, number: null, lines: afterLines });
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Drop a section. */
+function reflowRemove(index) {
+    REFLOW_BLOCKS.splice(index, 1);
+    reflowAutoNumber(REFLOW_BLOCKS);
+    reflowRender();
+}
+
+/* Apply the parsed sections to the current song as real components. */
+function reflowApply() {
+    if (!currentSongId) { showToast('Select or create a song first.', 'warning'); return; }
+    var song = findSongById(currentSongId);
+    if (!song) { return; }
+    if (!REFLOW_BLOCKS.length) { return; }
+    if (!song.components) { song.components = []; }
+
+    /* Drop pre-existing EMPTY components (e.g. the blank default verse a fresh
+       song starts with) so reflow lands clean; keep any with real text. */
+    song.components = song.components.filter(function (c) {
+        return Array.isArray(c.lines) && c.lines.join('').trim() !== '';
+    });
+
+    var added = 0;
+    REFLOW_BLOCKS.forEach(function (b) {
+        var lines = b.lines.slice();
+        while (lines.length > 1 && lines[lines.length - 1].trim() === '') { lines.pop(); }
+        if (!lines.join('').trim()) { return; } /* skip an empty section */
+        song.components.push({
+            type: (COMPONENT_TYPES.indexOf(b.type) !== -1) ? b.type : 'verse',
+            number: (b.number != null && b.number > 0) ? parseInt(b.number, 10) : null,
+            lines: lines
+        });
+        added++;
+    });
+
+    markModified(song.id);
+    renderComponents(song);
+    renderArrangement(song);
+    renderPreview(song);
+    fitAllComponentTextareas();
+
+    var modalEl = document.getElementById('reflow-modal');
+    if (modalEl && window.bootstrap) {
+        window.bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+    }
+    /* Belt-and-suspenders (#1180): Bootstrap removes the .modal-backdrop on the
+       modal's transitionend, which can be SKIPPED when the DOM is mutated
+       mid-transition (the heavy renderComponents/renderPreview above) — leaving
+       the page dimmed + every click blocked (the bug the owner hit applying
+       reflow). This time-based sweep runs regardless of whether the transition
+       fired, and only when no modal is genuinely still open. */
+    _sweepOrphanModalBackdrop();
+    REFLOW_BLOCKS = [];
+    showToast('Added ' + added + ' section' + (added === 1 ? '' : 's') + ' from reflow.', 'success');
+}
+
+/* Remove any leftover Bootstrap modal backdrop + body lock once the close
+   transition would have finished — guards against the "stuck dimmed page"
+   state. No-op while a modal is legitimately open. (#1180) */
+function _sweepOrphanModalBackdrop() {
+    setTimeout(function () {
+        if (document.querySelector('.modal.show')) { return; }
+        document.querySelectorAll('.modal-backdrop').forEach(function (b) { b.remove(); });
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+    }, 350);
+}
+
+/* Wire the modal's Parse / Apply controls + reset on open/close.
+ * Called once from the editor's listener setup. */
+function initReflowControls() {
+    var parseBtn = document.getElementById('reflow-parse-btn');
+    var applyBtn = document.getElementById('reflow-apply-btn');
+    var input = document.getElementById('reflow-input');
+    var modalEl = document.getElementById('reflow-modal');
+
+    if (parseBtn && input) {
+        parseBtn.addEventListener('click', function () {
+            REFLOW_BLOCKS = reflowParseText(input.value);
+            reflowRender();
+            if (!REFLOW_BLOCKS.length) {
+                showToast('No sections found — paste some lyrics first.', 'warning');
+            }
+        });
+    }
+    if (applyBtn) {
+        applyBtn.addEventListener('click', reflowApply);
+    }
+    if (modalEl) {
+        modalEl.addEventListener('shown.bs.modal', function () {
+            if (input) { input.focus(); }
+        });
+        modalEl.addEventListener('hidden.bs.modal', function () {
+            REFLOW_BLOCKS = [];
+            if (input) { input.value = ''; }
+            reflowRender();
+        });
+    }
+    /* Global safety net (#1180): when ANY editor modal finishes hiding, sweep a
+       leftover backdrop so a leaked overlay can never strand the page dimmed +
+       unclickable. Idempotent + a no-op while a modal is still open. */
+    document.addEventListener('hidden.bs.modal', function () { _sweepOrphanModalBackdrop(); });
 }
 
 /**
@@ -5007,6 +6103,7 @@ function bindMultiSelectListeners() {
 
         var idSet = new Set(ids);
         songData.songs = (songData.songs || []).filter(function (s) { return !idSet.has(s.id); });
+        rebuildSongIndex();   /* keep the O(1) id index in sync (#1180-A1) */
         ids.forEach(function (id) { modifiedSongIds.delete(id); });
         if (currentSongId && idSet.has(currentSongId)) {
             currentSongId = null;
@@ -5025,25 +6122,33 @@ function bindMultiSelectListeners() {
     if (verify) verify.addEventListener('click', function () {
         var ids = Array.from(window._selectedIds || []);
         if (!ids.length) return;
-        var idSet = new Set(ids);
-        var changed = 0;
-        (songData.songs || []).forEach(function (s) {
-            if (!idSet.has(s.id)) return;
-            if (!s.verified) {
-                s.verified = true;
-                modifiedSongIds.add(s.id);
-                changed++;
-            }
+        /* WS-D #1016 — load full records first so Save persists COMPLETE
+           songs; mutating a slim stub would make save_song wipe its
+           credits/components. */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            var changed = 0;
+            (songData.songs || []).forEach(function (s) {
+                if (!idSet.has(s.id)) return;
+                if (!s.verified) {
+                    s.verified = true;
+                    modifiedSongIds.add(s.id);
+                    changed++;
+                }
+            });
+            renderSongList();
+            updateStatusBar();
+            updateBulkActionsBar();
+            showToast(
+                changed > 0
+                    ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
+                    : 'Nothing to change — all selected songs were already verified.',
+                changed > 0 ? 'success' : 'info'
+            );
+        }).catch(function (err) {
+            showToast('Could not load songs for bulk verify: ' +
+                      (err && err.message ? err.message : err), 'danger');
         });
-        renderSongList();
-        updateStatusBar();
-        updateBulkActionsBar();
-        showToast(
-            changed > 0
-                ? 'Marked ' + changed + ' song(s) verified. Click Save to persist.'
-                : 'Nothing to change — all selected songs were already verified.',
-            changed > 0 ? 'success' : 'info'
-        );
     });
 
     /* Bulk Move (#399) — relocates every selected song to a different
@@ -5065,18 +6170,24 @@ function bindMultiSelectListeners() {
         var sb = (songData.songbooks || []).find(function (s) { return s.id === targetId; });
         if (!sb) { showToast('No songbook "' + targetId + '".', 'warning'); return; }
 
-        var idSet = new Set(ids);
-        (songData.songs || []).forEach(function (s) {
-            if (!idSet.has(s.id)) return;
-            s.songbook = sb.id;
-            s.songbookName = sb.name;
-            s.number = null;
-            modifiedSongIds.add(s.id);
+        /* WS-D #1016 — load full records first (see bulk verify). */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            (songData.songs || []).forEach(function (s) {
+                if (!idSet.has(s.id)) return;
+                s.songbook = sb.id;
+                s.songbookName = sb.name;
+                s.number = null;
+                modifiedSongIds.add(s.id);
+            });
+            renderSongList();
+            updateStatusBar();
+            updateBulkActionsBar();
+            showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
+        }).catch(function (err) {
+            showToast('Could not load songs for bulk move: ' +
+                      (err && err.message ? err.message : err), 'danger');
         });
-        renderSongList();
-        updateStatusBar();
-        updateBulkActionsBar();
-        showToast('Moved ' + ids.length + ' song(s) to ' + sb.id + '. Click Save to persist.', 'success');
     });
 
     /* Bulk Export (#399) — downloads the selected songs as JSON.
@@ -5088,51 +6199,58 @@ function bindMultiSelectListeners() {
     if (exp) exp.addEventListener('click', function () {
         var ids = Array.from(window._selectedIds || []);
         if (!ids.length) return;
-        var idSet = new Set(ids);
-        var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
+        /* WS-D #1016 — load full records first so the export file holds
+           COMPLETE songs (components, credits, …), not slim sidebar stubs. */
+        _loadSongsFull(ids).then(function () {
+            var idSet = new Set(ids);
+            var subset = (songData.songs || []).filter(function (s) { return idSet.has(s.id); });
 
-        import('/js/modules/export-filename.js?v=' + Date.now())
-            .then(function (m) {
-                var filenameBase;
-                if (subset.length === 1) {
-                    var only = subset[0];
-                    var bookSongs = (songData.songs || []).filter(function (s) {
-                        return s.songbook === only.songbook;
-                    });
-                    filenameBase = m.songExportFilename(only, bookSongs);
-                } else {
-                    /* All in one songbook? Use the bundle convention. */
-                    var firstAbbr = subset[0].songbook;
-                    var allSameBook = subset.every(function (s) { return s.songbook === firstAbbr; });
-                    if (allSameBook) {
-                        var sb = (songData.songbooks || []).find(function (b) { return b.id === firstAbbr; });
-                        filenameBase = m.songbookExportFilename({
-                            id:   firstAbbr,
-                            name: (sb && sb.name) || subset[0].songbookName || firstAbbr,
+            return import('/js/modules/export-filename.js?v=' + Date.now())
+                .then(function (m) {
+                    var filenameBase;
+                    if (subset.length === 1) {
+                        var only = subset[0];
+                        var bookSongs = (songData.songs || []).filter(function (s) {
+                            return s.songbook === only.songbook;
                         });
+                        filenameBase = m.songExportFilename(only, bookSongs);
                     } else {
-                        filenameBase = 'songs-export-' + new Date().toISOString().slice(0, 10);
+                        /* All in one songbook? Use the bundle convention. */
+                        var firstAbbr = subset[0].songbook;
+                        var allSameBook = subset.every(function (s) { return s.songbook === firstAbbr; });
+                        if (allSameBook) {
+                            var sb = (songData.songbooks || []).find(function (b) { return b.id === firstAbbr; });
+                            filenameBase = m.songbookExportFilename({
+                                id:   firstAbbr,
+                                name: (sb && sb.name) || subset[0].songbookName || firstAbbr,
+                            });
+                        } else {
+                            filenameBase = 'songs-export-' + new Date().toISOString().slice(0, 10);
+                        }
                     }
-                }
-                downloadBlob(
-                    JSON.stringify({ songs: subset }, null, 2),
-                    filenameBase + '.json',
-                    'application/json'
-                );
-                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
-            })
-            .catch(function (err) {
-                /* Helper module unavailable (broken deploy / offline) — fall
-                   back to the legacy date-stamped filename so the export
-                   still works. */
-                try { console.warn('[bulk_export] filename helper load failed:', err); } catch (_e) {}
-                downloadBlob(
-                    JSON.stringify({ songs: subset }, null, 2),
-                    'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
-                    'application/json'
-                );
-                showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
-            });
+                    downloadBlob(
+                        JSON.stringify({ songs: subset }, null, 2),
+                        filenameBase + '.json',
+                        'application/json'
+                    );
+                    showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+                })
+                .catch(function (err) {
+                    /* Helper module unavailable (broken deploy / offline) — fall
+                       back to the legacy date-stamped filename so the export
+                       still works. */
+                    try { console.warn('[bulk_export] filename helper load failed:', err); } catch (_e) {}
+                    downloadBlob(
+                        JSON.stringify({ songs: subset }, null, 2),
+                        'songs-export-' + new Date().toISOString().slice(0, 10) + '.json',
+                        'application/json'
+                    );
+                    showToast('Exported ' + subset.length + ' song(s) to JSON.', 'success');
+                });
+        }).catch(function (err) {
+            showToast('Could not load songs for export: ' +
+                      (err && err.message ? err.message : err), 'danger');
+        });
     });
 
     /* Bulk Tag (#399) — adds and/or removes tags on every selected song.
@@ -5162,7 +6280,7 @@ function bindMultiSelectListeners() {
 
         fetch(EDITOR_API_URL + '?action=bulk_tag', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: JSON.stringify({ songIds: ids, add: add, remove: rem })
         })
@@ -5228,14 +6346,6 @@ function updateHistoryButtonState() {
         saveBtn.title = hasSong
             ? 'Save all changes to the database'
             : 'Select a song to enable Save';
-    }
-
-    var validateBtn = document.getElementById('btn-validate');
-    if (validateBtn) {
-        validateBtn.disabled = !hasSongs;
-        validateBtn.title = hasSongs
-            ? 'Validate every song in the loaded catalogue'
-            : 'Songs are still loading…';
     }
 
     var historyBtn = document.getElementById('btn-history');
@@ -5351,7 +6461,7 @@ function triggerRevisionRestore(rev) {
     }
     fetch(EDITOR_API_URL + '?action=restore_revision', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         credentials: 'same-origin',
         body: JSON.stringify({ revisionId: rev.id }),
     })

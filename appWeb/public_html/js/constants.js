@@ -18,6 +18,11 @@ export const STORAGE_SEARCH_HISTORY = 'ihymns_search_history';
 export const STORAGE_CUSTOM_TAGS    = 'ihymns_custom_tags';
 export const STORAGE_OWNER_ID       = 'ihymns_owner_id';
 
+/* Per-device flag: set once the local recently-viewed history has been
+   pushed to the server (tblSongHistory) for the signed-in account, so the
+   one-time backfill doesn't re-stack rows on every login (WS-G #1019). */
+export const STORAGE_HISTORY_BACKFILLED = 'ihymns_history_backfilled';
+
 /* User preferences */
 export const STORAGE_THEME              = 'ihymns_theme';
 export const STORAGE_FONT_SIZE          = 'ihymns_fontSize';

@@ -94,12 +94,17 @@ body.reduce-motion {
     animation: none !important;
 }
 
-a:not(.btn):not(.nav-link):not(.dropdown-item) {
+a:not(.btn):not(.nav-link):not(.dropdown-item):not(.footer-link) {
     color: var(--accent-solid);
 }
-a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
+a:not(.btn):not(.nav-link):not(.dropdown-item):not(.footer-link):hover {
     color: var(--accent-end);
 }
+/* `.footer-link` (Terms / Privacy in the admin footer) is deliberately
+   EXCLUDED above so it keeps its understated app.css styling (muted, same
+   colour as the surrounding footer text) — the owner wants footer links
+   understated, NOT accent-coloured. This admin accent-link rule's high
+   specificity (a + three :not()s) was overriding .footer-link's colour. */
 
 /* Anchors dressed up as buttons should render identically to their
    <button> equivalents. The global `a { border-bottom: 1px dotted }`
@@ -629,6 +634,30 @@ body:has(.navbar-admin) {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;   /* anchor for the drag-to-resize handle (#1180) */
+}
+
+/* #1180 — draggable sidebar width on large displays. A thin grip pinned to the
+   sidebar's right edge; the inline script in editor/index.php handles the drag
+   and persists the chosen width to localStorage. Hidden on the ≤768px stacked
+   layout (a full-width sidebar has no width to give on a phone). */
+.sidebar-resize-handle {
+    position: absolute;
+    top: 0;
+    right: -1px;
+    width: 7px;
+    height: 100%;
+    cursor: col-resize;
+    z-index: 6;
+    background-color: transparent;
+    transition: background-color var(--transition-fast);
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.dragging {
+    background-color: var(--accent-solid);
+}
+@media (max-width: 768px) {
+    .sidebar-resize-handle { display: none; }
 }
 
 .sidebar-header {
@@ -646,6 +675,18 @@ body:has(.navbar-admin) {
 }
 
 .song-list-container { flex: 1; overflow-y: auto; padding: 0; }
+
+/* Song-list rows are Bootstrap `.list-group-item`s appended straight into the
+   `padding:0` container by editor.js (buildSongListRow). Bootstrap's default
+   `padding-x: 1rem` left the row text out of line with the filter / search /
+   sort controls in `.sidebar-header` above (which are inset `0.75rem`). Pin the
+   rows' horizontal padding to that same `0.75rem` so the list text's left edge
+   aligns with the controls above (and keep the right side symmetric). Scoped to
+   `#song-list` so no other admin `.list-group-item` is touched. */
+#song-list .list-group-item {
+    padding-left: 0.75rem;
+    padding-right: 0.75rem;
+}
 
 .song-list-item {
     padding: 0.5rem 0.75rem;
@@ -1010,6 +1051,19 @@ body:has(.navbar-admin) {
         max-width: none;
         max-height: 40vh;
     }
+    /* Sidebar footer: let the song-count + the action/export button cluster
+       WRAP instead of overflowing horizontally on the stacked/narrow layout
+       (#1180 mobile pass). */
+    .sidebar-footer {
+        flex-wrap: wrap;
+        gap: 0.4rem;
+        justify-content: center;
+        text-align: center;
+    }
+    .sidebar-footer > span.d-flex {
+        flex-wrap: wrap;
+        justify-content: center;
+    }
 }
 
 /* --------------------------------------------------------------------------
@@ -1053,6 +1107,15 @@ body:has(.navbar-admin) {
     /* Both flex groups (left nav, right actions) — tighten internal gap. */
     .navbar-editor > .d-flex {
         gap: 0.35rem !important;
+    }
+    /* Sidebar footer action/export buttons — pack tighter so the wrapped
+       cluster (#1180 mobile pass) needs fewer rows on a phone. */
+    .sidebar-footer .btn.btn-sm {
+        padding: 0.2rem 0.4rem;
+        font-size: 0.75rem;
+    }
+    .sidebar-footer .dropdown-toggle::after {
+        margin-left: 0.2rem;
     }
 }
 

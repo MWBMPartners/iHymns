@@ -57,8 +57,22 @@ $today = date('Y-m-d');
  * LOAD SONG DATA
  * ========================================================================= */
 
-$songData  = new SongData();
-$songbooks = $songData->getSongbooks();
+/* DB-direct (WS-J #1020): SongData throws when MySQL is unreachable — there is
+   no stale-JSON fallback any more. A 500 sitemap breaks search-engine indexing,
+   so on a DB outage we degrade to a still-valid STATIC-pages-only sitemap and
+   signal 503 + Retry-After: crawlers keep their cached full sitemap and come
+   back, while the core static URLs stay indexable. An empty $songbooks makes
+   every DB-dependent loop below a no-op, so $songData is never dereferenced. */
+$songData  = null;
+$songbooks = [];
+try {
+    $songData  = new SongData();
+    $songbooks = $songData->getSongbooks();
+} catch (\Throwable $e) {
+    error_log('[sitemap] song data unavailable, emitting static-only sitemap: ' . $e->getMessage());
+    http_response_code(503);
+    header('Retry-After: 300');
+}
 
 /* =========================================================================
  * BUILD SITEMAP ENTRIES

@@ -222,15 +222,9 @@ define('APP_CONFIG', [
             'css_local'  => 'vendor/animate/animate.min.css',
         ],
 
-        /* Fuse.js 7.1 — Client-side fuzzy search
-         * NOTE: Loaded via dynamic import() — SRI not supported by browsers
-         * for ES module imports. Hash stored for reference only. */
-        'fusejs' => [
-            'version'    => '7.1.0',
-            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/fuse.js@7.1.0/dist/fuse.min.mjs',
-            'js_sri'     => 'sha384-811P6qTvNGdeioyBs0y+XTVXngjnK9rDj1bK7eeYjJcOVKGY3c5nDbCmE61nrHul',
-            'js_local'   => 'vendor/fuse/fuse.min.mjs',
-        ],
+        /* Fuse.js removed in WS-J #1020 — there is no client-side corpus or
+           Fuse.js index any more; search is live MySQL FULLTEXT server-side
+           (see js/modules/search.js). */
 
         /* Tone.js 15.1 — Web Audio framework for MIDI playback (#90)
          * NOTE: jsDelivr auto-minifies Tone.js (no Tone.min.js in npm package),

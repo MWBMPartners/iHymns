@@ -1339,4 +1339,1017 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'PublicationCityId'),
     ],
+    'drop-songbook-name' => [
+        'script' => 'migrate-drop-songbook-name.php',
+        'card' => [
+            'title'  => 'Drop denormalised SongbookName (WS-E #1013)',
+            'body'   => 'Removes the denormalised <code>tblSongs.SongbookName</code> column. The'
+                      . ' songbook name is now read live via JOIN to <code>tblSongbooks.Name</code>'
+                      . ' everywhere, so the per-row copy is dead weight that also drifts when a'
+                      . ' songbook is renamed. Data-preserving: BEFORE the drop it ensures every'
+                      . ' <code>SongbookAbbr</code> has a <code>tblSongbooks</code> row and'
+                      . ' backfills any empty <code>tblSongbooks.Name</code> from the denorm value,'
+                      . ' and refuses to drop the column if that preservation step fails.'
+                      . ' Idempotent — once the column is gone the migration is a no-op.',
+            'button' => 'Drop denormalised SongbookName',
+        ],
+        /* Pending while the column STILL EXISTS (inverse of the ADD
+           migrations above): a DROP is "applied" once the column is gone,
+           so the probe self-clears after a successful run. */
+        'probe' => static fn(\mysqli $db) => _migProbe_columnExists($db, 'tblSongs', 'SongbookName'),
+    ],
+    'user-data-sync' => [
+        'script' => 'migrate-user-data-sync.php',
+        'card' => [
+            'title'  => 'User-data DB-first sync (WS-F/G #1018 / #1019)',
+            'body'   => 'Adds the two schema pieces the DB-first + auto-sync rewrite of the'
+                      . ' user data stores needs: <code>tblUserCustomTags</code> (per-user pool'
+                      . ' of custom favourite-tag names — the DB-first counterpart of the'
+                      . ' localStorage <code>ihymns_custom_tags</code> array, distinct from the'
+                      . ' curator-managed global <code>tblSongTags</code>) and a'
+                      . ' <code>Tags</code> JSON column on <code>tblUserFavorites</code> so each'
+                      . ' favourite&rsquo;s per-song tags survive a cross-device sync (previously'
+                      . ' the sync sent bare song IDs and silently dropped tags). Setlists,'
+                      . ' favourites and history already have their server tables; this only'
+                      . ' fills the gaps. Data-preserving + idempotent — safe to re-run.',
+            'button' => 'Run User-data Sync Migration',
+        ],
+        /* Pending until BOTH pieces exist — the new table and the new
+           column. Either missing keeps the card actionable so the
+           dashboard counter only clears once the migration has fully
+           landed. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblUserCustomTags')
+            || !_migProbe_columnExists($db, 'tblUserFavorites', 'Tags'),
+    ],
+    'song-history-table' => [
+        'script' => 'migrate-song-history.php',
+        'card' => [
+            'title'  => 'Recently-Viewed history table (#1236)',
+            'body'   => 'Creates <code>tblSongHistory</code> on long-running installs that predate it'
+                      . ' (fresh installs already get it from schema.sql). Without the table the'
+                      . ' <code>song_history</code> API throws, returns <code>{ fallback: true }</code>,'
+                      . ' and the client silently falls back to per-device <code>localStorage</code> — so a'
+                      . ' signed-in user&rsquo;s Recently-Viewed list differs across devices. The client +'
+                      . ' API (#546 / #549 / WS-G #1019) are already built; this only adds the missing'
+                      . ' table. Additive + idempotent — safe to re-run.',
+            'button' => 'Run Recently-Viewed History Migration',
+        ],
+        /* Pending until the table exists; self-clears once it has been created. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongHistory'),
+    ],
+    'notification-scope-expiry' => [
+        'script' => 'migrate-notification-scope-expiry.php',
+        'card' => [
+            'title'  => 'Notification scope + expiry (#1238)',
+            'body'   => 'Adds <code>Environment</code> (NULL = all; alpha / beta / production = that env'
+                      . ' only — the three environments share one DB) and <code>ExpiresAt</code>'
+                      . ' (NULL = never) to <code>tblNotifications</code>, so an admin broadcast can'
+                      . ' target a single environment and/or auto-expire. Additive + idempotent —'
+                      . ' safe to re-run.',
+            'button' => 'Run Notification Scope + Expiry Migration',
+        ],
+        /* Pending until BOTH columns exist; self-clears once they have landed. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblNotifications', 'Environment')
+            || !_migProbe_columnExists($db, 'tblNotifications', 'ExpiresAt'),
+    ],
+    'lyric-lines-mirror' => [
+        'script' => 'migrate-lyric-lines-mirror.php',
+        'card' => [
+            'title'  => 'Lyric-lines mirror: chords/notes + backfill (#1235 P1)',
+            'body'   => 'Lyric-line normalisation Phase 1 (Option 1). Adds the two per-line homes'
+                      . ' <code>tblLyricLines</code> still needed — <code>ChordsJson</code> +'
+                      . ' <code>Note</code> — then backfills the WHOLE catalogue into'
+                      . ' <code>tblLyricLines</code> from the authoritative <code>tblSongComponents</code>'
+                      . ' (line text + part identity + chords + notes + per-component language),'
+                      . ' <strong>in place, no re-import</strong>. <code>tblSongComponents</code> stays'
+                      . ' authoritative + reads are unchanged; the mirror is the future single source of'
+                      . ' truth. Additive + idempotent (delete + reinsert per song) — safe to re-run.',
+            'button' => 'Run Lyric-lines Mirror Migration',
+        ],
+        /* Pending until BOTH per-line columns exist; self-clears once they land.
+           (The backfill is idempotent, so re-running after an edit is safe.) */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLyricLines', 'ChordsJson')
+            || !_migProbe_columnExists($db, 'tblLyricLines', 'Note'),
+    ],
+
+    'component-line-languages' => [
+        'script' => 'migrate-component-line-languages.php',
+        'card' => [
+            'title'  => 'Per-line language: tblSongComponents.LanguagesJson (#1235 P3)',
+            'body'   => 'Adds <code>tblSongComponents.LanguagesJson</code> — a per-line language'
+                      . ' parallel array (like <code>ChordsJson</code> / <code>NotesJson</code>) giving'
+                      . ' per-line language overrides a durable home that survives lyric-line'
+                      . ' reprojection. A line without one inherits the component language'
+                      . ' (which inherits <code>tblSongs.Language</code>). Strictly additive +'
+                      . ' idempotent, no backfill.',
+            'button' => 'Add Per-line Language Column',
+        ],
+        /* Pending until the column lands; self-clears once it exists. #1235 P4/C6
+           resurrection guard: pending only while the JSON era is active (LinesJson present),
+           so the C6 drop of LanguagesJson is never undone by an "Apply all" re-run. */
+        'probe' => static fn(\mysqli $db) =>
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson')
+            && !_migProbe_columnExists($db, 'tblSongComponents', 'LanguagesJson'),
+    ],
+
+    /* ---- iLyricsDB alignment, pre-deploy (#1044 / #1045 / #1046) ----------
+       Shape-readiness so the iHymns DB can become the shared iLyricsDB core
+       without a second re-architecture. All three are strictly additive. */
+    'songbook-entries' => [
+        'script' => 'migrate-add-songbook-entries.php',
+        'card' => [
+            'title'  => 'Songbook Entries N:N junction (#1044)',
+            'body'   => 'Creates <code>tblSongbookEntries</code> (many-to-many song↔songbook) and'
+                      . ' backfills one <em>home</em> entry per song from'
+                      . ' <code>(SongbookAbbr, Number)</code>. Lets a hymn live in several'
+                      . ' hymnals with different numbers, and a future non-Christian song have'
+                      . ' zero entries (owned via its artist). Strictly additive —'
+                      . ' <code>SongbookAbbr</code> / <code>Number</code> / the <code>SongId</code>'
+                      . ' prefix are untouched and nothing reads the junction yet. Idempotent.',
+            'button' => 'Run Songbook Entries Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongbookEntries'),
+    ],
+    'songbook-ischristian' => [
+        'script' => 'migrate-songbook-ischristian.php',
+        'card' => [
+            'title'  => 'Songbook IsChristian filter axis (#1045)',
+            'body'   => 'Adds <code>tblSongbooks.IsChristian</code> (default 1, indexed) — the'
+                      . ' machine axis that lets iHymns surface only Christian lyrics'
+                      . ' (<code>WHERE IsChristian=1</code>) from a shared generic corpus, while'
+                      . ' the iLyricsDB core applies no filter. Every existing songbook defaults'
+                      . ' to Christian. Idempotent — safe to re-run.',
+            'button' => 'Run Songbook IsChristian Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'IsChristian'),
+    ],
+    'song-explicit-genre' => [
+        'script' => 'migrate-song-explicit-genre.php',
+        'card' => [
+            'title'  => 'Song IsExplicit + Genre (#1046)',
+            'body'   => 'Adds two cheap additive columns the generic model carries:'
+                      . ' <code>tblSongs.IsExplicit</code> (default 0) and'
+                      . ' <code>tblSongs.Genre</code> (free-text, indexed). Genre is a secondary'
+                      . ' classification (Hymn / Contemporary Worship / …), NOT the Christian'
+                      . ' filter (that is <code>tblSongbooks.IsChristian</code>). Idempotent.',
+            'button' => 'Run Song IsExplicit + Genre Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'IsExplicit'),
+    ],
+    'normalize-lyrics' => [
+        'script' => 'migrate-normalize-lyrics.php',
+        'card' => [
+            'title'  => 'Normalised lyrics model (#1047)',
+            'body'   => 'Creates <code>tblLyrics</code> / <code>tblLyricLines</code> /'
+                      . ' <code>tblLyricWords</code> — the generic, timing-capable lyrics model'
+                      . ' the shared iLyricsDB core uses and that TTML / word-timing ingest'
+                      . ' depends on. Backfills one primary &ldquo;ihymns&rdquo; lyrics per song'
+                      . ' and its lines from <code>tblSongComponents.LinesJson</code>.'
+                      . ' <strong>Additive</strong> — <code>tblSongComponents</code> stays'
+                      . ' authoritative and no read path changes yet;'
+                      . ' <code>tblLyricWords</code> starts empty for future timed imports.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run Normalised Lyrics Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyrics'),
+    ],
+    'lyric-syllables' => [
+        'script' => 'migrate-lyric-syllables.php',
+        'card' => [
+            'title'  => 'Syllable timing + TTML metadata (#1047 / iLyricsDB #141)',
+            'body'   => 'Completes the timing model line → word → <strong>syllable</strong>:'
+                      . ' creates <code>tblLyricSyllables</code> (FK to <code>tblLyricWords</code>),'
+                      . ' adds <code>tblLyrics.HasSyllableTiming</code>, and adds a lossless'
+                      . ' <code>MetaJson</code> column to <code>tblLyricLines</code> /'
+                      . ' <code>tblLyricWords</code> / <code>tblLyricSyllables</code> so Apple'
+                      . ' Music syllable-synced TTML attributes (ttm:role, itunes:key,'
+                      . ' background-vocal, agent) are never discarded on import. Empty until'
+                      . ' timed imports populate it. Additive + idempotent.',
+            'button' => 'Run Syllable Timing Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricSyllables'),
+    ],
+
+    'api-keys' => [
+        'script' => 'migrate-api-keys.php',
+        'card' => [
+            'title'  => 'API keys (machine-to-machine) (#1064)',
+            'body'   => 'Creates <code>tblApiKeys</code> so external services (e.g. MeedyaDL)'
+                      . ' can authenticate to the lyrics-ingest endpoint with a per-client,'
+                      . ' SHA-256-hashed, scoped, revocable key instead of a session. The raw'
+                      . ' key is shown once at creation and never stored. Manage keys at'
+                      . ' <code>/manage/api-keys</code>. Additive + idempotent.',
+            'button' => 'Run API Keys Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeys'),
+    ],
+
+    'song-recording-ids' => [
+        'script' => 'migrate-song-recording-ids.php',
+        'card' => [
+            'title'  => 'Song recording IDs — ISRC/UPC (#1064)',
+            'body'   => 'Adds <code>tblSongs.Isrc</code> + <code>tblSongs.Upc</code> (indexed ISRC)'
+                      . ' so the lyrics-ingest endpoint can store the recording/release identifiers'
+                      . ' MeedyaDL supplies, and the duplicate-songs review page can detect songs that'
+                      . ' share an ISRC. Additive + idempotent.',
+            'button' => 'Run Song Recording IDs Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'Isrc'),
+    ],
+
+    'song-softref-fks' => [
+        'script' => 'migrate-song-softref-fks.php',
+        'card' => [
+            'title'  => 'Harden soft SongId references (FKs) (#1064)',
+            'body'   => 'Adds real FOREIGN KEY constraints to the three columns that referenced'
+                      . ' <code>tblSongs.SongId</code> without one'
+                      . ' (<code>tblSongRequests.ResolvedSongId</code> → SET NULL;'
+                      . ' <code>tblSongRevisions.SongId</code> and'
+                      . ' <code>tblSongLinkSuggestionsDismissed.SongIdA/B</code> → CASCADE), after'
+                      . ' cleaning any dangling values. The database now guarantees no orphaned'
+                      . ' SongId references. Idempotent.',
+            'button' => 'Run Soft-Reference FK Hardening',
+        ],
+        /* Pending until the representative FK constraint exists in the live schema. */
+        'probe' => static function (\mysqli $db): bool {
+            $res = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+                  WHERE CONSTRAINT_SCHEMA = DATABASE()
+                    AND CONSTRAINT_NAME = 'fk_Revisions_Song' LIMIT 1"
+            );
+            return !($res && $res->num_rows > 0);
+        },
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1066 — one-pass forward-looking schema for interchange fidelity, ingest
+     * hardening, identity map. Additive + dormant until the consuming features
+     * land; shipped together to avoid a second migration round.
+     * -------------------------------------------------------------------- */
+    'interchange-fidelity' => [
+        'script' => 'migrate-interchange-fidelity.php',
+        'card' => [
+            'title'  => 'Interchange fidelity — chords/notes/arrangements (#1066)',
+            'body'   => 'Adds <code>tblSongComponents.ChordsJson</code> +'
+                      . ' <code>NotesJson</code> (lossless chord + presenter-note'
+                      . ' round-trip) and creates <code>tblSongArrangements</code>'
+                      . ' (named component reorderings the PP7 exporter reads via'
+                      . ' <code>IsDefault=1</code>). Additive + idempotent.',
+            'button' => 'Run Interchange Fidelity Migration',
+        ],
+        /* #1235 P4/C6 resurrection guard: "pending" only while the JSON era is active
+           (tblSongComponents.LinesJson present). Once C6 drops the payload columns,
+           LinesJson is gone and this must NOT report pending — re-running would re-ADD the
+           retired ChordsJson. (tblSongArrangements, also created here, survives independently
+           and is in schema.sql, so a fresh post-C6 install gets it without this migration.) */
+        'probe' => static fn(\mysqli $db) =>
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson')
+            && !_migProbe_columnExists($db, 'tblSongComponents', 'ChordsJson'),
+    ],
+
+    'ingest-review-queue' => [
+        'script' => 'migrate-ingest-review-queue.php',
+        'card' => [
+            'title'  => 'Lyrics review queue + conflicts (#1066)',
+            'body'   => 'Creates <code>tblLyricsConflicts</code> +'
+                      . ' <code>tblLyricsReviewQueue</code> — a moderation gate'
+                      . ' between lyrics ingest and the public read path, so a'
+                      . ' conflicting incoming version is queued for review instead'
+                      . ' of silently overwriting curated data. Additive + idempotent.',
+            'button' => 'Run Lyrics Review Queue Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricsReviewQueue'),
+    ],
+
+    'api-key-hardening' => [
+        'script' => 'migrate-api-key-hardening.php',
+        'card' => [
+            'title'  => 'API-key hardening — rate limits + idempotency (#1066)',
+            'body'   => 'Adds <code>tblApiKeys.RateLimitPerMin/PerDay</code> and'
+                      . ' creates <code>tblApiKeyUsage</code> (rolling counters,'
+                      . ' per-scope-ready) + <code>tblApiKeyIdempotency</code>'
+                      . ' (safe-retry response cache) for the ingest endpoint.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run API-Key Hardening Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblApiKeys', 'RateLimitPerMin'),
+    ],
+
+    'song-normalized-title' => [
+        'script' => 'migrate-song-normalized-title.php',
+        'card' => [
+            'title'  => 'NormalizedTitle dedup column (#1066)',
+            'body'   => 'Adds <code>tblSongs.NormalizedTitle</code> (indexed,'
+                      . ' app-maintained fold of <code>Title</code>) and backfills'
+                      . ' every song, so duplicate detection + ingest resolution'
+                      . ' pre-filter on the index instead of normalising row-by-row'
+                      . ' in PHP. Additive + idempotent (backfill re-runnable).',
+            'button' => 'Run NormalizedTitle Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongs', 'NormalizedTitle'),
+    ],
+
+    'activity-log-observability' => [
+        'script' => 'migrate-activity-log-observability.php',
+        'card' => [
+            'title'  => 'Activity Log observability columns (#1207)',
+            'body'   => 'Adds <code>Environment</code> / <code>RequestPath</code> / '
+                      . '<code>Referrer</code> / <code>Country</code> to <code>tblActivityLog</code> '
+                      . '— the shared DB serves all three environments, so each row records which '
+                      . 'env / file / referrer / country it came from. Also adds dormant geo-cache '
+                      . 'columns to <code>tblIpReputation</code> for the IP→country resolver (#1208). '
+                      . 'Strictly additive + idempotent.',
+            'button' => 'Run Activity Log Observability Migration',
+        ],
+        /* OR-probe (rule #19): pending until EVERY added column exists, so a
+           partial apply re-applies instead of showing the card green. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblActivityLog', 'Environment')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'RequestPath')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'Referrer')
+            || !_migProbe_columnExists($db, 'tblActivityLog', 'Country')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'CountryCode')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'CountryName')
+            || !_migProbe_columnExists($db, 'tblIpReputation', 'GeoLookedUpAt'),
+    ],
+
+    'song-link-confidence' => [
+        'script' => 'migrate-song-link-confidence.php',
+        'card' => [
+            'title'  => 'Song-link confidence tiers (#1066)',
+            'body'   => 'Adds <code>tblSongLinkSuggestions.Confidence</code>'
+                      . ' (high/medium/low) + <code>Signal</code> (detecting'
+                      . ' method, e.g. shared-isrc) so curators triage strong-key'
+                      . ' matches ahead of fuzzy title guesses. Additive + idempotent.',
+            'button' => 'Run Song-Link Confidence Migration',
+        ],
+        /* Multi-column OR-probe (rule #19): pending until BOTH columns exist.
+           A single-column probe on 'Confidence' alone left the card green when
+           a partial apply added Confidence but not Signal — Apply-all then
+           never re-ran it to add the missing Signal (the addCol calls are each
+           idempotent, so a re-run safely adds only what's absent). */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Confidence')
+            || !_migProbe_columnExists($db, 'tblSongLinkSuggestions', 'Signal'),
+    ],
+
+    'song-identity-map' => [
+        'script' => 'migrate-song-identity-map.php',
+        'card' => [
+            'title'  => 'Cross-system identity map + Christian view (#1066)',
+            'body'   => 'Adds <code>tblWorks.MusicBrainzWorkMBID</code> (composition'
+                      . ' identity), creates <code>tblSongIdentityMap</code>'
+                      . ' (recording identity: ISRC/MusicBrainz/Spotify/Genius) and'
+                      . ' the <code>v_ChristianSongs</code> read fence. The iLyricsDB'
+                      . ' bridge stays gated on the DB-merge decision. Additive + idempotent.',
+            'button' => 'Run Identity Map Migration',
+        ],
+        /* Pending until ALL THREE objects this migration creates exist — the
+         * table, the tblWorks column, and the view — so a partial apply (table
+         * created but a later step threw) never shows the card as green. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongIdentityMap')) {
+                return true;
+            }
+            if (!_migProbe_columnExists($db, 'tblWorks', 'MusicBrainzWorkMBID')) {
+                return true;
+            }
+            $v = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.VIEWS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'v_ChristianSongs' LIMIT 1"
+            );
+            return !($v && $v->num_rows > 0);
+        },
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1088 — per-line lyric enrichment: translations + Genius-style
+     * annotations, anchored on tblLyricLines.Id. Additive + dormant until the
+     * ingest/UI/display feature work lands.
+     * -------------------------------------------------------------------- */
+    'line-enrichment' => [
+        'script' => 'migrate-line-enrichment.php',
+        'card' => [
+            'title'  => 'Per-line lyric enrichment — translations + annotations (#1088)',
+            'body'   => 'Creates <code>tblLyricLineTranslations</code> (per-line meaning'
+                      . ' translation + romanization, modelling the Apple Music TTML'
+                      . ' <code>&lt;translation&gt;</code>/<code>&lt;transliteration&gt;</code> tracks)'
+                      . ' and <code>tblLyricLineAnnotations</code> (Genius-style explanatory'
+                      . ' gloss over a line/phrase span). Both anchor on'
+                      . ' <code>tblLyricLines.Id</code>. Additive + idempotent.',
+            'button' => 'Run Line Enrichment Migration',
+        ],
+        /* Pending until BOTH tables exist (multi-table OR-form). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblLyricLineTranslations')
+            || !_migProbe_tableExists($db, 'tblLyricLineAnnotations'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * #1090 — enhancement-foundation batch: forward-looking, additive, dormant
+     * schema for the next program phase (tune entity, CCLI usage spine, corpus
+     * linter, annotation voting, embeddings, live-follow) + request-corrections
+     * + ENUM->VARCHAR hardening. Deployable ahead of the consuming features.
+     * -------------------------------------------------------------------- */
+    'tunes-entity' => [
+        'script' => 'migrate-tunes-entity.php',
+        'card' => [
+            'title'  => 'Tune + meter entity (#1090 P4)',
+            'body'   => 'Creates <code>tblTunes</code> + <code>tblTuneAliases</code>'
+                      . ' and adds <code>tblSongs.TuneId</code> (FK), promoting the'
+                      . ' hymn tune from free-text <code>TuneName</code> to a'
+                      . ' first-class entity (metre, MusicBrainz Work). Backfills'
+                      . ' from distinct tune names + links songs. Additive + idempotent.',
+            'button' => 'Run Tune Entity Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblTunes')
+            || !_migProbe_columnExists($db, 'tblSongs', 'TuneId'),
+    ],
+
+    'usage-events' => [
+        'script' => 'migrate-usage-events.php',
+        'card' => [
+            'title'  => 'Song usage-event log (#1090 P5)',
+            'body'   => 'Creates <code>tblSongUsageEvents</code> — the reportable'
+                      . ' "song used on date, in context, by org" spine that backs'
+                      . ' CCLI / CCS / OneLicense usage reports. Dormant until the'
+                      . ' projection/print/schedule write-hooks land. Additive + idempotent.',
+            'button' => 'Run Usage-Event Log Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongUsageEvents'),
+    ],
+
+    'quality-findings' => [
+        'script' => 'migrate-quality-findings.php',
+        'card' => [
+            'title'  => 'Corpus-quality linter findings (#1090 P8)',
+            'body'   => 'Creates <code>tblSongQualityFindings</code> — one row per'
+                      . ' (song, rule) defect, UPSERTed each lint run and triaged'
+                      . ' like the review queue, so corpus defects become a finite'
+                      . ' assignable worklist. Additive + idempotent.',
+            'button' => 'Run Quality-Findings Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongQualityFindings'),
+    ],
+
+    'annotation-votes' => [
+        'script' => 'migrate-annotation-votes.php',
+        'card' => [
+            'title'  => 'Annotation votes — sort-only (#1090 P10)',
+            'body'   => 'Creates <code>tblLyricAnnotationVotes</code> (one vote per'
+                      . ' user per annotation). The tally drives reviewer-queue SORT'
+                      . ' ORDER only — it never auto-publishes to the read path.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run Annotation Votes Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricAnnotationVotes'),
+    ],
+
+    'song-embeddings' => [
+        'script' => 'migrate-song-embeddings.php',
+        'card' => [
+            'title'  => 'Song embeddings — semantic search (#1090 P11)',
+            'body'   => 'Creates <code>tblSongEmbeddings</code> — the durable vector'
+                      . ' cache for semantic search, with a content-hash so an edit'
+                      . ' re-embeds only the affected rows (never the whole corpus).'
+                      . ' Prepped now, dormant until semantic search ships. Additive + idempotent.',
+            'button' => 'Run Song Embeddings Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongEmbeddings'),
+    ],
+
+    'live-follow' => [
+        'script' => 'migrate-live-follow.php',
+        'card' => [
+            'title'  => 'Live-follow sessions (#1090 P7)',
+            'body'   => 'Creates <code>tblLiveFollowSessions</code> — ephemeral'
+                      . ' broadcast state for the native "Live Follow" feature'
+                      . ' (congregants mirror the leader\'s current slide via a join'
+                      . ' code). Additive + idempotent.',
+            'button' => 'Run Live-Follow Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLiveFollowSessions'),
+    ],
+
+    'live-follow-revision' => [
+        'script' => 'migrate-live-follow-revision.php',
+        'card' => [
+            'title'  => 'Live-follow: StateRevision (#1268)',
+            'body'   => 'Adds <code>tblLiveFollowSessions.StateRevision</code> — a'
+                      . ' monotonic broadcast counter so web/PWA Live-Follow'
+                      . ' followers short-poll cheaply (<code>?since=</code>) without'
+                      . ' holding a server connection open. Additive + idempotent;'
+                      . ' run the Live-follow sessions migration first.',
+            'button' => 'Run Live-Follow Revision Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'StateRevision'),
+    ],
+
+    'request-corrections' => [
+        'script' => 'migrate-request-corrections.php',
+        'card' => [
+            'title'  => 'Song-request corrections (#1090 N2)',
+            'body'   => 'Extends <code>tblSongRequests</code> with'
+                      . ' <code>RequestType</code> + <code>SongId</code> (FK) +'
+                      . ' <code>FieldName</code> + <code>OriginalValue</code>/'
+                      . '<code>ProposedValue</code> so corrections to an existing'
+                      . ' song are captured as a structured before/after diff.'
+                      . ' Additive + idempotent.',
+            'button' => 'Run Request-Corrections Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongRequests', 'RequestType'),
+    ],
+
+    'identifier-media-hardening' => [
+        'script' => 'migrate-identifier-media-hardening.php',
+        'card' => [
+            'title'  => 'Identifier + media hardening (#1090 P6/N6-N7)',
+            'body'   => 'Widens <code>tblCreditPersonIdentifiers.IdentifierType</code>'
+                      . ' and <code>tblSongMedia.Kind</code> from ENUM to VARCHAR'
+                      . ' (new identifier/media kinds need no ALTER) and adds'
+                      . ' <code>tblCreditPeople.MusicBrainzArtistMBID</code>.'
+                      . ' Data-preserving + idempotent.',
+            'button' => 'Run Identifier + Media Hardening',
+        ],
+        /* Pending until the new column exists AND IdentifierType is widened. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblCreditPeople', 'MusicBrainzArtistMBID')) {
+                return true;
+            }
+            $r = $db->query(
+                "SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonIdentifiers'
+                    AND COLUMN_NAME = 'IdentifierType' LIMIT 1"
+            );
+            $row = $r ? $r->fetch_assoc() : null;
+            return !$row || strtolower((string)$row['DATA_TYPE']) !== 'varchar';
+        },
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Schema-completeness batch (#1090 audit) — gaps the cross-repo iHymns +
+     * iLyricsDB audit found iHymns missing (vocal parts headline). Additive +
+     * dormant; anchored on shipped tables.
+     * -------------------------------------------------------------------- */
+    'vocal-parts' => [
+        'script' => 'migrate-vocal-parts.php',
+        'card' => [
+            'title'  => 'Vocal / singing parts (#1137)',
+            'body'   => 'Creates <code>tblVocalParts</code> (per-version singing-part'
+                      . ' registry — lead/backing/soloist/duet/named-singer, reusing'
+                      . ' <code>tblCreditPeople</code>) + <code>tblLyricLineVocalParts</code>'
+                      . ' + <code>tblLyricWordVocalParts</code> (many-to-many for'
+                      . ' duet/unison) — first-class queryable vocal parts vs the'
+                      . ' lossless-only MetaJson today. Additive + idempotent.',
+            'button' => 'Run Vocal Parts Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblVocalParts'),
+    ],
+
+    'song-part-types' => [
+        'script' => 'migrate-song-part-types.php',
+        'card' => [
+            'title'  => 'Song-part types (#1138)',
+            'body'   => 'Creates <code>tblSongPartTypes</code> (seeded: Intro/Verse/'
+                      . 'Chorus/Bridge/Tag/…) and adds <code>tblLyricLines.PartTypeSlug</code>'
+                      . ' so reorder-by-part / part-headers are a JOIN, not a string'
+                      . ' match. Additive + idempotent.',
+            'button' => 'Run Song-Part Types Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSongPartTypes')
+            || !_migProbe_columnExists($db, 'tblLyricLines', 'PartTypeSlug'),
+    ],
+
+    'scripture-index' => [
+        'script' => 'migrate-scripture-index.php',
+        'card' => [
+            'title'  => 'Scripture cross-reference index (#1112)',
+            'body'   => 'Creates <code>tblBibleBooks</code> (seeded with the 66-book'
+                      . ' OSIS canon) + <code>tblSongScriptureRefs</code> for'
+                      . ' browse-by-passage ("every hymn that sets Isaiah 53").'
+                      . ' Owner-confirmed; unblocks lectionary. Additive + idempotent.',
+            'button' => 'Run Scripture Index Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblBibleBooks')
+            || !_migProbe_tableExists($db, 'tblSongScriptureRefs'),
+    ],
+
+    'rights-axis' => [
+        'script' => 'migrate-rights-axis.php',
+        'card' => [
+            'title'  => 'Rights axis — availability / royalty IDs / per-action (#1090)',
+            'body'   => 'Adds <code>tblSongs.Availability</code> (available|paid_only|'
+                      . 'unavailable), <code>tblContentRestrictions.AppliesToAction</code>'
+                      . ' (display vs print/export/translate), and creates'
+                      . ' <code>tblSongRoyaltyIds</code> (per-song PRO IDs). Additive + idempotent.',
+            'button' => 'Run Rights Axis Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongs', 'Availability')
+            || !_migProbe_tableExists($db, 'tblSongRoyaltyIds')
+            || !_migProbe_columnExists($db, 'tblContentRestrictions', 'AppliesToAction'),
+    ],
+
+    'search-synonyms' => [
+        'script' => 'migrate-search-synonyms.php',
+        'card' => [
+            'title'  => 'Search synonyms + diacritic folding (#1142)',
+            'body'   => 'Creates <code>tblSearchSynonyms</code> and adds a'
+                      . ' diacritic-folded <code>tblSongs.LyricsTextFolded</code> +'
+                      . ' FULLTEXT index for accent-insensitive search'
+                      . ' (Noël↔Noel, Saviour↔Savior). Additive + idempotent.',
+            'button' => 'Run Search Synonyms Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblSearchSynonyms')
+            || !_migProbe_columnExists($db, 'tblSongs', 'LyricsTextFolded'),
+    ],
+
+    'source-documents' => [
+        'script' => 'migrate-source-documents.php',
+        'card' => [
+            'title'  => 'Raw-source-document store (#1143)',
+            'body'   => 'Creates <code>tblLyricsSourceDocuments</code> — verbatim'
+                      . ' ingested carrier docs (LyricsFile YAML / .ilyrics / raw TTML)'
+                      . ' for lossless whole-document round-trip. Additive + idempotent.',
+            'button' => 'Run Source-Documents Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblLyricsSourceDocuments'),
+    ],
+
+    'presentation-themes' => [
+        'script' => 'migrate-presentation-themes.php',
+        'card' => [
+            'title'  => 'Presentation themes + cascade (#1168)',
+            'body'   => 'Creates the 8-table presentation-styling groundwork for casting /'
+                      . ' projection — reusable <code>tblPresentationThemes</code> + per-display-role'
+                      . ' <code>tblPresentationThemeVariants</code> (with background-layer + footer'
+                      . ' child tables), the discriminated <code>tblPresentationThemeAssignments</code>'
+                      . ' cascade spine, <code>tblPresentationSlideOverrides</code>, theme tags, and a'
+                      . ' format-fidelity round-trip carrier. Additive + idempotent + <strong>dormant</strong>'
+                      . ' (nothing reads it until the casting/editor feature consumes it).',
+            'button' => 'Run Presentation Themes Migration',
+        ],
+        /* Pending until ALL eight tables exist (multi-object OR-form, mirrors #1088). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblPresentationThemes')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeVariants')
+            || !_migProbe_tableExists($db, 'tblPresentationBackgroundLayers')
+            || !_migProbe_tableExists($db, 'tblPresentationFooterOverlays')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeAssignments')
+            || !_migProbe_tableExists($db, 'tblPresentationSlideOverrides')
+            || !_migProbe_tableExists($db, 'tblPresentationThemeTags')
+            || !_migProbe_tableExists($db, 'tblPresentationFormatFidelity'),
+    ],
+
+    'entity-colours' => [
+        'script' => 'migrate-entity-colours.php',
+        'card' => [
+            'title'  => 'Catalogue + Series colours (#1181)',
+            'body'   => 'Adds <code>tblCatalogues.Colour</code> + <code>tblSongbookSeries.Colour</code>'
+                      . ' (badge hex <code>#RRGGBB</code>, empty = theme default) so catalogues /'
+                      . ' collections carry a badge colour and a songbook series defines ONE colour its'
+                      . ' member songbooks share. Additive + idempotent.',
+            'button' => 'Run Entity Colours Migration',
+        ],
+        /* Pending until BOTH columns exist (multi-column OR-form). */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblCatalogues', 'Colour')
+            || !_migProbe_columnExists($db, 'tblSongbookSeries', 'Colour'),
+    ],
+
+    'theme-vocabulary' => [
+        'script' => 'migrate-seed-theme-vocabulary.php',
+        'card' => [
+            'title'  => 'Standard Theme Vocabulary (CCLI / OpenLyrics) (#1152)',
+            'body'   => 'Adds <code>tblSongTags.ParentId</code> (self-FK for the 2-level theme'
+                      . ' hierarchy), <code>CcliThemeId</code> and <code>Source</code>, then seeds'
+                      . ' the standard CCLI / OpenLyrics theme vocabulary'
+                      . ' (<code>themelist.txt</code>) marked <code>Source=ccli-openlyrics</code>.'
+                      . ' Curators keep adding custom tags; the seed gives Browse-by-Theme and the'
+                      . ' tag typeahead a professional, interoperable baseline. Idempotent — re-runs'
+                      . ' upsert by name, never duplicating.',
+            'button' => 'Run Standard Theme Vocabulary Migration',
+        ],
+        /* Multi-object OR-probe: pending until all three columns exist AND the
+           standard vocabulary has actually been seeded (a partial apply never
+           shows the card green). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'ParentId'))    return true;
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'CcliThemeId')) return true;
+            if (!_migProbe_columnExists($db, 'tblSongTags', 'Source'))      return true;
+            try {
+                $res = $db->query("SELECT 1 FROM tblSongTags WHERE Source = 'ccli-openlyrics' LIMIT 1");
+                $seeded = $res && $res->fetch_row() !== null;
+                if ($res) $res->close();
+                return !$seeded;   /* pending while nothing has been seeded */
+            } catch (\Throwable $_e) { return false; }
+        },
+    ],
+    'lyric-lines-parttypeslug' => [
+        'script' => 'migrate-lyric-lines-parttypeslug.php',
+        'card' => [
+            'title'  => 'Lyric-line PartTypeSlug backfill (#1138)',
+            'body'   => 'Populates <code>tblLyricLines.PartTypeSlug</code> from the free-text'
+                      . ' <code>PartType</code> via the <code>tblSongPartTypes</code> allow-list'
+                      . ' (the #1138 typed-part column was added but never backfilled — NULL on every'
+                      . ' line). Data-only, no schema change. Part of #1235 P4 (lines authoritative) —'
+                      . ' the projector now writes the slug on every save too, so the backfill cannot'
+                      . ' rot. Idempotent — re-runs touch only rows still NULL; an unrecognised type is'
+                      . ' left NULL, never invented.',
+            'button' => 'Run PartTypeSlug Backfill',
+        ],
+        /* Pending while any line with a MAPPABLE PartType still has a NULL slug; the
+           JOIN restricts to known vocab so an unknown type never keeps the card red.
+           Self-clears once the backfill (+ slug-at-write) have run. Returns not-pending
+           on an install lacking the prerequisite column/table. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_columnExists($db, 'tblLyricLines', 'PartTypeSlug')) return false;
+            if (!_migProbe_tableExists($db, 'tblSongPartTypes'))              return false;
+            try {
+                $res = $db->query(
+                    "SELECT 1 FROM tblLyricLines ll
+                       JOIN tblSongPartTypes pt ON pt.Slug = LOWER(ll.PartType)
+                      WHERE ll.PartTypeSlug IS NULL LIMIT 1"
+                );
+                $needs = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needs;
+            } catch (\Throwable $_e) { return false; }
+        },
+    ],
+
+    /* ---- #1235 P4 / C6 — the DROP (DESTRUCTIVE, manual + gated) ----------------
+       Retires the four tblSongComponents JSON payload columns now that tblLyricLines is
+       authoritative. Registered LAST (after every ADD migration). alpha/beta/production SHARE
+       ONE database, so this is a SINGLE in-place drop run ONCE BY HAND — never per-env (a
+       re-run is an idempotent no-op) — only after C4/C5 is live on ALL THREE envs and a soak
+       is green, with all three UIs frozen (#1234) + a tested backup. The real safety is in the
+       script: Stage 0 ABORTS unless confirm=1 + the C3 verifier sentinel is pre-drop/green/<24h
+       + live parity holds — so even an accidental "Apply all pending" is a harmless no-op skip.
+       Recovery: regenerate-lines-json-from-lines.php. */
+    'retire-component-lines-json' => [
+        'script' => 'migrate-retire-component-lines-json.php',
+        /* #1235 P4/C6 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS
+           bulk runner and the no-JS apply-all loop) and from the pending counter, and its
+           single-run requires confirm=1 (like drop-legacy). Without this, its perpetually-
+           "pending" probe would (a) let a routine Apply-all execute the irreversible drop and
+           (b) keep the counter stuck non-zero + hard-fail the no-JS bulk run. setup-database.php
+           honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '⚠ RETIRE tblSongComponents JSON columns (#1235 P4/C6)',
+            'body'   => 'DESTRUCTIVE — drops <code>LinesJson</code> / <code>ChordsJson</code> /'
+                      . ' <code>NotesJson</code> / <code>LanguagesJson</code> from'
+                      . ' <code>tblSongComponents</code> now that <code>tblLyricLines</code> is the'
+                      . ' single source of truth. Do NOT run via "Apply all" — run by hand inside a'
+                      . ' #1234 maintenance freeze with a fresh tested backup, AFTER a ≥7-night soak.'
+                      . ' It REFUSES to drop unless <code>appWeb/.sql/verify-lyrics-cutover.php'
+                      . ' --phase=pre-drop</code> wrote a green sentinel &lt; 24h ago AND live line-count'
+                      . ' parity holds. Reversible via <code>regenerate-lines-json-from-lines.php</code>.',
+            'button' => 'RETIRE JSON Columns (gated)',
+        ],
+        /* "Pending" while LinesJson still exists (the drop has not run); self-clears to
+           applied once retired. Detects real completion (never always-true). */
+        'probe' => static fn(\mysqli $db) =>
+            _migProbe_columnExists($db, 'tblSongComponents', 'LinesJson'),
+    ],
+
+    'activity-log-microtime' => [
+        'script' => 'migrate-activity-log-microtime.php',
+        'card' => [
+            'title'  => 'Activity Log: microsecond timestamps (#1287)',
+            'body'   => 'Widens <code>tblActivityLog.CreatedAt</code> to'
+                      . ' <code>TIMESTAMP(6)</code> so log entries capture sub-second'
+                      . ' time (<code>logActivity</code> writes <code>NOW(6)</code>) —'
+                      . ' forensics / latency / precise sequencing. Idempotent;'
+                      . ' one-time column rewrite (opt-in per env).',
+            'button' => 'Run Activity-Log Microtime Migration',
+        ],
+        /* Pending until CreatedAt is TIMESTAMP(6); self-clears once the precision is
+           6. Table-absent (fresh install pre-Install) reports not-pending. */
+        'probe' => static function (\mysqli $db): bool {
+            $r = $db->query(
+                "SELECT DATETIME_PRECISION FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME   = 'tblActivityLog'
+                    AND COLUMN_NAME  = 'CreatedAt' LIMIT 1"
+            );
+            $row = $r ? $r->fetch_assoc() : null;
+            if ($r) { $r->close(); }
+            if ($row === null) { return false; }
+            return (int)($row['DATETIME_PRECISION'] ?? 0) < 6;
+        },
+    ],
+    'org-venues' => [
+        'script' => 'migrate-org-venues.php',
+        'card' => [
+            'title'  => 'Org Venues &amp; Service Schedules (#1325)',
+            'body'   => 'Creates <code>tblOrgVenues</code> (org physical venues — name, address,'
+                      . ' lat/lng + radius, timezone) and <code>tblOrgServiceSchedules</code>'
+                      . ' (recurring service times per venue). The forward-looking foundation for'
+                      . ' &ldquo;Service Mode&rdquo; (#1323); ships empty, populated by'
+                      . ' <code>/manage/venues</code>. Idempotent — safe to re-run.',
+            'button' => 'Run Org Venues Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until BOTH tables exist, so a
+           partial apply never shows the card green. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblOrgVenues')
+            || !_migProbe_tableExists($db, 'tblOrgServiceSchedules'),
+    ],
+    'songbook-display-abbr' => [
+        'script' => 'migrate-songbook-display-abbr.php',
+        'card' => [
+            'title'  => 'Songbook display label (#1332)',
+            'body'   => 'Adds <code>tblSongbooks.DisplayAbbr</code> — an optional free-text label'
+                      . ' shown to users in place of the Abbreviation (so a book can display'
+                      . ' &ldquo;AH-OLD&rdquo;, &ldquo;Psalty:Kids&rdquo;, …) while the Abbreviation stays'
+                      . ' the alphanumeric SongId prefix. Idempotent — safe to re-run.',
+            'button' => 'Run Songbook Display Label Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongbooks', 'DisplayAbbr'),
+    ],
+    'external-systems' => [
+        'script' => 'migrate-external-systems.php',
+        'card' => [
+            'title'  => 'External-system integration hook (#1327)',
+            'body'   => 'Creates the DORMANT integration scaffold: <code>tblExternalSystems</code>'
+                      . ' (system registry, seeded with a paused <code>webms-intra</code> row) plus'
+                      . ' per-entity ref tables <code>tblOrganisationExternalRefs</code>,'
+                      . ' <code>tblOrgVenueExternalRefs</code> and'
+                      . ' <code>tblOrgServiceScheduleExternalRefs</code> — so orgs / venues / service'
+                      . ' times can be linked to WebMS-Intra (or another system) in future without a'
+                      . ' second migration. No read/write code consumes them yet. Runs after Org Venues.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Run External-Systems Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until all four tables exist
+           AND the seeded webms-intra registry row is present (the tableExists
+           guards short-circuit before the SELECT, so it never runs against a
+           missing table under STRICT). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblExternalSystems')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrganisationExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgVenueExternalRefs')) { return true; }
+            if (!_migProbe_tableExists($db, 'tblOrgServiceScheduleExternalRefs')) { return true; }
+            $r = $db->query("SELECT 1 FROM tblExternalSystems WHERE SystemKey = 'webms-intra' LIMIT 1");
+            $seeded = $r && $r->num_rows > 0;
+            if ($r) { $r->close(); }
+            return !$seeded;
+        },
+    ],
+    'service-mode-sessions' => [
+        'script' => 'migrate-service-mode-sessions.php',
+        'card' => [
+            'title'  => 'Service Mode sessions (#1335)',
+            'body'   => 'Extends <code>tblLiveFollowSessions</code> (NULL-able host + venue/schedule/'
+                      . 'occurrence/kind + the 3-docroot <code>Channel</code> discriminator) and creates'
+                      . ' <code>tblLiveFollowJoinCodes</code>, <code>tblServicePresence</code> and'
+                      . ' <code>tblServicePollCounters</code> — the dormant foundation for congregation'
+                      . ' &ldquo;Service Mode&rdquo; (#1323). Runs after Org Venues. Idempotent — safe to re-run.',
+            'button' => 'Run Service Mode Sessions Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the spine column AND all
+           three new tables exist. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLiveFollowSessions', 'VenueId')
+            || !_migProbe_tableExists($db, 'tblLiveFollowJoinCodes')
+            || !_migProbe_tableExists($db, 'tblServicePresence')
+            || !_migProbe_tableExists($db, 'tblServicePollCounters'),
+    ],
+
+    'song-link-origin' => [
+        'script' => 'migrate-song-link-origin.php',
+        'card' => [
+            'title'  => 'Song-link origin marker (#1125)',
+            'body'   => 'Adds <code>tblSongLinks.Origin</code> so a counterpart link records whether it'
+                      . ' was created by a curator (<code>manual</code>) or by the #1125 hard-key'
+                      . ' auto-promoter (<code>auto-iswc</code> / <code>auto-ccli</code> / <code>auto-isrc</code>).'
+                      . ' Keeps auto-links auditable + revertable. Additive, idempotent — safe to re-run;'
+                      . ' the auto-linker works without it (writes a Note tag instead) on an un-migrated install.',
+            'button' => 'Run Song-Link Origin Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblSongLinks', 'Origin'),
+    ],
+
+    'song-redirects' => [
+        'script' => 'migrate-song-redirects.php',
+        'card' => [
+            'title'  => 'Song permalink redirects (#1343)',
+            'body'   => 'Creates <code>tblSongRedirects</code> so a shared permalink'
+                      . ' (<code>/song/&lt;SongId&gt;</code>) keeps resolving after a song is merged,'
+                      . ' deleted or renamed — a 301 to the replacement, or a friendly &ldquo;removed&rdquo;'
+                      . ' tombstone, instead of a dead 404 (the &ldquo;Here To Stay&rdquo; problem). Merge'
+                      . ' auto-populates it; delete offers relink-or-tombstone. Idempotent — safe to re-run.',
+            'button' => 'Run Song Permalink Redirects Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblSongRedirects'),
+    ],
+
+    'song-public-id' => [
+        'script' => 'migrate-song-public-id.php',
+        'card' => [
+            'title'  => 'Song PublicId / permalink id (#1343-B)',
+            'body'   => 'Adds <code>tblSongs.PublicId</code> — an opaque, stable, location-independent'
+                      . ' permalink id (Crockford base32) so a shared <code>/song/&lt;id&gt;</code> link'
+                      . ' survives the song moving songbook or being renumbered (the SongId stays the'
+                      . ' internal key). Backfills every existing song, then adds a UNIQUE index. Idempotent —'
+                      . ' <strong>re-run until it reports 0 remaining</strong>, then the UNIQUE is added.',
+            'button' => 'Run Song PublicId Migration',
+        ],
+        /* Pending until the column exists AND every row is backfilled AND the UNIQUE
+           index has landed (#1343-B review wfgwvkokd). The index check is NOT redundant
+           with the NULL check: MySQL UNIQUE permits multiple NULLs, and an interrupted
+           Stage 3 (ADD UNIQUE after the final backfill batch) would otherwise leave the
+           card green with no uniqueness constraint — re-running adds it (Stage 3 is
+           idempotent), so the card must stay pending to signal the re-run. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSongs', 'PublicId')
+            || _migProbe_hasNullPublicId($db)
+            || !_migProbe_indexExists($db, 'tblSongs', 'uniq_PublicId'),
+    ],
+    'print-templates' => [
+        'script' => 'migrate-print-templates.php',
+        'card' => [
+            'title'  => 'Print templates (#1350)',
+            'body'   => 'Creates <code>tblPrintTemplates</code> — curator-authored, block-based print'
+                      . ' layouts for the clean song-print path (the 3 built-ins ship in JS; this'
+                      . ' stores custom ones built in the <code>/manage/print-templates</code> editor).'
+                      . ' Layout is JSON blocks so new block types need no ALTER (rule #20). Idempotent.',
+            'button' => 'Run Print Templates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPrintTemplates'),
+    ],
+    'tier-capabilities-json' => [
+        'script' => 'migrate-add-tier-capabilities-json.php',
+        'card' => [
+            'title'  => 'JSON-backed tier capabilities',
+            'body'   => 'Adds <code>tblAccessTiers.Capabilities</code> (JSON) — the additive,'
+                      . ' schema-free home for NEW gated tier capabilities. The 7 original caps'
+                      . ' (<code>CanViewLyrics</code> … <code>RequiresCcli</code>) stay as their own'
+                      . ' TINYINT columns (the native-app API contract reads them); future caps live'
+                      . ' as named keys inside this one JSON column, so adding a gated feature is a'
+                      . ' ONE-LINE change in <code>TIER_CAPS</code> (storage <code>json</code>) — no'
+                      . ' further ALTER (rule #20). NULL = no json caps set → each falls back to its'
+                      . ' TIER_CAPS default. Idempotent — column-existence guarded, safe to re-run.',
+            'button' => 'Run JSON Tier Capabilities Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblAccessTiers', 'Capabilities'),
+    ],
+    'read-rate-limit' => [
+        'script' => 'migrate-add-read-rate-limit.php',
+        'card' => [
+            'title'  => 'Public-read rate-limit counters (#1354)',
+            'body'   => 'Creates <code>tblReadRateLimit</code> — fixed-window request counters'
+                      . ' keyed by <em>token-or-IP</em> (not an API key id — that is'
+                      . ' <code>tblApiKeyUsage</code>). Backs the lightweight per-requester'
+                      . ' rate limiter on the heaviest <strong>public</strong> reads in'
+                      . ' <code>api.php</code> (<code>song_detail</code> / <code>search</code> /'
+                      . ' <code>bulk_songs</code> / <code>songs_index</code> /'
+                      . ' <code>related_songs</code> …) to blunt scraping. The limiter is'
+                      . ' <strong>fail-open</strong> — until this runs it is a clean no-op, so'
+                      . ' the reads behave exactly as today. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Public-Read Rate-Limit Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblReadRateLimit'),
+    ],
+
+    'api-key-requests' => [
+        'script' => 'migrate-add-api-key-requests.php',
+        'card' => [
+            'title'  => 'Self-serve API-key requests (Phase D)',
+            'body'   => 'Creates <code>tblApiKeyRequests</code> — the self-serve key-request'
+                      . ' workflow. An admin (entitlement <code>request_api_keys</code>) requests'
+                      . ' a <code>catalogue:read</code> key with a justification; a global admin'
+                      . ' reviews it on <code>/manage/api-keys</code> and <strong>approves</strong>'
+                      . ' (mints + links the key) or <strong>rejects</strong>. Sensitive scopes'
+                      . ' (<code>lyrics:ingest</code>, <code>content:gated</code>) stay'
+                      . ' approval-only. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Self-Serve API-Key Requests Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeyRequests'),
+    ],
+
+    'creditpeople-date-precision' => [
+        'script' => 'migrate-add-creditpeople-date-precision.php',
+        'card' => [
+            'title'  => 'Credit-people partial dates',
+            'body'   => 'Adds <code>tblCreditPeople.BirthDatePrecision</code> + '
+                      . '<code>DeathDatePrecision</code> (VARCHAR <code>year|month|day</code>) so a '
+                      . 'historical writer with only a known <strong>year</strong> (or month + year) of '
+                      . 'birth/death can be recorded — the <code>DATE</code> column stays (partial dates '
+                      . 'normalise to the first of the period; existing full dates backfill to '
+                      . '<code>day</code>). Additive, idempotent — safe to re-run.',
+            'button' => 'Run Credit-People Partial Dates Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'BirthDatePrecision'),
+    ],
 ];

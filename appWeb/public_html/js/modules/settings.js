@@ -893,13 +893,17 @@ export class Settings {
     }
 
     /**
-     * Ensure songs.json is fetched and cached locally for download operations.
-     * @returns {Promise<Array>} Array of song objects
+     * Fetch the slim song index (id/number/title/songbook, no lyrics) once
+     * and cache it in memory. Used by the offline-download feature to
+     * enumerate songbook IDs + song counts — the only fields it needs.
+     * config.dataUrl points at ?action=songs_index (WS-I #1017), so this is
+     * a few hundred KB rather than the old ~5.7 MB corpus.
+     * @returns {Promise<Array>} Array of slim song rows
      */
     async getSongsData() {
         if (this._songsDataCache) return this._songsDataCache;
         const response = await fetch(this.app.config.dataUrl);
-        if (!response.ok) throw new Error('Failed to fetch song data');
+        if (!response.ok) throw new Error('Failed to fetch song index');
         const data = await response.json();
         this._songsDataCache = data.songs || [];
         return this._songsDataCache;

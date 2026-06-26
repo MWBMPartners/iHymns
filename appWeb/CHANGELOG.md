@@ -1,5 +1,106 @@
 # iHymns Web/PWA — Changelog
 
+## [0.880.0] — 2026-06-09
+
+The Song Editor v2 rewrite (#1200) landed on alpha alongside dev-tooling and accuracy improvements.
+
+### Song Editor v2 (#1200)
+- Ground-up rewrite vs the MySQL backend: a clean, granular, CSRF-guarded `api2.php` + a hand-rolled reactive store, replacing the 5,800-line JSON-era `editor.js`. Sidebar (search · multi-select · resizable) → 7 tabs (Structure / Metadata / Credits / Links / Tags / Media / Preview) + Revisions → New / Delete → Paste & Reflow → Export (8 formats) → single-file + async ZIP import → credit-people autocomplete → Composition-origin place-picker → bulk Verify / Tag. Lives alongside the legacy editor pending cutover.
+
+### Lyrics language tagging (accuracy / SEO / a11y)
+- The song **title** and each lyric **component** now carry their own BCP 47 `lang` (script subtags pass through, e.g. `zh-Hans`) plus `dir="rtl"` for right-to-left scripts, while `<html lang>` stays the UI language. Multi-language songs tag each verse independently (#858 extended).
+
+### Dev tooling
+- Database Setup: an expandable list of **which** migrations are pending (incl. card-less ones) + per-item "Run & show output"; the bulk runner no longer auto-refreshes away the output log (#1200). CI now runs `php -l` + the PHP test suites on **PHP 8.4 and 8.5** (project targets 8.5, 8.4 floor).
+
+## [0.770.0] — 2026-06-05
+
+DB-direct data-layer rewrite (epic #1010) landed on alpha (PR #1160) alongside the home-UX rethink, importers, and the security / accessibility / W3C audit fixes.
+
+### DB-direct reads & schema
+- Every read hits live MySQL; the whole-corpus `songs.json` file cache is decommissioned (#1020); a DB outage returns a themed 503 (#1021). One-pass forward-looking schema in the #1066 / #1088 / #1090 families (31 additive, dormant, idempotent migrations).
+
+### Home UX (#1147)
+- Compact searchable **language picker** (#1149), capped **Popular-Themes** strip with counts (#1148), customisable **home sections** via client-side hydration (#448).
+
+### Importers & catalogue
+- **MusicXML** notation parser (#1096), **PowerPoint .pptx** importer (#1095), manual per-line **chords** (#1094); smart song-correction flow (#1092); "why you can use this" rights panel (#1098).
+
+### Security / accessibility / compliance
+- Fixed a critical SQL-injection in the EasyWorship importer, a `.mxl` path-traversal, and 4 role→entitlement checks; Global Admin can no longer be locked out of the invite-only channel gate. WCAG 2.2 focus / aria-live / target-size fixes (#1151); W3C validity fixes incl. per-fragment (#1150).
+
+### Fixes
+- The song-link-confidence migration probe is now a multi-column OR-probe so a partial apply (Confidence added, Signal missing) re-applies instead of showing the card green (schema-audit drift fix).
+
+### Governance
+- Standing-tasks consistency convention (`.claude/standing-tasks.md`); new `SECURITY.md` + `LICENSING.md`.
+
+## [0.550.0] — 2026-06-04
+
+Minor-version jump for the multi-format interchange + lyrics-ingest program. (iLyricsDB follows this version numbering until the backends merge.)
+
+### Worship-software import / export (editor)
+
+- **Imports** (single file or ZIP, dedupe-aware, INSERT-only): OpenLyrics/OpenLP `.xml` (#1052), ProPresenter 6 `.pro6` (#1057, base64-RTF decode), FreeShow `.show` (#884), EasyWorship 6/7 SQLite `Songs.db`+`SongWords.db` (#1058, **beta**), Proclaim `.txt`/`.rtf` (#1062). Each round-trips with its exporter.
+- **Exports** (single song + whole songbook): OpenSong (#1054), VideoPsalm (#1055), FreeShow (#1056), OpenLP/OpenLyrics `.osz` (#1053), Proclaim (#1063), ProPresenter 6 `.pro6` (#889), EasyWorship `Songs.db` (#1059, **beta**) — all via the shared `format-export.js` module + the stored-ZIP writer.
+- **Max lines per slide** (#1065) — cap lyric lines per slide on presentation exports (PP6 / FreeShow / OpenLP / OpenSong / VideoPsalm) for lower-third use; per-export + remembered as a default.
+- **Dedupe on import** (#1051) — opt-in skip of songs whose title already exists in the songbook (accent/punctuation/case-insensitive).
+- EasyWorship import/export is flagged **beta/unverified** in the UI + help (round-trips internally; not yet confirmed against a live EasyWorship install).
+- MediaShout (#1060/#1061) + ProPresenter 7 (#885/#887) are documented as blocked (proprietary sample needed / protobuf) with ready-to-execute plans.
+
+### Lyrics ingest — timed lyrics from Apple Music (#1064)
+
+- **`lyrics_ingest` API** (`POST /api?action=lyrics_ingest`) — accepts Apple-Music **TTML** with word + syllable timing and writes it into the normalised `tblLyrics → tblLyricLines → tblLyricWords → tblLyricSyllables` model (lossless `MetaJson`). Lyrics default to `pending_review`.
+- **Per-client API keys** — new `tblApiKeys` (SHA-256-hashed, scoped, revocable) + `/manage/api-keys` admin page; machine-to-machine auth for external pushers (e.g. MeedyaDL).
+- **Song resolution + enrichment** — when no `songId` is given, the endpoint matches by ISRC → **normalized title** (artist tiebreak) → else creates a provisional song in **Misc** (`Verified=0`). It stores the payload's IDs/URLs (new `tblSongs.Isrc`/`Upc` columns; artists; MusicBrainz/Spotify/Genius/Apple links) so matching strengthens over time.
+- **Duplicate-songs review** (`/manage/duplicate-songs`, `manage_duplicate_songs`) — surfaces potential duplicates (shared normalised title / ISRC / provider URL) and merges them, re-pointing every `tblSongs.SongId` reference (22 FK tables + soft refs) to the survivor in one audited transaction.
+
+### Cross-repo (companion)
+
+- **iLyricsDB #146** — syllable-level TTML in the shared lyrics model (`tblLyricSyllables` + parser + commit pipeline).
+- **MeedyaDL #907** — pushes downloaded Apple-Music TTML + metadata to the ingest endpoint (opt-in; Rust client + download hook).
+
+## [0.400.0] — 2026-06-03
+
+Minor-version jump reflecting the growing pre-release feature set on top of the DB-direct rewrite.
+
+### Editor
+
+- **ProPresenter 7+ export (#887)** — export the open song as a `.pro` file, or a whole songbook as a `.probundle` (a ProPresenter bundle: `Documents/<n>.pro` + `manifest.json`). Pure client-side via a vendored protobufjs runtime + the reverse-engineered Proto 7.16 schema; no server dependency. Verified by a 54-test suite (valid `.pro` round-trip, `.probundle`, RTF/CCLI/artist mapping, per-songbook number padding). _Setlist → `.probundle` is a tracked follow-up (PWA surface)._
+
+### Catalogue integrity
+
+- Every song must belong to a songbook: the editor defaults a songless save to the generic **Misc** collection, and **Misc** is now seeded in `schema.sql` so a bare install always has it (no language).
+- Scoped the last whole-corpus loads (`/writer/<slug>` matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param) — closes the #929 OOM path.
+- Search rows never emit a null `songbookName`; `app_status` exposes `contentGatingEnabled`.
+
+## [0.200.0] — 2026-06-03
+
+### DB-direct data layer (epic #1010, WS-A → WS-K)
+
+Major architectural change: **every runtime read now hits live MySQL**; the whole-corpus `songs.json` file cache is gone; nothing materialises the full catalogue; a DB outage returns a graceful themed 503 instead of stale data.
+
+- Live MySQL fuzzy search replaces the client-side Fuse.js corpus download (#1014)
+- Song of the Day resolves via a live server endpoint, not a client corpus scan (#1015)
+- Song Editor is DB-direct — lightweight song index + per-record load/save; whole-corpus load/export removed (#1016)
+- De-normalised `tblSongs.SongbookName` dropped; readers resolve the live name via JOIN (#1013)
+- PWA offline uses a slim id/number/title/songbook index; the corpus is precached nowhere (#1017)
+- Setlists, favourites, tags, and view-history are DB-first with authoritative auto-sync + first-login merge backfill (#1018, #1019)
+- Decommissioned the file caches (`songs_cache.php`, `exportAsJson`, the SQLite mirror) and the DB-down JSON fallbacks (#1020)
+- System maintenance mode + global DB-down 503 intercept; `/manage/*` structurally exempt so admins can't be locked out (#1021)
+- Lightweight DB-direct paginated song index endpoint (`?action=songs_index`, #1012)
+
+### Error handling
+
+- Theme-aware custom error-page system (app-function + HTTP-standard 400/401/403/404/429/500/502/503), PWA-offline-capable; forward-looking gated-lyrics fragment behind `content_gating_enabled`
+
+### Security & hardening
+
+- Validate `postMessage` origin + source on the cross-domain storage bridge (CWE-346)
+- Same-site redirect guard on the admin login (CWE-601)
+- Scope the surviving whole-corpus loads: `/writer/<slug>` now matches in SQL; `bulk_songs`/`bulk_audio` require a `songbook` param (closes the #929 OOM path)
+- `app_status` exposes `contentGatingEnabled`; search rows never emit a null `songbookName`
+
 ## [0.25.1] — 2026-04-28
 - Add Song of the Day with Christian calendar theming (#108)
 - Add configurable page transition animations (#106)

@@ -127,9 +127,9 @@ $validateScope = static function (string $scope) use ($ALLOWED_SCOPES): ?string 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     header('Content-Type: application/json; charset=UTF-8');
 
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
-        echo json_encode(['error' => 'CSRF token invalid — refresh the page.']);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
         exit;
     }
     $action = (string)($_POST['action'] ?? '');
@@ -439,10 +439,13 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Languages — iHymns Admin</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.2/font/bootstrap-icons.css">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php /* #955 — shared head bundle: runs admin-theme-init.php (the
+       synchronous theme resolver) BEFORE any CSS so this page honours the
+       user's Light/Dark/High-contrast/CVD/System preference with no FOUC,
+       and loads Bootstrap/Icons with SRI + cache-busted app.css/admin.css.
+       Replaces the previous inline, SRI-less, resolver-less CSS block that
+       left this page stuck in the default theme regardless of preference. */ ?>
+    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
 </head>
 <body>
 <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-nav.php'; ?>
@@ -752,7 +755,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 (function () {
     'use strict';
 
-    const CSRF       = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES) ?>;
+    const CSRF       = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     const ACTION_URL = window.location.pathname; // POST back to /manage/languages
 
     /* ---- Modal: add / edit ------------------------------------------- */
@@ -812,6 +815,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             const r = await fetch(ACTION_URL, {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
                 body: payload,
             });
             const d = await r.json().catch(() => ({}));
@@ -867,6 +871,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 const r = await fetch(ACTION_URL, {
                     method: 'POST',
                     credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
                     body: body,
                 });
                 if (!r.ok) {
@@ -919,6 +924,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             const r = await fetch(ACTION_URL, {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
                 body: body,
             });
             const d = await r.json().catch(() => ({}));

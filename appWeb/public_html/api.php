@@ -27,7 +27,7 @@ declare(strict_types=1);
  *   action=song_data   — Returns JSON song data for a specific ID
  *   action=songbooks   — Returns JSON songbook list
  *   action=songs       — Returns JSON song list (with optional songbook filter)
- *   action=songs_json  — Serves the full songs.json file (for client-side search)
+ *   action=songs_index — Slim DB-direct song index (id/number/title/songbook), live MySQL
  *   action=setlist_share (POST) — Create or update a shared setlist
  *   action=setlist_get&id=X    — Retrieve a shared setlist by short ID
  *
@@ -90,7 +90,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
     $devStatus = $GLOBALS['app']['Application']['Version']['Development']['Status'] ?? null;
     $verbose = ($devStatus === 'Alpha' || $devStatus === 'Beta');
 
-    $emit = function (string $msg, string $class, ?string $where = null) use ($isAction, $verbose, $rid) {
+    $emit = function (string $msg, string $class, ?string $where = null, int $status = 500) use ($isAction, $verbose, $rid) {
         /* Always log the full detail to error_log so production admins
            can correlate via the request id even when the response is
            generic. */
@@ -99,12 +99,17 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
             $rid, $class, $msg, $where ? " @ {$where}" : ''
         ));
         if (headers_sent()) return; /* nothing we can do — response already started */
-        http_response_code(500);
+        http_response_code($status);
+        /* A DB outage is transient — tell clients (and the service worker,
+           which then serves cache) to retry rather than treating it as a
+           hard 500 (WS-K #1021; WS-J removed the stale-JSON fallback). */
+        $genericMsg = $status === 503 ? 'Service temporarily unavailable.' : 'Internal server error.';
+        if ($status === 503) header('Retry-After: 30');
         if ($isAction) {
             header('Content-Type: application/json; charset=UTF-8');
             header('X-Content-Type-Options: nosniff');
             header('Cache-Control: no-cache, must-revalidate');
-            $body = ['error' => 'Internal server error.', 'request_id' => $rid];
+            $body = ['error' => $genericMsg, 'request_id' => $rid];
             if ($verbose) {
                 $body['error']           = $msg;
                 $body['exception_class'] = $class;
@@ -116,8 +121,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
                into the page <div>. Same alpha/beta gating on what we
                disclose. */
             header('Content-Type: text/html; charset=UTF-8');
-            echo '<div class="alert alert-danger" role="alert">';
-            echo '<strong>Internal server error.</strong> ';
+            echo '<div class="alert ' . ($status === 503 ? 'alert-warning' : 'alert-danger') . '" role="alert">';
+            echo '<strong>' . htmlspecialchars($genericMsg, ENT_QUOTES) . '</strong> ';
             echo 'Reference: <code>' . htmlspecialchars($rid, ENT_QUOTES) . '</code>';
             if ($verbose) {
                 echo '<br><small>' . htmlspecialchars($class . ': ' . $msg, ENT_QUOTES) . '</small>';
@@ -127,8 +132,16 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
     };
 
     set_exception_handler(function (\Throwable $e) use ($emit) {
+        /* DB-connection failures (server down / unreachable / too many
+           connections / auth / unknown DB / missing credentials) are a
+           transient 503, not a 500 — WS-J removed the stale-JSON fallback so a
+           DB outage now reaches here (covers the deferred work/tune/iswc pages
+           dispatched via api.php). isDbConnectionFailure() (db_mysql.php) keeps
+           ordinary query errors as 500. */
+        $status = (function_exists('isDbConnectionFailure') && isDbConnectionFailure($e)) ? 503 : 500;
         $emit($e->getMessage(), get_class($e),
-              basename($e->getFile()) . ':' . $e->getLine());
+              basename($e->getFile()) . ':' . $e->getLine(),
+              $status);
     });
 
     register_shutdown_function(function () use ($emit) {
@@ -145,8 +158,28 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* #1354 — lightweight per-requester (token-or-IP) rate limiting for the
+   heaviest PUBLIC read actions. enforceReadRateLimitKeyed() is FAIL-OPEN and
+   table-existence-gated, so it is a clean no-op until the migration runs and
+   never trips a legitimate native-app sync (limits are generous). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
+/* checkRateLimit() (the login/attempt + live-follow/Service-Mode throttles in
+   includes/rate_limit.php) was previously require_once'd ONLY inside the
+   setlist_collab_invite case — so every OTHER caller (service_session_start /
+   service_broadcast / service_operator / live_follow_create|update|join|poll)
+   fatal'd with "Call to undefined function checkRateLimit()" and Service Mode
+   "Go Live" never started (latent since #1335; surfaced on first live use).
+   Load it top-level so it is always defined for every endpoint. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+/* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
+   validators below can defensively resolve a PublicId passed by a non-web
+   client back to its underlying SongId before the existing allow-list regex
+   runs. Every read inside is gated on tblSongs.PublicId existing, so this is
+   a no-op on an un-migrated install. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
@@ -177,6 +210,24 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'language_filter.php';
 
 /* =========================================================================
+ * SYSTEM MAINTENANCE GATE (WS-K #1021)
+ *
+ * Admin-toggled in /manage/configuration. When maintenance is on, public
+ * requests get a 503, EXCEPT app_status (so the PWA learns the flag + shows
+ * its banner and the service worker keeps serving cached content) and the
+ * auth_* family (so users — incl. admins — can still sign in). Admin curation
+ * runs through the separate /manage/* entry points, which never reach here.
+ * No-op when maintenance is off or the DB is unavailable (the DB-down case is
+ * handled by the JSON error handler above as a 503).
+ * ========================================================================= */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+enforceMaintenanceForApi();
+
+/* Themed error-card renderer for the ?page= partials (song/songbook/work/…
+   not-found etc.) so every in-SPA error state is one consistent card. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'error_page.php';
+
+/* =========================================================================
  * CSRF DEFENCE POLICY (#293 / B15)
  *
  * The iHymns API is a same-origin AJAX surface — every legitimate
@@ -186,9 +237,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
  * API consumers.
  *
  * The defence stack is therefore:
- *   1. SameSite=Strict on the auth cookie — browsers refuse to send
- *      it on cross-site POST requests, so a CSRF attempt has no
- *      authenticated identity. (Set in the auth-cookie issuance.)
+ *   1. SameSite=Lax on the auth cookie — browsers don't send it on
+ *      cross-site POST requests, so a CSRF attempt has no authenticated
+ *      identity. (Set in _authCookieOpts(); Lax — not Strict — is
+ *      deliberate so the *.ihymns.app cross-subdomain sign-in works (#390).
+ *      #1093 BUG-3: this doc was corrected to match the code.)
  *   2. Bearer token in `Authorization: Bearer <token>` header —
  *      cross-origin attackers can't read it (it's in localStorage of
  *      the legitimate origin, blocked from cross-origin reads by the
@@ -489,16 +542,34 @@ if ($action !== null) {
          * Parameters: q (query string), songbook (optional filter)
          * ----------------------------------------------------------------- */
         case 'search':
+            /* #1354 — search runs a lyrics-wide scan, so it's a prime scrape
+               target. 120/min ≈ 2 req/s sustained: far above any human or the
+               PWA's debounced typeahead, but caps a scraper. Fail-open. */
+            enforceReadRateLimitKeyed('search', 120);
             $query    = isset($_GET['q']) ? trim($_GET['q']) : '';
             $bookId   = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
-            $limit    = isset($_GET['limit']) ? (int)$_GET['limit'] : 50;
+            $limit    = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
+            $offset   = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+            /* "search within lyrics" toggle — defaults ON for direct API
+               callers, but the web client passes it explicitly (off by
+               default) to mirror the old Fuse title-only behaviour. */
+            $includeLyrics = isset($_GET['lyrics'])
+                ? in_array($_GET['lyrics'], ['1', 'true', 'yes'], true)
+                : true;
+
+            $limit = max(1, min(100, $limit));
+            if ($offset < 0) {
+                $offset = 0;
+            }
 
             if ($query === '') {
-                sendJson(['results' => [], 'total' => 0]);
+                sendJson(['results' => [], 'total' => 0, 'hasMore' => false]);
                 break;
             }
 
-            $results = $songData->searchSongs($query, $bookId, $limit);
+            /* Over-fetch by one so we can report hasMore for "load more"
+               pagination without a separate COUNT round-trip. */
+            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics);
 
             /* Language filter (#736). Apply the active preferred-subtag
                set in-memory so search results respect the user's
@@ -509,31 +580,41 @@ if ($action !== null) {
             );
             $results = array_values(array_filter($results, $_langPred));
 
-            /* Fire-and-forget search-query logging (#404). Silently no-ops
-               if the table is missing (fresh installs before the schema
-               ALTER has been applied). */
-            try {
-                $logDb = getDbMysqli();
-                $uid   = null;
-                $logAuth = getAuthenticatedUser();
-                if ($logAuth) $uid = (int)$logAuth['Id'];
-                $logStmt = $logDb->prepare(
-                    'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
-                );
-                $resultCount = count($results);
-                $logStmt->bind_param('sii', $query, $resultCount, $uid);
-                $logStmt->execute();
-                $logStmt->close();
-            } catch (\Throwable $_e) {
-                /* Best-effort — search-query analytics is non-critical.
-                   Logged so admins notice if the INSERT is failing
-                   systematically (e.g., tblSearchQueries DDL drift). */
-                error_log('[api/search log] ' . $_e->getMessage());
+            $hasMore = count($results) > $limit;
+            if ($hasMore) {
+                $results = array_slice($results, 0, $limit);
+            }
+
+            /* Fire-and-forget search-query logging (#404), first page
+               only so a "load more" doesn't double-count. Silently
+               no-ops if the table is missing (fresh installs before the
+               schema ALTER has been applied). */
+            if ($offset === 0) {
+                try {
+                    $logDb = getDbMysqli();
+                    $uid   = null;
+                    $logAuth = getAuthenticatedUser();
+                    if ($logAuth) $uid = (int)$logAuth['Id'];
+                    $logStmt = $logDb->prepare(
+                        'INSERT INTO tblSearchQueries (Query, ResultCount, UserId) VALUES (?, ?, ?)'
+                    );
+                    $resultCount = count($results);
+                    $logStmt->bind_param('sii', $query, $resultCount, $uid);
+                    $logStmt->execute();
+                    $logStmt->close();
+                } catch (\Throwable $_e) {
+                    /* Best-effort — search-query analytics is non-critical.
+                       Logged so admins notice if the INSERT is failing
+                       systematically (e.g., tblSearchQueries DDL drift). */
+                    error_log('[api/search log] ' . $_e->getMessage());
+                }
             }
 
             sendJson([
                 'results' => array_map('songToSummary', $results),
                 'total'   => count($results),
+                'hasMore' => $hasMore,
+                'offset'  => $offset,
                 'query'   => $query,
             ]);
             break;
@@ -572,7 +653,53 @@ if ($action !== null) {
             if ($song === null) {
                 sendJson(['error' => 'No songs available.'], 404);
             } else {
+                /* #1353 — `random` emits the SAME full song payload (lyric body
+                   + media) as song_detail, so it gets the SAME tier gate or it
+                   would be a trivial bypass. NO-OP unless content_gating_enabled
+                   === '1' (rule A). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $rndAuth = getAuthenticatedUser();
+                $rndUid  = $rndAuth ? (int)$rndAuth['Id'] : null;
+                $rndPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song    = contentGatingApply($song, $rndUid, $rndPlat);
                 sendJson(['song' => $song]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Song of the Day (#108 / WS-C #1015) — deterministic per-day pick
+         * via a LIVE MySQL query (server-side calendar theming). Replaces
+         * the old client-side corpus scan.
+         * Parameters:
+         *   lang (optional) — preferred-language subtags (else resolved
+         *                     from the X-Preferred-Languages header / user)
+         *   date (optional) — YYYY-MM-DD; the client passes its LOCAL date
+         *                     so liturgical themes align to the user's
+         *                     calendar (exactly as the old client did).
+         *                     Falls back to the server date when absent /
+         *                     malformed.
+         * ----------------------------------------------------------------- */
+        case 'song_of_the_day':
+            $sotdLangs = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+
+            $sotdDate = new DateTimeImmutable('now');
+            $sotdRaw  = isset($_GET['date']) ? trim((string)$_GET['date']) : '';
+            if ($sotdRaw !== '' && preg_match('/^\d{4}-\d{2}-\d{2}$/', $sotdRaw) === 1) {
+                $sotdParsed = DateTimeImmutable::createFromFormat('!Y-m-d', $sotdRaw);
+                /* createFromFormat tolerates overflow (2026-13-40); reject
+                   anything that doesn't round-trip to the same string. */
+                if ($sotdParsed instanceof DateTimeImmutable && $sotdParsed->format('Y-m-d') === $sotdRaw) {
+                    $sotdDate = $sotdParsed;
+                }
+            }
+
+            $sotd = new SongOfTheDay(getDbMysqli());
+            $pick = $sotd->pickForDate($sotdDate, $sotdLangs);
+
+            if ($pick === null) {
+                sendJson(['song' => null, 'themeLabel' => '', 'firstLine' => '']);
+            } else {
+                sendJson($pick);
             }
             break;
 
@@ -580,7 +707,16 @@ if ($action !== null) {
          * Get full song data by ID
          * Parameters: id (required)
          * ----------------------------------------------------------------- */
+        /* song_detail is the canonical per-record fetch name (WS-A #1012);
+           song_data is kept as an alias so existing clients keep working. */
+        case 'song_detail':
         case 'song_data':
+            /* #1354 — the per-song read. A native/casting client can pull many
+               songs in a burst (a setlist preload), so 240/min ≈ 4 req/s is
+               deliberately generous; it still stops a corpus-walking scraper.
+               Fail-open + per-token, so a NAT-shared congregation isn't capped
+               as one IP. */
+            enforceReadRateLimitKeyed('song_detail', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($songId === '') {
                 sendJson(['error' => 'Song ID is required.'], 400);
@@ -591,7 +727,202 @@ if ($action !== null) {
             if ($song === null) {
                 sendJson(['error' => 'Song not found.'], 404);
             } else {
+                /* #1099 — opt-in enrichment for native/casting clients. Without
+                   ?include=, the response is unchanged (back-compat). The list is
+                   allow-listed in SongData; unknown blocks are ignored. Each block
+                   is scoped to this one song (never the corpus — rule #17). */
+                $includeRaw = isset($_GET['include']) ? (string)$_GET['include'] : '';
+                if ($includeRaw !== '') {
+                    $requested = array_filter(array_map('trim', explode(',', $includeRaw)));
+                    $allowed   = array_values(array_intersect($requested, SongData::songDetailIncludeBlocks()));
+                    if ($allowed !== []) {
+                        $extras = $songData->getSongDetailExtras((string)($song['id'] ?? $songId), $allowed);
+                        foreach ($extras as $blockKey => $blockVal) {
+                            $song[$blockKey] = $blockVal;
+                        }
+                    }
+                }
+                /* #1353 — server-side content-gating enforcement. NO-OP (returns
+                   $song byte-identical) unless content_gating_enabled === '1';
+                   when on, strips the lyric body / media / offline affordance the
+                   requester's tier may not access (caps resolved from the live
+                   tblAccessTiers registry, #1352). Applied AFTER the payload is
+                   fully built (incl. include= extras) and BEFORE it is emitted. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $sdAuth = getAuthenticatedUser();
+                $sdUid  = $sdAuth ? (int)$sdAuth['Id'] : null;
+                $sdPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song   = contentGatingApply($song, $sdUid, $sdPlat);
                 sendJson(['song' => $song]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Print templates (#1350 Phase 2) — curated, block-based print
+         * layouts for the clean song-print picker (js/modules/print.js merges
+         * these after its 3 built-ins). Public read (anonymous can print);
+         * returns only active templates for the scope. Gated on the table
+         * existing so an un-migrated install returns [] and the built-ins
+         * still work — never a 500 under STRICT.
+         * ----------------------------------------------------------------- */
+        case 'print_templates':
+            $ptScope = isset($_GET['scope']) ? preg_replace('/[^a-z]/', '', strtolower((string)$_GET['scope'])) : 'song';
+            if ($ptScope === '') { $ptScope = 'song'; }
+            try {
+                $db = getDbMysqli();
+                $probe = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblPrintTemplates' LIMIT 1");
+                if (!$probe || $probe->fetch_row() === null) { sendJson(['templates' => []]); break; }
+                $stmt = $db->prepare(
+                    'SELECT Id, Name, BlocksJson, PageOptionsJson
+                       FROM tblPrintTemplates
+                      WHERE Scope = ? AND IsActive = 1
+                      ORDER BY SortOrder ASC, Id ASC'
+                );
+                $stmt->bind_param('s', $ptScope);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $ptOut = [];
+                while ($row = $res->fetch_assoc()) {
+                    $blocks = json_decode((string)$row['BlocksJson'], true);
+                    if (!is_array($blocks)) { continue; }
+                    $pageOpts = ($row['PageOptionsJson'] !== null) ? json_decode((string)$row['PageOptionsJson'], true) : null;
+                    $ptOut[] = [
+                        'id'          => (int)$row['Id'],
+                        'name'        => (string)$row['Name'],
+                        'blocks'      => $blocks,
+                        'pageOptions' => is_array($pageOpts) ? $pageOpts : (object)[],
+                    ];
+                }
+                $stmt->close();
+                sendJson(['templates' => $ptOut]);
+            } catch (\Throwable $e) {
+                sendJson(['templates' => []]); /* graceful — built-ins still work */
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Public songbook export (#1166) — full records of ONE songbook's
+         * songs for the end-user export UI (js/modules/export-ui.js). DB-direct,
+         * scoped to one songbook (rule #17 — never the corpus); same shape the
+         * editor's songbook_export returns ({songs, songbook}). EXPORT is a gated
+         * ACTION distinct from display (#1120/#1141): when content_gating_enabled
+         * is on, songs the requester can't EXPORT (a restriction whose
+         * AppliesToAction is export|reproduce|all) are filtered out. Dormant while
+         * the flag is off (the no-restriction default is allow).
+         * ----------------------------------------------------------------- */
+        case 'songbook_export':
+            /* #1354 — whole-songbook payload (heavy). Shares the 'bulk' budget
+               with bulk_songs/bulk_audio at 60/min: a full offline sync touches
+               each songbook a handful of times, well under the cap. Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
+            $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
+            if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
+                sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
+                break;
+            }
+            $sbSongs    = $songData->getSongs($abbr);
+            $sbSongbook = null;
+            foreach ($songData->getSongbooks() as $b) {
+                $bid = strtoupper((string)($b['id'] ?? $b['abbreviation'] ?? ''));
+                if ($bid === $abbr) { $sbSongbook = $b; break; }
+            }
+            /* #1120/#1141 — per-action EXPORT gating (dormant unless the flag is on). */
+            if ($sbSongs && function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+                if (function_exists('checkBulkAccess')) {
+                    $exAuth = getAuthenticatedUser();
+                    $exUid  = $exAuth ? (int)$exAuth['Id'] : null;
+                    $exPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                    $exKey  = static fn(array $s): string => (string)($s['id'] ?? $s['songId'] ?? $s['SongId'] ?? '');
+                    $exIds  = array_values(array_filter(array_map($exKey, $sbSongs), static fn($v) => $v !== ''));
+                    $exAllow = checkBulkAccess('song', $exIds, $exUid, $exPlat, 'export');
+                    $sbSongs = array_values(array_filter($sbSongs, static fn($s) => $exAllow[$exKey($s)] ?? true));
+                }
+            }
+            sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Resolve songs by an industry identifier (#1103).
+         * Params: type (iswc|isrc|upc|ccli) + value (required).
+         * The type maps to a FIXED tblSongs column (allow-list — never user
+         * input into the column position); the value is always bound.
+         * ----------------------------------------------------------------- */
+        case 'song_by_identifier':
+            $idType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
+            $idValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
+            $songIdCols = ['iswc' => 'Iswc', 'isrc' => 'Isrc', 'upc' => 'Upc', 'ccli' => 'Ccli'];
+            if (!isset($songIdCols[$idType]) || $idValue === '') {
+                sendJson(['error' => 'type (iswc|isrc|upc|ccli) and value are required.'], 400);
+                break;
+            }
+            try {
+                $db  = getDbMysqli();
+                $col = $songIdCols[$idType];   // hardcoded constant from the map above
+                $stmt = $db->prepare(
+                    "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, "
+                  . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
+                  . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
+                  . "WHERE s.`{$col}` = ? ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
+                );
+                $stmt->bind_param('s', $idValue);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $songs = [];
+                while ($row = $res->fetch_assoc()) {
+                    $row['number']       = $row['number'] !== null ? (int)$row['number'] : null;
+                    $row['songbookName'] = $row['songbookName'] ?? '';
+                    $songs[] = $row;
+                }
+                $stmt->close();
+                sendJson(['type' => $idType, 'value' => $idValue, 'songs' => $songs]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Lookup failed.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Resolve credit-people by an industry identifier (#1103).
+         * Params: type (ipi|isni|cae|…) + value (required). Both bound.
+         * ----------------------------------------------------------------- */
+        case 'person_by_identifier':
+            $pType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
+            $pValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
+            if ($pType === '' || $pValue === '' || strlen($pType) > 20) {
+                sendJson(['error' => 'type and value are required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $probe = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() "
+                  . "AND TABLE_NAME = 'tblCreditPersonIdentifiers' LIMIT 1"
+                );
+                $hasTable = $probe && $probe->fetch_row() !== null;
+                if ($probe) { $probe->close(); }
+                if (!$hasTable) { sendJson(['type' => $pType, 'value' => $pValue, 'people' => []]); break; }
+
+                $stmt = $db->prepare(
+                    "SELECT cp.Id AS id, cp.Name AS name, cp.Slug AS slug, "
+                  . "i.IdentifierType AS identifierType, i.IdentifierValue AS identifierValue "
+                  . "FROM tblCreditPersonIdentifiers i "
+                  . "JOIN tblCreditPeople cp ON cp.Id = i.CreditPersonId "
+                  . "WHERE i.IdentifierType = ? AND i.IdentifierValue = ? "
+                  . "ORDER BY cp.Name LIMIT 50"
+                );
+                $stmt->bind_param('ss', $pType, $pValue);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $people = [];
+                while ($row = $res->fetch_assoc()) {
+                    $row['id'] = (int)$row['id'];
+                    $people[] = $row;
+                }
+                $stmt->close();
+                sendJson(['type' => $pType, 'value' => $pValue, 'people' => $people]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Lookup failed.'], 500);
             }
             break;
 
@@ -686,10 +1017,17 @@ if ($action !== null) {
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'songs':
-            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            /* rule #17 — MUST be scoped to one songbook. getSongs(null) applies no
+               SongbookAbbr filter and materialises the WHOLE ~3,600-song corpus in
+               PHP-array memory (the #929 OOM, the same hole bulk_songs was hardened
+               against). No client — web OR native — uses the unscoped form; the
+               full catalogue is served lightweight via songs_index / songs_list. */
             if ($bookId === '') {
-                $bookId = null;
+                sendJson(['error' => 'A songbook parameter is required (use songs_index for the full catalogue).'], 400);
+                break;
             }
+            enforceReadRateLimitKeyed('bulk', 60);
 
             $songs = $songData->getSongs($bookId);
             $_langPred = makeLanguageFilterPredicate(
@@ -703,10 +1041,202 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Lightweight, paginated song index (WS-A #1012)
+         * Parameters: songbook (optional), limit (1..500, default 50),
+         *             offset (default 0). The language filter is applied
+         *             in SQL so pagination is correct. Returns lightweight
+         *             rows only (id/number/title/songbook/songbookName +
+         *             media flags); fetch a full song via
+         *             action=song_detail&id=… This replaces the
+         *             whole-corpus load for browse/editor-list surfaces.
+         * ----------------------------------------------------------------- */
+        case 'songs_list':
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            if ($bookId === '') {
+                $bookId = null;
+            }
+            enforceReadRateLimitKeyed('songs_list', 120);
+            $listLimit  = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
+            $listOffset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+            $listLangs  = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+            $listPage   = $songData->getSongsIndex($bookId, $listLimit, $listOffset, $listLangs);
+            $listPage['hasMore'] = ($listPage['offset'] + count($listPage['songs'])) < $listPage['total'];
+            sendJson($listPage);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Slim song index for PWA offline browse/search (WS-I #1017)
+         *
+         * The FULL catalogue as lightweight rows (id/number/title/songbook/
+         * songbookName + language + media flags) in ONE response — a few
+         * hundred KB gzipped vs the ~5.7 MB whole-song corpus. The service
+         * worker precaches THIS (replacing the corpus precache), so that
+         * OFFLINE the client can still browse + run a basic title/number
+         * search over the index and fall back to cached song pages.
+         * Online, every read is still the live API — this is the
+         * offline-only fallback. No pagination, no lyrics: one fetch.
+         * ----------------------------------------------------------------- */
+        case 'songs_index':
+            /* #1354 — the full slim corpus in one response (a few hundred KB).
+               The SW precaches it once and rarely refetches, so 120/min is far
+               above any real client yet caps a scraper polling it. Fail-open. */
+            enforceReadRateLimitKeyed('songs_index', 120);
+            sendJson(['songs' => $songData->getSongsSlimIndex()]);
+            break;
+
+        /* -----------------------------------------------------------------
          * Get collection statistics
          * ----------------------------------------------------------------- */
         case 'stats':
             sendJson($songData->getStats());
+            break;
+
+        /* -----------------------------------------------------------------
+         * LYRICS_INGEST (#1064) — accept timed lyrics (Apple-Music TTML with
+         * word + syllable timing) from an external service (e.g. MeedyaDL
+         * #907) and write them into the normalized lyrics schema.
+         *
+         * POST /api?action=lyrics_ingest
+         *   Auth: API key with scope "lyrics:ingest"
+         *         (Authorization: Bearer <key>  OR  X-API-Key: <key>)
+         *   Body: JSON { songId, ttml, source?, sourceUrl?, isPrimary?,
+         *                isExplicit?, status? }
+         *         — or raw TTML body with ?songId=… (&source=…).
+         *
+         * Ingested lyrics default to status 'pending_review' (a curator
+         * approves before they go live). Re-ingesting the same (song, source)
+         * replaces its rows rather than duplicating.
+         * ----------------------------------------------------------------- */
+        case 'lyrics_ingest':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_keys.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyrics_ingest.php';
+            $ingestDb = getDbMysqli();
+            $ingestKey = apiKeyAuthorize($ingestDb, 'lyrics:ingest');
+            if ($ingestKey === null) { break; } /* 401 already emitted */
+            /* #1066 Theme B — enforce the per-key rate limit (429 + Retry-After if
+               exceeded; no-op when the key has no limit / the schema is un-migrated). */
+            if (!apiKeyEnforceRateLimit($ingestDb, $ingestKey, 'lyrics:ingest')) { break; }
+
+            $rawBody = (string)file_get_contents('php://input');
+            if (strlen($rawBody) > 4 * 1024 * 1024) {
+                sendJson(['error' => 'Payload exceeds the 4 MiB ingest limit.'], 413);
+                break;
+            }
+            /* #1066 Theme B — idempotent replay: a retry carrying the same
+               Idempotency-Key header AND the same body returns the cached response
+               WITHOUT re-ingesting. Captured on the success path below. */
+            $idemKey = apiKeyIdempotencyKey();
+            if ($idemKey !== null) {
+                $replay = apiKeyIdempotencyReplay($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody);
+                if ($replay !== null) {
+                    http_response_code($replay['status']);
+                    header('Content-Type: application/json; charset=UTF-8');
+                    header('Idempotency-Replayed: true');
+                    echo $replay['data'];
+                    break;
+                }
+            }
+            $payload   = json_decode($rawBody, true);
+            $songId    = '';
+            $ttml      = '';
+            $source    = null;
+            $sourceUrl = null;
+            $isPrimary = false;
+            $isExplicit = false;
+            $status    = 'pending_review';
+            if (is_array($payload)) {
+                $songId     = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
+                $ttml       = (string)($payload['ttml'] ?? '');
+                $source     = isset($payload['source']) ? (string)$payload['source'] : null;
+                $sourceUrl  = isset($payload['sourceUrl']) ? (string)$payload['sourceUrl'] : null;
+                $isPrimary  = !empty($payload['isPrimary']);
+                $isExplicit = !empty($payload['isExplicit']);
+                if (isset($payload['status'])) { $status = (string)$payload['status']; }
+            } else {
+                /* Raw TTML body + ?songId= (&source=). */
+                $songId = trim((string)($_GET['songId'] ?? $_GET['song_id'] ?? ''));
+                $ttml   = $rawBody;
+                $source = isset($_GET['source']) ? (string)$_GET['source'] : null;
+            }
+
+            if (trim($ttml) === '') {
+                sendJson(['error' => 'ttml is required (JSON {songId|title, ttml, …} or raw TTML with ?songId=).'], 400);
+                break;
+            }
+            /* Status is an enum — validate against the allow-list. */
+            if (!in_array($status, ['draft', 'pending_review', 'approved', 'rejected', 'archived'], true)) {
+                $status = 'pending_review';
+            }
+
+            try {
+                $parsed = lyricsIngest_parseTtml($ttml);
+
+                /* Resolve the song (#1064): explicit songId → ISRC → normalized
+                   title → create a provisional 'Misc' song. The match/enrich
+                   payload is the JSON body when present, else a minimal one
+                   from the raw-TTML query params. */
+                $matchPayload = is_array($payload) ? $payload : [];
+                if ($songId !== '') { $matchPayload['songId'] = $songId; }
+                /* FULLTEXT seed text for a song created from this TTML. */
+                $lyricsText = implode("\n", array_map(static fn($l) => (string)($l['text'] ?? ''), $parsed['lines']));
+
+                $resolved = lyricsIngest_resolveSong($ingestDb, $matchPayload, $lyricsText);
+                $songId   = $resolved['songId'];
+
+                $result = lyricsIngest_writeToDb($ingestDb, $songId, $parsed, [
+                    'source'     => $source ?: 'applemusic-ttml',
+                    'sourceUrl'  => $sourceUrl,
+                    'isPrimary'  => $isPrimary,
+                    'isExplicit' => $isExplicit,
+                    'status'     => $status,
+                    /* Machine ingest has no user; SubmittedBy stays null. */
+                ]);
+                /* Enrich the song with the payload's external IDs/URLs so future
+                   matches get stronger (ISRC/UPC columns + artists + provider links). */
+                $enriched = lyricsIngest_storeExternalIds($ingestDb, $songId, $matchPayload);
+
+                if (function_exists('logActivity')) {
+                    logActivity('lyrics.ingest', 'song', $songId, [
+                        'apiKey'    => (string)($ingestKey['Label'] ?? ''),
+                        'source'    => $source ?: 'applemusic-ttml',
+                        'matched'   => $resolved['matched'],
+                        'created'   => $resolved['created'],
+                        'lines'     => $result['lines'],
+                        'words'     => $result['words'],
+                        'syllables' => $result['syllables'],
+                        'idsAdded'  => $enriched,
+                        'status'    => $status,
+                    ]);
+                }
+                $ingestResponse = [
+                    'ok'                => true,
+                    'songId'            => $songId,
+                    'matched'           => $resolved['matched'],
+                    'created'           => $resolved['created'],
+                    'lyricsId'          => $result['lyricsId'],
+                    'lines'             => $result['lines'],
+                    'words'             => $result['words'],
+                    'syllables'         => $result['syllables'],
+                    'idsAdded'          => $enriched,
+                    'hasTiming'         => $parsed['hasTiming'],
+                    'hasWordTiming'     => $parsed['hasWordTiming'],
+                    'hasSyllableTiming' => $parsed['hasSyllableTiming'],
+                    'language'          => $parsed['language'],
+                    'status'            => $status,
+                ];
+                /* #1066 Theme B — cache the success under the Idempotency-Key so a
+                   client retry replays it instead of re-ingesting (24h TTL). */
+                if ($idemKey !== null) {
+                    apiKeyIdempotencyStore($ingestDb, (int)$ingestKey['Id'], $idemKey, $rawBody, 200, (string)json_encode($ingestResponse));
+                }
+                sendJson($ingestResponse);
+            } catch (\RuntimeException $e) {
+                sendJson(['error' => 'Ingest failed: ' . $e->getMessage()], 422);
+            }
             break;
 
         /* -----------------------------------------------------------------
@@ -737,15 +1267,30 @@ if ($action !== null) {
          * requests into ~6 (one per songbook).
          *
          * Parameters:
-         *   songbook (optional) — filter by songbook abbreviation
+         *   songbook (REQUIRED) — songbook abbreviation to scope to. A
+         *     missing/empty value returns 400 (the old "all songbooks"
+         *     behaviour was removed — it OOM'd on the full corpus, #1010).
          *
          * Response: { "songs": { "CP-0001": "<html>...", ... } }
          * ----------------------------------------------------------------- */
         case 'bulk_songs':
+            /* #1354 — renders an ENTIRE songbook's HTML; the heaviest read.
+               60/min on the shared 'bulk' scope: the SW fetches one songbook at
+               a time, so this caps a scraper looping every songbook without
+               ever blocking a normal offline sync. Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
-            $bulkSongs = $bulkSongbook !== ''
-                ? $songData->getSongs($bulkSongbook)
-                : $songData->getSongs();
+            /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
+               single songbook. The old unscoped fallback materialised AND
+               rendered the entire catalogue (~3,612 songs, the #929 OOM),
+               and was reachable unauthenticated by any direct request. The
+               service worker always passes &songbook= (service-worker.js.php),
+               so no real client is affected. */
+            if ($bulkSongbook === '') {
+                sendJson(['error' => 'A songbook parameter is required.'], 400);
+                break;
+            }
+            $bulkSongs = $songData->getSongs($bulkSongbook);
 
             if (empty($bulkSongs)) {
                 sendJson(['songs' => new \stdClass()]);
@@ -788,13 +1333,22 @@ if ($action !== null) {
          * separately from song HTML. Only songs whose `hasAudio` flag
          * is set are returned.
          *
-         * Parameters: songbook (optional; all if omitted)
+         * Parameters: songbook (REQUIRED; missing/empty returns 400 — the
+         *   old "all if omitted" corpus scan was removed, #1010)
          * ----------------------------------------------------------------- */
         case 'bulk_audio':
+            /* #1354 — whole-songbook audio manifest. Shares the 'bulk' 60/min
+               budget with bulk_songs/songbook_export (the SW fetches them
+               together per songbook). Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
             $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
-            $audioSongs = $audioBook !== ''
-                ? $songData->getSongs($audioBook)
-                : $songData->getSongs();
+            /* #1010 / CLAUDE.md rule #17 — must be scoped to one songbook
+               (see bulk_songs above). The SW always passes &songbook=. */
+            if ($audioBook === '') {
+                sendJson(['error' => 'A songbook parameter is required.'], 400);
+                break;
+            }
+            $audioSongs = $songData->getSongs($audioBook);
 
             $manifest = [];
             foreach ($audioSongs as $s) {
@@ -807,34 +1361,43 @@ if ($action !== null) {
                 ];
             }
 
+            /* #1353 media protection — when content gating is ON, drop the audio
+               of songs the requester can't access (the ENTITY model, mirroring
+               the gated song-media.php route this offline manifest sidesteps).
+               NO-OP when content_gating_enabled='0' (default), so the offline
+               audio bundle is byte-identical to today on every live env. The SW
+               fetches anonymously → userId resolves null → anonymous entity gate.
+               Fail-open on any error (the master switch is the real gate). NOTE:
+               this stops a RESTRICTED song's audio being PRE-CACHED, but the
+               static /data/audio/*.mp3 file itself is still directly fetchable —
+               sealing that needs the signed-URL / move-behind-song-media work
+               tracked separately (it must not break browser <audio>). */
+            if (function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1'
+                && function_exists('checkBulkAccess')) {
+                try {
+                    $audioAuth = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+                    $audioUid  = isset($audioAuth['Id']) ? (int)$audioAuth['Id'] : null;
+                    $audioIds  = array_column($manifest, 'songId');
+                    if ($audioIds) {
+                        $audioAcc = checkBulkAccess('song', $audioIds, $audioUid, 'PWA', 'display');
+                        $manifest = array_values(array_filter(
+                            $manifest,
+                            /* keep when allowed; an id missing from the map (unknown)
+                               is kept — fail-open, consistent with content_gating.php. */
+                            static fn($m) => !array_key_exists($m['songId'], $audioAcc) || $audioAcc[$m['songId']] === true
+                        ));
+                    }
+                } catch (\Throwable $_e) {
+                    error_log('[bulk_audio] gating failed: ' . $_e->getMessage());
+                }
+            }
+
             sendJson([
                 'songbook' => $audioBook ?: 'all',
                 'count'    => count($manifest),
                 'audio'    => $manifest,
             ]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Serve the full song data as JSON (#154, #270)
-         *
-         * Exports the complete song database from MySQL as JSON for
-         * client-side Fuse.js search and service worker caching.
-         * Includes ETag for efficient browser caching.
-         * ----------------------------------------------------------------- */
-        case 'songs_json':
-            /* #932 — serve the precomputed corpus cache (raw or
-               .br/.gz precompressed sibling) instead of rebuilding
-               from MySQL. Replaces the #929/#931 512 MB ini_set
-               band-aid: the read path now allocates <2 MB instead of
-               ~140 MB, and brotli-capable clients receive ~850 KB on
-               the wire instead of ~6 MB. The cache is regenerated by
-               editor save_song, bulk-import flows, and the admin
-               regenerate-cache button. The 512 MB bump now lives
-               inside songsCacheRegenerate() so it only applies when
-               actually rebuilding. */
-            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes'
-                . DIRECTORY_SEPARATOR . 'songs_cache.php';
-            songsCacheServe();
             break;
 
         /* -----------------------------------------------------------------
@@ -863,8 +1426,21 @@ if ($action !== null) {
 
             /* Sanitise inputs */
             $setlistName  = mb_substr(trim($body['name']), 0, 200);
+            /* #1343-B — resolve any PublicId in the song list to its SongId before
+               the existing allow-list regex (unchanged), so a non-web client that
+               built the setlist from opaque permalinks stores canonical SongIds.
+               LAZY (#1343-B review): getDbMysqli() is touched only for a
+               PublicId-shaped token, so SongId-only input (the web app) adds no DB
+               dependency here and a malformed request still 400s before any DB hit.
+               Gated/no-op pre-migration. */
             $setlistSongs = array_values(array_filter(
-                array_map('trim', $body['songs']),
+                array_map(static function ($s) {
+                    $s = trim($s);
+                    if (songPublicId_looksLikePublicId($s)) {
+                        $s = songPublicId_resolveToSongId(getDbMysqli(), $s);
+                    }
+                    return $s;
+                }, $body['songs']),
                 fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
             ));
             $ownerId      = preg_replace('/[^a-f0-9\-]/', '', strtolower(trim($body['owner'])));
@@ -910,7 +1486,14 @@ if ($action !== null) {
             $arrangements = [];
             if (isset($body['arrangements']) && is_array($body['arrangements'])) {
                 foreach ($body['arrangements'] as $sid => $arr) {
-                    if (!is_string($sid) || !preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                    if (!is_string($sid)) continue;
+                    /* #1343-B — resolve a PublicId key to its SongId so the
+                       arrangement map keys on the canonical SongId. Gated;
+                       no-op for a real SongId (which never looks like a PublicId). */
+                    if (songPublicId_looksLikePublicId($sid)) {
+                        $sid = songPublicId_resolveToSongId(getDbMysqli(), $sid);
+                    }
+                    if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
                     if (count($validArr) > 0) {
@@ -1550,6 +2133,17 @@ if ($action !== null) {
             /* Cap at 50 setlists per user */
             $localLists = array_slice($body['setlists'], 0, 50);
 
+            /* Sync mode (WS-F #1018):
+             *   'merge'   — union local + server, never delete (the safe
+             *               first-login backfill; default for back-compat
+             *               with any client that omits the field).
+             *   'replace' — authoritative: the client's full current list
+             *               IS the truth, so server rows absent from the
+             *               payload are DELETED. This is what every per-edit
+             *               auto-sync sends so a setlist deleted on one
+             *               device propagates to the others. */
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
@@ -1621,6 +2215,21 @@ if ($action !== null) {
                 unset($serverMap[$setlistId]);
             }
             $upsert->close();
+
+            /* Authoritative replace (WS-F #1018): anything still left in
+               $serverMap was on the server but NOT in the client's payload,
+               i.e. the user deleted it. Drop those rows so the deletion
+               propagates. In 'merge' mode they're preserved (server-only
+               wins), which is what the first-login backfill wants. */
+            if ($syncMode === 'replace' && count($serverMap) > 0) {
+                $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach (array_keys($serverMap) as $delId) {
+                    $del->execute();
+                }
+                $del->close();
+            }
 
             /* Fetch the merged result (all setlists for this user) */
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
@@ -2112,15 +2721,26 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $stmt = $db->prepare(
-                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
             $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();
-            $rows = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $favRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
-            sendJson(['favorites' => $rows]);
+            /* Return objects {id, tags} (WS-G #1019) so per-favourite tags
+               survive a cross-device pull. The client unions these with its
+               local favourite metadata (title / songbook / number). */
+            $favorites = array_map(static function ($row) {
+                $tags = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                return [
+                    'id'   => $row['SongId'],
+                    'tags' => is_array($tags) ? array_values($tags) : [],
+                ];
+            }, $favRows);
+
+            sendJson(['favorites' => $favorites]);
             break;
 
         /* -----------------------------------------------------------------
@@ -2146,62 +2766,151 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
 
             if (!is_array($body['favorites'] ?? null)) {
-                sendJson(['error' => 'Invalid request. Required: favorites (array of song IDs).'], 400);
+                sendJson(['error' => 'Invalid request. Required: favorites (array).'], 400);
                 break;
             }
+
+            /* Sync mode — same merge/replace contract as user_setlists_sync.
+               'replace' (per-edit auto-sync) deletes favourites absent from
+               the payload so a removed favourite propagates across devices;
+               'merge' (first-login backfill) only adds. Default 'merge' for
+               back-compat with any client that omits the field. */
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
-            /* Sanitise incoming song IDs */
-            $localFavs = array_values(array_filter(
-                array_map('trim', $body['favorites']),
-                fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
-            ));
+            /* Accept BOTH payload shapes (WS-G #1019):
+                 - legacy : ["CP-0001", "MP-0042", ...]
+                 - tagged : [{ "id": "CP-0001", "tags": ["Easter"] }, ...]
+               Normalise to an ordered songId => tags(array|null) map. A
+               bare-string entry carries no tags (null → leave any existing
+               server tags untouched); an object with a tags array sets them
+               (including [] to clear). Last write per id wins. */
+            $localFavs = [];
+            foreach (array_slice($body['favorites'], 0, 500) as $entry) {
+                if (is_string($entry)) {
+                    $sid  = trim($entry);
+                    $tags = null;
+                } elseif (is_array($entry) && isset($entry['id'])) {
+                    $sid  = trim((string)$entry['id']);
+                    $tags = is_array($entry['tags'] ?? null)
+                        ? array_values(array_filter(
+                              array_map(fn($t) => mb_substr(trim((string)$t), 0, 50), $entry['tags']),
+                              fn($t) => $t !== ''
+                          ))
+                        : [];
+                } else {
+                    continue;
+                }
+                /* #1343-B — resolve a PublicId to its SongId before the allow-list
+                   regex (unchanged). $db is in scope above; gated/no-op pre-migration
+                   and a real SongId never looks like a PublicId, so unchanged for it. */
+                if (songPublicId_looksLikePublicId($sid)) {
+                    $sid = songPublicId_resolveToSongId($db, $sid);
+                }
+                if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                $localFavs[$sid] = $tags;
+            }
 
-            /* Cap at 500 favorites */
-            $localFavs = array_slice($localFavs, 0, 500);
-
-            /* Get existing server favorites */
-            $stmt = $db->prepare('SELECT SongId FROM tblUserFavorites WHERE UserId = ?');
+            /* Existing server favourites — id + tags (for the replace diff and
+               the MERGE-mode tag union below). */
+            $stmt = $db->prepare('SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ?');
             $stmt->bind_param('i', $userId);
             $stmt->execute();
-            $serverFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
+            $serverFavs = array_column($serverRows, 'SongId');
+            $serverTagMap = [];
+            foreach ($serverRows as $r) {
+                $decoded = $r['Tags'] !== null ? json_decode($r['Tags'], true) : [];
+                $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
+            }
 
-            /* Merge: union of local and server */
-            $merged = array_unique(array_merge($serverFavs, $localFavs));
+            /* Authoritative replace: delete server favourites the client no
+               longer has. In merge mode nothing is deleted. */
+            $deleted = 0;
+            if ($syncMode === 'replace') {
+                $toDelete = array_diff($serverFavs, array_keys($localFavs));
+                if (count($toDelete) > 0) {
+                    $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                    $delId = '';
+                    $del->bind_param('is', $userId, $delId);
+                    foreach ($toDelete as $delId) {
+                        $del->execute();
+                        $deleted += $del->affected_rows;
+                    }
+                    $del->close();
+                }
+            }
 
-            /* Insert any new favorites (ignore duplicates). Reused
-               prepared statement with $songId as a bound-by-reference
-               variable that we update each iteration. */
-            $insert = $db->prepare(
-                'INSERT IGNORE INTO tblUserFavorites (UserId, SongId) VALUES (?, ?)'
+            /* Upsert each payload favourite. Tags are only overwritten when
+               the client actually sent a tags array for that entry — a bare
+               string id leaves any existing server tags intact (COALESCE).
+               Per-row try/catch preserves the old INSERT IGNORE resilience:
+               an orphan song id (FK violation) is skipped, not fatal. */
+            $upsert = $db->prepare(
+                'INSERT INTO tblUserFavorites (UserId, SongId, Tags) VALUES (?, ?, ?)
+                 ON DUPLICATE KEY UPDATE Tags = COALESCE(VALUES(Tags), Tags)'
             );
             $songIdBound = '';
-            $insert->bind_param('is', $userId, $songIdBound);
+            $tagsBound = null;
+            $upsert->bind_param('iss', $userId, $songIdBound, $tagsBound);
             $newlyAdded = 0;
-            foreach ($localFavs as $songId) {
-                $songIdBound = $songId;
-                $insert->execute();
-                $newlyAdded += $insert->affected_rows;
+            foreach ($localFavs as $sid => $tags) {
+                $songIdBound = $sid;
+                if ($syncMode === 'merge') {
+                    /* MERGE = first-login reconcile: UNION the incoming tags
+                       with whatever this favourite already carries server-side
+                       (set by another device) so neither side's tags are lost.
+                       A bare-id (null) or empty incoming array contributes
+                       nothing, leaving the server tags intact. An empty union
+                       binds NULL so COALESCE preserves (and a brand-new row
+                       stays untagged). (review: cross-device tag union) */
+                    $incoming = is_array($tags) ? $tags : [];
+                    $union = array_values(array_unique(array_merge(
+                        $serverTagMap[$sid] ?? [], $incoming
+                    )));
+                    $tagsBound = empty($union)
+                        ? null
+                        : json_encode($union, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                } else {
+                    /* REPLACE = per-edit authoritative: the client's tags win,
+                       including [] to clear. A bare id (null) preserves via
+                       COALESCE. */
+                    $tagsBound = ($tags === null)
+                        ? null
+                        : json_encode(array_values($tags), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                }
+                try {
+                    $upsert->execute();
+                    if ($upsert->affected_rows === 1) $newlyAdded++; /* 1=insert, 2=update, 0=no change */
+                } catch (\Throwable $_e) {
+                    /* Orphan song id / transient error — skip, keep the batch. */
+                }
             }
-            $insert->close();
+            $upsert->close();
 
-            /* Return merged list */
+            /* Return the stored list as {id, tags} objects. */
             $stmt = $db->prepare(
-                'SELECT SongId FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
+                'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
             );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
-            $finalFavs = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'SongId');
+            $finalRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
+            $finalFavs = array_map(static function ($row) {
+                $t = $row['Tags'] !== null ? json_decode($row['Tags'], true) : [];
+                return ['id' => $row['SongId'], 'tags' => is_array($t) ? array_values($t) : []];
+            }, $finalRows);
 
-            /* Audit (#535) — only one row per sync, not per favourite,
-               since the sync is the meaningful user action. */
-            if ($newlyAdded > 0) {
+            /* Audit (#535) — one row per sync, since the sync is the
+               meaningful user action. */
+            if ($newlyAdded > 0 || $deleted > 0) {
                 logActivity('favorites.sync', 'user', (string)$userId, [
+                    'mode'        => $syncMode,
                     'newly_added' => $newlyAdded,
+                    'deleted'     => $deleted,
                     'total'       => count($finalFavs),
                 ]);
             }
@@ -2231,6 +2940,14 @@ if ($action !== null) {
             $body = json_decode($rawBody, true);
             $removeSongId = trim($body['song_id'] ?? '');
 
+            /* #1343-B — a non-web client may pass a PublicId where a SongId is
+               expected; resolve it before the allow-list regex (unchanged).
+               getDbMysqli() is only touched for a PublicId-shaped token, so a
+               real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($removeSongId)) {
+                $removeSongId = songPublicId_resolveToSongId(getDbMysqli(), $removeSongId);
+            }
+
             if (!preg_match('/^[A-Za-z]+-\d+$/', $removeSongId)) {
                 sendJson(['error' => 'Invalid song ID.'], 400);
                 break;
@@ -2248,6 +2965,121 @@ if ($action !== null) {
             }
 
             sendJson(['ok' => true]);
+            break;
+
+        /* =================================================================
+         * USER CUSTOM TAGS — Per-user pool of favourite-tag names (WS-G #1019)
+         *
+         * The DB-first counterpart of the localStorage `ihymns_custom_tags`
+         * array. Distinct from the curator-managed global tblSongTags.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Get the authenticated user's custom tags
+         * Requires: Authorization: Bearer <token>
+         * Returns: { "tags": ["Easter", "Quiet", ...] }
+         * ----------------------------------------------------------------- */
+        case 'custom_tags':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $tagRows = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+            $stmt->close();
+
+            sendJson(['tags' => $tagRows]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Sync custom tags. Same merge/replace contract as favorites_sync.
+         *
+         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace" }
+         * Returns: { "tags": [...stored...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'custom_tags_sync':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['tags'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: tags (array of strings).'], 400);
+                break;
+            }
+
+            $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
+
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
+
+            /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
+               cap the pool at 200 tags. */
+            $localTags = [];
+            foreach ($body['tags'] as $t) {
+                if (!is_string($t)) continue;
+                $t = mb_substr(trim($t), 0, 50);
+                if ($t === '') continue;
+                $localTags[$t] = true;
+            }
+            $localTags = array_slice(array_keys($localTags), 0, 200);
+
+            /* Replace: delete tags the client no longer has. */
+            $deleted = 0;
+            if ($syncMode === 'replace') {
+                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ?');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $serverTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $stmt->close();
+
+                $toDelete = array_diff($serverTags, $localTags);
+                if (count($toDelete) > 0) {
+                    $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
+                    $delTag = '';
+                    $del->bind_param('is', $userId, $delTag);
+                    foreach ($toDelete as $delTag) {
+                        $del->execute();
+                        $deleted += $del->affected_rows;
+                    }
+                    $del->close();
+                }
+            }
+
+            /* Insert any new tags (ignore duplicates). */
+            $insert = $db->prepare('INSERT IGNORE INTO tblUserCustomTags (UserId, Tag) VALUES (?, ?)');
+            $tagBound = '';
+            $insert->bind_param('is', $userId, $tagBound);
+            foreach ($localTags as $t) {
+                $tagBound = $t;
+                $insert->execute();
+            }
+            $insert->close();
+
+            /* Return the stored list. */
+            $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+            $stmt->close();
+
+            sendJson(['tags' => $finalTags]);
             break;
 
         /* =================================================================
@@ -2878,7 +3710,12 @@ if ($action !== null) {
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
                Dynamic IN-list with str_repeat for the bind type string. */
-            $publicKeys = ['maintenance_mode', 'song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled'];
+            /* #1313 — maintenance is PER-ENV and is sourced below via the canonical
+               env-aware helpers (isMaintenanceMode()/maintenanceMessage()), NOT from
+               here: the non-env-suffixed maintenance_mode/_message keys are never set,
+               so reading them made the PWA flag permanently false. The rest of these
+               public settings ARE global keys. */
+            $publicKeys = ['song_requests_enabled', 'motd', 'registration_mode', 'email_service', 'captcha_provider', 'ads_enabled', 'content_gating_enabled'];
             $placeholders = implode(',', array_fill(0, count($publicKeys), '?'));
             $stmt = $db->prepare(
                 "SELECT SettingKey, SettingValue FROM tblAppSettings WHERE SettingKey IN ({$placeholders})"
@@ -2893,14 +3730,25 @@ if ($action !== null) {
                 $settings[$row['SettingKey']] = $row['SettingValue'];
             }
 
+            /* #1313 — env-aware maintenance state via the SAME helpers the 503 gate
+               uses (includes/maintenance.php, already required by this entry point).
+               Message only when actually in maintenance, so app_status stays empty-
+               when-off as before (maintenanceMessage() otherwise returns a default). */
+            $inMaintenance = function_exists('isMaintenanceMode') ? isMaintenanceMode() : false;
             sendJson([
-                'maintenance'         => ($settings['maintenance_mode'] ?? '0') === '1',
+                'maintenance'         => $inMaintenance,
+                'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
                 'songRequestsEnabled' => ($settings['song_requests_enabled'] ?? '1') === '1',
                 'registrationMode'    => $settings['registration_mode'] ?? 'open',
                 'motd'                => $settings['motd'] ?? '',
                 'emailLoginEnabled'   => ($settings['email_service'] ?? 'none') !== 'none',
                 'captchaProvider'     => $settings['captcha_provider'] ?? 'none',
                 'adsEnabled'          => ($settings['ads_enabled'] ?? '0') === '1',
+                /* Whether copyrighted-lyrics gating is active. song.php only
+                   gates lyrics when this is on; PWA/native clients need it to
+                   decide between a "lyrics protected" surface and a full
+                   fetch (#1010 forward-looking content_gating_enabled flag). */
+                'contentGatingEnabled' => ($settings['content_gating_enabled'] ?? '0') === '1',
             ]);
             break;
 
@@ -3812,7 +4660,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -3856,7 +4704,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_content_restrictions', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -4343,13 +5191,14 @@ if ($action !== null) {
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
-                            s.SongbookName  AS songbookName,
+                            sb.Name         AS songbookName,
                             s.Language      AS language,
                             COUNT(*)        AS views
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
+                     LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
                 );
@@ -4409,13 +5258,15 @@ if ($action !== null) {
                             s.Title         AS title,
                             s.Number        AS number,
                             s.SongbookAbbr  AS songbook,
-                            s.SongbookName  AS songbookName,
+                            sb.Name         AS songbookName,
                             s.Language      AS language,
-                            MAX(h.ViewedAt) AS viewedAt
+                            MAX(h.ViewedAt) AS viewedAt,
+                            UNIX_TIMESTAMP(MAX(h.ViewedAt)) AS viewedAtEpoch
                      FROM tblSongHistory h
                      JOIN tblSongs s ON s.SongId = h.SongId
+                     LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.UserId = ?
-                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, s.SongbookName, s.Language
+                     GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
                 );
@@ -4434,6 +5285,51 @@ if ($action !== null) {
             } catch (\Throwable $e) {
                 error_log('[api/song_history] ' . $e->getMessage());
                 sendJson(['history' => [], 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Batch existence check for a list of SongIds (#1329).
+         * Public — only reveals whether already-public song ids still exist.
+         * The client uses it to PRUNE songs that have been deleted from the
+         * catalogue out of localStorage-backed lists (Recently Viewed etc.)
+         * so a stale cached entry never renders an unresolvable id.
+         * GET ?action=songs_exist&ids=CP-0001,MP-0042 → {exists:[ids…]}.
+         * On error returns {exists:null} so the client leaves its cache intact.
+         * ----------------------------------------------------------------- */
+        case 'songs_exist':
+            $idsRaw = (string)($_GET['ids'] ?? '');
+            /* Validate each id to the SongId charset (mirrors song_view at
+               api.php ~5097); drop anything malformed before it reaches SQL. */
+            $existIds = array_values(array_unique(array_filter(
+                array_map('trim', explode(',', $idsRaw)),
+                static fn($s) => $s !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $s)
+            )));
+            if (!$existIds) { sendJson(['exists' => []]); break; }
+            if (count($existIds) > 200) { $existIds = array_slice($existIds, 0, 200); }
+            try {
+                $db = getDbMysqli();
+                /* #1343-B review — songs_exist deliberately does NOT resolve PublicIds.
+                   Its contract is to echo back the subset of the CLIENT'S input ids that
+                   exist; resolving would return SongIds a PublicId-keyed caller can't
+                   match against its cache (and might wrongly prune a live song). Callers
+                   send canonical SongIds; the web app always does. */
+                /* Placeholder string built from a constant count (rule #5 —
+                   the only legitimate interpolation into SQL); values bound. */
+                $ph    = implode(',', array_fill(0, count($existIds), '?'));
+                $types = str_repeat('s', count($existIds));
+                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                $stmt->bind_param($types, ...$existIds);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                $found = [];
+                while ($row = $res->fetch_row()) { $found[] = $row[0]; }
+                $stmt->close();
+                sendJson(['exists' => $found]);
+            } catch (\Throwable $e) {
+                error_log('[api/songs_exist] ' . $e->getMessage());
+                /* null (not []) so the client does NOT wrongly prune everything. */
+                sendJson(['exists' => null, 'fallback' => true]);
             }
             break;
 
@@ -4474,6 +5370,12 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
+                /* #1343-B — resolve a PublicId to its SongId so the history row keys
+                   on the canonical SongId, not the opaque permalink. Inside the try
+                   so a DB outage still degrades gracefully. Gated/no-op pre-migration. */
+                if (songPublicId_looksLikePublicId($viewSongId)) {
+                    $viewSongId = songPublicId_resolveToSongId($db, $viewSongId);
+                }
                 $stmt = $db->prepare(
                     'INSERT INTO tblSongHistory (SongId, UserId) VALUES (?, ?)'
                 );
@@ -4488,6 +5390,114 @@ if ($action !== null) {
                 error_log('[api/song_view] ' . $e->getMessage());
                 sendJson(['ok' => false, 'fallback' => true]);
             }
+            break;
+
+        /* -----------------------------------------------------------------
+         * One-time history backfill (WS-G #1019)
+         *
+         * Pushes a signed-in user's pre-existing LOCAL recently-viewed list
+         * (viewed before this account existed on this device) into
+         * tblSongHistory so "Recently Viewed" is consistent across devices.
+         * The client runs this once per device, guarded by a localStorage
+         * flag. Idempotent enough: the read path GROUP BYs on SongId so the
+         * occasional duplicate row is invisible.
+         *
+         * POST body (JSON):
+         *   { "views": [{ "song_id": "CP-0001", "viewed_at": "ISO8601" }, ...] }
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'song_history_backfill':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+
+            if (!is_array($body['views'] ?? null)) {
+                sendJson(['error' => 'Invalid request. Required: views (array).'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $userId = (int)$authUser['Id'];
+
+            /* Insert with the client-supplied ViewedAt so the order is
+               preserved. The client sends a UTC ISO-8601 string; we parse it
+               to a UTC epoch and bind it through FROM_UNIXTIME(), so the value
+               round-trips to the correct instant regardless of the MySQL
+               session timezone (a raw gmdate string would be reinterpreted in
+               the session tz and shifted on a non-UTC server). An invalid /
+               missing timestamp binds NULL → COALESCE → NOW(). Per-row
+               try/catch skips orphan song ids (FK violation) without aborting
+               the batch. Cap at 50 — the read path only surfaces 50 most recent. */
+            $insert = $db->prepare(
+                'INSERT INTO tblSongHistory (UserId, SongId, ViewedAt) VALUES (?, ?, COALESCE(FROM_UNIXTIME(?), NOW()))'
+            );
+            $sidBound = '';
+            $epochBound = null;
+            $insert->bind_param('isi', $userId, $sidBound, $epochBound);
+            $imported = 0;
+            foreach (array_slice($body['views'], 0, 50) as $v) {
+                if (!is_array($v)) continue;
+                $sid = trim((string)($v['song_id'] ?? ''));
+                if (!preg_match('/^[A-Za-z0-9_-]{1,32}$/', $sid)) continue;
+                $sidBound = $sid;
+                /* Parse the UTC ISO timestamp to an epoch; null → NOW(). */
+                $rawTs = trim((string)($v['viewed_at'] ?? ''));
+                $ts = $rawTs !== '' ? strtotime($rawTs) : false;
+                $epochBound = ($ts !== false) ? $ts : null;
+                try {
+                    $insert->execute();
+                    $imported++;
+                } catch (\Throwable $_e) {
+                    /* Orphan song id / transient error — skip. */
+                }
+            }
+            $insert->close();
+
+            sendJson(['ok' => true, 'imported' => $imported]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Clear the authenticated user's recently-viewed history (WS-G #1019)
+         *
+         * DB-first "Clear" companion: removes this user's own tblSongHistory
+         * rows so the cleared state propagates across devices (a local-only
+         * clear would just repopulate from the server on next load).
+         * Anonymous (UserId NULL) rows are untouched — those drive aggregate
+         * popularity, not a user's personal list.
+         *
+         * Requires: Authorization: Bearer <token>
+         * ----------------------------------------------------------------- */
+        case 'song_history_clear':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare('DELETE FROM tblSongHistory WHERE UserId = ?');
+            $authUserId = (int)$authUser['Id'];
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $cleared = $stmt->affected_rows;
+            $stmt->close();
+
+            sendJson(['ok' => true, 'cleared' => $cleared]);
             break;
 
         /* =================================================================
@@ -4518,6 +5528,48 @@ if ($action !== null) {
                 sendJson(['tags' => $tags]);
             } catch (\Throwable $e) {
                 error_log('[api/tags] ' . $e->getMessage());
+                sendJson(['tags' => [], 'fallback' => true]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Popular tags — the top-N themes ranked by usage, with song
+         * counts (#1148). Powers the compact "Popular themes" home strip
+         * that replaced the unbounded chip wall: the home page advertises
+         * the handful that matter; the full searchable index scales the
+         * long tail. Reuses the same COUNT(m.TagId) JOIN as manage/tags.php
+         * (INNER JOIN → only tags actually in use appear). DB-direct/scoped
+         * per CLAUDE.md rule #17 — never a whole-corpus load.
+         * Parameters: limit (optional, default 8, clamped 1..50).
+         * ----------------------------------------------------------------- */
+        case 'popular_tags':
+            $popularLimit = (int)($_GET['limit'] ?? 8);
+            $popularLimit = max(1, min(50, $popularLimit));
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug,
+                            COUNT(m.TagId) AS useCount
+                     FROM tblSongTags t
+                     JOIN tblSongTagMap m ON m.TagId = t.Id
+                     GROUP BY t.Id, t.Name, t.Slug
+                     ORDER BY useCount DESC, t.Name ASC
+                     LIMIT ?'
+                );
+                $stmt->bind_param('i', $popularLimit);
+                $stmt->execute();
+                $popular = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                foreach ($popular as &$pt) {
+                    $pt['id']       = (int)$pt['id'];
+                    $pt['useCount'] = (int)$pt['useCount'];
+                }
+                unset($pt);
+
+                sendJson(['tags' => $popular]);
+            } catch (\Throwable $e) {
+                error_log('[api/popular_tags] ' . $e->getMessage());
                 sendJson(['tags' => [], 'fallback' => true]);
             }
             break;
@@ -4596,24 +5648,27 @@ if ($action !== null) {
                 break;
             }
 
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT SongId AS id, Title AS title,
-                        SongbookAbbr AS songbook, Number AS number
-                 FROM tblSongs
-                 WHERE Title LIKE ?
-                 LIMIT 8'
-            );
-            $like = '%' . $suggestQ . '%';
-            $stmt->bind_param('s', $like);
-            $stmt->execute();
-            $suggestions = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
+            /* Live, relevance-ranked typeahead (D2 prefix match) via the
+               shared SongData pipeline — replaces the old inline
+               Title LIKE scan, and powers the header autocomplete now
+               that the client no longer holds a Fuse corpus (#1014). */
+            $suggestRows = $songData->suggestSongs($suggestQ, 8);
 
-            foreach ($suggestions as &$sg) {
-                $sg['number'] = (int)$sg['number'];
-            }
-            unset($sg);
+            /* Respect the active language filter the same way the main
+               search does — untagged songs always pass. */
+            $_sgPred = makeLanguageFilterPredicate(
+                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
+            );
+            $suggestRows = array_values(array_filter($suggestRows, $_sgPred));
+
+            $suggestions = array_map(static function (array $r): array {
+                return [
+                    'id'       => $r['id'] ?? '',
+                    'title'    => $r['title'] ?? '',
+                    'songbook' => $r['songbook'] ?? '',
+                    'number'   => $r['number'] ?? null,
+                ];
+            }, $suggestRows);
 
             sendJson(['suggestions' => $suggestions]);
             break;
@@ -5141,8 +6196,20 @@ if ($action !== null) {
          * same songbook.
          * ----------------------------------------------------------------- */
         case 'related_songs':
+            /* #1354 — fires on every song-page view (the "related" rail), so
+               it's high-volume for real users; 240/min ≈ 4 req/s matches the
+               song_detail budget and won't trip normal browsing while still
+               capping a scraper enumerating relationships. Fail-open. */
+            enforceReadRateLimitKeyed('related_songs', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
+
+            /* #1343-B — resolve a PublicId to its SongId before the allow-list regex
+               (unchanged). getDbMysqli() is only touched for a PublicId-shaped token,
+               so a real SongId behaves exactly as before. Gated/no-op pre-migration. */
+            if (songPublicId_looksLikePublicId($songId)) {
+                $songId = songPublicId_resolveToSongId(getDbMysqli(), $songId);
+            }
 
             if ($songId === '' || !preg_match('/^[A-Za-z]+-\d+$/', $songId)) {
                 sendJson(['error' => 'Valid song ID is required.'], 400);
@@ -5285,10 +6352,11 @@ if ($action !== null) {
 
             /* Fetch all songs with writers and composers */
             $stmt = $db->prepare(
-                'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, s.SongbookName,
+                'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName,
                         s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
                         s.LyricsText
                  FROM tblSongs s
+                 LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  ORDER BY s.SongbookAbbr, s.Number'
             );
             $stmt->execute();
@@ -5884,6 +6952,10 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'access_tiers':
             $db = getDbMysqli();
+            /* PRIMARY SELECT — byte-identical to the original so the 7
+               camelCase keys (canViewLyrics … requiresCcli) that form the
+               native-app contract are unchanged. New json-backed caps are
+               merged in below, never by editing this list. */
             $stmt = $db->prepare(
                 'SELECT Name AS name, DisplayName AS displayName, Level AS level,
                         Description AS description, CanViewLyrics AS canViewLyrics,
@@ -5902,6 +6974,36 @@ if ($action !== null) {
                 }
             }
             unset($t);
+
+            /* JSON-backed caps (#1352): append each registered json cap to
+               every tier under its camelCase key (lcfirst of the PascalCase
+               TIER_CAPS key) so a NEW gated cap appears in the API exactly
+               like the column ones — no edit to the SELECT or the contract.
+               Entirely skipped (zero extra query) when no json cap is
+               registered or the Capabilities column hasn't been migrated,
+               so today's response is unchanged. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+            $jsonKeys = tierCapJsonKeys();
+            if ($jsonKeys && tierCapsColumnExists($db)) {
+                /* One extra query: Name → its decoded Capabilities blob. */
+                $capByName = [];
+                try {
+                    $capRes = $db->query('SELECT Name, Capabilities FROM tblAccessTiers');
+                    while ($capRes && ($row = $capRes->fetch_assoc())) {
+                        $capByName[(string)$row['Name']] = $row;
+                    }
+                    if ($capRes) { $capRes->close(); }
+                } catch (\Throwable $_e) { $capByName = []; }
+                foreach ($tiers as &$t) {
+                    $rowForTier = $capByName[(string)($t['name'] ?? '')] ?? [];
+                    foreach ($jsonKeys as $capKey) {
+                        /* lcfirst(PascalCase) → the same camelCase shape the
+                           column caps use (CanViewLyrics → canViewLyrics). */
+                        $t[lcfirst($capKey)] = (bool)tierCapRead($rowForTier, $capKey);
+                    }
+                }
+                unset($t);
+            }
             sendJson(['tiers' => $tiers]);
             break;
 
@@ -5917,7 +7019,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('assign_user_tier', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -5954,7 +7056,7 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
+            if (!$authUser || !userHasEntitlement('manage_user_licences', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
@@ -6378,6 +7480,115 @@ if ($action !== null) {
             }
             break;
 
+        /* -----------------------------------------------------------------
+         * Submit a structured CORRECTION to an existing song (#1092).
+         * Unlike a missing-song request, this captures {SongId, FieldName,
+         * OriginalValue, ProposedValue} as a reviewable diff. FieldName is
+         * allow-listed (never free user input into SQL/HTML); the OriginalValue
+         * is read SERVER-side from the live record (the client's "before" is
+         * never trusted). Routed through tblSongRequests (RequestType=correction)
+         * with the same honeypot + length + email + IP rate-limit guards as
+         * song_request_submit. POST JSON: { songId, field, proposed, email, website }.
+         * ----------------------------------------------------------------- */
+        case 'song_correction_submit':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $cBody = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $cSongId   = strtoupper(trim((string)($cBody['songId']   ?? '')));
+            $cField    = strtolower(trim((string)($cBody['field']    ?? '')));
+            $cProposed = trim((string)($cBody['proposed'] ?? ''));
+            $cEmail    = trim((string)($cBody['email']    ?? ''));
+            $cHoney    = (string)($cBody['website']        ?? '');
+            $cIp       = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Honeypot — silent OK so a bot isn't tipped off. */
+            if ($cHoney !== '') { sendJson(['ok' => true, 'trackingId' => 0]); break; }
+
+            /* Allow-list: field key -> the tblSongs scalar column to prefill the
+               OriginalValue from (null = free-text field, no DB column to diff). */
+            $correctionFields = [
+                'title' => 'Title', 'copyright' => 'Copyright', 'tune' => 'TuneName',
+                'ccli' => 'Ccli', 'iswc' => 'Iswc', 'language' => 'Language',
+                'lyrics' => null, 'author' => null, 'composer' => null, 'other' => null,
+            ];
+            if ($cSongId === '' || !array_key_exists($cField, $correctionFields) || $cProposed === '') {
+                sendJson(['error' => 'songId, a valid field, and a proposed value are required.'], 400);
+                break;
+            }
+            if (mb_strlen($cProposed) > 5000) { sendJson(['error' => 'Proposed value too long.'], 400); break; }
+            if (mb_strlen($cEmail) > 255)     { sendJson(['error' => 'Email too long.'], 400); break; }
+            if ($cEmail !== '' && !filter_var($cEmail, FILTER_VALIDATE_EMAIL)) {
+                sendJson(['error' => 'Email address is not valid.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+
+                /* The corrected song must exist; grab its Title + songbook. */
+                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $stmt->bind_param('s', $cSongId);
+                $stmt->execute();
+                $songRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$songRow) { sendJson(['error' => 'Song not found.'], 404); break; }
+
+                /* Server-authoritative OriginalValue for scalar fields. */
+                $cOriginal = '';
+                $col = $correctionFields[$cField];
+                if ($col !== null) {  // $col is a hardcoded constant from the map (rule #5)
+                    $s2 = $db->prepare("SELECT `{$col}` AS cur FROM tblSongs WHERE SongId = ? LIMIT 1");
+                    $s2->bind_param('s', $cSongId);
+                    $s2->execute();
+                    $r2 = $s2->get_result()->fetch_assoc();
+                    $s2->close();
+                    $cOriginal = (string)($r2['cur'] ?? '');
+                }
+
+                /* Rate-limit: ≥5 submissions from this IP in 24 h. */
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)');
+                $stmt->bind_param('s', $cIp);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ((int)($row[0] ?? 0) >= 5) {
+                    sendJson(['error' => 'You have submitted several times recently. Please try again tomorrow.'], 429);
+                    break;
+                }
+
+                $authUser = getAuthenticatedUser();
+                $cUserId  = $authUser ? (int)$authUser['Id'] : null;
+                $cTitle   = 'Correction: ' . mb_substr((string)$songRow['Title'], 0, 480);
+                $cSongbook = (string)$songRow['SongbookAbbr'];
+                $cDetails  = 'Field: ' . $cField;
+
+                $stmt = $db->prepare(
+                    "INSERT INTO tblSongRequests
+                        (Title, Songbook, Details, ContactEmail, UserId, IpAddress, Status,
+                         RequestType, SongId, FieldName, OriginalValue, ProposedValue)
+                     VALUES (?, ?, ?, ?, ?, ?, 'pending', 'correction', ?, ?, ?, ?)"
+                );
+                $stmt->bind_param(
+                    'ssssisssss',
+                    $cTitle, $cSongbook, $cDetails, $cEmail, $cUserId, $cIp,
+                    $cSongId, $cField, $cOriginal, $cProposed
+                );
+                $stmt->execute();
+                $trackingId = (int)$stmt->insert_id;
+                $stmt->close();
+
+                if (function_exists('logActivity')) {
+                    /* Signature: (action, entityType, entityId, details[], result). */
+                    logActivity('song.correction_submit', 'song', $cSongId,
+                        ['field' => $cField, 'trackingId' => $trackingId], 'success');
+                }
+                sendJson(['ok' => true, 'trackingId' => $trackingId]);
+            } catch (\Throwable $e) {
+                sendJson(['error' => 'Could not submit the correction.'], 500);
+            }
+            break;
+
         case 'song_request_submit':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
@@ -6565,21 +7776,45 @@ if ($action !== null) {
             }
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT Id AS id,
-                            Type AS type,
-                            Title AS title,
-                            Body AS body,
-                            ActionUrl AS action_url,
-                            IsRead AS is_read,
-                            CreatedAt AS created_at
-                       FROM tblNotifications
-                      WHERE UserId = ?
-                      ORDER BY IsRead ASC, CreatedAt DESC
-                      LIMIT 50'
-                );
                 $authUserId = (int)$authUser['Id'];
-                $stmt->bind_param('i', $authUserId);
+                /* #1238 — filter by environment scope + expiry, but ONLY if the
+                   columns exist (migrations aren't auto-applied; an un-migrated
+                   install must not 500 the bell). Probe once; degrade to the
+                   original unscoped query when absent. */
+                $notifHasScope = false;
+                $colRes = $db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblNotifications'
+                        AND COLUMN_NAME = 'Environment' LIMIT 1"
+                );
+                if ($colRes) { $notifHasScope = $colRes->num_rows > 0; $colRes->close(); }
+
+                if ($notifHasScope) {
+                    /* Show rows for ALL envs (Environment IS NULL) or THIS env, that
+                       are unexpired (ExpiresAt IS NULL or still in the future). */
+                    $stmt = $db->prepare(
+                        'SELECT Id AS id, Type AS type, Title AS title, Body AS body,
+                                ActionUrl AS action_url, IsRead AS is_read, CreatedAt AS created_at
+                           FROM tblNotifications
+                          WHERE UserId = ?
+                            AND (Environment IS NULL OR Environment = ?)
+                            AND (ExpiresAt IS NULL OR ExpiresAt > NOW())
+                          ORDER BY IsRead ASC, CreatedAt DESC
+                          LIMIT 50'
+                    );
+                    $env = ihymns_environment();
+                    $stmt->bind_param('is', $authUserId, $env);
+                } else {
+                    $stmt = $db->prepare(
+                        'SELECT Id AS id, Type AS type, Title AS title, Body AS body,
+                                ActionUrl AS action_url, IsRead AS is_read, CreatedAt AS created_at
+                           FROM tblNotifications
+                          WHERE UserId = ?
+                          ORDER BY IsRead ASC, CreatedAt DESC
+                          LIMIT 50'
+                    );
+                    $stmt->bind_param('i', $authUserId);
+                }
                 $stmt->execute();
                 $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
@@ -8354,27 +9589,50 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
+                /* Split caps by storage (#1352). Column-backed caps (the 7
+                   originals) bind to their own TINYINT columns exactly as
+                   before; json-backed caps (every new one) are assembled
+                   into the single Capabilities JSON column. Default to 0
+                   when a key is unspecified. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
                     /* Accept the camelCase or PascalCase form clients
                        might use; the canonical key is the exact column
-                       name. Default to 0 when unspecified. */
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                       name. */
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+                $jsonKeys = tierCapJsonKeys();
+                /* Only touch the Capabilities column when there ARE json caps
+                   registered AND the migration has landed — keeps an
+                   un-migrated install (or the all-column state shipped with
+                   this change) byte-identical to the old INSERT. */
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
+                $jsonCaps  = [];
+                foreach ($jsonKeys as $col) {
+                    $jsonCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
 
-                $cols         = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $cols   = array_merge(['Name','DisplayName','Level','Description'], array_keys($columnCaps));
+                $types  = 'ssis' . str_repeat('i', count($columnCaps));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($columnCaps));
+                if ($writeJson) {
+                    /* One extra column + one extra bound 's' param carrying
+                       the json_encode'd caps. Placeholder/type/value counts
+                       stay in lockstep (rule #5). */
+                    $cols[]   = 'Capabilities';
+                    $types   .= 's';
+                    $values[] = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                }
                 $placeholders = implode(', ', array_fill(0, count($cols), '?'));
                 $sql          = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
-                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
-                   each TIER_CAPS column as int. Built dynamically so a new
-                   capability column auto-extends the bind without an edit. */
-                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
-                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
                 $stmt   = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* For the activity log, present the full cap set (column +
+                   json) the same way regardless of storage. */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.create', 'access_tier', (string)$newId, [
                     'name'         => $name,
@@ -8440,27 +9698,70 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                /* Split caps by storage (#1352), mirroring admin_tier_create.
+                   Column caps SET their own TINYINT column; json caps merge
+                   into the Capabilities JSON column. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
+                $jsonKeys  = tierCapJsonKeys();
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
 
                 $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
                 $args = [$displayName, $level, $description];
-                foreach ($caps as $col => $val) {
-                    $sets[] = "$col = ?";
-                    $args[] = $val;
+                $types = 'sis';
+                foreach ($columnCaps as $col => $val) {
+                    $sets[]  = "$col = ?";
+                    $args[]  = $val;
+                    $types  .= 'i';
                 }
-                $args[] = $id;
-                /* Type string: DisplayName(s), Level(i), Description(s),
-                   each TIER_CAPS column as int, then Id(i). */
-                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $jsonCaps = [];
+                if ($writeJson) {
+                    /* Merge submitted json caps over the row's existing
+                       Capabilities so a partial update never drops caps the
+                       caller didn't send. */
+                    $existing = [];
+                    try {
+                        $stmtCap = $db->prepare('SELECT Capabilities FROM tblAccessTiers WHERE Id = ?');
+                        $stmtCap->bind_param('i', $id);
+                        $stmtCap->execute();
+                        $rowCap = $stmtCap->get_result()->fetch_row();
+                        $stmtCap->close();
+                        $rawCap = $rowCap[0] ?? null;
+                        if ($rawCap !== null && $rawCap !== '') {
+                            $decodedCap = json_decode((string)$rawCap, true);
+                            if (is_array($decodedCap)) { $existing = $decodedCap; }
+                        }
+                    } catch (\Throwable $_e) { /* degrade to empty existing */ }
+                    /* Only overwrite json caps the caller ACTUALLY submitted —
+                       the API body is genuinely sparse (a client may PATCH a
+                       single cap), so iterating every registered key would force
+                       omitted caps to 0 and clobber a stored 1, defeating the
+                       read-existing merge above (#1352 review finding). An explicit
+                       0 still clears a cap; an absent key is preserved. (The web
+                       form in tiers.php always submits the full set, so it keeps
+                       the simpler all-keys write.) */
+                    foreach ($jsonKeys as $col) {
+                        if (array_key_exists($col, $capsInput)) {
+                            $existing[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                        }
+                    }
+                    $jsonCaps = $existing;
+                    $sets[]   = 'Capabilities = ?';
+                    $args[]   = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                    $types   .= 's';
+                }
+                $args[]  = $id;
+                $types  .= 'i';
                 $stmt  = $db->prepare(
                     'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
                 );
                 $stmt->bind_param($types, ...$args);
                 $stmt->execute();
                 $stmt->close();
+                /* Full cap set for the activity log (column + json). */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.update', 'access_tier', (string)$id, [
                     'name'         => $name,
@@ -9445,9 +10746,7 @@ if ($action !== null) {
             $name        = trim((string)($body['name']         ?? ''));
             $notesRaw    = trim((string)($body['notes']        ?? ''));
             $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
-            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
-            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
@@ -9459,14 +10758,22 @@ if ($action !== null) {
                special-case (more constraining). */
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+            /* Partial birth/death dates — accept the flexible curator form
+               (YYYY / MM/YYYY / DD/MM/YYYY, plus ISO) via the shared
+               partial_date helper, same as /manage/credit-people. The
+               INSERT below writes the normalised DATE; the precision flag is
+               persisted separately, gated on the column existing. */
+            $pb = partialDateParse((string)($body['birth_date'] ?? ''));
+            $pd = partialDateParse((string)($body['death_date'] ?? ''));
+
             if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
             if (mb_strlen($name) > 255) { sendJson(['error' => 'Name must be 255 characters or fewer.'], 400); break; }
-            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
-                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
-            }
-            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
-                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
-            }
+            if (!$pb['ok']) { sendJson(['error' => 'birth_date: ' . $pb['error']], 400); break; }
+            if (!$pd['ok']) { sendJson(['error' => 'death_date: ' . $pd['error']], 400); break; }
+            $birthDate = $pb['date'];
+            $birthPrec = $pb['precision'];
+            $deathDate = $pd['date'];
+            $deathPrec = $pd['precision'];
 
             try {
                 $db = getDbMysqli();
@@ -9539,6 +10846,11 @@ if ($action !== null) {
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+
+                    /* Date precision flags — separate, column-gated UPDATE
+                       (no-op on an un-migrated install; the date itself
+                       already landed in the INSERT above). */
+                    creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
 
                     if ($links) {
                         $linkStmt = $db->prepare(
@@ -9638,9 +10950,7 @@ if ($action !== null) {
             $name        = trim((string)($body['name']         ?? ''));
             $notesRaw    = trim((string)($body['notes']        ?? ''));
             $birthPlace  = trim((string)($body['birth_place']  ?? '')) ?: null;
-            $birthDate   = trim((string)($body['birth_date']   ?? '')) ?: null;
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
-            $deathDate   = trim((string)($body['death_date']   ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
             $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
@@ -9650,14 +10960,19 @@ if ($action !== null) {
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+            /* Partial birth/death dates — same flexible-input parse as the
+               add endpoint (YYYY / MM/YYYY / DD/MM/YYYY → DATE + precision). */
+            $pb = partialDateParse((string)($body['birth_date'] ?? ''));
+            $pd = partialDateParse((string)($body['death_date'] ?? ''));
+
             if ($id <= 0)               { sendJson(['error' => 'Person id required.'], 400); break; }
             if ($name === '')           { sendJson(['error' => 'Name is required.'], 400); break; }
-            if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) {
-                sendJson(['error' => 'birth_date must be YYYY-MM-DD.'], 400); break;
-            }
-            if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) {
-                sendJson(['error' => 'death_date must be YYYY-MM-DD.'], 400); break;
-            }
+            if (!$pb['ok']) { sendJson(['error' => 'birth_date: ' . $pb['error']], 400); break; }
+            if (!$pd['ok']) { sendJson(['error' => 'death_date: ' . $pd['error']], 400); break; }
+            $birthDate = $pb['date'];
+            $birthPrec = $pb['precision'];
+            $deathDate = $pd['date'];
+            $deathPrec = $pd['precision'];
 
             try {
                 $db = getDbMysqli();
@@ -9708,6 +11023,11 @@ if ($action !== null) {
                     }
                     $stmt->execute();
                     $stmt->close();
+
+                    /* Date precision flags — column-gated UPDATE, written
+                       unconditionally so clearing a date also clears its
+                       precision back to NULL. No-op on an un-migrated install. */
+                    creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
@@ -10325,21 +11645,12 @@ if ($action !== null) {
                 }
             }
 
-            /* SongData JSON fallback probe — non-fatal on partly-loaded
-               configs. The probe runs the SongData constructor which
-               may throw when songs.json is corrupt; we surface the
-               exception text in `note` rather than failing the whole
-               response. */
-            $songDataJsonFallback = null;
-            $songDataNote         = null;
-            try {
-                if (class_exists('\\SongData')) {
-                    $probe = new \SongData();
-                    $songDataJsonFallback = $probe->isJsonFallback();
-                }
-            } catch (\Throwable $sdErr) {
-                $songDataNote = 'SongData probe failed: ' . $sdErr->getMessage();
-            }
+            /* The SongData JSON-fallback probe was removed here: the
+               whole-corpus songs.json fallback no longer exists (WS-J
+               #1020), so isJsonFallback() is permanently false and the
+               constructor now throws on DB-down (not corrupt JSON) — the
+               probe only mislabelled an outage. The `songs_json_fallback`
+               / `songs_json_note` response keys are dropped with it. */
 
             /* Legacy share-directory + SQLite presence checks. Defined
                constants come from config.php; treat absence as "not
@@ -10382,8 +11693,6 @@ if ($action !== null) {
             sendJson([
                 'database_up'           => true,
                 'table_counts'          => $tableCounts,
-                'songs_json_fallback'   => $songDataJsonFallback,
-                'songs_json_note'       => $songDataNote,
                 'share_dir' => [
                     'configured'        => $shareDirPath !== '',
                     'present'           => $shareDirPath !== '' && is_dir($shareDirPath),
@@ -10622,6 +11931,671 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * Live Follow (#1268) — web/PWA real-time multi-device follow.
+         * DB-relayed short-poll over tblLiveFollowSessions (no SSE — shared
+         * hosting can't hold a worker per follower). The host writes its
+         * current song/section/state and bumps StateRevision; followers poll
+         * with ?since=<rev> and get a near-free "unchanged" until it advances.
+         * Host endpoints require auth + ownership; join/poll are anonymous,
+         * scoped by the unguessable code. State-changing POSTs inherit the
+         * X-Requested-With CSRF guard at the top of this file.
+         * ----------------------------------------------------------------- */
+        case 'live_follow_create': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* 20 new sessions / hour / user is plenty for a worship leader. */
+            checkRateLimit('live_follow_create', $liveIp, 20, 3600, true, $userId);
+            recordRateLimitHit('live_follow_create', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $setlistId = isset($body['setlistId'])
+                ? mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', (string)$body['setlistId']), 0, 100) : null;
+            if ($setlistId === '') { $setlistId = null; }
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : null;
+            if ($songId === '') { $songId = null; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+            $orgId = null; /* v1: org scoping deferred; the FK stays NULL (SET NULL-safe). */
+
+            $db = getDbMysqli();
+
+            /* Reject an unknown songId up front — the CurrentSongId FK would
+               otherwise throw 1452 under STRICT → an uncaught 500. */
+            if ($songId !== null) {
+                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chkSong->bind_param('s', $songId);
+                $chkSong->execute();
+                $songOk = $chkSong->get_result()->fetch_row() !== null;
+                $chkSong->close();
+                if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
+            }
+
+            /* One active session per host — supersede any prior one. */
+            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
+            $deact->bind_param('i', $userId);
+            $deact->execute();
+            $deact->close();
+
+            /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
+            $alphabet = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+            $alphaMax = strlen($alphabet) - 1;
+            $code = '';
+            $inserted = false;
+            for ($attempt = 0; $attempt < 6 && !$inserted; $attempt++) {
+                $code = '';
+                for ($i = 0; $i < 6; $i++) { $code .= $alphabet[random_int(0, $alphaMax)]; }
+                try {
+                    $ins = $db->prepare(
+                        'INSERT INTO tblLiveFollowSessions
+                            (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
+                             CurrentComponentIndex, StateJson, IsActive, StartedAt,
+                             LastHeartbeatAt, ExpiresAt, StateRevision)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
+                                 DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0)'
+                    );
+                    $ins->bind_param('siissis', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson);
+                    $ins->execute();
+                    $ins->close();
+                    $inserted = true;
+                } catch (\mysqli_sql_exception $e) {
+                    /* uq_Code collision (errno 1062) — retry; anything else is real. */
+                    if ($e->getCode() !== 1062) { throw $e; }
+                }
+            }
+            if (!$inserted) { sendJson(['error' => 'Could not allocate a session code, please retry.'], 503); break; }
+
+            sendJson(['ok' => true, 'code' => $code, 'revision' => 0]);
+            break;
+        }
+
+        case 'live_follow_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Generous: a fast operator + heartbeats stay well under 600/min. */
+            checkRateLimit('live_follow_update', $liveIp, 600, 60, true, $userId);
+            recordRateLimitHit('live_follow_update', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            /* The host broadcasts its FULL current context each update. */
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : '';
+            if ($songId === '') { sendJson(['error' => 'songId is required.'], 400); break; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+
+            $db = getDbMysqli();
+
+            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500. */
+            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $chkSong->bind_param('s', $songId);
+            $chkSong->execute();
+            $songOk = $chkSong->get_result()->fetch_row() !== null;
+            $chkSong->close();
+            if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
+
+            $upd = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                        LastHeartbeatAt = UTC_TIMESTAMP(),
+                        ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR),
+                        StateRevision = StateRevision + 1
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $upd->bind_param('sissi', $songId, $componentIndex, $stateJson, $code, $userId);
+            $upd->execute();
+            $changed = $upd->affected_rows;
+            $upd->close();
+            if ($changed === 0) { sendJson(['ok' => false, 'error' => 'Session not found, not yours, or ended.'], 409); break; }
+
+            $sel = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE SessionCode = ? AND HostUserId = ?');
+            $sel->bind_param('si', $code, $userId);
+            $sel->execute();
+            $revRow = $sel->get_result()->fetch_row();
+            $rev = $revRow ? (int)$revRow[0] : 0;
+            $sel->close();
+
+            sendJson(['ok' => true, 'revision' => $rev]);
+            break;
+        }
+
+        case 'live_follow_heartbeat': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            $db = getDbMysqli();
+            /* Keepalive only — does NOT bump StateRevision (no state changed). */
+            $hb = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET LastHeartbeatAt = UTC_TIMESTAMP(),
+                        ExpiresAt = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR)
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $hb->bind_param('si', $code, $userId);
+            $hb->execute();
+            $hb->close();
+
+            /* Liveness via existence, NOT affected_rows: two heartbeats in the
+               same second write identical timestamps, so affected_rows (changed
+               rows) would be 0 even though the session is fine. */
+            $chk = $db->prepare(
+                'SELECT 1 FROM tblLiveFollowSessions
+                  WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1'
+            );
+            $chk->bind_param('si', $code, $userId);
+            $chk->execute();
+            $alive = $chk->get_result()->fetch_row() !== null;
+            $chk->close();
+
+            sendJson(['ok' => $alive]);
+            break;
+        }
+
+        case 'live_follow_leave': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code = strtoupper(trim((string)($body['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
+
+            $db = getDbMysqli();
+            $end = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE SessionCode = ? AND HostUserId = ?');
+            $end->bind_param('si', $code, $userId);
+            $end->execute();
+            $end->close();
+
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        case 'live_follow_join': {
+            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['ok' => false, 'error' => 'Invalid session code.'], 400); break; }
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Join is infrequent (once per follower); a per-IP cap blunts code
+               enumeration without penalising a real congregation. */
+            checkRateLimit('live_follow_join', $liveIp, 60, 60, true);
+            recordRateLimitHit('live_follow_join', $liveIp);
+
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
+                        u.DisplayName AS HostName
+                   FROM tblLiveFollowSessions s
+                   JOIN tblUsers u ON u.Id = s.HostUserId
+                  WHERE s.SessionCode = ? AND s.IsActive = 1
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)'
+            );
+            $stmt->bind_param('s', $code);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            /* Identical message for missing / expired / wrong code so liveness
+               can't be probed cheaply (combined with the rate limit). */
+            if (!$row) { sendJson(['ok' => false, 'error' => 'Session not found or ended.'], 404); break; }
+
+            sendJson([
+                'ok'              => true,
+                'code'            => $code,
+                'hostDisplayName' => (string)($row['HostName'] ?? ''),
+                'currentSongId'   => $row['CurrentSongId'],
+                'componentIndex'  => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
+                'state'           => $row['StateJson'] !== null ? json_decode($row['StateJson'], true) : null,
+                'revision'        => (int)$row['StateRevision'],
+            ]);
+            break;
+        }
+
+        case 'live_follow_poll': {
+            $code = strtoupper(trim((string)($_GET['code'] ?? '')));
+            if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['active' => false], 400); break; }
+            $since = (int)($_GET['since'] ?? 0);
+            $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Per-IP cap so `poll` can't serve as an un-throttled code-existence
+               oracle that sidesteps the join cap (a live vs unknown code give
+               different responses). Generous for legitimate ~2.5s polling from a
+               handful of devices. NOTE: a NAT-shared congregation polling at
+               scale needs the NAT-safe anti-enumeration design — a short-lived
+               join token gating poll + a per-session counter instead of per-IP
+               recording — which lands with the Phase-3 client (#1268). Dormant in
+               Phase 1 (no client polls yet). */
+            checkRateLimit('live_follow_poll', $liveIp, 600, 60, true);
+            recordRateLimitHit('live_follow_poll', $liveIp);
+            $db = getDbMysqli();
+            $stmt = $db->prepare(
+                'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
+                        (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)) AS Fresh
+                   FROM tblLiveFollowSessions
+                  WHERE SessionCode = ?'
+            );
+            $stmt->bind_param('s', $code);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$row || (int)$row['Fresh'] !== 1) { sendJson(['active' => false]); break; }
+
+            $rev = (int)$row['StateRevision'];
+            if ($rev <= $since) { sendJson(['changed' => false, 'revision' => $rev]); break; }
+
+            sendJson([
+                'changed'        => true,
+                'currentSongId'  => $row['CurrentSongId'],
+                'componentIndex' => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
+                'state'          => $row['StateJson'] !== null ? json_decode($row['StateJson'], true) : null,
+                'revision'       => $rev,
+            ]);
+            break;
+        }
+
+        /* =================================================================
+         * SERVICE MODE (#1335) — operator endpoints (Phase 2b).
+         * A venue/service session congregants join via a rotating code (2c)
+         * + (Phase 3) get a temporary presence-scoped CCLI unlock. Operator =
+         * global_admin/admin OR an org-admin/owner of the venue's org. Every
+         * row is CHANNEL-scoped (the 3-docroot guard) so an alpha/beta session
+         * is never joinable on production. State-changing POSTs inherit the
+         * X-Requested-With CSRF guard at the top of this file.
+         * ================================================================= */
+        case 'service_session_start': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_session_start', $svcIp, 30, 3600, true, $userId);
+            recordRateLimitHit('service_session_start', 'user:' . $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $venueId    = (int)($body['venueId'] ?? 0);
+            $scheduleId = (int)($body['scheduleId'] ?? 0);
+            $occDate    = (string)($body['occurrenceDate'] ?? '');
+            if ($venueId <= 0) { sendJson(['error' => 'Missing venue.'], 400); break; }
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $occDate)) { sendJson(['error' => 'Invalid occurrence date.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+
+            $vstmt = $db->prepare('SELECT OrgId, TimeZone FROM tblOrgVenues WHERE Id = ? AND IsActive = 1');
+            $vstmt->bind_param('i', $venueId);
+            $vstmt->execute();
+            $venue = $vstmt->get_result()->fetch_assoc();
+            $vstmt->close();
+            if (!$venue) { sendJson(['error' => 'Unknown venue.'], 404); break; }
+            $orgId   = (int)$venue['OrgId'];
+            $venueTz = (string)($venue['TimeZone'] ?? 'UTC');
+
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised for this organisation.'], 403); break; }
+
+            /* Schedule (if given) must belong to the venue → start/duration/tz. */
+            $startTime = '10:00:00'; $duration = 90; $schedTz = $venueTz; $scheduleIdN = null;
+            if ($scheduleId > 0) {
+                $sstmt = $db->prepare('SELECT StartTime, DurationMins, TimeZone FROM tblOrgServiceSchedules WHERE Id = ? AND VenueId = ?');
+                $sstmt->bind_param('ii', $scheduleId, $venueId);
+                $sstmt->execute();
+                $sched = $sstmt->get_result()->fetch_assoc();
+                $sstmt->close();
+                if (!$sched) { sendJson(['error' => 'Unknown schedule for this venue.'], 404); break; }
+                $startTime   = (string)$sched['StartTime'];
+                $duration    = (int)$sched['DurationMins'];
+                $schedTz     = ($sched['TimeZone'] ?? '') ?: $venueTz;
+                $scheduleIdN = $scheduleId;
+            }
+            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz);
+
+            /* Supersede any prior active service session for the same occurrence + channel. */
+            $deact = $db->prepare(
+                "UPDATE tblLiveFollowSessions SET IsActive = 0
+                  WHERE SessionKind = 'service' AND IsActive = 1 AND Channel = ?
+                    AND VenueId = ? AND OccurrenceDate = ? AND (ScheduleId <=> ?)"
+            );
+            $deact->bind_param('sisi', $channel, $venueId, $occDate, $scheduleIdN);
+            $deact->execute();
+            $deact->close();
+
+            /* Insert the session (SessionKind=service; SessionCode is the spine's
+               required unique id, internal — congregants use the rotating codes).
+               ExpiresAt = the resolved-UTC occurrence end. Retry on uq_Code. */
+            $newSessionId = 0;
+            $ins = $db->prepare(
+                "INSERT INTO tblLiveFollowSessions
+                    (SessionCode, HostUserId, OrgId, VenueId, ScheduleId, OccurrenceDate,
+                     SessionKind, Channel, IsActive, StartedAt, LastHeartbeatAt, ExpiresAt, StateRevision)
+                 VALUES (?, ?, ?, ?, ?, ?, 'service', ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 0)"
+            );
+            $sessionCode = '';
+            $ins->bind_param('siiiisss', $sessionCode, $userId, $orgId, $venueId, $scheduleIdN, $occDate, $channel, $endUtc);
+            for ($attempt = 0; $attempt < 6 && $newSessionId === 0; $attempt++) {
+                $sessionCode = 'SVC' . serviceMode_generateCode(8);
+                try {
+                    $ins->execute();
+                    $newSessionId = (int)$db->insert_id;
+                } catch (\mysqli_sql_exception $e) {
+                    if ($e->getCode() !== 1062) { throw $e; }
+                }
+            }
+            $ins->close();
+            if ($newSessionId === 0) { sendJson(['error' => 'Could not start the session, please retry.'], 503); break; }
+
+            $code = serviceMode_mintCode($db, $newSessionId);
+            logActivity('service.session.start', 'organisation', (string)$orgId, ['session_id' => $newSessionId, 'venue_id' => $venueId, 'channel' => $channel]);
+            sendJson(['ok' => true, 'sessionId' => $newSessionId, 'code' => $code, 'occurrenceEnd' => $endUtc]);
+            break;
+        }
+
+        case 'service_code_rotate':
+        case 'service_code_current':
+        case 'service_session_end': {
+            $isRotate = ($action === 'service_code_rotate');
+            $isEnd    = ($action === 'service_session_end');
+            if (($isRotate || $isEnd) && $_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_operator', $svcIp, 600, 60, true, $userId);
+
+            $sessionId = $isRotate || $isEnd
+                ? (int)((json_decode(file_get_contents('php://input'), true) ?: [])['sessionId'] ?? 0)
+                : (int)($_GET['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            /* Resolve the session (channel-scoped) + gate on operator. */
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId, IsActive FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ?");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) { sendJson(['error' => 'Unknown session.'], 404); break; }
+            $orgId = (int)$sess['OrgId'];
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || (int)$sess['HostUserId'] === $userId
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+
+            if ($isEnd) {
+                $db->begin_transaction();
+                try {
+                    $e1 = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE Id = ?');
+                    $e1->bind_param('i', $sessionId); $e1->execute(); $e1->close();
+                    /* Revoke all presence → immediate gate revocation. */
+                    $e2 = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
+                    $e2->bind_param('i', $sessionId); $e2->execute(); $e2->close();
+                    $db->commit();
+                } catch (\Throwable $e) { $db->rollback(); throw $e; }
+                logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                sendJson(['ok' => true]);
+                break;
+            }
+
+            if ($isRotate) {
+                if ((int)$sess['IsActive'] !== 1) { sendJson(['error' => 'Session is not active.'], 409); break; }
+                /* The rotate doubles as a heartbeat keeping the session fresh. */
+                $hb = $db->prepare('UPDATE tblLiveFollowSessions SET LastHeartbeatAt = UTC_TIMESTAMP() WHERE Id = ?');
+                $hb->bind_param('i', $sessionId); $hb->execute(); $hb->close();
+                $code = serviceMode_mintCode($db, $sessionId);
+                sendJson(['ok' => true, 'code' => $code]);
+                break;
+            }
+
+            /* service_code_current — projection-page resume after a reload. */
+            $cur = $db->prepare("SELECT Code FROM tblLiveFollowJoinCodes WHERE SessionId = ? AND Status = 'current' AND ExpiresAt > UTC_TIMESTAMP() ORDER BY Generation DESC LIMIT 1");
+            $cur->bind_param('i', $sessionId);
+            $cur->execute();
+            $row = $cur->get_result()->fetch_assoc();
+            $cur->close();
+            if (!$row) {
+                /* Current expired (e.g. tab slept) — mint a fresh one if the session's still active. */
+                if ((int)$sess['IsActive'] === 1) {
+                    $code = serviceMode_mintCode($db, $sessionId);
+                    sendJson(['ok' => true, 'code' => $code]);
+                } else {
+                    sendJson(['ok' => false, 'error' => 'Session not active.'], 409);
+                }
+                break;
+            }
+            sendJson(['ok' => true, 'code' => (string)$row['Code']]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * SERVICE MODE (#1335) — broadcast (operator) + congregant join/poll/
+         * leave (Phase 2c). The broadcast endpoint serves BOTH broadcaster
+         * mechanisms (the projection laptop OR a separate leader device) — it
+         * just needs the sessionId + operator auth. Congregant endpoints are
+         * anonymous, gated by the unguessable rotating code (join) / opaque
+         * presence token (poll/leave), CHANNEL-scoped, NAT-safe per-token.
+         * ----------------------------------------------------------------- */
+        case 'service_broadcast': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+            checkRateLimit('service_broadcast', $_SERVER['REMOTE_ADDR'] ?? '', 600, 60, true, $userId);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $sessionId = (int)($body['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+            $songId = isset($body['songId']) ? _liveFollowCleanSongId((string)$body['songId']) : null;
+            if ($songId === '') { $songId = null; }
+            $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
+                ? min(9999, max(0, (int)$body['componentIndex'])) : null;
+            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) { sendJson(['error' => 'Unknown or ended session.'], 404); break; }
+            $orgId = (int)$sess['OrgId'];
+            $canOperate = ($role === 'global_admin' || $role === 'admin')
+                || (int)$sess['HostUserId'] === $userId
+                || in_array($orgId, userIsOrgAdminOf($userId), true);
+            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+
+            if ($songId !== null) {
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $chk->bind_param('s', $songId);
+                $chk->execute();
+                $ok = $chk->get_result()->fetch_row() !== null;
+                $chk->close();
+                if (!$ok) { sendJson(['error' => 'Unknown song.'], 400); break; }
+            }
+
+            $upd = $db->prepare(
+                'UPDATE tblLiveFollowSessions
+                    SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
+                        StateRevision = StateRevision + 1, LastHeartbeatAt = UTC_TIMESTAMP()
+                  WHERE Id = ?'
+            );
+            $upd->bind_param('sisi', $songId, $componentIndex, $stateJson, $sessionId);
+            $upd->execute();
+            $upd->close();
+            $rev = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+            $rev->bind_param('i', $sessionId);
+            $rev->execute();
+            $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
+            $rev->close();
+            sendJson(['ok' => true, 'revision' => $revision]);
+            break;
+        }
+
+        case 'service_join': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            $svcIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* Generous per-IP cap — a whole congregation joins at once behind one
+               church-wifi IP, so this is high; the real throttle is the per-device
+               presence row + the rotating code's air-gap. */
+            checkRateLimit('service_join', $svcIp, 300, 60, false, null);
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $code   = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($body['code'] ?? '')));
+            $venueId = (int)($body['venueId'] ?? 0);  /* OPTIONAL — 0 = resolve by code+channel alone (congregant typed it off the screen). */
+            $deviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($body['presenceDeviceId'] ?? ''));
+            $deviceId = mb_substr($deviceId, 0, 64);
+            if ($code === '' || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $sess = serviceMode_resolveJoin($db, $code, $venueId, $channel);
+            if (!$sess) {
+                /* Opaque — don't distinguish wrong/expired/unknown (anti-probe). */
+                sendJson(['ok' => false, 'error' => 'That code isn’t active. Check the screen and try again.'], 404);
+                break;
+            }
+            $sessionId = (int)$sess['Id'];
+
+            /* Resolve the session's ExpiresAt (the resolved-UTC occurrence end) +
+               its current broadcast state for an immediate follow. */
+            $meta = $db->prepare('SELECT ExpiresAt, CurrentSongId, CurrentComponentIndex, StateJson, StateRevision FROM tblLiveFollowSessions WHERE Id = ?');
+            $meta->bind_param('i', $sessionId);
+            $meta->execute();
+            $m = $meta->get_result()->fetch_assoc();
+            $meta->close();
+            $expiresAt = (string)($m['ExpiresAt'] ?? '');
+
+            /* Opaque presence token (base64url 32 bytes = 43 chars) — the gate key. */
+            $token = rtrim(strtr(base64_encode(random_bytes(32)), '+/', '-_'), '=');
+            $orgId = $sess['OrgId'] !== null ? (int)$sess['OrgId'] : null;
+            $sVenueId = $sess['VenueId'] !== null ? (int)$sess['VenueId'] : null;
+            $schedId = $sess['ScheduleId'] !== null ? (int)$sess['ScheduleId'] : null;
+            $occDate = $sess['OccurrenceDate'] !== null ? (string)$sess['OccurrenceDate'] : null;
+
+            /* Upsert presence: one row per (session, device); a re-join reactivates
+               + re-tokens rather than duplicating (uq_DeviceSession). */
+            $ins = $db->prepare(
+                "INSERT INTO tblServicePresence
+                    (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                     PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                 ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
+                     LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+            );
+            $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+            $ins->execute();
+            $ins->close();
+
+            sendJson([
+                'ok' => true,
+                'presenceToken' => $token,
+                'currentSongId' => $m['CurrentSongId'] ?? null,
+                'componentIndex' => isset($m['CurrentComponentIndex']) ? (int)$m['CurrentComponentIndex'] : null,
+                'state' => isset($m['StateJson']) && $m['StateJson'] !== null ? json_decode((string)$m['StateJson'], true) : null,
+                'revision' => (int)($m['StateRevision'] ?? 0),
+            ]);
+            break;
+        }
+
+        case 'service_poll': {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            $token = (string)($_GET['presenceToken'] ?? '');
+            if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['active' => false]); break; }
+            $since = max(0, (int)($_GET['since'] ?? 0));
+            /* NAT-safe: rate-limit PER TOKEN (not per IP) so many congregants
+               behind one IP each get their own budget, and one bad token can't
+               DoS the rest. 40/min comfortably covers ~2.5s polling. */
+            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), 40, 60, false, null);
+
+            $db = getDbMysqli();
+            $channel = serviceMode_channel();
+            $stmt = $db->prepare(
+                "SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision
+                   FROM tblServicePresence p
+                   JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+                  WHERE p.PresenceToken = ? AND p.IsActive = 1 AND p.ExpiresAt > UTC_TIMESTAMP()
+                    AND s.IsActive = 1 AND s.Channel = ?
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 120 SECOND)
+                  LIMIT 1"
+            );
+            $stmt->bind_param('ss', $token, $channel);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) { sendJson(['active' => false]); break; }
+
+            /* Touch liveness (best-effort; not every poll needs it but cheap). */
+            $touch = $db->prepare('UPDATE tblServicePresence SET LastSeenAt = UTC_TIMESTAMP() WHERE PresenceToken = ?');
+            $touch->bind_param('s', $token);
+            $touch->execute();
+            $touch->close();
+
+            $revision = (int)$row['StateRevision'];
+            if ($revision <= $since) { sendJson(['active' => true, 'changed' => false, 'revision' => $revision]); break; }
+            sendJson([
+                'active' => true,
+                'changed' => true,
+                'currentSongId' => $row['CurrentSongId'] ?? null,
+                'componentIndex' => isset($row['CurrentComponentIndex']) ? (int)$row['CurrentComponentIndex'] : null,
+                'state' => isset($row['StateJson']) && $row['StateJson'] !== null ? json_decode((string)$row['StateJson'], true) : null,
+                'revision' => $revision,
+            ]);
+            break;
+        }
+
+        case 'service_leave': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            $token = (string)(($body = json_decode(file_get_contents('php://input'), true)) && is_array($body) ? ($body['presenceToken'] ?? '') : '');
+            if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['ok' => true]); break; }
+            $db = getDbMysqli();
+            /* Immediate gate revocation. */
+            $upd = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE PresenceToken = ?');
+            $upd->bind_param('s', $token);
+            $upd->execute();
+            $upd->close();
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * Unknown action
          * ----------------------------------------------------------------- */
         default:
@@ -10681,6 +12655,38 @@ function sendJson(array $data, int $statusCode = 200): void
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * Live Follow (#1268) — sanitise a SongId from client input to the SongId
+ * charset (alnum + _ -) and the column width (VARCHAR(20)). Empty after
+ * cleaning ⇒ '' (caller treats as "no song").
+ */
+function _liveFollowCleanSongId(string $raw): string
+{
+    return mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', $raw), 0, 20);
+}
+
+/**
+ * Live Follow (#1268) — whitelist the broadcast StateJson. NEVER stores raw
+ * client JSON: only the known broadcast hints survive, each clamped to a safe
+ * range. Returns a compact JSON string, or null when nothing valid was sent.
+ */
+function _liveFollowCleanState($state): ?string
+{
+    if (!is_array($state)) { return null; }
+    $clean = [];
+    if (array_key_exists('blank', $state)) {
+        $clean['blank'] = (bool)$state['blank'];
+    }
+    if (array_key_exists('scrollPct', $state) && is_numeric($state['scrollPct'])) {
+        $clean['scrollPct'] = max(0.0, min(1.0, (float)$state['scrollPct']));
+    }
+    if (array_key_exists('transposeOffset', $state) && is_numeric($state['transposeOffset'])) {
+        $clean['transposeOffset'] = max(-12, min(12, (int)$state['transposeOffset']));
+    }
+    if (!$clean) { return null; }
+    return json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 /**
@@ -10858,7 +12864,7 @@ function getAuthenticatedUser(): ?array
  */
 function songToSummary(array $song): array
 {
-    return [
+    $summary = [
         'id'           => $song['id'] ?? '',
         'number'       => $song['number'] ?? 0,
         'title'        => $song['title'] ?? '',
@@ -10868,4 +12874,17 @@ function songToSummary(array $song): array
         'hasAudio'     => $song['hasAudio'] ?? false,
         'hasSheetMusic' => $song['hasSheetMusic'] ?? false,
     ];
+
+    /* Live-search extras (#1014) — only present when set, so number /
+       songbook summaries stay minimal. lyricsSnippet rides along when
+       a body match drove the hit; matchedVia carries the curator
+       alt-title hint (#832). */
+    if (!empty($song['lyricsSnippet'])) {
+        $summary['lyricsSnippet'] = $song['lyricsSnippet'];
+    }
+    if (!empty($song['matchedVia'])) {
+        $summary['matchedVia'] = $song['matchedVia'];
+    }
+
+    return $summary;
 }

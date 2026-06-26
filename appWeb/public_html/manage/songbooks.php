@@ -653,7 +653,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
 ) {
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store');
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo json_encode(['error' => 'Invalid CSRF token.']);
         exit;
@@ -861,7 +861,7 @@ try {
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -884,6 +884,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear    = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright  = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation= trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
+                $displayAbbr = trim((string)($_POST['display_abbr']    ?? ''));
+                $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
                 /* Places adoption sweep — display string + FK. The
                    FK is populated by the place-search JS module when
                    the curator picks a candidate; free-typing leaves
@@ -1001,6 +1004,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $stmt->execute();
                     $stmt->close();
                 }
+                /* #1332 — display label in a schema-tolerant separate UPDATE
+                   (skipped pre-migration), same pattern as the place columns. */
+                if (placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')) {
+                    $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayAbbr = ? WHERE Id = ?');
+                    $stmt->bind_param('si', $displayAbbr, $newId);
+                    $stmt->execute();
+                    $stmt->close();
+                }
                 logActivity('songbook.create', 'songbook', (string)$newId, [
                     'abbreviation'    => $abbr,
                     'name'            => $name,
@@ -1058,6 +1069,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pubYear     = trim((string)($_POST['publication_year'] ?? '')) ?: null;
                 $copyright   = trim((string)($_POST['copyright']        ?? '')) ?: null;
                 $affiliation = trim((string)($_POST['affiliation']      ?? '')) ?: null;
+                /* #1332 — optional free-text display label (any chars, ≤30); '' → NULL. */
+                $displayAbbr = trim((string)($_POST['display_abbr']     ?? ''));
+                $displayAbbr = $displayAbbr !== '' ? mb_substr($displayAbbr, 0, 30) : null;
                 /* Places adoption sweep — display string + FK. */
                 $publicationCity   = trim((string)($_POST['publication_city']    ?? '')) ?: null;
                 $publicationCityId = (int)($_POST['publication_city_id'] ?? 0) ?: null;
@@ -1306,6 +1320,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                               WHERE Id = ?'
                         );
                         $stmt->bind_param('sii', $publicationCity, $publicationCityId, $id);
+                        $stmt->execute();
+                        $stmt->close();
+                    }
+
+                    /* #1332 — display label, schema-tolerant separate UPDATE. */
+                    if (placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')) {
+                        $stmt = $db->prepare('UPDATE tblSongbooks SET DisplayAbbr = ? WHERE Id = ?');
+                        $stmt->bind_param('si', $displayAbbr, $id);
                         $stmt->execute();
                         $stmt->close();
                     }
@@ -2352,6 +2374,12 @@ try {
         ? ', b.PublicationCity, b.PublicationCityId'
         : ', NULL AS PublicationCity, NULL AS PublicationCityId';
 
+    /* #1332 — optional free-text display label, shown in place of the
+       abbreviation. NULL AS … keeps $r['DisplayAbbr'] always set pre-migration. */
+    $displayAbbrSelect = placeColumnExists($db, 'tblSongbooks', 'DisplayAbbr')
+        ? ', b.DisplayAbbr'
+        : ', NULL AS DisplayAbbr';
+
     /* Same probe pattern for the #782 phase A parent columns. When
        the schema is live, also LEFT JOIN to the parent row so the
        list-page Parent column can render abbreviation + name in one
@@ -2381,7 +2409,7 @@ try {
     $stmt = $db->prepare(
         'SELECT b.Id, b.Abbreviation, b.Name, b.SongCount, b.DisplayOrder, b.Colour,
                 b.IsOfficial, b.Publisher, b.PublicationYear,
-                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . ',
+                b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
            LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
@@ -2630,6 +2658,8 @@ $csrf = csrfToken();
                                         'viaf_id'             => $r['ViafId']             ?? '',
                                         'lccn'                => $r['Lccn']               ?? '',
                                         'lc_class'            => $r['LcClass']            ?? '',
+                                        /* #1332 — optional display label (free text shown in place of the abbreviation). */
+                                        'display_abbr'        => $r['DisplayAbbr']         ?? '',
                                         /* #782 phase B — parent fields. Defaults
                                            keep the modal openable on a pre-migration
                                            deployment (the LEFT JOIN above only
@@ -2667,10 +2697,10 @@ $csrf = csrfToken();
                                        JSON document, named "<Title> (<ABBR>) [Bundle].json"
                                        per the shared export-filename convention. The
                                        click handler is wired in inline JS at the bottom
-                                       of this file; it shells out to the existing
-                                       /manage/editor/api?action=load endpoint and
-                                       filters client-side, so no new server endpoint
-                                       is required for this rollout. */
+                                       of this file; it calls the DB-direct
+                                       /manage/editor/api?action=songbook_export&abbr=…
+                                       endpoint (WS-J #1020), which returns only this
+                                       songbook's songs — no client-side corpus filter. */
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary songbook-export-btn"
                                         data-songbook-abbrev="<?= htmlspecialchars($r['Abbreviation'], ENT_QUOTES, 'UTF-8') ?>"
@@ -2943,6 +2973,17 @@ $csrf = csrfToken();
                 </div>
             </div>
 
+            <!-- #1332 — optional free-text display label (shown in place of the
+                 abbreviation; the abbreviation stays the letters/numbers song-URL code). -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-4">
+                    <label class="form-label small">Display label <span class="text-muted">(optional)</span></label>
+                    <input type="text" name="display_abbr" class="form-control form-control-sm"
+                           maxlength="30" placeholder="e.g. AH-OLD">
+                    <div class="form-text small">Shown to users instead of the abbreviation; any characters allowed.</div>
+                </div>
+            </div>
+
             <!-- #502 metadata -->
             <div class="row g-2 mt-2">
                 <div class="col-sm-3 d-flex align-items-end">
@@ -3113,6 +3154,12 @@ $csrf = csrfToken();
                         <div class="mb-3">
                             <label class="form-label">Name</label>
                             <input type="text" class="form-control" name="name" id="edit-name" maxlength="255" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Display label <span class="text-muted">(optional)</span></label>
+                            <input type="text" class="form-control" name="display_abbr" id="edit-display-abbr" maxlength="30"
+                                   placeholder="e.g. AH-OLD — shown instead of the abbreviation">
+                            <div class="form-text">Free text shown to users in place of the abbreviation (any characters). The abbreviation itself stays the song-URL code (letters/numbers only). Leave blank to show the abbreviation.</div>
                         </div>
                         <div class="row g-2 mb-3">
                             <div class="col-sm-6">
@@ -3463,7 +3510,7 @@ $csrf = csrfToken();
                             <!-- Curated link-type registry (#833 seed list). Pre-loaded so
                                  the shared row-builder doesn't need an AJAX round-trip. -->
                             <script>
-                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
                             </script>
                         </div>
                         <?php endif; ?>
@@ -3673,6 +3720,10 @@ $csrf = csrfToken();
             document.getElementById('edit-id').value                = row.id;
             document.getElementById('edit-abbr-label').textContent  = row.abbreviation;
             document.getElementById('edit-name').value              = row.name;
+            /* #1332 — pre-fill the optional display label so saving the form
+               doesn't blank it. Empty string when unset. */
+            var _editDisplayAbbr = document.getElementById('edit-display-abbr');
+            if (_editDisplayAbbr) { _editDisplayAbbr.value = row.display_abbr || ''; }
             /* The colour field is now wrapped in the shared colour-picker
                partial (#715), which gives the text input the id
                edit-songbook-colour-text and adds a sibling swatch.
@@ -4693,27 +4744,26 @@ $csrf = csrfToken();
             btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>';
 
             try {
-                const res = await fetch('/manage/editor/api.php?action=load', {
-                    credentials: 'same-origin',
-                });
+                /* DB-direct per-songbook export (WS-J #1020): the server
+                   returns only this songbook's songs (+ its record), so we
+                   no longer download and filter the whole corpus. */
+                const res = await fetch(
+                    '/manage/editor/api.php?action=songbook_export&abbr=' + encodeURIComponent(abbr),
+                    { credentials: 'same-origin' },
+                );
                 if (!res.ok) throw new Error('HTTP ' + res.status);
                 const data = await res.json();
 
-                const songs = (data.songs || []).filter(
-                    (s) => (s.songbook || '').toUpperCase() === abbr.toUpperCase()
-                );
+                const songs = data.songs || [];
                 if (songs.length === 0) {
                     alert('No songs reference "' + abbr + '" — nothing to export.');
                     return;
                 }
 
-                /* Match the songbook record from the corpus so the
-                   bundle's filename uses the canonical display name
-                   (preserves accents, casing, etc.) rather than the
-                   row's `Name` column copy in the DOM. */
-                const sb = (data.songbooks || []).find(
-                    (b) => (b.id || b.abbreviation || '').toUpperCase() === abbr.toUpperCase()
-                ) || { id: abbr, name: name };
+                /* The server returns the songbook record so the bundle's
+                   filename uses the canonical display name (accents, casing)
+                   rather than the row's DOM copy. */
+                const sb = data.songbook || { id: abbr, name: name };
 
                 const filename = songbookExportFilename(sb) + '.json';
                 const blob     = new Blob(

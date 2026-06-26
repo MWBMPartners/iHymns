@@ -2,8 +2,9 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.77.0 Alpha](https://img.shields.io/badge/Version-0.77.0%20Alpha-orange.svg)](#environments)
-[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](#license)
+[![Version: 0.1254.0 Alpha](https://img.shields.io/badge/Version-0.1253.0%20Alpha-orange.svg)](#environments)
+[![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
+[![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
 [![Platform: iOS](https://img.shields.io/badge/Platform-iOS%20%7C%20iPadOS%20%7C%20tvOS-black.svg)](#platforms)
 [![Platform: Android](https://img.shields.io/badge/Platform-Android-green.svg)](#platforms)
@@ -18,46 +19,13 @@
 
 ---
 
-## Song Library
-
-The catalogue currently spans **30+ songbooks, ~12,370 songs across ~20 languages**. Counts grow as scrapers and curator-imports add new hymnals; the seed is dynamic — query `tblSongbooks` for the live count on any deployment.
-
-**Original English hymnals** — Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), Seventh-day Adventist Hymnal (SDAH), The Church Hymnal (CH).
-
-**Christ in Song family** (#663) — 20+ multilingual SDA hymnals including:
-
-| Language | Code | Songbook | Songs |
-| --- | --- | --- | --- |
-| English | en | Christ in Song (CIS) | ~700 |
-| Spanish | es | Himnario Adventista (HA) | ~600 |
-| Portuguese | pt | HASD | ~600 |
-| French | fr | Hymnes & Louanges (DLG) | ~600 |
-| Russian | ru | GASD | ~600 |
-| Twi | tw | DRG | ~500 |
-| Tonga | to | – | ~500 |
-| Tswana | tn | – | ~500 |
-| Sotho / Sesotho | st | – | ~500 |
-| Chichewa / Shona / Venda | ny / sn / ve | – | ~500 each |
-| Swahili | sw | – | ~500 |
-| Ndebele | nr | – | ~500 |
-| Xhosa | xh | – | ~500 |
-| Xitsonga / Gikuyu / Abagusii | ts / ki / luo | – | ~400 each |
-| Dholuo / Kinyarwanda | luo / rw | – | ~400 each |
-| Tumbuka / Sepedi / Bemba / Afrikaans | tum / nso / bem / af | – | ~400 each |
-
-Plus: Advent Hymns (AH), Adventist Youth Sing (AYS), New Adventist Hymnal (NAH) and a Misc collection for community contributions.
-
-Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so a Spanish translation living in an English-primary songbook surfaces correctly under language filters.
-
----
-
 ## Platforms
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.77.0) |
-| iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | In progress |
-| Android / Fire OS | Kotlin, Jetpack Compose | Planned |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.1254.0) |
+| iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | Scaffold / in progress (~14 Swift sources) |
+| Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress (~12 Kotlin sources) |
 
 ---
 
@@ -85,6 +53,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 - **Translation linking** — songs linked to equivalent translations in other languages.
 - **Song media** (#853) — curators upload audio (MP3 / M4A / OGG / WAV / FLAC / ALAC), sheet music (PDF), MIDI, and MusicXML via the Song Editor; served behind a gated `/song-media/<id>` route with HTTP Range support for audio scrubbing.
 - **Transpose** — shift song key up / down (persisted per song).
+- **Service Mode — congregation Live-Follow** (#1323 / #1335) — congregants join a live service via a venue-displayed rotating code and follow songs in sync (org venues + recurring schedules, anonymous presence tokens, two broadcaster UIs at `/manage/service-projection` and `/manage/service-lead`). Ships dormant behind `content_gating_enabled` with a CCLI-licence content gate.
 
 ### Catalogue
 
@@ -94,6 +63,10 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 - **Works** (#840) — composition grouping links the same hymn across translations, arrangements, and songbooks (mirrors MusicBrainz Work ↔ Recording).
 - **IETF BCP 47** (#681 → #738) — all language tags through the IANA registry + CLDR native-name overlay; an in-app picker composes language / script / region / variant.
 - **Parent songbooks** (#782) — express series and family relationships between songbooks ("Mission Praise" → "MP Combined" → "MP Combined Music Edition").
+- **Official / unofficial songbooks + Collections** (#1223) — official and unofficial songbooks surface together as one "Songbooks" family (presentation only); unofficial books carry the shared "Unofficial" badge. Curated cross-songbook groupings are user-labelled **Collections** (internally `tblCatalogues`); managed at `/manage/catalogues`.
+- **Songbook display label** (#1332) — an optional free-text `DisplayAbbr` gives a richer user-facing abbreviation (e.g. "Psalty") while the real `Abbreviation` stays the SongId prefix.
+- **Standard theme vocabulary** (#1152 / #1222) — the CCLI / SongSelect OpenLyrics theme taxonomy is seeded as a 2-level hierarchy; curator tags are canonicalised into standard themes from `/manage/tags`.
+- **Duplicate & counterpart detection** (#1215 / #1216) — fuzzy cross-book matching via the shared `includes/song_similarity.php` scorer; the unified review UI at `/manage/duplicate-songs` links, dismisses, and merges (the former `/manage/song-link-suggestions` is now a 302 redirect).
 
 ### Discovery
 
@@ -114,13 +87,14 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 - **Offline downloads** — individual songbooks or all at once.
 - **Bulk download API** — optimised endpoint fetches entire songbooks in a handful of requests.
+- **Rate-limited public reads** — the heaviest sessionless reads (`song_detail`, `search`, `songs_index`, `related_songs`, bulk) carry a fixed-window per-requester limit (per token where present, else per IP) that returns `429` + `Retry-After`; generous enough that real clients never trip it, fail-open and dormant until `migrate-add-read-rate-limit.php` runs (#1354).
 - **Offline audio** — opt-in pre-cache so playback works without a connection (#401).
 - **Per-songbook size readout + eviction** — Settings shows actual cached bytes per songbook with a remove-from-offline button (#401).
 - **Background downloads** — continue when navigating away from Settings.
 - **Auto-update** — optional automatic update of saved offline songs; service-worker update toast (#396).
 - **Service worker** — precaches all app assets; cache version auto-derived from `infoAppVer.php` so every alpha build invalidates cleanly.
 - **Offline indicator** — shows connection status in UI.
-- **JSON fallback** — full functionality when MySQL is unavailable.
+- **DB-direct reads, client-cache fallback** — song reads come live from MySQL (epic #1010 / WS-J; there is no server-side `songs.json` corpus cache and no JSON read fallback). When MySQL is unavailable the server returns a themed 503 (WS-K #1021); previously-downloaded songbooks remain available from the client offline cache.
 
 ### Appearance & accessibility
 
@@ -139,6 +113,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 - **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
+- **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
 - **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page.
 
 ### Community
@@ -157,19 +132,20 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. The admin nav is grouped into seven sections; ~39 distinct surfaces in total.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. The admin nav is grouped into several sections; ~48 distinct surfaces in total.
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
-| **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Song Link Suggestions |
-| **Catalogue** | Songbooks · Songbook Series · Works · External-Link Types · Credit People · Languages · Tags & Themes |
+| **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) |
+| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Credit People · Languages · Tags & Themes (`/manage/tags`) |
+| **Service Mode** | Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Service Lead (`/manage/service-lead`) |
 | **Access** | Content Restrictions · Access Tiers · Entitlements |
 | **People** | Users · User Groups · Organisations · My Organisations |
 | **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · Database Setup · Configuration · Notifications |
 | **Help** | Help / Guides |
 
-Every write on these pages is CSRF-protected. DB error messages are never leaked to clients (see server error log).
+Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
 
 ---
 
@@ -189,11 +165,13 @@ cd iHymns
 npm install
 ```
 
-### 2. Generate song data
+### 2. Generate song-import data
 
 ```bash
 npm run parse-songs    # data/songs.json from .SourceSongData/
 ```
+
+`songs.json` is a **migration input only** — it is parsed once to seed MySQL. At runtime the app reads songs **live from MySQL** (DB-direct, epic #1010); there is no server-side `songs.json` corpus cache.
 
 ### 3. Set up the database
 
@@ -201,7 +179,7 @@ npm run parse-songs    # data/songs.json from .SourceSongData/
 # Interactive installer — prompts for MySQL credentials, creates tables
 php appWeb/.sql/install.php
 
-# Import song data from songs.json into MySQL
+# Import song data from songs.json into MySQL (one-time seed)
 php appWeb/.sql/migrate-json.php
 ```
 
@@ -227,7 +205,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning ~50 tables. The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning ~131 tables. The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 
@@ -259,9 +237,11 @@ Migrations under `appWeb/.sql/migrate-*.php` add features incrementally (every o
 - Song media uploads (#853) · Song component language overrides (#858)
 - Song arrangement persistence (#892) — `tblSongs.ArrangementJson` so the Song Editor's Structure-tab arrangement (e.g. "Verse 1, Verse 2, Verse 1, …" with refrain between verses) round-trips through save → reload.
 - Bulk-import diagnostics (#906 / #907) — `tblBulkImportJobs.PerSongbookJson` carries per-songbook created/skipped/failed counts so the import summary surfaces a per-book breakdown instead of an opaque "X skipped"; `tblBulkImportJobs.PhaseLabel` lets the worker advertise its current phase ("walking-zip", "parsing-songs", "flushing-songbooks") so the progress UI never shows a silent 0%.
-- Plus: bulk-import jobs (#676), song revisions, credit-people registry, organisation licences, activity log (#535), song-link suggestions, and many more.
+- Duplicate / counterpart detection + unified review (#1215 / #1216) · standard CCLI/OpenLyrics theme vocabulary (#1152)
+- Org venues + recurring service schedules + live-follow sessions (Service Mode, #1323 / #1335) · songbook `DisplayAbbr` (#1332)
+- Plus: bulk-import jobs (#676), song revisions, credit-people registry, organisation licences, activity log (#535), and many more.
 
-Run them via `/manage/setup-database` (web-based, with pending-state probes that auto-hide already-applied migrations) or via `php appWeb/.sql/migrate-<name>.php` from CLI.
+Migrations are **not auto-applied on deploy**. On shared hosting the operator is web-only (no CLI/SSH), so run them via `/manage/setup-database` — the registry-driven dashboard with per-migration pending probes and an **"Apply all pending"** action. A `php appWeb/.sql/migrate-<name>.php` CLI route also exists where shell access is available.
 
 ### Step 3 — initial admin
 
@@ -311,8 +291,8 @@ iHymns/
 │   │   ├── manage/               Admin area + Song Editor
 │   │   └── song-media.php        Gated streaming endpoint (#853)
 │   └── .bulk_import_uploads/  Staging for bulk-import ZIPs
-├── appApple/             Native Apple app (Swift / SwiftUI)
-├── appAndroid/           Android app (Kotlin / Compose)
+├── appApple/             Native Apple app (Swift / SwiftUI) — scaffold / in progress
+├── appAndroid/           Android app (Kotlin / Compose) — scaffold / in progress
 ├── iHymns.wiki/          GitHub wiki (cloned alongside as a sibling — see below)
 ├── help/                 User documentation
 ├── Project_Plan.md       Detailed project plan
@@ -346,11 +326,13 @@ git clone https://github.com/MWBMPartners/iHymns.wiki.git
 
 ## License
 
-Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
+Copyright © 2026 MWBM Partners Ltd. All rights reserved.
 
 This software is proprietary. Unauthorized copying, modification, or distribution is strictly prohibited.
 
-Third-party components retain their respective licences (MIT, Apache 2.0, etc.).
+Third-party components retain their respective licences (MIT, Apache 2.0, BSD, etc.). See **[LICENSING.md](LICENSING.md)** for the full dependency-licence breakdown, song-content rights position, and trademark notes.
+
+Security: to report a vulnerability privately, see **[SECURITY.md](SECURITY.md)**.
 
 ---
 

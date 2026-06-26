@@ -29,7 +29,37 @@ declare(strict_types=1);
  * Auth: editor+ (read + write). Curators are the only audience.
  */
 
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+/* A require/parse FATAL before the try/catch further down surfaces as a BARE HTTP 500
+   with NO body — invisible to the admin client's `detail` renderer (this file has now
+   had two such load-time path fatals: #1180 and #1365). This shutdown hook converts any
+   uncaught fatal into a diagnostic JSON 500 so the next one is visible immediately. */
+register_shutdown_function(static function (): void {
+    $e = error_get_last();
+    if ($e === null || !in_array($e['type'], [E_ERROR, E_PARSE, E_COMPILE_ERROR, E_CORE_ERROR], true)) {
+        return;   /* normal shutdown — nothing to report */
+    }
+    $where = basename((string)($e['file'] ?? '')) . ':' . (int)($e['line'] ?? 0);
+    error_log('[places-api] FATAL ' . ($e['message'] ?? '') . ' @ ' . $where);
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=UTF-8');
+    }
+    /* Path/message only when explicitly debugging — a load fatal can fire before the
+       auth gate, so never leak server paths to an unauthenticated caller by default. */
+    echo json_encode([
+        'error'  => 'Internal error (load).',
+        'detail' => (defined('IHYMNS_DEBUG') && IHYMNS_DEBUG) ? (($e['message'] ?? '') . ' @ ' . $where) : null,
+    ]);
+});
+
+/* Admin auth + CSRF helpers (isAuthenticated / getCurrentUser / hasRole /
+   validateCsrfRequest) live in manage/includes/auth.php — i.e. THIS file's OWN
+   directory (__DIR__/includes/), NOT the public includes/ one level up. The original
+   #996 require used dirname(__DIR__)/includes/auth.php = <webroot>/includes/auth.php,
+   which DOES NOT EXIST (auth.php is manage-only), so EVERY request fatal-ed at load and
+   the place typeahead never worked (#1365). db_mysql.php / places.php below DO live in
+   the public includes/ and so correctly keep dirname(__DIR__). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 
@@ -46,8 +76,16 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
     exit;
 }
 
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* These were dirname(__DIR__, 2) . '/public_html/includes/…' — which assumes a
+   NESTED public_html and only resolved in the repo (appWeb/public_html/). On the
+   deployed server public_html IS the web root, so that path doesn't exist and the
+   require_once threw a FATAL at load — BEFORE the try/catch below — surfacing as a
+   bare HTTP 500 on every Composition-Origin lookup (#1180). db_mysql.php + places.php
+   DO live in the public includes/, so dirname(__DIR__)/includes/… resolves them on
+   BOTH layouts (the repo's nested public_html and the deployed web root). NOTE: auth.php
+   above is the exception — it is manage-only, so it uses __DIR__/includes/ (#1365). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
 
 /* =========================================================================
  * Configuration
@@ -106,6 +144,14 @@ try {
     }
 
     if ($method === 'POST' && $action === 'upsert') {
+        /* CSRF (security sweep): this write previously had NO CSRF check. Robust
+           same-origin validation (the place-search client sends X-Requested-With); a
+           header token is accepted too. Editor auth already enforced above. */
+        if (!validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'CSRF check failed — please retry.']);
+            exit;
+        }
         /* JSON body — the client posts back one of the candidates
            returned by ?action=search. We re-normalise + upsert. */
         $bodyRaw = (string)file_get_contents('php://input');
@@ -160,12 +206,19 @@ try {
     echo json_encode(['error' => 'Unknown action.']);
     exit;
 } catch (\Throwable $e) {
+    /* Always log server-side so a recurring geocoder/host failure leaves a
+       trail even when no admin is watching (#1180 debugging aid). */
+    error_log('[places-api] ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
     http_response_code(500);
+    /* Surface the detail to admins (or IHYMNS_DEBUG) so the curator sees WHY
+       the lookup failed instead of a bare 500 — the place-search dropdown
+       renders this `detail` inline. */
+    $isAdmin = isset($currentUser['role']) && hasRole($currentUser['role'], 'admin');
     echo json_encode([
-        'error' => 'Internal error.',
-        /* Detail only when the global debug flag is on — matches
-           the convention used elsewhere in /manage/ APIs. */
-        'detail' => (defined('IHYMNS_DEBUG') && IHYMNS_DEBUG) ? $e->getMessage() : null,
+        'error'  => 'Internal error.',
+        'detail' => ((defined('IHYMNS_DEBUG') && IHYMNS_DEBUG) || $isAdmin)
+            ? ($e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine())
+            : null,
     ]);
     exit;
 }

@@ -1,3 +1,5 @@
+> ⚠️ HISTORICAL PLANNING DOC (2026-04). Superseded — see .claude/ProjectBrief.md for current state. The JSON-first / static-hosting framing below predates the MySQL DB-direct architecture.
+
 # 📖 iHymns — Project Plan
 
 > **A multiplatform Christian lyrics application for worship enhancement**
@@ -534,5 +536,5 @@ A built-in song editor accessible to developers/administrators for editing the s
 
 ---
 
-*Last updated: 2026-04-05*
+*Last updated: 2026-06-21*
 *Version: 0.1.0-planning*

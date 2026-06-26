@@ -15,15 +15,16 @@
 #   beta   → appWeb/public_html/ → SFTP_BETA_PATH  (beta)
 #   alpha  → appWeb/public_html/ → SFTP_DEV_PATH   (alpha/dev)
 #
-# Shared data (songs.json, shared setlists) is deployed from
-# appWeb/data_share/ → remote data_share/ (sibling to public_html)
+# Shared data directory scaffolding (.htaccess guards) is deployed from
+# appWeb/data_share/ → remote data_share/ (sibling to public_html). The
+# songs.json corpus cache was decommissioned in WS-J #1020 (all reads are
+# live MySQL), so no song data is staged here any more.
 #
 # FLOW:
-#   1. Copy songs.json into data_share/
-#   2. Inject build metadata and channel into deploy source
-#   3. Minify JS/CSS/HTML before upload
-#   4. Upload via lftp (SSH key or password auth)
-#   5. Upload data_share/ alongside public_html
+#   1. Inject build metadata and channel into deploy source
+#   2. Minify JS/CSS/HTML before upload
+#   3. Upload via lftp (SSH key or password auth)
+#   4. Upload data_share/ scaffolding alongside public_html
 #
 # SECRETS REQUIRED:
 #   SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_KEY (or SFTP_PASSWORD)
@@ -61,6 +62,9 @@ jobs:
   # ===========================================================================
   deploy:
     runs-on: ubuntu-latest
+    # Hard cap so a stalled SFTP mirror cannot hang for the full 6h Actions
+    # ceiling (two runs hung at "Making directory .well-known" until cancelled).
+    timeout-minutes: 20
     if: vars.SFTP_ENABLED == 'true'
 
     # Shared lftp exclude flags — available to all steps via $LFTP_EXCLUDES.
@@ -100,6 +104,20 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ github.ref_name }}
+
+      # -- lftp connection timeouts (global ~/.lftprc, inherited by every lftp
+      #    call below) so a stalled SFTP op retries/fails fast instead of hanging.
+      #    Two prior runs hung 6h at "Making directory .well-known"; this plus the
+      #    job timeout-minutes prevent that recurring. --
+      - name: Configure lftp timeouts
+        run: |
+          {
+            echo "set net:timeout 20"
+            echo "set net:max-retries 3"
+            echo "set net:reconnect-interval-base 5"
+            echo "set net:reconnect-interval-multiplier 1"
+            echo "set mirror:no-empty-dirs yes"
+          } >> "$HOME/.lftprc"
 
       # -- Determine which directory to deploy based on branch --
       - name: Determine deployment target
@@ -153,28 +171,27 @@ jobs:
             if [[ -z "$CHANGED" ]]; then
               echo "has_changes=false" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
-              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
+              echo "mirror_newer_flag=" >> $GITHUB_OUTPUT
               echo "No deployable files changed in $SOURCE_DIR"
             else
               echo "has_changes=true" >> $GITHUB_OUTPUT
               echo "full_deploy=false" >> $GITHUB_OUTPUT
-              echo "mirror_newer_flag=--only-newer" >> $GITHUB_OUTPUT
+              # NEVER --only-newer: actions/checkout stamps every file with the
+              # checkout mtime, so --only-newer wrongly SKIPS a file whose remote
+              # copy carries a later (prior-deploy) mtime — that silently stranded
+              # lyric_lines_sync.php (#1235), and setup-database.php before it
+              # (#919/#920). Empty flag => lftp mirror compares size+content and
+              # uploads anything new OR changed. Slower (~2.5m) but correct.
+              echo "mirror_newer_flag=" >> $GITHUB_OUTPUT
               echo "Changed files:"
               echo "$CHANGED"
             fi
           fi
 
-      # -- Copy songs.json into the shared data directory (#154) --
-      # Songs data is stored outside the web root in data_share/song_data/
-      # and served to JS clients via the PHP API (api.php?action=songs_json).
-      # This ensures a single source of truth across all environments.
-      - name: Copy songs.json into shared data directory
-        if: steps.changes.outputs.has_changes == 'true'
-        run: |
-          mkdir -p appWeb/data_share/song_data
-          mkdir -p appWeb/data_share/setlist_json
-          cp data/songs.json appWeb/data_share/song_data/songs.json
-          echo "Copied data/songs.json into appWeb/data_share/song_data/"
+      # WS-J #1020: the songs.json corpus file cache was decommissioned — every
+      # read is live MySQL now (slim songs_index for the PWA, load_index /
+      # load_song / songbook_export for the editor + songbook bundles), so there
+      # is no songs.json to stage into data_share/song_data/ on deploy.
 
       # -- Inject .env-channel file for server-side environment detection --
       # Since all branches deploy from the same source directory, the PHP code
@@ -362,13 +379,8 @@ jobs:
       # Runs alongside the public deployment when private files changed.
       # ================================================================
 
-      # -- Copy songs.json into private_html/ for the editor --
-      - name: Copy songs.json into private_html
-        if: steps.changes.outputs.has_changes == 'true' || contains(github.event.head_commit.message, '[deploy all]')
-        run: |
-          mkdir -p appWeb/private_html/data
-          cp data/songs.json appWeb/private_html/data/songs.json
-          echo "Copied data/songs.json into appWeb/private_html/data/"
+      # WS-J #1020: the legacy private_html editor's songs.json copy is gone —
+      # the Song Editor is DB-direct (load_index / load_song / load_songs).
 
       # -- Check if private_html/ files changed --
       - name: Check private_html changes
@@ -539,6 +551,43 @@ jobs:
             appWeb/.sql/ ${SQL_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo ".sql deployed to ${SQL_PATH}"
+
+      # ================================================================
+      # POST-DEPLOY: bust PHP OPcache (#1290)
+      # On this shared FPM host, OPcache can serve STALE bytecode across a
+      # deploy even with opcache.validate_timestamps=on, so freshly-uploaded
+      # PHP doesn't run until the cache is reset (this caused the songs_json
+      # 's.SongbookName' flood + the editor CSRF mismatch). Curl the token-
+      # guarded /opcache-bust.php so new code goes live immediately.
+      # No-op (logs a notice, never fails the deploy) until OPCACHE_BUST_KEY
+      # is set AND the matching ../.auth/opcache_bust_key.php exists on the host.
+      # ================================================================
+      - name: Bust PHP OPcache (post-deploy)
+        if: steps.changes.outputs.has_changes == 'true'
+        env:
+          OPCACHE_KEY: ${{ secrets.OPCACHE_BUST_KEY }}
+          CHANNEL: ${{ steps.target.outputs.channel }}
+        run: |
+          if [[ -z "$OPCACHE_KEY" ]]; then
+            echo "::notice::OPCACHE_BUST_KEY secret not set — skipping OPcache bust. Set it (and ../.auth/opcache_bust_key.php on the host) to enable automatic post-deploy cache busting (#1290)."
+            exit 0
+          fi
+          case "$CHANNEL" in
+            alpha) BASE="https://dev.ihymns.app" ;;
+            beta)  BASE="https://beta.ihymns.app" ;;
+            live)  BASE="https://ihymns.app" ;;
+            *)     echo "::notice::Unknown channel '$CHANNEL' — skipping OPcache bust."; exit 0 ;;
+          esac
+          echo "Busting OPcache at ${BASE}/opcache-bust.php"
+          HTTP=$(curl -fsS -o /tmp/opcache_resp.json -w '%{http_code}' \
+            -H "X-OPcache-Key: ${OPCACHE_KEY}" \
+            --max-time 30 "${BASE}/opcache-bust.php" || true)
+          echo "HTTP ${HTTP}"
+          cat /tmp/opcache_resp.json 2>/dev/null || true
+          echo
+          if [[ "$HTTP" != "200" ]]; then
+            echo "::warning::OPcache bust returned HTTP ${HTTP} (deploy still succeeded; new code may lag until the cache evicts). 503=key not configured on host; 403=key mismatch."
+          fi
 
       # ================================================================
       # .auth/ DEPLOYMENT (#272)

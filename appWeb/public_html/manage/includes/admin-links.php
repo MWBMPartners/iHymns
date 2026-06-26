@@ -44,14 +44,24 @@ $_adminLinks = [
     ['requests',             '/manage/requests',               'bi-lightbulb',       'Song Requests',         'review_song_requests',        'Songs'      ],
     ['revisions',            '/manage/revisions',              'bi-clock-history',   'Revisions Audit',       'verify_songs',                'Songs'      ],
     ['missing-numbers',      '/manage/missing-numbers',        'bi-binoculars',      'Missing Numbers',       'edit_songs',                  'Songs'      ],
-    ['song-link-suggestions','/manage/song-link-suggestions',  'bi-link-45deg',      'Song Link Suggestions', 'edit_songs',                  'Songs'      ],
+    /* Duplicate Songs absorbed the old Song Link Suggestions page (#1215): one
+       unified Duplicate & Counterpart Review surface. Curator-visible
+       (edit_songs) for Link/Dismiss; the destructive Merge is gated per-action
+       in-page (manage_duplicate_songs). */
+    ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicates & Links',    'edit_songs',                  'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],
     ['songbook-series',      '/manage/songbook-series',        'bi-collection',      'Songbook Series',       'manage_songbooks',            'Catalogue'  ],
-    ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Catalogues',            'manage_songbooks',            'Catalogue'  ],
+    /* User-facing label is "Collections" (#1223); the route + table + entitlement
+       stay 'catalogue(s)' internally (owner decision — keep tblCatalogues). */
+    ['catalogues',           '/manage/catalogues',             'bi-collection-fill', 'Collections',           'manage_songbooks',            'Catalogue'  ],
     ['works',                '/manage/works',                  'bi-diagram-3',       'Works',                 'manage_works',                'Catalogue'  ],
     ['external-link-types',  '/manage/external-link-types',    'bi-link-45deg',      'External-Link Types',   'manage_external_link_types',  'Catalogue'  ],
+    /* Print templates (#1350 Phase 2) — curator-authored block-based song-print
+       layouts (tblPrintTemplates). Curator-level, same entitlement as the other
+       Catalogue metadata surfaces. */
+    ['print-templates',      '/manage/print-templates',        'bi-printer',         'Print templates',       'manage_songbooks',            'Catalogue'  ],
     ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],
     ['languages',            '/manage/languages',              'bi-translate',       'Languages',             'manage_languages',            'Catalogue'  ],
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
@@ -65,6 +75,17 @@ $_adminLinks = [
     ['users',                '/manage/users',                  'bi-people',          'Users',                 'view_users',                  'People'     ],
     ['groups',               '/manage/groups',                 'bi-people-fill',     'User Groups',           'manage_user_groups',          'People'     ],
     ['organisations',        '/manage/organisations',          'bi-building',        'Organisations',         'manage_organisations',        'People'     ],
+    /* Venues & service times (#1325) — the where/when of an org; foundation for
+       Service Mode (#1323). Same entitlement as Organisations. */
+    ['venues',               '/manage/venues',                 'bi-geo-alt',         'Venues',                'manage_organisations',        'People'     ],
+    /* Service projection (#1335) — the projector page that runs a live service +
+       shows the rotating join code. Page self-gates to org-admins; nav visible to
+       manage_organisations like Venues. */
+    ['service-projection',   '/manage/service-projection',     'bi-projector',       'Service Projection',    'manage_organisations',        'People'     ],
+    /* Lead a service (#1335) — the second broadcaster front-end: a handheld the
+       worship leader uses to drive the songs of a running service (the projection
+       laptop shows the code; this drives the songs). Same self-gate + entitlement. */
+    ['service-lead',         '/manage/service-lead',           'bi-music-note-list', 'Lead a Service',        'manage_organisations',        'People'     ],
     /* My Organisations (#707) — the entitlement is open to every signed-in
        role; admin-nav.php applies a data-driven hide via
        userHasOwnOrganisation() so non-admins only see this link when they
@@ -81,6 +102,7 @@ $_adminLinks = [
     ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
     ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
+    ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 
     ['help',                 '/manage/help',                   'bi-life-preserver',  'Help / Guides',         null,                          'Help'       ],
     ['api-docs',             '/manage/api-docs',               'bi-file-earmark-code', 'API Docs (Swagger UI)', 'view_api_docs',             'Help'       ],

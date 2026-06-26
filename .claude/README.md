@@ -7,6 +7,7 @@ Context + rules for anyone — human or Claude — working in this repo.
 | File | Purpose | Loaded automatically? |
 |---|---|---|
 | **`CLAUDE.md`** | Project memory: modularity rule + top-level guardrails. Claude Code auto-loads this at session start. | ✅ Yes |
+| **`MEMORY.md`** | Portable working memory — current state, the live workflow, and hard-won gotchas; a quick "start here" for picking the project up on another device. Maintained per `CLAUDE.md` standing-task #6. | No — read on resume |
 | **`project-rules.md`** | Long-form expansion of the rules (naming, auth, errors, a11y, perf, workflow, anti-patterns). Cite in PR reviews. | Linked from `CLAUDE.md` |
 | **`ProjectBrief.md`** | Current state snapshot: version, phase, tech stack, schema summary. | Linked from `CLAUDE.md` |
 | **`ProjectOverview.md`** | Original scoping doc from the start of the project. | Linked from `CLAUDE.md` |

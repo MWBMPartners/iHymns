@@ -16,20 +16,61 @@
 
 declare(strict_types=1);
 
+/* #1328 — hide the songbook abbreviation badge when it just repeats the name. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+
 /* Fetch the full song data */
 $song = $songData->getSongById($songId);
 
-/* Handle song not found */
+/* Handle song not found. */
 if ($song === null) {
-    http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Song not found: <strong>' . htmlspecialchars($songId) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    /* #1343 — a merged/deleted/renamed permalink should RESOLVE, not 404. Try the
+       redirect layer before giving up. A server fragment can't usefully 301 (the
+       Location would point at the /api?page=song fragment URL, not the SPA route),
+       so on a live replacement we emit a [data-song-redirect] marker the SPA
+       router reads in afterPageLoad('song') and navigates to (history-replaced). */
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_redirects.php';
+    $rd = songRedirectResolve(getDbMysqli(), (string)$songId);
+    if ($rd['redirected'] && $rd['target'] !== null && $songData->getSongById($rd['target']) !== null) {
+        $rdTarget = '/song/' . rawurlencode((string)$rd['target']);
+        echo '<div data-song-redirect="' . htmlspecialchars($rdTarget, ENT_QUOTES) . '" class="text-secondary small p-4 text-center">'
+           . '<i class="fa-solid fa-arrow-right-arrow-left me-2" aria-hidden="true"></i>This song moved — taking you to its current page…</div>';
+        return;
+    }
+
+    /* No live target — a tombstone (removed/merged with no replacement) reads as
+       "removed" (410 Gone) rather than the generic "not found" (404). */
+    $rdGone = (bool)$rd['redirected'];
+    http_response_code($rdGone ? 410 : 404);
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => $rdGone ? 'Song removed' : 'Song not found',
+            'message' => $rdGone
+                ? 'This song has been removed — it may have been a duplicate that was merged, or withdrawn. Try a search for the title.'
+                : 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
+            'fa'      => 'fa-music',
+            'actions' => [
+                ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',           'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">'
+           . ($rdGone ? 'Song removed: ' : 'Song not found: ') . '<strong>'
+           . htmlspecialchars($songId) . '</strong></div>';
+    }
     return;
 }
+
+/* #1343-B — the canonical permalink is the opaque PublicId (if backfilled). When
+   the visitor arrived via a NON-canonical id (a legacy SongId, a padding alias, or
+   a resolved redirect), emit a [data-song-canonical] marker so the SPA router
+   history-REPLACES the URL to /song/<PublicId> (soft canonicalise, same vehicle as
+   the #1343-A redirect marker). No marker when already canonical or un-backfilled. */
+$songPublicId  = (string)($song['publicId'] ?? '');
+$songCanonical = ($songPublicId !== '' && strtoupper((string)$songId) !== strtoupper($songPublicId))
+    ? ('/song/' . rawurlencode($songPublicId))
+    : '';
 
 /* Extract metadata for convenience — Number is NULL for Misc songs and
    for any custom-songbook entry that wasn't given a position (#392, #797).
@@ -97,9 +138,96 @@ $ccli        = $song['ccli']        ?? '';
 $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
+
+/* #1200 — song-language tagging. The page <html lang> stays the UI language;
+   song-language content (the TITLE here, and each lyric component below) carries
+   its OWN BCP 47 tag + dir for RTL scripts, so screen readers, browser
+   hyphenation, translators and search engines treat it correctly even when the
+   song's language differs from the UI. resolveLanguageMeta() resolves the
+   direction from tblLanguages (schema-probed + cached). Script subtags
+   (zh-Hans, sr-Cyrl, ja-Latn, …) pass straight through from the stored tag. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
+$songPrimaryLang = trim((string)($song['language'] ?? ''));
+$songLangDir     = $songPrimaryLang !== '' ? (resolveLanguageMeta($songPrimaryLang)['dir'] ?? 'ltr') : 'ltr';
 $lyricsPublicDomain = !empty($song['lyricsPublicDomain']);
 $musicPublicDomain  = !empty($song['musicPublicDomain']);
 $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
+
+/* Content gating for lyrics (forward-looking — e.g. gating copyrighted lyrics).
+   Does NOTHING unless the content_gating_enabled flag is ON, so there is zero
+   cost (no tblContentRestrictions query) on the hot song-page path by default.
+   When a restriction matches the viewer, the lyrics are replaced with the
+   themed "Lyrics protected" card (renderContentGatedFragment).
+   NOTE: ?page= renders are currently anonymous (router.loadPage doesn't send
+   the bearer token), so a signed-in ENTITLED user is treated as anonymous
+   until (a) loadPage forwards auth and (b) the song page is excluded from the
+   shared ETag cache when gated — both small follow-ups for when gating is
+   actually switched on. */
+$lyricsGated = false;
+$gateReason  = '';
+$serviceCcliNumber = null;   /* #1335 — set when a present congregant rides the org's CCLI licence; drives the per-song CCL notice. */
+if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', '0') === '1'
+    && function_exists('checkContentAccess')) {
+    try {
+        $gateViewer = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+        /* #1335 — a congregant following a live service carries an opaque presence
+           token (set as a same-origin cookie by service-follow.js on join). It
+           lets them ride the org's live CCLI licence for gated lyrics while
+           present, and is revoked the moment they leave / it expires. */
+        $presenceTok = '';
+        if (isset($_COOKIE['ihymns_sf_presence_token'])
+            && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+            $presenceTok = (string)$_COOKIE['ihymns_sf_presence_token'];
+        }
+        $gateAccess = checkContentAccess(
+            'song', (string)$songId,
+            isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null,
+            'PWA',
+            $presenceTok !== '' ? $presenceTok : null
+        );
+        if (empty($gateAccess['allowed'])) {
+            $lyricsGated = true;
+            $gateReason  = (string)($gateAccess['reason'] ?? '');
+        } elseif ($presenceTok !== '' && !$fullyPublicDomain && function_exists('serviceMode_presenceCcliNumber')) {
+            /* Allowed + a present congregant viewing a copyrighted song → the CCL
+               requires the licence-holder's copyright notice on each device. */
+            $serviceCcliNumber = serviceMode_presenceCcliNumber(
+                getDbMysqli(), $presenceTok,
+                function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
+            );
+        }
+
+        /* #1357 — TIER gate, composed with the entity model above so the web page
+           (and the offline bundle, which renders THROUGH this file) gate consistently
+           with the song_detail API (#1353). The two axes are independent:
+             • ENTITY (require_licence rows) — the per-song legal restriction, handled
+               above ($lyricsGated from checkContentAccess); a denial here is authoritative.
+             • TIER — the viewer's PLAN axis, which always governs COPYRIGHTED lyrics.
+           A valid Service-Mode presence unlock ($serviceCcliNumber) overrides the tier
+           (the rule #26 in-service exception). So a copyrighted song is additionally
+           gated when the viewer's tier can't view copyrighted AND there is no presence
+           unlock. Still entirely dormant behind content_gating_enabled; fail-open via the
+           catch below (a thrown tier lookup leaves the entity verdict untouched). */
+        if (!$lyricsGated && !$lyricsPublicDomain && $serviceCcliNumber === null) {
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+            if (function_exists('resolveEffectiveTier') && function_exists('checkTierAccess')) {
+                $tierViewerId  = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
+                $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
+                $viewerHasCcli = function_exists('contentGating_userHasCcli')
+                    ? contentGating_userHasCcli($tierViewerId)
+                    : false;
+                $tierVerdict   = checkTierAccess($viewerTier ?: 'public', 'view_copyrighted', $viewerHasCcli);
+                if (empty($tierVerdict['allowed'])) {
+                    $lyricsGated = true;
+                    $gateReason  = 'A higher access tier is required to view these lyrics.';
+                }
+            }
+        }
+    } catch (\Throwable $_e) {
+        /* Gating must never break a song render — fail open (show lyrics). */
+        error_log('[song.php] content-gate check failed: ' . $_e->getMessage());
+    }
+}
 
 /* ===================================================================
  * Translations (#281) — list of other-language versions of this song
@@ -115,62 +243,15 @@ $fullyPublicDomain  = $lyricsPublicDomain && $musicPublicDomain;
  * Wrapped in try/catch so a missing table during early setup or a
  * DB hiccup simply hides the picker rather than blanking the page.
  * =================================================================== */
+/* #1206 — the cluster query now lives in SongData::getSongTranslations() so the
+   song page picker AND the hreflang alternates (emitted in index.php's <head>)
+   share ONE definition (modularity rule). Still wrapped so a hiccup hides the
+   picker rather than blanking the page. */
 $translations = [];
 try {
-    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-    $translationsDb = getDbMysqli();
-    $sql = '
-        /* Outward — this song has translations to other languages */
-        SELECT t.TranslatedSongId  AS song_id,
-               t.TargetLanguage    AS target_language,
-               l.Name              AS language_name,
-               l.NativeName        AS native_name,
-               l.TextDirection     AS text_direction,
-               t.Translator        AS translator,
-               t.Verified          AS verified
-          FROM tblSongTranslations t
-          JOIN tblLanguages l ON l.Code = t.TargetLanguage
-         WHERE t.SourceSongId = ? AND l.IsActive = 1
-        UNION
-        /* Inward — this song IS a translation of another; surface the
-           source plus any siblings (other translations of that source). */
-        SELECT src.SongId          AS song_id,
-               srcLang.Code        AS target_language,
-               srcLang.Name        AS language_name,
-               srcLang.NativeName  AS native_name,
-               srcLang.TextDirection AS text_direction,
-               ""                  AS translator,
-               1                   AS verified
-          FROM tblSongTranslations selfT
-          JOIN tblSongs src            ON src.SongId = selfT.SourceSongId
-          JOIN tblLanguages srcLang    ON srcLang.Code = src.Language
-         WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
-        UNION
-        SELECT sibling.TranslatedSongId AS song_id,
-               sibling.TargetLanguage   AS target_language,
-               l2.Name                  AS language_name,
-               l2.NativeName            AS native_name,
-               l2.TextDirection         AS text_direction,
-               sibling.Translator       AS translator,
-               sibling.Verified         AS verified
-          FROM tblSongTranslations selfT2
-          JOIN tblSongTranslations sibling
-               ON sibling.SourceSongId = selfT2.SourceSongId
-              AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
-          JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
-         WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
-    ';
-    $stmt = $translationsDb->prepare($sql);
-    if ($stmt !== false) {
-        $sid = (string)($song['id'] ?? '');
-        $stmt->bind_param('sss', $sid, $sid, $sid);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($row = $res->fetch_assoc()) $translations[] = $row;
-        $stmt->close();
-    }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'SongData.php';
+    $translations = (new SongData())->getSongTranslations((string)($song['id'] ?? ''));
 } catch (\Throwable $_e) {
-    /* No translations infrastructure — picker stays hidden. */
     $translations = [];
 }
 
@@ -250,7 +331,7 @@ try {
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>" data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -296,7 +377,7 @@ try {
                 </span>
                 <?php endif; ?>
                 <div class="flex-grow-1">
-                    <h1 class="h4 mb-1"><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
+                    <h1 class="h4 mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
                     <?php
                         /* #832 — "Also known as …" line. Hidden when this
                            song has no alt titles (or pre-migration). Per-row
@@ -329,9 +410,18 @@ try {
                         </p>
                     <?php endif; ?>
                     <p class="text-muted mb-0">
-                        <span class="badge bg-body-secondary"><?= htmlspecialchars($songbook) ?></span>
+                        <?php $sbAbbr = ihymns_songbook_abbr_label($songbook, (is_array($bookData ?? null) ? ($bookData['displayAbbr'] ?? null) : null)); ?>
+                        <?php if (ihymns_songbook_show_abbr($bookName, $sbAbbr)): ?>
+                        <span class="badge bg-body-secondary"><?= htmlspecialchars($sbAbbr) ?></span>
+                        <?php endif; ?>
                         <?= htmlspecialchars($bookName) ?>
                     </p>
+                    <?php if ($serviceCcliNumber !== null): /* #1335 — CCL copyright notice for a present congregant riding the org licence. */ ?>
+                        <p class="small text-muted fst-italic mb-0 mt-1">
+                            <i class="bi bi-shield-check me-1" aria-hidden="true"></i>
+                            Shown under your church’s CCLI Copyright Licence<?= $serviceCcliNumber !== '' ? ' #' . htmlspecialchars($serviceCcliNumber) : '' ?> while you follow the service.
+                        </p>
+                    <?php endif; ?>
                     <?php if ($songbookParent !== null && $parentSongLinkUrl !== ''):
                         /* #782 phase D — canonical-source link. Renders only
                            when the current songbook declares a parent AND we
@@ -641,7 +731,8 @@ try {
                 <!-- Share button -->
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm song-toolbar-btn btn-share"
-                        data-song-id="<?= htmlspecialchars($song['id']) ?>"
+                        data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?>
+                        data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?>
                         data-song-title="<?= htmlspecialchars($songTitle) ?>"
                         aria-label="Share this song">
                     <i class="fa-solid fa-share-nodes me-1" aria-hidden="true"></i>
@@ -720,6 +811,29 @@ try {
                     Print
                 </button>
 
+                <!-- Export to a worship-presentation format (#1166). The dropdown
+                     items are wired by export-ui.js (initSongExport), which
+                     lazy-loads the export libs (format-export.js) on first use. -->
+                <div class="btn-group song-toolbar-btn">
+                    <button type="button"
+                            class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
+                            data-bs-toggle="dropdown" aria-expanded="false"
+                            aria-label="Export this song to a worship-presentation format">
+                        <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
+                        Export
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end song-export-menu">
+                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
+                        <li><button type="button" class="dropdown-item" data-export-format="chordPro">ChordPro</button></li>
+                    </ul>
+                </div>
+
                 <!-- Chord charts toggle (#299) -->
                 <button class="btn btn-sm btn-outline-secondary" id="btn-toggle-chords" style="display:none" title="Show/hide chord charts">
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
@@ -764,7 +878,12 @@ try {
                 ? array_map(fn($i) => $components[$i] ?? null, $arrangement)
                 : $components;
             $renderOrder = array_filter($renderOrder);
+            /* Gated: suppress the lyric components; the card is shown instead. */
+            if ($lyricsGated) { $renderOrder = []; }
         ?>
+        <?php if ($lyricsGated && function_exists('renderContentGatedFragment')): ?>
+            <?= renderContentGatedFragment($gateReason) ?>
+        <?php endif; ?>
         <?php
             /* #858 — collect the union of song-level + per-component
                languages so we can extend the JSON-LD MusicComposition
@@ -822,8 +941,9 @@ try {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'language_names.php';
                 }
             ?>
+            <?php $effDir = resolveLanguageMeta($effectiveLang)['dir'] ?? 'ltr'; ?>
             <div class="lyric-component <?= $typeClass ?>"
-                 lang="<?= htmlspecialchars($effectiveLang) ?>"
+                 lang="<?= htmlspecialchars($effectiveLang) ?>"<?php if ($effDir === 'rtl'): ?> dir="rtl"<?php endif; ?>
                  role="group" aria-label="<?= htmlspecialchars($label) ?>">
                 <!-- Component type label -->
                 <div class="lyric-label" aria-hidden="true">
@@ -939,15 +1059,106 @@ try {
         </footer>
     <?php endif; ?>
 
-    <!-- Report missing song link — points at the dedicated form page (#656)
-         rather than dumping the user at the bottom of the long /help
-         article where the request form used to live. URL is /request (#658)
-         with /request-a-song retained as a back-compat alias. -->
-    <div class="mt-3">
-        <a href="/request" data-navigate="request" class="text-muted small text-decoration-none">
-            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>
-            Report a missing song or suggest a correction
+    <?php
+    /* "Why you can use this" rights panel (#1098 P1a) — pure surfacing of the
+       INDEPENDENT lyrics-PD vs music-PD flags + copyright + CCLI. The two PD
+       axes are reported as a combined verdict for the reader, but are never
+       AND-ed for gating (#939). Helps worship leaders judge project/print/use. */
+    $rpLyricsPd = !empty($song['lyricsPublicDomain']);
+    $rpMusicPd  = !empty($song['musicPublicDomain']);
+    $rpCcli     = trim((string)($song['ccli'] ?? ''));
+    $rpIswc     = trim((string)($song['iswc'] ?? ''));
+    $rpCopyright = trim((string)($song['copyright'] ?? ''));
+    if ($rpLyricsPd && $rpMusicPd) {
+        $rpClass = 'success'; $rpIcon = 'fa-circle-check';
+        $rpTitle = 'Public domain';
+        $rpMsg   = 'Both the words and the music are in the public domain — free to project, print, and translate.';
+    } elseif ($rpLyricsPd || $rpMusicPd) {
+        $rpClass = 'warning'; $rpIcon = 'fa-circle-half-stroke';
+        $rpTitle = 'Partly public domain';
+        $rpMsg   = $rpLyricsPd
+            ? 'The lyrics are public domain, but the music / tune may still be under copyright — check before reproducing the music.'
+            : 'The tune is public domain, but the lyrics may still be under copyright — check before reproducing the words.';
+    } else {
+        $rpClass = 'secondary'; $rpIcon = 'fa-shield-halved';
+        $rpTitle = 'Under copyright';
+        $rpMsg   = $rpCcli !== ''
+            ? 'Likely covered by your church CCLI licence — remember to report this song under CCLI #' . htmlspecialchars($rpCcli) . '.'
+            : 'Check your licence (e.g. CCLI) before projecting, printing, or translating.';
+    }
+    ?>
+    <section class="song-rights mt-4 pt-3 border-top" aria-label="Usage and rights">
+        <h2 class="h6 mb-2 d-flex align-items-center gap-2">
+            <i class="fa-solid fa-scale-balanced text-muted" aria-hidden="true"></i>Can you use this?
+        </h2>
+        <div class="alert alert-<?= $rpClass ?> py-2 px-3 mb-2 small d-flex align-items-start gap-2" role="note">
+            <i class="fa-solid <?= $rpIcon ?> mt-1" aria-hidden="true"></i>
+            <span><strong><?= htmlspecialchars($rpTitle) ?>.</strong> <?= $rpMsg ?></span>
+        </div>
+        <ul class="list-inline small text-muted mb-0">
+            <li class="list-inline-item">Lyrics: <strong><?= $rpLyricsPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <li class="list-inline-item">·</li>
+            <li class="list-inline-item">Music: <strong><?= $rpMusicPd ? 'Public domain' : 'Copyright' ?></strong></li>
+            <?php if ($rpCcli !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">CCLI <a href="https://songselect.ccli.com/Search/Results?SongNumber=<?= rawurlencode($rpCcli) ?>" target="_blank" rel="noopener" class="song-meta-link">#<?= htmlspecialchars($rpCcli) ?></a></li>
+            <?php endif; ?>
+            <?php if ($rpIswc !== ''): ?>
+                <li class="list-inline-item">·</li>
+                <li class="list-inline-item">ISWC <?= htmlspecialchars($rpIswc) ?></li>
+            <?php endif; ?>
+        </ul>
+        <p class="text-muted fst-italic mb-0 mt-1" style="font-size:.75rem">Guidance only — confirm rights with your licence provider.</p>
+    </section>
+
+    <!-- Report a missing song (→ /request page #656/#658) + suggest a structured
+         correction for THIS song (#1092 — posts {songId, field, proposed} to
+         song_correction_submit; the server reads the current value itself). -->
+    <div class="mt-3 small">
+        <a href="/request" data-navigate="request" class="text-muted text-decoration-none me-3">
+            <i class="fa-solid fa-flag me-1" aria-hidden="true"></i>Report a missing song
         </a>
+        <a class="text-muted text-decoration-none" role="button" data-bs-toggle="collapse"
+           href="#song-correction-form" aria-expanded="false" aria-controls="song-correction-form">
+            <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>Suggest a correction
+        </a>
+    </div>
+    <div class="collapse mt-2" id="song-correction-form">
+        <form id="correction-form" class="card card-body" data-song-id="<?= htmlspecialchars((string)$songId) ?>" novalidate>
+            <p class="small text-muted mb-2">Spotted an error in this song? Tell us what should change &mdash; a curator will review it.</p>
+            <div class="row g-2">
+                <div class="col-sm-4">
+                    <label class="form-label small mb-1" for="correction-field">What needs correcting?</label>
+                    <select class="form-select form-select-sm" id="correction-field" required>
+                        <option value="title">Title</option>
+                        <option value="lyrics">Lyrics</option>
+                        <option value="author">Author / writer</option>
+                        <option value="composer">Composer</option>
+                        <option value="copyright">Copyright</option>
+                        <option value="tune">Tune name</option>
+                        <option value="ccli">CCLI number</option>
+                        <option value="iswc">ISWC</option>
+                        <option value="language">Language</option>
+                        <option value="other">Something else</option>
+                    </select>
+                </div>
+                <div class="col-sm-8">
+                    <label class="form-label small mb-1" for="correction-email">Your email <span class="text-muted">(optional, for follow-up)</span></label>
+                    <input type="email" class="form-control form-control-sm" id="correction-email" autocomplete="email" maxlength="255">
+                </div>
+            </div>
+            <div class="mt-2">
+                <label class="form-label small mb-1" for="correction-proposed">What should it say?</label>
+                <textarea class="form-control form-control-sm" id="correction-proposed" rows="3" required maxlength="5000"></textarea>
+            </div>
+            <!-- honeypot: real users leave this blank -->
+            <input type="text" id="correction-website" name="website" tabindex="-1" autocomplete="off"
+                   class="position-absolute" style="left:-9999px" aria-hidden="true">
+            <div class="mt-2 d-flex align-items-center gap-2">
+                <button type="submit" class="btn btn-sm btn-primary">Submit correction</button>
+                <span id="correction-feedback" class="small" role="status" aria-live="polite"></span>
+            </div>
+        </form>
     </div>
 
     <!-- Song translations (#352) — populated client-side from API -->
@@ -1225,6 +1436,18 @@ try {
     </nav>
 
 </article>
+
+<!-- Export-to-format wiring (#1166). The SPA re-runs injected inline scripts,
+     so this binds the Export dropdown after the fragment loads. -->
+<script>
+(function () {
+    if (!document.querySelector('.btn-export-song')) { return; }
+    var songId = <?= json_encode($song['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
+    import('/js/modules/export-ui.js')
+        .then(function (m) { m.initSongExport(songId); })
+        .catch(function () { /* export is best-effort; never block the page */ });
+})();
+</script>
 
 <!-- Presentation mode JS (#297) -->
 <script>

@@ -32,6 +32,15 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* Partial-date parser/formatter (the ONE place that turns a curator's
+   YYYY / MM/YYYY / DD/MM/YYYY input into a normalised (date, precision)
+   pair and back). The credit-person save + load paths below delegate to
+   it so the form, the API and the public page all agree on what a
+   year-only birth date means. require_once is idempotent — both
+   /manage/credit-people.php and /api.php pull this helper file, and
+   either may already have included partial_date.php. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
+
 /**
  * Legacy slug → tblExternalLinkTypes.Slug map for credit-people.
  *
@@ -370,6 +379,110 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
         $cached = false;
     }
     return $cached;
+}
+
+/* =========================================================================
+ * PARTIAL BIRTH / DEATH DATES (precision flags)
+ *
+ * Historical writers often have only a known YEAR (or month + year) of
+ * birth / death. The `BirthDate` / `DeathDate` columns stay `DATE` (so they
+ * still sort + range-query), the partial is normalised to the FIRST of the
+ * period, and a precision flag ('year' | 'month' | 'day' — VARCHAR, NULL
+ * when no date) records how much of it is real. See
+ * migrate-add-creditpeople-date-precision.php + includes/partial_date.php.
+ *
+ * Every helper below is EXISTENCE-GATED on the precision columns: migrations
+ * are web-run (NOT auto-applied), so a partly-migrated install must not be
+ * able to read / write a column that doesn't exist — mysqli runs STRICT
+ * (MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT) so an "Unknown column" would
+ * THROW and white-screen the page. On an un-migrated install these helpers
+ * no-op cleanly: the date still saves to the DATE column, the precision is
+ * simply not recorded and the input round-trips as a full date.
+ * ========================================================================= */
+
+/**
+ * Cached probe for the BirthDatePrecision / DeathDatePrecision columns
+ * (migrate-add-creditpeople-date-precision.php). Both ship together, so
+ * detecting BirthDatePrecision is sufficient to assume DeathDatePrecision.
+ * Mirrors creditPeoplePlaceIdColumnsExist() in includes/places.php — the
+ * add / update / API save paths gate the precision write on this so a
+ * partly-migrated install saves the date without throwing "Unknown column".
+ * Static-cached for the request lifetime so the INFORMATION_SCHEMA round-trip
+ * happens at most once.
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-columns-table.html
+ */
+function creditPeopleDatePrecisionColumnsExist(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'BirthDatePrecision' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Persist the birth / death date precision flags for a credit-person row,
+ * in a SEPARATE statement from the main INSERT / UPDATE (mirroring the
+ * per-place BirthPlaceId / DeathPlaceId UPDATE pattern). The multi-branch
+ * INSERT shapes in credit-people.php / api.php don't have to learn about
+ * the precision columns — this runs straight after, gated on existence.
+ *
+ * Both values bind as 's' (string); a NULL precision (no date) binds fine
+ * via mysqli's NULL handling and lands as SQL NULL, matching the column's
+ * "NULL when no date" semantics. No-op on an un-migrated install.
+ *
+ * @param int          $personId  tblCreditPeople.Id (insert_id on create).
+ * @param string|null  $birthPrec 'year' | 'month' | 'day' | null
+ * @param string|null  $deathPrec 'year' | 'month' | 'day' | null
+ */
+function creditPeopleSaveDatePrecision(
+    \mysqli $db,
+    int     $personId,
+    ?string $birthPrec,
+    ?string $deathPrec
+): void {
+    if ($personId <= 0) return;
+    if (!creditPeopleDatePrecisionColumnsExist($db)) return;
+    $stmt = $db->prepare(
+        'UPDATE tblCreditPeople
+            SET BirthDatePrecision = ?, DeathDatePrecision = ?
+          WHERE Id = ?'
+    );
+    $stmt->bind_param('ssi', $birthPrec, $deathPrec, $personId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * Format a stored (date, precision) pair back into the editor-input form
+ * (YYYY / MM/YYYY / DD/MM/YYYY) so a partial date round-trips through the
+ * drawer's text field. When the precision column exists we use the stored
+ * precision; on an un-migrated install there is no precision to read, so we
+ * treat the row as a full date ('day') — a legacy full date renders as
+ * DD/MM/YYYY, which is correct, and a (rare) year-only legacy date would
+ * render as e.g. "01/01/1823", which is the honest representation of what
+ * is actually stored before the migration runs.
+ *
+ * @return string Empty string when $date is NULL / unparseable.
+ */
+function creditPeopleDateInput(\mysqli $db, ?string $date, ?string $precision): string
+{
+    if (creditPeopleDatePrecisionColumnsExist($db)) {
+        return partialDateFormatInput($date, $precision);
+    }
+    return partialDateFormatInput($date, 'day');
 }
 
 /**

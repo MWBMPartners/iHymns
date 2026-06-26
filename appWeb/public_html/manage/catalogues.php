@@ -88,8 +88,9 @@ if ($hasSchema
            members), so the simple shape avoids ref-bind awkwardness
            with mysqli's variadic bind_param. */
         $sql = "SELECT s.SongId AS id, s.Title AS title, s.Number AS number,
-                       s.SongbookAbbr AS songbook, s.SongbookName AS songbookName
+                       s.SongbookAbbr AS songbook, sb.Name AS songbookName
                   FROM tblSongs s
+                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
                  ORDER BY s.Title ASC
                  LIMIT ?";
@@ -137,6 +138,11 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $slug = $slugRaw !== '' ? $slugFor($slugRaw) : $slugFor($title);
                 if ($slug === '')                                        { $error = 'Slug could not be derived — provide one explicitly.'; break; }
                 if (mb_strlen($slug) > 255)                              { $error = 'Slug must be 255 characters or fewer.'; break; }
+                /* #1181 — optional badge colour (blank = theme default; validated hex). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
 
                 $stmt = $db->prepare('SELECT Id FROM tblCatalogues WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
@@ -146,11 +152,11 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($exists) { $error = "A catalogue with slug '{$slug}' already exists."; break; }
 
                 $stmt = $db->prepare(
-                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility)
-                     VALUES (?, ?, ?, ?, ?)'
+                    'INSERT INTO tblCatalogues (Slug, Title, Description, SortOrder, Visibility, Colour)
+                     VALUES (?, ?, ?, ?, ?, ?)'
                 );
-                $stmt->bind_param('sssis',
-                    $slug, $title, $description, $sortOrder, $visibility);
+                $stmt->bind_param('sssiss',
+                    $slug, $title, $description, $sortOrder, $visibility, $colour);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
@@ -158,7 +164,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 logActivity('admin.catalogues.add', 'catalogue', (string)$newId, [
                     'slug' => $slug, 'title' => $title, 'visibility' => $visibility,
                 ]);
-                $success = "Catalogue '{$title}' created.";
+                $success = "Collection '{$title}' created.";
                 break;
             }
 
@@ -168,37 +174,43 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $description = trim((string)($_POST['description'] ?? '')) ?: null;
                 $visibility  = trim((string)($_POST['visibility']  ?? 'public'));
                 $sortOrder   = (int)($_POST['sort_order'] ?? 0);
-                if ($id <= 0)                                            { $error = 'Catalogue id missing.'; break; }
+                if ($id <= 0)                                            { $error = 'Collection id missing.'; break; }
                 if ($title === '')                                       { $error = 'Title is required.'; break; }
                 if (!in_array($visibility, ['public','curated','admin_only'], true)) {
                     $error = 'Invalid visibility.'; break;
                 }
 
+                /* #1181 — optional badge colour (blank = theme default; validated hex). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
+
                 $stmt = $db->prepare(
                     'UPDATE tblCatalogues
-                        SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?
+                        SET Title = ?, Description = ?, SortOrder = ?, Visibility = ?, Colour = ?
                       WHERE Id = ?'
                 );
-                $stmt->bind_param('ssisi', $title, $description, $sortOrder, $visibility, $id);
+                $stmt->bind_param('ssissi', $title, $description, $sortOrder, $visibility, $colour, $id);
                 $stmt->execute();
                 $stmt->close();
 
                 logActivity('admin.catalogues.update', 'catalogue', (string)$id, [
                     'title' => $title, 'visibility' => $visibility,
                 ]);
-                $success = "Catalogue updated.";
+                $success = "Collection updated.";
                 break;
             }
 
             case 'delete': {
                 $id = (int)($_POST['id'] ?? 0);
-                if ($id <= 0) { $error = 'Catalogue id missing.'; break; }
+                if ($id <= 0) { $error = 'Collection id missing.'; break; }
                 $stmt = $db->prepare('SELECT Title FROM tblCatalogues WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
-                if (!$row) { $error = 'Catalogue not found.'; break; }
+                if (!$row) { $error = 'Collection not found.'; break; }
                 $stmt = $db->prepare('DELETE FROM tblCatalogues WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -207,7 +219,7 @@ if ($hasSchema && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 logActivity('admin.catalogues.delete', 'catalogue', (string)$id, [
                     'title' => $row['Title'],
                 ]);
-                $success = "Catalogue '{$row['Title']}' deleted.";
+                $success = "Collection '{$row['Title']}' deleted.";
                 break;
             }
 
@@ -273,7 +285,7 @@ if ($hasSchema) {
     try {
         $stmt = $db->prepare(
             'SELECT c.Id, c.Slug, c.Title, c.Description, c.SortOrder, c.Visibility,
-                    c.CreatedAt, c.UpdatedAt,
+                    c.Colour, c.CreatedAt, c.UpdatedAt,
                     (SELECT COUNT(*) FROM tblCatalogueSongs cs WHERE cs.CatalogueId = c.Id) AS SongCount
                FROM tblCatalogues c
               ORDER BY c.SortOrder ASC, c.Title ASC'
@@ -294,9 +306,10 @@ if ($hasSchema && !empty($catalogues)) {
         $stmt = $db->prepare(
             'SELECT cs.CatalogueId, cs.SongId, cs.SortOrder,
                     s.Title AS SongTitle, s.Number AS SongNumber,
-                    s.SongbookAbbr, s.SongbookName
+                    s.SongbookAbbr, sb.Name AS SongbookName
                FROM tblCatalogueSongs cs
                JOIN tblSongs s ON s.SongId = cs.SongId
+               LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
               ORDER BY cs.CatalogueId ASC, cs.SortOrder ASC, s.Title ASC'
         );
         $stmt->execute();
@@ -314,7 +327,7 @@ if ($hasSchema && !empty($catalogues)) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Catalogues — iHymns Admin</title>
+    <title>Collections — iHymns Admin</title>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>
@@ -324,10 +337,10 @@ if ($hasSchema && !empty($catalogues)) {
 <main class="container py-3">
 
     <h1 class="h4 mb-3">
-        <i class="bi bi-collection me-1" aria-hidden="true"></i>Catalogues
+        <i class="bi bi-collection me-1" aria-hidden="true"></i>Collections
     </h1>
     <p class="small text-muted mb-3">
-        A <strong>Catalogue</strong> is a free-form many-to-many grouping of songs that sits alongside
+        A <strong>Collection</strong> is a free-form many-to-many grouping of songs that sits alongside
         the Songbook hierarchy. Use it for thematic collections (Christmas, Easter), worship-leader
         curations (Modern, Traditional), denominational groupings, Public-Domain-only views — anything
         where one song should appear in many groupings without duplicating data.
@@ -344,13 +357,13 @@ if ($hasSchema && !empty($catalogues)) {
         <div class="alert alert-warning small">
             <i class="bi bi-database-gear me-1" aria-hidden="true"></i>
             The <code>tblCatalogues</code> table hasn't been created yet. Run the
-            <a href="/manage/setup-database">Catalogues migration</a> to enable this page.
+            <a href="/manage/setup-database">Collections migration</a> to enable this page.
         </div>
     <?php else: ?>
 
         <!-- Add catalogue form -->
         <div class="card-admin p-3 mb-3">
-            <h2 class="h6 mb-2"><i class="bi bi-plus-circle me-1" aria-hidden="true"></i>Add a catalogue</h2>
+            <h2 class="h6 mb-2"><i class="bi bi-plus-circle me-1" aria-hidden="true"></i>Add a collection</h2>
             <form method="POST" class="row g-2 align-items-end small">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                 <input type="hidden" name="action" value="add">
@@ -370,7 +383,7 @@ if ($hasSchema && !empty($catalogues)) {
                 </div>
                 <div class="col-md-1">
                     <label class="form-label small mb-0">Sort</label>
-                    <input type="number" name="sort_order" class="form-control form-control-sm" value="0">
+                    <input type="number" name="sort_order" class="form-control form-control-sm" min="0" value="0">
                 </div>
                 <div class="col-md-2">
                     <label class="form-label small mb-0">Visibility</label>
@@ -379,6 +392,18 @@ if ($hasSchema && !empty($catalogues)) {
                         <option value="curated">Curated only</option>
                         <option value="admin_only">Admin only</option>
                     </select>
+                </div>
+                <div class="col-md-3">
+                    <!-- #1181 — optional catalogue badge colour; swatch writes its
+                         hex into the text field (the submitted value). Blank = default. -->
+                    <label class="form-label small mb-0">Colour <small class="text-muted">(optional)</small></label>
+                    <div class="input-group input-group-sm">
+                        <input type="color" class="form-control form-control-color" value="#888888"
+                               title="Pick a colour" aria-label="Collection colour swatch"
+                               oninput="this.nextElementSibling.value = this.value.toUpperCase()">
+                        <input type="text" name="colour" class="form-control" maxlength="7"
+                               pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB — blank = default">
+                    </div>
                 </div>
                 <div class="col-12">
                     <button type="submit" class="btn btn-sm btn-info">
@@ -390,7 +415,7 @@ if ($hasSchema && !empty($catalogues)) {
 
         <!-- Existing catalogues -->
         <?php if (empty($catalogues)): ?>
-            <div class="text-muted small">No catalogues yet — use the form above to create the first one.</div>
+            <div class="text-muted small">No collections yet — use the form above to create the first one.</div>
         <?php else: ?>
             <div class="card-admin p-0 mb-3">
                 <div class="table-responsive">
@@ -426,7 +451,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         <i class="bi bi-music-note-list"></i>
                                     </button>
                                     <form method="POST" class="d-inline"
-                                          onsubmit="return confirm('Delete catalogue \'<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>\'? This unlinks every member song; the songs themselves are NOT deleted.');">
+                                          onsubmit="return confirm('Delete collection \'<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>\'? This unlinks every member song; the songs themselves are NOT deleted.');">
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="id"     value="<?= (int)$c['Id'] ?>">
@@ -456,7 +481,7 @@ if ($hasSchema && !empty($catalogues)) {
                                         <div class="col-md-1">
                                             <label class="form-label small mb-0">Sort</label>
                                             <input type="number" name="sort_order" class="form-control form-control-sm"
-                                                   value="<?= (int)$c['SortOrder'] ?>">
+                                                   min="0" value="<?= (int)$c['SortOrder'] ?>">
                                         </div>
                                         <div class="col-md-2">
                                             <label class="form-label small mb-0">Visibility</label>
@@ -465,6 +490,19 @@ if ($hasSchema && !empty($catalogues)) {
                                                     <option value="<?= $v ?>" <?= $c['Visibility'] === $v ? 'selected' : '' ?>><?= $v ?></option>
                                                 <?php endforeach; ?>
                                             </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <!-- #1181 — catalogue badge colour (blank = default). -->
+                                            <label class="form-label small mb-0">Colour</label>
+                                            <div class="input-group input-group-sm">
+                                                <input type="color" class="form-control form-control-color"
+                                                       value="<?= htmlspecialchars(($c['Colour'] ?? '') !== '' ? (string)$c['Colour'] : '#888888') ?>"
+                                                       title="Pick a colour" aria-label="Collection colour swatch"
+                                                       oninput="this.nextElementSibling.value = this.value.toUpperCase()">
+                                                <input type="text" name="colour" class="form-control"
+                                                       value="<?= htmlspecialchars((string)($c['Colour'] ?? '')) ?>"
+                                                       maxlength="7" pattern="#?[0-9A-Fa-f]{6}" placeholder="#RRGGBB">
+                                            </div>
                                         </div>
                                         <div class="col-md-3 text-end">
                                             <button type="submit" class="btn btn-sm btn-info">
@@ -480,7 +518,7 @@ if ($hasSchema && !empty($catalogues)) {
                                 <td colspan="6" class="bg-body-secondary">
                                     <h3 class="h6 mb-2"><i class="bi bi-music-note-list me-1"></i>Members of "<?= htmlspecialchars($c['Title']) ?>"</h3>
                                     <?php if (empty($members)): ?>
-                                        <p class="text-muted small mb-2">No songs in this catalogue yet — use the form below to add some.</p>
+                                        <p class="text-muted small mb-2">No songs in this collection yet — use the form below to add some.</p>
                                     <?php else: ?>
                                         <ul class="list-group list-group-flush small mb-2">
                                             <?php foreach ($members as $m): ?>
@@ -493,7 +531,7 @@ if ($hasSchema && !empty($catalogues)) {
                                                         <small class="text-muted ms-2">#<?= (int)$m['SongNumber'] ?></small>
                                                     </span>
                                                     <form method="POST" class="d-inline"
-                                                          onsubmit="return confirm('Remove this song from the catalogue?');">
+                                                          onsubmit="return confirm('Remove this song from the collection?');">
                                                         <input type="hidden" name="csrf_token"   value="<?= htmlspecialchars($csrf) ?>">
                                                         <input type="hidden" name="action"       value="remove_member">
                                                         <input type="hidden" name="catalogue_id" value="<?= (int)$c['Id'] ?>">

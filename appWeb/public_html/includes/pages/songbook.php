@@ -15,19 +15,30 @@
 
 declare(strict_types=1);
 
+/* #1328 — hide the abbreviation badge when it just repeats the title. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
+
 /* Fetch songbook and its songs */
 $book = $songData->getSongbook($bookId);
 $songs = $songData->getSongs($bookId);
 
-/* Handle invalid songbook ID */
+/* Handle invalid songbook ID — themed error card (unified renderer). */
 if ($book === null) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'Songbook not found: <strong>' . htmlspecialchars($bookId) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'Songbook not found',
+            'message' => 'We couldn\'t find a songbook matching "' . $bookId . '". It may have been renamed or removed.',
+            'fa'      => 'fa-book-open',
+            'actions' => [
+                ['label' => 'All Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',        'href' => '/search',     'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">Songbook not found: <strong>'
+           . htmlspecialchars($bookId) . '</strong></div>';
+    }
     return;
 }
 
@@ -60,7 +71,19 @@ if ($book === null) {
             <h1 class="h4 mb-1">
                 <i class="fa-solid fa-book me-2" aria-hidden="true"></i>
                 <?= htmlspecialchars($book['name']) ?>
-                <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($book['id']) ?></span>
+                <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
+                <span class="badge bg-body-secondary ms-1"><?= htmlspecialchars($sbAbbr) ?></span>
+                <?php endif; ?>
+                <?php if (empty($book['isOfficial'])): ?>
+                    <!-- #1223 — "Unofficial" badge on the songbook header so the
+                         distinction persists after click-through from the list / home.
+                         NOT aria-hidden here: the <h1> is read normally (no
+                         stretched-link folding), so "Unofficial" is part of the
+                         accessible heading. -->
+                    <span class="badge songbook-unofficial-badge ms-1"
+                          title="Unofficial songbook">Unofficial</span>
+                <?php endif; ?>
             </h1>
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
             <?php
@@ -129,8 +152,40 @@ if ($book === null) {
                 <i class="fa-solid fa-shuffle me-1" aria-hidden="true"></i>
                 Shuffle
             </button>
+            <!-- Export this whole songbook to a worship-presentation format
+                 (#1166). Wired by export-ui.js (initSongbookExport), which
+                 lazy-loads the export libs on first use. -->
+            <div class="btn-group">
+                <button type="button"
+                        class="btn btn-outline-secondary btn-sm dropdown-toggle btn-export-songbook"
+                        data-bs-toggle="dropdown" aria-expanded="false"
+                        aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format">
+                    <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
+                    Export
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end songbook-export-menu">
+                    <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
+                    <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
+                </ul>
+            </div>
         </div>
     </div>
+
+    <!-- Export wiring (#1166) — the SPA re-runs injected inline scripts. -->
+    <script>
+    (function () {
+        if (!document.querySelector('.btn-export-songbook')) { return; }
+        var abbr = <?= json_encode($book['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
+        import('/js/modules/export-ui.js')
+            .then(function (m) { m.initSongbookExport(abbr); })
+            .catch(function () { /* best-effort */ });
+    })();
+    </script>
 
     <?php
         /* #833 — "Find this songbook elsewhere" panel. Reads from the

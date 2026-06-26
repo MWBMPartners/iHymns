@@ -952,6 +952,60 @@ function validateCsrf(string $token): bool
     return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
+/**
+ * Robust CSRF check for same-origin AJAX writes — fixes the SPORADIC "CSRF error"
+ * on long-lived editor pages (merge / delete / save).
+ *
+ * WHY: validateCsrf() above compares a token BAKED INTO THE PAGE at render against
+ * $_SESSION['csrf_token']. On a long-lived single-page editor, that session token can
+ * rotate / be GC'd / change across a multi-tab session while the page stays open — so
+ * a perfectly legitimate POST then carries a STALE token and is rejected. That is the
+ * intermittent failure the owner saw. (The v2 editor api2.php already sidesteps it.)
+ *
+ * This check does NOT depend on the baked token. It accepts the request when EITHER:
+ *   (a) a valid session token was supplied (back-compat — existing callers still work), OR
+ *   (b) it is a genuine same-origin AJAX request: the custom header X-Requested-With is
+ *       present (a browser cannot set it on a CROSS-origin request without a CORS
+ *       preflight this server never grants), AND — if an Origin or Referer header is
+ *       present — its host matches this site (an explicit cross-origin host is rejected;
+ *       an ABSENT Origin/Referer is allowed, since the custom header already proves
+ *       same-origin and some privacy setups strip Referer).
+ *
+ * Either signal alone is an OWASP-recognised CSRF mitigation; together they are robust
+ * and — crucially — never go stale. State-changing AJAX endpoints should call this
+ * instead of validateCsrf() directly. Pass the submitted token (or null) for (a).
+ *
+ * Docs: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+ *
+ * @param string|null $token Submitted CSRF token (header/field), or null if none.
+ * @return bool True if the request is a legitimate same-origin write.
+ */
+function validateCsrfRequest(?string $token = null): bool
+{
+    /* (a) A valid session token still passes — zero behaviour change for callers
+       whose baked token happens to be current. */
+    if ($token !== null && $token !== '' && validateCsrf($token)) {
+        return true;
+    }
+
+    /* (b) Same-origin AJAX. The custom header is the strong signal — required. */
+    if (empty($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+        return false;
+    }
+
+    /* If Origin / Referer is present it MUST match this host; absent is allowed. */
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
+        if (!empty($_SERVER[$hdr])) {
+            $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
+            if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /* =========================================================================
  * USER PROFILE MANAGEMENT
  * ========================================================================= */
@@ -1263,8 +1317,11 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
         return null; /* Rate limited */
     }
 
-    /* Check if user already exists with this email */
-    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1');
+    /* Check if user already exists with this email.
+       #1093 BUG-4 — Email has no UNIQUE (passwordless rows share ''), so a stable
+       tiebreak is required: ORDER BY Id ASC LIMIT 1 makes the same email always
+       resolve to the OLDEST account rather than a non-deterministic first match. */
+    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1 ORDER BY Id ASC LIMIT 1');
     $stmt->bind_param('s', $email);
     $stmt->execute();
     $existingUser = $stmt->get_result()->fetch_assoc();
@@ -1414,6 +1471,34 @@ function completeEmailLogin(string $email, ?int $userId): array
 {
     $db = getDbMysqli();
 
+    /* #1011 — atomic find-or-create + token issue. Old bug: the new-user
+       row was INSERTed (and committed under autocommit), then a failed
+       follow-up read threw an uncaught 500 — leaving the user in the DB
+       while the client saw an error. The whole flow now runs in ONE
+       transaction: it either fully commits or fully rolls back, and a
+       missing post-upsert row raises a clear exception instead of
+       indexing a null record. (InnoDB; on a MyISAM build begin/commit are
+       no-ops but the explicit null-guard still prevents the crash.) */
+    $db->begin_transaction();
+    try {
+        $result = _completeEmailLoginTxn($db, $email, $userId);
+        $db->commit();
+        return $result;
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        throw $e;
+    }
+}
+
+/**
+ * Inner body of completeEmailLogin(), executed inside the transaction
+ * opened by the wrapper above. Returns { token, user } on success or
+ * throws (which the wrapper rolls back). (#1011)
+ *
+ * @return array{token: string, user: array}
+ */
+function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
+{
     if ($userId === null) {
         /* Create a new user from the email address */
         $username = strstr($email, '@', true); /* Part before @ */
@@ -1480,6 +1565,16 @@ function completeEmailLogin(string $email, ?int $userId): array
     $stmt->execute();
     $user = $stmt->get_result()->fetch_assoc();
     $stmt->close();
+
+    /* #1011 — never index a null row. If the just-upserted user can't be
+       read back, something is wrong; throw so the wrapper rolls the whole
+       flow back (no orphaned account) and the caller returns a clean
+       error instead of a 500 mid-response. */
+    if (!is_array($user)) {
+        throw new \RuntimeException(
+            'completeEmailLogin: user row not found after upsert (id ' . (int)$userId . ')'
+        );
+    }
 
     /* Generate API bearer token (30-day expiry) */
     $token = bin2hex(random_bytes(32));

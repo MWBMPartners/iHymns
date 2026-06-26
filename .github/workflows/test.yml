@@ -216,6 +216,87 @@ jobs:
           php tests/php/test-schema-coverage.php
 
       # -----------------------------------------------------------------------
+      # Step 5d: Id-preserving lyric-line diff (#1235 P2b)
+      # Asserts the pure matching logic in includes/lyric_lines_sync.php keeps a
+      # line's Id (and its FK'd timing / translations / annotations) across an
+      # edit. A regression here silently orphans per-line enrichment on the next
+      # save, which is invisible until enrichment data exists — so guard it now.
+      # -----------------------------------------------------------------------
+      - name: Lyric-line diff (Id preservation)
+        run: |
+          echo "Running lyric-line Id-preserving diff test..."
+          php tests/php/test-lyric-lines-diff.php
+
+      # -----------------------------------------------------------------------
+      # Step 5e: Per-line enrichment validators (#1235 P3 / #1088)
+      # Guards the shared translation/annotation write layer's pure validators
+      # (vocab allow-lists, code-point offset bounds, BCP47) the editor + native
+      # API both rely on.
+      # -----------------------------------------------------------------------
+      - name: Line enrichment validators
+        run: |
+          echo "Running per-line enrichment validator test..."
+          php tests/php/test-line-enrichment.php
+
+      # -----------------------------------------------------------------------
+      # Step 5f: Line-first assembler (#1235 P4 / C1)
+      # Pins the pure component-assembly core that rebuilds a song from the
+      # authoritative tblLyricLines. Its output must match SongData::_getComponents()
+      # byte-for-byte — the read switch (P4b) is a clean delegation only if it does.
+      # -----------------------------------------------------------------------
+      - name: Line-first assembler (P4 C1)
+        run: |
+          echo "Running line-first assembler test..."
+          php tests/php/test-lyric-lines-read.php
+
+      # -----------------------------------------------------------------------
+      # tblSongComponents JSON-payload column guard (#1235 P4 / C5). Fails when a
+      # raw LinesJson / NotesJson / LanguagesJson reference on tblSongComponents
+      # appears outside a column-existence-gated or `lines-json-fallback`-marked
+      # site — those columns are retired in P4d/C6 and a surviving raw reference
+      # throws under MYSQLI_REPORT_STRICT.
+      # -----------------------------------------------------------------------
+      - name: Component JSON-payload column guard (P4 C5)
+        run: |
+          echo "Running tblSongComponents JSON-column guard..."
+          php tests/php/test-component-json-guard.php
+
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: |
+          echo "Running auto-link hard-id planner test..."
+          php tests/php/test-auto-link-hard-id.php
+
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: |
+          echo "Running ChordPro importer test..."
+          php tests/php/test-chordpro-parser.php
+
+      - name: Per-action content-gating matcher (#1120)
+        run: |
+          echo "Running content-access action-matcher test..."
+          php tests/php/test-content-access-action.php
+
+      - name: OpenLyrics importer enrichment (#1130)
+        run: |
+          echo "Running OpenLyrics importer enrichment test..."
+          php tests/php/test-openlyrics-parser.php
+
+      - name: Deploy-path smell guard (#1196)
+        run: |
+          echo "Running deploy-path (dirname/public_html) guard..."
+          php tests/php/test-deploy-paths.php
+
+      - name: Song permalink redirect resolver (#1343)
+        run: |
+          echo "Running song-redirect follow test..."
+          php tests/php/test-song-redirects.php
+
+      - name: Song PublicId helper (#1343-B)
+        run: |
+          echo "Running song-public-id helper test..."
+          php tests/php/test-song-public-id.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -279,3 +360,106 @@ jobs:
           else
             echo "::warning::HTMLHint not available. Skipping HTML lint."
           fi
+
+  # ===========================================================================
+  # PHP forward-compat matrix (#1200) — actually runs the PHP lint + the PHP
+  # test suite on the SUPPORTED interpreter versions: 8.4 (backward-compat
+  # floor) and 8.5 (project target, per ProjectBrief). Catches syntax that only
+  # breaks on a newer PHP, on every push/PR (this workflow's existing triggers).
+  #
+  # Deliberately a SEPARATE job from `lint` (not a matrix ON `lint`): the `lint`
+  # job's name "Lint & Validate" is a REQUIRED status check on alpha branch
+  # protection. Adding a matrix would rename it to "Lint & Validate (8.4)" /
+  # "(8.5)", orphaning the required check and soft-locking auto-merge (see
+  # .claude/CLAUDE.md CI lesson #1). This job is additive + non-blocking until
+  # someone adds "PHP 8.4" / "PHP 8.5" to alpha's required checks in repo Settings.
+  # ===========================================================================
+  php-compat:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['8.4', '8.5']
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP ${{ matrix.php }}
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+
+      # Same embedded-PHP-tag guard as the lint job — re-run per interpreter so
+      # a tag that only fatals on a newer PHP is still caught (#536 incident).
+      - name: Detect embedded PHP open tags in HTML comments / backticks
+        run: |
+          echo "Scanning .php files for literal '<?' inside backticks or HTML comments..."
+          MATCHES=$(grep -rnP '`[^`]*<\?|<!--[^>]*<\?' appWeb --include='*.php' || true)
+          if [ -n "$MATCHES" ]; then
+            echo "::error::Found literal PHP open tags inside HTML comments or backticks (see .claude/project-rules.md §9)."
+            echo "$MATCHES"
+            exit 1
+          fi
+          echo "OK: no embedded PHP tags inside HTML comments or backticks."
+
+      - name: Lint PHP (php -l) on PHP ${{ matrix.php }}
+        run: |
+          echo "Running php -l on all appWeb PHP under $(php -r 'echo PHP_VERSION;')..."
+          ERRORS=0
+          PHP_FILES=$(find appWeb/ -name '*.php' -type f 2>/dev/null || true)
+          if [ -z "$PHP_FILES" ]; then echo "No PHP files found."; exit 0; fi
+          while IFS= read -r file; do
+            if ! php -l "$file" 2>&1 | grep -q "No syntax errors"; then
+              echo "::error file=$file::PHP syntax error in $file"
+              php -l "$file"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done <<< "$PHP_FILES"
+          if [ "$ERRORS" -gt 0 ]; then
+            echo "::error::$ERRORS PHP file(s) failed php -l on this interpreter."
+            exit 1
+          fi
+          echo "All PHP files parse cleanly on $(php -r 'echo PHP_VERSION;')."
+
+      - name: Migration registry sanity
+        run: php tests/php/test-migration-registry.php
+
+      - name: Schema-coverage drift guard
+        run: php tests/php/test-schema-coverage.php
+
+      - name: Lyric-line diff (Id preservation)
+        run: php tests/php/test-lyric-lines-diff.php
+
+      - name: Line enrichment validators
+        run: php tests/php/test-line-enrichment.php
+
+      - name: Line-first assembler (P4 C1)
+        run: php tests/php/test-lyric-lines-read.php
+
+      - name: Component JSON-payload column guard (P4 C5)
+        run: php tests/php/test-component-json-guard.php
+
+      - name: Hard-key counterpart auto-promoter planner (#1125)
+        run: php tests/php/test-auto-link-hard-id.php
+
+      - name: ChordPro importer (incl. #1126 chord retention)
+        run: php tests/php/test-chordpro-parser.php
+
+      - name: Per-action content-gating matcher (#1120)
+        run: php tests/php/test-content-access-action.php
+
+      - name: OpenLyrics importer enrichment (#1130)
+        run: php tests/php/test-openlyrics-parser.php
+
+      - name: Deploy-path smell guard (#1196)
+        run: php tests/php/test-deploy-paths.php
+
+      - name: Song permalink redirect resolver (#1343)
+        run: php tests/php/test-song-redirects.php
+
+      - name: Song PublicId helper (#1343-B)
+        run: php tests/php/test-song-public-id.php

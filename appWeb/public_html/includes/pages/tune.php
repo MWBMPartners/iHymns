@@ -62,8 +62,9 @@ if ($tuneSlug !== '') {
 
         if ($canonicalTune !== '') {
             $stmt = $tdb->prepare(
-                "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, s.SongbookName, s.Language
+                "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
                    FROM tblSongs s
+                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                   WHERE s.TuneName = ?
                   ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
             );

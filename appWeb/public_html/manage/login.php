@@ -10,6 +10,20 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 
+/**
+ * Constrain a post-login redirect target to a SAME-SITE path. Rejects
+ * protocol-relative ("//evil.com"), backslash ("/\evil.com") and absolute
+ * ("https://evil.com") targets so a poisoned redirect_after_login can never
+ * become an open-redirect phishing vector (security audit, CWE-601 — defence
+ * in depth; the value is server-set today but this makes it safe regardless).
+ */
+function _manageSafeRedirect(mixed $target): string
+{
+    return (is_string($target) && preg_match('#^/[^/\\\\]#', $target) === 1)
+        ? $target
+        : '/manage/';
+}
+
 /* Redirect to setup if no users exist */
 if (needsSetup()) {
     header('Location: /manage/setup');
@@ -27,6 +41,7 @@ if (needsSetup()) {
 if (isAuthenticated()) {
     $redirect = $_SESSION['redirect_after_login'] ?? '/manage/';
     unset($_SESSION['redirect_after_login']);
+    $redirect = _manageSafeRedirect($redirect);
     header('Location: ' . $redirect);
     exit;
 }
@@ -57,6 +72,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                above the matching block at the top of this file. */
             $redirect = $_SESSION['redirect_after_login'] ?? '/manage/';
             unset($_SESSION['redirect_after_login']);
+            $redirect = _manageSafeRedirect($redirect);
             header('Location: ' . $redirect);
             exit;
         }

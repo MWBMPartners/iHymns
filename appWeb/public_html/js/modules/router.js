@@ -117,7 +117,7 @@ export class Router {
      *
      * @param {string} path URL path to navigate to (e.g., '/song/CP-0001')
      */
-    async navigate(path) {
+    async navigate(path, opts = {}) {
         /* Normalise path */
         path = path || '/';
         if (path !== '/' && path.endsWith('/')) {
@@ -133,10 +133,16 @@ export class Router {
             this._scrollByPath.set(this.currentPath, window.scrollY || 0);
         }
 
-        /* Push new state to browser history with an incremented
-           counter so popstate can detect direction. (#752) */
+        /* Push (or REPLACE, for a permalink redirect — #1343 — so the dead
+           /song/<old> URL doesn't linger in history and cause a back-button loop)
+           new state with an incremented counter so popstate can detect direction. */
         this._navCounter += 1;
-        window.history.pushState({ path, counter: this._navCounter }, '', path);
+        const _state = { path, counter: this._navCounter };
+        if (opts.replace) {
+            window.history.replaceState(_state, '', path);
+        } else {
+            window.history.pushState(_state, '', path);
+        }
         document.body.dataset.navDirection = 'forward';
 
         /* Load the page content */
@@ -204,6 +210,12 @@ export class Router {
 
         /* Run post-load hooks (e.g., initialise favourites on song pages) */
         this.afterPageLoad(page, params);
+
+        /* a11y (WCAG 2.4.3): move focus to the main region after a client-side
+           navigation so keyboard + screen-reader users land on the new content
+           rather than the stale nav link they activated. preventScroll so this
+           doesn't fight the scroll-restore below; #main-content has tabindex="-1". */
+        document.getElementById('main-content')?.focus({ preventScroll: true });
 
         /* Scroll handling. On popstate-back / forward to a previously-
            seen path, restore the saved scroll position with a smooth
@@ -560,12 +572,33 @@ export class Router {
 
         /* Initialise favourites state on song pages */
         if (page === 'song') {
+            /* #1343 — a merged/deleted/renamed permalink renders a redirect marker
+               instead of the song; navigate to the canonical song (history-replaced
+               so the dead URL leaves no back-button trap) and skip the song inits. */
+            const _redirect = document.querySelector('[data-song-redirect]');
+            if (_redirect) {
+                const _to = _redirect.getAttribute('data-song-redirect');
+                if (_to) { this.navigate(_to, { replace: true }); return; }
+            }
+            /* #1343-B — the CORRECT song rendered, but via a non-canonical id (a
+               legacy SongId / alias). Soft-canonicalise the URL bar to its PublicId
+               WITHOUT reloading (content is already right); mirrors the zero-pad
+               canonicalise at handleCurrentRoute. */
+            const _canonical = document.querySelector('[data-song-canonical]');
+            if (_canonical) {
+                const _cto = _canonical.getAttribute('data-song-canonical');
+                if (_cto && _cto !== window.location.pathname) {
+                    window.history.replaceState({ path: _cto }, '', _cto);
+                    this.currentPath = _cto;
+                }
+            }
             this.app.favorites.initSongPage();
             this.app.share.initSongPage();
             this.app.setList.initSongPage();
             this.app.setList.renderSongNavigation();
             this.app.display.initSongPage();
             this.app.compare.initSongPage();
+            if (this.app.liveFollow) { this.app.liveFollow.initSongPage(); }  // #1268 Live Follow controls + host broadcast
             this.app.transpose.initSongPage();
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
@@ -589,6 +622,16 @@ export class Router {
                 const role = this.app.userAuth?.getUser()?.role;
                 if (userHasEntitlement('edit_songs', role)) {
                     editBtn.classList.remove('d-none');
+                }
+            }
+
+            /* Edit button on the person page (#1348) — same affordance, gated on
+               manage_credit_people (admin / global_admin); the admin page re-checks. */
+            const editPersonBtn = document.getElementById('btn-edit-person');
+            if (editPersonBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('manage_credit_people', role)) {
+                    editPersonBtn.classList.remove('d-none');
                 }
             }
 
@@ -808,8 +851,9 @@ export class Router {
                 /* Show success toast */
                 this.app.showToast('Signed in successfully!', 'success', 3000);
 
-                /* Trigger setlist sync in background */
-                this.app.userAuth?.triggerSetlistSync();
+                /* Trigger a full user-data backfill in the background
+                   (setlists + favourites + tags + history) (WS-F/G). */
+                this.app.userAuth?.triggerUserDataSync();
             } else {
                 /* Token invalid or expired */
                 const message = data.error || 'Login link expired. Please request a new one.';
@@ -875,8 +919,14 @@ export class Router {
             const b = rgb[2] / 255;
             const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
 
-            /* Light backgrounds (L > 0.4) get dark text; dark backgrounds get white */
-            badge.style.color = L > 0.4 ? '#1a1a1a' : '#ffffff';
+            /* Pick black or white text by ACTUAL WCAG contrast ratio against this
+               background — whichever is higher — so ANY songbook/collection colour
+               stays readable in every theme. The old flat luminance threshold
+               (L > 0.4) mis-picked WHITE on mid-tone colours: e.g. the CH red
+               (#ef4444) gave white ~3.5:1, where black is ~5.6:1. (#152) */
+            const contrastBlack = (L + 0.05) / 0.05;
+            const contrastWhite = 1.05 / (L + 0.05);
+            badge.style.color = contrastBlack >= contrastWhite ? '#1a1a1a' : '#ffffff';
         });
     }
 
@@ -1045,8 +1095,10 @@ export class Router {
 
     /**
      * Find and render related songs for the current song page (#118).
-     * Uses songs.json data to match by shared writers, composers, and songbook.
-     * Runs asynchronously to avoid blocking page load.
+     * Uses the LIVE ?action=related_songs endpoint (shared writer / composer
+     * / tag / same-songbook, scored server-side), so it works DB-direct with
+     * no client corpus (WS-I #1017 — was a whole-corpus TF-IDF scan). Runs
+     * asynchronously; silently skips when offline or on error.
      *
      * @param {string} currentSongId The current song's ID
      */
@@ -1056,219 +1108,38 @@ export class Router {
         if (!container || !itemsEl) return;
 
         try {
-            const songs = await this.app.settings.getSongsData();
-            const currentSong = songs.find(s => s.id === currentSongId);
-            if (!currentSong) return;
+            const url = new URL(this.app.config.apiUrl, window.location.origin);
+            url.searchParams.set('action', 'related_songs');
+            url.searchParams.set('id', currentSongId);
+            url.searchParams.set('limit', '5');
+            const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!response.ok) return; /* offline / error — non-critical, skip */
+            const data = await response.json();
+            const related = (data.related || []).slice(0, 5);
+            if (related.length === 0) return;
 
-            /* --- Metadata signals --- */
-            const currentWriters = new Set((currentSong.writers || []).map(w => w.toLowerCase()));
-            const currentComposers = new Set((currentSong.composers || []).map(c => c.toLowerCase()));
-            const currentSongbook = currentSong.songbook || '';
-
-            /* --- Content similarity: extract significant terms from lyrics --- */
-            const currentTerms = this._extractTerms(currentSong);
-            const currentTermSet = new Set(currentTerms);
-
-            /* Build IDF (inverse document frequency) for the corpus on first run.
-             * Cached on the class instance so subsequent calls are instant. */
-            if (!this._idfCache) {
-                this._idfCache = this._buildIdf(songs);
-            }
-            const idf = this._idfCache;
-
-            /* TF vector for the current song */
-            const currentTf = this._termFrequency(currentTerms);
-
-            /* Score each song for relatedness */
-            const scored = [];
-            for (const song of songs) {
-                if (song.id === currentSongId) continue;
-
-                /* --- Metadata score (max ~10 typically) --- */
-                let metaScore = 0;
-                for (const w of (song.writers || [])) {
-                    if (currentWriters.has(w.toLowerCase())) metaScore += 3;
-                }
-                for (const c of (song.composers || [])) {
-                    if (currentComposers.has(c.toLowerCase())) metaScore += 2;
-                }
-                if (song.songbook === currentSongbook) metaScore += 1;
-
-                /* --- Content score: TF-IDF cosine similarity (0–1) --- */
-                const candidateTerms = this._extractTerms(song);
-                /* Quick check: skip cosine calc if no term overlap */
-                let hasOverlap = false;
-                for (const t of candidateTerms) {
-                    if (currentTermSet.has(t)) { hasOverlap = true; break; }
-                }
-
-                let contentScore = 0;
-                if (hasOverlap) {
-                    const candidateTf = this._termFrequency(candidateTerms);
-                    contentScore = this._cosineSimilarity(currentTf, candidateTf, idf);
-                }
-
-                /* --- Combined score ---
-                 * Content similarity is scaled to 0–15 so it carries more weight
-                 * than metadata (writer +3, composer +2, songbook +1).
-                 * A song with very similar lyrics but different writers will
-                 * rank higher than one with the same writer but unrelated lyrics. */
-                const combinedScore = metaScore + (contentScore * 15);
-
-                if (combinedScore > 0.5) {
-                    scored.push({ song, score: combinedScore });
-                }
-            }
-
-            if (scored.length === 0) return;
-
-            /* Sort by score descending, take top 5 */
-            scored.sort((a, b) => b.score - a.score);
-            const related = scored.slice(0, 5);
-
-            /* Render related songs */
-            itemsEl.innerHTML = related.map(({ song }) => `
+            itemsEl.innerHTML = related.map(song => `
                 <a href="/song/${escapeHtml(song.id)}"
                    class="list-group-item list-group-item-action song-list-item"
                    data-navigate="song"
                    data-song-id="${escapeHtml(song.id)}"
                    role="listitem">
-                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook)}">${song.number ?? ''}</span>
+                    <span class="song-number-badge" data-songbook="${escapeHtml(song.songbook || '')}">${song.number ?? ''}</span>
                     <div class="song-info flex-grow-1">
-                        <span class="song-title">${escapeHtml(toTitleCase(song.title))}${verifiedBadge(song)}</span>
-                        <small class="text-muted d-block">${songbookLabel(song.songbook, song.songbookName)}</small>
+                        <span class="song-title">${escapeHtml(toTitleCase(song.title || ''))}</span>
+                        ${song.reason ? `<small class="text-muted d-block">${escapeHtml(song.reason)}</small>` : ''}
                     </div>
                     <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
                 </a>
             `).join('');
 
             container.classList.remove('d-none');
-
-            /* Fix badge contrast for newly rendered badges */
             this.fixBadgeContrast();
 
         } catch (err) {
-            /* Non-critical — silently skip if songs data unavailable */
+            /* Non-critical — silently skip if related-songs is unavailable */
             console.warn('[Router] Failed to load related songs:', err.message);
         }
-    }
-
-    /* -----------------------------------------------------------------------
-     * Content-based similarity helpers (#118 enhancement)
-     * Uses TF-IDF cosine similarity on lyric text to find thematically
-     * related songs regardless of writer/composer overlap.
-     * ----------------------------------------------------------------------- */
-
-    /** Common English stop words + hymn-specific filler to exclude */
-    static STOP_WORDS = new Set([
-        'a','an','the','and','or','but','in','on','at','to','for','of','with',
-        'is','am','are','was','were','be','been','being','have','has','had',
-        'do','does','did','will','would','shall','should','may','might','can',
-        'could','i','me','my','we','us','our','you','your','he','him','his',
-        'she','her','it','its','they','them','their','this','that','these',
-        'those','not','no','nor','so','if','then','than','too','very','just',
-        'all','each','every','both','few','more','most','some','any','such',
-        'from','by','as','up','out','off','over','into','through','about',
-        'again','once','here','there','when','where','how','what','which',
-        'who','whom','why','oh','o','la','da','na','yeah','amen',
-    ]);
-
-    /**
-     * Extract significant terms from a song's lyrics + title.
-     * Lowercased, stop-words removed, short words filtered.
-     *
-     * @param {object} song Song object with components and title
-     * @returns {string[]} Array of significant terms
-     */
-    _extractTerms(song) {
-        let text = (song.title || '') + ' ';
-        for (const c of (song.components || [])) {
-            for (const line of (c.lines || [])) {
-                text += line + ' ';
-            }
-        }
-        return text
-            .toLowerCase()
-            .replace(/[^a-z\s'-]/g, ' ')
-            .split(/\s+/)
-            .filter(w => w.length > 2 && !Router.STOP_WORDS.has(w));
-    }
-
-    /**
-     * Build term frequency map from an array of terms.
-     *
-     * @param {string[]} terms
-     * @returns {Map<string, number>}
-     */
-    _termFrequency(terms) {
-        const tf = new Map();
-        for (const t of terms) {
-            tf.set(t, (tf.get(t) || 0) + 1);
-        }
-        return tf;
-    }
-
-    /**
-     * Build inverse document frequency map across the entire corpus.
-     * IDF = log(N / df) where df = number of documents containing the term.
-     *
-     * @param {object[]} songs All songs
-     * @returns {Map<string, number>}
-     */
-    _buildIdf(songs) {
-        const N = songs.length;
-        const df = new Map();
-
-        for (const song of songs) {
-            const seen = new Set();
-            const terms = this._extractTerms(song);
-            for (const t of terms) {
-                if (!seen.has(t)) {
-                    df.set(t, (df.get(t) || 0) + 1);
-                    seen.add(t);
-                }
-            }
-        }
-
-        const idf = new Map();
-        for (const [term, count] of df) {
-            idf.set(term, Math.log(N / count));
-        }
-        return idf;
-    }
-
-    /**
-     * Compute cosine similarity between two TF vectors using IDF weighting.
-     *
-     * @param {Map<string, number>} tfA TF map for song A
-     * @param {Map<string, number>} tfB TF map for song B
-     * @param {Map<string, number>} idf IDF map
-     * @returns {number} Similarity score 0–1
-     */
-    _cosineSimilarity(tfA, tfB, idf) {
-        let dot = 0, magA = 0, magB = 0;
-
-        /* Only iterate over terms in A — terms not in B contribute 0 to dot product */
-        for (const [term, freqA] of tfA) {
-            const w = idf.get(term) || 0;
-            const wA = freqA * w;
-            magA += wA * wA;
-
-            const freqB = tfB.get(term);
-            if (freqB) {
-                dot += wA * (freqB * w);
-            }
-        }
-
-        /* Magnitude of B */
-        for (const [term, freqB] of tfB) {
-            const w = idf.get(term) || 0;
-            const wB = freqB * w;
-            magB += wB * wB;
-        }
-
-        const denom = Math.sqrt(magA) * Math.sqrt(magB);
-        return denom > 0 ? dot / denom : 0;
     }
 
     /**
@@ -1315,6 +1186,10 @@ export class Router {
         if (recent.length < 2) return;
 
         const songbooks = this.config.songbooks || [];
+        /* Drop any recently-viewed songbooks that no longer exist (deleted) so a
+           badge never renders a 404-on-click link (e.g. a removed HAOLD). */
+        recent = recent.filter(id => songbooks.some(b => b.id === id));
+        if (recent.length === 0) return;
 
         const badges = recent.map(id => {
             const sb = songbooks.find(b => b.id === id);
@@ -1337,7 +1212,7 @@ export class Router {
             <div class="d-flex align-items-center gap-2 mb-1">
                 <small class="text-muted fw-semibold">
                     <i class="fa-solid fa-clock-rotate-left me-1" aria-hidden="true"></i>
-                    Recent
+                    Recently viewed songbooks
                 </small>
             </div>
             <div class="d-flex flex-wrap gap-2">${badges}</div>

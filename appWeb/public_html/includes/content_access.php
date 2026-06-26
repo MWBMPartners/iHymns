@@ -34,29 +34,89 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';
 
 /**
+ * Does a restriction whose AppliesToAction = $ruleAction govern the requested
+ * $action? (#1120) CCLI (and most licences) separate DISPLAY from REPRODUCTION,
+ * so a rule can target one action without gating the others:
+ *   - 'all' (and the legacy empty/NULL) governs every action;
+ *   - 'reproduce' is the umbrella for the non-display reproduction actions
+ *     (print / export / translate);
+ *   - otherwise an exact action match.
+ * Pure (no DB) so it is unit-testable.
+ */
+function contentAccessActionApplies(string $ruleAction, string $action): bool
+{
+    $ruleAction = ($ruleAction === '') ? 'all' : strtolower($ruleAction);
+    $action     = strtolower($action) ?: 'display';
+    if ($ruleAction === 'all') { return true; }
+    if ($ruleAction === $action) { return true; }
+    if ($ruleAction === 'reproduce') {
+        return in_array($action, ['print', 'export', 'translate'], true);
+    }
+    return false;
+}
+
+/**
  * Check if a user has access to a specific entity (song, songbook, or feature).
  *
- * @param string   $entityType  'song', 'songbook', or 'feature'
- * @param string   $entityId    Song ID, songbook abbreviation, or feature name
- * @param int|null $userId      Authenticated user ID (null for anonymous)
- * @param string   $platform    'PWA', 'Apple', or 'Android'
+ * @param string   $entityType    'song', 'songbook', or 'feature'
+ * @param string   $entityId      Song ID, songbook abbreviation, or feature name
+ * @param int|null $userId        Authenticated user ID (null for anonymous)
+ * @param string   $platform      'PWA', 'Apple', or 'Android'
+ * @param ?string  $presenceToken Service-Mode presence token (#1335), or null
+ * @param string   $action        'display' (default) | 'print' | 'export' | 'translate' —
+ *                                 the requested ACTION; restrictions are filtered to those
+ *                                 whose AppliesToAction governs it (#1120). Back-compat:
+ *                                 omit for the original display-time check.
  * @return array{allowed: bool, reason: string}
  */
-function checkContentAccess(string $entityType, string $entityId, ?int $userId, string $platform = 'PWA'): array
+function checkContentAccess(string $entityType, string $entityId, ?int $userId, string $platform = 'PWA', ?string $presenceToken = null, string $action = 'display'): array
 {
     $db = getDbMysqli();
 
-    /* Fetch all restrictions for this entity */
+    /* Is the per-action axis migrated on THIS env? (#1120 / #1141). Probed ONCE
+       per request (static) — a missing column must not throw under STRICT (the
+       #1228 lesson); when absent, every rule is treated as AppliesToAction='all'
+       so behaviour is byte-identical to the pre-#1120 display-only gate. */
+    static $hasActionCol = null;
+    if ($hasActionCol === null) {
+        try {
+            $cstmt = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblContentRestrictions'
+                    AND COLUMN_NAME = 'AppliesToAction' LIMIT 1"
+            );
+            $cstmt->execute();
+            $hasActionCol = $cstmt->get_result()->fetch_row() !== null;
+            $cstmt->close();
+        } catch (\Throwable $e) { $hasActionCol = false; }
+    }
+
+    /* Fetch all restrictions for this entity (+ AppliesToAction when present). */
+    $cols = 'RestrictionType, TargetType, TargetId, Effect, Priority, Reason'
+          . ($hasActionCol ? ', AppliesToAction' : '');
     $stmt = $db->prepare(
-        'SELECT RestrictionType, TargetType, TargetId, Effect, Priority, Reason
+        "SELECT {$cols}
          FROM tblContentRestrictions
-         WHERE EntityType = ? AND (EntityId = ? OR EntityId = \'*\')
-         ORDER BY Priority DESC, Effect ASC'
+         WHERE EntityType = ? AND (EntityId = ? OR EntityId = '*')
+         ORDER BY Priority DESC, Effect ASC"
     );
     $stmt->bind_param('ss', $entityType, $entityId);
     $stmt->execute();
     $rules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
+
+    /* Drop rules that don't govern the requested action (only when the axis
+       exists — otherwise all rules apply, as before). */
+    if ($hasActionCol && $action !== 'display') {
+        $rules = array_values(array_filter($rules, static fn($r) =>
+            contentAccessActionApplies((string)($r['AppliesToAction'] ?? 'all'), $action)));
+    } elseif ($hasActionCol) {
+        /* action === 'display': keep rules governing display or all (exclude
+           reproduction-only rules so a print/export-only restriction never gates
+           on-screen viewing). */
+        $rules = array_values(array_filter($rules, static fn($r) =>
+            contentAccessActionApplies((string)($r['AppliesToAction'] ?? 'all'), 'display')));
+    }
 
     if (empty($rules)) {
         return ['allowed' => true, 'reason' => ''];
@@ -81,6 +141,22 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
            to + every ancestor org (#462). Replaces the old single-level
            query that only looked at direct memberships. */
         $userLicenceTypes = getUserEffectiveLicenceTypes($userId);
+    }
+
+    /* Service-Mode presence unlock (#1335): a congregant physically present in a
+       live service (a valid, unexpired presence token on an active session whose
+       org holds a LIVE CCLI licence) rides that org's licence for the duration —
+       so a `require_licence: ccli` rule passes. Works for ANONYMOUS congregants
+       (no userId). Revoked the instant they leave / it expires / the licence
+       lapses (serviceMode_presenceCcliNumber re-checks every call). The owner has
+       accepted the licensing basis (#1324); the per-song CCL notice is rendered
+       by song.php when this grant applies. */
+    if ($presenceToken !== null && $presenceToken !== '') {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
+        if (function_exists('serviceMode_presenceCcliNumber')
+            && serviceMode_presenceCcliNumber($db, $presenceToken, serviceMode_channel()) !== null) {
+            $userLicenceTypes[] = 'ccli';
+        }
     }
 
     /* Evaluate rules in priority order */
@@ -187,13 +263,14 @@ function checkContentAccess(string $entityType, string $entityId, ?int $userId, 
  * @param string[] $entityIds   Array of entity IDs to check
  * @param int|null $userId      Authenticated user ID
  * @param string   $platform    Platform identifier
+ * @param string   $action      Requested action (default 'display'); see checkContentAccess (#1120)
  * @return array<string, bool>  Map of entityId => allowed
  */
-function checkBulkAccess(string $entityType, array $entityIds, ?int $userId, string $platform = 'PWA'): array
+function checkBulkAccess(string $entityType, array $entityIds, ?int $userId, string $platform = 'PWA', string $action = 'display'): array
 {
     $result = [];
     foreach ($entityIds as $id) {
-        $check = checkContentAccess($entityType, $id, $userId, $platform);
+        $check = checkContentAccess($entityType, $id, $userId, $platform, null, $action);
         $result[$id] = $check['allowed'];
     }
     return $result;

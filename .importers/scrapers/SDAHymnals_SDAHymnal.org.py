@@ -1056,8 +1056,18 @@ def fetch_hymn(number, base_url, home_url):
                     # All 3 attempts failed — skip this hymn
                     print(f"  server error (500) after 3 attempts.")
                     return "SKIP"
+            elif e.code in (401, 403):
+                # #1306 — a hard auth/forbidden wall (bot / WAF / datacenter-IP
+                # block), NOT a missing hymn. Return a DISTINCT sentinel so the
+                # caller aborts the whole run with an actionable diagnostic
+                # instead of the MAX_CONSEC net silently mis-reading it as
+                # "end of hymnal" (which is what hid this for a month: HASD/IA
+                # 403 every hymn from #1, the run stopped after 10, and
+                # skipped.log only said "fetch failed or no title found").
+                print(f"  HTTP {e.code} (blocked).")
+                return "FORBIDDEN"
             else:
-                # Other HTTP errors (404, 403, etc.) — don't retry, just skip
+                # Other HTTP errors (404, etc.) — don't retry, just skip
                 print(f"  HTTP {e.code}.")
                 return "SKIP"
 
@@ -1664,6 +1674,25 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False, prefer_sou
             # the hymnal. This is the normal termination condition.
             print()
             break
+
+        if hymn == "FORBIDDEN":
+            # #1306 — the site refused us at the HTTP layer (403/401). This is a
+            # WAF / bot / datacenter-IP block, NOT a code or parser fault: the
+            # SAME request (browser UA, www host) from a RESIDENTIAL IP returns
+            # 200, but a cloud/datacenter IP is blocked. Abort the run loudly and
+            # immediately with an actionable message rather than burning the
+            # whole range and leaving a generic skipped.log (the #1306 failure
+            # mode — silent for a month behind "assuming end of hymnal").
+            msg = (f"BLOCKED at hymn {number}: HTTP 403/401 from {home_url}. "
+                   f"This is a WAF / datacenter-IP block, not a scraper bug — the "
+                   f"same request from a residential IP + browser UA returns 200. "
+                   f"FIX: run this scraper from a residential IP (locally / a "
+                   f"residential proxy), or disable the scheduled cloud routine. "
+                   f"See iHymns issue #1306.")
+            print(f"\n✗  {msg}")
+            log_skip(number, label, msg, book_dir)
+            skipped += 1
+            break   # stop the run — every subsequent hymn would 403 too
 
         if hymn == "SKIP":
             # This hymn couldn't be scraped — log it and continue

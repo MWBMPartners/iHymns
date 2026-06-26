@@ -18,6 +18,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1315 — ihymns_environment() for the per-env log default
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -28,6 +29,99 @@ if (!$currentUser || !in_array(($currentUser['role'] ?? ''), ['admin', 'global_a
 
 $activePage = 'activity-log';
 $db = getDbMysqli();
+
+/* #1207 — do the observability columns (Environment / RequestPath / Referrer /
+   Country) exist yet? Probed once; gates the env filter, the path search, the
+   SELECT tail, and the display so a pre-migration deploy still renders. */
+$hasObsCols = false;
+try {
+    $obsProbe = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblActivityLog'
+            AND COLUMN_NAME  = 'Environment' LIMIT 1"
+    );
+    $obsProbe->execute();
+    $hasObsCols = (bool)$obsProbe->get_result()->fetch_row();
+    $obsProbe->close();
+} catch (\Throwable $_e) { /* pre-migration deploy → stays false */ }
+/* SELECT tail for the observability columns — empty on a pre-migration deploy
+   so the query still compiles. Reused by the CSV export + the main SELECT. */
+$obsColsSql = $hasObsCols ? ', a.Environment, a.RequestPath, a.Referrer, a.Country' : '';
+
+/* Proxy/VPN columns (migrate-activity-log-proxy-vpn.php) — probed ONCE here so
+   the CSV export, the paginated SELECT, AND the #1302 infinite-scroll fragment
+   endpoint can all share the same flag + SELECT tail rather than re-probing
+   INFORMATION_SCHEMA three times. Pre-migration deploys skip the columns so the
+   SELECT still compiles. */
+$hasProxyCols = false;
+try {
+    $probe = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE()
+            AND TABLE_NAME   = 'tblActivityLog'
+            AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
+    );
+    $probe->execute();
+    $hasProxyCols = (bool)$probe->get_result()->fetch_row();
+    $probe->close();
+} catch (\Throwable $_e) { /* pre-migration deploy → stays false */ }
+$proxyColsSql = $hasProxyCols
+    ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
+    : '';
+
+/* #1208 — render an ISO-3166-1 alpha-2 country code as its flag emoji (two
+   Unicode regional-indicator letters). No image assets; empty for blank/invalid
+   codes. The geo resolver (#1208) populates tblActivityLog.Country. */
+function _activityFlagEmoji(string $cc): string
+{
+    $cc = strtoupper(trim($cc));
+    if (strlen($cc) !== 2 || !ctype_alpha($cc)) {
+        return '';
+    }
+    $base = 0x1F1E6; // 🇦 regional indicator A
+    return mb_chr($base + (ord($cc[0]) - 65), 'UTF-8') . mb_chr($base + (ord($cc[1]) - 65), 'UTF-8');
+}
+
+/* #1208 — async geo backfill endpoint. The viewer POSTs the IPs of rows that
+   have no country yet; we resolve them (cache → MaxMind → API chain), snapshot
+   the country onto matching tblActivityLog rows + the IP cache, and return
+   { ip: "GB" } so the page injects flags without a reload. CSRF-guarded (it
+   UPDATEs rows) + capped per call to respect free-API rate limits. Admin gate is
+   already enforced at the top of the page. */
+if ($hasObsCols && ($_GET['action'] ?? '') === 'geo') {
+    header('Content-Type: application/json');
+    $token = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf'] ?? '');
+    /* Robust same-origin check — the client sends X-Requested-With, so a stale
+       baked token on a long-open Activity Log no longer 403s the AJAX calls. */
+    if (!validateCsrfRequest($token)) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'csrf']);
+        exit;
+    }
+    $ipsRaw = (string)($_POST['ips'] ?? '');
+    $ips = array_values(array_unique(array_filter(array_map('trim', explode(',', $ipsRaw)))));
+    $ips = array_slice($ips, 0, 25);   // cap external lookups per call (rate limits)
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ip_geolocation.php';
+    $countries = [];
+    foreach ($ips as $oneIp) {
+        $geo = ihymnsGeoLookup($oneIp, true);   // allow external providers here
+        if ($geo !== null && $geo['code'] !== '') {
+            $countries[$oneIp] = $geo['code'];
+            /* Snapshot onto rows from this IP that have no country yet, so the
+               next view needs no lookup at all (the owner's "save the country on
+               the row" point). Bound; best-effort. */
+            try {
+                $u = $db->prepare("UPDATE tblActivityLog SET Country = ? WHERE IpAddress = ? AND (Country IS NULL OR Country = '')");
+                $u->bind_param('ss', $countries[$oneIp], $oneIp);
+                $u->execute();
+                $u->close();
+            } catch (\Throwable $_e) { /* best-effort backfill */ }
+        }
+    }
+    echo json_encode(['ok' => true, 'countries' => $countries]);
+    exit;
+}
 
 /* Filter parsing — every filter is optional. Defaults give the
    admin "last 24 h, every action, every user" landing view. */
@@ -40,6 +134,16 @@ $filterRequestId  = trim((string)($_GET['request_id']  ?? ''));
 $filterDays       = (int)($_GET['days'] ?? 1);
 if (!in_array($filterDays, [1, 7, 30, 90, 365], true)) { $filterDays = 1; }
 $filterSearch     = trim((string)($_GET['q'] ?? ''));
+/* #1315 — default the Env filter to the CURRENT environment on a BARE load (no
+   ?env= param) so each env's log shows its OWN rows instead of the cross-env
+   firehose that masked the real origin of errors (the prod/beta s.SongbookName
+   saga). An explicit ?env= — including ''=the "— any —" option — is always
+   respected: once the filter form is submitted the param is present, so this only
+   changes the first bare visit. Safe on un-migrated installs: the env WHERE (~200)
+   is gated on $hasObsCols + an allow-list. (#1207 — alpha | beta | production) */
+$filterEnv = array_key_exists('env', $_GET)
+    ? trim((string)$_GET['env'])
+    : (function_exists('ihymns_environment') ? ihymns_environment() : '');
 
 $since = (new DateTime("-{$filterDays} days"))->format('Y-m-d H:i:s');
 
@@ -88,13 +192,364 @@ if ($filterRequestId !== '') {
     $types   .= 's';
 }
 if ($filterSearch !== '') {
-    $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
     $searchLike = '%' . $filterSearch . '%';
-    $params[] = $searchLike;
-    $params[] = $searchLike;
-    $types   .= 'ss';
+    /* #1207 — also search the requested path so "find every hit on /sitemap.xml"
+       works (only when the column exists). */
+    if ($hasObsCols) {
+        $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ? OR a.RequestPath LIKE ?)';
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $types   .= 'sss';
+    } else {
+        $where[]  = '(a.Action LIKE ? OR a.EntityId LIKE ?)';
+        $params[] = $searchLike;
+        $params[] = $searchLike;
+        $types   .= 'ss';
+    }
+}
+/* #1207 — environment filter (the shared DB serves alpha / beta / production). */
+if ($hasObsCols && in_array($filterEnv, ['alpha', 'beta', 'production'], true)) {
+    $where[]  = 'a.Environment = ?';
+    $params[] = $filterEnv;
+    $types   .= 's';
 }
 $whereSql = 'WHERE ' . implode(' AND ', $where);
+
+$pageSize = 50;
+
+$resultBadgeClass = [
+    'success' => 'bg-success',
+    'failure' => 'bg-warning text-dark',
+    'error'   => 'bg-danger',
+];
+
+/* Helper for keeping all current filters when generating the
+   "next page" / "export csv" links — saves writing them out
+   manually at every callsite. Defined up here (rather than after the
+   main query) so the #1302 fragment endpoint below can reuse it. */
+$buildQuery = function (array $overrides = []) use ($filterEnv) {
+    $merged = array_filter(array_merge([
+        'action'      => $_GET['action']      ?? '',
+        'user'        => $_GET['user']        ?? '',
+        'result'      => $_GET['result']      ?? '',
+        'entity_type' => $_GET['entity_type'] ?? '',
+        'entity_id'   => $_GET['entity_id']   ?? '',
+        'request_id'  => $_GET['request_id']  ?? '',
+        'days'        => $_GET['days']        ?? '',
+        'q'           => $_GET['q']           ?? '',
+        'env'         => $filterEnv,          /* #1315 — effective env (defaults to current) so paging/export links stay consistent */
+        'page'        => $_GET['page']        ?? '',
+    ], $overrides), fn($v) => $v !== '' && $v !== null);
+    return http_build_query($merged);
+};
+
+/* #1302 — fetch ONE page of activity rows by OFFSET. Used by the full-page
+   render AND the no-JS ?page= fallback so there's exactly ONE OFFSET-paginated
+   query (same WHERE / $params / $types, same ORDER, same LIMIT/OFFSET). The page
+   number is the only thing that varies; $pageSize is fixed and the OFFSET is
+   computed from a bound-safe integer cast, so no filter value is ever
+   interpolated into SQL. Returns [$rows, $total].
+
+   NOTE: OFFSET pagination is provably unstable on tblActivityLog — the table is
+   append-heavy and self-logging, so rows inserted between two fetches shift the
+   window and the same row reappears at the next page's seam. That's why the
+   JS infinite-scroll path uses $fetchActivityKeyset() (SEEK pagination) below
+   instead of this. This OFFSET path is retained ONLY as the no-JS fallback,
+   where each ?page= load is a fresh independent snapshot and a one-row seam
+   overlap is immaterial. */
+$fetchActivityPage = function (int $pageNum) use ($db, $whereSql, $params, $types, $pageSize, $proxyColsSql, $obsColsSql): array {
+    $pageNum = max(1, $pageNum);
+    $offsetN = ($pageNum - 1) * $pageSize;
+
+    $countStmt = $db->prepare(
+        'SELECT COUNT(*)
+           FROM tblActivityLog a
+           LEFT JOIN tblUsers u ON u.Id = a.UserId ' . $whereSql
+    );
+    $countStmt->bind_param($types, ...$params);
+    $countStmt->execute();
+    $cRow = $countStmt->get_result()->fetch_row();
+    $totalN = (int)($cRow[0] ?? 0);
+    $countStmt->close();
+
+    /* #805 — UNIX_TIMESTAMP(a.CreatedAt) feeds the unambiguous-UTC cell + the
+       data-ts attribute the JS converter reads. LIMIT/OFFSET use (int)-cast
+       constants only — never a bound user value. */
+    $stmt = $db->prepare(
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                a.Action, a.EntityType, a.EntityId, a.Result,
+                a.Details, a.IpAddress' . $proxyColsSql . $obsColsSql . ', a.UserAgent, a.RequestId, a.Method,
+                a.DurationMs, u.Username
+           FROM tblActivityLog a
+           LEFT JOIN tblUsers u ON u.Id = a.UserId
+           ' . $whereSql . '
+           ORDER BY a.CreatedAt DESC, a.Id DESC
+           LIMIT ' . (int)$pageSize . ' OFFSET ' . (int)$offsetN
+    );
+    $stmt->bind_param($types, ...$params);
+    $stmt->execute();
+    $pageRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    return [$pageRows, $totalN];
+};
+
+/* #1302 — fetch ONE page of activity rows by KEYSET (SEEK) for the JS
+   infinite-scroll fragment path. The client carries the last-appended row's
+   (CreatedAt, Id) forward as an opaque cursor; we add an extra
+   `(a.CreatedAt < ? OR (a.CreatedAt = ? AND a.Id < ?))` predicate that selects
+   strictly OLDER rows than the cursor, REUSING the existing filter binds. Because
+   the seek is relative to a fixed anchor row (not an absolute OFFSET), rows
+   inserted between fetches never shift the window — so the page-boundary
+   duplicate that OFFSET pagination produces on this append-heavy, self-logging
+   table cannot occur (the MAJOR finding). ALL values are bound via bind_param;
+   the cursor strings/int are appended to a COPY of $params/$types so the shared
+   filter binds stay untouched for the OFFSET path + COUNT + CSV export.
+
+   $cursorTs is the raw TIMESTAMP(6) string from the cursor row's data-created
+   (compared against a.CreatedAt for sub-second-exact seeking); $cursorId is the
+   tie-breaker. With neither supplied the first keyset page is returned (no seek
+   predicate), so an initial fragment fetch with no cursor still works. Returns
+   just $rows — there is no $total for a keyset page; end-of-data is "fewer rows
+   than $pageSize came back" (handled by the caller). */
+$fetchActivityKeyset = function (string $cursorTs, int $cursorId) use ($db, $whereSql, $params, $types, $pageSize, $proxyColsSql, $obsColsSql): array {
+    /* Copy the shared filter binds, then append the seek binds so the canonical
+       $params/$types (reused by COUNT, OFFSET SELECT, CSV) are never mutated. */
+    $kParams = $params;
+    $kTypes  = $types;
+    $seekSql = '';
+    if ($cursorTs !== '' && $cursorId > 0) {
+        $seekSql  = ' AND (a.CreatedAt < ? OR (a.CreatedAt = ? AND a.Id < ?))';
+        $kParams[] = $cursorTs;   // a.CreatedAt < ?
+        $kParams[] = $cursorTs;   // a.CreatedAt = ?
+        $kParams[] = $cursorId;   // a.Id < ?
+        $kTypes   .= 'ssi';
+    }
+
+    $stmt = $db->prepare(
+        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
+                a.Action, a.EntityType, a.EntityId, a.Result,
+                a.Details, a.IpAddress' . $proxyColsSql . $obsColsSql . ', a.UserAgent, a.RequestId, a.Method,
+                a.DurationMs, u.Username
+           FROM tblActivityLog a
+           LEFT JOIN tblUsers u ON u.Id = a.UserId
+           ' . $whereSql . $seekSql . '
+           ORDER BY a.CreatedAt DESC, a.Id DESC
+           LIMIT ' . (int)$pageSize
+    );
+    $stmt->bind_param($kTypes, ...$kParams);
+    $stmt->execute();
+    $pageRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    return $pageRows;
+};
+
+/* #1302 — render the <tr> markup for a set of rows. The full-page table body
+   and the infinite-scroll fragment endpoint BOTH call this, so the row markup
+   (badges, geo-flags, TZ data attributes, proxy/VPN indicator, expandable
+   detail row) lives in exactly ONE place — no divergent client-side rebuild
+   of the row HTML. Echoes directly (used inside output buffering by the
+   fragment endpoint, inline by the page). */
+$renderActivityRows = function (array $rowsToRender) use ($hasObsCols, $resultBadgeClass, $buildQuery): void {
+    foreach ($rowsToRender as $r):
+        $detailsRaw = $r['Details'];
+        $detailsArr = $detailsRaw !== null ? json_decode((string)$detailsRaw, true) : null;
+        $detailsPretty = $detailsArr !== null
+            ? json_encode($detailsArr, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            : '';
+        /* #805 — render the cell text as UTC built from UNIX_TIMESTAMP via
+           gmdate() so the value is correct regardless of MySQL session TZ or
+           PHP date.timezone. The data-ts attribute carries the Unix seconds
+           for the JS converter to format in the visitor's local TZ. */
+        $createdTs    = (int)($r['CreatedAtTs'] ?? 0);
+        $createdUtcStr = $createdTs > 0
+            ? gmdate('Y-m-d H:i:s', $createdTs)
+            : (string)$r['CreatedAt'];
+        /* Sub-second fraction (#1287) — ms (3 digits) from the raw TIMESTAMP(6)
+           value; empty on a pre-migration second column. */
+        $createdMs = '';
+        if (preg_match('/\.(\d{1,6})/', (string)($r['CreatedAt'] ?? ''), $msMatch)) {
+            $createdMs = substr(str_pad($msMatch[1], 3, '0'), 0, 3);
+        }
+        $createdUtcFull = $createdUtcStr . ($createdMs !== '' ? '.' . $createdMs : '');
+        /* #1302 keyset — the raw TIMESTAMP(6) string is the cursor's CreatedAt
+           half (the seek query compares against a.CreatedAt, NOT the int Unix
+           seconds, so sub-second precision is preserved and the comparison is
+           byte-for-byte identical to what MySQL stored). The Id is the
+           tie-breaker. Both are emitted on the row so the client can carry the
+           last-seen (CreatedAt, Id) forward as an opaque cursor AND skip any
+           row id it already has appended (belt-and-braces against a seam dup). */
+        $rowId        = (int)($r['Id'] ?? 0);
+        $rowCreatedAt = (string)($r['CreatedAt'] ?? '');
+    ?>
+        <tr class="activity-row"
+            data-row-id="<?= $rowId ?>"
+            data-created="<?= htmlspecialchars($rowCreatedAt, ENT_QUOTES, 'UTF-8') ?>">
+            <td class="text-muted small activity-when"
+                data-ts="<?= (int)$createdTs ?>"
+                data-ms="<?= htmlspecialchars($createdMs, ENT_QUOTES, 'UTF-8') ?>"
+                title="<?= htmlspecialchars($createdUtcFull, ENT_QUOTES, 'UTF-8') ?> UTC">
+                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?><?php if ($createdMs !== ''): ?><span class="text-muted">.<?= htmlspecialchars($createdMs, ENT_QUOTES, 'UTF-8') ?></span><?php endif; ?> <span class="text-muted">UTC</span>
+            </td>
+            <?php if ($hasObsCols): ?>
+            <td>
+                <?php
+                $env = (string)($r['Environment'] ?? '');
+                if ($env !== ''):
+                    $envCls = match ($env) {
+                        'production' => 'bg-success',
+                        'beta'       => 'bg-info text-dark',
+                        'alpha'      => 'bg-secondary',
+                        default      => 'bg-dark border',
+                    };
+                ?>
+                    <span class="badge <?= $envCls ?>"><?= htmlspecialchars($env, ENT_QUOTES, 'UTF-8') ?></span>
+                <?php endif; ?>
+            </td>
+            <?php endif; ?>
+            <td>
+                <?php if (!empty($r['Username'])): ?>
+                    <span><?= htmlspecialchars((string)$r['Username'], ENT_QUOTES, 'UTF-8') ?></span>
+                <?php else: ?>
+                    <em class="text-muted">— anon —</em>
+                <?php endif; ?>
+            </td>
+            <td class="activity-action">
+                <?= htmlspecialchars((string)$r['Action'], ENT_QUOTES, 'UTF-8') ?>
+            </td>
+            <td class="small">
+                <?php if ($r['EntityType'] !== '' || $r['EntityId'] !== ''): ?>
+                    <code><?= htmlspecialchars((string)$r['EntityType'], ENT_QUOTES, 'UTF-8') ?></code>
+                    <span class="text-muted">/</span>
+                    <code><?= htmlspecialchars((string)$r['EntityId'], ENT_QUOTES, 'UTF-8') ?></code>
+                <?php endif; ?>
+            </td>
+            <?php if ($hasObsCols): ?>
+            <td class="small text-muted">
+                <?php $rp = (string)($r['RequestPath'] ?? ''); if ($rp !== ''): ?>
+                    <a class="text-decoration-none"
+                       href="?<?= htmlspecialchars($buildQuery(['q' => $rp]), ENT_QUOTES, 'UTF-8') ?>"
+                       title="Filter to hits on this path">
+                        <code class="d-inline-block text-truncate" style="max-width: 18rem; vertical-align: bottom;"><?= htmlspecialchars($rp, ENT_QUOTES, 'UTF-8') ?></code>
+                    </a>
+                <?php endif; ?>
+            </td>
+            <?php endif; ?>
+            <td>
+                <span class="badge <?= $resultBadgeClass[$r['Result']] ?? 'bg-secondary' ?>">
+                    <?= htmlspecialchars((string)$r['Result'], ENT_QUOTES, 'UTF-8') ?>
+                </span>
+            </td>
+            <td class="text-muted small">
+                <?php
+                /* #1208 — every IP gets a .geo-flag span (filled
+                   server-side from the Country snapshot; empty
+                   ones are backfilled async by the script below). */
+                if ($hasObsCols):
+                    $cc = (string)($r['Country'] ?? '');
+                ?><span class="geo-flag" data-ip="<?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>"<?php if ($cc !== ''): ?> title="<?= htmlspecialchars($cc, ENT_QUOTES, 'UTF-8') ?>"<?php endif; ?>><?= _activityFlagEmoji($cc) ?></span> <?php endif; ?><?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
+                <?php
+                /* Proxy/VPN indicator badge — shown inline under
+                   the IP when classification is something other
+                   than 'none'. Pre-migration deploys (column not
+                   selected) skip the badge entirely. */
+                $pind = (string)($r['ProxyVpnIndicator'] ?? '');
+                if ($pind !== '' && $pind !== 'none'):
+                    $pcls = match ($pind) {
+                        'vpn', 'tor'    => 'bg-warning text-dark',
+                        'datacentre',
+                        'proxy'         => 'bg-secondary',
+                        'cloudflare',
+                        'xff'           => 'bg-info text-dark',
+                        default          => 'bg-secondary',
+                    };
+                    $ptitle = trim((string)($r['IpProxyChain'] ?? ''));
+                ?>
+                    <br>
+                    <span class="badge <?= $pcls ?>"
+                          title="<?= htmlspecialchars($ptitle !== '' ? "Proxy chain: $ptitle" : '', ENT_QUOTES, 'UTF-8') ?>">
+                        <?= htmlspecialchars($pind, ENT_QUOTES, 'UTF-8') ?>
+                    </span>
+                <?php endif; ?>
+            </td>
+            <td>
+                <a class="request-id-pill"
+                   href="?<?= htmlspecialchars($buildQuery(['request_id' => $r['RequestId']]), ENT_QUOTES, 'UTF-8') ?>"
+                   title="Show every row from this HTTP request">
+                    <?= htmlspecialchars(substr((string)$r['RequestId'], 0, 8), ENT_QUOTES, 'UTF-8') ?>
+                </a>
+            </td>
+        </tr>
+        <?php if ($detailsPretty !== '' || ($r['UserAgent'] ?? '') !== '' || $r['DurationMs'] !== null): ?>
+        <tr class="activity-row">
+            <td colspan="<?= $hasObsCols ? 9 : 7 ?>" class="bg-black-soft border-0 py-2">
+                <div class="small text-muted mb-1">
+                    <?php if ($r['Method'] !== ''): ?>
+                        <code><?= htmlspecialchars((string)$r['Method'], ENT_QUOTES, 'UTF-8') ?></code>
+                    <?php endif; ?>
+                    <?php if ($r['DurationMs'] !== null): ?>
+                        · <?= (int)$r['DurationMs'] ?> ms
+                    <?php endif; ?>
+                    <?php if (!empty($r['UserAgent'])): ?>
+                        <?php /* Render the full UA inline (no 80-char substr cap)
+                                 — long UAs wrap to a second line via the
+                                 .activity-ua wrapper class. (#721) */ ?>
+                        · UA: <span class="activity-ua" title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
+                            <?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>
+                        </span>
+                    <?php endif; ?>
+                    <?php if ($hasObsCols && !empty($r['Referrer'])): ?>
+                        <br>· Referrer: <span class="activity-ua"><?= htmlspecialchars((string)$r['Referrer'], ENT_QUOTES, 'UTF-8') ?></span>
+                    <?php endif; ?>
+                </div>
+                <?php if ($detailsPretty !== ''): ?>
+                    <div class="activity-details"><?= htmlspecialchars($detailsPretty, ENT_QUOTES, 'UTF-8') ?></div>
+                <?php endif; ?>
+            </td>
+        </tr>
+        <?php endif; ?>
+    <?php endforeach;
+};
+
+/* #1302 — infinite-scroll fragment endpoint. Returns ONLY the <tr> rows OLDER
+   than the supplied keyset cursor (same bound filters + ALL active filters as
+   the full view), so the client IntersectionObserver can append the next batch
+   without a reload. KEYSET (SEEK), not OFFSET — see $fetchActivityKeyset above
+   for why (page-boundary duplicates on this append-heavy table). The existing
+   ?page=N OFFSET pagination remains the complete no-JS fallback. Read-only GET;
+   the admin gate at the top of the file already applies.
+
+   Cursor: `cursor_ts` = the last appended row's data-created (raw TIMESTAMP(6)
+   string); `cursor_id` = its data-row-id. Both arrive only from rows this same
+   endpoint (or the initial page) emitted, and both are bound — never
+   interpolated. With neither present the first keyset batch is returned. */
+if (($_GET['action'] ?? '') === 'next-page') {
+    header('Content-Type: text/html; charset=UTF-8');
+    header('Cache-Control: no-store');
+    $cursorTs = trim((string)($_GET['cursor_ts'] ?? ''));
+    $cursorId = (int)($_GET['cursor_id'] ?? 0);
+    try {
+        $fpRows = $fetchActivityKeyset($cursorTs, $cursorId);
+    } catch (\Throwable $e) {
+        error_log('[manage/activity-log.php#next-page] ' . $e->getMessage());
+        http_response_code(503);
+        echo '<!-- activity-log fragment error -->';
+        exit;
+    }
+    /* "Fewer rows than a full page" => this was the last batch; tell the client
+       so it stops observing. A 200 with an EMPTY <tbody> (zero rows) is also a
+       valid end-of-data signal the client treats the same way (MINOR finding:
+       no tight-loop). */
+    $fpAtEnd = count($fpRows) < $pageSize ? 1 : 0;
+    echo '<tbody data-activity-fragment="1"'
+        . ' data-row-count="' . count($fpRows) . '"'
+        . ' data-at-end="' . $fpAtEnd . '">';
+    $renderActivityRows($fpRows);
+    echo '</tbody>';
+    exit;
+}
 
 /* CSV export — same filters, but streams every matching row to
    the browser instead of paginating. Capped at 10 000 rows so an
@@ -111,22 +566,10 @@ if (($_GET['export'] ?? '') === 'csv') {
        up. The legacy `CreatedAt` column is preserved for back-compat
        with any existing report tooling but should be considered
        deprecated — `CreatedAtUtc` is the new canonical value. */
-    /* New columns from migrate-activity-log-proxy-vpn.php — schema-
-       probe before SELECTing them so a pre-migration deploy keeps
-       exporting cleanly with the legacy header set. */
-    $hasProxyCols = false;
-    try {
-        $probe = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblActivityLog'
-                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
-        );
-        $probe->execute();
-        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
-        $probe->close();
-    } catch (\Throwable $_e) { /* fall through to legacy export */ }
-
+    /* New columns from migrate-activity-log-proxy-vpn.php — $hasProxyCols was
+       probed once near the top of the file (shared with the paginated SELECT +
+       the #1302 fragment endpoint), so a pre-migration deploy keeps exporting
+       cleanly with the legacy header set. */
     $headerRow = [
         'Id', 'CreatedAt', 'CreatedAtUtc', 'Username', 'Action', 'EntityType', 'EntityId',
         'Result', 'IpAddress', 'UserAgent', 'RequestId', 'Method', 'DurationMs', 'Details',
@@ -134,19 +577,22 @@ if (($_GET['export'] ?? '') === 'csv') {
     if ($hasProxyCols) {
         array_splice($headerRow, 9, 0, ['IpProxyChain', 'ProxyVpnIndicator', 'ProxyVpnDetail']);
     }
+    if ($hasObsCols) {
+        $headerRow[] = 'Environment';
+        $headerRow[] = 'RequestPath';
+        $headerRow[] = 'Referrer';
+        $headerRow[] = 'Country';
+    }
     fputcsv($out, $headerRow);
-    $proxyColsSql = $hasProxyCols
-        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
-        : '';
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 u.Username, a.Action, a.EntityType, a.EntityId,
-                a.Result, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
+                a.Result, a.IpAddress' . $proxyColsSql . $obsColsSql . ', a.UserAgent, a.RequestId, a.Method,
                 a.DurationMs, a.Details
            FROM tblActivityLog a
            LEFT JOIN tblUsers u ON u.Id = a.UserId
            ' . $whereSql . '
-           ORDER BY a.CreatedAt DESC
+           ORDER BY a.CreatedAt DESC, a.Id DESC
            LIMIT 10000'
     );
     $stmt->bind_param($types, ...$params);
@@ -154,7 +600,13 @@ if (($_GET['export'] ?? '') === 'csv') {
     $res = $stmt->get_result();
     while ($row = $res->fetch_assoc()) {
         $ts        = (int)($row['CreatedAtTs'] ?? 0);
-        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s\Z', $ts) : '';
+        /* Sub-second fraction (#1287) — from the raw TIMESTAMP(6) string when present
+           (UNIX_TIMESTAMP is cast to int, so the fraction lives on the raw value). */
+        $frac = '';
+        if (preg_match('/\.(\d{1,6})/', (string)($row['CreatedAt'] ?? ''), $fm)) {
+            $frac = '.' . substr(str_pad($fm[1], 3, '0'), 0, 3);
+        }
+        $createdUtc = $ts > 0 ? gmdate('Y-m-d\TH:i:s', $ts) . $frac . 'Z' : '';
         $csvRow = [
             $row['Id'], $row['CreatedAt'], $createdUtc, $row['Username'] ?? '', $row['Action'],
             $row['EntityType'], $row['EntityId'], $row['Result'],
@@ -170,6 +622,12 @@ if (($_GET['export'] ?? '') === 'csv') {
         $csvRow[] = $row['Method']     ?? '';
         $csvRow[] = $row['DurationMs'] ?? '';
         $csvRow[] = $row['Details']    ?? '';
+        if ($hasObsCols) {
+            $csvRow[] = $row['Environment'] ?? '';
+            $csvRow[] = $row['RequestPath'] ?? '';
+            $csvRow[] = $row['Referrer']    ?? '';
+            $csvRow[] = $row['Country']     ?? '';
+        }
         fputcsv($out, $csvRow);
     }
     $stmt->close();
@@ -177,66 +635,14 @@ if (($_GET['export'] ?? '') === 'csv') {
     exit;
 }
 
-/* Paginated list query for the UI. */
-$pageSize = 50;
-$page     = max(1, (int)($_GET['page'] ?? 1));
-$offset   = ($page - 1) * $pageSize;
-
+/* Paginated list query for the UI — delegates to the shared $fetchActivityPage
+   closure so the full page and the #1302 fragment endpoint run the identical
+   bound query. */
+$page  = max(1, (int)($_GET['page'] ?? 1));
 $total = 0;
 $rows  = [];
 try {
-    $countStmt = $db->prepare(
-        'SELECT COUNT(*)
-           FROM tblActivityLog a
-           LEFT JOIN tblUsers u ON u.Id = a.UserId ' . $whereSql
-    );
-    $countStmt->bind_param($types, ...$params);
-    $countStmt->execute();
-    $row = $countStmt->get_result()->fetch_row();
-    $total = (int)($row[0] ?? 0);
-    $countStmt->close();
-
-    /* #805 — also pull UNIX_TIMESTAMP(a.CreatedAt) so the cell can
-       render an unambiguous UTC value AND carry the seconds-since-epoch
-       as a data attribute for the JS converter below. The raw
-       a.CreatedAt comes back in MySQL's session timezone (`SYSTEM` by
-       default = OS), so suffixing 'Z' on the string would lie when the
-       server isn't in UTC. UNIX_TIMESTAMP() is always UTC seconds and
-       side-steps that whole class of bug. */
-    /* Schema-probe for the proxy/VPN columns added by
-       migrate-activity-log-proxy-vpn.php. Pre-migration deploys
-       skip them entirely so the SELECT compiles. */
-    $hasProxyCols = false;
-    try {
-        $probe = $db->prepare(
-            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-              WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblActivityLog'
-                AND COLUMN_NAME  = 'ProxyVpnIndicator' LIMIT 1"
-        );
-        $probe->execute();
-        $hasProxyCols = (bool)$probe->get_result()->fetch_row();
-        $probe->close();
-    } catch (\Throwable $_e) { /* fall through */ }
-    $proxyColsSql = $hasProxyCols
-        ? ', a.IpProxyChain, a.ProxyVpnIndicator, a.ProxyVpnDetail'
-        : '';
-
-    $stmt = $db->prepare(
-        'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
-                a.Action, a.EntityType, a.EntityId, a.Result,
-                a.Details, a.IpAddress' . $proxyColsSql . ', a.UserAgent, a.RequestId, a.Method,
-                a.DurationMs, u.Username
-           FROM tblActivityLog a
-           LEFT JOIN tblUsers u ON u.Id = a.UserId
-           ' . $whereSql . '
-           ORDER BY a.CreatedAt DESC
-           LIMIT ' . (int)$pageSize . ' OFFSET ' . (int)$offset
-    );
-    $stmt->bind_param($types, ...$params);
-    $stmt->execute();
-    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-    $stmt->close();
+    [$rows, $total] = $fetchActivityPage($page);
 } catch (\Throwable $e) {
     error_log('[manage/activity-log.php] ' . $e->getMessage());
     /* If the Activity Log viewer itself can't load, recording an
@@ -269,29 +675,8 @@ try {
     $stmt->close();
 } catch (\Throwable $_e) { /* empty list is fine */ }
 
-$resultBadgeClass = [
-    'success' => 'bg-success',
-    'failure' => 'bg-warning text-dark',
-    'error'   => 'bg-danger',
-];
-
-/* Helper for keeping all current filters when generating the
-   "next page" / "export csv" links — saves writing them out
-   manually at every callsite. */
-$buildQuery = function (array $overrides = []) {
-    $merged = array_filter(array_merge([
-        'action'      => $_GET['action']      ?? '',
-        'user'        => $_GET['user']        ?? '',
-        'result'      => $_GET['result']      ?? '',
-        'entity_type' => $_GET['entity_type'] ?? '',
-        'entity_id'   => $_GET['entity_id']   ?? '',
-        'request_id'  => $_GET['request_id']  ?? '',
-        'days'        => $_GET['days']        ?? '',
-        'q'           => $_GET['q']           ?? '',
-        'page'        => $_GET['page']        ?? '',
-    ], $overrides), fn($v) => $v !== '' && $v !== null);
-    return http_build_query($merged);
-};
+/* $resultBadgeClass + $buildQuery were defined earlier (before the fragment
+   endpoint) so the shared render closure could reuse them. */
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -299,6 +684,7 @@ $buildQuery = function (array $overrides = []) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Activity Log — iHymns Admin</title>
+    <meta name="csrf-token" content="<?= htmlspecialchars(csrfToken(), ENT_QUOTES, 'UTF-8') ?>"><!-- #1208 geo backfill POST -->
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
     <style>
@@ -342,6 +728,13 @@ $buildQuery = function (array $overrides = []) {
             a positive integer (1..3650 days). Audit, compliance, and
             forensics tend to want long retention, so pruning is opt-in.
         </p>
+        <p class="text-secondary small mb-4">
+            <i class="bi bi-info-circle me-1"></i>All three environments
+            (alpha&nbsp;·&nbsp;beta&nbsp;·&nbsp;production) share one database, so this log
+            spans them all — use the <strong>Env</strong> column / filter to tell them apart.
+            The <strong>When</strong> column shows your <strong>local</strong> time
+            (<span data-activity-tz>detecting…</span>); CSV export is in UTC.
+        </p>
 
         <form method="GET" class="row g-2 mb-3 small">
             <div class="col-md-3">
@@ -371,6 +764,17 @@ $buildQuery = function (array $overrides = []) {
                     <option value="error"   <?= $filterResult === 'error'   ? 'selected' : '' ?>>error</option>
                 </select>
             </div>
+            <?php if ($hasObsCols): ?>
+            <div class="col-md-2">
+                <label class="form-label mb-1" for="filter-env">Env</label>
+                <select class="form-select form-select-sm" id="filter-env" name="env">
+                    <option value="">— any —</option>
+                    <option value="alpha"      <?= $filterEnv === 'alpha'      ? 'selected' : '' ?>>alpha</option>
+                    <option value="beta"       <?= $filterEnv === 'beta'       ? 'selected' : '' ?>>beta</option>
+                    <option value="production" <?= $filterEnv === 'production' ? 'selected' : '' ?>>production</option>
+                </select>
+            </div>
+            <?php endif; ?>
             <div class="col-md-2">
                 <label class="form-label mb-1" for="filter-entity-type">Entity</label>
                 <input class="form-control form-control-sm" id="filter-entity-type" type="text" name="entity_type"
@@ -417,10 +821,22 @@ $buildQuery = function (array $overrides = []) {
             </div>
         </form>
 
-        <p class="text-secondary small mb-2">
-            <?= number_format($total) ?> entr<?= $total === 1 ? 'y' : 'ies' ?> match —
-            page <?= $page ?> of <?= $totalPages ?>.
-        </p>
+        <div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-2">
+            <p class="text-secondary small mb-0">
+                <?= number_format($total) ?> entr<?= $total === 1 ? 'y' : 'ies' ?> match —
+                <span data-activity-pagelabel>page <?= $page ?> of <?= $totalPages ?></span>.
+            </p>
+            <?php /* #1302 — infinite-scroll opt-in. Hidden for no-JS users (the
+                     enhancement script un-hides it); the ?page= pagination below
+                     stays as the complete fallback either way. The choice is
+                     remembered in localStorage so it survives reloads. */ ?>
+            <div class="form-check form-switch small mb-0" data-activity-scroll-toggle hidden>
+                <input class="form-check-input" type="checkbox" role="switch" id="activity-infinite-scroll">
+                <label class="form-check-label text-secondary" for="activity-infinite-scroll">
+                    Infinite scroll
+                </label>
+            </div>
+        </div>
 
         <?php if (empty($rows)): ?>
             <div class="alert alert-info py-2" role="status">
@@ -428,7 +844,10 @@ $buildQuery = function (array $overrides = []) {
             </div>
         <?php else: ?>
             <div class="table-responsive">
-                <table class="table table-sm table-dark table-hover align-middle cp-sortable">
+                <table class="table table-sm table-dark table-hover align-middle cp-sortable"
+                       data-activity-table
+                       data-page="<?= (int)$page ?>"
+                       data-total-pages="<?= (int)$totalPages ?>">
                     <thead>
                         <tr>
                             <?php /* Header label flips between (local) and (UTC) at runtime
@@ -437,133 +856,60 @@ $buildQuery = function (array $overrides = []) {
                                      the cells stay UTC and the header keeps its initial
                                      "(UTC)" suffix. (#723) */ ?>
                             <th style="width: 11rem;" id="activity-when-header" data-sort-key="when"   data-sort-type="text">When (UTC)</th>
+                            <?php if ($hasObsCols): ?><th style="width: 5rem;" data-sort-key="env" data-sort-type="text">Env</th><?php endif; ?>
                             <th style="width: 10rem;" data-sort-key="user"   data-sort-type="text">User</th>
                             <th data-sort-key="action" data-sort-type="text">Action</th>
                             <th data-sort-key="entity" data-sort-type="text">Entity</th>
+                            <?php if ($hasObsCols): ?><th data-sort-key="path" data-sort-type="text">Path</th><?php endif; ?>
                             <th style="width: 5rem;"  data-sort-key="result" data-sort-type="text">Result</th>
                             <th style="width: 9rem;"  data-sort-key="ip"     data-sort-type="text">IP</th>
                             <th style="width: 5rem;"  data-sort-key="req"    data-sort-type="text">Req</th>
                         </tr>
                     </thead>
-                    <tbody>
-                    <?php foreach ($rows as $r):
-                        $detailsRaw = $r['Details'];
-                        $detailsArr = $detailsRaw !== null ? json_decode((string)$detailsRaw, true) : null;
-                        $detailsPretty = $detailsArr !== null
-                            ? json_encode($detailsArr, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
-                            : '';
-                        $rowId = (int)$r['Id'];
-                        /* #805 — render the cell text as UTC built from
-                           UNIX_TIMESTAMP via gmdate() so the value is
-                           correct regardless of MySQL session TZ or
-                           PHP date.timezone. The data-ts attribute
-                           carries the Unix seconds for the JS converter
-                           to format in the visitor's local TZ. The
-                           " UTC" suffix is dropped by the JS once it
-                           replaces the cell, so visitors see "(local)"
-                           cells without the redundant suffix. */
-                        $createdTs    = (int)($r['CreatedAtTs'] ?? 0);
-                        $createdUtcStr = $createdTs > 0
-                            ? gmdate('Y-m-d H:i:s', $createdTs)
-                            : (string)$r['CreatedAt'];
-                    ?>
-                        <tr class="activity-row">
-                            <td class="text-muted small activity-when"
-                                data-ts="<?= (int)$createdTs ?>"
-                                title="<?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> UTC">
-                                <?= htmlspecialchars($createdUtcStr, ENT_QUOTES, 'UTF-8') ?> <span class="text-muted">UTC</span>
-                            </td>
-                            <td>
-                                <?php if (!empty($r['Username'])): ?>
-                                    <span><?= htmlspecialchars((string)$r['Username'], ENT_QUOTES, 'UTF-8') ?></span>
-                                <?php else: ?>
-                                    <em class="text-muted">— anon —</em>
-                                <?php endif; ?>
-                            </td>
-                            <td class="activity-action">
-                                <?= htmlspecialchars((string)$r['Action'], ENT_QUOTES, 'UTF-8') ?>
-                            </td>
-                            <td class="small">
-                                <?php if ($r['EntityType'] !== '' || $r['EntityId'] !== ''): ?>
-                                    <code><?= htmlspecialchars((string)$r['EntityType'], ENT_QUOTES, 'UTF-8') ?></code>
-                                    <span class="text-muted">/</span>
-                                    <code><?= htmlspecialchars((string)$r['EntityId'], ENT_QUOTES, 'UTF-8') ?></code>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <span class="badge <?= $resultBadgeClass[$r['Result']] ?? 'bg-secondary' ?>">
-                                    <?= htmlspecialchars((string)$r['Result'], ENT_QUOTES, 'UTF-8') ?>
-                                </span>
-                            </td>
-                            <td class="text-muted small">
-                                <?= htmlspecialchars((string)$r['IpAddress'], ENT_QUOTES, 'UTF-8') ?>
-                                <?php
-                                /* Proxy/VPN indicator badge — shown inline under
-                                   the IP when classification is something other
-                                   than 'none'. Pre-migration deploys (column not
-                                   selected) skip the badge entirely. */
-                                $pind = (string)($r['ProxyVpnIndicator'] ?? '');
-                                if ($pind !== '' && $pind !== 'none'):
-                                    $pcls = match ($pind) {
-                                        'vpn', 'tor'    => 'bg-warning text-dark',
-                                        'datacentre',
-                                        'proxy'         => 'bg-secondary',
-                                        'cloudflare',
-                                        'xff'           => 'bg-info text-dark',
-                                        default          => 'bg-secondary',
-                                    };
-                                    $ptitle = trim((string)($r['IpProxyChain'] ?? ''));
-                                ?>
-                                    <br>
-                                    <span class="badge <?= $pcls ?>"
-                                          title="<?= htmlspecialchars($ptitle !== '' ? "Proxy chain: $ptitle" : '', ENT_QUOTES, 'UTF-8') ?>">
-                                        <?= htmlspecialchars($pind, ENT_QUOTES, 'UTF-8') ?>
-                                    </span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <a class="request-id-pill"
-                                   href="?<?= htmlspecialchars($buildQuery(['request_id' => $r['RequestId']]), ENT_QUOTES, 'UTF-8') ?>"
-                                   title="Show every row from this HTTP request">
-                                    <?= htmlspecialchars(substr((string)$r['RequestId'], 0, 8), ENT_QUOTES, 'UTF-8') ?>
-                                </a>
-                            </td>
-                        </tr>
-                        <?php if ($detailsPretty !== '' || ($r['UserAgent'] ?? '') !== '' || $r['DurationMs'] !== null): ?>
-                        <tr class="activity-row">
-                            <td colspan="7" class="bg-black-soft border-0 py-2">
-                                <div class="small text-muted mb-1">
-                                    <?php if ($r['Method'] !== ''): ?>
-                                        <code><?= htmlspecialchars((string)$r['Method'], ENT_QUOTES, 'UTF-8') ?></code>
-                                    <?php endif; ?>
-                                    <?php if ($r['DurationMs'] !== null): ?>
-                                        · <?= (int)$r['DurationMs'] ?> ms
-                                    <?php endif; ?>
-                                    <?php if (!empty($r['UserAgent'])): ?>
-                                        <?php /* Render the full UA inline (no 80-char substr cap)
-                                                 — long UAs wrap to a second line via the
-                                                 .activity-ua wrapper class, which uses
-                                                 word-break:break-word + max-width:100% so
-                                                 long unbroken tokens still wrap rather than
-                                                 overflow the row. (#721) */ ?>
-                                        · UA: <span class="activity-ua" title="<?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>">
-                                            <?= htmlspecialchars((string)$r['UserAgent'], ENT_QUOTES, 'UTF-8') ?>
-                                        </span>
-                                    <?php endif; ?>
-                                </div>
-                                <?php if ($detailsPretty !== ''): ?>
-                                    <div class="activity-details"><?= htmlspecialchars($detailsPretty, ENT_QUOTES, 'UTF-8') ?></div>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                        <?php endif; ?>
-                    <?php endforeach; ?>
+                    <tbody data-activity-rows>
+                    <?php /* #1302 — rows rendered via the shared $renderActivityRows
+                             closure so the full page and the infinite-scroll
+                             fragment endpoint emit byte-identical markup. */ ?>
+                    <?php $renderActivityRows($rows); ?>
                     </tbody>
                 </table>
             </div>
 
+            <?php /* #1302 — infinite-scroll status line. The sentinel the
+                     IntersectionObserver watches lives here (a div, not a <tr>,
+                     so it sits outside the table semantics and never confuses a
+                     screen-reader's row count). The VISIBLE status text gives
+                     sighted users feedback; it is NOT a scroll-only instruction
+                     (a focusable "Load more" button below is the keyboard/AT
+                     trigger, so the message names the button, not "scroll").
+
+                     a11y (MINOR #3): the polite live region is a SEPARATE,
+                     ALWAYS-RENDERED .visually-hidden node — never `hidden`. A
+                     region with the `hidden` attribute is removed from the
+                     accessibility tree, so the FIRST mutation can be missed
+                     (the region must already be in the tree when its text
+                     changes for the announcement to fire). We mutate its text;
+                     we never toggle its presence.
+                     https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/ARIA_Live_Regions */ ?>
+            <div class="activity-scroll-status text-secondary small mt-2"
+                 data-activity-scroll-status hidden></div>
+            <div class="visually-hidden" role="status" aria-live="polite"
+                 data-activity-scroll-announce></div>
+
+            <?php /* #1302 — focusable, non-scroll trigger (MINOR #2). Hidden for
+                     no-JS users; the enhancement reveals it only when infinite
+                     scroll is active so keyboard / AT users have a button they
+                     can Tab to and activate instead of relying on a scroll
+                     gesture an IntersectionObserver can't detect. */ ?>
+            <div class="mt-2" data-activity-loadmore-wrap hidden>
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-activity-loadmore>
+                    <i class="bi bi-arrow-down-circle me-1"></i>Load more
+                </button>
+            </div>
+            <div data-activity-sentinel aria-hidden="true"></div>
+
             <?php if ($totalPages > 1): ?>
-            <nav aria-label="Activity log pagination" class="mt-3">
+            <nav aria-label="Activity log pagination" class="mt-3" data-activity-pagination>
                 <ul class="pagination pagination-sm">
                     <li class="page-item <?= $page <= 1 ? 'disabled' : '' ?>">
                         <a class="page-link"
@@ -586,16 +932,6 @@ $buildQuery = function (array $overrides = []) {
         <?php endif; ?>
     </div>
 
-    <!-- Visitor-local time conversion (#805, replaces #721 / #723).
-         Each .activity-when cell carries data-ts="<unix-seconds-utc>";
-         this script multiplies by 1000, builds a Date, formats via the
-         browser's Intl.DateTimeFormat in the visitor's resolved
-         timezone, and replaces the cell's text. The fallback (cell
-         text rendered server-side as `YYYY-MM-DD HH:MM:SS UTC` from
-         gmdate(UNIX_TIMESTAMP)) stays in place if Intl is unavailable
-         OR the visitor's TZ can't be resolved — so the column is
-         always either visitor-local or unambiguous UTC, never silently
-         server-local-pretending-to-be-anything-else. -->
     <style>
         .activity-ua {
             display: inline-block;
@@ -605,46 +941,395 @@ $buildQuery = function (array $overrides = []) {
         }
     </style>
     <script>
+    /* #1302 — the visitor-TZ converter + the geo backfill are now exposed on a
+       small shared namespace so the infinite-scroll script can re-run BOTH over
+       just-appended rows (a `root` element scopes each to a row subtree;
+       defaults to document for the initial page render). The behaviour for the
+       initial render is unchanged — these are the same two routines, factored
+       into reusable functions. */
     (function () {
+        var NS = (window.iHymnsActivityLog = window.iHymnsActivityLog || {});
+
+        /* ---- Visitor-local time conversion (#805, replaces #721 / #723). ----
+           Each .activity-when cell carries data-ts="<unix-seconds-utc>". We
+           multiply by 1000, build a Date, format via Intl.DateTimeFormat in the
+           visitor's resolved timezone, and replace the cell's text. The
+           server-rendered "YYYY-MM-DD HH:MM:SS UTC" fallback stays if Intl is
+           unavailable OR the TZ can't be resolved. */
+        var visitorTz = '';
+        var fmt = null;
         try {
-            if (typeof Intl === 'undefined' || !Intl.DateTimeFormat) return;
-            /* Resolve the visitor's TZ explicitly so we can fall back
-               to UTC display if it comes back empty (some locked-down
-               browser configs return ''). */
-            var resolved = Intl.DateTimeFormat().resolvedOptions();
-            var visitorTz = resolved && resolved.timeZone ? resolved.timeZone : '';
-            if (!visitorTz) return; /* fall back to server-rendered UTC */
-            var fmt = new Intl.DateTimeFormat(undefined, {
-                year:    'numeric', month:  '2-digit', day:    '2-digit',
-                hour:    '2-digit', minute: '2-digit', second: '2-digit',
-                hour12:  false,
-                timeZone: visitorTz,
-            });
-            var cells = document.querySelectorAll('.activity-when[data-ts]');
-            if (!cells.length) return;
-            cells.forEach(function (cell) {
+            if (typeof Intl !== 'undefined' && Intl.DateTimeFormat) {
+                var resolved = Intl.DateTimeFormat().resolvedOptions();
+                visitorTz = (resolved && resolved.timeZone) ? resolved.timeZone : '';
+                if (visitorTz) {
+                    fmt = new Intl.DateTimeFormat(undefined, {
+                        year:    'numeric', month:  '2-digit', day:    '2-digit',
+                        hour:    '2-digit', minute: '2-digit', second: '2-digit',
+                        hour12:  false,
+                        timeZone: visitorTz,
+                    });
+                }
+            }
+        } catch (_e) { fmt = null; }
+
+        NS.localiseTimes = function (root) {
+            if (!fmt) return; /* fall back to server-rendered UTC */
+            var scope = root || document;
+            var cells = scope.querySelectorAll('.activity-when[data-ts]');
+            Array.prototype.forEach.call(cells, function (cell) {
+                if (cell.getAttribute('data-tz-done')) return; /* idempotent re-runs */
                 var ts = parseInt(cell.getAttribute('data-ts') || '0', 10);
                 if (!ts) return;
                 var d = new Date(ts * 1000);
                 if (isNaN(d.getTime())) return;
-                /* Reformat to "YYYY-MM-DD HH:MM:SS" — matches the
-                   table's existing visual cadence; some locales would
-                   otherwise produce "30/04/2026, 14:53:42" which jars
-                   in a tabular layout. */
+                /* Reformat to "YYYY-MM-DD HH:MM:SS" — matches the table's visual
+                   cadence; some locales would otherwise produce
+                   "30/04/2026, 14:53:42" which jars in a tabular layout. */
                 var parts = fmt.formatToParts(d).reduce(function (acc, p) {
                     if (p.type !== 'literal') acc[p.type] = p.value; return acc;
                 }, {});
+                /* #1287 — re-append the sub-second fraction (timezone-invariant). */
+                var ms = cell.getAttribute('data-ms') || '';
                 cell.textContent = parts.year + '-' + parts.month + '-' + parts.day
-                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second;
-                /* Hover title carries the resolved timezone name so
-                   curators inspecting an entry can see the offset
-                   they're looking at — useful when comparing logs
-                   across teammates in different regions. */
+                    + ' ' + parts.hour + ':' + parts.minute + ':' + parts.second
+                    + (ms ? '.' + ms : '');
                 cell.setAttribute('title', cell.textContent + ' (' + visitorTz + ')');
+                cell.setAttribute('data-tz-done', '1');
             });
+        };
+
+        /* ---- #1208 async country flags. ---- Collect IPs whose flag isn't
+           rendered yet, resolve them via the CSRF-guarded geo backfill endpoint,
+           inject the flag emoji. The page never waits on this; flags pop in as
+           the lookups return. */
+        function flagEmoji(cc) {
+            cc = (cc || '').toUpperCase();
+            if (!/^[A-Z]{2}$/.test(cc)) { return ''; }
+            return String.fromCodePoint(0x1F1E6 + cc.charCodeAt(0) - 65, 0x1F1E6 + cc.charCodeAt(1) - 65);
+        }
+        NS.backfillFlags = function (root) {
+            try {
+                var meta = document.querySelector('meta[name="csrf-token"]');
+                var csrf = meta ? (meta.getAttribute('content') || '') : '';
+                /* #1302 — `root` may be a single element / document (initial
+                   render) OR an array / NodeList of elements (the just-appended
+                   rows, scoped per MINOR #5). Normalise to a list of scopes and
+                   gather the unresolved .geo-flag nodes across them in ONE pass,
+                   so an appended batch is still ONE POST — not one per row. */
+                var scopes;
+                if (!root) {
+                    scopes = [document];
+                } else if (root.nodeType) {
+                    scopes = [root];
+                } else {
+                    scopes = Array.prototype.slice.call(root);
+                }
+                var pending = [];
+                scopes.forEach(function (scope) {
+                    if (!scope || !scope.querySelectorAll) { return; }
+                    Array.prototype.forEach.call(scope.querySelectorAll('.geo-flag'), function (el) {
+                        if (el.textContent.trim() === '' && el.getAttribute('data-ip')) { pending.push(el); }
+                    });
+                });
+                if (!pending.length) { return; }
+                var ips = [];
+                pending.forEach(function (el) {
+                    var ip = el.getAttribute('data-ip');
+                    if (ip && ips.indexOf(ip) === -1) { ips.push(ip); }
+                });
+                ips = ips.slice(0, 25);   /* server caps at 25/call too */
+                if (!ips.length) { return; }
+                fetch('/manage/activity-log.php?action=geo', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'X-CSRF-Token': csrf,
+                    },
+                    body: 'ips=' + encodeURIComponent(ips.join(',')),
+                }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+                    if (!j || !j.countries) { return; }
+                    pending.forEach(function (el) {
+                        var code = j.countries[el.getAttribute('data-ip')];
+                        if (code && /^[A-Za-z]{2}$/.test(code)) {   // defense-in-depth: validate before DOM
+                            var fl = flagEmoji(code);
+                            if (fl) { el.textContent = fl; el.setAttribute('title', code.toUpperCase()); }
+                        }
+                    });
+                }).catch(function () { /* fail-soft — no flags, page still fine */ });
+            } catch (_e) { /* fail-soft */ }
+        };
+
+        /* Initial-render pass (same effect as before #1302). */
+        try { NS.localiseTimes(document); } catch (_e) {}
+        try { NS.backfillFlags(document); } catch (_e) {}
+
+        /* #1207 — keep the header short ("When (local)"); surface the actual
+           timezone in the blurb instead. Done once, not per row. */
+        if (fmt && visitorTz) {
             var header = document.getElementById('activity-when-header');
-            if (header) header.textContent = 'When (local — ' + visitorTz + ')';
-        } catch (_e) { /* fail-soft — server-rendered UTC stays */ }
+            if (header) header.textContent = 'When (local)';
+            var tzLabel = document.querySelector('[data-activity-tz]');
+            if (tzLabel) tzLabel.textContent = visitorTz;
+        }
+    })();
+    </script>
+
+    <!-- #1302 — Activity-Log infinite scroll (PROGRESSIVE ENHANCEMENT).
+         An IntersectionObserver watches a sentinel below the table; when it
+         scrolls into view the next BATCH is fetched from the ?action=next-page
+         fragment endpoint and its rows are appended to the tbody. The fetch uses
+         KEYSET (SEEK) pagination, NOT OFFSET: the client carries the last
+         appended row's (data-created, data-row-id) forward as an opaque cursor,
+         so rows inserted between fetches never cause a page-boundary duplicate
+         on this append-heavy, self-logging table. As belt-and-braces, the client
+         also tracks every row id it has appended and skips any the server
+         returns again. OPT-IN via a remembered toggle. Accessibility: a focusable
+         "Load more" button is the non-scroll trigger (keyboard / AT users don't
+         rely on a scroll gesture); the no-JS ?page= pagination stays reachable;
+         each batch + end-of-log are announced via an always-rendered
+         .visually-hidden role="status" aria-live="polite" region (never `hidden`,
+         so the first announce isn't lost). -->
+    <script>
+    (function () {
+        var NS = window.iHymnsActivityLog || {};
+        var table = document.querySelector('[data-activity-table]');
+        var tbody = table ? table.querySelector('[data-activity-rows]') : null;
+        var sentinel = document.querySelector('[data-activity-sentinel]');
+        var statusEl = document.querySelector('[data-activity-scroll-status]');
+        var announceEl = document.querySelector('[data-activity-scroll-announce]');
+        var toggleWrap = document.querySelector('[data-activity-scroll-toggle]');
+        var toggle = document.getElementById('activity-infinite-scroll');
+        var pagination = document.querySelector('[data-activity-pagination]');
+        var pageLabel = document.querySelector('[data-activity-pagelabel]');
+        var loadMoreWrap = document.querySelector('[data-activity-loadmore-wrap]');
+        var loadMoreBtn = document.querySelector('[data-activity-loadmore]');
+
+        /* Bail to the no-JS pagination if the browser lacks the APIs we need or
+           the table is absent (e.g. the empty-results state). */
+        if (!table || !tbody || !sentinel || !toggle || !toggleWrap
+            || typeof IntersectionObserver === 'undefined'
+            || typeof fetch === 'undefined'
+            || typeof URLSearchParams === 'undefined') {
+            return;
+        }
+
+        var STORAGE_KEY = 'ihymns_activity_infinite_scroll';
+        var loading = false;
+        /* Seed end-of-data from the server's initial page-count: if the first
+           render already held every matching row (one page), there's nothing to
+           seek for and we never fire a fetch. Keyset takes over from there. */
+        var initialTotalPages = parseInt(table.getAttribute('data-total-pages') || '1', 10) || 1;
+        var reachedEnd = initialTotalPages <= 1;
+        var observer = null;
+        var loadedCount = tbody.querySelectorAll('tr.activity-row[data-row-id]').length;
+
+        /* Belt-and-braces de-dup: every row id already present in the DOM. Even
+           though keyset pagination should never re-emit a row, a row id the
+           server returns that's already here is skipped on append. */
+        var seenIds = Object.create(null);
+        Array.prototype.forEach.call(
+            tbody.querySelectorAll('tr.activity-row[data-row-id]'),
+            function (tr) { seenIds[tr.getAttribute('data-row-id')] = true; }
+        );
+
+        /* The keyset cursor = the last appended primary row's (data-created,
+           data-row-id). Re-derived from the DOM after every append so we always
+           seek from the genuinely oldest row currently shown. Returns null when
+           there are no rows (nothing to seek from). */
+        function readCursor() {
+            var rows = tbody.querySelectorAll('tr.activity-row[data-row-id]');
+            if (!rows.length) { return null; }
+            var last = rows[rows.length - 1];
+            return {
+                ts: last.getAttribute('data-created') || '',
+                id: last.getAttribute('data-row-id') || '',
+            };
+        }
+
+        /* The toggle is hidden for no-JS users; reveal it now that JS is live —
+           but only when there's actually more than one page to scroll through
+           (otherwise infinite scroll is a no-op). */
+        if (!reachedEnd) {
+            toggleWrap.removeAttribute('hidden');
+        }
+
+        /* Visible (sighted) status. The polite live region is mutated separately
+           via announce() so AT hears the same text without us toggling the
+           region's presence (which would drop the first announce). */
+        function setStatus(msg) {
+            if (statusEl) {
+                if (msg) {
+                    statusEl.textContent = msg;
+                    statusEl.removeAttribute('hidden');
+                } else {
+                    statusEl.textContent = '';
+                    statusEl.setAttribute('hidden', '');
+                }
+            }
+        }
+        /* Mutate (never replace/hide) the always-rendered live region. */
+        function announce(msg) {
+            if (announceEl) { announceEl.textContent = msg || ''; }
+        }
+
+        /* Re-run the shared TZ + geo enhancements over ONLY the appended rows so
+           new timestamps localise and new IP flags backfill, exactly like the
+           initial page. TZ-localise is per row; geo backfill is ONE call scoped
+           to the appended rows ARRAY (MINOR #5) — not the whole tbody — so flags
+           resolved on a previous batch are never re-scanned, and the batch is
+           still a single geo POST rather than one per row. */
+        function enhanceAppendedRows(rows) {
+            rows.forEach(function (tr) {
+                try { if (NS.localiseTimes) NS.localiseTimes(tr); } catch (_e) {}
+            });
+            try { if (NS.backfillFlags) NS.backfillFlags(rows); } catch (_e) {}
+        }
+
+        function finish(endMsg) {
+            reachedEnd = true;
+            setStatus(endMsg);
+            announce(endMsg);
+            if (observer) { observer.disconnect(); }
+            if (loadMoreWrap) { loadMoreWrap.setAttribute('hidden', ''); }
+        }
+
+        function loadNextPage() {
+            if (loading || reachedEnd) { return; }
+            var cursor = readCursor();
+            if (!cursor || !cursor.id) {
+                /* No anchor row to seek from — nothing more we can fetch. */
+                finish('End of log — all entries loaded.');
+                return;
+            }
+            loading = true;
+            setStatus('Loading more…');
+            if (loadMoreBtn) { loadMoreBtn.disabled = true; }
+            var params = new URLSearchParams(window.location.search);
+            params.set('action', 'next-page');
+            params.set('cursor_ts', cursor.ts);
+            params.set('cursor_id', cursor.id);
+            /* page/export have no meaning for the keyset fragment — strip them. */
+            params.delete('page');
+            params.delete('export');
+
+            fetch(window.location.pathname + '?' + params.toString(), {
+                credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            }).then(function (r) {
+                if (!r.ok) { throw new Error('HTTP ' + r.status); }
+                return r.text();
+            }).then(function (html) {
+                loading = false;
+                if (loadMoreBtn) { loadMoreBtn.disabled = false; }
+                /* Parse the returned <tbody> fragment in a detached table so the
+                   <tr> rows are valid (a bare <tr> in a <div> would be dropped by
+                   the HTML parser). */
+                var tmp = document.createElement('table');
+                tmp.innerHTML = html;
+                var frag = tmp.querySelector('[data-activity-fragment]');
+                /* MINOR #4: a 200 with NO fragment wrapper at all is treated as
+                   end-of-data (not retried), removing the latent tight-loop where
+                   an empty-but-OK body would re-arm the observer forever. */
+                if (!frag) {
+                    finish('End of log — all entries loaded.');
+                    return;
+                }
+                var allRows = Array.prototype.slice.call(frag.children);
+                /* Skip any row id already in the DOM (belt-and-braces dedup). */
+                var newRows = allRows.filter(function (tr) {
+                    if (tr.nodeType !== 1) { return false; }
+                    var id = tr.getAttribute && tr.getAttribute('data-row-id');
+                    if (id) {
+                        if (seenIds[id]) { return false; }
+                        seenIds[id] = true;
+                    }
+                    return true;
+                });
+                var atEnd = frag.getAttribute('data-at-end') === '1';
+                if (newRows.length) {
+                    /* Append into the live tbody, then enhance ONLY these rows
+                       (TZ-localise + geo-backfill scoped per row subtree). */
+                    newRows.forEach(function (tr) { tbody.appendChild(tr); });
+                    loadedCount += newRows.filter(function (tr) {
+                        return tr.classList && tr.classList.contains('activity-row')
+                            && tr.getAttribute('data-row-id');
+                    }).length;
+                    enhanceAppendedRows(newRows);
+                    if (pageLabel) {
+                        pageLabel.textContent = loadedCount + ' entr'
+                            + (loadedCount === 1 ? 'y' : 'ies') + ' loaded';
+                    }
+                }
+                /* End-of-data when the server says so OR it returned no usable
+                   rows (covers a full page of pure duplicates, which keyset makes
+                   essentially impossible but we still guard). */
+                if (atEnd || allRows.length === 0) {
+                    finish('End of log — all entries loaded.');
+                } else {
+                    setStatus('Scroll down or use “Load more” to load more.');
+                }
+            }).catch(function () {
+                /* Network / server error — stop trying and leave the no-JS
+                   pagination + Load more visible as a manual fallback. */
+                loading = false;
+                if (loadMoreBtn) { loadMoreBtn.disabled = false; }
+                var msg = 'Could not load more — use the page links below.';
+                setStatus(msg);
+                announce(msg);
+                if (pagination) { pagination.removeAttribute('hidden'); }
+                if (observer) { observer.disconnect(); }
+            });
+        }
+
+        function activate() {
+            /* The Prev/Next pagination is hidden while infinite scroll is active,
+               BUT keyboard / AT users are NOT left without a non-scroll trigger:
+               the focusable "Load more" button (revealed just below) replaces it
+               1:1 as a Tab-reachable, Enter/Space-activatable control. An
+               IntersectionObserver alone can't be driven by keyboard, so this
+               button is the accessibility fallback (MINOR #2). */
+            if (pagination) { pagination.setAttribute('hidden', ''); }
+            if (loadMoreWrap && !reachedEnd) { loadMoreWrap.removeAttribute('hidden'); }
+            if (!observer) {
+                /* rootMargin pre-fetches the next batch ~400px before the sentinel
+                   reaches the viewport, so the append feels seamless. */
+                observer = new IntersectionObserver(function (entries) {
+                    entries.forEach(function (entry) {
+                        if (entry.isIntersecting) { loadNextPage(); }
+                    });
+                }, { rootMargin: '400px' });
+            }
+            observer.observe(sentinel);
+            if (!reachedEnd) { setStatus('Scroll down or use “Load more” to load more.'); }
+        }
+
+        function deactivate() {
+            if (observer) { observer.disconnect(); }
+            if (pagination) { pagination.removeAttribute('hidden'); }
+            if (loadMoreWrap) { loadMoreWrap.setAttribute('hidden', ''); }
+            setStatus('');
+        }
+
+        /* The focusable button is the keyboard/AT trigger (MINOR #2). */
+        if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', function () { loadNextPage(); });
+        }
+
+        /* Persisted preference (default OFF — the user asked for it as an
+           OPTION). Restore it, then react to changes. */
+        var saved = null;
+        try { saved = window.localStorage.getItem(STORAGE_KEY); } catch (_e) {}
+        if (saved === '1') { toggle.checked = true; }
+
+        toggle.addEventListener('change', function () {
+            try { window.localStorage.setItem(STORAGE_KEY, toggle.checked ? '1' : '0'); } catch (_e) {}
+            if (toggle.checked) { activate(); } else { deactivate(); }
+        });
+
+        if (toggle.checked) { activate(); }
     })();
     </script>
 

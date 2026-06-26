@@ -18,10 +18,30 @@ declare(strict_types=1);
    tooltip. Static-cached per request so this require + map build
    only fires once per page load. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+/* Songbook display helper (#1328) — ihymns_songbook_show_abbr() hides the
+   abbreviation badge when it just repeats the title (e.g. "Psalty"/"Psalty"). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
 /* Load song data for statistics */
 $stats = $songData->getStats();
 $songbooks = $songData->getSongbooks();
+
+/* #448 — each top-level home section is wrapped in a `.card-layout-item`
+   so a signed-in user can reorder/hide it. The WRAPPER (not the inner
+   section) is the draggable unit, so loaders that innerHTML-replace or
+   .remove() the inner element never destroy the drag handle. The handle
+   strip is hidden until edit mode (see app.css). applyCardLayout() in
+   card-layout.js hydrates the viewer's saved order/hidden set on load —
+   the home fragment is shared-cache, so the server emits the canonical
+   default order and personalisation happens client-side. */
+$homeCard = static function (string $cardId): string {
+    $id = htmlspecialchars($cardId, ENT_QUOTES, 'UTF-8');
+    return '<div class="card-layout-item" data-card-id="' . $id . '">'
+         . '<div class="card-layout-handle" aria-hidden="true">'
+         . '<i class="bi bi-grip-vertical"></i><span class="ms-1">Drag to reorder</span>'
+         . '</div>';
+};
+$homeCardEnd = '</div>';
 
 ?>
 
@@ -53,6 +73,48 @@ $songbooks = $songData->getSongbooks();
         </div>
     </div>
 
+    <!-- Join a live service (#1335) — a congregant enters the rotating code shown
+         on their church's screen to follow the service in sync. Outside the
+         reorderable grid so it stays discoverable; service-follow.js wires the
+         [data-action="join-service"] click. -->
+    <div class="text-center mb-4">
+        <button type="button" class="btn btn-outline-success" data-action="join-service">
+            <i class="bi bi-broadcast-pin me-1" aria-hidden="true"></i>Join a live service
+        </button>
+        <div class="small text-muted mt-1">Enter the code shown on your church’s screen to follow along.</div>
+    </div>
+
+    <!-- Customise-home toolbar (#448). Hidden until applyCardLayout()
+         confirms the viewer may edit (canCustomiseOwn / canSetDefault),
+         so the logged-out majority never sees a dead "Customise" button. -->
+    <div class="d-flex align-items-center flex-wrap gap-2 mb-3 d-none" id="card-layout-toolbar">
+        <button type="button" class="btn btn-sm btn-outline-info" id="btn-card-layout-edit">
+            <i class="bi bi-grid-3x3-gap me-1" aria-hidden="true"></i>Customise home
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary d-none" id="btn-card-layout-done">
+            <i class="bi bi-check2 me-1" aria-hidden="true"></i>Done
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-warning d-none" id="btn-card-layout-reset">
+            <i class="bi bi-arrow-counterclockwise me-1" aria-hidden="true"></i>Reset to default
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-danger d-none" id="btn-card-layout-save-default"
+                title="Save the current order as the home default for all users">
+            <i class="bi bi-save me-1" aria-hidden="true"></i>Save as site default
+        </button>
+        <span class="small text-muted d-none" id="card-layout-help">
+            Drag a section's handle to reorder; click &times; to hide it. Hidden sections reappear from
+            <a href="/settings#tab-profile" class="text-info">Settings &rarr; Profile</a>.
+        </span>
+    </div>
+
+    <!-- #448 — reorderable / hideable home sections. A vertical stack of
+         card-layout-item wrappers; applyCardLayout() reorders/hides them
+         per the signed-in viewer's saved layout after this fragment loads. -->
+    <div id="home-section-grid"
+         data-layout-surface="home"
+         data-layout-handle=".card-layout-handle">
+
+    <?= $homeCard('quick-actions') ?>
     <!-- Quick Action Buttons -->
     <section id="quick-actions" aria-label="Quick actions">
     <div class="row g-3 mb-4">
@@ -105,18 +167,24 @@ $songbooks = $songData->getSongbooks();
         </div>
     </div>
     </section>
+    <?= $homeCardEnd ?>
 
+    <?= $homeCard('recent-songbooks') ?>
     <!-- Recent songbooks quick tabs (#121) — populated by JS -->
     <div id="recent-songbooks" class="d-none mb-4"></div>
+    <?= $homeCardEnd ?>
 
+    <?= $homeCard('song-of-the-day') ?>
     <!-- Song of the Day (#108) — populated by JS -->
     <div id="song-of-the-day"></div>
+    <?= $homeCardEnd ?>
 
     <!-- Songbook Cards Grid (#151 — section ID for sitelink eligibility).
          Moved up from below "Browse by Theme" in #678 so a returning
          user sees the full songbook list straight after the Recent
          badges + Song of the Day, without having to scroll past
          Recently Viewed / Popular Songs / Themes first. -->
+    <?= $homeCard('songbooks') ?>
     <section id="songbooks" aria-label="Songbooks">
         <h2 class="h5 mb-3">
             <i class="fa-solid fa-book-open me-2" aria-hidden="true"></i>
@@ -165,6 +233,13 @@ $songbooks = $songData->getSongbooks();
                         $bookLangsTitle = !empty($bookLangNames)
                             ? implode(', ', $bookLangNames)
                             : resolveLanguageName($bookLang);
+                        /* #1223 — unofficial-songbook flag (see
+                           includes/pages/songbooks.php for full rationale).
+                           A global per-book property (tblSongbooks.IsOfficial,
+                           #502), so it's safe to render in the cached home
+                           fragment — no per-user state, no personalisation of
+                           a shared cache (CLAUDE.md rule #6). */
+                        $isUnofficial = empty($book['isOfficial']);
                     ?>
                     <div class="col" id="songbook-<?= htmlspecialchars($book['id']) ?>">
                         <div class="card card-songbook h-100 position-relative"
@@ -179,7 +254,7 @@ $songbooks = $songData->getSongbooks();
                             <a href="/songbook/<?= htmlspecialchars($book['id']) ?>"
                                class="stretched-link text-decoration-none text-reset"
                                data-navigate="songbook"
-                               aria-label="<?= htmlspecialchars($book['name']) ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
+                               aria-label="<?= htmlspecialchars($book['name']) ?><?= $isUnofficial ? ' (unofficial songbook)' : '' ?> — <?= $book['songCount'] ?> songs<?= $langCode !== '' ? ' (' . htmlspecialchars($langCode) . ')' : '' ?>"></a>
                             <?php if ($langCode !== ''): ?>
                                 <!-- Language indicator badge (#680) — small uppercase
                                      ISO 639 code in the tile's top-right corner.
@@ -200,9 +275,23 @@ $songbooks = $songData->getSongbooks();
                                 <h3 class="card-title h6 mb-1">
                                     <?= htmlspecialchars($book['name']) ?>
                                 </h3>
+                                <?php $sbAbbr = ihymns_songbook_abbr_label($book['id'] ?? '', $book['displayAbbr'] ?? null); ?>
+                                <?php if (ihymns_songbook_show_abbr($book['name'] ?? '', $sbAbbr)): ?>
                                 <span class="badge bg-body-secondary rounded-pill">
-                                    <?= htmlspecialchars($book['id']) ?>
+                                    <?= htmlspecialchars($sbAbbr) ?>
                                 </span>
+                                <?php endif; ?>
+                                <?php if ($isUnofficial): ?>
+                                    <!-- #1223 — "Unofficial" badge (see
+                                         includes/pages/songbooks.php for the full
+                                         rationale). rounded-pill + ms-1 to match the
+                                         sibling abbreviation pill on the centred home
+                                         tile. aria-hidden — the accessible name in the
+                                         stretched-link already carries it. -->
+                                    <span class="badge songbook-unofficial-badge rounded-pill ms-1"
+                                          title="Unofficial songbook"
+                                          aria-hidden="true">Unofficial</span>
+                                <?php endif; ?>
                                 <p class="card-text text-muted small mt-2 mb-0">
                                     <?= number_format($book['songCount']) ?> songs
                                 </p>
@@ -251,28 +340,41 @@ $songbooks = $songData->getSongbooks();
             <?php endforeach; ?>
         </div>
     </section>
+    <?= $homeCardEnd ?>
 
+    <?= $homeCard('recent-songs') ?>
     <!-- Recently Viewed Songs (#304) — shown for authenticated users -->
     <div class="mb-4" id="recent-songs-section" style="display:none">
-        <h5><i class="fa-solid fa-clock-rotate-left me-2"></i>Recently Viewed</h5>
-        <div id="recent-songs-list" class="list-group list-group-flush"></div>
+        <h2 class="h5"><i class="fa-solid fa-clock-rotate-left me-2" aria-hidden="true"></i>Recently Viewed</h2>
+        <div id="recent-songs-list" class="list-group list-group-flush" aria-live="polite"></div>
     </div>
+    <?= $homeCardEnd ?>
 
+    <?= $homeCard('popular-songs') ?>
     <!-- Popular Songs (#303) -->
     <div class="mb-4" id="popular-songs-section">
-        <h5><i class="fa-solid fa-fire me-2 text-warning"></i>Popular Songs</h5>
-        <div id="popular-songs-list" class="list-group list-group-flush">
+        <h2 class="h5"><i class="fa-solid fa-fire me-2 text-warning" aria-hidden="true"></i>Popular Songs</h2>
+        <div id="popular-songs-list" class="list-group list-group-flush" aria-live="polite">
             <div class="text-muted small p-2">Loading...</div>
         </div>
     </div>
+    <?= $homeCardEnd ?>
 
-    <!-- Browse by Theme (#305) -->
+    <?= $homeCard('tags') ?>
+    <!-- Popular Themes (#305 → rethought in #1148). A compact strip of
+         the top themes ranked by usage (rendered client-side with song
+         counts), capped so it can't become an unbounded chip wall as the
+         tag vocabulary grows. "Browse all themes" reveals the full set
+         inline; the dedicated searchable /themes index is the follow-on. -->
     <div class="mb-4" id="tags-section">
-        <h5><i class="fa-solid fa-tags me-2"></i>Browse by Theme</h5>
-        <div id="tags-list" class="d-flex flex-wrap gap-2">
+        <h2 class="h5"><i class="fa-solid fa-tags me-2" aria-hidden="true"></i>Popular Themes</h2>
+        <div id="tags-list" class="d-flex flex-wrap gap-2 align-items-center" aria-live="polite">
             <span class="text-muted small">Loading...</span>
         </div>
     </div>
+    <?= $homeCardEnd ?>
+
+    </div><!-- /#home-section-grid -->
 
     <!-- The dynamic sections above (Popular Songs, Recently Viewed,
          Browse by Theme) are populated client-side by

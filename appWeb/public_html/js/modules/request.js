@@ -112,10 +112,15 @@ export class Request {
     }
 
     /**
-     * Handle form submission — generate mailto: link.
+     * Handle form submission — POST to the DB-backed song-request endpoint
+     * (#711). Previously this built a mailto: and fired a success toast
+     * unconditionally, so submissions were never logged (and on devices with no
+     * mail client, nothing happened at all). Now it uses the same
+     * song_request_submit endpoint + offline-safe contract as the /request page,
+     * and only confirms success on a real server `ok`.
      * @param {object} bsModal Bootstrap modal instance
      */
-    handleSubmit(bsModal) {
+    async handleSubmit(bsModal) {
         const title = document.getElementById('request-title')?.value.trim();
         const songbook = document.getElementById('request-songbook')?.value.trim();
         const notes = document.getElementById('request-notes')?.value.trim();
@@ -136,28 +141,29 @@ export class Request {
             return;
         }
 
-        /* Build email body */
-        const subject = `Song Request: ${title}`;
-        let body = `Song Request from iHymns\n`;
-        body += `${'='.repeat(30)}\n\n`;
-        body += `Song Title: ${title}\n`;
-        if (songbook) body += `Songbook: ${songbook}\n`;
-        if (notes) body += `Notes: ${notes}\n`;
-        if (email) body += `Contact Email: ${email}\n`;
-        body += `\nSubmitted: ${new Date().toLocaleString()}\n`;
-
-        /* Generate mailto: link */
-        const mailto = `mailto:${encodeURIComponent(this.contactEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-
-        /* Open the email client */
-        window.location.href = mailto;
-
-        /* Record submission time for rate limiting */
+        /* Record submission time for client-side rate limiting (the server also
+           rate-limits by IP). Set before the request so rapid clicks throttle. */
         this.lastSubmitTime = now;
 
-        /* Close modal and show confirmation */
-        bsModal.hide();
-        this.app.showToast('Request sent! Thank you for your feedback.', 'success', 3000);
+        /* POST to the DB-backed endpoint — same contract as the /request page.
+           `website` is the honeypot (must stay empty for a real submission). */
+        try {
+            const res = await fetch('/api?action=song_request_submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify({ title, songbook, details: notes || '', email: email || '', website: '' }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data || !data.ok) {
+                throw new Error((data && data.error) || 'Request failed.');
+            }
+            /* Only now — on a real server OK — do we confirm success. */
+            bsModal.hide();
+            const ref = data.trackingId ? ` (Reference #${data.trackingId})` : '';
+            this.app.showToast(`Request received${ref}. Thank you!`, 'success', 4000);
+        } catch (err) {
+            this.app.showToast('Could not submit your request — please try again.', 'error', 4000);
+        }
     }
 
     /**

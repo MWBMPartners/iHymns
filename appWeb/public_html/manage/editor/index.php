@@ -25,6 +25,20 @@ requireEditor();
 
 $currentUser = getCurrentUser();
 
+/* CSRF token mint — MUST run BEFORE any HTML output (mirrors editor2.php:34).
+   csrfToken() calls initSession() → session_start(), so the session cookie
+   and the freshly-minted $_SESSION['csrf_token'] are committed to the response
+   headers + session store while we still own the output buffer. The old code
+   first called csrfToken() at the inline <script> ~1640 lines down, deep in the
+   HTML body; for a token-adopted session (ihymns_auth cookie, no prior PHP
+   session) that was the FIRST mint, and minting/persisting a brand-new token
+   that late made api2.php's validateCsrf() (X-CSRF-Token header) reject the
+   subsequent delete_song POST with a 403 "Invalid or missing CSRF token".
+   Establishing it here, before <!DOCTYPE>, gives the same early-mint guarantee
+   that makes the v2 editor's CSRF validate. The window.IHYMNS_EDITOR_CSRF emit
+   below now just re-reads this same session token. (delete_song 403 fix) */
+$editorCsrf = function_exists('csrfToken') ? csrfToken() : '';
+
 /* External-link type registry for the Song-Editor Links tab (#833).
    Empty array on pre-migration installs — the Links tab still
    renders but the dropdown shows the empty-state hint. */
@@ -88,48 +102,12 @@ try {
 <body>
 
     <!-- =================================================================
-         HIDDEN FILE INPUTS
-         These are invisible <input type="file"> elements triggered by
-         JavaScript when the user clicks "Load JSON" or "Import".
-         They live outside the visible DOM to keep the layout clean.
-         ================================================================= -->
-
-    <!-- Hidden file input for loading the primary songs.json file -->
-    <input
-        type="file"
-        id="fileInputLoad"
-        accept=".json"
-        style="display: none;"
-        aria-label="Load songs.json file"
-    >
-
-    <!-- Hidden file input for importing songs from an external file.
-         Accepts .json (curator-edited corpus or VideoPsalm songbook)
-         and .zip bulk archives. A bulk-import ZIP mirrors the
-         .SourceSongData/ folder layout (#664) and may contain
-         plain-text .txt files (one per song), OpenSong .xml files
-         (#882), or VideoPsalm .json songbooks (#883). All three
-         kinds may be mixed in the same archive — the server
-         dispatches per-entry by extension and content shape. The zip
-         path inserts directly into MySQL via the
-         /manage/editor/api.php?action=bulk_import_zip endpoint and
-         never overwrites existing songbook or song rows. A single
-         VideoPsalm .json file is routed to
-         action=bulk_import_videopsalm with the same insert-only
-         contract. -->
-    <input
-        type="file"
-        id="fileInputImport"
-        accept=".json,.zip,application/json,application/zip"
-        style="display: none;"
-        aria-label="Import songs from file"
-    >
-
-
-    <!-- =================================================================
          TOP NAVBAR
-         Contains the editor branding and primary action buttons:
-         Load JSON, Save JSON, Export dropdown, and Import.
+         Editor branding + primary action buttons: Save, Revisions,
+         Import (server-side bulk: .zip / VideoPsalm), and per-song
+         Export in the sidebar footer. (The whole-corpus Load/Save/Export
+         JSON workflow was retired in WS-D #1016 — the editor is fully
+         DB-direct.)
          ================================================================= -->
     <nav class="navbar navbar-editor d-flex align-items-center">
 
@@ -178,21 +156,7 @@ try {
                 title="Select a song to enable Save"
                 disabled
             >
-                <i class="bi bi-floppy me-1"></i>Save
-            </button>
-
-            <!-- VALIDATE — Check the entire loaded catalogue for data
-                 quality issues (#235). Catalogue-wide, not per-song —
-                 starts disabled until the editor has finished loading
-                 songs (#590), then enables. -->
-            <button
-                type="button"
-                class="btn btn-sm btn-outline-success"
-                id="btn-validate"
-                title="Validate every song in the loaded catalogue"
-                disabled
-            >
-                <i class="bi bi-check-circle me-1"></i>Validate
+                <i class="bi bi-floppy me-1"></i><span class="btn-save-label">Save</span>
             </button>
 
             <!-- REVISIONS — Show revision history for the currently-selected
@@ -211,45 +175,22 @@ try {
                 <i class="bi bi-clock-history me-1"></i>Revisions
             </button>
 
-            <!-- EXPORT DROPDOWN — Provides JSON and CSV export options.
-                 Tooltip clarifies the scope (#591): exports the entire
-                 currently-loaded catalogue, not the selected song. -->
-            <div class="dropdown">
-                <button
-                    class="btn btn-sm btn-amber dropdown-toggle"
-                    type="button"
-                    id="dropdownExport"
-                    data-bs-toggle="dropdown"
-                    aria-expanded="false"
-                    title="Export the entire loaded catalogue (JSON or CSV)"
-                >
-                    <i class="bi bi-box-arrow-up me-1"></i>Export
-                </button>
-                <ul class="dropdown-menu dropdown-menu-dark" aria-labelledby="dropdownExport">
-                    <!-- Export as JSON — full data export -->
-                    <li>
-                        <a class="dropdown-item" href="#" id="btn-export-json">
-                            <i class="bi bi-filetype-json me-2"></i>Export as JSON
-                        </a>
-                    </li>
-                    <!-- Export as CSV — tabular export for spreadsheets -->
-                    <li>
-                        <a class="dropdown-item" href="#" id="btn-export-csv">
-                            <i class="bi bi-filetype-csv me-2"></i>Export as CSV
-                        </a>
-                    </li>
-                </ul>
-            </div>
-
             <!-- IMPORT — Triggers the hidden import file input -->
             <button
                 type="button"
                 class="btn btn-sm btn-amber"
                 id="btn-import"
-                title="Import songs from a JSON corpus (in-memory merge), a VideoPsalm songbook .json (whole-hymnal upload), or a .zip bulk archive. ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml files in the same &lt;Hymnal&gt; [&lt;ABBR&gt;]/ folder shape, or VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
+                title="Bulk-import songs from a .zip archive, a VideoPsalm songbook .json, an OpenLyrics/OpenLP .xml, a ProPresenter 6 .pro6, a FreeShow .show, an EasyWorship Songs.db (BETA — unverified against live EasyWorship), a Proclaim .txt/.rtf (whole-hymnal or single song), a ChordPro .cho/.pro/.chopro/.crd/.chord single song (OnSong / OpenSong / WorshipTools interop, #1264), or a PowerPoint .pptx worship deck (slides segmented into songs by their '# number-Songbook' title slides; existing songs are matched, not duplicated). ZIPs accept the .SourceSongData layout (one .txt per song), OpenSong .xml, OpenLyrics .xml, ProPresenter .pro6, FreeShow .show, EasyWorship Songs.db + SongWords.db (these carry their own song/songbook, so they ignore the folder shape), and VideoPsalm .json songbooks at any depth. Bulk imports insert directly into MySQL and never overwrite existing rows."
             >
                 <i class="bi bi-box-arrow-in-down me-1"></i>Import
             </button>
+            <!-- #1051 — opt-in title dedupe for the next import; read by editor.js,
+                 posted as dedupeMode=skip-title. -->
+            <span class="form-check form-check-inline ms-1 align-middle"
+                  title="When ticked, the next import skips any song whose title already exists in the same songbook (matched ignoring case, punctuation and accents) — catching duplicates that have a different number.">
+                <input class="form-check-input" type="checkbox" id="import-dedupe-title">
+                <label class="form-check-label small text-muted" for="import-dedupe-title">Skip existing&nbsp;(by&nbsp;title)</label>
+            </span>
 
             <!-- Separator + Admin links / Logout -->
             <span class="text-muted mx-1 navbar-editor-separator">|</span>
@@ -286,6 +227,12 @@ try {
                4. Footer — displays total song count
              ============================================================= -->
         <aside class="editor-sidebar">
+
+            <!-- #1180 — drag-to-resize grip (large displays only; CSS hides it
+                 ≤768px). Wired by the inline script near the foot of this file. -->
+            <div class="sidebar-resize-handle" id="sidebar-resize-handle"
+                 role="separator" aria-orientation="vertical"
+                 aria-label="Drag to resize the song list" title="Drag to resize"></div>
 
             <!-- Sidebar Header — Filter and search controls -->
             <div class="sidebar-header">
@@ -360,21 +307,22 @@ try {
                      </div>
                 -->
 
-                <!-- Empty state shown when no songs are loaded -->
+                <!-- Empty state shown before the song index has loaded -->
                 <div class="empty-state py-5" id="songListEmpty">
                     <i class="bi bi-music-note-list"></i>
                     <p class="mb-1">No songs loaded</p>
-                    <small>Click "Load JSON" to begin</small>
+                    <small>Loading songs from the database…</small>
                 </div>
             </div>
 
             <!-- Sidebar Footer — Song count + Add/Delete buttons -->
-            <div class="sidebar-footer d-flex align-items-center justify-content-between">
-                <span>
-                    <span id="song-count">0 songs</span>
-                    <span id="songCountFiltered" style="display: none;"> (showing <span id="filteredCount">0</span>)</span>
-                </span>
-                <span class="d-flex gap-1">
+            <div class="sidebar-footer d-flex align-items-center justify-content-center flex-wrap gap-2">
+                <!-- #1180 — the redundant "N / total" song-count was removed from
+                     here: the total already shows in the page footer ("N songs
+                     loaded"), and on the same flex row it crowded + mis-aligned
+                     the action buttons. editor.js still updates #song-count if
+                     present (guarded), so this is markup-only. -->
+                <span class="d-flex gap-1 flex-wrap">
                     <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-select-mode"
                             title="Multi-select mode (#399)" aria-pressed="false">
                         <i class="bi bi-check2-square me-1"></i>Select
@@ -382,11 +330,59 @@ try {
                     <button type="button" class="btn btn-sm btn-amber" id="btn-add-song" title="Add new song">
                         <i class="bi bi-plus-lg me-1"></i>Add
                     </button>
-                    <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-export-song"
-                            title="Export the currently-open song as JSON. Filename follows the &lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;[ (&lt;Tune&gt;)] convention so files sort numerically in Finder / Explorer."
-                            disabled>
-                        <i class="bi bi-box-arrow-down me-1"></i>Export
-                    </button>
+                    <!-- Consolidated export (#1166 polish): ONE "Export ▾"
+                         dropdown listing every format for the open song or the
+                         active-filter songbook, replacing the former wall of
+                         per-format buttons (which the mobile flex-wrap exposed).
+                         Every item ID is preserved, so the existing
+                         bindFormat() / inline wiring is unchanged; the old
+                         per-format toggle-enable lines simply no-op now. All
+                         export handlers already guard (no-song / no-filter →
+                         toast), so the single toggle can stay always-enabled.
+                         data-bs-auto-close="outside" keeps the menu open while
+                         the Lines/slide field is used. -->
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                                id="btn-export-all" data-bs-toggle="dropdown"
+                                data-bs-auto-close="outside" aria-expanded="false"
+                                title="Export the open song or the active-filter songbook to a worship-presentation format">
+                            <i class="bi bi-box-arrow-down me-1"></i>Export
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark" style="max-height:70vh;overflow-y:auto;min-width:15rem">
+                            <li><h6 class="dropdown-header">This song</h6></li>
+                            <li><a class="dropdown-item" href="#" id="btn-export-song"><i class="bi bi-braces me-2"></i>iHymns JSON</a></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-song"><i class="bi bi-easel me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.pro</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-song"><i class="bi bi-display me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.pro6</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-song"><i class="bi bi-filetype-xml me-2"></i>OpenSong <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-song"><i class="bi bi-easel me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.xml</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-song"><i class="bi bi-filetype-json me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-song"><i class="bi bi-easel2 me-2"></i>FreeShow <span class="text-muted small ms-1">.show</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-song"><i class="bi bi-file-text me-2"></i>Proclaim <span class="text-muted small ms-1">.txt</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-song"><i class="bi bi-database me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header">This songbook <span class="text-muted fw-normal">· active filter</span></h6></li>
+                            <li><a class="dropdown-item" href="#" id="pp-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 7+ <span class="text-muted small ms-1">.probundle</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="p6-export-songbook"><i class="bi bi-archive me-2"></i>ProPresenter 6 <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="os-export-songbook"><i class="bi bi-archive me-2"></i>OpenSong <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ol-export-songbook"><i class="bi bi-archive me-2"></i>OpenLP / OpenLyrics <span class="text-muted small ms-1">.osz</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="vp-export-songbook"><i class="bi bi-journal-text me-2"></i>VideoPsalm <span class="text-muted small ms-1">.json</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="fs-export-songbook"><i class="bi bi-archive me-2"></i>FreeShow <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="pc-export-songbook"><i class="bi bi-archive me-2"></i>Proclaim <span class="text-muted small ms-1">.zip</span></a></li>
+                            <li><a class="dropdown-item" href="#" id="ew-export-songbook"><i class="bi bi-database-down me-2"></i>EasyWorship <span class="badge bg-warning text-dark ms-1">beta</span></a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li>
+                                <div class="px-3 py-1">
+                                    <label class="form-label small mb-1 d-block" for="export-lines-per-slide">
+                                        Max lines / slide <span class="text-muted">· presentation formats</span>
+                                    </label>
+                                    <input type="number" class="form-control form-control-sm" id="export-lines-per-slide"
+                                           min="0" max="20" step="1" value="0" style="width:5rem"
+                                           aria-label="Maximum lyric lines per slide on export"
+                                           title="0 = keep each verse on one slide. Remembered as your default.">
+                                </div>
+                            </li>
+                        </ul>
+                    </div>
                     <button type="button" class="btn btn-sm btn-outline-danger" id="btn-delete-song" title="Delete selected song">
                         <i class="bi bi-trash me-1"></i>Delete
                     </button>
@@ -833,6 +829,19 @@ try {
                                 title="Add a new song component (verse, chorus, etc.)"
                             >
                                 <i class="bi bi-plus-circle me-1"></i>Add Component
+                            </button>
+                            <!-- Paste & Reflow (#1043) — ProPresenter-style bulk section entry.
+                                 Opens a modal to paste a whole lyrics block and auto-split it
+                                 into classified sections, then Apply creates components. -->
+                            <button
+                                type="button"
+                                class="btn btn-sm btn-outline-secondary"
+                                id="btn-paste-reflow"
+                                data-bs-toggle="modal"
+                                data-bs-target="#reflow-modal"
+                                title="Paste a whole lyrics block and split it into sections (ProPresenter-style Reflow)"
+                            >
+                                <i class="bi bi-magic me-1"></i>Paste &amp; Reflow
                             </button>
                         </div>
 
@@ -1566,6 +1575,63 @@ try {
         </div>
     </div>
 
+    <!-- PASTE & REFLOW modal (#1043) — ProPresenter-style bulk section entry.
+         Paste a lyrics block, auto-split into classified sections, adjust,
+         then Apply to create components via the normal save_song path.
+         All section-card UI is built in editor.js (reflowRender). -->
+    <div class="modal fade" id="reflow-modal" tabindex="-1" aria-labelledby="reflow-modal-title" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+            <div class="modal-content bg-dark text-light border-info">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="reflow-modal-title">
+                        <i class="bi bi-magic me-2"></i>Paste &amp; Reflow
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <!-- #1180 — prominent, scannable explainer (the old version
+                         was small muted text that was easy to skim past). Leads
+                         with the load-bearing rule: blank line = new section. -->
+                    <div class="small border border-info rounded p-2 mb-3 d-flex gap-2"
+                         style="background: rgba(13,202,240,0.08);" role="note">
+                        <i class="bi bi-info-circle-fill text-info mt-1 flex-shrink-0"></i>
+                        <div>
+                            <strong>Put one blank line between each section.</strong>
+                            Every block of lines (separated by an empty line) becomes its own
+                            component when you Apply. Optionally begin a block with a label on its
+                            own line — <code>Verse 1</code>, <code>Chorus</code>, <code>Bridge</code>,
+                            <code>Pre-Chorus</code>… — to set its type; unlabelled blocks are
+                            auto-classified (a repeated block → Chorus, the rest → numbered Verses).
+                            Click <strong>Parse into sections</strong> to preview, adjust the
+                            type / number / text of any section, then <strong>Apply sections</strong>.
+                        </div>
+                    </div>
+                    <label for="reflow-input" class="form-label small mb-1">Raw lyrics</label>
+                    <textarea id="reflow-input"
+                              class="form-control bg-dark text-light border-secondary"
+                              rows="8"
+                              placeholder="Verse 1&#10;Amazing grace, how sweet the sound&#10;That saved a wretch like me&#10;&#10;Chorus&#10;Praise God, praise God&#10;&#10;Verse 2&#10;..."></textarea>
+                    <div class="d-flex gap-2 mt-2 align-items-center">
+                        <button type="button" class="btn btn-sm btn-info" id="reflow-parse-btn">
+                            <i class="bi bi-arrow-down-up me-1"></i>Parse into sections
+                        </button>
+                        <span class="text-muted small" id="reflow-count"></span>
+                    </div>
+                    <hr class="border-secondary">
+                    <div id="reflow-blocks">
+                        <p class="text-muted small mb-0">Paste lyrics above and click <strong>Parse into sections</strong>.</p>
+                    </div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-amber btn-sm" id="reflow-apply-btn" disabled>
+                        <i class="bi bi-check2-circle me-1"></i>Apply sections
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- External-link provider auto-detect + shared card-list editor (#833 / #841).
          Loaded before editor.js so the global module objects are
          available when the editor mounts the Links tab. The Song
@@ -1580,12 +1646,240 @@ try {
          attachPlaceSearch() helper runs. -->
     <script src="/js/modules/place-search.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/place-search.js') ?>"></script>
     <script>
-        window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+        window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        /* #1235 P3 / #1088 — CSRF token for the v2 API (api2.php) that the per-line
+           translation/annotation editor POSTs to. The legacy load/save path
+           (api.php) is session-only; api2.php's enrichment endpoints additionally
+           validate this token via the X-CSRF-Token header. */
+        window.IHYMNS_EDITOR_CSRF = <?= json_encode($editorCsrf) ?>;
+        window.IHYMNS_EDITOR_API2 = '/manage/editor/api2';
     </script>
 
     <!-- Editor JavaScript — all interactive logic (loading, saving, editing, previewing)
          is handled in this separate file to keep concerns separated -->
     <script src="editor.js"></script>
+
+    <!-- ProPresenter 7+ exporter (#887). protobufjs is vendored locally
+         (vendor/protobuf.min.js, BSD-3-Clause) so the editor works on shared
+         hosts + offline; propresenter-export.js exposes window.iHymnsProPresenter.
+         Loaded AFTER editor.js so the inline wiring can read its globals. -->
+    <script src="vendor/protobuf.min.js"></script>
+    <script src="propresenter-export.js"></script>
+    <script>
+    /* #887 — wire the ProPresenter dropdown to the exporter. Self-contained:
+       reads editor.js globals (currentSongId / songData / EDITOR_API_URL /
+       getSelectedSongbookFilter / _loadSongsFull) + the ?action=songbook_export
+       endpoint; makes NO changes to editor.js. Single song -> .pro; the active
+       sidebar songbook filter -> .probundle (bundle of every song in it). */
+    (function () {
+        'use strict';
+
+        function notify(msg, type) {
+            if (typeof showToast === 'function') {
+                showToast(msg, type === 'danger' ? 'error' : type);
+            } else {
+                console.log('[ProPresenter] ' + msg);
+            }
+        }
+
+        /* Zero-pad width for a song's songbook so files sort numerically. */
+        function paddingForSong(song) {
+            var sb = (songData.songbooks || []).find(function (x) { return x.id === song.songbook; });
+            return (sb && window.iHymnsProPresenter) ? window.iHymnsProPresenter.paddingFor(sb) : 0;
+        }
+
+        async function exportCurrentSong() {
+            if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }
+            var song = (songData.songs || []).find(function (s) { return s.id === currentSongId; });
+            if (!song) { notify('Could not find the open song.', 'danger'); return; }
+            /* Ensure the FULL record (components + credits), not the slim stub. */
+            if (!song._full && typeof _loadSongsFull === 'function') {
+                await _loadSongsFull([currentSongId]);
+                song = (songData.songs || []).find(function (s) { return s.id === currentSongId; }) || song;
+            }
+            var result = await window.iHymnsProPresenter.exportSong(song, { padNumber: paddingForSong(song) });
+            notify('Exported ' + result.filename, 'success');
+        }
+
+        async function exportCurrentSongbook() {
+            var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+            if (!abbr) { notify('Filter the song list to one songbook first (sidebar dropdown), then export it.', 'warning'); return; }
+            notify('Building ProPresenter bundle for ' + abbr + '…', 'info');
+            var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
+            if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
+            var payload = await resp.json();
+            var songs = payload.songs || [];
+            if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            var sb = payload.songbook || {};
+            var result = await window.iHymnsProPresenter.exportAllAsBundle(songs, {
+                songbookAbbrev: abbr,
+                songbookName: sb.name || sb.Name || abbr
+            });
+            notify('Exported ' + result.count + ' song' + (result.count === 1 ? '' : 's') + ' → ' + result.filename, 'success');
+        }
+
+        /* Load the protobuf descriptor up-front; enable the dropdown only
+           once the schema parses (so a broken bundle disables export rather
+           than failing mid-click). */
+        function eagerInit() {
+            if (!window.iHymnsProPresenter || !window.iHymnsProPresenter.init) return;
+            window.iHymnsProPresenter.init().then(function () {
+                var btn = document.getElementById('btn-pp-export');
+                if (btn) btn.disabled = false;
+            }).catch(function (err) {
+                console.warn('[ProPresenter] schema init failed; export disabled:', err);
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function () {
+            var s = document.getElementById('pp-export-song');
+            var b = document.getElementById('pp-export-songbook');
+            if (s) s.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportCurrentSong().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            if (b) b.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportCurrentSongbook().catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            eagerInit();
+        });
+    })();
+    </script>
+
+    <!-- File-format exporters (#1054 OpenSong / #1055 VideoPsalm / …).
+         format-export.js exposes window.iHymnsFormatExport and reuses
+         propresenter-export.js's ZIP writer (loaded above). -->
+    <script src="format-export.js"></script>
+    <script>
+    /* Wire the file-format export dropdowns to window.iHymnsFormatExport via a
+       single generic binder (one bindFormat() line per format). Reuses
+       editor.js globals (currentSongId / songData / EDITOR_API_URL /
+       getSelectedSongbookFilter / _loadSongsFull) + ?action=songbook_export.
+       No editor.js changes; no protobuf needed (unlike the .pro export). */
+    (function () {
+        'use strict';
+        function notify(msg, type) {
+            if (typeof showToast === 'function') { showToast(msg, type === 'danger' ? 'error' : type); }
+            else { console.log('[export] ' + msg); }
+        }
+        function currentFullSong() {
+            if (!currentSongId) { return null; }
+            return (songData.songs || []).find(function (s) { return s.id === currentSongId; }) || null;
+        }
+        /* #1065 — max lyric lines per slide for presentation exports. The
+           toolbar input is BOTH the per-export value and (persisted to
+           localStorage on change) the user's default. 0 = keep verses whole. */
+        var LINES_PER_SLIDE_KEY = 'ihymns_export_lines_per_slide';
+        function linesPerSlide() {
+            var el = document.getElementById('export-lines-per-slide');
+            if (el) {
+                var v = parseInt(el.value, 10);
+                return (!isNaN(v) && v > 0) ? v : 0;
+            }
+            var stored = parseInt(window.localStorage.getItem(LINES_PER_SLIDE_KEY), 10);
+            return (!isNaN(stored) && stored > 0) ? stored : 0;
+        }
+        function exportOptions(extra) {
+            var o = extra || {};
+            o.maxLinesPerSlide = linesPerSlide();
+            return o;
+        }
+        async function exportSong(formatKey) {
+            var song = currentFullSong();
+            if (!song) { notify('Open a song first, then export it.', 'warning'); return; }
+            if (!song._full && typeof _loadSongsFull === 'function') {
+                await _loadSongsFull([currentSongId]);
+                song = currentFullSong() || song;
+            }
+            var r = window.iHymnsFormatExport[formatKey].exportSong(song, exportOptions());
+            notify('Exported ' + r.filename, 'success');
+        }
+        async function exportSongbook(formatKey, label) {
+            var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+            if (!abbr) { notify('Filter the song list to one songbook first, then export it.', 'warning'); return; }
+            notify('Building ' + label + ' export for ' + abbr + '…', 'info');
+            var resp = await fetch(EDITOR_API_URL + '?action=songbook_export&abbr=' + encodeURIComponent(abbr), { credentials: 'same-origin' });
+            if (!resp.ok) { notify('Failed to load songbook ' + abbr + ' (HTTP ' + resp.status + ').', 'danger'); return; }
+            var payload = await resp.json();
+            var songs = payload.songs || [];
+            if (!songs.length) { notify('Songbook ' + abbr + ' has no songs to export.', 'warning'); return; }
+            var sb = payload.songbook || {};
+            var r = window.iHymnsFormatExport[formatKey].exportSongbook(songs, exportOptions({
+                songbookAbbr: abbr,
+                songbookName: sb.name || sb.Name || abbr
+            }));
+            notify('Exported ' + r.count + ' song' + (r.count === 1 ? '' : 's') + ' → ' + r.filename, 'success');
+        }
+        function bindFormat(formatKey, label, btnId, songItemId, bookItemId) {
+            var s = document.getElementById(songItemId);
+            var b = document.getElementById(bookItemId);
+            if (s) s.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportSong(formatKey).catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            if (b) b.addEventListener('click', function (e) {
+                e.preventDefault();
+                exportSongbook(formatKey, label).catch(function (err) { notify('Export failed: ' + ((err && err.message) || err), 'danger'); });
+            });
+            var btn = document.getElementById(btnId);
+            if (btn && window.iHymnsFormatExport && window.iHymnsFormatExport[formatKey]) { btn.disabled = false; }
+        }
+        document.addEventListener('DOMContentLoaded', function () {
+            /* #1065 — hydrate the lines-per-slide input from the saved default
+               and persist any change back as the new default. */
+            var lps = document.getElementById('export-lines-per-slide');
+            if (lps) {
+                var saved = parseInt(window.localStorage.getItem(LINES_PER_SLIDE_KEY), 10);
+                if (!isNaN(saved) && saved >= 0) { lps.value = String(saved); }
+                lps.addEventListener('change', function () {
+                    var v = parseInt(lps.value, 10);
+                    if (isNaN(v) || v < 0) { v = 0; lps.value = '0'; }
+                    if (v > 20) { v = 20; lps.value = '20'; }
+                    try { window.localStorage.setItem(LINES_PER_SLIDE_KEY, String(v)); } catch (_e) {}
+                });
+            }
+            bindFormat('openSong',   'OpenSong',   'btn-os-export', 'os-export-song', 'os-export-songbook');
+            bindFormat('videoPsalm', 'VideoPsalm', 'btn-vp-export', 'vp-export-song', 'vp-export-songbook');
+            bindFormat('freeShow',   'FreeShow',   'btn-fs-export', 'fs-export-song', 'fs-export-songbook');
+            bindFormat('openLyrics',    'OpenLP',       'btn-ol-export', 'ol-export-song', 'ol-export-songbook');
+            bindFormat('proclaim',      'Proclaim',     'btn-pc-export', 'pc-export-song', 'pc-export-songbook');
+            bindFormat('proPresenter6', 'ProPresenter 6', 'btn-p6-export', 'p6-export-song', 'p6-export-songbook');
+
+            /* EasyWorship export (#1059) — server-side endpoint, so it can't go
+               through bindFormat()/format-export.js. The dropdown items trigger
+               a download of the generated Songs.db. BETA — see the button title.
+               Honours the same lines-per-slide value. */
+            function triggerEwExport(query) {
+                var url = EDITOR_API_URL + '?action=easyworship_export&' + query
+                        + '&maxLinesPerSlide=' + encodeURIComponent(linesPerSlide());
+                var a = document.createElement('a');
+                a.href = url;
+                a.rel = 'noopener';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+            var ewBtn  = document.getElementById('btn-ew-export');
+            var ewSong = document.getElementById('ew-export-song');
+            var ewBook = document.getElementById('ew-export-songbook');
+            if (ewBtn) { ewBtn.disabled = false; }
+            if (ewSong) ewSong.addEventListener('click', function (e) {
+                e.preventDefault();
+                if (!currentSongId) { notify('Open a song first, then export it.', 'warning'); return; }
+                notify('Building EasyWorship Songs.db (beta — verify it opens in EasyWorship)…', 'info');
+                triggerEwExport('id=' + encodeURIComponent(currentSongId));
+            });
+            if (ewBook) ewBook.addEventListener('click', function (e) {
+                e.preventDefault();
+                var abbr = (typeof getSelectedSongbookFilter === 'function') ? getSelectedSongbookFilter() : '';
+                if (!abbr) { notify('Filter the song list to one songbook first, then export it.', 'warning'); return; }
+                notify('Building EasyWorship Songs.db for ' + abbr + ' (beta — verify it opens in EasyWorship)…', 'info');
+                triggerEwExport('abbr=' + encodeURIComponent(abbr));
+            });
+        });
+    })();
+    </script>
     <!-- Wire the Composition origin field to the place-search module
          after editor.js boots. The hidden id input fires a synthetic
          `change` event when set, which the bindMetadataListeners
@@ -1607,6 +1901,56 @@ try {
                 wirePlaceSearch();
             }
         })();
+    </script>
+    <!-- #1180 — drag-to-resize the song-list sidebar on large displays. The
+         chosen width persists to localStorage; clamped to [240px, 60vw]; only
+         active above the 768px stacked-layout breakpoint. -->
+    <script>
+    (function () {
+        var KEY = 'ihymns_editor_sidebar_w';
+        var sidebar = document.querySelector('.editor-sidebar');
+        var handle  = document.getElementById('sidebar-resize-handle');
+        if (!sidebar || !handle) { return; }
+        function isWide() { return window.matchMedia('(min-width: 769px)').matches; }
+        function clamp(w) { return Math.max(240, Math.min(w, Math.round(window.innerWidth * 0.6))); }
+        /* Restore a saved width (large displays only). */
+        try {
+            var saved = parseInt(window.localStorage.getItem(KEY), 10);
+            if (saved && isWide() && saved >= 240 && saved <= window.innerWidth * 0.6) {
+                sidebar.style.width = saved + 'px';
+                sidebar.style.maxWidth = 'none';
+            }
+        } catch (_e) { /* private mode — skip restore */ }
+        var dragging = false;
+        handle.addEventListener('mousedown', function (e) {
+            if (!isWide()) { return; }
+            dragging = true;
+            handle.classList.add('dragging');
+            document.body.style.userSelect = 'none';
+            document.body.style.cursor = 'col-resize';
+            e.preventDefault();
+        });
+        document.addEventListener('mousemove', function (e) {
+            if (!dragging) { return; }
+            var left = sidebar.getBoundingClientRect().left;
+            var w = clamp(e.clientX - left);
+            sidebar.style.width = w + 'px';
+            sidebar.style.maxWidth = 'none';
+        });
+        document.addEventListener('mouseup', function () {
+            if (!dragging) { return; }
+            dragging = false;
+            handle.classList.remove('dragging');
+            document.body.style.userSelect = '';
+            document.body.style.cursor = '';
+            try { window.localStorage.setItem(KEY, String(parseInt(sidebar.style.width, 10) || '')); } catch (_e) {}
+        });
+        /* If the viewport shrinks to the stacked layout, drop the inline width
+           so the ≤768px rules (full-width sidebar) take over cleanly. */
+        window.addEventListener('resize', function () {
+            if (!isWide()) { sidebar.style.width = ''; sidebar.style.maxWidth = ''; }
+        });
+    })();
     </script>
 
     <!-- #858 — pre-load tblLanguages once per page so the per-component
@@ -1654,6 +1998,11 @@ try {
         if (root) {
             window.editSongIetfPicker = bootIetfLanguagePicker(root);
         }
+        /* #1345 — also expose the boot function itself so editor.js (classic
+           script) can instantiate per-line / per-translation pickers on demand
+           (buildInlineIetfPicker). The structured picker replaces the old
+           free-text per-line language textarea. */
+        window.bootIetfLanguagePicker = bootIetfLanguagePicker;
     </script>
 
     <!-- Song Media editor boot (#853). Subscribes to the

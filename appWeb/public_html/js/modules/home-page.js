@@ -36,6 +36,16 @@ export function initHomePage() {
     loadPopularSongs();
     loadRecentlyViewed();
     loadTags();
+
+    /* #448 — hydrate the signed-in viewer's saved home layout (reorder +
+       hide) client-side, since the home fragment is served shared-cache
+       and can't carry a per-user order. No-op for logged-out visitors. */
+    const grid = document.getElementById('home-section-grid');
+    if (grid) {
+        import('./card-layout.js')
+            .then(m => m.applyCardLayout(grid))
+            .catch(() => { /* module load blip — default order stands */ });
+    }
 }
 
 /* ==================================================================
@@ -67,11 +77,17 @@ async function loadPopularSongs() {
     }
 
     if (!songs.length) {
-        document.getElementById('popular-songs-section')?.remove();
+        /* Remove the whole card-layout-item wrapper (#448), not just the
+           inner section, so no empty draggable shell is left behind. */
+        const sec = document.getElementById('popular-songs-section');
+        (sec?.closest('.card-layout-item') || sec)?.remove();
         return;
     }
 
     el.innerHTML = uniqueBySongId(songs).map(s => renderPopularRow(s)).join('');
+    /* These badges are injected AFTER the route render, so re-run the WCAG
+       text-contrast pass on them (else they'd keep the CSS default colour). */
+    window.iHymnsApp?.router?.fixBadgeContrast?.();
 }
 
 /**
@@ -135,7 +151,11 @@ function renderPopularRow(s, opts = {}) {
        was deleted — drop the row rather than render a bare ID. */
     if (!id || !s.title) return '';
     const title    = toTitleCase(s.title);
-    const book     = s.songbook || id.split('-')[0] || '';
+    /* #1343-B — only derive the songbook abbreviation from the id when it has the
+       <letters>-<digits> SongId shape. A PublicId (IHUID) is opaque with no hyphen,
+       so it carries no songbook prefix; fall back to '' (the empty badge renders the
+       book-glyph) rather than mis-using the whole PublicId as an abbreviation. */
+    const book     = s.songbook || (id.includes('-') ? id.split('-')[0] : '') || '';
     const bookName = s.songbookName || SONGBOOK_NAMES[book] || book;
     const number   = s.number ?? '';
     const views    = s.views ?? 0;
@@ -144,11 +164,19 @@ function renderPopularRow(s, opts = {}) {
         ? `<span class="badge bg-secondary">${escapeHtml(String(views))}</span>`
         : '';
 
+    /* Always render the coloured square (keeps the list aligned + identifies the
+       songbook). Numbered/official songbooks show the number; collection /
+       unofficial songbooks (Misc — number 0/empty) render the badge EMPTY so the
+       `.song-number-badge:empty::before` CSS shows a book glyph instead of a
+       meaningless "0". Both Popular Songs + Recently Viewed use this row.
+       (#392 book-glyph; fixes the earlier over-suppression that hid the square.) */
+    const numberBadge = `<span class="song-number-badge" data-songbook="${escapeHtml(book)}">${number ? escapeHtml(String(number)) : ''}</span>`;
+
     return `<a href="/song/${escapeHtml(id)}"
                data-navigate="song"
                data-song-id="${escapeHtml(id)}"
                class="list-group-item list-group-item-action song-list-item">
-                <span class="song-number-badge" data-songbook="${escapeHtml(book)}">${escapeHtml(String(number))}</span>
+                ${numberBadge}
                 <div class="song-info flex-grow-1">
                     <span class="song-title">${escapeHtml(title)}</span>
                     <small class="text-muted d-block">
@@ -195,25 +223,51 @@ async function loadRecentlyViewed() {
             songbook: h.songbook,
             number:   h.number,
         }, { showViews: false })).join('');
+        /* Re-run the WCAG text-contrast pass on these async-injected badges. */
+        window.iHymnsApp?.router?.fixBadgeContrast?.();
     } catch {
         /* Non-fatal — leave the section hidden. */
     }
 }
 
 /* ==================================================================
- * BROWSE BY THEME (#305)
+ * POPULAR THEMES (#305 → rethought #1148)
  *
- * Lists every song-tag as a pill linking to /tag/<slug>. If the tag
- * registry is empty (fresh install / JSON fallback) the section is
- * removed so the empty heading doesn't linger.
+ * The old version rendered EVERY song-tag as a pill — an unbounded
+ * chip wall that didn't scale as the vocabulary grew. Now: a compact
+ * strip of the top-N themes ranked by usage (with song counts), capped
+ * so it can never become a wall, plus a "Browse all themes" affordance
+ * that reveals the full set inline (the dedicated searchable /themes
+ * index is the tracked follow-on). If the tag registry is empty
+ * (fresh install / DB-less) the section is removed so the empty
+ * heading doesn't linger.
  * ================================================================== */
+const POPULAR_TAGS_LIMIT = 8;
+
+/* Render one theme chip. With a positive count we append a pill badge
+   carrying a visually-hidden " songs" suffix so a screen reader reads
+   "Easter, 42 songs". `seen` collects slugs so the "Browse all" reveal
+   can skip the ones already shown. */
+function renderThemeChip(t, seen) {
+    const slug = escapeHtml(t.slug || '');
+    const name = escapeHtml(t.name || '');
+    if (seen) seen.add(t.slug || '');
+    const count = Number(t.useCount) || 0;
+    const badge = count > 0
+        ? ` <span class="badge rounded-pill text-bg-secondary ms-1">${count}<span class="visually-hidden"> songs</span></span>`
+        : '';
+    return `<a href="/tag/${slug}"
+               data-navigate="tag"
+               class="btn btn-sm btn-outline-secondary theme-chip">${name}${badge}</a>`;
+}
+
 async function loadTags() {
     const el = document.getElementById('tags-list');
     if (!el) return;
 
     let tags = [];
     try {
-        const res  = await fetch('/api?action=tags');
+        const res  = await fetch('/api?action=popular_tags&limit=' + POPULAR_TAGS_LIMIT);
         const data = await res.json();
         tags = Array.isArray(data.tags) ? data.tags : [];
     } catch {
@@ -221,15 +275,43 @@ async function loadTags() {
     }
 
     if (!tags.length) {
-        el.closest('#tags-section')?.remove();
+        /* Remove the card-layout-item wrapper (#448) so no empty shell stays. */
+        const sec = el.closest('#tags-section');
+        (sec?.closest('.card-layout-item') || sec)?.remove();
         return;
     }
 
-    el.innerHTML = tags.map(t => {
-        const slug = escapeHtml(t.slug || '');
-        const name = escapeHtml(t.name || '');
-        return `<a href="/tag/${slug}"
-                   data-navigate="tag"
-                   class="btn btn-sm btn-outline-secondary">${name}</a>`;
-    }).join('');
+    const seen = new Set();
+    el.innerHTML = tags.map(t => renderThemeChip(t, seen)).join('');
+
+    /* If we filled the popular cap there are probably more themes — offer
+       a one-click inline reveal of the remaining set. The popular chips
+       (with counts) stay; the rest append without counts. */
+    if (tags.length >= POPULAR_TAGS_LIMIT) {
+        const moreBtn = document.createElement('button');
+        moreBtn.type = 'button';
+        moreBtn.className = 'btn btn-sm btn-link theme-show-all px-1';
+        moreBtn.textContent = 'Browse all themes →';
+        el.appendChild(moreBtn);
+
+        moreBtn.addEventListener('click', async () => {
+            moreBtn.disabled = true;
+            let all = [];
+            try {
+                const res  = await fetch('/api?action=tags');
+                const data = await res.json();
+                all = Array.isArray(data.tags) ? data.tags : [];
+            } catch {
+                /* Network blip — leave the popular strip as-is. */
+            }
+            const extra = all.filter(t => !seen.has(t.slug || ''));
+            if (extra.length) {
+                moreBtn.insertAdjacentHTML(
+                    'beforebegin',
+                    extra.map(t => renderThemeChip(t, seen)).join('')
+                );
+            }
+            moreBtn.remove();
+        });
+    }
 }

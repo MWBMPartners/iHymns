@@ -2,17 +2,29 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.57.0"
+  version: "0.1254.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
     search, songbook browsing, setlist management, user authentication,
     favorites sync, offline PWA caching, and administrative operations.
 
-    All endpoints are served from a single PHP entry point (`api.php`) and are
+    Most endpoints are served from a single PHP entry point (`api.php`) and are
     routed via the `action` query parameter. Responses are JSON unless otherwise
-    noted. The admin-only **Editor API** (`/manage/editor/api.php`) follows the
-    same action-query pattern but is gated by the `/manage/` PHP session.
+    noted. Three further surfaces share the action-query pattern:
+
+    - The legacy admin **Editor API** (`/manage/editor/api.php`) — gated by the
+      `/manage/` PHP session.
+    - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
+      purpose-built, per-edit atomic editor backend that replaces the
+      whole-song `save_song` race. AUTH + editor-role gated; POSTs use an
+      `X-Requested-With: XMLHttpRequest` same-origin CSRF guard (NOT a session
+      token field). See the **Editor API v2** tag.
+    - **Service Mode** (congregation Live-Follow, #1323/#1335) — the
+      `service_*` action family on `api.php`. See the **Service Mode** tag.
+
+    One non-action route exists: the gated media stream
+    `GET /song-media/<id>` (see the **Media** tag).
 
     ## Authentication
 
@@ -48,13 +60,61 @@ info:
     user is still returned for compatibility, but authorisation uses the
     capability check internally.
 
+    Separately, **access-tier gating capabilities** (the content caps that
+    drive `access_tiers` + content gating) are registered in the `TIER_CAPS`
+    map in `includes/access_tier_validation.php` (#1352). The 7 original caps
+    (`CanViewLyrics`, `CanViewCopyrighted`, `CanPlayAudio`, `CanDownloadMidi`,
+    `CanDownloadPdf`, `CanOfflineSave`, `RequiresCcli`) stay column-backed
+    because their camelCase keys are the frozen native-app API contract. Every
+    **new** gateable cap is a single line in `TIER_CAPS` with `storage 'json'` —
+    stored as a named key inside the one `tblAccessTiers.Capabilities` JSON
+    column, with **no schema change / no new column**. (Earlier docs said to
+    "add a capability column" — that is now only true of the 7 grandfathered
+    caps.)
+
     ## Rate Limiting
 
-    Song request submissions are rate-limited to a configurable maximum per IP
-    per day (default: 5). The shared rate-limit helper
-    (`includes/rate_limit.php::checkRateLimit`) keys by either client IP or
-    authenticated user ID and is reusable for any new endpoint that needs
-    throttling.
+    **Write / auth throttle.** Song-request submissions, login, and the
+    Service-Mode operator endpoints are throttled by
+    `includes/rate_limit.php::checkRateLimit`, keyed by client IP or
+    authenticated user ID. Song requests default to a configurable max per IP
+    per day (default 5).
+
+    **Read throttle (#1354).** The heavy public read endpoints are throttled by
+    a separate fixed-window limiter, `includes/read_rate_limit.php::enforceReadRateLimit`.
+    Each is keyed **per token-or-IP**: a `Bearer`/`ihymns_auth` 64-hex token
+    hashes to its own bucket (`tok:<sha256>`), otherwise the bucket is the
+    client `REMOTE_ADDR` (`ip:<addr>` — never `X-Forwarded-For`). Limits are
+    deliberately generous (≈2–4 req/s sustained per device):
+
+    | Action(s) | Limit |
+    | --- | --- |
+    | `search` | 120 / minute |
+    | `songs_index` | 120 / minute |
+    | `song_detail` / `song_data` | 240 / minute |
+    | `related_songs` | 240 / minute |
+    | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
+
+    On exceed, the endpoint returns **429** with `Retry-After`,
+    `X-RateLimit-Limit`, and `X-RateLimit-Window` headers (see the shared
+    `RateLimited` response). The read limiter is **fail-open** — on an
+    un-migrated install (no `tblReadRateLimit`) or any DB error, no limit is
+    enforced. The token bucket is NOT validated against the sessions table
+    (low-overhead, per-device), so a NAT-shared congregation is not collapsed
+    to one bucket.
+
+    ## Content gating (#1353)
+
+    Content gating is **dormant by default** (`content_gating_enabled='0'`).
+    When an operator turns it on, `song_data` / `song_detail` (and random-song)
+    responses are filtered by the caller's access-tier capabilities: when the
+    tier may not view the lyric body (or it is copyrighted and the tier lacks
+    that capability) the `components` / `translations` / `annotations` /
+    `vocalParts` are stripped and the song object gains `contentRestricted: true`
+    + a `restrictionReason`. Disallowed `media` rows are dropped and
+    `hasAudio` / `hasSheetMusic` forced false; `offlineAllowed` reflects the
+    `offline_save` capability. With the flag off, the song object is returned
+    byte-identical (no extra fields). See the `Song` schema's gated fields.
 
     ## Cross-platform consumers
 
@@ -195,10 +255,15 @@ tags:
   - name: Admin — Tiers
     description: |
       Access-tier CRUD parity (#719 PR 2b). Mirrors `/manage/tiers`.
-      Capability-column list (`TIER_CAPS`) lives in
-      `includes/access_tier_validation.php` so a new capability is a
-      one-line schema + const change — no surface-specific bind_param
-      edits needed.
+      The capability registry (`TIER_CAPS`) lives in
+      `includes/access_tier_validation.php` (#1352). A new gateable
+      capability is a single `TIER_CAPS` line with `storage 'json'` —
+      stored as a named key in the one `tblAccessTiers.Capabilities`
+      JSON column, **no schema change / no new column** (the 7
+      grandfathered caps remain column-backed as the frozen native-app
+      contract). All four surfaces — web admin, `admin_tier_create` /
+      `admin_tier_update`, the public `access_tiers` emit, and content
+      gating — derive their cap list from `TIER_CAPS`.
   - name: Admin — Organisations
     description: |
       System-admin organisation CRUD parity (#719 PR 2c). Mirrors
@@ -248,6 +313,69 @@ tags:
       Admin-only endpoints under `/manage/editor/api.php`, protected by the
       /manage/ PHP session rather than a Bearer token. Used by the song
       editor SPA for per-song save, bulk tag, and revision history.
+  - name: Editor API v2
+    description: |
+      Granular, atomic editor backend (#1200) at `/manage/editor/api2.php`,
+      reached as `?action=<name>`. Every edit is its own CSRF-guarded,
+      audited MySQL write — replacing the whole-song `save_song` auto/manual
+      save race (#1178) without re-implementing the primary save path.
+
+      **Auth + CSRF.** Requires `isAuthenticated()` AND the `editor` role —
+      otherwise `401 {ok:false,error}` (unauthenticated) or
+      `403 {ok:false,error}` (authenticated non-editor). Every **POST**
+      additionally requires the `X-Requested-With: XMLHttpRequest` header
+      (a forbidden header a cross-origin form/navigation cannot set without a
+      CORS preflight that is never honoured); a POST missing it gets
+      `403 {ok:false,error:"Cross-site POST blocked…"}`. This is the same
+      same-origin defence as the public `api.php` (#293) — chosen over an
+      embedded session token that went stale under the cross-subdomain
+      adopted-token admin session (#1307). GET reads carry no CSRF guard.
+
+      **Wire format.** `action` via query string (GET reads) or JSON body
+      (POST writes); two endpoints (`media_upload`, `import_file`/`import_zip`)
+      are `multipart/form-data` reading `$_POST` + `$_FILES`. Every response is
+      `{ok: bool, …}` with the TRUE result. Unknown action → `400`. Any
+      uncaught server error → `500 {ok:false,error:"Server error.",error_detail}`
+      (`error_detail` only populated for admins).
+  - name: Service Mode
+    description: |
+      Congregation Live-Follow (#1323 / #1335) — congregants join a live
+      service via a venue-displayed **rotating code** and follow the broadcast
+      song in sync. The `service_*` action family on `api.php`.
+
+      **Two audiences.** Operator endpoints (`service_session_start`,
+      `service_code_rotate`, `service_code_current`, `service_session_end`,
+      `service_broadcast`) require an authenticated org-operator
+      (`global_admin` / `admin` / the session host / an org-admin of the
+      session's org) — else `401` / `403`. Congregant endpoints
+      (`service_join`, `service_poll`, `service_leave`) are **anonymous** —
+      gated only by knowing the unguessable rotating code (join) or holding
+      the opaque presence token (poll/leave).
+
+      **Presence-token model.** The client mints a `presenceDeviceId`; on
+      `service_join` the server mints an opaque 43-char `PresenceToken` (the
+      hard-revocable gate key, hashed for rate-limit bucketing) bound to the
+      session and expiring at the venue-local occurrence end (UTC). Anonymous
+      polling is rate-limited **per presence token** (`tok:<hash>`, 40/min),
+      not per IP, so a whole congregation behind one church-wifi IP each gets
+      their own budget. Every query filters the `Channel` env discriminator
+      (`alpha`/`beta`/`production`).
+
+      **Dormancy.** The endpoints are always live, but the Phase-3 CCLI
+      content-unlock they exist to drive has **no effect** until both
+      `content_gating_enabled='1'` AND `require_licence:ccli` restriction rows
+      exist — so the family is effectively dormant by default. (The older
+      host-led `live_follow_*` family shares the spine tables but is a
+      separate, non-anonymous, non-venue feature — #1268.)
+  - name: Media
+    description: |
+      Gated streaming of per-song media files (#853) at
+      `GET /song-media/<id>`, where `<id>` is the `tblSongMedia.Id`. Access is
+      evaluated via `checkContentAccess('song', <parent SongId>, …)`; an
+      anonymous request degrades gracefully (no 401 — gating applies as
+      anonymous). Supports HTTP `Range` / `206 Partial Content` for seekable
+      audio. Kinds: `audio` (streamed inline), `sheet-music` (PDF), `midi`,
+      `musicxml` (the last three served as downloads).
 
 paths:
   # ===========================================================================
@@ -260,9 +388,14 @@ paths:
       tags: [Songs]
       summary: Search songs
       description: |
-        Full-text search across song titles, lyrics, writers, and composers.
-        Uses MySQL FULLTEXT for queries of 3+ characters with a LIKE fallback
-        for shorter queries. Results are returned as lightweight summaries.
+        Live MySQL full-text search across song titles, lyrics, writers, and
+        composers. Queries of 3+ characters use FULLTEXT BOOLEAN mode with each
+        term prefix-matched and required (e.g. `+amaz* +grac*`), broadening to
+        ANY-term then writer/composer LIKE then SOUNDEX when a pass is empty;
+        shorter queries use a LIKE scan. Curator-priority matches (alternative
+        titles, scripture-reference tags) are prepended on the first page.
+        Results are lightweight summaries; pass `offset` to page with the
+        returned `hasMore` flag.
       parameters:
         - name: action
           in: query
@@ -288,12 +421,31 @@ paths:
         - name: limit
           in: query
           required: false
-          description: Maximum number of results to return
+          description: Maximum number of results to return per page
           schema:
             type: integer
             default: 50
             minimum: 1
-            maximum: 200
+            maximum: 100
+        - name: offset
+          in: query
+          required: false
+          description: Pagination offset; combine with the returned hasMore flag
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: lyrics
+          in: query
+          required: false
+          description: |
+            Search (and snippet) song bodies as well as titles — mirrors the
+            public "search within lyrics" toggle. Defaults ON for direct API
+            callers. Accepts 1/true/yes (on) or 0/false (off).
+          schema:
+            type: string
+            enum: ["1", "0", "true", "false", "yes"]
+            default: "1"
       responses:
         "200":
           description: Search results
@@ -308,8 +460,16 @@ paths:
                       $ref: "#/components/schemas/SongSummary"
                   total:
                     type: integer
-                    description: Number of results returned
+                    description: Number of results on this page
                     example: 3
+                  hasMore:
+                    type: boolean
+                    description: True when another page is available (use offset)
+                    example: false
+                  offset:
+                    type: integer
+                    description: The offset this page was served from
+                    example: 0
                   query:
                     type: string
                     description: The search query that was executed
@@ -325,7 +485,11 @@ paths:
                     hasAudio: false
                     hasSheetMusic: true
                 total: 1
+                hasMore: false
+                offset: 0
                 query: amazing grace
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=search_num:
     get:
@@ -379,6 +543,14 @@ paths:
         lyrics components (verses, choruses), writers, composers, and metadata.
         Supports flexible ID formats: `MP-1`, `MP-01`, `MP-001`, and `MP-0001`
         all resolve to the same song.
+
+        **Content gating (#1353).** When `content_gating_enabled='1'` and the
+        caller's access tier lacks the relevant capability, the returned `song`
+        is filtered: `components` / `translations` / `annotations` /
+        `vocalParts` stripped, `contentRestricted: true` + `restrictionReason`
+        added, disallowed media dropped, `hasAudio` / `hasSheetMusic` forced
+        false. With the flag off (default) the payload is unchanged. See the
+        `Song` schema's gated fields.
       parameters:
         - name: action
           in: query
@@ -393,9 +565,21 @@ paths:
           schema:
             type: string
             example: CP-0001
+        - name: include
+          in: query
+          required: false
+          description: |
+            (#1099) Opt-in comma-separated enrichment blocks for native/casting
+            clients. Omitted = the base payload (back-compatible). Unknown blocks
+            are ignored; a block is present only when the song actually has that
+            data. Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
+            `scriptureRefs`, `vocalParts`, `translations`, `annotations`.
+          schema:
+            type: string
+            example: tune,media,vocalParts,scriptureRefs
       responses:
         "200":
-          description: Full song data
+          description: Full song data (plus any requested + available include blocks)
           content:
             application/json:
               schema:
@@ -419,6 +603,102 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: Song not found.
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api.php?action=song_by_identifier:
+    get:
+      operationId: getSongByIdentifier
+      tags: [Songs]
+      summary: Resolve songs by an industry identifier (#1103)
+      description: |
+        Look up songs by an industry identifier. `type` is allow-listed and maps
+        to a fixed column; `value` is always bound.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_by_identifier] }
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [iswc, isrc, upc, ccli] }
+        - name: value
+          in: query
+          required: true
+          schema: { type: string, example: "T-034.524.680-C" }
+      responses:
+        "200":
+          description: Matching songs (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string }
+                  value: { type: string }
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string, example: CP-0001 }
+                        number: { type: integer, nullable: true }
+                        title: { type: string }
+                        songbook: { type: string }
+                        songbookName: { type: string }
+        "400":
+          description: Missing/invalid type or value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api.php?action=person_by_identifier:
+    get:
+      operationId: getPersonByIdentifier
+      tags: [Songs]
+      summary: Resolve credit-people by an industry identifier (#1103)
+      description: |
+        Look up credit-people by an industry identifier (IPI / ISNI / CAE / …).
+        Both `type` and `value` are bound.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [person_by_identifier] }
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, example: ipi }
+        - name: value
+          in: query
+          required: true
+          schema: { type: string, example: "00052210040" }
+      responses:
+        "200":
+          description: Matching credit-people (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string }
+                  value: { type: string }
+                  people:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string, nullable: true }
+                        identifierType: { type: string }
+                        identifierValue: { type: string }
+        "400":
+          description: Missing type or value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /api.php?action=songs:
     get:
@@ -529,6 +809,87 @@ paths:
               example:
                 error: No songs available.
 
+  /api.php?action=song_of_the_day:
+    get:
+      operationId: songOfTheDay
+      tags: [Discovery]
+      summary: Song of the Day
+      description: |
+        Deterministic per-day song pick via a live MySQL query (#1015).
+        Everyone sees the same song on the same calendar day; on key dates
+        in the Christian calendar (Advent, Christmas, Lent, Holy Week,
+        Easter, Pentecost, …) a themed song is chosen by keyword matching.
+        The selection is a bounded query — it never materialises the corpus.
+        Language filtering follows the standard rules (untagged songs pass;
+        empty filter = no filter), resolved from `lang` / the
+        X-Preferred-Languages header / the authenticated user.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [song_of_the_day]
+        - name: lang
+          in: query
+          required: false
+          description: |
+            Comma-separated preferred-language primary subtags (e.g. en,es).
+            Overrides the X-Preferred-Languages header / user preference.
+          schema:
+            type: string
+            example: en
+        - name: date
+          in: query
+          required: false
+          description: |
+            YYYY-MM-DD. The client passes its LOCAL date so liturgical
+            themes align to the user's calendar. Malformed/absent → the
+            server's current date.
+          schema:
+            type: string
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+            example: "2026-12-25"
+      responses:
+        "200":
+          description: The chosen song (song is null only if the catalogue is empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    type: object
+                    nullable: true
+                    description: |
+                      Minimal card payload — exactly the fields the home
+                      card renders (not the shared SongSummary shape).
+                    properties:
+                      id:           { type: string, example: CP-0202 }
+                      number:       { type: integer, nullable: true, example: 202 }
+                      title:        { type: string, example: Amazing Grace }
+                      songbook:     { type: string, example: CP }
+                      songbookName: { type: string, example: Christian Praise }
+                      verified:     { type: boolean, example: true }
+                  themeLabel:
+                    type: string
+                    description: Card heading, e.g. "Easter Song of the Day"
+                    example: Christmas Song of the Day
+                  firstLine:
+                    type: string
+                    description: First lyric line, shown as a teaser
+                    example: "Hark! the herald angels sing"
+              example:
+                song:
+                  id: CP-0202
+                  number: 202
+                  title: Amazing Grace
+                  songbook: CP
+                  songbookName: Christian Praise
+                  verified: true
+                themeLabel: Song of the Day
+                firstLine: "Amazing grace! how sweet the sound"
+
   /api.php?action=stats:
     get:
       operationId: getStats
@@ -557,59 +918,194 @@ paths:
                     name: Christian Praise
                     songCount: 650
 
-  /api.php?action=songs_json:
-    get:
-      operationId: exportSongsJson
-      tags: [Songs]
-      summary: Export full song database as JSON
+  /api.php?action=lyrics_ingest:
+    post:
+      operationId: lyricsIngest
+      tags: [Lyrics]
+      summary: Ingest timed lyrics (TTML with word + syllable timing)
       description: |
-        Exports the complete song database as a single JSON payload for
-        client-side Fuse.js search and service worker caching. Supports
-        ETag-based conditional requests (returns 304 Not Modified when the
-        client cache is still valid).
+        Accept Apple-Music-style **TTML** (line / word / syllable timing) for a
+        song and store it in the normalized lyrics schema (`tblLyrics` →
+        `tblLyricLines` → `tblLyricWords` → `tblLyricSyllables`, #1047 / #141).
+        Intended for an external pusher such as MeedyaDL (#907).
+
+        - **Auth:** an API key with scope `lyrics:ingest` (mint at
+          `/manage/api-keys`). Send `Authorization: Bearer ihk_live_…` or
+          `X-API-Key: …`.
+        - Ingested lyrics default to `status: pending_review` — a curator
+          approves before they go live.
+        - Re-ingesting the same `(songId, source)` **replaces** its rows
+          (no duplication).
+        - Body is JSON `{ songId|title, ttml, … }`, or raw TTML with `?songId=`.
+
+        **Song resolution (#1064):** when `songId` is omitted, the backend
+        resolves the song from the metadata — explicit `songId` → exact `isrc`
+        → normalized `title` (with an `artist` tiebreak) → else it **creates a
+        provisional song** in the `Misc` songbook (`Verified=0`, surfaced at
+        `/manage/duplicate-songs` for moderator review). The payload's external
+        IDs (`isrc`/`upc`) + artists + provider URLs (`appleMusicUrl`,
+        `crossPlatform`) are stored on the song (idempotent add-if-absent) so
+        future matches get stronger. The response reports `matched`/`created`.
+      security:
+        - ingestApiKey: []
+        - ingestApiKeyHeader: []
       parameters:
         - name: action
           in: query
           required: true
           schema:
             type: string
-            enum: [songs_json]
+            enum: [lyrics_ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttml]
+              properties:
+                songId:
+                  type: string
+                  description: Explicit tblSongs.SongId. Omit to resolve/create by metadata.
+                  example: CP-0271
+                ttml:
+                  type: string
+                  description: The TTML document (Apple-Music word/syllable timing).
+                title:
+                  type: string
+                  description: Song title — the primary match key when songId is absent.
+                artist:
+                  type: string
+                  description: Artist(s) — tiebreak when several titles match; stored on the song.
+                album:
+                  type: string
+                isrc:
+                  type: string
+                  description: Recording ISRC — exact-match key + stored on tblSongs.Isrc.
+                upc:
+                  type: string
+                durationMs:
+                  type: integer
+                appleMusicUrl:
+                  type: string
+                crossPlatform:
+                  type: object
+                  additionalProperties: { type: string }
+                  description: Provider→URL map (spotify, youtubeMusic, genius, musicbrainzRecording, …) stored as song external links.
+                source:
+                  type: string
+                  default: applemusic-ttml
+                  description: Provenance label; unique per song with the lyrics record.
+                sourceUrl:
+                  type: string
+                isPrimary:
+                  type: boolean
+                  description: Make these the canonical lyrics (demotes any other primary).
+                isExplicit:
+                  type: boolean
+                status:
+                  type: string
+                  enum: [draft, pending_review, approved, rejected, archived]
+                  default: pending_review
+          application/xml:
+            schema:
+              type: string
+              description: Raw TTML body (use ?songId=… &source=… in the query).
       responses:
         "200":
-          description: Full song database
-          headers:
-            ETag:
-              description: Content hash for conditional caching
-              schema:
-                type: string
-            Cache-Control:
-              description: Caching directive
-              schema:
-                type: string
-                example: "public, max-age=3600, must-revalidate"
+          description: Lyrics ingested
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  meta:
-                    type: object
-                    description: Collection metadata
-                    properties:
-                      totalSongs:
-                        type: integer
-                      totalSongbooks:
-                        type: integer
-                  songbooks:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Songbook"
+                  ok: { type: boolean }
+                  songId: { type: string }
+                  matched: { type: boolean, description: matched an existing song }
+                  created: { type: boolean, description: a provisional song was created }
+                  lyricsId: { type: integer }
+                  lines: { type: integer }
+                  words: { type: integer }
+                  syllables: { type: integer }
+                  idsAdded: { type: integer, description: external IDs/URLs added to the song }
+                  hasTiming: { type: boolean }
+                  hasWordTiming: { type: boolean }
+                  hasSyllableTiming: { type: boolean }
+                  language: { type: string, nullable: true }
+                  status: { type: string }
+              example:
+                ok: true
+                songId: CP-0271
+                matched: true
+                created: false
+                lyricsId: 42
+                lines: 24
+                words: 180
+                syllables: 96
+                idsAdded: 3
+                hasTiming: true
+                hasWordTiming: true
+                hasSyllableTiming: true
+                language: en
+                status: pending_review
+        "400":
+          description: Missing songId/ttml or bad request
+        "401":
+          description: Missing / invalid / unscoped API key
+        "405":
+          description: POST required
+        "413":
+          description: Payload exceeds the 4 MiB limit
+        "422":
+          description: TTML parse / write failure (e.g. not a TTML document, unknown song)
+
+  /api.php?action=songs_index:
+    get:
+      operationId: songsIndex
+      tags: [Songs]
+      summary: Slim catalogue index (PWA offline)
+      description: |
+        The FULL catalogue as lightweight rows (id/number/title/songbook/
+        songbookName + language + media flags) in one response — a few
+        hundred KB gzipped vs the ~5.7 MB whole-song corpus (#1017). The
+        service worker precaches this so that OFFLINE the client can browse
+        + run a basic title/number search and fall back to cached song
+        pages. Online, every read is still the live API; this index is the
+        offline-only fallback. No pagination, no lyrics.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songs_index]
+      responses:
+        "200":
+          description: Slim song index
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
                   songs:
                     type: array
                     items:
-                      $ref: "#/components/schemas/Song"
-        "304":
-          description: Not Modified (client cache is still valid)
+                      type: object
+                      properties:
+                        id:           { type: string, example: CP-0202 }
+                        number:       { type: integer, nullable: true, example: 202 }
+                        title:        { type: string, example: Amazing Grace }
+                        songbook:     { type: string, example: CP }
+                        songbookName: { type: string, example: Christian Praise }
+                        language:     { type: string, example: en }
+                        hasAudio:     { type: boolean }
+                        hasSheetMusic: { type: boolean }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  # /api.php?action=songs_json removed in WS-J #1020 — the whole-corpus JSON
+  # export + its file cache were decommissioned. The PWA uses the slim
+  # /api?action=songs_index (live MySQL) instead.
 
   /api.php?action=missing_songs:
     get:
@@ -669,9 +1165,184 @@ paths:
               example:
                 error: Songbook parameter is required.
 
+  /api.php?action=song_detail:
+    get:
+      operationId: getSongDetail
+      tags: [Songs]
+      summary: Get full song data (alias of song_data)
+      description: |
+        Identical to `action=song_data` — same handler in api.php. Retained as
+        the name `songs_list` points callers to for fetching a full record
+        after a paginated index hit (#1012). Returns the complete song with
+        lyrics components, writers, composers and metadata. Subject to the same
+        read rate limit and content gating (#1353) as `song_data`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_detail] }
+        - name: id
+          in: query
+          required: true
+          description: "Song ID in BOOK-NUMBER format (e.g. CP-0001)"
+          schema: { type: string, example: CP-0001 }
+      responses:
+        "200":
+          description: Full song data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  song:
+                    $ref: "#/components/schemas/Song"
+        "400":
+          description: Missing song ID
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api.php?action=songs_list:
+    get:
+      operationId: songsList
+      tags: [Songs]
+      summary: Lightweight paginated song index (WS-A #1012)
+      description: |
+        Paginated, language-filtered slim index — id/number/title/songbook/
+        songbookName/language + media flags only (no lyrics, writers or
+        components). The language filter is applied in SQL so pagination is
+        correct. Fetch a full record via action=song_detail&id=…
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [songs_list] }
+        - name: songbook
+          in: query
+          required: false
+          description: Filter by songbook abbreviation
+          schema: { type: string, example: CP }
+        - name: limit
+          in: query
+          required: false
+          description: Rows per page (clamped server-side to 1..500)
+          schema: { type: integer, default: 50, minimum: 1, maximum: 500 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: One page of the slim song index
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:            { type: string, example: CP-0202 }
+                        number:        { type: integer, nullable: true, example: 202 }
+                        title:         { type: string, example: Amazing Grace }
+                        songbook:      { type: string, example: CP }
+                        songbookName:  { type: string, example: Christian Praise }
+                        language:      { type: string, example: en }
+                        hasAudio:      { type: boolean }
+                        hasSheetMusic: { type: boolean }
+                  total:   { type: integer, description: Total rows matching the filter (before paging), example: 650 }
+                  offset:  { type: integer, example: 0 }
+                  limit:   { type: integer, example: 50 }
+                  hasMore: { type: boolean, description: True when (offset + page length) < total, example: true }
+
+  /api.php?action=song_links:
+    get:
+      operationId: getSongLinks
+      tags: [Songs]
+      summary: Cross-book counterparts for one song (#807)
+      description: |
+        Every other song sharing this song's tblSongLinks.GroupId — the same
+        hymn in a different songbook. Distinct from translations (different
+        language). Deployments without tblSongLinks get a clean empty list
+        (groupId 0) rather than a 500.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_links] }
+        - name: id
+          in: query
+          required: true
+          description: "Canonical SongId, e.g. CP-0001"
+          schema: { type: string, example: CP-0001 }
+      responses:
+        "200":
+          description: Cross-book counterparts (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groupId:
+                    type: integer
+                    description: Link group ID (0 when the song has no counterparts)
+                    example: 42
+                  songs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: string, example: MP-0031 }
+                        title:        { type: string, example: Amazing Grace }
+                        number:       { type: integer, nullable: true, example: 31 }
+                        songbook:     { type: string, example: MP }
+                        songbookName: { type: string, example: Mission Praise }
+                        language:     { type: string, example: en }
+                        note:         { type: string, nullable: true }
+                        verified:     { type: boolean }
+        "400":
+          description: Missing song ID
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "500":
+          description: Lookup failed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   # ===========================================================================
   # LANGUAGES
   # ===========================================================================
+
+  /api.php?action=catalogue_language_subtags:
+    get:
+      operationId: catalogueLanguageSubtags
+      tags: [Languages]
+      summary: Distinct primary language subtags present in the catalogue (#776)
+      description: |
+        The union of primary language subtags actually present across
+        tblSongbooks.Language and tblSongs.Language (lowercase, sorted,
+        de-duplicated). Lightweight replacement for hitting `songbooks` just to
+        derive the language chip set. No authentication; cached 5 min.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [catalogue_language_subtags] }
+      responses:
+        "200":
+          description: Sorted unique primary subtags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  subtags:
+                    type: array
+                    items: { type: string }
+                    example: ["en", "es", "fr", "sw"]
 
   /api.php?action=languages:
     get:
@@ -1166,10 +1837,15 @@ paths:
       tags: [Setlists]
       summary: Sync setlists with server
       description: |
-        Merge local setlists with server-side storage. New setlists (by ID)
-        are inserted; existing setlists are updated if the local version is
-        newer; server-only setlists are preserved. Maximum 50 setlists per
-        user with up to 200 songs each.
+        Reconcile local setlists with server-side storage. Behaviour depends
+        on `mode` (WS-F #1018):
+          * `replace` (default for per-edit auto-sync) — the client's full
+            current list is authoritative: setlists present in the payload are
+            upserted, and server setlists ABSENT from the payload are DELETED,
+            so a deletion on one device propagates to the others.
+          * `merge` (first-login backfill) — union: payload setlists are
+            upserted and server-only setlists are preserved (never deleted).
+        Maximum 50 setlists per user with up to 200 songs each.
       security:
         - bearerAuth: []
       parameters:
@@ -1187,6 +1863,13 @@ paths:
               type: object
               required: [setlists]
               properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                  description: >
+                    'replace' deletes server setlists absent from the payload;
+                    'merge' only adds/updates. Omitted → 'merge'.
                 setlists:
                   type: array
                   maxItems: 50
@@ -1387,7 +2070,9 @@ paths:
       operationId: getFavorites
       tags: [Favorites]
       summary: Get user favorites
-      description: Retrieve all favorite song IDs for the authenticated user.
+      description: |
+        Retrieve the authenticated user's favorites as `{id, tags}` objects
+        (WS-G #1019 — `tags` is the per-favourite tag array, empty if none).
       security:
         - bearerAuth: []
       parameters:
@@ -1399,7 +2084,7 @@ paths:
             enum: [favorites]
       responses:
         "200":
-          description: Favorite song IDs
+          description: Favorite objects
           content:
             application/json:
               schema:
@@ -1408,8 +2093,7 @@ paths:
                   favorites:
                     type: array
                     items:
-                      type: string
-                    example: ["CP-0202", "MP-0042"]
+                      $ref: "#/components/schemas/FavoriteEntry"
         "401":
           description: Not authenticated
           content:
@@ -1423,9 +2107,15 @@ paths:
       tags: [Favorites]
       summary: Sync favorites
       description: |
-        Merge local favorites with server-side storage. The result is the
-        union of both sets (no favorites are removed during sync). Maximum
-        500 favorites per user.
+        Reconcile local favorites with server-side storage (WS-G #1019).
+        Behaviour depends on `mode`:
+          * `replace` (default for per-edit auto-sync) — the client's list is
+            authoritative: favourites absent from the payload are DELETED, so a
+            removal on one device propagates; per-song tags are upserted.
+          * `merge` (first-login backfill) — union: nothing is deleted.
+        The payload accepts BOTH the legacy bare-id array and the tagged
+        `{id, tags}` object form. A bare id leaves any existing server tags
+        intact; a `{id, tags}` entry sets them. Maximum 500 favorites.
       security:
         - bearerAuth: []
       parameters:
@@ -1443,17 +2133,27 @@ paths:
               type: object
               required: [favorites]
               properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                  description: >
+                    'replace' deletes favourites absent from the payload;
+                    'merge' only adds. Omitted → 'merge'.
                 favorites:
                   type: array
-                  description: Array of song IDs from local storage
+                  description: >
+                    Song IDs (legacy) or {id, tags} objects (preferred).
                   maxItems: 500
                   items:
-                    type: string
-                    pattern: "^[A-Za-z]+-\\d+$"
-                  example: ["CP-0202", "MP-0042"]
+                    oneOf:
+                      - type: string
+                        pattern: "^[A-Za-z]+-\\d+$"
+                      - $ref: "#/components/schemas/FavoriteEntry"
+                  example: [{ "id": "CP-0202", "tags": ["Easter"] }, "MP-0042"]
       responses:
         "200":
-          description: Merged favorites
+          description: Stored favorites as {id, tags} objects
           content:
             application/json:
               schema:
@@ -1462,8 +2162,7 @@ paths:
                   favorites:
                     type: array
                     items:
-                      type: string
-                    example: ["CP-0202", "MP-0042", "CP-0501"]
+                      $ref: "#/components/schemas/FavoriteEntry"
         "400":
           description: Invalid request body
           content:
@@ -1514,6 +2213,101 @@ paths:
                 $ref: "#/components/schemas/SuccessResponse"
         "400":
           description: Invalid song ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=custom_tags:
+    get:
+      operationId: getCustomTags
+      tags: [Favorites]
+      summary: Get the user's custom tag pool
+      description: |
+        Retrieve the authenticated user's per-user custom favourite-tag pool
+        (WS-G #1019) — distinct from the curator-managed global song tags.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [custom_tags]
+      responses:
+        "200":
+          description: Custom tag names
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items: { type: string, maxLength: 50 }
+                    example: ["Easter", "Quiet Time"]
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=custom_tags_sync:
+    post:
+      operationId: syncCustomTags
+      tags: [Favorites]
+      summary: Sync the user's custom tag pool
+      description: |
+        Reconcile the local custom-tag pool with the server (WS-G #1019).
+        `mode=replace` (default for edits) deletes tags absent from the
+        payload; `mode=merge` (first-login backfill) only adds. Max 200 tags.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [custom_tags_sync]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tags]
+              properties:
+                mode:
+                  type: string
+                  enum: [replace, merge]
+                  default: merge
+                tags:
+                  type: array
+                  maxItems: 200
+                  items: { type: string, maxLength: 50 }
+                  example: ["Easter", "Quiet Time"]
+      responses:
+        "200":
+          description: Stored tag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Invalid request body
           content:
             application/json:
               schema:
@@ -1710,6 +2504,99 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_verify_email:
+    post:
+      operationId: authVerifyEmail
+      tags: [Authentication]
+      summary: Verify an email-verification token
+      description: |
+        Consumes a one-time email-verification token (from the verification
+        link). The token may be supplied in the POST JSON body OR as a `token`
+        query parameter (GET) for direct link clicks. Failures are logged with
+        a hashed token prefix only.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_verify_email] }
+        - name: token
+          in: query
+          required: false
+          description: Verification token (GET path — used by link clicks)
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string, description: Verification token (POST path) }
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean, example: true }
+                  message: { type: string, example: Email verified successfully. }
+                  user_id: { type: integer, example: 123 }
+        "400":
+          description: Missing, invalid, or expired token
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_update_avatar_service:
+    post:
+      operationId: authUpdateAvatarService
+      tags: [Authentication]
+      summary: Update avatar-service preference (#616)
+      description: |
+        Sets the authenticated user's avatar resolver. `null` clears the
+        override (inherit the project default). Returns 503 if the
+        tblUsers.AvatarService column has not been migrated yet.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_update_avatar_service] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [avatar_service]
+              properties:
+                avatar_service:
+                  type: string
+                  nullable: true
+                  description: Resolver name (gravatar / libravatar / dicebear / none), or null to inherit the project default.
+      responses:
+        "200":
+          description: Preference saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  avatar_service: { type: string, nullable: true, example: gravatar }
+        "400":
+          description: Invalid avatar_service value
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: AvatarService column not yet migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=auth_update_profile:
     post:
@@ -2131,12 +3018,44 @@ paths:
                 properties:
                   maintenance:
                     type: boolean
-                    description: Whether the app is in maintenance mode
+                    description: Whether the app is in maintenance mode (WS-K #1021). Always returned 200 even during maintenance so the PWA can learn the flag + show a banner.
                     example: false
+                  maintenanceMessage:
+                    type: string
+                    description: Optional admin-set message shown on the maintenance banner/page (empty = default text).
+                    example: ""
                   songRequestsEnabled:
                     type: boolean
                     description: Whether song requests are currently accepted
                     example: true
+                  registrationMode:
+                    type: string
+                    description: Account-registration mode (e.g. open / invite / closed).
+                    example: open
+                  motd:
+                    type: string
+                    description: Message of the day (empty when unset).
+                    example: ""
+                  emailLoginEnabled:
+                    type: boolean
+                    description: True when an email service is configured (email_service != 'none').
+                    example: true
+                  captchaProvider:
+                    type: string
+                    description: Active CAPTCHA provider key ('none' when disabled).
+                    example: none
+                  adsEnabled:
+                    type: boolean
+                    description: Whether ad slots are enabled.
+                    example: false
+                  contentGatingEnabled:
+                    type: boolean
+                    description: >-
+                      Whether copyrighted-lyrics gating is active. When true,
+                      the song page may serve a "lyrics protected" surface
+                      instead of full lyrics; clients use this to decide
+                      whether to fetch lyrics.
+                    example: false
 
   /api.php?action=ccli_validate:
     post:
@@ -3231,6 +4150,8 @@ paths:
                     additionalProperties:
                       type: string
                       description: Rendered `<article>` HTML for the song page
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=bulk_audio:
     get:
@@ -3269,6 +4190,8 @@ paths:
                       properties:
                         songId: { type: string, example: CP-0202 }
                         url:    { type: string, example: /data/audio/CP/0202.mp3 }
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ===========================================================================
   # DISCOVERY  (popular / tags / suggest / related)
@@ -3333,6 +4256,44 @@ paths:
                         slug:     { type: string, example: easter }
                         songCount: { type: integer }
 
+  /api.php?action=popular_tags:
+    get:
+      operationId: popularTags
+      tags: [Discovery]
+      summary: Top themes ranked by usage, with song counts
+      description: >
+        Powers the compact "Popular themes" home strip (#1148). Returns
+        only tags that are actually in use, ordered by song count
+        (descending) then name. Scoped/DB-direct — never a whole-corpus
+        load.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [popular_tags] }
+        - name: limit
+          in: query
+          required: false
+          description: Maximum tags to return (default 8, clamped 1..50).
+          schema: { type: integer, default: 8, minimum: 1, maximum: 50 }
+      responses:
+        "200":
+          description: Popular tag list with song counts
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:       { type: integer }
+                        name:     { type: string, example: Easter }
+                        slug:     { type: string, example: easter }
+                        useCount: { type: integer, example: 42 }
+
   /api.php?action=songs_by_tag:
     get:
       operationId: songsByTag
@@ -3370,6 +4331,12 @@ paths:
       operationId: suggest
       tags: [Discovery]
       summary: Typeahead suggestions for the search box
+      description: |
+        Lightweight, relevance-ranked title typeahead (live MySQL). Uses the
+        same FULLTEXT BOOLEAN prefix strategy as `action=search` (`+term*`)
+        with a LIKE fallback for sub-3-char queries, returning at most 8
+        minimal rows. Honours the active language filter. Powers the header
+        autocomplete (#1014).
       parameters:
         - name: action
           in: query
@@ -3378,10 +4345,10 @@ paths:
         - name: q
           in: query
           required: true
-          schema: { type: string, minLength: 1 }
+          schema: { type: string, minLength: 2 }
       responses:
         "200":
-          description: Suggestion list
+          description: Suggestion list (empty when q is shorter than 2 chars)
           content:
             application/json:
               schema:
@@ -3392,9 +4359,10 @@ paths:
                     items:
                       type: object
                       properties:
-                        label: { type: string }
-                        type:  { type: string, enum: [song, writer, songbook, tag] }
-                        id:    { type: string, nullable: true }
+                        id:       { type: string, example: CP-0202 }
+                        title:    { type: string, example: Amazing Grace }
+                        songbook: { type: string, example: CP }
+                        number:   { type: integer, nullable: true, example: 202 }
 
   /api.php?action=related_songs:
     get:
@@ -4015,17 +4983,37 @@ paths:
   # EDITOR API  (separate entry point — /manage/editor/api.php)
   # ===========================================================================
 
-  /manage/editor/api.php?action=load:
+  /manage/editor/api.php?action=songbook_export:
     get:
-      operationId: editorLoad
+      operationId: editorSongbookExport
       tags: [Editor API]
-      summary: Load every song + songbook + writer row the editor needs
+      summary: Export one songbook's songs as a JSON bundle (WS-J #1020)
       description: |
-        Editor SPA hits this once on open. Returns the full in-memory
-        model. Auth is the `/manage/` PHP session — not a Bearer token.
+        DB-direct per-songbook export used by /manage/songbooks.php. Returns
+        only the requested songbook's songs (the full importable shape) plus
+        its songbook record for the export filename. Replaces the old
+        whole-corpus ?action=load. Auth is the `/manage/` PHP session.
+      parameters:
+        - name: abbr
+          in: query
+          required: true
+          schema: { type: string, example: CP }
       responses:
         "200":
-          description: Full editor payload
+          description: Songbook bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Song" }
+                  songbook:
+                    type: object
+                    nullable: true
+        "400":
+          description: Missing or invalid abbr
         "401":
           description: Not authenticated (redirect the user to /manage/login)
         "403":
@@ -4712,6 +5700,93 @@ paths:
                         title:    { type: string }
                         songbook: { type: string }
                         viewedAt: { type: string, format: date-time }
+
+  /api.php?action=song_history_backfill:
+    post:
+      operationId: songHistoryBackfill
+      tags: [Song Metadata]
+      summary: One-time push of local recently-viewed into the server (WS-G #1019)
+      description: |
+        Pushes a signed-in user's pre-existing LOCAL recently-viewed list
+        (e.g. songs viewed while anonymous, before this device signed in) into
+        `tblSongHistory` so Recently Viewed is consistent across devices. The
+        client runs this once per device, guarded by a localStorage flag; the
+        read path dedupes, so an occasional duplicate row is invisible.
+        Capped at 50 views; ViewedAt preserved (invalid → NOW()).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_history_backfill] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [views]
+              properties:
+                views:
+                  type: array
+                  maxItems: 50
+                  items:
+                    type: object
+                    required: [song_id]
+                    properties:
+                      song_id:   { type: string, pattern: "^[A-Za-z0-9_-]{1,32}$" }
+                      viewed_at: { type: string, format: date-time }
+      responses:
+        "200":
+          description: Imported count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:       { type: boolean }
+                  imported: { type: integer }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=song_history_clear:
+    post:
+      operationId: songHistoryClear
+      tags: [Song Metadata]
+      summary: Clear the caller's recently-viewed history (WS-G #1019)
+      description: |
+        Deletes the authenticated user's own `tblSongHistory` rows so a
+        "Clear" propagates across devices instead of repopulating from the
+        server on the next pull. Anonymous (UserId NULL) rows — which drive
+        aggregate popularity — are untouched.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_history_clear] }
+      responses:
+        "200":
+          description: Cleared count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  cleared: { type: integer }
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api.php?action=song_key:
     get:
@@ -7345,6 +8420,63 @@ components:
         `getAuthenticatedUser()` when no `Authorization` header is
         present. Either scheme is accepted wherever security is
         declared with both entries.
+    ingestApiKey:
+      type: http
+      scheme: bearer
+      description: |
+        Machine-to-machine API key (#1064) for external services (e.g.
+        MeedyaDL) — NOT a user token. A global admin mints it at
+        `/manage/api-keys`; it is stored only as a SHA-256 hash + a short
+        prefix (`tblApiKeys`) and carries a space-separated scope. Scopes:
+        `lyrics:ingest` (write — the lyrics-ingest endpoint) and
+        `catalogue:read` (read — the public catalogue reads at the key's own
+        per-key rate limit instead of the anonymous IP limit; it does NOT
+        unlock gated/copyrighted content), and `content:gated` (a SEPARATE,
+        deliberately-granted scope to read gated/copyrighted content unstripped —
+        dormant unless content gating is enabled; issuing it is a per-partner
+        licensing decision). Per-key limits + usage are managed at
+        `/manage/api-keys`. Send it as `Authorization: Bearer ihk_live_…`
+        or, equivalently, the `X-API-Key` header.
+    ingestApiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        Alternative to the Bearer header for the same machine-to-machine
+        key — `X-API-Key: ihk_live_…`.
+
+  responses:
+    RateLimited:
+      description: |
+        Too Many Requests — the per-window read rate limit was exceeded
+        (#1354). See the **Read rate limiting** section in the API
+        description for the per-action limits and the bucket key. Limits
+        are generous (2–4 req/s sustained per device); a normal client
+        never trips them. The limiter is **fail-open** — on an install
+        where the backing table hasn't been migrated, or on any DB error,
+        no limit applies.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (60 for the minute window).
+          schema: { type: integer, example: 60 }
+        X-RateLimit-Limit:
+          description: The per-window request ceiling that was exceeded.
+          schema: { type: integer, example: 120 }
+        X-RateLimit-Window:
+          description: The window TYPE word (not a number) — `minute` (read endpoints) or `day`.
+          schema: { type: string, enum: [minute, day], example: minute }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Rate limit exceeded (120 per minute). Please slow down and retry shortly."
+              retryAfter:
+                type: integer
+                description: Mirrors the `Retry-After` header.
+                example: 60
 
   schemas:
     # -------------------------------------------------------------------------
@@ -7494,6 +8626,21 @@ components:
           type: boolean
         hasSheetMusic:
           type: boolean
+        lyricsSnippet:
+          type: string
+          description: |
+            First body line containing a query term — present only on
+            search hits driven by a lyrics match (lyrics search on).
+          example: "Through many dangers, toils and snares"
+        matchedVia:
+          type: object
+          description: |
+            Why a curated result was surfaced — present only when the hit
+            came from an alternative-title match (#832).
+          properties:
+            alternativeTitle:
+              type: string
+              example: "Faith's Review and Expectation"
 
     Songbook:
       type: object
@@ -7938,6 +9085,23 @@ components:
             type: integer
             minimum: 0
           example: [0, 1, 2, 1, 3]
+
+    FavoriteEntry:
+      type: object
+      description: A user favourite with its per-song tags (WS-G #1019)
+      required: [id]
+      properties:
+        id:
+          type: string
+          pattern: "^[A-Za-z]+-\\d+$"
+          example: CP-0202
+        tags:
+          type: array
+          description: Per-favourite user tags (empty if none)
+          items:
+            type: string
+            maxLength: 50
+          example: ["Easter", "Communion"]
 
     # -------------------------------------------------------------------------
     # Song request models
@@ -8535,14 +9699,6 @@ components:
           additionalProperties:
             type: integer
             nullable: true
-        songs_json_fallback:
-          type: boolean
-          nullable: true
-          description: True when `SongData` is currently reading from songs.json instead of MySQL. `null` if the probe couldn't run.
-        songs_json_note:
-          type: string
-          nullable: true
-          description: Diagnostic note when the SongData probe threw (e.g. corrupt songs.json).
         share_dir:
           type: object
           properties:

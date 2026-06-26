@@ -31,6 +31,8 @@ import { History } from './modules/history.js';
 import { SetList } from './modules/setlist.js';
 import { UserAuth } from './modules/user-auth.js';
 import { Display } from './modules/display.js';
+import { LiveFollow } from './modules/live-follow.js';
+import { ServiceFollow } from './modules/service-follow.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
 import { Request } from './modules/request.js';
@@ -39,6 +41,8 @@ import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
 import { SearchHistory } from './modules/search-history.js';
 import { bootOfflineUi } from './modules/offline-ui.js';
+import { bootExternalLinkInterstitial } from './modules/external-link-interstitial.js';
+import { openSongPrintDialog } from './modules/print.js';
 import { SongOfTheDay } from './modules/song-of-the-day.js';
 import { OfflineIndicator } from './modules/offline-indicator.js';
 import { StorageBridge } from './modules/storage-bridge.js';
@@ -258,6 +262,16 @@ class iHymnsApp {
                circuit and re-bind on next login. */
             this.userAuth.bindOfflineDrains();
 
+            /* Bridged-session catch-up (WS-F/G #1018/#1019): a token already
+               in localStorage at page load (cross-subdomain sign-in) never
+               fires a login handler, and the router's initial auth-changed
+               dispatch (router.init above) ran BEFORE bindOfflineDrains bound
+               its once-guard listener — so that first event was missed. Fire
+               the one-time DB-first backfill directly for an already-signed-in
+               visitor; the _userDataSynced guard dedupes it against the
+               listener on later navigations. */
+            if (this.userAuth.isLoggedIn()) this.userAuth.triggerUserDataSync();
+
             /* Re-refresh the Settings → Account section now that userAuth
                exists and has read its localStorage credentials. Settings
                .init() ran earlier (with userAuth still undefined) and
@@ -278,6 +292,16 @@ class iHymnsApp {
             /* Display preferences & presentation mode (#95) */
             this.display = new Display(this);
             this.display.init();
+
+            /* Live Follow — real-time leader→followers song sync (#1268).
+               After userAuth + display so isLoggedIn() + the song toolbar exist. */
+            this.liveFollow = new LiveFollow(this);
+            this.liveFollow.init();
+
+            /* Service Mode — congregant join-by-code + follow (#1335 Phase 2c).
+               Anonymous; resumes a join across reloads + wires [data-action=join-service]. */
+            this.serviceFollow = new ServiceFollow(this);
+            this.serviceFollow.init();
 
             /* Side-by-side song comparison (#102) */
             this.compare = new Compare(this);
@@ -314,6 +338,44 @@ class iHymnsApp {
             /* Offline status indicator (#112) */
             this.offlineIndicator = new OfflineIndicator(this);
             this.offlineIndicator.init();
+
+            /* Maintenance-mode banner (WS-K #1021). During maintenance the
+               server 503s the public site, but a returning PWA user loads the
+               cached shell (the service worker serves cache on the 503) and
+               ?action=app_status stays 200 with the flag — so surface a
+               non-blocking banner. New visitors instead get the full
+               server-side maintenance page (index.php) and never run this. */
+            this.userAuth?._ensureAppStatus?.().then((status) => {
+                if (!status || !status.maintenance) return;
+                if (document.getElementById('maintenance-banner')) return;
+                /* #1330 — an admin bypassing maintenance already sees the
+                   server-rendered amber admin-bypass banner (index.php
+                   #ihymns-maint-bypass). Don't stack this second brown banner
+                   on top of it (the redundant double-banner the owner spotted);
+                   the bypass notice is authoritative + more informative. Only
+                   non-admin returning PWA users (no bypass banner) see this. */
+                if (document.getElementById('ihymns-maint-bypass')) return;
+                const bar = document.createElement('div');
+                bar.id = 'maintenance-banner';
+                bar.setAttribute('role', 'status');
+                /* #1279 — pad past the iOS safe area (Dynamic Island / status bar)
+                   so the text isn't hidden in a standalone PWA. */
+                bar.style.cssText = 'position:sticky;top:0;z-index:1080;background:#b45309;'
+                    + 'color:#fff;padding:calc(.5rem + env(safe-area-inset-top, 0px)) '
+                    + 'max(1rem, env(safe-area-inset-right, 0px)) .5rem '
+                    + 'max(1rem, env(safe-area-inset-left, 0px));text-align:center;font-size:.9rem';
+                const icon = document.createElement('i');
+                icon.className = 'fa-solid fa-screwdriver-wrench me-2';
+                icon.setAttribute('aria-hidden', 'true');
+                const text = document.createElement('span');
+                /* textContent — the message is admin-set but render it as text
+                   so it can never inject markup. */
+                text.textContent = (status.maintenanceMessage || '').trim()
+                    || 'iHymns is in maintenance mode — some features may be unavailable until it ends.';
+                bar.appendChild(icon);
+                bar.appendChild(text);
+                document.body.prepend(bar);
+            }).catch(() => { /* status fetch failed — no banner */ });
 
             /* Touch gesture navigation (#143) */
             this.gestures = new Gestures(this);
@@ -371,6 +433,11 @@ class iHymnsApp {
                rendered. Safe to call every route change because the
                helper only binds fresh nodes. */
             bootOfflineUi();
+
+            /* One-per-session "you're leaving iHymns" disclaimer on outbound links
+               (#1347). Delegated + idempotent, so booting once here covers every
+               page; safe to call again on later routes (no-op after the first). */
+            bootExternalLinkInterstitial();
 
             /* --- Hide the loading spinner --- */
             this.hideLoader();
@@ -479,6 +546,12 @@ class iHymnsApp {
                     /* Toggle presentation mode (#125) */
                     this.display.togglePresentationMode();
                     break;
+                case 'b':
+                case 'B':
+                    /* Blank/black the screen while presenting (#1273). No-ops
+                       elsewhere — toggleBlankScreen checks for the overlay. */
+                    this.display.toggleBlankScreen();
+                    break;
                 case 'l':
                 case 'L':
                     /* Navigate to set list page (#125) */
@@ -516,6 +589,50 @@ class iHymnsApp {
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
                 e.preventDefault();
                 this.search.toggleHeaderSearch(true);
+            }
+        });
+
+        /* --- Song correction form (event delegation, #1092) ---
+           The song page is AJAX-injected, so its form is bound here at the
+           document level rather than via an inline script. Posts a structured
+           correction to song_correction_submit and only confirms on server ok. */
+        document.addEventListener('submit', async (e) => {
+            const form = e.target;
+            if (!form || form.id !== 'correction-form') {
+                return;
+            }
+            e.preventDefault();
+            const fb = form.querySelector('#correction-feedback');
+            const proposedEl = form.querySelector('#correction-proposed');
+            const proposed = (proposedEl?.value || '').trim();
+            if (!proposed) { proposedEl?.focus(); return; }
+            const btn = form.querySelector('button[type="submit"]');
+            if (btn) { btn.disabled = true; }
+            if (fb) { fb.className = 'small text-muted'; fb.textContent = 'Sending…'; }
+            try {
+                const res = await fetch('/api?action=song_correction_submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                    body: JSON.stringify({
+                        songId:   form.dataset.songId || '',
+                        field:    form.querySelector('#correction-field')?.value || 'other',
+                        proposed: proposed,
+                        email:    (form.querySelector('#correction-email')?.value || '').trim(),
+                        website:  form.querySelector('#correction-website')?.value || '',
+                    }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok || !data || !data.ok) { throw new Error((data && data.error) || 'Failed.'); }
+                form.reset();
+                if (fb) {
+                    fb.className = 'small text-success';
+                    fb.textContent = 'Thank you! Your correction has been submitted for review'
+                        + (data.trackingId ? ` (#${data.trackingId}).` : '.');
+                }
+            } catch (err) {
+                if (fb) { fb.className = 'small text-danger'; fb.textContent = 'Could not submit — please try again.'; }
+            } finally {
+                if (btn) { btn.disabled = false; }
             }
         });
 
@@ -617,7 +734,10 @@ class iHymnsApp {
                 this.shuffle.shuffleFromBook(el.dataset.shuffleBook || null);
                 break;
             case 'print':
-                window.print();
+                /* #1350 — clean, template-based print (lyrics / chords / large)
+                   instead of window.print() on the chromed page. Falls back to
+                   window.print() off a song page. */
+                openSongPrintDialog(this);
                 break;
         }
     }

@@ -25,9 +25,27 @@ declare(strict_types=1);
  *   - sendgrid : SendGrid v3 REST API
  *   - mailgun  : Mailgun v3 REST API (auto-detects EU / US region)
  *   - ses      : AWS SES SendEmail (SigV4-signed POST, no AWS SDK)
- *   - smtp     : NOT YET IMPLEMENTED (#898 follow-up). Returns a
- *                structured failure so the caller surfaces a real 500
- *                rather than silently dropping the email.
+ *   - smtp     : Self-contained SMTP-AUTH client (no PHPMailer / Composer).
+ *                Speaks ESMTP over a raw socket with STARTTLS or implicit
+ *                SSL/TLS, AUTH LOGIN, and an RFC 5322 MIME multipart body.
+ *                Supports Microsoft 365 (smtp.office365.com) and Google
+ *                Workspace (smtp.gmail.com) via the provider presets in
+ *                /manage/configuration.php, plus DELEGATE / "send-as"
+ *                sending where the From / Sender address differs from the
+ *                SMTP AUTH login (the login mailbox must be granted
+ *                Send-As on the delegate mailbox in the provider's admin
+ *                console — see the configuration.php setup guides). (feature C)
+ *   - graph    : Microsoft 365 via Microsoft Graph (OAuth2 app-only) — #1311.
+ *                client-credentials token → POST /users/{sender}/sendMail with
+ *                the Mail.Send application permission. No SMTP, no app password;
+ *                the modern path immune to Basic-Auth / SMTP-AUTH deprecation.
+ *                Selected when email_service=office365 + email_auth_method=oauth2.
+ *   - gmail-api : Google Workspace via the Gmail API (OAuth2 service-account +
+ *                domain-wide delegation) — #1311. Signed JWT → access token
+ *                impersonating the sender → users/{sender}/messages/send (raw
+ *                base64url RFC822). Selected when email_service=gmail +
+ *                email_auth_method=oauth2. (MailerMatt remains the eventual
+ *                consolidated mechanism; these are the native OAuth2 drivers.)
  *   - log      : developer-only "send to PHP error_log" mode. Sanitises
  *                the log line — never writes the magic-link token, the
  *                6-digit code, or the verification token. The raw
@@ -189,16 +207,28 @@ final class EmailService
                 return self::sendViaMailgun($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'ses':
                 return self::sendViaSes($to, $subject, $bodyHtml, $bodyText, $cfg);
+            case 'office365':
+                /* #1309 — Microsoft 365 / Google Workspace are first-class
+                   providers. #1311 — each can authenticate via SMTP-AUTH (app
+                   password) OR an OAuth2 REST API. email_auth_method picks;
+                   default 'smtp' preserves the #1309 behaviour for existing
+                   configs. M365's OAuth2 path is Microsoft Graph (app-only). */
+                if (($cfg['email_auth_method'] ?? 'smtp') === 'oauth2') {
+                    return self::sendViaGraph($to, $subject, $bodyHtml, $bodyText, $cfg);
+                }
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
+            case 'gmail':
+                /* #1311 — Google Workspace OAuth2 path is the Gmail API
+                   (service-account + domain-wide delegation). */
+                if (($cfg['email_auth_method'] ?? 'smtp') === 'oauth2') {
+                    return self::sendViaGmailApi($to, $subject, $bodyHtml, $bodyText, $cfg);
+                }
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
             case 'smtp':
-                /* Documented as TODO in #898 — see configuration.php
-                   instructions panel. Returning a structured failure
-                   makes the caller surface a real 500 rather than
-                   silently dropping the email. */
-                return EmailSendResult::failure(
-                    'smtp',
-                    'smtp_provider_not_yet_implemented',
-                    'NotImplemented'
-                );
+                /* feature C — real SMTP-AUTH client with STARTTLS / implicit
+                   SSL, AUTH LOGIN, and delegate ("send-as") From support.
+                   Supersedes the #898 "not yet implemented" stub. */
+                return self::sendViaSmtp($to, $subject, $bodyHtml, $bodyText, $cfg);
             default:
                 return EmailSendResult::failure(
                     (string)$service,
@@ -415,6 +445,517 @@ final class EmailService
     }
 
     /* -------------------------------------------------------------------
+     * Driver: SMTP (feature C — self-contained ESMTP client)
+     * -----------------------------------------------------------------
+     * Speaks ESMTP over a raw socket so the repo stays Composer-free,
+     * mirroring the no-SDK approach of the SES driver. Supports:
+     *   - STARTTLS (port 587, the Microsoft 365 / Google Workspace default)
+     *     and implicit SSL/TLS (port 465).
+     *   - AUTH LOGIN with the SMTP username + password.
+     *   - DELEGATE / "send-as" sending: the MAIL FROM envelope sender and
+     *     the From: header use email_smtp_from_address (the delegate
+     *     mailbox) when set, while authentication still uses email_smtp_user
+     *     (the login mailbox). The provider must have granted the login
+     *     mailbox Send-As permission on the delegate mailbox — that's an
+     *     admin-console step, documented in configuration.php.
+     *
+     * NOTE: the SMTP password is read here and written ONLY into the
+     * AUTH LOGIN exchange on the encrypted socket — it is never logged,
+     * never echoed, never placed in the activity-log row.
+     * ----------------------------------------------------------------- */
+    private static function sendViaSmtp(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $host   = trim((string)($cfg['email_smtp_host'] ?? ''));
+        $port   = (int)($cfg['email_smtp_port'] ?? 0);
+        $user   = (string)($cfg['email_smtp_user'] ?? '');
+        $pass   = (string)($cfg['email_smtp_pass'] ?? '');
+        $secure = (string)($cfg['email_smtp_secure'] ?? 'tls');
+
+        /* #1309 — when a first-class office365 / gmail provider is selected,
+           default the connection endpoint from the shared preset (keyed by the
+           service) for any field the admin left blank. The UI pre-fills these
+           too, but this guarantees a correct send even if the JS pre-fill never
+           ran (e.g. the value was saved before this field was filled). The
+           preset keys are identical to the email_service values by design. */
+        $service = (string)($cfg['email_service'] ?? '');
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'smtp_presets.php';
+        $presets = ihymns_smtp_presets();
+        if (isset($presets[$service])) {
+            if ($host === '')              { $host   = (string)$presets[$service]['host']; }
+            if ($port <= 0)                { $port   = (int)$presets[$service]['port']; }
+            if ($secure === '' && $presets[$service]['secure'] !== '') {
+                $secure = (string)$presets[$service]['secure'];
+            }
+        }
+
+        /* fromAddress() already prefers the delegate / send-as address
+           (email_smtp_from_address → falls back to email_from_address). */
+        $from   = self::fromAddress($cfg);
+
+        if ($host === '' || $port <= 0 || $user === '' || $pass === '' || $from['email'] === '') {
+            return EmailSendResult::failure('smtp', 'missing_host_port_credentials_or_from', 'NotConfigured');
+        }
+        if (!function_exists('fsockopen') && !function_exists('stream_socket_client')) {
+            return EmailSendResult::failure('smtp', 'no_socket_transport_available', 'TransportError');
+        }
+
+        /* Implicit-SSL connects to an already-TLS socket (port 465);
+           STARTTLS and "none" connect in cleartext and (for tls) upgrade
+           after EHLO. */
+        $useImplicitSsl = ($secure === 'ssl');
+        $useStartTls    = ($secure === 'tls');
+        $transport      = $useImplicitSsl ? 'ssl://' : '';
+
+        $errno  = 0;
+        $errstr = '';
+        $timeout = 15;
+        /* @ suppresses the connection-warning so a refused/timed-out
+           connection becomes a clean structured failure instead of a
+           PHP warning leaking host details into the output. */
+        $fp = @stream_socket_client(
+            $transport . $host . ':' . $port,
+            $errno,
+            $errstr,
+            $timeout,
+            STREAM_CLIENT_CONNECT
+        );
+        if ($fp === false) {
+            return EmailSendResult::failure(
+                'smtp',
+                'connect_failed:' . self::sanitiseForLog($errstr !== '' ? $errstr : ('errno_' . $errno), 80),
+                'TransportError'
+            );
+        }
+        stream_set_timeout($fp, $timeout);
+
+        /* RFC 5321 conversation. Each helper reads the multi-line reply
+           and asserts the leading 3-digit code is in the accepted set;
+           any deviation aborts and closes the socket. */
+        $fail = static function (string $why, ?string $detail = null) use ($fp): EmailSendResult {
+            @fclose($fp);
+            $msg = $detail !== null ? ($why . ':' . self::sanitiseForLog($detail, 120)) : $why;
+            return EmailSendResult::failure('smtp', $msg, 'ProviderError');
+        };
+
+        $ehloName = self::smtpEhloName($from['email']);
+
+        $greet = self::smtpRead($fp);
+        if (substr($greet, 0, 1) !== '2') {
+            return $fail('no_greeting', $greet);
+        }
+
+        self::smtpWrite($fp, 'EHLO ' . $ehloName);
+        $ehlo = self::smtpRead($fp);
+        if (substr($ehlo, 0, 1) !== '2') {
+            return $fail('ehlo_rejected', $ehlo);
+        }
+
+        if ($useStartTls) {
+            self::smtpWrite($fp, 'STARTTLS');
+            $tls = self::smtpRead($fp);
+            if (substr($tls, 0, 1) !== '2') {
+                return $fail('starttls_rejected', $tls);
+            }
+            /* Negotiate TLS on the existing socket. Use the modern "any
+               TLS" crypto-method constant so 1.2 / 1.3 are both allowed. */
+            $cryptoOk = @stream_socket_enable_crypto(
+                $fp,
+                true,
+                STREAM_CRYPTO_METHOD_TLS_CLIENT
+            );
+            if ($cryptoOk !== true) {
+                return $fail('starttls_handshake_failed', null);
+            }
+            /* RFC 3207: re-issue EHLO over the now-encrypted channel. */
+            self::smtpWrite($fp, 'EHLO ' . $ehloName);
+            $ehlo2 = self::smtpRead($fp);
+            if (substr($ehlo2, 0, 1) !== '2') {
+                return $fail('ehlo_after_tls_rejected', $ehlo2);
+            }
+        }
+
+        /* AUTH LOGIN — username + password base64-encoded, each on its
+           own line after the server's 334 challenge. The password leaves
+           this process only here, over the (TLS) socket. */
+        self::smtpWrite($fp, 'AUTH LOGIN');
+        $authChallenge = self::smtpRead($fp);
+        if (substr($authChallenge, 0, 3) !== '334') {
+            return $fail('auth_login_unsupported', $authChallenge);
+        }
+        self::smtpWrite($fp, base64_encode($user));
+        $userChallenge = self::smtpRead($fp);
+        if (substr($userChallenge, 0, 3) !== '334') {
+            return $fail('auth_username_rejected', $userChallenge);
+        }
+        self::smtpWrite($fp, base64_encode($pass));
+        $authResult = self::smtpRead($fp);
+        if (substr($authResult, 0, 3) !== '235') {
+            /* 535 here = bad credentials / SMTP-AUTH disabled / app
+               password required. We surface the SERVER's text but never
+               the password itself. */
+            return $fail('auth_failed', $authResult);
+        }
+
+        /* Envelope. MAIL FROM is the delegate address when send-as is
+           configured; some providers (M365) require it to match an
+           address the login mailbox is authorised to send as. */
+        self::smtpWrite($fp, 'MAIL FROM:<' . self::smtpAddr($from['email']) . '>');
+        $mailFrom = self::smtpRead($fp);
+        if (substr($mailFrom, 0, 1) !== '2') {
+            return $fail('mail_from_rejected', $mailFrom);
+        }
+        self::smtpWrite($fp, 'RCPT TO:<' . self::smtpAddr($to) . '>');
+        $rcptTo = self::smtpRead($fp);
+        if (substr($rcptTo, 0, 1) !== '2') {
+            return $fail('rcpt_to_rejected', $rcptTo);
+        }
+
+        self::smtpWrite($fp, 'DATA');
+        $dataPrompt = self::smtpRead($fp);
+        if (substr($dataPrompt, 0, 3) !== '354') {
+            return $fail('data_rejected', $dataPrompt);
+        }
+
+        $message = self::smtpBuildMessage($from, $to, $subject, $bodyHtml, $bodyText);
+        /* Dot-stuffing (RFC 5321 §4.5.2): a line that is just "." would
+           terminate DATA prematurely, so any leading dot is doubled. */
+        $message = preg_replace('/^\./m', '..', $message) ?? $message;
+        /* Terminate DATA with CRLF.CRLF. */
+        self::smtpWriteRaw($fp, $message . "\r\n.\r\n");
+        $sent = self::smtpRead($fp);
+        if (substr($sent, 0, 1) !== '2') {
+            return $fail('message_rejected', $sent);
+        }
+
+        /* Best-effort polite close; the message is already accepted. */
+        self::smtpWrite($fp, 'QUIT');
+        @fclose($fp);
+
+        /* Pull the queue id out of the 250 acceptance line if present
+           (e.g. "250 2.0.0 OK <id>") so admins can cross-reference. */
+        $msgId = null;
+        if (preg_match('/queued as ([A-Za-z0-9]+)/i', $sent, $m)) {
+            $msgId = $m[1];
+        }
+        return EmailSendResult::success('smtp', $msgId);
+    }
+
+    /** Send one SMTP command line terminated with CRLF. */
+    private static function smtpWrite($fp, string $line): void
+    {
+        self::smtpWriteRaw($fp, $line . "\r\n");
+    }
+
+    /** Write a raw payload to the socket. */
+    private static function smtpWriteRaw($fp, string $data): void
+    {
+        @fwrite($fp, $data);
+    }
+
+    /**
+     * Read a (possibly multi-line) SMTP reply. Continuation lines have a
+     * hyphen after the 3-digit code ("250-..."); the final line has a
+     * space ("250 ..."). Returns the full block so callers inspect the
+     * leading code via substr().
+     */
+    private static function smtpRead($fp): string
+    {
+        $data = '';
+        while (!feof($fp)) {
+            $line = fgets($fp, 1024);
+            if ($line === false) {
+                break;
+            }
+            $data .= $line;
+            /* 4th char is a space on the last line of a reply. */
+            if (strlen($line) >= 4 && $line[3] === ' ') {
+                break;
+            }
+            $info = stream_get_meta_data($fp);
+            if (!empty($info['timed_out'])) {
+                break;
+            }
+        }
+        return $data;
+    }
+
+    /**
+     * Strip CR/LF from an address before it goes into a MAIL FROM /
+     * RCPT TO command or a header — prevents SMTP command / header
+     * injection via a crafted address.
+     */
+    private static function smtpAddr(string $addr): string
+    {
+        return str_replace(["\r", "\n"], '', trim($addr));
+    }
+
+    /**
+     * Derive the EHLO hostname. RFC 5321 wants a FQDN; the From domain is
+     * a reasonable, non-leaking choice (falls back to a literal).
+     */
+    private static function smtpEhloName(string $fromEmail): string
+    {
+        $at = strrpos($fromEmail, '@');
+        $domain = $at !== false ? substr($fromEmail, $at + 1) : '';
+        $domain = preg_replace('/[^A-Za-z0-9.\-]/', '', $domain) ?? '';
+        return $domain !== '' ? $domain : 'localhost';
+    }
+
+    /**
+     * Build the RFC 5322 message: headers + multipart/alternative body
+     * (text + HTML). All header values are CRLF-stripped so neither the
+     * subject nor the From name can inject extra headers.
+     */
+    private static function smtpBuildMessage(array $from, string $to, string $subject, string $bodyHtml, string $bodyText): string
+    {
+        $headerSafe = static fn (string $v): string => str_replace(["\r", "\n"], '', $v);
+
+        $fromHeader = self::formatFrom($from);
+        $boundary   = 'ihymns_' . bin2hex(random_bytes(16));
+        $date       = gmdate('r');
+        $messageId  = '<' . bin2hex(random_bytes(16)) . '@' . self::smtpEhloName($from['email']) . '>';
+        if ($bodyText === '') {
+            $bodyText = trim(strip_tags($bodyHtml));
+        }
+
+        $headers = [
+            'Date: ' . $date,
+            'From: ' . $headerSafe($fromHeader),
+            'To: <' . self::smtpAddr($to) . '>',
+            'Subject: ' . $headerSafe($subject),
+            'Message-ID: ' . $messageId,
+            'MIME-Version: 1.0',
+            'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
+        ];
+
+        $crlf = "\r\n";
+        $body = '--' . $boundary . $crlf
+              . 'Content-Type: text/plain; charset=UTF-8' . $crlf
+              . 'Content-Transfer-Encoding: 8bit' . $crlf . $crlf
+              . $bodyText . $crlf . $crlf
+              . '--' . $boundary . $crlf
+              . 'Content-Type: text/html; charset=UTF-8' . $crlf
+              . 'Content-Transfer-Encoding: 8bit' . $crlf . $crlf
+              . $bodyHtml . $crlf . $crlf
+              . '--' . $boundary . '--' . $crlf;
+
+        return implode($crlf, $headers) . $crlf . $crlf . $body;
+    }
+
+    /* -------------------------------------------------------------------
+     * Driver: Microsoft Graph (OAuth2 app-only) — #1311
+     *
+     * The modern alternative to SMTP-AUTH for Microsoft 365, immune to the
+     * Basic-Auth / SMTP-AUTH deprecation. OAuth2 client-credentials grant
+     * (app-only) against the tenant token endpoint → POST /users/{sender}/
+     * sendMail with the Mail.Send APPLICATION permission. Requires (Azure):
+     * an app registration with Mail.Send application permission + admin
+     * consent, a client secret, and the sender mailbox UPN. The client
+     * secret + bearer token are NEVER logged (only short error codes are).
+     * ----------------------------------------------------------------- */
+    private static function sendViaGraph(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $tenant = trim((string)($cfg['email_graph_tenant_id'] ?? ''));
+        $client = trim((string)($cfg['email_graph_client_id'] ?? ''));
+        $secret = (string)($cfg['email_graph_client_secret'] ?? '');
+        $sender = trim((string)($cfg['email_graph_sender'] ?? ''));
+        if ($tenant === '' || $client === '' || $secret === '' || $sender === '') {
+            return EmailSendResult::failure('graph', 'missing_tenant_client_secret_or_sender', 'NotConfigured');
+        }
+
+        $from      = self::oauthFrom($cfg, $sender);   /* default From = sender; explicit delegate = Send-As */
+        $fromEmail = $from['email'];
+
+        /* 1) OAuth2 client-credentials token. scope=.default grants the app's
+              consented application permissions (Mail.Send). */
+        $tok = self::httpPostForm(
+            'https://login.microsoftonline.com/' . rawurlencode($tenant) . '/oauth2/v2.0/token',
+            [
+                'client_id'     => $client,
+                'client_secret' => $secret,
+                'scope'         => 'https://graph.microsoft.com/.default',
+                'grant_type'    => 'client_credentials',
+            ],
+            []
+        );
+        if ($tok['err'] !== '') {
+            return EmailSendResult::failure('graph', 'token_' . $tok['err'], 'TransportError');
+        }
+        if ($tok['code'] < 200 || $tok['code'] >= 300) {
+            return EmailSendResult::failure('graph', 'token_http_' . $tok['code'] . ':' . self::oauthErr($tok['body']), 'AuthError', $tok['code']);
+        }
+        $accessToken = (string)(json_decode($tok['body'], true)['access_token'] ?? '');
+        if ($accessToken === '') {
+            return EmailSendResult::failure('graph', 'token_no_access_token', 'AuthError');
+        }
+
+        /* 2) sendMail. From defaults to the sender mailbox; an explicit
+              different From requires Send-As granted on it (the SMTP delegate
+              model). Setting From = the sender's own address is always valid. */
+        $fromAddr = ['address' => $fromEmail];
+        if (($from['name'] ?? '') !== '') { $fromAddr['name'] = (string)$from['name']; }
+        $message = [
+            'subject'      => $subject,
+            'body'         => ['contentType' => 'HTML', 'content' => $bodyHtml],
+            'toRecipients' => [['emailAddress' => ['address' => $to]]],
+            'from'         => ['emailAddress' => $fromAddr],
+        ];
+
+        $resp = self::httpPostJson(
+            'https://graph.microsoft.com/v1.0/users/' . rawurlencode($sender) . '/sendMail',
+            ['message' => $message, 'saveToSentItems' => false],
+            [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/json',
+            ]
+        );
+        if ($resp['err'] !== '') {
+            return EmailSendResult::failure('graph', $resp['err'], 'TransportError');
+        }
+        if ($resp['code'] >= 200 && $resp['code'] < 300) {
+            return EmailSendResult::success('graph', null);   /* 202 Accepted, no Message-Id */
+        }
+        return EmailSendResult::failure('graph', 'http_' . $resp['code'] . ':' . self::oauthErr($resp['body']), 'ProviderError', $resp['code']);
+    }
+
+    /* -------------------------------------------------------------------
+     * Driver: Gmail API (OAuth2 service-account + domain-wide delegation) — #1311
+     *
+     * The Google Workspace equivalent of the Graph path. A service account
+     * with domain-wide delegation for the gmail.send scope signs a JWT,
+     * exchanges it for an access token impersonating the configured sender,
+     * then POSTs a base64url RFC822 message to users/{sender}/messages/send.
+     * Requires (Google Cloud): a project with the Gmail API enabled, a
+     * service-account JSON key, and domain-wide delegation authorised for the
+     * gmail.send scope in the Workspace Admin console. The private key +
+     * bearer token are NEVER logged.
+     * ----------------------------------------------------------------- */
+    private static function sendViaGmailApi(string $to, string $subject, string $bodyHtml, string $bodyText, array $cfg): EmailSendResult
+    {
+        $saJson = (string)($cfg['email_gmail_sa_json'] ?? '');
+        $sender = trim((string)($cfg['email_gmail_sender'] ?? ''));
+        if ($saJson === '' || $sender === '') {
+            return EmailSendResult::failure('gmail-api', 'missing_service_account_or_sender', 'NotConfigured');
+        }
+        if (!function_exists('openssl_sign')) {
+            return EmailSendResult::failure('gmail-api', 'openssl_extension_missing', 'TransportError');
+        }
+        $sa = json_decode($saJson, true);
+        if (!is_array($sa) || empty($sa['client_email']) || empty($sa['private_key'])) {
+            return EmailSendResult::failure('gmail-api', 'invalid_service_account_json', 'NotConfigured');
+        }
+        /* token_uri comes from the pasted SA JSON; constrain it to a Google
+           host (defence-in-depth) so a tampered key can't aim the signed
+           assertion elsewhere. Falls back to the canonical endpoint. */
+        $tokenUri = (string)($sa['token_uri'] ?? 'https://oauth2.googleapis.com/token');
+        $tuHost   = (string)parse_url($tokenUri, PHP_URL_HOST);
+        if (stripos($tokenUri, 'https://') !== 0 || substr($tuHost, -15) !== '.googleapis.com') {
+            $tokenUri = 'https://oauth2.googleapis.com/token';
+        }
+
+        $from = self::oauthFrom($cfg, $sender);   /* default From = impersonated sender; explicit delegate = verified send-as */
+
+        /* 1) Build + sign the JWT assertion (RS256), impersonating $sender via
+              domain-wide delegation (the `sub` claim). iat is backdated 60s to
+              absorb server clock-skew vs Google (a fast clock → invalid_grant). */
+        $now    = time();
+        $header = ['alg' => 'RS256', 'typ' => 'JWT'];
+        $claims = [
+            'iss'   => (string)$sa['client_email'],
+            'sub'   => $sender,
+            'scope' => 'https://www.googleapis.com/auth/gmail.send',
+            'aud'   => $tokenUri,
+            'iat'   => $now - 60,
+            'exp'   => $now + 3600,
+        ];
+        $signingInput = self::b64url((string)json_encode($header)) . '.' . self::b64url((string)json_encode($claims));
+        $signature    = '';
+        if (!@openssl_sign($signingInput, $signature, (string)$sa['private_key'], OPENSSL_ALGO_SHA256)) {
+            return EmailSendResult::failure('gmail-api', 'jwt_signing_failed', 'AuthError');
+        }
+        $assertion = $signingInput . '.' . self::b64url($signature);
+
+        /* 2) Exchange the JWT for an access token. */
+        $tok = self::httpPostForm($tokenUri, [
+            'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+            'assertion'  => $assertion,
+        ], []);
+        if ($tok['err'] !== '') {
+            return EmailSendResult::failure('gmail-api', 'token_' . $tok['err'], 'TransportError');
+        }
+        if ($tok['code'] < 200 || $tok['code'] >= 300) {
+            return EmailSendResult::failure('gmail-api', 'token_http_' . $tok['code'] . ':' . self::oauthErr($tok['body']), 'AuthError', $tok['code']);
+        }
+        $accessToken = (string)(json_decode($tok['body'], true)['access_token'] ?? '');
+        if ($accessToken === '') {
+            return EmailSendResult::failure('gmail-api', 'token_no_access_token', 'AuthError');
+        }
+
+        /* 3) Build the RFC822 message (reuse the SMTP MIME builder) and send it
+              base64url-encoded via the Gmail API. */
+        $raw  = self::smtpBuildMessage($from, $to, $subject, $bodyHtml, $bodyText);
+        $resp = self::httpPostJson(
+            'https://gmail.googleapis.com/gmail/v1/users/' . rawurlencode($sender) . '/messages/send',
+            ['raw' => self::b64url($raw)],
+            [
+                'Authorization: Bearer ' . $accessToken,
+                'Content-Type: application/json',
+            ]
+        );
+        if ($resp['err'] !== '') {
+            return EmailSendResult::failure('gmail-api', $resp['err'], 'TransportError');
+        }
+        if ($resp['code'] >= 200 && $resp['code'] < 300) {
+            $msgId = (string)(json_decode($resp['body'], true)['id'] ?? '');
+            return EmailSendResult::success('gmail-api', $msgId !== '' ? $msgId : null);
+        }
+        return EmailSendResult::failure('gmail-api', 'http_' . $resp['code'] . ':' . self::oauthErr($resp['body']), 'ProviderError', $resp['code']);
+    }
+
+    /** base64url (RFC 4648 §5, unpadded) — JWT segments + Gmail raw message. */
+    private static function b64url(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+    }
+
+    /**
+     * Extract a SHORT, secret-free error summary from an OAuth/REST error body.
+     * Never receives or returns a token/secret — the success bodies (which carry
+     * access_token) are parsed separately and never reach here.
+     */
+    private static function oauthErr(string $body): string
+    {
+        $j = json_decode($body, true);
+        if (is_array($j)) {
+            if (isset($j['error']) && is_array($j['error'])) {        /* Graph: {error:{code,message}} */
+                return self::sanitiseForLog(trim((string)($j['error']['code'] ?? '') . ' ' . (string)($j['error']['message'] ?? '')), 180);
+            }
+            if (isset($j['error_description'])) {                     /* Google/AAD: {error,error_description} */
+                return self::sanitiseForLog((string)$j['error_description'], 180);
+            }
+            if (isset($j['error']) && is_string($j['error'])) {
+                return self::sanitiseForLog($j['error'], 180);
+            }
+        }
+        return self::sanitiseForLog($body, 120);
+    }
+
+    /**
+     * #1311 — From for the OAuth2 drivers. Prefers an EXPLICIT delegate /
+     * send-as address (email_smtp_from_address) only; otherwise defaults to the
+     * OAuth sender mailbox (always authorised), NOT the generic cross-provider
+     * email_from_address — so a leftover From from another provider's setup
+     * can't silently 400/rewrite a Graph/Gmail send. A delegate From still
+     * needs Send-As (Graph) / a verified "Send mail as" alias (Gmail).
+     */
+    private static function oauthFrom(array $cfg, string $sender): array
+    {
+        $delegate = trim((string)($cfg['email_smtp_from_address'] ?? ''));
+        $email = ($delegate !== '' && filter_var($delegate, FILTER_VALIDATE_EMAIL)) ? $delegate : $sender;
+        return ['email' => $email, 'name' => self::fromAddress($cfg)['name']];
+    }
+
+    /* -------------------------------------------------------------------
      * Internal helpers
      * ----------------------------------------------------------------- */
 
@@ -467,9 +1008,23 @@ final class EmailService
             'email_from_address', 'email_from_name',
             'email_smtp_host', 'email_smtp_port', 'email_smtp_user',
             'email_smtp_pass', 'email_smtp_secure',
+            /* feature C — SMTP provider preset + delegate / send-as From.
+               The preset only pre-fills host/port/secure in the UI; the
+               delegate address overrides the From / Sender at send time. */
+            'email_smtp_preset',
+            'email_smtp_from_address', 'email_smtp_from_name',
             'email_sendgrid_api_key',
             'email_mailgun_api_key', 'email_mailgun_domain',
             'email_ses_region', 'email_ses_access_key', 'email_ses_secret_key',
+            /* #1311 — OAuth2 API transport. email_auth_method ('smtp'|'oauth2')
+               selects, for the office365/gmail providers, between the SMTP-AUTH
+               driver and the OAuth2 REST driver (Microsoft Graph / Gmail API).
+               office365 → Graph (tenant/client/secret + sender mailbox);
+               gmail → Gmail API (service-account JSON + impersonated sender). */
+            'email_auth_method',
+            'email_graph_tenant_id', 'email_graph_client_id',
+            'email_graph_client_secret', 'email_graph_sender',
+            'email_gmail_sa_json', 'email_gmail_sender',
         ];
         try {
             $db = getDbMysqli();
@@ -492,11 +1047,37 @@ final class EmailService
         return self::$settings = $out;
     }
 
+    /**
+     * Resolve the effective From / Sender.
+     *
+     * feature C — DELEGATE / "send-as": when an SMTP delegate address is
+     * configured (email_smtp_from_address), it overrides the generic
+     * email_from_address so the message is sent on behalf of the
+     * delegated mailbox while AUTH still uses email_smtp_user. The
+     * delegate name (email_smtp_from_name) falls back to the generic
+     * From name. If no delegate is set, behaviour is identical to the
+     * pre-feature-C path (generic From for every provider).
+     *
+     * The delegate keys are SMTP-specific in the UI, but reading them
+     * here is harmless for the API providers (they have no delegate
+     * fields, so the keys are empty and we fall through to the generic
+     * From) and keeps the resolution in one place.
+     */
     private static function fromAddress(array $cfg): array
     {
+        $delegate = trim((string)($cfg['email_smtp_from_address'] ?? ''));
+        $email = ($delegate !== '' && filter_var($delegate, FILTER_VALIDATE_EMAIL))
+            ? $delegate
+            : (string)($cfg['email_from_address'] ?? '');
+
+        $delegateName = trim((string)($cfg['email_smtp_from_name'] ?? ''));
+        $name = $delegateName !== ''
+            ? $delegateName
+            : (string)($cfg['email_from_name'] ?? 'iHymns');
+
         return [
-            'email' => (string)($cfg['email_from_address'] ?? ''),
-            'name'  => (string)($cfg['email_from_name']    ?? 'iHymns'),
+            'email' => $email,
+            'name'  => $name,
         ];
     }
 

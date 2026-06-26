@@ -5,10 +5,14 @@
  *
  * PURPOSE:
  * In-app help and user guide. Provides instructions for using the
- * application, including searching, favourites, themes, PWA install,
- * keyboard shortcuts, and accessibility features.
+ * application, including searching, reading a song (transpose/chords,
+ * sheet music, audio, compare versions, Presentation mode), favourites,
+ * setlists, collections/series, Song of the Day, personal stats, themes,
+ * PWA install, offline songs, keyboard shortcuts, and accessibility.
  *
  * Loaded via AJAX: api.php?page=help
+ *
+ * Last updated: 2026-06-21 (v0.990.0)
  */
 
 declare(strict_types=1);
@@ -88,6 +92,34 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- Reading a song -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-reading"
+                        aria-expanded="false"
+                        aria-controls="help-reading">
+                    <i class="fa-solid fa-music me-2" aria-hidden="true"></i>
+                    Reading a Song
+                </button>
+            </h2>
+            <div id="help-reading" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>A song page gives you several ways to view and work with the music:</p>
+                    <ul>
+                        <li><strong>Transpose &amp; chords:</strong> where chord data is available, raise or lower the key and the chords above the lyrics shift to match. Toggle chords on or off entirely.</li>
+                        <li><strong>Sheet music:</strong> songs that have notation can switch to a <strong>sheet-music view</strong> to read the score.</li>
+                        <li><strong>Audio playback:</strong> when a recording or tune is linked, play it back from the song page.</li>
+                        <li><strong>Compare versions:</strong> when the same song appears in more than one songbook, open <strong>Compare versions</strong> to view the variants side by side.</li>
+                        <li><strong>Presentation mode:</strong> tap <strong>Presentation</strong> (or press <kbd>P</kbd>) for a large, full-screen, one-stanza-at-a-time view suitable for projecting or reading at a distance. Use the arrow keys to move between sections.</li>
+                        <li><strong>Previous / next:</strong> step through the songbook in number order with the <kbd>&larr;</kbd> and <kbd>&rarr;</kbd> arrow keys.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
         <!-- External Links & Works (#833 / #840) -->
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -138,7 +170,8 @@ declare(strict_types=1);
                     <ul>
                         <li>Tap the <i class="fa-regular fa-heart" aria-hidden="true"></i> heart icon on any song to add it to your favourites</li>
                         <li>Access your favourites from the <strong>Favourites</strong> tab in the bottom navigation</li>
-                        <li>Favourites are saved locally on your device and persist between sessions</li>
+                        <li>Favourites are kept on your device and persist between sessions &mdash; and when you&rsquo;re <strong>signed in</strong> they also sync automatically across all your devices, so a song you favourite on your phone shows up on your tablet too</li>
+                        <li><strong>Organise with tags:</strong> add your own labels (e.g. &ldquo;Communion&rdquo;, &ldquo;Christmas&rdquo;) to a favourite from the tag <i class="fa-solid fa-tags" aria-hidden="true"></i> button, then filter the list by tag. Tags sync across devices when signed in too</li>
                         <li>Tap the filled heart <i class="fa-solid fa-heart text-danger" aria-hidden="true"></i> to remove a song from favourites</li>
                     </ul>
                 </div>
@@ -322,7 +355,7 @@ declare(strict_types=1);
                     <p>Download songs for offline access so you can use iHymns without an internet connection:</p>
                     <ul>
                         <li>Go to <strong>Settings</strong> &rarr; <strong>Offline Songs</strong></li>
-                        <li>Download individual songbooks or tap <strong>Download All Songbooks</strong> (~14 MB total)</li>
+                        <li>Download individual songbooks or tap <strong>Download All Songbooks</strong> to save the whole catalogue at once</li>
                         <li>Downloads continue in the background if you navigate away from Settings</li>
                         <li>Estimated storage sizes are shown for each songbook</li>
                     </ul>
@@ -450,6 +483,100 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- Song of the Day -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-song-of-the-day"
+                        aria-expanded="false"
+                        aria-controls="help-song-of-the-day">
+                    <i class="fa-solid fa-calendar-day me-2" aria-hidden="true"></i>
+                    Song of the Day
+                </button>
+            </h2>
+            <div id="help-song-of-the-day" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        The home page features a <strong>Song of the Day</strong> — a single hymn highlighted
+                        for everyone each day. It's a quick way to discover something outside your usual
+                        favourites. Tap it to open the full song.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Collections, Series & related browsing -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-browsing"
+                        aria-expanded="false"
+                        aria-controls="help-browsing">
+                    <i class="fa-solid fa-layer-group me-2" aria-hidden="true"></i>
+                    Collections, Series &amp; Related Pages
+                </button>
+            </h2>
+            <div id="help-browsing" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <h3 class="h6">Collections</h3>
+                    <p>
+                        A <strong>Collection</strong> is a curated grouping of songs drawn from across
+                        different songbooks — for example a themed set for a season or topic. Browse the
+                        collections to find ready-made groupings rather than hunting song by song.
+                    </p>
+
+                    <h3 class="h6 mt-3">Songbook Series &amp; parent songbooks</h3>
+                    <p>
+                        Related songbooks can be grouped into a <strong>Series</strong>, and a songbook can
+                        have a <strong>parent</strong> songbook (for example, a regional edition under a
+                        master hymnal). These relationships let you move between related books, and
+                        editions of the same hymnal stay grouped together.
+                    </p>
+                    <p>
+                        Some songbooks are flagged <strong>unofficial</strong> — curated groupings rather
+                        than published hymnals. They appear alongside official songbooks with an
+                        <em>Unofficial</em> badge beside their abbreviation so you can tell them apart.
+                    </p>
+
+                    <h3 class="h6 mt-3">Tune, ISWC, and person pages</h3>
+                    <ul class="mb-0">
+                        <li><strong>Tune pages</strong> (<code>/tune/&lt;slug&gt;</code>) list every hymn that shares a particular tune, so you can find different texts sung to the same melody.</li>
+                        <li><strong>ISWC pages</strong> (<code>/iswc/&lt;code&gt;</code>) gather all entries that share an International Standard Musical Work Code — the same underlying composition across songbooks.</li>
+                        <li><strong>Person pages</strong> show a writer's or composer's biography and every song they wrote, composed, translated, or arranged. Tap a credited name on any song to open their page.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Personal Stats -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-stats"
+                        aria-expanded="false"
+                        aria-controls="help-stats">
+                    <i class="fa-solid fa-chart-simple me-2" aria-hidden="true"></i>
+                    Personal Stats
+                </button>
+            </h2>
+            <div id="help-stats" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Visit <a href="/stats" data-navigate="stats">/stats</a> to see your own listening
+                        and viewing activity — songs you've viewed most, songbooks you reach for, and how
+                        your usage has built up over time. Your stats are personal to you and, when you're
+                        signed in, follow you across devices.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <!-- Admin portal overview -->
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -473,7 +600,7 @@ declare(strict_types=1);
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
                         <li><strong>Entitlements</strong> — grant/revoke per-capability permissions by role.</li>
                         <li><strong>Database Setup</strong> — install schema, migrate, backup, restore.</li>
-                        <li><strong>Help &amp; Guides</strong> — a plain-English reference at <a href="/manage/help">/manage/help</a> covering every admin page, including the org-admin surface, the activity log error capture, the bulk migration runner, and the public REST API.</li>
+                        <li><strong>Help &amp; Guides</strong> — a plain-English reference at <a href="/manage/help">/manage/help</a> covering the admin surfaces, including the org-admin area, the activity log error capture, the bulk migration runner, and the public REST API.</li>
                     </ul>
                     <p class="small text-muted mb-2">
                         Permissions use <strong>entitlements</strong>. Each feature is gated by a
@@ -482,10 +609,10 @@ declare(strict_types=1);
                         <a href="/manage/entitlements">/manage/entitlements</a>.
                     </p>
                     <p class="small text-muted mb-0">
-                        Native clients (Apple, Android, FireOS) drive the same surfaces via the public
-                        REST API documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a> —
-                        every admin verb on the web admin has a public-API counterpart, with the same
-                        validation rules and audit-log trail.
+                        The public REST API is documented in <a href="/api-docs.yaml"><code>/api-docs.yaml</code></a>,
+                        with the same validation rules and audit-log trail as the web admin. The native
+                        clients (Apple, Android, Fire OS) are in-progress scaffolds that will consume the
+                        same API as they mature.
                     </p>
                 </div>
             </div>

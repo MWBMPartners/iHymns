@@ -3,10 +3,14 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Songbook language filter (#679)
+ * iHymns — Songbook + song language filter (#679, picker UX #1149)
  *
- * Renders a small <select> above the songbook tile grid that lets a
- * user narrow the visible tiles by IETF BCP 47 language. Used by:
+ * Renders ONE compact dropdown trigger ("Languages: All ▾") above the
+ * songbook tile grid. The trigger opens a searchable, name-labelled,
+ * multi-select panel that lets a user narrow the visible tiles + songs
+ * by IETF BCP 47 language. Replaces the earlier flat wall of bare
+ * 2–3-letter ISO codes (AF, BEM, BG…), which didn't scale or read
+ * professionally as the catalogue grew. Used by:
  *   - /         (home page, above the Songbooks section)
  *   - /songbooks (full listing page, above the grid)
  *
@@ -19,23 +23,29 @@ declare(strict_types=1);
  *
  * Filter rule (per #679):
  *   - "All languages" → every tile visible.
- *   - Specific language picked → tiles whose `data-songbook-language`
- *     starts with the picked subtag stay visible. Tiles WITHOUT a
+ *   - Specific language(s) picked → tiles whose `data-songbook-language`
+ *     starts with a picked subtag stay visible. Tiles WITHOUT a
  *     `data-songbook-language` attribute (i.e. songbooks with no
  *     Language set) ALWAYS stay visible — the absence is treated as
  *     "multi-lingual / not specified" so a curated grouping isn't
  *     hidden when the user filters to one language.
  *
- * The options list is computed server-side from the unique language
- * subtags currently in tblSongbooks — only languages a curator has
- * actually used appear in the dropdown, so a fresh install with one
- * English songbook doesn't show 28 unused languages.
+ * The option list is computed server-side from the unique language
+ * subtags currently in tblSongbooks + tblSongs — only languages a
+ * curator has actually used appear, so a fresh install with one English
+ * songbook doesn't show 28 unused languages. Each option renders its
+ * full English name primary, with the native endonym + code as muted
+ * secondary text (#1149), resolved via resolveLanguageMeta().
  *
  * Filter UX is pure client-side; the JS module
- * /js/modules/songbook-language-filter.js wires the <select> change
- * event to walk the tiles and toggle their `display`. State persists
- * in localStorage per device so a user who picked "Spanish" once
- * doesn't see English tiles on every reload.
+ * /js/modules/songbook-language-filter.js wires the checkbox `change`
+ * events to walk the tiles and toggle their `display`, keeps the
+ * trigger label + count badge in sync, and filters the panel rows from
+ * the search box. State persists in localStorage per device (key
+ * `songbook-language-filter`) and syncs to the signed-in account via
+ * `user_preferred_languages_save`. The `.js-songbook-language-filter-all`
+ * / `.js-songbook-language-filter-option` (value = subtag) hooks are a
+ * stable contract the module depends on — preserve them on any redesign.
  */
 
 if (!isset($songbooks) || !is_array($songbooks)) {
@@ -112,47 +122,96 @@ if (count($languageOptions) <= 1) {
     return;
 }
 
-/* #856 — resolve each subtag to a human-readable language name for
-   the pill tooltip. The helper is request-scoped + static-cached
-   so this is one extra DB query for the whole partial. */
+/* #1149 — resolve each used subtag to its full display metadata
+   (English name + native endonym + text direction) so the picker can
+   show "Afrikaans · Afrikaans (AF)" instead of a bare code. The helper
+   is request-scoped + static-cached, so this is one extra DB query for
+   the whole partial regardless of how many languages there are. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'language_names.php';
+
+$languageList = [];
+foreach ($languageOptions as $sub => $upper) {
+    $meta = resolveLanguageMeta($sub);
+    $languageList[] = [
+        'sub'    => $sub,
+        'code'   => $upper,
+        'name'   => $meta['name'] !== '' ? $meta['name'] : $upper,
+        'native' => $meta['nativeName'],
+        'dir'    => $meta['dir'] === 'rtl' ? 'rtl' : 'ltr',
+    ];
+}
+/* Alphabetical by English name reads far more professionally than the
+   raw subtag order — "Afrikaans, Bemba, Bulgarian…" not "AF, BEM, BG…". */
+usort($languageList, static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']));
+$languageCount = count($languageList);
 ?>
 <div class="songbook-language-filter mb-3"
      data-songbook-language-filter
+     role="group"
      aria-label="Filter songbooks and songs by language">
-    <div class="d-flex align-items-center flex-wrap gap-2 mb-1">
-        <span class="form-label small mb-0 me-1">
+    <div class="dropdown">
+        <button type="button"
+                class="btn btn-outline-secondary btn-sm dropdown-toggle js-lang-filter-trigger"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                aria-haspopup="true" aria-expanded="false">
             <i class="bi bi-translate me-1" aria-hidden="true"></i>
-            Show languages:
-        </span>
-        <div class="btn-group btn-group-sm flex-wrap" role="group" aria-label="Language filter options">
-            <input type="checkbox" class="btn-check js-songbook-language-filter-all"
-                   id="songbook-language-filter-all" autocomplete="off" checked>
-            <label class="btn btn-outline-info" for="songbook-language-filter-all">All</label>
-            <?php foreach ($languageOptions as $sub => $label): ?>
-                <?php
-                    $id       = 'songbook-language-filter-' . htmlspecialchars($sub, ENT_QUOTES, 'UTF-8');
-                    /* #856 — resolved name for the tooltip; falls back to
-                       the uppercase code when tblLanguages isn't seeded. */
-                    $langName = resolveLanguageName($sub);
-                ?>
-                <input type="checkbox" class="btn-check js-songbook-language-filter-option"
-                       id="<?= $id ?>"
-                       value="<?= htmlspecialchars($sub, ENT_QUOTES, 'UTF-8') ?>"
-                       autocomplete="off">
-                <label class="btn btn-outline-info" for="<?= $id ?>"
-                       title="<?= htmlspecialchars($langName, ENT_QUOTES, 'UTF-8') ?>">
-                    <?= htmlspecialchars($label, ENT_QUOTES, 'UTF-8') ?>
+            <span class="js-lang-filter-trigger-label">Languages: All</span>
+            <span class="badge rounded-pill text-bg-info ms-1 d-none js-lang-filter-count"
+                  aria-hidden="true">0</span>
+        </button>
+        <div class="dropdown-menu dropdown-menu-end p-0 shadow lang-filter-panel"
+             role="group" aria-label="Choose which languages to show">
+            <div class="lang-filter-search-wrap p-2 border-bottom">
+                <label class="visually-hidden" for="lang-filter-search">Search languages</label>
+                <input type="search" id="lang-filter-search"
+                       class="form-control form-control-sm js-lang-filter-search"
+                       placeholder="Search <?= (int)$languageCount ?> languages&hellip;"
+                       autocomplete="off" aria-controls="lang-filter-list">
+            </div>
+            <div class="lang-filter-scroll" id="lang-filter-list">
+                <label class="lang-filter-row lang-filter-row--all d-flex align-items-center gap-2 px-3 py-2 mb-0">
+                    <input type="checkbox" class="form-check-input m-0 flex-shrink-0 js-songbook-language-filter-all"
+                           id="songbook-language-filter-all" checked>
+                    <span class="lang-filter-name fw-semibold">All languages</span>
                 </label>
-            <?php endforeach; ?>
+                <?php foreach ($languageList as $l): ?>
+                    <?php
+                        $id     = 'songbook-language-filter-' . htmlspecialchars($l['sub'], ENT_QUOTES, 'UTF-8');
+                        $search = strtolower($l['name'] . ' ' . $l['native'] . ' ' . $l['code'] . ' ' . $l['sub']);
+                        $showNative = $l['native'] !== '' && strcasecmp($l['native'], $l['name']) !== 0;
+                    ?>
+                    <label class="lang-filter-row d-flex align-items-center gap-2 px-3 py-2 mb-0"
+                           data-search="<?= htmlspecialchars($search, ENT_QUOTES, 'UTF-8') ?>">
+                        <input type="checkbox" class="form-check-input m-0 flex-shrink-0 js-songbook-language-filter-option"
+                               id="<?= $id ?>"
+                               value="<?= htmlspecialchars($l['sub'], ENT_QUOTES, 'UTF-8') ?>"
+                               data-lang-name="<?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?>">
+                        <span class="d-flex flex-column lh-sm">
+                            <span class="lang-filter-name"><?= htmlspecialchars($l['name'], ENT_QUOTES, 'UTF-8') ?></span>
+                            <small class="text-muted lang-filter-meta">
+                                <?php if ($showNative): ?>
+                                    <span dir="<?= $l['dir'] ?>"><?= htmlspecialchars($l['native'], ENT_QUOTES, 'UTF-8') ?></span>
+                                    &middot; <?= htmlspecialchars($l['code'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php else: ?>
+                                    <?= htmlspecialchars($l['code'], ENT_QUOTES, 'UTF-8') ?>
+                                <?php endif; ?>
+                            </small>
+                        </span>
+                    </label>
+                <?php endforeach; ?>
+                <p class="lang-filter-empty text-muted small text-center mb-0 py-3 d-none js-lang-filter-empty">
+                    No languages match your search.
+                </p>
+            </div>
+            <div class="lang-filter-foot small text-muted px-3 py-2 border-top">
+                Songbooks and songs without a language set always remain visible.
+                <?php if (!empty($currentUser)): ?>
+                    Your selection is saved to your account and syncs across devices.
+                <?php else: ?>
+                    Sign in to save your selection across devices.
+                <?php endif; ?>
+            </div>
         </div>
     </div>
-    <small class="text-muted">
-        Songbooks and songs without a language set always remain visible.
-        <?php if (!empty($currentUser)): ?>
-        Your selection is saved to your account and syncs across devices.
-        <?php else: ?>
-        Sign in to save your selection across devices.
-        <?php endif; ?>
-    </small>
+    <span class="visually-hidden" aria-live="polite" role="status" data-lang-filter-status></span>
 </div>

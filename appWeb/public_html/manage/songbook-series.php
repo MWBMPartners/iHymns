@@ -163,6 +163,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $name        = mb_substr($name, 0, 120);
                 $slug        = mb_substr($slug, 0, 120);
                 $description = mb_substr($description, 0, 255);
+                /* #1181 — optional shared series colour. Blank = theme default;
+                   otherwise a validated #RRGGBB hex (never interpolated). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
 
                 /* UNIQUE on Slug → check before insert for a friendly error. */
                 $stmt = $db->prepare('SELECT Id FROM tblSongbookSeries WHERE Slug = ?');
@@ -173,9 +179,9 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 if ($exists) { $error = "Slug '{$slug}' already taken — pick another."; break; }
 
                 $stmt = $db->prepare(
-                    'INSERT INTO tblSongbookSeries (Name, Slug, Description) VALUES (?, ?, ?)'
+                    'INSERT INTO tblSongbookSeries (Name, Slug, Description, Colour) VALUES (?, ?, ?, ?)'
                 );
-                $stmt->bind_param('sss', $name, $slug, $description);
+                $stmt->bind_param('ssss', $name, $slug, $description, $colour);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
@@ -200,6 +206,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $name        = mb_substr($name, 0, 120);
                 $slug        = mb_substr($slug, 0, 120);
                 $description = mb_substr($description, 0, 255);
+                /* #1181 — optional shared series colour (blank = theme default). */
+                $colour = strtoupper(trim((string)($_POST['colour'] ?? '')));
+                if ($colour !== '' && !preg_match('/^#[0-9A-F]{6}$/', $colour)) {
+                    $error = 'Colour must be a #RRGGBB hex value or left blank.'; break;
+                }
 
                 /* Pull the before-row for the audit log + collision check. */
                 $stmt = $db->prepare('SELECT Name, Slug, Description FROM tblSongbookSeries WHERE Id = ?');
@@ -236,10 +247,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 try {
                     $stmt = $db->prepare(
                         'UPDATE tblSongbookSeries
-                            SET Name = ?, Slug = ?, Description = ?
+                            SET Name = ?, Slug = ?, Description = ?, Colour = ?
                           WHERE Id = ?'
                     );
-                    $stmt->bind_param('sssi', $name, $slug, $description, $id);
+                    $stmt->bind_param('ssssi', $name, $slug, $description, $colour, $id);
                     $stmt->execute();
                     $stmt->close();
 
@@ -350,7 +361,7 @@ $rows = [];
 if ($hasSchema) {
     try {
         $stmt = $db->prepare(
-            'SELECT s.Id, s.Name, s.Slug, s.Description, s.CreatedAt,
+            'SELECT s.Id, s.Name, s.Slug, s.Description, s.Colour, s.CreatedAt,
                     (SELECT COUNT(*) FROM tblSongbookSeriesMembership m WHERE m.SeriesId = s.Id) AS MemberCount
                FROM tblSongbookSeries s
               ORDER BY s.Name ASC'
@@ -465,6 +476,7 @@ if ($hasSchema) {
                                 'name'        => (string)$r['Name'],
                                 'slug'        => (string)$r['Slug'],
                                 'description' => (string)$r['Description'],
+                                'colour'      => (string)($r['Colour'] ?? ''),  // #1181
                                 'members'     => $members,
                             ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                             $deleteJson = json_encode([
@@ -504,14 +516,14 @@ if ($hasSchema) {
             <input type="hidden" name="action" value="create">
             <h2 class="h6 mb-3"><i class="bi bi-plus-circle me-2"></i>Add a series</h2>
             <div class="row g-2">
-                <div class="col-sm-5">
+                <div class="col-sm-4">
                     <label class="form-label small">Name</label>
                     <input type="text" name="name" id="create-name"
                            class="form-control form-control-sm"
                            maxlength="120" required
                            placeholder="e.g. Songs of Fellowship">
                 </div>
-                <div class="col-sm-3">
+                <div class="col-sm-2">
                     <label class="form-label small">Slug
                         <small class="text-muted">(auto)</small>
                     </label>
@@ -520,12 +532,26 @@ if ($hasSchema) {
                            maxlength="120" pattern="[a-z0-9-]+"
                            placeholder="songs-of-fellowship">
                 </div>
-                <div class="col-sm-4">
+                <div class="col-sm-3">
                     <label class="form-label small">Description (optional)</label>
                     <input type="text" name="description"
                            class="form-control form-control-sm"
                            maxlength="255"
                            placeholder="Brief context for curators">
+                </div>
+                <div class="col-sm-3">
+                    <!-- #1181 — optional shared series colour; the swatch writes
+                         its hex into the text field (the submitted value). Blank
+                         text = theme default. Auto-contrast (#1179) keeps it readable. -->
+                    <label class="form-label small">Colour <small class="text-muted">(optional, shared)</small></label>
+                    <div class="input-group input-group-sm">
+                        <input type="color" class="form-control form-control-color" value="#888888"
+                               title="Pick a colour" aria-label="Series colour swatch"
+                               oninput="this.nextElementSibling.value = this.value.toUpperCase()">
+                        <input type="text" name="colour" id="create-colour"
+                               class="form-control" maxlength="7" pattern="#?[0-9A-Fa-f]{6}"
+                               placeholder="#RRGGBB — blank = default">
+                    </div>
                 </div>
             </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
@@ -566,6 +592,19 @@ if ($hasSchema) {
                                 <label class="form-label">Description (optional)</label>
                                 <input type="text" name="description" id="edit-description"
                                        class="form-control" maxlength="255">
+                            </div>
+                            <div class="mb-3">
+                                <!-- #1181 — shared series colour. All member songbooks
+                                     inherit it (own songbook colour still wins). -->
+                                <label class="form-label">Colour <small class="text-muted">(optional — shared by all member songbooks)</small></label>
+                                <div class="input-group" style="max-width:18rem">
+                                    <input type="color" class="form-control form-control-color" id="edit-colour-swatch"
+                                           value="#888888" title="Pick a colour" aria-label="Series colour swatch"
+                                           oninput="document.getElementById('edit-colour').value = this.value.toUpperCase()">
+                                    <input type="text" name="colour" id="edit-colour"
+                                           class="form-control" maxlength="7" pattern="#?[0-9A-Fa-f]{6}"
+                                           placeholder="#RRGGBB — blank = theme default">
+                                </div>
                             </div>
 
                             <hr>
@@ -789,6 +828,11 @@ if ($hasSchema) {
             document.getElementById('edit-name').value         = row.name || '';
             document.getElementById('edit-slug').value         = row.slug || '';
             document.getElementById('edit-description').value  = row.description || '';
+            /* #1181 — shared series colour into the text field + swatch. */
+            var _ec = document.getElementById('edit-colour');
+            var _es = document.getElementById('edit-colour-swatch');
+            if (_ec) { _ec.value = row.colour || ''; }
+            if (_es && row.colour && /^#[0-9A-Fa-f]{6}$/.test(row.colour)) { _es.value = row.colour; }
             document.getElementById('edit-title-label').textContent = row.name || '';
             const tbody = document.getElementById('edit-members-tbody');
             tbody.innerHTML = '';

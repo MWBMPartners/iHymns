@@ -21,6 +21,12 @@ export class OfflineIndicator {
 
         /** @type {number|null} Auto-dismiss timer */
         this.dismissTimer = null;
+
+        /** @type {boolean} Current connectivity state. The fetch-succeeded /
+         *  fetch-failed signals fire on EVERY search/fetch, so we only act on
+         *  an actual transition — otherwise "Back online" would re-flash on
+         *  each successful request (e.g. every "Load more"). (WS-I #1017) */
+        this._online = true;
     }
 
     /**
@@ -73,6 +79,8 @@ export class OfflineIndicator {
 
     /** Handle going offline */
     onOffline() {
+        if (!this._online) return; /* already offline — ignore repeat signals */
+        this._online = false;
         clearTimeout(this.dismissTimer);
         this.ensureBanner();
 
@@ -93,6 +101,8 @@ export class OfflineIndicator {
 
     /** Handle coming back online */
     onOnline() {
+        if (this._online) return; /* already online — ignore stray success signals (e.g. every load-more) */
+        this._online = true;
         clearTimeout(this.dismissTimer);
         this.ensureBanner();
 
