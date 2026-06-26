@@ -1,5 +1,7 @@
 ## [unreleased] — alpha
 
+- chore(version): bump app version to **0.1251.0** (`includes/infoAppVer.php`; the PWA service-worker cache version auto-syncs off it, #81). README + OpenAPI spec updated to match.
+- fix(api): **Service Mode "Go Live" fatal — `Call to undefined function checkRateLimit()`** (#1360). `includes/rate_limit.php` (which defines `checkRateLimit()`) was `require_once`'d only inside the `setlist_collab_invite` case, so every other caller (`service_session_start` / `service_broadcast` / `service_operator` / `live_follow_*`) fatal'd. Now loaded top-level in `api.php` so it is always defined. Pre-existing/latent since Service Mode #1335; surfaced on first live use.
 - chore(version): bump app version to **0.1250.0** (`includes/infoAppVer.php`; the PWA service-worker cache version auto-syncs off it, #81). README + OpenAPI spec updated to match.
 - docs(readme): remove the static **Song Library** catalogue block — song counts/songbooks now live in the backend MySQL database (`tblSongbooks` / `tblSongs`), not tied to builds, releases or deployment, so a hard-coded catalogue snapshot in the README only goes stale. Query `tblSongbooks` for the live count.
 - feat(api): **server-side content gating + extensible tier registry + read rate limiting + robust CSRF** (#1352 / #1353 / #1354) — turns the previously-advisory gating model into real server-side enforcement, makes the capability set extensible in one line, caps the heaviest public reads, and ends the sporadic "CSRF error" on admin writes. Five strands:
