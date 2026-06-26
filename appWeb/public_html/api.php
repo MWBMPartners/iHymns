@@ -166,6 +166,14 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    table-existence-gated, so it is a clean no-op until the migration runs and
    never trips a legitimate native-app sync (limits are generous). */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
+/* checkRateLimit() (the login/attempt + live-follow/Service-Mode throttles in
+   includes/rate_limit.php) was previously require_once'd ONLY inside the
+   setlist_collab_invite case — so every OTHER caller (service_session_start /
+   service_broadcast / service_operator / live_follow_create|update|join|poll)
+   fatal'd with "Call to undefined function checkRateLimit()" and Service Mode
+   "Go Live" never started (latent since #1335; surfaced on first live use).
+   Load it top-level so it is always defined for every endpoint. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
 /* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
    validators below can defensively resolve a PublicId passed by a non-web
    client back to its underlying SongId before the existing allow-list regex
