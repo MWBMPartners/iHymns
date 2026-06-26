@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.990.0 Alpha](https://img.shields.io/badge/Version-0.990.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.1250.0 Alpha](https://img.shields.io/badge/Version-0.1250.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -19,44 +19,11 @@
 
 ---
 
-## Song Library
-
-The catalogue currently spans **30+ songbooks, ~12,370 songs across ~20 languages**. Counts grow as scrapers and curator-imports add new hymnals; the seed is dynamic — query `tblSongbooks` for the live count on any deployment.
-
-**Original English hymnals** — Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), Seventh-day Adventist Hymnal (SDAH), The Church Hymnal (CH).
-
-**Christ in Song family** (#663) — 20+ multilingual SDA hymnals including:
-
-| Language | Code | Songbook | Songs |
-| --- | --- | --- | --- |
-| English | en | Christ in Song (CIS) | ~700 |
-| Spanish | es | Himnario Adventista (HA) | ~600 |
-| Portuguese | pt | HASD | ~600 |
-| French | fr | Hymnes & Louanges (DLG) | ~600 |
-| Russian | ru | GASD | ~600 |
-| Twi | tw | DRG | ~500 |
-| Tonga | to | – | ~500 |
-| Tswana | tn | – | ~500 |
-| Sotho / Sesotho | st | – | ~500 |
-| Chichewa / Shona / Venda | ny / sn / ve | – | ~500 each |
-| Swahili | sw | – | ~500 |
-| Ndebele | nr | – | ~500 |
-| Xhosa | xh | – | ~500 |
-| Xitsonga / Gikuyu / Abagusii | ts / ki / luo | – | ~400 each |
-| Dholuo / Kinyarwanda | luo / rw | – | ~400 each |
-| Tumbuka / Sepedi / Bemba / Afrikaans | tum / nso / bem / af | – | ~400 each |
-
-Plus: Advent Hymns (AH), Adventist Youth Sing (AYS), New Adventist Hymnal (NAH) and a Misc collection for community contributions.
-
-Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so a Spanish translation living in an English-primary songbook surfaces correctly under language filters.
-
----
-
 ## Platforms
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.990.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.1250.0) |
 | iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | Scaffold / in progress (~14 Swift sources) |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress (~12 Kotlin sources) |
 
@@ -120,6 +87,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 
 - **Offline downloads** — individual songbooks or all at once.
 - **Bulk download API** — optimised endpoint fetches entire songbooks in a handful of requests.
+- **Rate-limited public reads** — the heaviest sessionless reads (`song_detail`, `search`, `songs_index`, `related_songs`, bulk) carry a fixed-window per-requester limit (per token where present, else per IP) that returns `429` + `Retry-After`; generous enough that real clients never trip it, fail-open and dormant until `migrate-add-read-rate-limit.php` runs (#1354).
 - **Offline audio** — opt-in pre-cache so playback works without a connection (#401).
 - **Per-songbook size readout + eviction** — Settings shows actual cached bytes per songbook with a remove-from-offline button (#401).
 - **Background downloads** — continue when navigating away from Settings.
@@ -145,6 +113,7 @@ Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so
 - **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
+- **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
 - **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page.
 
 ### Community
@@ -176,7 +145,7 @@ Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate r
 | **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · Database Setup · Configuration · Notifications |
 | **Help** | Help / Guides |
 
-Every write on these pages is CSRF-protected. DB error messages are never leaked to clients (see server error log).
+Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
 
 ---
 

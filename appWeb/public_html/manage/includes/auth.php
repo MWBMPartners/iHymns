@@ -952,6 +952,60 @@ function validateCsrf(string $token): bool
     return isset($_SESSION['csrf_token']) && hash_equals($_SESSION['csrf_token'], $token);
 }
 
+/**
+ * Robust CSRF check for same-origin AJAX writes — fixes the SPORADIC "CSRF error"
+ * on long-lived editor pages (merge / delete / save).
+ *
+ * WHY: validateCsrf() above compares a token BAKED INTO THE PAGE at render against
+ * $_SESSION['csrf_token']. On a long-lived single-page editor, that session token can
+ * rotate / be GC'd / change across a multi-tab session while the page stays open — so
+ * a perfectly legitimate POST then carries a STALE token and is rejected. That is the
+ * intermittent failure the owner saw. (The v2 editor api2.php already sidesteps it.)
+ *
+ * This check does NOT depend on the baked token. It accepts the request when EITHER:
+ *   (a) a valid session token was supplied (back-compat — existing callers still work), OR
+ *   (b) it is a genuine same-origin AJAX request: the custom header X-Requested-With is
+ *       present (a browser cannot set it on a CROSS-origin request without a CORS
+ *       preflight this server never grants), AND — if an Origin or Referer header is
+ *       present — its host matches this site (an explicit cross-origin host is rejected;
+ *       an ABSENT Origin/Referer is allowed, since the custom header already proves
+ *       same-origin and some privacy setups strip Referer).
+ *
+ * Either signal alone is an OWASP-recognised CSRF mitigation; together they are robust
+ * and — crucially — never go stale. State-changing AJAX endpoints should call this
+ * instead of validateCsrf() directly. Pass the submitted token (or null) for (a).
+ *
+ * Docs: https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html
+ *
+ * @param string|null $token Submitted CSRF token (header/field), or null if none.
+ * @return bool True if the request is a legitimate same-origin write.
+ */
+function validateCsrfRequest(?string $token = null): bool
+{
+    /* (a) A valid session token still passes — zero behaviour change for callers
+       whose baked token happens to be current. */
+    if ($token !== null && $token !== '' && validateCsrf($token)) {
+        return true;
+    }
+
+    /* (b) Same-origin AJAX. The custom header is the strong signal — required. */
+    if (empty($_SERVER['HTTP_X_REQUESTED_WITH'])) {
+        return false;
+    }
+
+    /* If Origin / Referer is present it MUST match this host; absent is allowed. */
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
+        if (!empty($_SERVER[$hdr])) {
+            $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
+            if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 /* =========================================================================
  * USER PROFILE MANAGEMENT
  * ========================================================================= */

@@ -85,6 +85,18 @@ $sections = [
         'group' => 'Content',
     ],
     [
+        'id'    => 'songbook-series',
+        'icon'  => 'bi-collection-fill',
+        'title' => 'Songbook Series',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'print-templates',
+        'icon'  => 'bi-printer',
+        'title' => 'Print Templates',
+        'group' => 'Content',
+    ],
+    [
         'id'    => 'credit-people',
         'icon'  => 'bi-person-vcard',
         'title' => 'Credit People',
@@ -106,6 +118,12 @@ $sections = [
         'id'    => 'tags',
         'icon'  => 'bi-tags',
         'title' => 'Tags & Themes',
+        'group' => 'Content',
+    ],
+    [
+        'id'    => 'languages',
+        'icon'  => 'bi-translate',
+        'title' => 'Languages',
         'group' => 'Content',
     ],
     [
@@ -220,6 +238,12 @@ $sections = [
         'id'    => 'native-api',
         'icon'  => 'bi-broadcast',
         'title' => 'Native API surface',
+        'group' => 'Operations',
+    ],
+    [
+        'id'    => 'api-keys',
+        'icon'  => 'bi-key-fill',
+        'title' => 'API Keys',
         'group' => 'Operations',
     ],
     [
@@ -505,17 +529,24 @@ foreach ($sections as $s) {
                             sort by title / number / songbook+number using the
                             controls above the song list.</li>
                         <li>Click a song in the list to load it into the tabs on the
-                            right (Metadata, Structure, Credits, Tags, Preview).</li>
+                            right (Metadata, Structure, Credits, Links, Tags, Media,
+                            Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
                             (verify, tag, move to another songbook, export, delete).</li>
                     </ul>
-                    <h3 class="h6">The five tabs</h3>
+                    <h3 class="h6">The seven tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
                         <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
                         <dt>Structure</dt>
                         <dd>
                             The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
+                            <p class="mt-2 mb-2">
+                                <strong>Paste &amp; Reflow</strong> (#1043) — the <em>Paste &amp; Reflow</em> button opens a modal where you paste a whole lyrics block; it auto-splits the text into classified sections (verse / chorus / bridge…) ProPresenter-style, and <strong>Apply</strong> turns them into components in one go — far quicker than adding each section by hand.
+                            </p>
+                            <p class="mb-2">
+                                <strong>Per-line language, translations &amp; annotations</strong> (#1088 / #1235) — expand the per-line panel under the section to attach, line by line, a <em>translation</em> or <em>transliteration</em> (romanization) of a lyric line and Genius-style <em>annotations</em> (explanation / reference / scripture / history / trivia). These anchor to the individual lyric line, not the section's text blob, and are saved as you add them (save the song first so each line has an ID).
+                            </p>
                             <details class="mt-2">
                                 <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
                                 <div class="small text-muted mt-1">
@@ -530,8 +561,12 @@ foreach ($sections as $s) {
                         </dd>
                         <dt>Credits</dt>
                         <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#credit-people">Credit People</a> registry so you don't get duplicate spellings.</dd>
+                        <dt>Links</dt>
+                        <dd>External-website links for this song (Hymnary.org, Internet Archive scans, Wikipedia, YouTube performances, Spotify, etc.). Paste a URL and the provider auto-detects; see <a href="#external-links">External Links</a> for how the shared editor works (#833 / #841).</dd>
                         <dt>Tags</dt>
                         <dd>Categorical tags (e.g. <em>Easter</em>, <em>Communion</em>) that drive Browse-by-Theme in the main app and can be used as targets for <a href="#restrictions">Content Restrictions</a>.</dd>
+                        <dt>Media</dt>
+                        <dd>Accompanying files for the song (#853) — audio recordings, sheet-music PDFs, MIDI sequences and MusicXML notation. Files inherit the song's content-access rules, so a gated song gates its media automatically. Audio is stored on disk and served via the gated <code>/song-media/&lt;id&gt;</code> route; sheet music / MIDI / MusicXML live in the database.</dd>
                         <dt>Preview</dt>
                         <dd>Read-only render of the finished song as users will see it. Always check this before saving.</dd>
                     </dl>
@@ -572,6 +607,7 @@ foreach ($sections as $s) {
                         <li><strong>VideoPsalm</strong> (<code>.json</code>) — import + export (a whole songbook is one JSON).</li>
                         <li><strong>OpenSong</strong> (<code>.xml</code>) — import (in ZIPs) + export.</li>
                         <li><strong>Proclaim</strong> (<code>.txt</code> / <code>.rtf</code>) — import + export (plain text, one song per file).</li>
+                        <li><strong>ChordPro</strong> (<code>.cho</code> / <code>.pro</code> / <code>.chopro</code> / <code>.crd</code> / <code>.chord</code>) — import + export (#1264). One ChordPro document is one song (OnSong / OpenSong / WorshipTools interop). On import it files under a <code>ChordPro Import</code> (CHORDPRO) songbook unless the filename uses the <code>&lt;#&gt; (&lt;ABBR&gt;) - &lt;Title&gt;</code> shape; the lyrics-only exporter round-trips with it.</li>
                         <li><strong class="text-warning">EasyWorship</strong> (SQLite <code>Songs.db</code> + <code>SongWords.db</code>) — import + export. <span class="badge bg-warning text-dark">beta</span>
                             <div class="alert alert-warning small mt-1 mb-1">
                                 <i class="bi bi-exclamation-triangle me-1"></i>
@@ -725,6 +761,45 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="songbook-series" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-collection-fill me-2"></i>Songbook Series</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A <strong>Series</strong> groups songbooks that belong together as equals &mdash; volumes of one collection (e.g. <em>Songs of Fellowship</em> 1 / 2 / 3 / 4) or a themed compilation where no single book is the &ldquo;root.&rdquo; It's the peer-to-peer counterpart to the parent-songbook hierarchy (#782): use a parent FK when one book contains another, use a Series when several books simply sit side by side. Gated by <code>manage_songbooks</code> (the same entitlement as the Songbooks page).
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Create / Edit</dt><dd>Name the series, optionally describe it, and set a display order. Membership is a two-pane picker over every songbook &mdash; add or remove member books at will.</dd>
+                        <dt>Delete</dt><dd>Removes the series and its membership rows. The member <em>songbooks</em> (and their songs) are untouched &mdash; a series only references them.</dd>
+                    </dl>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A series never owns songs and never moves them. It's a presentation grouping over songbooks; deleting it changes nothing about where any song lives.
+                    </div>
+                </section>
+
+                <section id="print-templates" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-printer me-2"></i>Print Templates</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The editor for the block-based layouts the song <em>Print</em> path uses (#1350). A template is an ordered list of blocks (title, lyrics, credits, copyright, etc.) plus page options, stored in <code>tblPrintTemplates</code>. Curated/global templates have no owner and are offered to everyone. Gated by <code>manage_songbooks</code>.
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <ul>
+                        <li><strong>Create / Edit</strong> a template by arranging blocks and setting page options.</li>
+                        <li><strong>Live preview</strong> renders through the <em>same</em> renderer the print path uses, so what you see is byte-identical to the printed page &mdash; one source of truth, no &ldquo;looked fine in the editor, broke on paper.&rdquo;</li>
+                        <li><strong>Delete</strong> a template you no longer want offered.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> The block model and the renderer live in <code>js/modules/print.js</code>; this page only writes the rows. Add a new block <em>type</em> in code, not here.
+                    </div>
+                </section>
+
                 <section id="credit-people" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-person-vcard me-2"></i>Credit People</h2>
                     <p class="role-badges">
@@ -827,6 +902,25 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
+                <section id="languages" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-translate me-2"></i>Languages</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        The registry of IETF BCP 47 language codes (<code>tblLanguages</code>) that backs the Language picker in the Song Editor and Songbooks, and the home-page language filter. Most rows are seeded from the IANA Language Subtag Registry by a migration and are correct out of the box &mdash; this page is the manual escape hatch for the handful of cases the bundled data doesn't cover. Gated by <code>manage_languages</code>.
+                    </p>
+                    <h3 class="h6">When to use it</h3>
+                    <ul>
+                        <li><strong>Add a private-use code</strong> (e.g. <code>qwx</code>) for a hymnal in a language IANA doesn't list.</li>
+                        <li><strong>Fix a native name</strong> the bundled CLDR data got wrong or didn't carry.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> You rarely need this. The IANA seed covers nearly everything; reach for the manual editor only when a code is genuinely missing or a native name is wrong. Re-running the seed migration won't clobber your manual rows.
+                    </div>
+                </section>
+
                 <section id="catalogues" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-collection me-2"></i>Collections (Catalogues)</h2>
                     <p class="role-badges">
@@ -914,8 +1008,20 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        Tiers are bundles of capabilities (view lyrics, view copyrighted lyrics, play audio, download MIDI, download PDF, save offline, requires CCLI). Every user is assigned one tier, which controls what UI controls they see in the main app.
+                        Tiers are bundles of capabilities. The seven original caps are view lyrics, view copyrighted lyrics, play audio, download MIDI, download PDF, save offline, and requires CCLI. Every user is assigned one tier, which controls what UI controls they see in the main app &mdash; and, when content gating is switched on (see below), what the API will actually send them.
                     </p>
+                    <h3 class="h6">Caps are extensible (#1352)</h3>
+                    <p>
+                        The capability list is <strong>not</strong> a fixed seven &mdash; it's a registry (<code>TIER_CAPS</code> in <code>includes/access_tier_validation.php</code>). The seven originals each have their own column for back-compatibility with the native-app API contract; <em>new</em> caps are stored in a single <code>Capabilities</code> JSON column, so adding one needs no schema change to <code>tblAccessTiers</code>. The tier checkbox grid on this page, both API CRUD endpoints, the public <code>access_tiers</code> API emit and the content-gating enforcement all derive their cap list from that one registry.
+                    </p>
+                    <div class="gotcha small" style="border-left-color: var(--bs-info);">
+                        <strong>How to add a new gateable feature:</strong>
+                        <ol class="mb-0">
+                            <li>Add <strong>one line</strong> to <code>TIER_CAPS</code> in <code>includes/access_tier_validation.php</code> &mdash; e.g. <code>'CanRequestSongs' =&gt; ['Requests', 'Submit song requests', 'json', 0]</code> (label, description, storage, default).</li>
+                            <li>Run the JSON-backed tier-capabilities migration card on <a href="#setup-database">Database Setup</a> (it adds the <code>Capabilities</code> column the first time). Migrations are web-run and are <em>not</em> auto-applied on deploy.</li>
+                            <li>That's it &mdash; the admin checkbox here, both API CRUD endpoints (<code>admin_tier_create</code> / <code>admin_tier_update</code>), the <code>access_tiers</code> API emit (as <code>canRequestSongs</code>) and content gating (<code>checkTierAccess</code>) all pick it up with no further schema or per-surface change.</li>
+                        </ol>
+                    </div>
                     <h3 class="h6">Default tiers (seeded at install)</h3>
                     <ul>
                         <li><strong>public</strong> &mdash; lyrics only, public-domain only.</li>
@@ -924,6 +1030,10 @@ foreach ($sections as $s) {
                         <li><strong>premium</strong> &mdash; everything except offline.</li>
                         <li><strong>pro</strong> &mdash; everything.</li>
                     </ul>
+                    <h3 class="h6">Tiers are only enforced when content gating is on</h3>
+                    <p>
+                        Until you switch it on, tiers are <em>advisory</em>: the API emits full song data and the apps are trusted to self-limit. The enforcement point is the <code>content_gating_enabled</code> flag in <code>tblAppSettings</code> (set via <a href="#setup-database">Database Setup</a>) &mdash; <strong>not</strong> an entitlement and not something on the <a href="#entitlements">Entitlements</a> page. With the flag at <code>'1'</code>, the server strips fields a tier may not see (the lyric body for copyrighted songs, gated media) from the <code>song_detail</code> / <code>song_data</code> / random API payloads and from the offline manifest, resolving each cap from the live tier row. At its default <code>'0'</code> the whole mechanism is a verified no-op.
+                    </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> A tier's machine name is set on creation and never changes. To &ldquo;rename&rdquo; a tier, create a new one, reassign users to it, then delete the old one.
                     </div>
@@ -1333,6 +1443,41 @@ foreach ($sections as $s) {
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Status codes follow REST: 400 (validation), 401, 403 (role gate or row-level refusal), 404, 405 (wrong method), 409 (duplicate key), 422 (cannot delete because dependents exist). Native UIs can render the right toast without parsing the error string.
+                    </div>
+                </section>
+
+                <section id="api-keys" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-key-fill me-2"></i>API Keys</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Mint, list and revoke the <strong>machine-to-machine</strong> API keys that external services use to call the public API <em>without</em> a user session (#1064). Distinct from the <a href="#native-api">Native API surface</a>, which uses a per-user Bearer login token &mdash; an API key is a long-lived, scoped credential for a system (e.g. the MeedyaDL lyrics-ingest pipeline). Gated by <code>manage_api_keys</code>.
+                    </p>
+                    <h3 class="h6">How a key works</h3>
+                    <ul>
+                        <li><strong>Shown once.</strong> The raw key is generated server-side and displayed a single time in the create response &mdash; copy it then. iHymns stores only its SHA-256 hash plus a short non-secret prefix, so it can never show you the key again. Lost it? Revoke and mint a new one.</li>
+                        <li><strong>Scoped.</strong> Each key carries one or more space-separated scopes that limit what it can do, checked on every call. Today: <code>lyrics:ingest</code> (write &mdash; the lyrics-ingest endpoint) and <code>catalogue:read</code> (read &mdash; lets a trusted integrator read the public catalogue at the key's <em>own</em> rate limit instead of the tighter anonymous limit; it does <strong>not</strong> unlock gated/copyrighted content). More scopes can be added later without re-issuing existing keys.</li>
+                        <li><strong>Revocable.</strong> Toggle a key <em>inactive</em> to suspend it, or delete it outright. Both actions are written to the <a href="#activity-log">Activity Log</a>.</li>
+                    </ul>
+                    <h3 class="h6">Rate limits</h3>
+                    <p>
+                        API-key calls are rate-limited per key against a windowed usage counter, so one integration can't starve the others. (This is separate from the per-token / per-IP limiter that protects the heavy <em>public</em> reads &mdash; <code>song_detail</code>, search, the slim index, related songs and bulk endpoints each carry a generous per-minute ceiling and answer <code>429</code> with a <code>Retry-After</code> header when a single requester floods them. Real clients never trip it; it fails open if its counter table isn't present.)
+                    </p>
+                    <h3 class="h6">Usage &amp; per-key limits</h3>
+                    <p>
+                        The key list shows each key's <strong>requests today</strong> and its <strong>per-minute&nbsp;&middot;&nbsp;per-day</strong> ceilings. Click <em>Limits</em> on a key to set them (blank&nbsp;=&nbsp;no limit). A key over its window gets a <code>429</code> + <code>Retry-After</code>. Setting a daily cap also makes that key's usage visible here.
+                    </p>
+                    <h3 class="h6">Developer quickstart</h3>
+                    <ul>
+                        <li><strong>Authenticate</strong> &mdash; send the key as <code>Authorization: Bearer ihk_live_&hellip;</code> (or the <code>X-API-Key</code> header) on every request.</li>
+                        <li><strong>Read the catalogue</strong> &mdash; a <code>catalogue:read</code> key calling <code>/api?action=song_detail&amp;id=&hellip;</code> (or <code>songs_index</code>, <code>search</code>, <code>songs_list</code>, <code>bulk_songs</code>) is metered against the key's own limit; without a key the same reads work but on the anonymous per-IP limit.</li>
+                        <li><strong>Watch the headers</strong> &mdash; rate-limited responses carry <code>X-RateLimit-Limit</code>, <code>X-RateLimit-Remaining</code>, <code>X-RateLimit-Window</code>; a <code>429</code> adds <code>Retry-After</code> (seconds). Honour them to self-throttle.</li>
+                        <li><strong>Idempotency</strong> &mdash; for writes, send an <code>Idempotency-Key</code> header so a retried request isn't applied twice.</li>
+                        <li><strong>Explore live</strong> &mdash; the <a href="/manage/api-docs">API docs (Swagger UI)</a> have <em>Try it out</em> enabled; the full OpenAPI spec is at <code>/api-docs.yaml</code>.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Treat a minted key like a password &mdash; it grants its scope to anyone holding it, with no user behind it. If a key leaks, revoke it immediately and re-issue; never paste a raw key into a ticket, chat or log.
                     </div>
                 </section>
 

@@ -2,17 +2,29 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.550.0"
+  version: "0.1250.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
     search, songbook browsing, setlist management, user authentication,
     favorites sync, offline PWA caching, and administrative operations.
 
-    All endpoints are served from a single PHP entry point (`api.php`) and are
+    Most endpoints are served from a single PHP entry point (`api.php`) and are
     routed via the `action` query parameter. Responses are JSON unless otherwise
-    noted. The admin-only **Editor API** (`/manage/editor/api.php`) follows the
-    same action-query pattern but is gated by the `/manage/` PHP session.
+    noted. Three further surfaces share the action-query pattern:
+
+    - The legacy admin **Editor API** (`/manage/editor/api.php`) — gated by the
+      `/manage/` PHP session.
+    - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
+      purpose-built, per-edit atomic editor backend that replaces the
+      whole-song `save_song` race. AUTH + editor-role gated; POSTs use an
+      `X-Requested-With: XMLHttpRequest` same-origin CSRF guard (NOT a session
+      token field). See the **Editor API v2** tag.
+    - **Service Mode** (congregation Live-Follow, #1323/#1335) — the
+      `service_*` action family on `api.php`. See the **Service Mode** tag.
+
+    One non-action route exists: the gated media stream
+    `GET /song-media/<id>` (see the **Media** tag).
 
     ## Authentication
 
@@ -48,13 +60,61 @@ info:
     user is still returned for compatibility, but authorisation uses the
     capability check internally.
 
+    Separately, **access-tier gating capabilities** (the content caps that
+    drive `access_tiers` + content gating) are registered in the `TIER_CAPS`
+    map in `includes/access_tier_validation.php` (#1352). The 7 original caps
+    (`CanViewLyrics`, `CanViewCopyrighted`, `CanPlayAudio`, `CanDownloadMidi`,
+    `CanDownloadPdf`, `CanOfflineSave`, `RequiresCcli`) stay column-backed
+    because their camelCase keys are the frozen native-app API contract. Every
+    **new** gateable cap is a single line in `TIER_CAPS` with `storage 'json'` —
+    stored as a named key inside the one `tblAccessTiers.Capabilities` JSON
+    column, with **no schema change / no new column**. (Earlier docs said to
+    "add a capability column" — that is now only true of the 7 grandfathered
+    caps.)
+
     ## Rate Limiting
 
-    Song request submissions are rate-limited to a configurable maximum per IP
-    per day (default: 5). The shared rate-limit helper
-    (`includes/rate_limit.php::checkRateLimit`) keys by either client IP or
-    authenticated user ID and is reusable for any new endpoint that needs
-    throttling.
+    **Write / auth throttle.** Song-request submissions, login, and the
+    Service-Mode operator endpoints are throttled by
+    `includes/rate_limit.php::checkRateLimit`, keyed by client IP or
+    authenticated user ID. Song requests default to a configurable max per IP
+    per day (default 5).
+
+    **Read throttle (#1354).** The heavy public read endpoints are throttled by
+    a separate fixed-window limiter, `includes/read_rate_limit.php::enforceReadRateLimit`.
+    Each is keyed **per token-or-IP**: a `Bearer`/`ihymns_auth` 64-hex token
+    hashes to its own bucket (`tok:<sha256>`), otherwise the bucket is the
+    client `REMOTE_ADDR` (`ip:<addr>` — never `X-Forwarded-For`). Limits are
+    deliberately generous (≈2–4 req/s sustained per device):
+
+    | Action(s) | Limit |
+    | --- | --- |
+    | `search` | 120 / minute |
+    | `songs_index` | 120 / minute |
+    | `song_detail` / `song_data` | 240 / minute |
+    | `related_songs` | 240 / minute |
+    | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
+
+    On exceed, the endpoint returns **429** with `Retry-After`,
+    `X-RateLimit-Limit`, and `X-RateLimit-Window` headers (see the shared
+    `RateLimited` response). The read limiter is **fail-open** — on an
+    un-migrated install (no `tblReadRateLimit`) or any DB error, no limit is
+    enforced. The token bucket is NOT validated against the sessions table
+    (low-overhead, per-device), so a NAT-shared congregation is not collapsed
+    to one bucket.
+
+    ## Content gating (#1353)
+
+    Content gating is **dormant by default** (`content_gating_enabled='0'`).
+    When an operator turns it on, `song_data` / `song_detail` (and random-song)
+    responses are filtered by the caller's access-tier capabilities: when the
+    tier may not view the lyric body (or it is copyrighted and the tier lacks
+    that capability) the `components` / `translations` / `annotations` /
+    `vocalParts` are stripped and the song object gains `contentRestricted: true`
+    + a `restrictionReason`. Disallowed `media` rows are dropped and
+    `hasAudio` / `hasSheetMusic` forced false; `offlineAllowed` reflects the
+    `offline_save` capability. With the flag off, the song object is returned
+    byte-identical (no extra fields). See the `Song` schema's gated fields.
 
     ## Cross-platform consumers
 
@@ -195,10 +255,15 @@ tags:
   - name: Admin — Tiers
     description: |
       Access-tier CRUD parity (#719 PR 2b). Mirrors `/manage/tiers`.
-      Capability-column list (`TIER_CAPS`) lives in
-      `includes/access_tier_validation.php` so a new capability is a
-      one-line schema + const change — no surface-specific bind_param
-      edits needed.
+      The capability registry (`TIER_CAPS`) lives in
+      `includes/access_tier_validation.php` (#1352). A new gateable
+      capability is a single `TIER_CAPS` line with `storage 'json'` —
+      stored as a named key in the one `tblAccessTiers.Capabilities`
+      JSON column, **no schema change / no new column** (the 7
+      grandfathered caps remain column-backed as the frozen native-app
+      contract). All four surfaces — web admin, `admin_tier_create` /
+      `admin_tier_update`, the public `access_tiers` emit, and content
+      gating — derive their cap list from `TIER_CAPS`.
   - name: Admin — Organisations
     description: |
       System-admin organisation CRUD parity (#719 PR 2c). Mirrors
@@ -248,6 +313,69 @@ tags:
       Admin-only endpoints under `/manage/editor/api.php`, protected by the
       /manage/ PHP session rather than a Bearer token. Used by the song
       editor SPA for per-song save, bulk tag, and revision history.
+  - name: Editor API v2
+    description: |
+      Granular, atomic editor backend (#1200) at `/manage/editor/api2.php`,
+      reached as `?action=<name>`. Every edit is its own CSRF-guarded,
+      audited MySQL write — replacing the whole-song `save_song` auto/manual
+      save race (#1178) without re-implementing the primary save path.
+
+      **Auth + CSRF.** Requires `isAuthenticated()` AND the `editor` role —
+      otherwise `401 {ok:false,error}` (unauthenticated) or
+      `403 {ok:false,error}` (authenticated non-editor). Every **POST**
+      additionally requires the `X-Requested-With: XMLHttpRequest` header
+      (a forbidden header a cross-origin form/navigation cannot set without a
+      CORS preflight that is never honoured); a POST missing it gets
+      `403 {ok:false,error:"Cross-site POST blocked…"}`. This is the same
+      same-origin defence as the public `api.php` (#293) — chosen over an
+      embedded session token that went stale under the cross-subdomain
+      adopted-token admin session (#1307). GET reads carry no CSRF guard.
+
+      **Wire format.** `action` via query string (GET reads) or JSON body
+      (POST writes); two endpoints (`media_upload`, `import_file`/`import_zip`)
+      are `multipart/form-data` reading `$_POST` + `$_FILES`. Every response is
+      `{ok: bool, …}` with the TRUE result. Unknown action → `400`. Any
+      uncaught server error → `500 {ok:false,error:"Server error.",error_detail}`
+      (`error_detail` only populated for admins).
+  - name: Service Mode
+    description: |
+      Congregation Live-Follow (#1323 / #1335) — congregants join a live
+      service via a venue-displayed **rotating code** and follow the broadcast
+      song in sync. The `service_*` action family on `api.php`.
+
+      **Two audiences.** Operator endpoints (`service_session_start`,
+      `service_code_rotate`, `service_code_current`, `service_session_end`,
+      `service_broadcast`) require an authenticated org-operator
+      (`global_admin` / `admin` / the session host / an org-admin of the
+      session's org) — else `401` / `403`. Congregant endpoints
+      (`service_join`, `service_poll`, `service_leave`) are **anonymous** —
+      gated only by knowing the unguessable rotating code (join) or holding
+      the opaque presence token (poll/leave).
+
+      **Presence-token model.** The client mints a `presenceDeviceId`; on
+      `service_join` the server mints an opaque 43-char `PresenceToken` (the
+      hard-revocable gate key, hashed for rate-limit bucketing) bound to the
+      session and expiring at the venue-local occurrence end (UTC). Anonymous
+      polling is rate-limited **per presence token** (`tok:<hash>`, 40/min),
+      not per IP, so a whole congregation behind one church-wifi IP each gets
+      their own budget. Every query filters the `Channel` env discriminator
+      (`alpha`/`beta`/`production`).
+
+      **Dormancy.** The endpoints are always live, but the Phase-3 CCLI
+      content-unlock they exist to drive has **no effect** until both
+      `content_gating_enabled='1'` AND `require_licence:ccli` restriction rows
+      exist — so the family is effectively dormant by default. (The older
+      host-led `live_follow_*` family shares the spine tables but is a
+      separate, non-anonymous, non-venue feature — #1268.)
+  - name: Media
+    description: |
+      Gated streaming of per-song media files (#853) at
+      `GET /song-media/<id>`, where `<id>` is the `tblSongMedia.Id`. Access is
+      evaluated via `checkContentAccess('song', <parent SongId>, …)`; an
+      anonymous request degrades gracefully (no 401 — gating applies as
+      anonymous). Supports HTTP `Range` / `206 Partial Content` for seekable
+      audio. Kinds: `audio` (streamed inline), `sheet-music` (PDF), `midi`,
+      `musicxml` (the last three served as downloads).
 
 paths:
   # ===========================================================================
@@ -360,6 +488,8 @@ paths:
                 hasMore: false
                 offset: 0
                 query: amazing grace
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=search_num:
     get:
@@ -413,6 +543,14 @@ paths:
         lyrics components (verses, choruses), writers, composers, and metadata.
         Supports flexible ID formats: `MP-1`, `MP-01`, `MP-001`, and `MP-0001`
         all resolve to the same song.
+
+        **Content gating (#1353).** When `content_gating_enabled='1'` and the
+        caller's access tier lacks the relevant capability, the returned `song`
+        is filtered: `components` / `translations` / `annotations` /
+        `vocalParts` stripped, `contentRestricted: true` + `restrictionReason`
+        added, disallowed media dropped, `hasAudio` / `hasSheetMusic` forced
+        false. With the flag off (default) the payload is unchanged. See the
+        `Song` schema's gated fields.
       parameters:
         - name: action
           in: query
@@ -465,6 +603,8 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: Song not found.
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=song_by_identifier:
     get:
@@ -960,6 +1100,8 @@ paths:
                         language:     { type: string, example: en }
                         hasAudio:     { type: boolean }
                         hasSheetMusic: { type: boolean }
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # /api.php?action=songs_json removed in WS-J #1020 — the whole-corpus JSON
   # export + its file cache were decommissioned. The PWA uses the slim
@@ -1032,7 +1174,8 @@ paths:
         Identical to `action=song_data` — same handler in api.php. Retained as
         the name `songs_list` points callers to for fetching a full record
         after a paginated index hit (#1012). Returns the complete song with
-        lyrics components, writers, composers and metadata.
+        lyrics components, writers, composers and metadata. Subject to the same
+        read rate limit and content gating (#1353) as `song_data`.
       parameters:
         - name: action
           in: query
@@ -1059,6 +1202,8 @@ paths:
         "404":
           description: Song not found
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=songs_list:
     get:
@@ -4005,6 +4150,8 @@ paths:
                     additionalProperties:
                       type: string
                       description: Rendered `<article>` HTML for the song page
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=bulk_audio:
     get:
@@ -4043,6 +4190,8 @@ paths:
                       properties:
                         songId: { type: string, example: CP-0202 }
                         url:    { type: string, example: /data/audio/CP/0202.mp3 }
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ===========================================================================
   # DISCOVERY  (popular / tags / suggest / related)
@@ -8278,9 +8427,16 @@ components:
         Machine-to-machine API key (#1064) for external services (e.g.
         MeedyaDL) — NOT a user token. A global admin mints it at
         `/manage/api-keys`; it is stored only as a SHA-256 hash + a short
-        prefix (`tblApiKeys`) and carries a space-separated scope (today
-        `lyrics:ingest`). Send it as `Authorization: Bearer ihk_live_…` or,
-        equivalently, the `X-API-Key` header.
+        prefix (`tblApiKeys`) and carries a space-separated scope. Scopes:
+        `lyrics:ingest` (write — the lyrics-ingest endpoint) and
+        `catalogue:read` (read — the public catalogue reads at the key's own
+        per-key rate limit instead of the anonymous IP limit; it does NOT
+        unlock gated/copyrighted content), and `content:gated` (a SEPARATE,
+        deliberately-granted scope to read gated/copyrighted content unstripped —
+        dormant unless content gating is enabled; issuing it is a per-partner
+        licensing decision). Per-key limits + usage are managed at
+        `/manage/api-keys`. Send it as `Authorization: Bearer ihk_live_…`
+        or, equivalently, the `X-API-Key` header.
     ingestApiKeyHeader:
       type: apiKey
       in: header
@@ -8288,6 +8444,39 @@ components:
       description: |
         Alternative to the Bearer header for the same machine-to-machine
         key — `X-API-Key: ihk_live_…`.
+
+  responses:
+    RateLimited:
+      description: |
+        Too Many Requests — the per-window read rate limit was exceeded
+        (#1354). See the **Read rate limiting** section in the API
+        description for the per-action limits and the bucket key. Limits
+        are generous (2–4 req/s sustained per device); a normal client
+        never trips them. The limiter is **fail-open** — on an install
+        where the backing table hasn't been migrated, or on any DB error,
+        no limit applies.
+      headers:
+        Retry-After:
+          description: Seconds to wait before retrying (60 for the minute window).
+          schema: { type: integer, example: 60 }
+        X-RateLimit-Limit:
+          description: The per-window request ceiling that was exceeded.
+          schema: { type: integer, example: 120 }
+        X-RateLimit-Window:
+          description: The window TYPE word (not a number) — `minute` (read endpoints) or `day`.
+          schema: { type: string, enum: [minute, day], example: minute }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Rate limit exceeded (120 per minute). Please slow down and retry shortly."
+              retryAfter:
+                type: integer
+                description: Mirrors the `Retry-After` header.
+                example: 60
 
   schemas:
     # -------------------------------------------------------------------------

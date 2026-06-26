@@ -161,6 +161,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+/* #1354 — lightweight per-requester (token-or-IP) rate limiting for the
+   heaviest PUBLIC read actions. enforceReadRateLimitKeyed() is FAIL-OPEN and
+   table-existence-gated, so it is a clean no-op until the migration runs and
+   never trips a legitimate native-app sync (limits are generous). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'read_rate_limit.php';
 /* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
    validators below can defensively resolve a PublicId passed by a non-web
    client back to its underlying SongId before the existing allow-list regex
@@ -529,6 +534,10 @@ if ($action !== null) {
          * Parameters: q (query string), songbook (optional filter)
          * ----------------------------------------------------------------- */
         case 'search':
+            /* #1354 — search runs a lyrics-wide scan, so it's a prime scrape
+               target. 120/min ≈ 2 req/s sustained: far above any human or the
+               PWA's debounced typeahead, but caps a scraper. Fail-open. */
+            enforceReadRateLimitKeyed('search', 120);
             $query    = isset($_GET['q']) ? trim($_GET['q']) : '';
             $bookId   = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
             $limit    = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
@@ -636,6 +645,15 @@ if ($action !== null) {
             if ($song === null) {
                 sendJson(['error' => 'No songs available.'], 404);
             } else {
+                /* #1353 — `random` emits the SAME full song payload (lyric body
+                   + media) as song_detail, so it gets the SAME tier gate or it
+                   would be a trivial bypass. NO-OP unless content_gating_enabled
+                   === '1' (rule A). */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $rndAuth = getAuthenticatedUser();
+                $rndUid  = $rndAuth ? (int)$rndAuth['Id'] : null;
+                $rndPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song    = contentGatingApply($song, $rndUid, $rndPlat);
                 sendJson(['song' => $song]);
             }
             break;
@@ -685,6 +703,12 @@ if ($action !== null) {
            song_data is kept as an alias so existing clients keep working. */
         case 'song_detail':
         case 'song_data':
+            /* #1354 — the per-song read. A native/casting client can pull many
+               songs in a burst (a setlist preload), so 240/min ≈ 4 req/s is
+               deliberately generous; it still stops a corpus-walking scraper.
+               Fail-open + per-token, so a NAT-shared congregation isn't capped
+               as one IP. */
+            enforceReadRateLimitKeyed('song_detail', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($songId === '') {
                 sendJson(['error' => 'Song ID is required.'], 400);
@@ -710,6 +734,17 @@ if ($action !== null) {
                         }
                     }
                 }
+                /* #1353 — server-side content-gating enforcement. NO-OP (returns
+                   $song byte-identical) unless content_gating_enabled === '1';
+                   when on, strips the lyric body / media / offline affordance the
+                   requester's tier may not access (caps resolved from the live
+                   tblAccessTiers registry, #1352). Applied AFTER the payload is
+                   fully built (incl. include= extras) and BEFORE it is emitted. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                $sdAuth = getAuthenticatedUser();
+                $sdUid  = $sdAuth ? (int)$sdAuth['Id'] : null;
+                $sdPlat = trim((string)($_GET['platform'] ?? 'PWA'));
+                $song   = contentGatingApply($song, $sdUid, $sdPlat);
                 sendJson(['song' => $song]);
             }
             break;
@@ -768,6 +803,10 @@ if ($action !== null) {
          * the flag is off (the no-restriction default is allow).
          * ----------------------------------------------------------------- */
         case 'songbook_export':
+            /* #1354 — whole-songbook payload (heavy). Shares the 'bulk' budget
+               with bulk_songs/bulk_audio at 60/min: a full offline sync touches
+               each songbook a handful of times, well under the cap. Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
             $abbr = isset($_GET['abbr']) ? strtoupper(trim((string)$_GET['abbr'])) : '';
             if ($abbr === '' || !preg_match('/^[A-Z0-9]{1,20}$/', $abbr)) {
                 sendJson(['error' => 'A valid songbook abbreviation is required.'], 400);
@@ -970,10 +1009,17 @@ if ($action !== null) {
          * Parameters: songbook (optional)
          * ----------------------------------------------------------------- */
         case 'songs':
-            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : null;
+            $bookId = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
+            /* rule #17 — MUST be scoped to one songbook. getSongs(null) applies no
+               SongbookAbbr filter and materialises the WHOLE ~3,600-song corpus in
+               PHP-array memory (the #929 OOM, the same hole bulk_songs was hardened
+               against). No client — web OR native — uses the unscoped form; the
+               full catalogue is served lightweight via songs_index / songs_list. */
             if ($bookId === '') {
-                $bookId = null;
+                sendJson(['error' => 'A songbook parameter is required (use songs_index for the full catalogue).'], 400);
+                break;
             }
+            enforceReadRateLimitKeyed('bulk', 60);
 
             $songs = $songData->getSongs($bookId);
             $_langPred = makeLanguageFilterPredicate(
@@ -1001,6 +1047,7 @@ if ($action !== null) {
             if ($bookId === '') {
                 $bookId = null;
             }
+            enforceReadRateLimitKeyed('songs_list', 120);
             $listLimit  = isset($_GET['limit'])  ? (int)$_GET['limit']  : 50;
             $listOffset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
             $listLangs  = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
@@ -1022,6 +1069,10 @@ if ($action !== null) {
          * offline-only fallback. No pagination, no lyrics: one fetch.
          * ----------------------------------------------------------------- */
         case 'songs_index':
+            /* #1354 — the full slim corpus in one response (a few hundred KB).
+               The SW precaches it once and rarely refetches, so 120/min is far
+               above any real client yet caps a scraper polling it. Fail-open. */
+            enforceReadRateLimitKeyed('songs_index', 120);
             sendJson(['songs' => $songData->getSongsSlimIndex()]);
             break;
 
@@ -1215,6 +1266,11 @@ if ($action !== null) {
          * Response: { "songs": { "CP-0001": "<html>...", ... } }
          * ----------------------------------------------------------------- */
         case 'bulk_songs':
+            /* #1354 — renders an ENTIRE songbook's HTML; the heaviest read.
+               60/min on the shared 'bulk' scope: the SW fetches one songbook at
+               a time, so this caps a scraper looping every songbook without
+               ever blocking a normal offline sync. Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
                single songbook. The old unscoped fallback materialised AND
@@ -1273,6 +1329,10 @@ if ($action !== null) {
          *   old "all if omitted" corpus scan was removed, #1010)
          * ----------------------------------------------------------------- */
         case 'bulk_audio':
+            /* #1354 — whole-songbook audio manifest. Shares the 'bulk' 60/min
+               budget with bulk_songs/songbook_export (the SW fetches them
+               together per songbook). Fail-open. */
+            enforceReadRateLimitKeyed('bulk', 60);
             $audioBook  = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — must be scoped to one songbook
                (see bulk_songs above). The SW always passes &songbook=. */
@@ -1291,6 +1351,38 @@ if ($action !== null) {
                     'songId' => $sid,
                     'url'    => '/data/audio/' . rawurlencode($sid) . '.mp3',
                 ];
+            }
+
+            /* #1353 media protection — when content gating is ON, drop the audio
+               of songs the requester can't access (the ENTITY model, mirroring
+               the gated song-media.php route this offline manifest sidesteps).
+               NO-OP when content_gating_enabled='0' (default), so the offline
+               audio bundle is byte-identical to today on every live env. The SW
+               fetches anonymously → userId resolves null → anonymous entity gate.
+               Fail-open on any error (the master switch is the real gate). NOTE:
+               this stops a RESTRICTED song's audio being PRE-CACHED, but the
+               static /data/audio/*.mp3 file itself is still directly fetchable —
+               sealing that needs the signed-URL / move-behind-song-media work
+               tracked separately (it must not break browser <audio>). */
+            if (function_exists('getAppSetting')
+                && getAppSetting('content_gating_enabled', '0') === '1'
+                && function_exists('checkBulkAccess')) {
+                try {
+                    $audioAuth = function_exists('getAuthenticatedUser') ? getAuthenticatedUser() : null;
+                    $audioUid  = isset($audioAuth['Id']) ? (int)$audioAuth['Id'] : null;
+                    $audioIds  = array_column($manifest, 'songId');
+                    if ($audioIds) {
+                        $audioAcc = checkBulkAccess('song', $audioIds, $audioUid, 'PWA', 'display');
+                        $manifest = array_values(array_filter(
+                            $manifest,
+                            /* keep when allowed; an id missing from the map (unknown)
+                               is kept — fail-open, consistent with content_gating.php. */
+                            static fn($m) => !array_key_exists($m['songId'], $audioAcc) || $audioAcc[$m['songId']] === true
+                        ));
+                    }
+                } catch (\Throwable $_e) {
+                    error_log('[bulk_audio] gating failed: ' . $_e->getMessage());
+                }
             }
 
             sendJson([
@@ -6096,6 +6188,11 @@ if ($action !== null) {
          * same songbook.
          * ----------------------------------------------------------------- */
         case 'related_songs':
+            /* #1354 — fires on every song-page view (the "related" rail), so
+               it's high-volume for real users; 240/min ≈ 4 req/s matches the
+               song_detail budget and won't trip normal browsing while still
+               capping a scraper enumerating relationships. Fail-open. */
+            enforceReadRateLimitKeyed('related_songs', 240);
             $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
             $relLimit = isset($_GET['limit']) ? min((int)$_GET['limit'], 50) : 10;
 
@@ -6847,6 +6944,10 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'access_tiers':
             $db = getDbMysqli();
+            /* PRIMARY SELECT — byte-identical to the original so the 7
+               camelCase keys (canViewLyrics … requiresCcli) that form the
+               native-app contract are unchanged. New json-backed caps are
+               merged in below, never by editing this list. */
             $stmt = $db->prepare(
                 'SELECT Name AS name, DisplayName AS displayName, Level AS level,
                         Description AS description, CanViewLyrics AS canViewLyrics,
@@ -6865,6 +6966,36 @@ if ($action !== null) {
                 }
             }
             unset($t);
+
+            /* JSON-backed caps (#1352): append each registered json cap to
+               every tier under its camelCase key (lcfirst of the PascalCase
+               TIER_CAPS key) so a NEW gated cap appears in the API exactly
+               like the column ones — no edit to the SELECT or the contract.
+               Entirely skipped (zero extra query) when no json cap is
+               registered or the Capabilities column hasn't been migrated,
+               so today's response is unchanged. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
+            $jsonKeys = tierCapJsonKeys();
+            if ($jsonKeys && tierCapsColumnExists($db)) {
+                /* One extra query: Name → its decoded Capabilities blob. */
+                $capByName = [];
+                try {
+                    $capRes = $db->query('SELECT Name, Capabilities FROM tblAccessTiers');
+                    while ($capRes && ($row = $capRes->fetch_assoc())) {
+                        $capByName[(string)$row['Name']] = $row;
+                    }
+                    if ($capRes) { $capRes->close(); }
+                } catch (\Throwable $_e) { $capByName = []; }
+                foreach ($tiers as &$t) {
+                    $rowForTier = $capByName[(string)($t['name'] ?? '')] ?? [];
+                    foreach ($jsonKeys as $capKey) {
+                        /* lcfirst(PascalCase) → the same camelCase shape the
+                           column caps use (CanViewLyrics → canViewLyrics). */
+                        $t[lcfirst($capKey)] = (bool)tierCapRead($rowForTier, $capKey);
+                    }
+                }
+                unset($t);
+            }
             sendJson(['tiers' => $tiers]);
             break;
 
@@ -9450,27 +9581,50 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
+                /* Split caps by storage (#1352). Column-backed caps (the 7
+                   originals) bind to their own TINYINT columns exactly as
+                   before; json-backed caps (every new one) are assembled
+                   into the single Capabilities JSON column. Default to 0
+                   when a key is unspecified. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
                     /* Accept the camelCase or PascalCase form clients
                        might use; the canonical key is the exact column
-                       name. Default to 0 when unspecified. */
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                       name. */
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                }
+                $jsonKeys = tierCapJsonKeys();
+                /* Only touch the Capabilities column when there ARE json caps
+                   registered AND the migration has landed — keeps an
+                   un-migrated install (or the all-column state shipped with
+                   this change) byte-identical to the old INSERT. */
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
+                $jsonCaps  = [];
+                foreach ($jsonKeys as $col) {
+                    $jsonCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
 
-                $cols         = array_merge(['Name','DisplayName','Level','Description'], array_keys(TIER_CAPS));
+                $cols   = array_merge(['Name','DisplayName','Level','Description'], array_keys($columnCaps));
+                $types  = 'ssis' . str_repeat('i', count($columnCaps));
+                $values = array_merge([$name, $displayName, $level, $description], array_values($columnCaps));
+                if ($writeJson) {
+                    /* One extra column + one extra bound 's' param carrying
+                       the json_encode'd caps. Placeholder/type/value counts
+                       stay in lockstep (rule #5). */
+                    $cols[]   = 'Capabilities';
+                    $types   .= 's';
+                    $values[] = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                }
                 $placeholders = implode(', ', array_fill(0, count($cols), '?'));
                 $sql          = 'INSERT INTO tblAccessTiers (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')';
-                /* Type string: Name(s) DisplayName(s) Level(i) Description(s) +
-                   each TIER_CAPS column as int. Built dynamically so a new
-                   capability column auto-extends the bind without an edit. */
-                $types  = 'ssis' . str_repeat('i', count(TIER_CAPS));
-                $values = array_merge([$name, $displayName, $level, $description], array_values($caps));
                 $stmt   = $db->prepare($sql);
                 $stmt->bind_param($types, ...$values);
                 $stmt->execute();
                 $newId = (int)$db->insert_id;
                 $stmt->close();
+                /* For the activity log, present the full cap set (column +
+                   json) the same way regardless of storage. */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.create', 'access_tier', (string)$newId, [
                     'name'         => $name,
@@ -9536,27 +9690,70 @@ if ($action !== null) {
                     break;
                 }
 
-                $caps = [];
-                foreach (array_keys(TIER_CAPS) as $col) {
-                    $caps[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                /* Split caps by storage (#1352), mirroring admin_tier_create.
+                   Column caps SET their own TINYINT column; json caps merge
+                   into the Capabilities JSON column. */
+                $columnCaps = [];
+                foreach (tierCapColumnKeys() as $col) {
+                    $columnCaps[$col] = !empty($capsInput[$col]) ? 1 : 0;
                 }
+                $jsonKeys  = tierCapJsonKeys();
+                $writeJson = $jsonKeys && tierCapsColumnExists($db);
 
                 $sets = ['DisplayName = ?', 'Level = ?', 'Description = ?'];
                 $args = [$displayName, $level, $description];
-                foreach ($caps as $col => $val) {
-                    $sets[] = "$col = ?";
-                    $args[] = $val;
+                $types = 'sis';
+                foreach ($columnCaps as $col => $val) {
+                    $sets[]  = "$col = ?";
+                    $args[]  = $val;
+                    $types  .= 'i';
                 }
-                $args[] = $id;
-                /* Type string: DisplayName(s), Level(i), Description(s),
-                   each TIER_CAPS column as int, then Id(i). */
-                $types = 'sis' . str_repeat('i', count(TIER_CAPS)) . 'i';
+                $jsonCaps = [];
+                if ($writeJson) {
+                    /* Merge submitted json caps over the row's existing
+                       Capabilities so a partial update never drops caps the
+                       caller didn't send. */
+                    $existing = [];
+                    try {
+                        $stmtCap = $db->prepare('SELECT Capabilities FROM tblAccessTiers WHERE Id = ?');
+                        $stmtCap->bind_param('i', $id);
+                        $stmtCap->execute();
+                        $rowCap = $stmtCap->get_result()->fetch_row();
+                        $stmtCap->close();
+                        $rawCap = $rowCap[0] ?? null;
+                        if ($rawCap !== null && $rawCap !== '') {
+                            $decodedCap = json_decode((string)$rawCap, true);
+                            if (is_array($decodedCap)) { $existing = $decodedCap; }
+                        }
+                    } catch (\Throwable $_e) { /* degrade to empty existing */ }
+                    /* Only overwrite json caps the caller ACTUALLY submitted —
+                       the API body is genuinely sparse (a client may PATCH a
+                       single cap), so iterating every registered key would force
+                       omitted caps to 0 and clobber a stored 1, defeating the
+                       read-existing merge above (#1352 review finding). An explicit
+                       0 still clears a cap; an absent key is preserved. (The web
+                       form in tiers.php always submits the full set, so it keeps
+                       the simpler all-keys write.) */
+                    foreach ($jsonKeys as $col) {
+                        if (array_key_exists($col, $capsInput)) {
+                            $existing[$col] = !empty($capsInput[$col]) ? 1 : 0;
+                        }
+                    }
+                    $jsonCaps = $existing;
+                    $sets[]   = 'Capabilities = ?';
+                    $args[]   = json_encode($jsonCaps, JSON_UNESCAPED_SLASHES);
+                    $types   .= 's';
+                }
+                $args[]  = $id;
+                $types  .= 'i';
                 $stmt  = $db->prepare(
                     'UPDATE tblAccessTiers SET ' . implode(', ', $sets) . ' WHERE Id = ?'
                 );
                 $stmt->bind_param($types, ...$args);
                 $stmt->execute();
                 $stmt->close();
+                /* Full cap set for the activity log (column + json). */
+                $caps = $columnCaps + $jsonCaps;
 
                 logActivity('api.admin.tier.update', 'access_tier', (string)$id, [
                     'name'         => $name,

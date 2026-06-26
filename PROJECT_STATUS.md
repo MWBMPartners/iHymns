@@ -62,6 +62,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Standard theme vocabulary** (#1152 / #1222) — CCLI / OpenLyrics theme taxonomy seeded into `tblSongTags`; curator canonicalisation on `/manage/tags`.
 - **Service Mode — congregation Live-Follow** (#1323 / #1335) — org venues + recurring schedules, rotating-code join, anonymous presence, the two broadcaster UIs (`/manage/service-projection` + `/manage/service-lead`), dormant CCLI content gate. Currently dormant behind `content_gating_enabled='0'`.
 - **Songbook DisplayAbbr** (#1332) — optional display-only label distinct from the SongId-prefix `Abbreviation`; **Catalogues** are user-labelled "Collections" (#1223, internal name stays `catalogue`); unofficial-songbook badging (#1223).
+- **API gating + enforcement + rate limiting** (#1352 / #1353 / #1354) — content gating is now **server-enforced** (`includes/content_gating.php` strips gated fields from the API by tier cap) on an **extensible one-line capability registry** (`TIER_CAPS` + JSON-backed caps, no schema change); **dormant** until `content_gating_enabled='1'`. The heaviest public reads carry a per-requester (token-or-IP) windowed **rate limit** (`429` + `Retry-After`, fail-open, dormant until migrated). CSRF hardened to a robust same-origin `validateCsrfRequest()` (ends the sporadic stale-token errors on merge/delete/edits); `save_song` moved to the shared v2 editor API core under its X-Requested-With gate.
 
 ---
 
@@ -112,4 +113,4 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ---
 
-Last updated: 2026-06-21
+Last updated: 2026-06-24

@@ -892,6 +892,7 @@ CREATE TABLE IF NOT EXISTS tblAccessTiers (
     CanDownloadPdf  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Download sheet music PDFs',
     CanOfflineSave  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Save songs for offline use',
     RequiresCcli    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Requires valid CCLI licence',
+    Capabilities    JSON            NULL COMMENT 'json-backed extensible tier caps (rule 20); future gated capabilities live here as named keys, no per-feature ALTER',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -2645,6 +2646,33 @@ CREATE TABLE IF NOT EXISTS tblApiKeyIdempotency (
 
 
 -- ----------------------------------------------------------------------------
+-- tblApiKeyRequests (#1064 / API platform Phase D) — self-serve key requests:
+-- an admin requests a key (label + justification, safe scope), a global admin
+-- approves (mints + links ApiKeyId) or rejects. Status is VARCHAR (rule #20).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblApiKeyRequests (
+    Id            INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    RequesterId   INT UNSIGNED  NOT NULL COMMENT 'tblUsers.Id of the admin who requested the key',
+    Label         VARCHAR(120)  NOT NULL COMMENT 'Human label for the requested key',
+    Scope         VARCHAR(255)  NOT NULL DEFAULT 'catalogue:read' COMMENT 'Requested scope (self-serve allow-list, app-validated)',
+    Justification VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'Why the requester needs the key',
+    Status        VARCHAR(20)   NOT NULL DEFAULT 'pending' COMMENT 'pending | approved | rejected (VARCHAR, rule #20)',
+    ReviewedBy    INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblUsers.Id of the global admin who reviewed',
+    ReviewedAt    DATETIME      NULL DEFAULT NULL COMMENT 'When it was reviewed (UTC)',
+    ReviewNote    VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'Optional reviewer note (esp. on rejection)',
+    ApiKeyId      INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblApiKeys.Id minted on approval',
+    CreatedAt     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Requester (RequesterId),
+    INDEX idx_Status    (Status),
+    CONSTRAINT fk_ApiKeyReq_Requester FOREIGN KEY (RequesterId) REFERENCES tblUsers(Id)    ON DELETE CASCADE,
+    CONSTRAINT fk_ApiKeyReq_Reviewer  FOREIGN KEY (ReviewedBy)  REFERENCES tblUsers(Id)    ON DELETE SET NULL,
+    CONSTRAINT fk_ApiKeyReq_ApiKey    FOREIGN KEY (ApiKeyId)    REFERENCES tblApiKeys(Id)  ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Self-serve API-key requests + their review/approval state (Phase D).';
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongIdentityMap (#1066 Theme D) — cross-system recording identity:
 -- iHymns SongId <-> MusicBrainz recording / Spotify track / Genius / ISRC.
 -- SongId is a NON-unique index on purpose: one song legitimately maps to
@@ -3716,3 +3744,25 @@ CREATE TABLE IF NOT EXISTS tblPrintTemplates (
     CONSTRAINT fk_PrintTemplate_Owner
         FOREIGN KEY (OwnerId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblReadRateLimit (#1354) — public-read fixed-window rate-limit counters,
+-- keyed by token-or-IP (not an API key id — that's tblApiKeyUsage). Backs the
+-- lightweight limiter on the heaviest sessionless reads in api.php. The Scope
+-- column reserves per-endpoint limits without a future migration (rule #20);
+-- the limiter (includes/read_rate_limit.php) is FAIL-OPEN, so an un-migrated
+-- install is a clean no-op (#1228 white-screen lesson).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblReadRateLimit (
+    Id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    RateKey      VARCHAR(72)     NOT NULL COMMENT 'sha256 hex of the bearer token, or ip:<addr>',
+    Scope        VARCHAR(40)     NOT NULL DEFAULT '' COMMENT 'endpoint group, so different reads can have different limits without a 2nd migration',
+    WindowType   VARCHAR(10)     NOT NULL COMMENT 'minute | day',
+    WindowStart  DATETIME        NOT NULL COMMENT 'fixed-window start (UTC, minute- or day-truncated)',
+    RequestCount INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'requests counted in this (key, scope, window) bucket',
+
+    UNIQUE KEY uq_read_rl (RateKey, Scope, WindowType, WindowStart),
+    INDEX      idx_WindowStart (WindowStart)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Public-read fixed-window rate-limit counters, keyed by token-or-IP (#1354).';

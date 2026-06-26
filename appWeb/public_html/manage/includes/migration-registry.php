@@ -2288,4 +2288,53 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblPrintTemplates'),
     ],
+    'tier-capabilities-json' => [
+        'script' => 'migrate-add-tier-capabilities-json.php',
+        'card' => [
+            'title'  => 'JSON-backed tier capabilities',
+            'body'   => 'Adds <code>tblAccessTiers.Capabilities</code> (JSON) — the additive,'
+                      . ' schema-free home for NEW gated tier capabilities. The 7 original caps'
+                      . ' (<code>CanViewLyrics</code> … <code>RequiresCcli</code>) stay as their own'
+                      . ' TINYINT columns (the native-app API contract reads them); future caps live'
+                      . ' as named keys inside this one JSON column, so adding a gated feature is a'
+                      . ' ONE-LINE change in <code>TIER_CAPS</code> (storage <code>json</code>) — no'
+                      . ' further ALTER (rule #20). NULL = no json caps set → each falls back to its'
+                      . ' TIER_CAPS default. Idempotent — column-existence guarded, safe to re-run.',
+            'button' => 'Run JSON Tier Capabilities Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblAccessTiers', 'Capabilities'),
+    ],
+    'read-rate-limit' => [
+        'script' => 'migrate-add-read-rate-limit.php',
+        'card' => [
+            'title'  => 'Public-read rate-limit counters (#1354)',
+            'body'   => 'Creates <code>tblReadRateLimit</code> — fixed-window request counters'
+                      . ' keyed by <em>token-or-IP</em> (not an API key id — that is'
+                      . ' <code>tblApiKeyUsage</code>). Backs the lightweight per-requester'
+                      . ' rate limiter on the heaviest <strong>public</strong> reads in'
+                      . ' <code>api.php</code> (<code>song_detail</code> / <code>search</code> /'
+                      . ' <code>bulk_songs</code> / <code>songs_index</code> /'
+                      . ' <code>related_songs</code> …) to blunt scraping. The limiter is'
+                      . ' <strong>fail-open</strong> — until this runs it is a clean no-op, so'
+                      . ' the reads behave exactly as today. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Public-Read Rate-Limit Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblReadRateLimit'),
+    ],
+
+    'api-key-requests' => [
+        'script' => 'migrate-add-api-key-requests.php',
+        'card' => [
+            'title'  => 'Self-serve API-key requests (Phase D)',
+            'body'   => 'Creates <code>tblApiKeyRequests</code> — the self-serve key-request'
+                      . ' workflow. An admin (entitlement <code>request_api_keys</code>) requests'
+                      . ' a <code>catalogue:read</code> key with a justification; a global admin'
+                      . ' reviews it on <code>/manage/api-keys</code> and <strong>approves</strong>'
+                      . ' (mints + links the key) or <strong>rejects</strong>. Sensitive scopes'
+                      . ' (<code>lyrics:ingest</code>, <code>content:gated</code>) stay'
+                      . ' approval-only. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Self-Serve API-Key Requests Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeyRequests'),
+    ],
 ];

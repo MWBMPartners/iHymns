@@ -146,6 +146,7 @@ export function bootSongMediaEditor(root) {
         fd.append('file', file);
         const res = await fetch(`${API_BASE}?action=song_media_upload`, {
             method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: fd,
         });
@@ -162,6 +163,7 @@ export function bootSongMediaEditor(root) {
         fd.append('annotation', annotation || '');
         const res = await fetch(`${API_BASE}?action=song_media_update`, {
             method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: fd,
         });
@@ -177,6 +179,7 @@ export function bootSongMediaEditor(root) {
         fd.append('media_id', String(mediaId));
         const res = await fetch(`${API_BASE}?action=song_media_delete`, {
             method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: fd,
         });
@@ -194,6 +197,7 @@ export function bootSongMediaEditor(root) {
         ids.forEach(id => fd.append('ids[]', String(id)));
         const res = await fetch(`${API_BASE}?action=song_media_reorder`, {
             method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
             body: fd,
         });

@@ -47,5 +47,8 @@
       "Bash(git --no-pager diff --stat -- appWeb/public_html/api.php appWeb/public_html/index.php appWeb/public_html/service-worker.js.php appWeb/public_html/js/modules/search.js appWeb/public_html/js/modules/settings.js appWeb/public_html/api-docs.yaml)",
       "Bash(php -l appWeb/public_html/api.php appWeb/public_html/index.php)"
     ]
+  },
+  "enabledPlugins": {
+    "dev-team@dev-team": true
   }
 }

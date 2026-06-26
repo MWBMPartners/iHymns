@@ -113,6 +113,14 @@ try {
     }
 
     if ($method === 'POST' && $action === 'upsert') {
+        /* CSRF (security sweep): this write previously had NO CSRF check. Robust
+           same-origin validation (the place-search client sends X-Requested-With); a
+           header token is accepted too. Editor auth already enforced above. */
+        if (!validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'CSRF check failed — please retry.']);
+            exit;
+        }
         /* JSON body — the client posts back one of the candidates
            returned by ?action=search. We re-normalise + upsert. */
         $bodyRaw = (string)file_get_contents('php://input');

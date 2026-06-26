@@ -92,9 +92,12 @@ const MERGE_SOFT_REFS = [
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     header('Content-Type: application/json; charset=UTF-8');
 
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    /* Robust same-origin check (not the stale-prone baked token) so a long-open
+       duplicates page never sporadically 403s a legit merge/delete (owner report;
+       the client now also sends X-Requested-With). A valid token still passes. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
-        echo json_encode(['error' => 'CSRF token invalid — refresh the page.']);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
         exit;
     }
     $action = (string)($_POST['action'] ?? '');
@@ -1028,7 +1031,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     var params = { action: 'merge', survivor_id: survivor, duplicate_id: dup, csrf_token: CSRF };
                     if (force) { params.force = '1'; }
                     var body = new URLSearchParams(params);
-                    return fetch('/manage/duplicate-songs', { method: 'POST', body: body, credentials: 'same-origin' })
+                    return fetch('/manage/duplicate-songs', { method: 'POST', body: body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
                         .then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.success) { throw new Error(j.error || 'Merge failed'); } }); });
                 });
             });
@@ -1062,7 +1065,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     /* Shared POST helper → JSON, throwing on any non-success. */
     function postAction(params) {
         params.csrf_token = CSRF;
-        return fetch('/manage/duplicate-songs', { method: 'POST', body: new URLSearchParams(params), credentials: 'same-origin' })
+        return fetch('/manage/duplicate-songs', { method: 'POST', body: new URLSearchParams(params), credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } })
             .then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.success) { throw new Error(j.error || 'Action failed'); } return j; }); });
     }
 

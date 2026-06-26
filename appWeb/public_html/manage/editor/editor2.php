@@ -138,7 +138,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
     <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses. -->
-    <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;</script>
+    <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
 

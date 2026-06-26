@@ -127,9 +127,9 @@ $validateScope = static function (string $scope) use ($ALLOWED_SCOPES): ?string 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     header('Content-Type: application/json; charset=UTF-8');
 
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
-        echo json_encode(['error' => 'CSRF token invalid — refresh the page.']);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
         exit;
     }
     $action = (string)($_POST['action'] ?? '');
@@ -755,7 +755,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 (function () {
     'use strict';
 
-    const CSRF       = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES) ?>;
+    const CSRF       = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     const ACTION_URL = window.location.pathname; // POST back to /manage/languages
 
     /* ---- Modal: add / edit ------------------------------------------- */
@@ -815,6 +815,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             const r = await fetch(ACTION_URL, {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
                 body: payload,
             });
             const d = await r.json().catch(() => ({}));
@@ -870,6 +871,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 const r = await fetch(ACTION_URL, {
                     method: 'POST',
                     credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
                     body: body,
                 });
                 if (!r.ok) {
@@ -922,6 +924,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             const r = await fetch(ACTION_URL, {
                 method: 'POST',
                 credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' },
                 body: body,
             });
             const d = await r.json().catch(() => ({}));

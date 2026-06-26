@@ -653,7 +653,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
 ) {
     header('Content-Type: application/json; charset=UTF-8');
     header('Cache-Control: no-store');
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo json_encode(['error' => 'Invalid CSRF token.']);
         exit;
@@ -861,7 +861,7 @@ try {
 
 /* ----- POST actions ----- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
         exit;
@@ -3510,7 +3510,7 @@ $csrf = csrfToken();
                             <!-- Curated link-type registry (#833 seed list). Pre-loaded so
                                  the shared row-builder doesn't need an AJAX round-trip. -->
                             <script>
-                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+                                window._iHymnsLinkTypes = <?= json_encode($linkTypesForSongbook, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
                             </script>
                         </div>
                         <?php endif; ?>

@@ -102,7 +102,7 @@ $_adminLinks = [
     ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
     ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
-    ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'manage_api_keys',             'Operations' ],
+    ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 
     ['help',                 '/manage/help',                   'bi-life-preserver',  'Help / Guides',         null,                          'Help'       ],
     ['api-docs',             '/manage/api-docs',               'bi-file-earmark-code', 'API Docs (Swagger UI)', 'view_api_docs',             'Help'       ],

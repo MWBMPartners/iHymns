@@ -79,7 +79,10 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <?= htmlspecialchars($appName) ?> is <strong>not a substitute</strong> for purchasing
                 songbooks or obtaining proper licensing. Users are responsible for ensuring
                 they have the appropriate rights to access and display the lyrics contained
-                within this application.
+                within this application. Where access to certain content is governed by an access
+                tier or an organisation licence (e.g. a CCLI licence), the same responsibility applies —
+                and any content obtained through the <?= htmlspecialchars($appName) ?> API is subject to
+                these same licensing requirements.
             </p>
         </div>
     </div>
@@ -115,9 +118,14 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li>Use <?= htmlspecialchars($appName) ?> for any commercial purpose without
                     explicit written consent</li>
                 <li>Redistribute, reproduce, or republish song lyrics obtained through
-                    <?= htmlspecialchars($appName) ?> without appropriate licensing</li>
-                <li>Attempt to extract, scrape, or bulk download song data</li>
-                <li>Interfere with the operation of the application or its infrastructure</li>
+                    <?= htmlspecialchars($appName) ?> — including via the API — without appropriate licensing</li>
+                <li>Extract, scrape, or bulk-download song data by automated means <strong>except</strong>
+                    through the official <?= htmlspecialchars($appName) ?> API using a valid API key,
+                    in accordance with the key's scopes, the published rate limits, and these Terms</li>
+                <li>Share, sell, or transfer your account or API-key credentials, or access another
+                    person's account without authorisation</li>
+                <li>Interfere with the operation of the application or its infrastructure, or attempt to
+                    bypass rate limits, access controls, or content gating</li>
                 <li>Reverse engineer, decompile, or disassemble the application</li>
                 <li>Use the service in any way that violates applicable local, national,
                     or international laws</li>
@@ -179,9 +187,11 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">8. Privacy &amp; Analytics</h2>
             <p>
-                <?= htmlspecialchars($appName) ?> may use optional analytics services to understand
-                general usage patterns. Analytics are disabled by default and require your consent.
-                No personally identifiable information is collected. For full details, see our
+                <?= htmlspecialchars($appName) ?> can be used anonymously. If you create an account, we
+                store limited account data (such as your email and any favourites or set lists you sync);
+                our servers also process technical data such as IP addresses for security and rate-limiting.
+                Optional analytics are disabled by default and require your consent. For full details —
+                including what we collect, cookies, retention, API-access logging, and your rights — see our
                 <a href="/privacy" data-navigate="privacy">Privacy Policy</a>.
             </p>
         </div>

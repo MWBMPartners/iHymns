@@ -79,9 +79,9 @@ $slugFor = static function (string $name): string {
  * ---------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     header('Content-Type: application/json; charset=UTF-8');
-    if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
-        echo json_encode(['error' => 'CSRF token invalid — refresh the page.']);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
         exit;
     }
     $action = (string)($_POST['action'] ?? '');
@@ -678,7 +678,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 <script>
 (function () {
     'use strict';
-    const CSRF = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES) ?>;
+    const CSRF = <?= json_encode($csrf, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     const URL_ = window.location.pathname;
 
     /* Add / Edit modal */
@@ -708,7 +708,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     document.getElementById('tagForm').addEventListener('submit', async (e) => {
         e.preventDefault();
         const body = new URLSearchParams(new FormData(e.target));
-        const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin' });
+        const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { alert(d?.error || 'Save failed.'); return; }
         window.location.reload();
@@ -728,7 +728,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             const body = new URLSearchParams({
                 csrf_token: CSRF, action: 'delete', id, force: uses > 0 ? '1' : '',
             });
-            const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin' });
+            const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
             const d = await r.json().catch(() => ({}));
             if (!r.ok) { alert(d?.error || 'Delete failed.'); return; }
             window.location.reload();
@@ -747,7 +747,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             + '" into "' + e.target.querySelector('#mg-target option:checked').textContent
             + '"? This is irreversible.')) return;
         const body = new URLSearchParams(fd);
-        const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin' });
+        const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
         const d = await r.json().catch(() => ({}));
         if (!r.ok) { alert(d?.error || 'Merge failed.'); return; }
         alert('Merged. Repointed ' + d.repointed + ' mapping(s); ' + d.conflicts + ' duplicate(s) collapsed.');
@@ -766,7 +766,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 csrf_token: CSRF, action: 'merge',
                 source_id: btn.dataset.source, target_id: btn.dataset.target,
             });
-            const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin' });
+            const r = await fetch(URL_, { method: 'POST', body, credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
             const d = await r.json().catch(() => ({}));
             if (!r.ok || !d.success) { btn.disabled = false; alert(d?.error || 'Fold failed.'); return; }
             const row = btn.closest('tr'); if (row) row.remove();
