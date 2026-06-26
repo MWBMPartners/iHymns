@@ -257,9 +257,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $name        = trim((string)($_POST['name']         ?? ''));
                 $notesRaw    = trim((string)($_POST['notes']        ?? ''));
                 $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
-                $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                /* Partial birth/death dates — parse the flexible curator
+                   input (YYYY / MM/YYYY / DD/MM/YYYY) into a normalised
+                   DATE + a precision flag via the shared partial_date
+                   helper. $birthDate / $deathDate stay the DATE the INSERT
+                   below writes (now first-of-period for a partial); the
+                   precision is persisted separately, gated on the column. */
+                $pb = partialDateParse((string)($_POST['birth_date'] ?? ''));
+                if (!$pb['ok']) { $error = 'Birth date: ' . $pb['error']; break; }
+                $birthDate = $pb['date'];
+                $birthPrec = $pb['precision'];
+                $pd = partialDateParse((string)($_POST['death_date'] ?? ''));
+                if (!$pd['ok']) { $error = 'Death date: ' . $pd['error']; break; }
+                $deathDate = $pd['date'];
+                $deathPrec = $pd['precision'];
                 /* Places registry FKs — the live-autocomplete module
                    in js/modules/place-search.js fills these hidden
                    inputs with the tblPlaces.Id of the picked
@@ -302,8 +314,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
-                if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
-                if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) { $error = 'Death date must be YYYY-MM-DD.'; break; }
+                /* Date validation now lives in partialDateParse() above —
+                   it rejects malformed input before this point. */
 
                 /* Uniqueness check before opening the transaction so we
                    don't have to reason about MySQL's UNIQUE-violation
@@ -421,6 +433,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->close();
                     }
 
+                    /* Date precision flags — separate UPDATE, gated on the
+                       precision columns (same partly-migrated tolerance as
+                       the per-place FKs above). No-op on an un-migrated
+                       install; the date itself already landed in the INSERT. */
+                    creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
+
                     if ($links) {
                         $linkStmt = $db->prepare(
                             'INSERT INTO tblCreditPersonExternalLinks
@@ -506,9 +524,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $name        = trim((string)($_POST['name']         ?? ''));
                 $notesRaw    = trim((string)($_POST['notes']        ?? ''));
                 $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $birthDate   = trim((string)($_POST['birth_date']   ?? '')) ?: null;
                 $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
-                $deathDate   = trim((string)($_POST['death_date']   ?? '')) ?: null;
+                /* Partial birth/death dates — same flexible-input parse as
+                   the add handler (YYYY / MM/YYYY / DD/MM/YYYY → DATE +
+                   precision). The UPDATE keeps writing $birthDate/$deathDate;
+                   the precision is persisted separately, gated on the column. */
+                $pb = partialDateParse((string)($_POST['birth_date'] ?? ''));
+                if (!$pb['ok']) { $error = 'Birth date: ' . $pb['error']; break; }
+                $birthDate = $pb['date'];
+                $birthPrec = $pb['precision'];
+                $pd = partialDateParse((string)($_POST['death_date'] ?? ''));
+                if (!$pd['ok']) { $error = 'Death date: ' . $pd['error']; break; }
+                $deathDate = $pd['date'];
+                $deathPrec = $pd['precision'];
                 $birthPlaceId = (int)($_POST['birth_place_id'] ?? 0) ?: null;
                 $deathPlaceId = (int)($_POST['death_place_id'] ?? 0) ?: null;
                 $notes       = $notesRaw !== '' ? $notesRaw : null;
@@ -541,8 +569,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
-                if ($birthDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $birthDate)) { $error = 'Birth date must be YYYY-MM-DD.'; break; }
-                if ($deathDate && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $deathDate)) { $error = 'Death date must be YYYY-MM-DD.'; break; }
+                /* Date validation now lives in partialDateParse() above. */
 
                 /* Pull the before-row both as a sanity check (id valid?)
                    and to compute the audit-log diff. */
@@ -624,6 +651,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $stmt->execute();
                         $stmt->close();
                     }
+
+                    /* Date precision flags — written unconditionally (gated
+                       on the columns) so clearing a date also clears its
+                       precision back to NULL. No-op on an un-migrated install. */
+                    creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
@@ -1170,6 +1202,18 @@ try {
         ? ', p.BirthPlaceId, p.DeathPlaceId'
         : ', NULL AS BirthPlaceId, NULL AS DeathPlaceId';
 
+    /* Partial-date precision flags (migrate-add-creditpeople-date-
+       precision.php) — pulled when present so the Edit drawer can render
+       a year-only date as "1823" rather than "1823-01-01". On a partly-
+       migrated install (column missing) we surface NULLs and the drawer
+       falls back to treating every date as a full date via
+       creditPeopleDateInput(). The column-list strings are hardcoded
+       constants, not user input — safe to interpolate (rule #5). */
+    $hasDatePrecision = creditPeopleDatePrecisionColumnsExist($db);
+    $datePrecisionCols = $hasDatePrecision
+        ? ', p.BirthDatePrecision, p.DeathDatePrecision'
+        : ', NULL AS BirthDatePrecision, NULL AS DeathDatePrecision';
+
     /* Country / region surface (places sweep follow-up) — LEFT JOIN
        to tblPlaces on the birth-place FK so the list page can filter
        by country. The JOIN is only added when both the FK columns
@@ -1200,6 +1244,7 @@ try {
                {$flagCols}
                {$namePartCols}
                {$placeIdCols}
+               {$datePrecisionCols}
                {$countryCols}
           FROM tblCreditPeople p
           {$countryJoin}
@@ -1298,9 +1343,11 @@ try {
             'birth_place' => null,
             'birth_place_id' => null,
             'birth_date'  => null,
+            'birth_date_input' => '',
             'death_place' => null,
             'death_place_id' => null,
             'death_date'  => null,
+            'death_date_input' => '',
             'updated_at'  => null,
             'link_count'  => 0,
             'ipi_count'   => 0,
@@ -1329,9 +1376,11 @@ try {
                 'birth_place' => null,
                 'birth_place_id' => null,
                 'birth_date'  => null,
+                'birth_date_input' => '',
                 'death_place' => null,
                 'death_place_id' => null,
                 'death_date'  => null,
+                'death_date_input' => '',
                 'updated_at'  => null,
                 'link_count'  => 0,
                 'ipi_count'   => 0,
@@ -1347,6 +1396,14 @@ try {
         $byName[$name]['death_place']    = $r['DeathPlace'];
         $byName[$name]['death_place_id'] = isset($r['DeathPlaceId']) ? (int)$r['DeathPlaceId'] : null;
         $byName[$name]['death_date']     = $r['DeathDate'];
+        /* Editor-input forms of the dates — a partial date round-trips as
+           "1823" / "03/1823" rather than the normalised "1823-01-01".
+           creditPeopleDateInput() is column-gated: on an un-migrated install
+           it falls back to formatting the stored DATE as a full date. The
+           raw birth_date/death_date above stay the sortable ISO value the
+           list-table data-sort-value + the lifespan render still use. */
+        $byName[$name]['birth_date_input'] = creditPeopleDateInput($db, $r['BirthDate'], $r['BirthDatePrecision'] ?? null);
+        $byName[$name]['death_date_input'] = creditPeopleDateInput($db, $r['DeathDate'], $r['DeathDatePrecision'] ?? null);
         /* Birth-country surface for the list-page filter (places
            follow-up). NULL on rows that have no picked place. */
         $byName[$name]['birth_country']      = $r['BirthCountry']     ?? null;
@@ -1634,9 +1691,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'birth_place' => $p['birth_place'],
                                 'birth_place_id' => $p['birth_place_id'] ?? null,
                                 'birth_date'  => $p['birth_date'],
+                                /* Editor-form value: "1823" / "03/1823" for
+                                   partials (drawer populates the text field
+                                   from this, not the raw ISO date). */
+                                'birth_date_input' => $p['birth_date_input'] ?? '',
                                 'death_place' => $p['death_place'],
                                 'death_place_id' => $p['death_place_id'] ?? null,
                                 'death_date'  => $p['death_date'],
+                                'death_date_input' => $p['death_date_input'] ?? '',
                                 'is_special_case' => (int)($p['is_special_case'] ?? 0),
                                 'is_group'        => (int)($p['is_group']        ?? 0),
                                 /* Per-role counts so the Merge modal's
@@ -2124,7 +2186,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <label class="form-label small mb-1" for="cp-drawer-birth-date">
                         <span data-flag-label="individual">Birth date</span><span data-flag-label="group" class="d-none">Founded date</span>
                     </label>
-                    <input type="date" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date">
+                    <input type="text" inputmode="numeric" autocomplete="off" class="form-control form-control-sm" id="cp-drawer-birth-date" name="birth_date" placeholder="YYYY, MM/YYYY or DD/MM/YYYY">
+                    <div class="form-text small">Year, month + year, or full date — e.g. 1823, 03/1823, 15/03/1823.</div>
                 </div>
             </div>
 
@@ -2141,7 +2204,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     <label class="form-label small mb-1" for="cp-drawer-death-date">
                         <span data-flag-label="individual">Death date</span><span data-flag-label="group" class="d-none">Disbandment date</span>
                     </label>
-                    <input type="date" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date">
+                    <input type="text" inputmode="numeric" autocomplete="off" class="form-control form-control-sm" id="cp-drawer-death-date" name="death_date" placeholder="YYYY, MM/YYYY or DD/MM/YYYY">
+                    <div class="form-text small">Year, month + year, or full date — e.g. 1873, 06/1873, 21/06/1873.</div>
                 </div>
             </div>
 
@@ -2829,10 +2893,15 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 }
                 document.getElementById('cp-drawer-birth-place').value = person.birth_place || '';
                 document.getElementById('cp-drawer-birth-place-id').value = person.birth_place_id ? String(person.birth_place_id) : '';
-                document.getElementById('cp-drawer-birth-date').value  = person.birth_date  || '';
+                /* Populate the date text field from the editor-input form
+                   (birth_date_input = "1823" / "03/1823" / "15/03/1823")
+                   so a partial date shows as the curator typed it, not the
+                   normalised "1823-01-01". Falls back to the raw ISO date
+                   if the *_input value is absent (e.g. an older cached row). */
+                document.getElementById('cp-drawer-birth-date').value  = person.birth_date_input || person.birth_date || '';
                 document.getElementById('cp-drawer-death-place').value = person.death_place || '';
                 document.getElementById('cp-drawer-death-place-id').value = person.death_place_id ? String(person.death_place_id) : '';
-                document.getElementById('cp-drawer-death-date').value  = person.death_date  || '';
+                document.getElementById('cp-drawer-death-date').value  = person.death_date_input || person.death_date || '';
                 document.getElementById('cp-drawer-notes').value       = person.notes       || '';
                 /* #584 / #585 — pre-tick the classification flags. */
                 document.getElementById('cp-drawer-is-special-case').checked = !!person.is_special_case;
