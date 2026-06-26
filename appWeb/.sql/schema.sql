@@ -2646,6 +2646,33 @@ CREATE TABLE IF NOT EXISTS tblApiKeyIdempotency (
 
 
 -- ----------------------------------------------------------------------------
+-- tblApiKeyRequests (#1064 / API platform Phase D) — self-serve key requests:
+-- an admin requests a key (label + justification, safe scope), a global admin
+-- approves (mints + links ApiKeyId) or rejects. Status is VARCHAR (rule #20).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblApiKeyRequests (
+    Id            INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    RequesterId   INT UNSIGNED  NOT NULL COMMENT 'tblUsers.Id of the admin who requested the key',
+    Label         VARCHAR(120)  NOT NULL COMMENT 'Human label for the requested key',
+    Scope         VARCHAR(255)  NOT NULL DEFAULT 'catalogue:read' COMMENT 'Requested scope (self-serve allow-list, app-validated)',
+    Justification VARCHAR(1000) NOT NULL DEFAULT '' COMMENT 'Why the requester needs the key',
+    Status        VARCHAR(20)   NOT NULL DEFAULT 'pending' COMMENT 'pending | approved | rejected (VARCHAR, rule #20)',
+    ReviewedBy    INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblUsers.Id of the global admin who reviewed',
+    ReviewedAt    DATETIME      NULL DEFAULT NULL COMMENT 'When it was reviewed (UTC)',
+    ReviewNote    VARCHAR(500)  NOT NULL DEFAULT '' COMMENT 'Optional reviewer note (esp. on rejection)',
+    ApiKeyId      INT UNSIGNED  NULL DEFAULT NULL COMMENT 'tblApiKeys.Id minted on approval',
+    CreatedAt     TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    INDEX idx_Requester (RequesterId),
+    INDEX idx_Status    (Status),
+    CONSTRAINT fk_ApiKeyReq_Requester FOREIGN KEY (RequesterId) REFERENCES tblUsers(Id)    ON DELETE CASCADE,
+    CONSTRAINT fk_ApiKeyReq_Reviewer  FOREIGN KEY (ReviewedBy)  REFERENCES tblUsers(Id)    ON DELETE SET NULL,
+    CONSTRAINT fk_ApiKeyReq_ApiKey    FOREIGN KEY (ApiKeyId)    REFERENCES tblApiKeys(Id)  ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Self-serve API-key requests + their review/approval state (Phase D).';
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongIdentityMap (#1066 Theme D) — cross-system recording identity:
 -- iHymns SongId <-> MusicBrainz recording / Spotify track / Genius / ISRC.
 -- SongId is a NON-unique index on purpose: one song legitimately maps to

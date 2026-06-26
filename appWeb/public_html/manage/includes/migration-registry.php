@@ -2321,4 +2321,20 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblReadRateLimit'),
     ],
+
+    'api-key-requests' => [
+        'script' => 'migrate-add-api-key-requests.php',
+        'card' => [
+            'title'  => 'Self-serve API-key requests (Phase D)',
+            'body'   => 'Creates <code>tblApiKeyRequests</code> — the self-serve key-request'
+                      . ' workflow. An admin (entitlement <code>request_api_keys</code>) requests'
+                      . ' a <code>catalogue:read</code> key with a justification; a global admin'
+                      . ' reviews it on <code>/manage/api-keys</code> and <strong>approves</strong>'
+                      . ' (mints + links the key) or <strong>rejects</strong>. Sensitive scopes'
+                      . ' (<code>lyrics:ingest</code>, <code>content:gated</code>) stay'
+                      . ' approval-only. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Self-Serve API-Key Requests Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblApiKeyRequests'),
+    ],
 ];
