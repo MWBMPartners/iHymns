@@ -113,19 +113,31 @@ $normaliseIsni       = static fn(mixed $raw): array => normaliseCreditPersonIsni
    the INSERT loops below bind: ['type','value','name_used','notes']. */
 $normaliseOtherId = static function (mixed $raw): array {
     if (!is_array($raw)) return [];
-    /* App-level allow-list — anything else is silently dropped so a
-       hand-crafted POST can't smuggle an unrecognised IdentifierType. */
-    $allowed = ['viaf', 'wikidata', 'orcid'];
+    /* #1367 — the allow-list is now DERIVED from the central authority-control
+       identifier registry (creditIdentifierPickable()), not three hard-coded
+       slugs. Adding a provider there flows through here automatically, with no
+       schema change (IdentifierType is VARCHAR; rule #20). */
+    $allowed = array_keys(creditIdentifierPickable());
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        /* Lowercase + trim the type, then gate on the allow-list. */
+        /* Lowercase + trim the type, then gate on the allow-list so a
+           hand-crafted POST can't smuggle an unrecognised IdentifierType. */
         $type = strtolower(trim((string)($row['type'] ?? '')));
         if (!in_array($type, $allowed, true)) continue;
         /* Skip rows with no identifier value — an empty row is just an
-           unfilled template the curator left behind. */
+           unfilled template the curator left behind (rejected silently,
+           never validated). */
         $value = trim((string)($row['value'] ?? ''));
         if ($value === '') continue;
+        /* #1367 — the curator may have pasted the full authority URL into the
+           value box; fold it back to the bare id BEFORE validation so both
+           paste shapes (bare id OR URL) round-trip identically. */
+        $value = creditIdentifierNormalise($type, $value);
+        /* Reject a malformed value (would render a dead chip link) rather than
+           storing it. Lenient: the empty case already short-circuited above,
+           so this only fires on a genuinely non-empty-but-wrong value. */
+        if (!creditIdentifierValidate($type, $value)) continue;
         $out[] = [
             'type'      => $type,
             'value'     => $value,
@@ -2267,7 +2279,7 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     </button>
                 </div>
                 <div id="cp-otherid-container" class="d-flex flex-column gap-2"></div>
-                <div class="form-text small">VIAF, Wikidata (Q-number) or ORCID. Stored as a typed identifier and shown as a chip on the public people page.</div>
+                <div class="form-text small">Authority-control IDs — VIAF, Wikidata, GND, FAST, WorldCat, LoC, ORCID, IdRef, Trove and more. Paste a bare ID, or paste the full authority URL into an External Link and it'll be auto-detected here. Shown as a chip on the public people page.</div>
             </div>
 
             <!-- AKA / aliases — repeating sub-form. Mirrors the
@@ -2394,6 +2406,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
          to the numeric option values in the template above. -->
     <script>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        /* #1367 — the authority-control identifier registry slice the
+           paste-a-URL auto-extract needs (every provider's label + raw extract
+           pattern bodies + pickable flag). JSON_HEX_TAG escapes < and > to
+           < / >, so the payload can NEVER contain a literal
+           "</script>" however the bodies are shaped; slashes are LEFT ESCAPED
+           (no JSON_UNESCAPED_SLASHES) as the belt-and-braces choice — "\/" is
+           valid JSON and harmless to new RegExp(). */
+        window._cpIdentifierConfig = <?= json_encode(creditIdentifierClientConfig(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
     <template id="cp-ipi-row-template">
         <div class="card bg-dark border-secondary cp-ipi-row" data-row-kind="ipi">
@@ -2471,9 +2491,44 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             <div class="col-12 col-md-4">
                                 <select class="form-control form-control-sm cp-otherid-type"
                                         name="otherid[{i}][type]">
-                                    <option value="viaf">VIAF</option>
-                                    <option value="wikidata">Wikidata</option>
-                                    <option value="orcid">ORCID</option>
+                                    <?php
+                                        /* #1367 — options derived from the central
+                                           authority-control registry (pickable only),
+                                           bucketed into <optgroup>s by the entry's
+                                           `group`. Groups emit in this fixed order;
+                                           any registry group not listed falls through
+                                           the catch-all below so a future group can't
+                                           silently vanish. */
+                                        $cpIdPickable = creditIdentifierPickable();
+                                        $cpIdByGroup  = [];
+                                        foreach ($cpIdPickable as $cpIdSlug => $cpIdDef) {
+                                            $cpIdGrp = (string)($cpIdDef['group'] ?? 'Other');
+                                            $cpIdByGroup[$cpIdGrp][$cpIdSlug] = $cpIdDef;
+                                        }
+                                        $cpIdGroupOrder = ['International', 'National', 'Academic', 'People'];
+                                        $cpIdSeenGroups = [];
+                                        foreach ($cpIdGroupOrder as $cpIdGrp):
+                                            if (empty($cpIdByGroup[$cpIdGrp])) continue;
+                                            $cpIdSeenGroups[$cpIdGrp] = true;
+                                    ?>
+                                        <optgroup label="<?= htmlspecialchars($cpIdGrp) ?>">
+                                            <?php foreach ($cpIdByGroup[$cpIdGrp] as $cpIdSlug => $cpIdDef): ?>
+                                                <option value="<?= htmlspecialchars($cpIdSlug) ?>"><?= htmlspecialchars((string)$cpIdDef['label']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
+                                    <?php
+                                        /* Catch-all for any pickable group the fixed
+                                           order above didn't cover. */
+                                        foreach ($cpIdByGroup as $cpIdGrp => $cpIdDefs):
+                                            if (!empty($cpIdSeenGroups[$cpIdGrp])) continue;
+                                    ?>
+                                        <optgroup label="<?= htmlspecialchars((string)$cpIdGrp) ?>">
+                                            <?php foreach ($cpIdDefs as $cpIdSlug => $cpIdDef): ?>
+                                                <option value="<?= htmlspecialchars($cpIdSlug) ?>"><?= htmlspecialchars((string)$cpIdDef['label']) ?></option>
+                                            <?php endforeach; ?>
+                                        </optgroup>
+                                    <?php endforeach; ?>
                                 </select>
                             </div>
                             <div class="col-12 col-md-8">
@@ -2801,6 +2856,109 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (typeof applyFlagLabels === 'function') applyFlagLabels();
                 return row;
             }
+
+            /* =================================================================
+               #1367 — paste-a-URL → auto-add an authority identifier.
+
+               ELI5: when a curator pastes an authority-control URL (a VIAF /
+               GND / WorldCat / … link) into an External Link's URL box, we
+               recognise the provider, pull the bare id out, and quietly add a
+               matching row to "Other identifiers" — so they don't have to
+               re-type the id by hand.
+
+               WHY a JS mirror (not a server round-trip): it's instant and
+               works while the drawer is still being filled in, BEFORE save.
+               The bodies in window._cpIdentifierConfig are the SAME raw regex
+               bodies the PHP creditIdentifierExtractFromUrl() uses (PHP wraps
+               '#…#i'; here we do new RegExp(body,'i')), so client + server
+               agree on what each URL extracts to.
+               ================================================================= */
+
+            /* Mirror of PHP creditIdentifierExtractFromUrl(): scan every
+               provider's extract bodies; return the FIRST match's
+               {type, value, label}. Only considers `pickable` providers so we
+               never auto-add ISNI (it owns a dedicated section). */
+            function cpDetectIdentifierFromUrl(url) {
+                const cfg = window._cpIdentifierConfig || {};
+                const u   = (url || '').trim();
+                if (u === '') return null;
+                for (const slug in cfg) {
+                    if (!Object.prototype.hasOwnProperty.call(cfg, slug)) continue;
+                    const def = cfg[slug];
+                    if (!def || def.pickable !== true) continue;          /* skip non-pickable (isni) */
+                    const bodies = Array.isArray(def.extract) ? def.extract : [];
+                    for (let b = 0; b < bodies.length; b++) {
+                        let re;
+                        try { re = new RegExp(bodies[b], 'i'); }
+                        catch (_) { continue; }                            /* malformed body — skip */
+                        const m = re.exec(u);
+                        if (m && m[1]) {
+                            return { type: slug, value: m[1], label: def.label || slug };
+                        }
+                    }
+                }
+                return null;
+            }
+
+            /* True when an Other-identifiers row already holds this exact
+               (type, value) — so a re-blur of the same link doesn't add a
+               duplicate identifier row. Compares the row's <select> value +
+               the value input, both lower-/trim-normalised. */
+            function cpHasOtherIdRow(type, value) {
+                const wanted = (value || '').trim();
+                const rows   = otherIdBox.querySelectorAll('.cp-otherid-row');
+                for (let i = 0; i < rows.length; i++) {
+                    const sel = rows[i].querySelector('select[name$="[type]"]');
+                    const val = rows[i].querySelector('input[name$="[value]"]');
+                    if (sel && val
+                        && sel.value === type
+                        && (val.value || '').trim() === wanted) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            /* Flash a brief, dismiss-itself hint under the link row that
+               triggered the auto-add. Bootstrap .form-text .text-info; removed
+               after a few seconds so it doesn't clutter the form. */
+            function cpFlashLinkHint(linkRow, message) {
+                if (!linkRow) return;
+                /* Don't stack hints — replace any existing one on this row. */
+                const prev = linkRow.querySelector('.cp-otherid-autohint');
+                if (prev) prev.remove();
+                const hint = document.createElement('div');
+                hint.className = 'form-text small text-info cp-otherid-autohint mt-1';
+                hint.setAttribute('role', 'status');
+                hint.textContent = message;
+                const body = linkRow.querySelector('.card-body') || linkRow;
+                body.appendChild(hint);
+                window.setTimeout(() => { hint.remove(); }, 6000);
+            }
+
+            /* Delegated listener — bound ONCE on the link container (rows are
+               added dynamically, so per-row binding would miss them). Fires on
+               `change`/`blur` (capture, since `blur` doesn't bubble) of any
+               link-row URL input; if the URL resolves to a pickable provider
+               and that (type, value) isn't already present, auto-add it. */
+            function cpHandleLinkUrlEvent(ev) {
+                const input = ev.target;
+                if (!input || !input.matches || !input.matches('input[name$="[url]"]')) return;
+                if (!input.closest('.cp-link-row')) return;
+                const hit = cpDetectIdentifierFromUrl(input.value);
+                if (!hit) return;
+                if (cpHasOtherIdRow(hit.type, hit.value)) return;
+                addOtherIdRow({ type: hit.type, value: hit.value });
+                cpFlashLinkHint(
+                    input.closest('.cp-link-row'),
+                    'Added ' + hit.label + ' ' + hit.value + ' to Other identifiers.'
+                );
+            }
+            /* `change` bubbles; `blur` does not, so listen for it in the
+               capture phase. Both are bound on linksBox exactly once. */
+            linksBox.addEventListener('change', cpHandleLinkUrlEvent);
+            linksBox.addEventListener('blur', cpHandleLinkUrlEvent, true);
+
             function addAliasRow(prefill) {
                 if (!aliasTpl) return null;
                 const html = aliasTpl.innerHTML.replaceAll('{i}', String(aliasIndex++));

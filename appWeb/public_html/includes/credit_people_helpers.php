@@ -41,6 +41,208 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
+/* =========================================================================
+ * AUTHORITY-CONTROL IDENTIFIER REGISTRY (#1367)
+ *
+ * ELI5: a libraries-of-the-world "name tag" for a person. Each big library /
+ * music database hands the same writer a unique number (VIAF, Wikidata, GND,
+ * …). This table is the ONE place that knows, for each provider: the friendly
+ * label, the icon, the public look-up URL, what a valid bare id looks like,
+ * and how to pull the bare id back out of a pasted authority URL.
+ *
+ * WHY a registry (not three hard-coded types): the curator's "Other
+ * identifiers" picker, the save-time allow-list + value validation, the
+ * public chip link-out, and the paste-a-URL auto-extract all need the SAME
+ * truth. Adding a provider is now ONE entry here — no schema change, because
+ * tblCreditPersonIdentifiers.IdentifierType is already VARCHAR(20) and is
+ * app-validated (rule #20: a growable vocabulary is VARCHAR + an app-level
+ * allow-list, never an ENUM that would force an ALTER).
+ *
+ * Per-field contract (do NOT re-shape — the JS mirror + four consumers
+ * depend on it):
+ *   - label     friendly chip / dropdown text.
+ *   - group     bucket for the dropdown <optgroup> (International / National /
+ *               Academic / People — emitted in registry order).
+ *   - icon      FontAwesome solid icon class (rendered "fa-solid <icon>").
+ *   - url        printf template; "%s" is the BARE id, rawurlencode()'d when
+ *               the link is built (creditIdentifierDisplayUrl()).
+ *   - validate  a FULL PHP regex (delimiters included) — true ⇒ the bare id
+ *               is well-formed for this provider.
+ *   - extract   list of RAW regex bodies (NO delimiters): PHP wraps each as
+ *               '#'.$body.'#i' and the JS mirror does new RegExp(body,'i').
+ *               The bodies are deliberately PCRE/JS-compatible (capture
+ *               group 1 = the bare id). Used to lift the id out of a pasted
+ *               authority URL, both server-side (fallback) and client-side
+ *               (the primary paste-a-URL UX).
+ *   - pickable  true ⇒ appears in the Other-Identifiers dropdown AND the save
+ *               allow-list. ISNI is false: it has its own dedicated section
+ *               (canonicaliseIsni()), so it's display-only here.
+ *
+ * @link https://www.wikidata.org/wiki/Property:P214  (VIAF)
+ * @link https://www.loc.gov/standards/sourcelist/name-title.html
+ */
+const CREDIT_IDENTIFIER_TYPES = [
+  'isni'        => ['label'=>'ISNI',        'group'=>'International','icon'=>'fa-fingerprint',     'url'=>'https://isni.org/isni/%s',                    'validate'=>'/^\d{15}[\dX]$/',                       'extract'=>['isni\.org/isni/(\d{16})'],                                                              'pickable'=>false],
+  'viaf'        => ['label'=>'VIAF',        'group'=>'International','icon'=>'fa-id-card',         'url'=>'https://viaf.org/viaf/%s/',                   'validate'=>'/^\d+$/',                               'extract'=>['viaf\.org/viaf/(\d+)'],                                                                 'pickable'=>true],
+  'wikidata'    => ['label'=>'Wikidata',    'group'=>'International','icon'=>'fa-database',        'url'=>'https://www.wikidata.org/wiki/%s',            'validate'=>'/^Q\d+$/',                              'extract'=>['wikidata\.org/(?:wiki|entity)/(Q\d+)'],                                                 'pickable'=>true],
+  'gnd'         => ['label'=>'GND',         'group'=>'International','icon'=>'fa-landmark',        'url'=>'https://d-nb.info/gnd/%s',                    'validate'=>'/^[0-9X]+(?:-[0-9X]+)?$/',              'extract'=>['d-nb\.info/gnd/([0-9X][0-9X\-]*)', 'portal\.dnb\.de/\S*?(?:gnd[=/]|nid=)([0-9X][0-9X\-]*)'], 'pickable'=>true],
+  'fast'        => ['label'=>'FAST',        'group'=>'International','icon'=>'fa-tags',            'url'=>'https://id.worldcat.org/fast/%s',             'validate'=>'/^\d+$/',                               'extract'=>['id\.worldcat\.org/fast/(\d+)', 'fast\.oclc\.org/\S*?fast/(\d+)'],                       'pickable'=>true],
+  'worldcat'    => ['label'=>'WorldCat',    'group'=>'International','icon'=>'fa-globe',           'url'=>'https://id.oclc.org/worldcat/entity/%s',      'validate'=>'/^[A-Za-z0-9]+$/',                      'extract'=>['(?:id|entities)\.oclc\.org/worldcat/entity/([A-Za-z0-9]+)'],                             'pickable'=>true],
+  'loc'         => ['label'=>'LoC',         'group'=>'National',     'icon'=>'fa-building-columns','url'=>'https://id.loc.gov/authorities/names/%s',     'validate'=>'/^n[a-z]?\d+$/i',                       'extract'=>['id\.loc\.gov/authorities/names/(n[a-z]?\d+)', 'lccn\.loc\.gov/(n[a-z]?\d+)'],          'pickable'=>true],
+  'orcid'       => ['label'=>'ORCID',       'group'=>'People',       'icon'=>'fa-circle-nodes',    'url'=>'https://orcid.org/%s',                        'validate'=>'/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/',      'extract'=>['orcid\.org/(\d{4}-\d{4}-\d{4}-\d{3}[\dX])'],                                            'pickable'=>true],
+  'idref'       => ['label'=>'IdRef',       'group'=>'People',       'icon'=>'fa-id-badge',        'url'=>'https://www.idref.fr/%s',                     'validate'=>'/^\d{8}[\dX]$/',                        'extract'=>['idref\.fr/(\d{8}[\dX])'],                                                               'pickable'=>true],
+  'trove'       => ['label'=>'Trove',       'group'=>'People',       'icon'=>'fa-feather',         'url'=>'https://nla.gov.au/nla.party-%s',             'validate'=>'/^\d+$/',                               'extract'=>['nla\.gov\.au/nla\.party-(\d+)'],                                                        'pickable'=>true],
+  'librarything'=> ['label'=>'LibraryThing','group'=>'People',       'icon'=>'fa-book',            'url'=>'https://www.librarything.com/author/%s',      'validate'=>'/^[A-Za-z0-9]+$/',                      'extract'=>['librarything\.com/author/([A-Za-z0-9]+)'],                                              'pickable'=>true],
+  'openlibrary' => ['label'=>'Open Library','group'=>'People',       'icon'=>'fa-book-open',       'url'=>'https://openlibrary.org/authors/%s',          'validate'=>'/^OL\d+A$/',                            'extract'=>['openlibrary\.org/authors/(OL\d+A)'],                                                   'pickable'=>true],
+  'cinii'       => ['label'=>'CiNii',       'group'=>'Academic',     'icon'=>'fa-graduation-cap',  'url'=>'https://cir.nii.ac.jp/crid/%s',               'validate'=>'/^\d+$/',                               'extract'=>['cir\.nii\.ac\.jp/crid/(\d+)'],                                                          'pickable'=>true],
+];
+
+/**
+ * The whole registry. ELI5: hand back the lookup table so callers can read a
+ * provider's label / icon / url without re-typing it.
+ *
+ * @return array<string,array{label:string,group:string,icon:string,url:string,validate:string,extract:list<string>,pickable:bool}>
+ */
+function creditIdentifierTypes(): array
+{
+    return CREDIT_IDENTIFIER_TYPES;
+}
+
+/**
+ * Only the providers the curator may actually pick + save (pickable===true),
+ * in registry order. ELI5: the dropdown + the "is this type allowed?" list.
+ * Drives BOTH the <optgroup> dropdown and the save-time allow-list, so the two
+ * can never drift.
+ *
+ * @return array<string,array> slug → registry entry (order preserved)
+ */
+function creditIdentifierPickable(): array
+{
+    /* array_filter on an assoc array preserves keys + insertion order, so the
+       dropdown groups render in the same order the registry declares them. */
+    return array_filter(
+        CREDIT_IDENTIFIER_TYPES,
+        static fn(array $def): bool => ($def['pickable'] ?? false) === true
+    );
+}
+
+/**
+ * True when $value is a well-formed bare id for $type. ELI5: "does this look
+ * like a real VIAF / ORCID / … number?" Unknown type ⇒ false (a hand-crafted
+ * POST can't smuggle an unrecognised IdentifierType past this).
+ *
+ * WHY: the save path rejects a malformed value rather than storing garbage
+ * that would later render a dead chip link.
+ *
+ * @link https://www.php.net/manual/en/function.preg-match.php
+ */
+function creditIdentifierValidate(string $type, string $value): bool
+{
+    $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
+    if ($reg === null) return false;
+    /* validate IS a full PHP regex (delimiters included) — no wrapping. */
+    return (bool)preg_match($reg['validate'], $value);
+}
+
+/**
+ * Normalise a curator's input for $type into the bare id we store. ELI5: the
+ * curator may paste EITHER a bare id ("118578537") OR the whole authority URL
+ * ("https://d-nb.info/gnd/118578537") into the value box — this turns the URL
+ * form into the bare id; a bare id passes straight through (just trimmed).
+ *
+ * WHY: one value box, two acceptable paste shapes — fewer ways for a curator
+ * to get it "wrong". Only attempts URL extraction when the input LOOKS like a
+ * URL (contains "://" or a "dot+slash"), so a legitimately slashed bare id is
+ * left alone unless the type's own extract pattern matches it.
+ */
+function creditIdentifierNormalise(string $type, string $value): string
+{
+    $value = trim($value);
+    if ($value === '') return $value;
+    $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
+    if ($reg === null) return $value;
+
+    /* Cheap "could this be a URL?" gate — avoids running the extract regexes on
+       an obviously-bare id. preg_match returns 1 when a "<dot><slash>" pair
+       appears (e.g. "d-nb.info/…") which is the authority-host shape. */
+    $looksLikeUrl = str_contains($value, '://') || preg_match('/\.[^\s\/]*\//', $value) === 1;
+    if (!$looksLikeUrl) return $value;
+
+    foreach ($reg['extract'] as $body) {
+        /* extract bodies are RAW (no delimiters): wrap '#…#i' here, mirror
+           new RegExp(body,'i') client-side. Group 1 = the bare id. */
+        if (preg_match('#' . $body . '#i', $value, $m) === 1) {
+            return $m[1];
+        }
+    }
+    return $value;
+}
+
+/**
+ * Scan a pasted URL against EVERY provider's extract patterns; return the
+ * first match. ELI5: "this looks like a GND link — pull the GND number out."
+ * Used server-side as a FALLBACK; the JS mirror (creditIdentifierClientConfig)
+ * is the primary, instant UX when a curator pastes a URL into External Links.
+ *
+ * @return array{type:string,value:string}|null  null when no provider matches.
+ */
+function creditIdentifierExtractFromUrl(string $url): ?array
+{
+    $url = trim($url);
+    if ($url === '') return null;
+    foreach (CREDIT_IDENTIFIER_TYPES as $slug => $def) {
+        foreach ($def['extract'] as $body) {
+            if (preg_match('#' . $body . '#i', $url, $m) === 1) {
+                return ['type' => $slug, 'value' => $m[1]];
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * Build the public look-up URL for a stored (type, bare id). ELI5: turn
+ * ("gnd","118578537") into "https://d-nb.info/gnd/118578537". Unknown type
+ * ⇒ null (the chip then renders as plain text, no link).
+ *
+ * The bare id is rawurlencode()'d before substitution so an id with reserved
+ * characters can't break the URL or smuggle path segments.
+ *
+ * @link https://www.php.net/manual/en/function.rawurlencode.php
+ */
+function creditIdentifierDisplayUrl(string $type, string $value): ?string
+{
+    $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
+    if ($reg === null) return null;
+    return sprintf($reg['url'], rawurlencode($value));
+}
+
+/**
+ * The slim, JSON-serialisable slice the client-side auto-extract needs:
+ * every provider's label + its extract pattern BODIES (raw, no delimiters,
+ * so the JS does `new RegExp(body,'i')`). Also carries `pickable` so the JS
+ * only auto-adds providers the dropdown can actually represent (ISNI is
+ * excluded from auto-add — it owns a dedicated section).
+ *
+ * ELI5: a compact copy of the registry for the browser, so pasting an
+ * authority URL into a link field can detect the provider WITHOUT a server
+ * round-trip.
+ *
+ * @return array<string,array{label:string,extract:list<string>,pickable:bool}>
+ */
+function creditIdentifierClientConfig(): array
+{
+    $out = [];
+    foreach (CREDIT_IDENTIFIER_TYPES as $slug => $def) {
+        $out[$slug] = [
+            'label'    => $def['label'],
+            'extract'  => $def['extract'],
+            'pickable' => ($def['pickable'] ?? false) === true,
+        ];
+    }
+    return $out;
+}
+
 /**
  * Legacy slug → tblExternalLinkTypes.Slug map for credit-people.
  *
