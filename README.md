@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.990.0 Alpha](https://img.shields.io/badge/Version-0.990.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.1250.0 Alpha](https://img.shields.io/badge/Version-0.1250.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -19,44 +19,11 @@
 
 ---
 
-## Song Library
-
-The catalogue currently spans **30+ songbooks, ~12,370 songs across ~20 languages**. Counts grow as scrapers and curator-imports add new hymnals; the seed is dynamic — query `tblSongbooks` for the live count on any deployment.
-
-**Original English hymnals** — Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), Seventh-day Adventist Hymnal (SDAH), The Church Hymnal (CH).
-
-**Christ in Song family** (#663) — 20+ multilingual SDA hymnals including:
-
-| Language | Code | Songbook | Songs |
-| --- | --- | --- | --- |
-| English | en | Christ in Song (CIS) | ~700 |
-| Spanish | es | Himnario Adventista (HA) | ~600 |
-| Portuguese | pt | HASD | ~600 |
-| French | fr | Hymnes & Louanges (DLG) | ~600 |
-| Russian | ru | GASD | ~600 |
-| Twi | tw | DRG | ~500 |
-| Tonga | to | – | ~500 |
-| Tswana | tn | – | ~500 |
-| Sotho / Sesotho | st | – | ~500 |
-| Chichewa / Shona / Venda | ny / sn / ve | – | ~500 each |
-| Swahili | sw | – | ~500 |
-| Ndebele | nr | – | ~500 |
-| Xhosa | xh | – | ~500 |
-| Xitsonga / Gikuyu / Abagusii | ts / ki / luo | – | ~400 each |
-| Dholuo / Kinyarwanda | luo / rw | – | ~400 each |
-| Tumbuka / Sepedi / Bemba / Afrikaans | tum / nso / bem / af | – | ~400 each |
-
-Plus: Advent Hymns (AH), Adventist Youth Sing (AYS), New Adventist Hymnal (NAH) and a Misc collection for community contributions.
-
-Songs are tagged at song-level with their actual IETF BCP 47 language (#681), so a Spanish translation living in an English-primary songbook surfaces correctly under language filters.
-
----
-
 ## Platforms
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.990.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.1250.0) |
 | iOS / iPadOS / tvOS | Swift 6.3, SwiftUI | Scaffold / in progress (~14 Swift sources) |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress (~12 Kotlin sources) |
 
