@@ -157,6 +157,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 })();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Cross-subdomain `ihymns_auth` cookie helpers (#1377/#1376). Shared with
+   manage/includes/auth.php so the admin login mints the SAME cookie shape. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth_cookie.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
@@ -12915,55 +12918,13 @@ function getAuthBearerToken(): ?string
     return null;
 }
 
-/**
- * Return the standard cookie options used for the auth cookie (#390).
- *
- * The `Domain` attribute is only set when the current host is under
- * `ihymns.app`, so in local/dev environments (e.g. `localhost`) the
- * cookie stays host-only. `Secure` is set whenever the request arrived
- * over HTTPS (including via a reverse proxy that set X-Forwarded-Proto).
- */
-function _authCookieOpts(int $expiresAtTimestamp): array
-{
-    $host  = preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'] ?? '');
-    $https = !empty($_SERVER['HTTPS'])
-          || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
-
-    $opts = [
-        'expires'  => $expiresAtTimestamp,
-        'path'     => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-        'secure'   => $https,
-    ];
-
-    /* Scope the cookie to the parent domain so every iHymns subdomain
-       (alpha/beta/dev/production/sync) sees the same sign-in. */
-    if (preg_match('/(?:^|\.)ihymns\.app$/i', $host)) {
-        $opts['domain'] = '.ihymns.app';
-    }
-
-    return $opts;
-}
-
-/**
- * Set the `ihymns_auth` cookie used for cross-subdomain sign-in and
- * ITP-resilient persistence (#390). Safe to call before any output.
- */
-function setAuthTokenCookie(string $token, int $expiresAtTimestamp): void
-{
-    if (headers_sent()) return;
-    setcookie('ihymns_auth', $token, _authCookieOpts($expiresAtTimestamp));
-}
-
-/**
- * Clear the `ihymns_auth` cookie (logout + 401 paths).
- */
-function clearAuthTokenCookie(): void
-{
-    if (headers_sent()) return;
-    setcookie('ihymns_auth', '', _authCookieOpts(time() - 3600));
-}
+/* Cross-subdomain auth-cookie helpers (_authCookieOpts / setAuthTokenCookie /
+   clearAuthTokenCookie) were extracted to includes/auth_cookie.php (#1377/#1376)
+   so the /manage admin login can mint the SAME `ihymns_auth` cookie without
+   pulling in api.php wholesale — see that file's header for the rationale. The
+   require lives in the bootstrap block near the top of this file; this comment
+   marks where the inline copies used to be so a future reader isn't surprised
+   the definitions aren't here. */
 
 /**
  * Slide the token's ExpiresAt forward by 30 days so that any active use

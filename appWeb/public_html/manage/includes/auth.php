@@ -51,6 +51,17 @@ enableDebugModeIfRequested();
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
           . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
+/* Cross-subdomain `ihymns_auth` cookie helpers (#1377/#1376) — the SAME file
+   api.php uses. On a successful /manage login we mint an `ihymns_auth` API
+   token + cookie so the admin is recognised on the PUBLIC app too (full
+   access + the maintenance bypass in includes/maintenance.php). Without this,
+   a /manage sign-in only sets the path-scoped `ihymns_manage_session` cookie,
+   which never reaches the public site, so the admin is gated there (the
+   owner-reported "can't verify changes outside /manage during maintenance"
+   bug). setAuthTokenCookie() / clearAuthTokenCookie() come from here. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+          . DIRECTORY_SEPARATOR . 'auth_cookie.php';
+
 /* Entitlement helpers — paired with this file as the canonical /manage/
    bootstrap per the modularity rule in .claude/CLAUDE.md ("Auth + CSRF
    + role + entitlement checks → manage/includes/auth.php + includes/
@@ -532,6 +543,15 @@ function attemptLogin(string $username, string $password): ?array
     $_SESSION['user_id']  = (int)$user['Id'];
     $_SESSION['username'] = $user['Username'];
 
+    /* Cross-surface sign-in (#1377/#1376) — ALSO mint an `ihymns_auth` API
+       token + cookie so this admin is recognised as logged-in on the PUBLIC
+       app, not just inside the path-scoped /manage area. Best-effort: a mint
+       failure must NOT block the /manage login itself (the PHP session is
+       already set), so it is wrapped + logged, never thrown. The matching
+       revocation happens in logout() below, which already DELETEs the token
+       row + clears the cookie — so login/logout are symmetric. */
+    mintCrossSurfaceAuthToken((int)$user['Id']);
+
     /* Successful login (#535). */
     logActivity(
         'auth.login',
@@ -546,6 +566,67 @@ function attemptLogin(string $username, string $password): ?array
 }
 
 /**
+ * Mint a cross-subdomain `ihymns_auth` API token for a just-authenticated
+ * /manage user and set the matching cookie, so the PUBLIC app recognises
+ * them as signed-in (full access + the maintenance bypass in
+ * includes/maintenance.php). (#1377/#1376)
+ *
+ * STORAGE SHAPE — must match api.php EXACTLY or getCurrentUser() / the public
+ * api.php would never resolve the token:
+ *   - raw token  = bin2hex(random_bytes(32))  → 64-char hex (api.php line ~2141)
+ *   - tblApiTokens.Token stores hash('sha256', rawToken)  (api.php line ~2144-2146)
+ *   - the COOKIE carries the RAW token; lookups re-hash it (adoptApiTokenSession()
+ *     above + getAuthenticatedUser() in api.php both compute hash('sha256', cookie)).
+ *
+ * EXPIRY — 30 days, matching the main-app login (api.php auth_login/auth_register
+ * both use `time() + 30 * 86400`). The /manage PHP session's own 30-min idle
+ * timeout is unchanged; this token is the longer-lived "is this user signed in
+ * across subdomains" record, exactly as a main-app sign-in would create. Picking
+ * the SAME 30 days keeps a /manage sign-in indistinguishable from a public-app
+ * sign-in (and lets the existing sliding-expiry logic treat them identically).
+ *
+ * Best-effort: ANY failure is logged and swallowed — the caller has already
+ * established the /manage PHP session, so a token-mint hiccup must not break
+ * the admin's ability to reach the dashboard. All SQL is bound (rule #5).
+ *
+ * @param int $userId The just-authenticated user's id (already validated).
+ */
+function mintCrossSurfaceAuthToken(int $userId): void
+{
+    try {
+        $db = getDbMysqli();
+
+        /* Same generation as api.php: 32 random bytes → 64 hex chars. The
+           RAW token goes in the cookie; the DB stores only its sha256 hash so
+           a DB dump can't be replayed as a live bearer token. */
+        $rawToken    = bin2hex(random_bytes(32));
+        $tokenHash   = hash('sha256', $rawToken);
+        $expiresAtTs = time() + 30 * 86400;            /* 30 days — see docblock. */
+        $expiresAt   = gmdate('c', $expiresAtTs);
+
+        /* Bound INSERT — UserId is an int, Token/ExpiresAt are strings, mirroring
+           the 'sis' bind api.php uses for the same statement. */
+        $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+        $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
+        $stmt->execute();
+        $stmt->close();
+
+        /* Set the cross-subdomain cookie with the RAW token + the shared cookie
+           options (domain `.ihymns.app`, path `/`, HttpOnly, SameSite=Lax,
+           Secure-on-HTTPS) so the public app's getAuthenticatedUser() picks it
+           up. Helper comes from includes/auth_cookie.php (required at top). */
+        if (function_exists('setAuthTokenCookie')) {
+            setAuthTokenCookie($rawToken, $expiresAtTs);
+        }
+    } catch (\Throwable $e) {
+        /* Non-fatal: the /manage PHP session is already established, so a
+           cross-surface mint failure just means the admin is signed in on
+           /manage but not (yet) on the public app — degraded, not broken. */
+        error_log('[manage/auth] mintCrossSurfaceAuthToken failed: ' . $e->getMessage());
+    }
+}
+
+/**
  * Log out the current user and destroy the session.
  *
  * Also revokes the cross-subdomain `ihymns_auth` API token so the
@@ -554,6 +635,15 @@ function attemptLogin(string $username, string $password): ?array
  * requireAuth() deliberately does NOT call logout(): it wipes the
  * /manage/ session but preserves the API token so silent re-adoption
  * can carry the same user back in on the next request.
+ *
+ * This is the REVOKE half of the cross-surface sign-in introduced in
+ * #1377/#1376 (attemptLogin() now MINTs an `ihymns_auth` token on every
+ * successful /manage login). Because login mints and logout revokes, an
+ * admin who signs out of /manage is also signed out of the public app —
+ * the two surfaces stay symmetric. The DELETE below already matched the
+ * minted shape (sha256 hash of the raw cookie), so no change was needed
+ * there; the cookie clear now reuses the shared clearAuthTokenCookie()
+ * helper so its attributes are byte-identical to the set-side.
  *
  * @param bool $logEvent Set false when the caller is already writing
  *                       a more-specific row, to avoid double-logging.
@@ -602,17 +692,18 @@ function logout(bool $logEvent = true): void
         }
     }
     if (!empty($_COOKIE['ihymns_auth']) && !headers_sent()) {
-        $host  = preg_replace('/:\d+$/', '', (string)($_SERVER['HTTP_HOST'] ?? ''));
-        $https = !empty($_SERVER['HTTPS'])
-              || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
-        setcookie('ihymns_auth', '', [
-            'expires'  => time() - 3600,
-            'path'     => '/',
-            'domain'   => $host,
-            'secure'   => $https,
-            'httponly' => true,
-            'samesite' => 'Lax',
-        ]);
+        /* Clear via the SHARED helper (#1377/#1376) so the expiry cookie
+           carries the EXACT same path/domain/secure/HttpOnly/SameSite
+           attributes as the set-side (setAuthTokenCookie()). The previous
+           inline version scoped the clear to the bare host (`$host`) rather
+           than the `.ihymns.app` parent domain the cookie was actually set
+           with — a domain mismatch can leave the parent-domain cookie behind
+           in some browsers, so an admin who "logged out" could still be seen
+           as signed-in on a sibling subdomain. clearAuthTokenCookie() mirrors
+           _authCookieOpts() exactly, eliminating that drift. */
+        if (function_exists('clearAuthTokenCookie')) {
+            clearAuthTokenCookie();
+        }
         unset($_COOKIE['ihymns_auth']);
     }
 
