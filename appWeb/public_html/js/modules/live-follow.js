@@ -25,7 +25,7 @@
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
 const LF_HOST_KEY     = 'ihymns_lf_host';     // sessionStorage: active host session code
-const LF_FOLLOW_KEY   = 'ihymns_lf_follow';   // sessionStorage: joined follower session code
+const LF_FOLLOW_KEY   = 'ihymns_lf_follow';   // sessionStorage: joined follow state {code, token} (#1377); legacy = bare code string
 const LF_CODE_RE      = /^[A-Z0-9]{4,12}$/;
 
 export class LiveFollow {
@@ -33,6 +33,7 @@ export class LiveFollow {
         this.app = app;
         this.hostCode    = null;   // non-null ⇒ this device is hosting
         this.followCode  = null;   // non-null ⇒ this device is following
+        this.followToken = null;   // per-follower poll-bucket token (#1377); NOT auth — the code is
         this.followRev   = 0;      // last revision seen as a follower
         this.followHost  = '';     // host display name (follower banner)
         this._hbTimer    = null;
@@ -47,8 +48,14 @@ export class LiveFollow {
            initSongPage). sessionStorage is per-tab, which matches a session's
            lifetime — a closed tab legitimately drops out. */
         try {
-            this.hostCode   = sessionStorage.getItem(LF_HOST_KEY)   || null;
-            this.followCode = sessionStorage.getItem(LF_FOLLOW_KEY) || null;
+            this.hostCode = sessionStorage.getItem(LF_HOST_KEY) || null;
+            /* Follow state persists as {code, token} (#1377) so a reload keeps
+               the per-follower poll-bucket token. Tolerate the LEGACY plain-string
+               value written by an earlier client (token then absent → poll falls
+               back to per-IP server-side; back-compat). */
+            const fp = this._readFollowState();
+            this.followCode  = fp.code  || null;
+            this.followToken = fp.token || null;
         } catch (_e) { /* storage blocked — feature still works in-memory */ }
         this.followRev = 0;
 
@@ -57,6 +64,7 @@ export class LiveFollow {
            init() can't start both the heartbeat and the poll loop. */
         if (this.hostCode && this.followCode) {
             this.followCode = null;
+            this.followToken = null;
             try { sessionStorage.removeItem(LF_FOLLOW_KEY); } catch (_e) {}
         }
 
@@ -249,9 +257,14 @@ export class LiveFollow {
                 return;
             }
             this.followCode = code;
+            /* Per-follower poll-bucket token (#1377). Stateless server-side — it
+               only buckets the poll rate limiter PER follower so a NAT-shared
+               congregation isn't throttled as one IP. May be absent if the server
+               is an older build; the poll then falls back to per-IP (back-compat). */
+            this.followToken = (typeof r.data.followToken === 'string' && r.data.followToken) ? r.data.followToken : null;
             this.followRev  = (typeof r.data.revision === 'number') ? r.data.revision : 0;
             this.followHost = r.data.hostDisplayName || '';
-            try { sessionStorage.setItem(LF_FOLLOW_KEY, code); } catch (_e) {}
+            this._writeFollowState();
             this._showFollowBanner();
             this._startPolling();
             this.app.showToast('Following ' + (this.followHost ? ('“' + this.followHost + '”') : 'the leader') + '.', 'success');
@@ -263,6 +276,7 @@ export class LiveFollow {
 
     leaveFollow(silent = false) {
         this.followCode = null;
+        this.followToken = null;
         this.followRev = 0;
         this.followHost = '';
         this._pendingScroll = null;
@@ -284,9 +298,13 @@ export class LiveFollow {
         if (!this.followCode || this._polling) { return; }
         this._polling = true;
         try {
+            /* Append the per-follower token so the server buckets THIS device's
+               poll rate (#1377); omit it when absent so an older server still
+               accepts the request and falls back to per-IP (back-compat). */
+            const tokenQs = this.followToken ? ('&token=' + encodeURIComponent(this.followToken)) : '';
             const r = await this._api('live_follow_poll', {
                 method: 'GET',
-                query: '&code=' + encodeURIComponent(this.followCode) + '&since=' + this.followRev,
+                query: '&code=' + encodeURIComponent(this.followCode) + '&since=' + this.followRev + tokenQs,
             });
             /* Env went into maintenance mid-session — tell the follower ONCE (not every
                2.5s tick) and keep the session so updates resume when the site returns,
@@ -433,5 +451,41 @@ export class LiveFollow {
         return String(s).replace(/[&<>"']/g, (c) => (
             { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
         ));
+    }
+
+    /* ---------------------------------------------------- follow persistence -- */
+
+    /* Read the persisted follow state (#1377). New shape is JSON {code, token};
+       a LEGACY value is the bare code string (token absent → per-IP poll). Returns
+       {code, token} with safe defaults, never throws. */
+    _readFollowState() {
+        let raw = null;
+        try { raw = sessionStorage.getItem(LF_FOLLOW_KEY); } catch (_e) { return { code: null, token: null }; }
+        if (!raw) { return { code: null, token: null }; }
+        /* JSON object form. */
+        if (raw.charAt(0) === '{') {
+            try {
+                const o = JSON.parse(raw);
+                if (o && typeof o === 'object') {
+                    const code  = (typeof o.code === 'string')  ? o.code  : null;
+                    const token = (typeof o.token === 'string') ? o.token : null;
+                    return { code: code, token: token };
+                }
+            } catch (_e) { /* fall through to legacy string handling */ }
+        }
+        /* Legacy bare-code string. */
+        return { code: raw, token: null };
+    }
+
+    /* Persist the active follow state as {code, token} (#1377) so a full reload
+       keeps the per-follower poll-bucket token. No-op when not following. */
+    _writeFollowState() {
+        if (!this.followCode) { return; }
+        try {
+            sessionStorage.setItem(
+                LF_FOLLOW_KEY,
+                JSON.stringify({ code: this.followCode, token: this.followToken || null })
+            );
+        } catch (_e) { /* storage blocked — in-memory follow still works */ }
     }
 }

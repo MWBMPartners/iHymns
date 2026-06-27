@@ -85,6 +85,8 @@ export class SongOfTheDay {
             url.searchParams.set('action', 'song_of_the_day');
             url.searchParams.set('date', this._localDateStr());
             url.searchParams.set('hemisphere', this._hemisphere());
+            const country = this._country();
+            if (country) url.searchParams.set('country', country);
             const subtags = this.getActiveSubtags();
             if (subtags.length) url.searchParams.set('lang', subtags.join(','));
 
@@ -154,20 +156,64 @@ export class SongOfTheDay {
 
     /**
      * The user's hemisphere ('n' default | 's'), derived from their IANA timezone so
-     * the southern hemisphere gets Harvest in its own autumn (#1374). Privacy-friendly
-     * + cache-safe — no GeoIP, mirrors how the local date is already client-supplied.
-     * Anything not on the southern allow-list (incl. errors) → 'n', the prior behaviour.
+     * the southern hemisphere gets Harvest in its own autumn (#1374, broadened #1376).
+     * Privacy-friendly + cache-safe — no GeoIP, mirrors how the local date is already
+     * client-supplied. Two passes: (1) an explicit southern allow-list (broadened to
+     * the remaining populous southern zones); (2) a best-effort continent fallback for
+     * the wholly-southern regions (Australia/Antarctica/Pacific island groups) so a
+     * future IANA zone we didn't list still resolves. Anything unmatched (incl. errors,
+     * and the equator-straddling Africa/America/Asia/Europe regions where a blanket
+     * guess would mis-classify the northern majority) → 'n', the prior behaviour.
      *
      * @returns {'n'|'s'}
      */
     _hemisphere() {
         try {
             const tz = (Intl.DateTimeFormat().resolvedOptions().timeZone) || '';
-            /* Populous southern-hemisphere zones with distinct autumn timing. */
-            const SOUTH = /^(Australia\/|Antarctica\/|Atlantic\/Stanley|Pacific\/(Auckland|Chatham|Fiji|Noumea|Port_Moresby|Guadalcanal|Tongatapu|Norfolk|Easter|Apia|Pago_Pago)|Indian\/(Mauritius|Reunion|Antananarivo)|Africa\/(Johannesburg|Maseru|Mbabane|Windhoek|Gaborone|Harare|Lusaka|Maputo|Luanda|Antananarivo)|America\/(Argentina\/|Sao_Paulo|Bahia|Fortaleza|Recife|Maceio|Cuiaba|Campo_Grande|Manaus|Santiago|Punta_Arenas|Montevideo|Asuncion|La_Paz|Lima))/;
-            return SOUTH.test(tz) ? 's' : 'n';
+            /* (1) Explicit southern-hemisphere zones with distinct autumn timing.
+                   #1376 additions over #1374: more of Australia/NZ + Brazil + the
+                   Southern Cone + southern Africa + more Pacific/Indian-Ocean groups. */
+            const SOUTH = /^(Australia\/|Antarctica\/|Atlantic\/Stanley|Pacific\/(Auckland|Chatham|Fiji|Noumea|Port_Moresby|Bougainville|Guadalcanal|Tongatapu|Norfolk|Easter|Apia|Pago_Pago|Rarotonga|Tahiti|Marquesas|Gambier|Niue|Fakaofo|Tarawa|Efate|Kosrae|Pohnpei|Nauru)|Indian\/(Mauritius|Reunion|Antananarivo|Mahe|Cocos|Christmas|Kerguelen)|Africa\/(Johannesburg|Maseru|Mbabane|Windhoek|Gaborone|Harare|Lusaka|Blantyre|Maputo|Luanda|Antananarivo|Kinshasa|Lubumbashi|Brazzaville|Libreville|Bujumbura|Kigali)|America\/(Argentina\/|Sao_Paulo|Bahia|Fortaleza|Recife|Maceio|Araguaina|Cuiaba|Campo_Grande|Belem|Santarem|Manaus|Porto_Velho|Boa_Vista|Rio_Branco|Santiago|Punta_Arenas|Montevideo|Asuncion|La_Paz|Lima|Guayaquil))/;
+            if (SOUTH.test(tz)) return 's';
+            /* (2) Best-effort continent fallback for the wholly-southern regions —
+                   Australia + Antarctica are entirely southern; the listed Pacific
+                   prefixes are island groups that all sit below the equator. Anything
+                   else stays 'n' (the safe default), since the other continent
+                   prefixes straddle the equator. */
+            if (/^(Australia\/|Antarctica\/)/.test(tz)) return 's';
+            return 'n';
         } catch (_e) {
             return 'n';
+        }
+    }
+
+    /**
+     * The user's country as an ISO-3166-1 alpha-2 code (#1376), derived from the
+     * region subtag of navigator.language / navigator.languages (e.g. 'en-US' → 'US',
+     * 'en-GB' → 'GB', 'fr-CA' → 'CA'). Used server-side to theme NATIONAL civic days
+     * (US/Canadian Thanksgiving, US Independence Day). Privacy-friendly + cache-safe —
+     * no GeoIP, same shape as the existing client-supplied date/hemisphere signals.
+     * Returns '' when no region subtag is present (e.g. a bare 'en'), which the server
+     * treats as "no national theme" — an exact no-op vs today.
+     *
+     * @returns {string} Two upper-case letters, or '' when undeterminable.
+     */
+    _country() {
+        try {
+            /* Prefer the ordered preference list; fall back to the single value. */
+            const tags = (Array.isArray(navigator.languages) && navigator.languages.length)
+                ? navigator.languages
+                : (navigator.language ? [navigator.language] : []);
+            for (const tag of tags) {
+                /* A BCP-47 tag's region subtag is the 2-letter group after the
+                   primary language, e.g. en-US, fr-CA, es-419 (419 is a UN M.49
+                   region, NOT alpha-2 — the {2} guard excludes it). */
+                const m = /^[A-Za-z]{2,3}-(?:[A-Za-z]{4}-)?([A-Za-z]{2})\b/.exec(String(tag || ''));
+                if (m && m[1]) return m[1].toUpperCase();
+            }
+            return '';
+        } catch (_e) {
+            return '';
         }
     }
 }

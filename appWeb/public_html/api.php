@@ -157,6 +157,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 })();
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Cross-subdomain `ihymns_auth` cookie helpers (#1377/#1376). Shared with
+   manage/includes/auth.php so the admin login mints the SAME cookie shape. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth_cookie.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongOfTheDay.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
@@ -712,8 +715,17 @@ if ($action !== null) {
             $sotdHemi = (isset($_GET['hemisphere']) && in_array($_GET['hemisphere'], ['n', 's'], true))
                 ? (string)$_GET['hemisphere'] : 'n';
 
+            /* Country signal (#1376) — the client sends an ISO-3166-1 alpha-2 derived
+               from navigator.language's region subtag (en-US → US) so NATIONAL civic
+               days (US/Canadian Thanksgiving, US Independence Day) theme the daily song
+               for the right country. Validated to two letters then upper-cased; absent
+               / malformed / a country with no theme → '' → exact prior behaviour (an
+               old client or any non-themed locale is a verified no-op). */
+            $sotdCountry = (preg_match('/^[A-Za-z]{2}$/', (string)($_GET['country'] ?? '')) === 1)
+                ? strtoupper((string)$_GET['country']) : '';
+
             $sotd = new SongOfTheDay(getDbMysqli());
-            $pick = $sotd->pickForDate($sotdDate, $sotdLangs, $sotdHemi);
+            $pick = $sotd->pickForDate($sotdDate, $sotdLangs, $sotdHemi, $sotdCountry);
 
             if ($pick === null) {
                 sendJson(['song' => null, 'themeLabel' => '', 'firstLine' => '']);
@@ -12312,9 +12324,14 @@ if ($action !== null) {
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['ok' => false, 'error' => 'Invalid session code.'], 400); break; }
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
-            /* Join is infrequent (once per follower); a per-IP cap blunts code
-               enumeration without penalising a real congregation. */
-            checkRateLimit('live_follow_join', $liveIp, 60, 60, true);
+            /* Join is infrequent (once per follower) but a whole congregation
+               joins over a minute or two behind ONE church-wifi NAT IP, so the
+               per-IP cap is generous (120/60s). It still blunts cheap code
+               enumeration: the access control remains the session CODE, and a
+               minted follow token only buckets the per-token poll rate limiter
+               below (it is NOT an authorisation grant). NAT-safe model mirrors
+               service_join/service_poll (rule #26 / #1377). */
+            checkRateLimit('live_follow_join', $liveIp, 120, 60, true);
             recordRateLimitHit('live_follow_join', $liveIp);
 
             $db = getDbMysqli();
@@ -12335,9 +12352,16 @@ if ($action !== null) {
                can't be probed cheaply (combined with the rate limit). */
             if (!$row) { sendJson(['ok' => false, 'error' => 'Session not found or ended.'], 404); break; }
 
+            /* Mint a per-follower token (16 random bytes → 32 hex chars). It is
+               STATELESS — nothing is persisted server-side; it exists purely so
+               the poll endpoint can bucket the rate limiter per follower instead
+               of per shared NAT IP. The session CODE stays the access control. */
+            $followToken = bin2hex(random_bytes(16));
+
             sendJson([
                 'ok'              => true,
                 'code'            => $code,
+                'followToken'     => $followToken,
                 'hostDisplayName' => (string)($row['HostName'] ?? ''),
                 'currentSongId'   => $row['CurrentSongId'],
                 'componentIndex'  => $row['CurrentComponentIndex'] !== null ? (int)$row['CurrentComponentIndex'] : null,
@@ -12353,16 +12377,24 @@ if ($action !== null) {
             $since = (int)($_GET['since'] ?? 0);
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
-            /* Per-IP cap so `poll` can't serve as an un-throttled code-existence
-               oracle that sidesteps the join cap (a live vs unknown code give
-               different responses). Generous for legitimate ~2.5s polling from a
-               handful of devices. NOTE: a NAT-shared congregation polling at
-               scale needs the NAT-safe anti-enumeration design — a short-lived
-               join token gating poll + a per-session counter instead of per-IP
-               recording — which lands with the Phase-3 client (#1268). Dormant in
-               Phase 1 (no client polls yet). */
-            checkRateLimit('live_follow_poll', $liveIp, 600, 60, true);
-            recordRateLimitHit('live_follow_poll', $liveIp);
+            /* NAT-safe rate limiting (#1377, mirrors service_poll / rule #26).
+               A congregation in one building shares ONE public IP (church-wifi
+               NAT) and each follower polls every ~2.5s, so a per-IP cap throttles
+               the whole room. When the client sends the per-follower token minted
+               at join, bucket PER TOKEN ('tok:<token>', generous 40/60s for ~2.5s
+               polling) so each device gets its own budget and one bad token can't
+               DoS the rest. Fall back to the per-IP cap ONLY when the token is
+               absent (an old client) — the IP path keeps `poll` from being an
+               un-throttled code-existence oracle for those legacy callers. */
+            $liveTok = preg_replace('/[^a-f0-9]/', '', substr((string)($_GET['token'] ?? ''), 0, 40));
+            if ($liveTok !== '') {
+                $liveBucket = 'tok:' . $liveTok;
+                checkRateLimit('live_follow_poll', $liveBucket, 40, 60, true);
+                recordRateLimitHit('live_follow_poll', $liveBucket);
+            } else {
+                checkRateLimit('live_follow_poll', $liveIp, 600, 60, true);
+                recordRateLimitHit('live_follow_poll', $liveIp);
+            }
             $db = getDbMysqli();
             $stmt = $db->prepare(
                 'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
@@ -12886,55 +12918,13 @@ function getAuthBearerToken(): ?string
     return null;
 }
 
-/**
- * Return the standard cookie options used for the auth cookie (#390).
- *
- * The `Domain` attribute is only set when the current host is under
- * `ihymns.app`, so in local/dev environments (e.g. `localhost`) the
- * cookie stays host-only. `Secure` is set whenever the request arrived
- * over HTTPS (including via a reverse proxy that set X-Forwarded-Proto).
- */
-function _authCookieOpts(int $expiresAtTimestamp): array
-{
-    $host  = preg_replace('/:\d+$/', '', $_SERVER['HTTP_HOST'] ?? '');
-    $https = !empty($_SERVER['HTTPS'])
-          || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
-
-    $opts = [
-        'expires'  => $expiresAtTimestamp,
-        'path'     => '/',
-        'httponly' => true,
-        'samesite' => 'Lax',
-        'secure'   => $https,
-    ];
-
-    /* Scope the cookie to the parent domain so every iHymns subdomain
-       (alpha/beta/dev/production/sync) sees the same sign-in. */
-    if (preg_match('/(?:^|\.)ihymns\.app$/i', $host)) {
-        $opts['domain'] = '.ihymns.app';
-    }
-
-    return $opts;
-}
-
-/**
- * Set the `ihymns_auth` cookie used for cross-subdomain sign-in and
- * ITP-resilient persistence (#390). Safe to call before any output.
- */
-function setAuthTokenCookie(string $token, int $expiresAtTimestamp): void
-{
-    if (headers_sent()) return;
-    setcookie('ihymns_auth', $token, _authCookieOpts($expiresAtTimestamp));
-}
-
-/**
- * Clear the `ihymns_auth` cookie (logout + 401 paths).
- */
-function clearAuthTokenCookie(): void
-{
-    if (headers_sent()) return;
-    setcookie('ihymns_auth', '', _authCookieOpts(time() - 3600));
-}
+/* Cross-subdomain auth-cookie helpers (_authCookieOpts / setAuthTokenCookie /
+   clearAuthTokenCookie) were extracted to includes/auth_cookie.php (#1377/#1376)
+   so the /manage admin login can mint the SAME `ihymns_auth` cookie without
+   pulling in api.php wholesale — see that file's header for the rationale. The
+   require lives in the bootstrap block near the top of this file; this comment
+   marks where the inline copies used to be so a future reader isn't surprised
+   the definitions aren't here. */
 
 /**
  * Slide the token's ExpiresAt forward by 30 days so that any active use
