@@ -133,14 +133,22 @@ function contentGating_userHasCcli(?int $userId): bool
  * shape from SongData::_fetchSongRow), so the trim degrades gracefully if a
  * future shape change renames a key.
  *
- * @param array    $song     The built song array (song_detail/song_data shape).
- * @param int|null $userId   Authenticated user id, or null for anonymous.
- * @param string   $platform Requesting platform tag (informational; default 'PWA').
+ * @param array       $song          The built song array (song_detail/song_data shape).
+ * @param int|null    $userId        Authenticated user id, or null for anonymous.
+ * @param string      $platform      Requesting platform tag (informational; default 'PWA').
+ * @param string|null $presenceToken Service-Mode congregant presence token (#1335 / rule #26).
+ *                                   When it resolves to a live session whose org holds a
+ *                                   verified CCLI licence, it OR-grants view_copyrighted +
+ *                                   play_audio for the duration of the service — the in-service
+ *                                   exception. NULL/empty (the default) is a no-op, so the
+ *                                   existing 3-arg callers are completely unaffected.
  * @return array The same array, with disallowed fields stripped (or unchanged).
  */
-function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA'): array
+function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA', ?string $presenceToken = null): array
 {
-    /* (A) Master switch — the deliberate dormant default. */
+    /* (A) Master switch — the deliberate dormant default. Unchanged: a 3-arg OR a
+       4-arg call returns byte-identical data when the flag is off, because we bail
+       here BEFORE touching the new presence-token path. */
     if (!contentGatingEnabled()) {
         return $song;
     }
@@ -167,6 +175,34 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA')
         if ($tier === '') { $tier = 'public'; }
         $hasCcli = contentGating_userHasCcli($userId);
 
+        /* #1335 / rule #26 — Service-Mode presence unlock. A congregant following a
+           live service carries an opaque presence token (a same-origin cookie set by
+           service-follow.js). When that token resolves to an ACTIVE session whose org
+           holds a LIVE 'ccli' licence, they ride that licence for copyrighted lyrics +
+           audio while present. We OR this grant into the per-cap decisions below (entity
+           grant OR tier grant OR presence grant). DORMANT: only attempted when a
+           non-empty token is supplied AND the service_mode helper + table are present —
+           a missing helper / un-migrated env / DB blip resolves to false (deny the
+           unlock, which leaves the plain tier verdict authoritative — the safe
+           direction). serviceMode_presenceCcliNumber returns the org's CCLI number on a
+           valid present token, or null. */
+        $presenceCcli = false;
+        if ($presenceToken !== null && $presenceToken !== '') {
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
+                if (function_exists('serviceMode_presenceCcliNumber') && function_exists('serviceMode_channel')) {
+                    $presenceCcli = (serviceMode_presenceCcliNumber(
+                        getDbMysqli(),
+                        $presenceToken,
+                        serviceMode_channel()
+                    ) !== null);
+                }
+            } catch (\Throwable $_e) {
+                /* Missing helper / un-migrated table / DB blip — deny the unlock. */
+                $presenceCcli = false;
+            }
+        }
+
         /* Per-cap decisions via the SHARED registry-backed resolver (rule B). */
         $can = static function (string $action) use ($tier, $hasCcli): bool {
             $r = checkTierAccess($tier, $action, $hasCcli);
@@ -174,8 +210,12 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA')
         };
 
         $canViewLyrics      = $can('view_lyrics');
-        $canViewCopyrighted = $can('view_copyrighted');
-        $canPlayAudio       = $can('play_audio');
+        /* The two CCLI-gated caps get the presence OR-grant (rule #26). The others
+           (lyrics/midi/pdf/offline) are NOT covered by the in-service exception —
+           presence rides the org's CCLI licence, which licenses copyrighted-lyric
+           DISPLAY + accompaniment audio, not MIDI/PDF/offline redistribution. */
+        $canViewCopyrighted = $can('view_copyrighted') || $presenceCcli;
+        $canPlayAudio       = $can('play_audio')       || $presenceCcli;
         $canDownloadMidi    = $can('download_midi');
         $canDownloadPdf     = $can('download_pdf');
         $canOfflineSave     = $can('offline_save');

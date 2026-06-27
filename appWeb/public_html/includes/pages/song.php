@@ -197,7 +197,24 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
             );
         }
 
-        /* #1357 — TIER gate, composed with the entity model above so the web page
+        /* #1357 — TIER resolution, HOISTED so BOTH the lyric gate (below) and the
+           media-affordance gate (further below) share ONE tier/ccli lookup rather than
+           resolving the viewer's plan twice. resolveEffectiveTier() touches the DB, so
+           computing it once also halves the cost on the hot song-page path when gating
+           is on. Defaults: anonymous → 'public'; a thrown lookup is swallowed by the
+           catch below, leaving the entity verdict untouched (fail-open). */
+        $viewerTier    = 'public';   /* the viewer's PLAN axis (public/free/ccli/premium/pro) */
+        $viewerHasCcli = false;      /* a verified live CCLI number unlocks the ccli tier */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
+        if (function_exists('resolveEffectiveTier')) {
+            $tierViewerId  = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
+            $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
+            $viewerHasCcli = function_exists('contentGating_userHasCcli')
+                ? contentGating_userHasCcli($tierViewerId)
+                : false;
+        }
+
+        /* #1357 — TIER lyric gate, composed with the entity model above so the web page
            (and the offline bundle, which renders THROUGH this file) gate consistently
            with the song_detail API (#1353). The two axes are independent:
              • ENTITY (require_licence rows) — the per-song legal restriction, handled
@@ -208,19 +225,68 @@ if (function_exists('getAppSetting') && getAppSetting('content_gating_enabled', 
            gated when the viewer's tier can't view copyrighted AND there is no presence
            unlock. Still entirely dormant behind content_gating_enabled; fail-open via the
            catch below (a thrown tier lookup leaves the entity verdict untouched). */
-        if (!$lyricsGated && !$lyricsPublicDomain && $serviceCcliNumber === null) {
-            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'content_gating.php';
-            if (function_exists('resolveEffectiveTier') && function_exists('checkTierAccess')) {
-                $tierViewerId  = isset($gateViewer['Id']) ? (int)$gateViewer['Id'] : null;
-                $viewerTier    = ($tierViewerId === null) ? 'public' : (resolveEffectiveTier($tierViewerId) ?: 'public');
-                $viewerHasCcli = function_exists('contentGating_userHasCcli')
-                    ? contentGating_userHasCcli($tierViewerId)
-                    : false;
-                $tierVerdict   = checkTierAccess($viewerTier ?: 'public', 'view_copyrighted', $viewerHasCcli);
-                if (empty($tierVerdict['allowed'])) {
-                    $lyricsGated = true;
-                    $gateReason  = 'A higher access tier is required to view these lyrics.';
-                }
+        if (!$lyricsGated && !$lyricsPublicDomain && $serviceCcliNumber === null
+            && function_exists('checkTierAccess')) {
+            $tierVerdict = checkTierAccess($viewerTier ?: 'public', 'view_copyrighted', $viewerHasCcli);
+            if (empty($tierVerdict['allowed'])) {
+                $lyricsGated = true;
+                $gateReason  = 'A higher access tier is required to view these lyrics.';
+            }
+        }
+
+        /* #1357 — MEDIA-affordance gate. The lyric body above is gated by the
+           song_detail API (#1353) when fetched over the API, but the WEB song page
+           renders its media buttons (Audio / Sheet Music) + the inline <audio> + the
+           MIDI/PDF/MusicXML download chips straight from $song['media'] in this file,
+           so without this they'd survive even when the tier can't use them. Mirror
+           content_gating.php's kind→cap mapping (lines 214-228) so the affordances
+           disappear in lockstep with the API. A Service-Mode presence unlock overrides
+           the tier (rule #26 in-service exception). Still dormant behind the flag; a
+           thrown tier lookup is swallowed by the catch (fail-open → media stays). */
+        if (function_exists('checkTierAccess')) {
+            /* The presence override here must mirror the API (content_gating.php), which
+               resolves the Service-Mode unlock INDEPENDENT of public-domain status.
+               $serviceCcliNumber above is only set for COPYRIGHTED songs (it drives the
+               per-device CCL notice), so for a fully public-domain song a present congregant
+               would be stripped here while the API keeps their media — a web/API divergence
+               (#1357 review). Resolve a PD-independent media-presence flag for parity. */
+            $mediaPresenceOk = ($serviceCcliNumber !== null);
+            if (!$mediaPresenceOk && $presenceTok !== '' && function_exists('serviceMode_presenceCcliNumber')) {
+                $mediaPresenceOk = serviceMode_presenceCcliNumber(
+                    getDbMysqli(), $presenceTok,
+                    function_exists('serviceMode_channel') ? serviceMode_channel() : 'production'
+                ) !== null;
+            }
+            $audioOk = $mediaPresenceOk
+                || !empty(checkTierAccess($viewerTier ?: 'public', 'play_audio', $viewerHasCcli)['allowed']);
+            $sheetOk = $mediaPresenceOk
+                || !empty(checkTierAccess($viewerTier ?: 'public', 'download_pdf', $viewerHasCcli)['allowed']);
+            $midiOk  = $mediaPresenceOk
+                || !empty(checkTierAccess($viewerTier ?: 'public', 'download_midi', $viewerHasCcli)['allowed']);
+
+            /* Toolbar buttons (Audio ~743, Sheet Music ~754) key off these flags. */
+            if (!$audioOk) { $hasAudio = false; }
+            if (!$sheetOk) { $hasSheet = false; }
+
+            /* The "Recordings & resources" section (inline <audio> ~1202, download
+               chips ~1237) renders directly from $song['media']; drop the rows the
+               tier can't use — SAME kind→cap mapping as content_gating.php:214-228 so
+               the page + the API agree. audio→play_audio, midi→download_midi,
+               sheet-music/musicxml→download_pdf; unknown kinds are left untouched. */
+            if (!empty($song['media']) && is_array($song['media'])) {
+                $song['media'] = array_values(array_filter(
+                    $song['media'],
+                    static function ($m) use ($audioOk, $midiOk, $sheetOk): bool {
+                        $kind = is_array($m) ? (string)($m['kind'] ?? '') : '';
+                        switch ($kind) {
+                            case 'audio':       return $audioOk;
+                            case 'midi':        return $midiOk;
+                            case 'sheet-music': return $sheetOk;
+                            case 'musicxml':    return $sheetOk;  /* notation download = PDF family */
+                            default:            return true;       /* unknown kind — leave it */
+                        }
+                    }
+                ));
             }
         }
     } catch (\Throwable $_e) {

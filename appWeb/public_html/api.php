@@ -661,7 +661,18 @@ if ($action !== null) {
                 $rndAuth = getAuthenticatedUser();
                 $rndUid  = $rndAuth ? (int)$rndAuth['Id'] : null;
                 $rndPlat = trim((string)($_GET['platform'] ?? 'PWA'));
-                $song    = contentGatingApply($song, $rndUid, $rndPlat);
+                /* #1358 — pass the Service-Mode presence token (rule #26 in-service
+                   unlock). Only READ the cookie when gating is ON so the off-path does
+                   zero new work and stays byte-identical (contentGatingApply early-
+                   returns before touching the token anyway, but this also skips the
+                   cookie/regex work). */
+                $rndPresence = null;
+                if (getAppSetting('content_gating_enabled', '0') === '1'
+                    && isset($_COOKIE['ihymns_sf_presence_token'])
+                    && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+                    $rndPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
+                }
+                $song    = contentGatingApply($song, $rndUid, $rndPlat, $rndPresence);
                 sendJson(['song' => $song]);
             }
             break;
@@ -760,7 +771,16 @@ if ($action !== null) {
                 $sdAuth = getAuthenticatedUser();
                 $sdUid  = $sdAuth ? (int)$sdAuth['Id'] : null;
                 $sdPlat = trim((string)($_GET['platform'] ?? 'PWA'));
-                $song   = contentGatingApply($song, $sdUid, $sdPlat);
+                /* #1358 — Service-Mode presence token (rule #26 in-service unlock).
+                   Cookie read only when gating is ON so the off-path stays byte-
+                   identical (contentGatingApply early-returns regardless). */
+                $sdPresence = null;
+                if (getAppSetting('content_gating_enabled', '0') === '1'
+                    && isset($_COOKIE['ihymns_sf_presence_token'])
+                    && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+                    $sdPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
+                }
+                $song   = contentGatingApply($song, $sdUid, $sdPlat, $sdPresence);
                 sendJson(['song' => $song]);
             }
             break;
@@ -1395,6 +1415,24 @@ if ($action !== null) {
                                is kept — fail-open, consistent with content_gating.php. */
                             static fn($m) => !array_key_exists($m['songId'], $audioAcc) || $audioAcc[$m['songId']] === true
                         ));
+                    }
+
+                    /* #1358 — SEAL surviving audio URLs. When signing is ALSO on
+                       (audioSigningEnabled = gating + audio_signing_enabled + key),
+                       rewrite each entry from the static literal /data/audio/<id>.mp3
+                       to a short-lived signed /audio/<id>.mp3?exp=…&sig=… so the
+                       offline bundle fetches through the gated route, not the static
+                       file. NO-OP when signing is off (audioSignedUrlFor returns null
+                       → keep the literal), so the off-path emits exactly as today. */
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'audio_signing.php';
+                    if (audioSigningEnabled()) {
+                        foreach ($manifest as &$audioEntry) {
+                            $signed = audioSignedUrlFor((string)$audioEntry['songId']);
+                            if ($signed !== null) {
+                                $audioEntry['url'] = $signed;
+                            }
+                        }
+                        unset($audioEntry);
                     }
                 } catch (\Throwable $_e) {
                     error_log('[bulk_audio] gating failed: ' . $_e->getMessage());

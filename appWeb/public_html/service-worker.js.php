@@ -572,9 +572,20 @@ self.addEventListener('fetch', (event) => {
        On-demand caching: once a user plays or views a song, the underlying
        audio or PDF is cached. Subsequent plays — including offline — hit
        the cache immediately with no network round-trip. Separate cache
-       bucket so it can be cleared independently of the app shell. */
+       bucket so it can be cleared independently of the app shell.
+
+       #1358 — also match the gated /audio/<id>.mp3 route so SIGNED audio
+       URLs cache like the rest. NOTE: a signed URL carries ?exp=…&sig=… and
+       EXPIRES, so a precached gated mp3 is BEST-EFFORT offline — a fresh
+       navigation re-mints the URL (new query string = new cache key), and an
+       expired link served from cache will 403 on a cache-miss refetch. PD /
+       un-gated audio (emitted as the legacy /data/audio/… literal while
+       signing is off) is unaffected — it has no query string and caches
+       permanently as before. */
     if (event.request.method === 'GET'
-        && (url.pathname.startsWith('/data/audio/') || url.pathname.startsWith('/data/music/'))) {
+        && (url.pathname.startsWith('/data/audio/')
+            || url.pathname.startsWith('/data/music/')
+            || url.pathname.startsWith('/audio/'))) {
         event.respondWith(
             caches.open('iHymns-media-v1').then(async (cache) => {
                 const hit = await cache.match(event.request);
