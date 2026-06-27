@@ -509,11 +509,16 @@ $migrationCards  = [];
 $migrationProbes = [];
 $migrationManual = [];   /* #1235 P4/C6 — slugs flagged 'manual' (destructive, gated): excluded
                             from "Apply all" + the pending counter; single-run needs confirm=1. */
+$migrationDryRunnable = []; /* #1380 FIX 4 — slugs flagged 'dryRunnable': a manual migration that
+                              ALSO supports a report-only run WITHOUT &confirm=1 (e.g. the canonical
+                              SongId backfill). The card renders a distinct "Dry-run (report only)"
+                              link so the WEB-ONLY operator can preview before mutating. */
 foreach ($MIGRATIONS as $_slug => $_entry) {
     $scriptMap[$_slug]       = $_entry['script'];
     $migrationCards[$_slug]  = $_entry['card'];
     $migrationProbes[$_slug] = $_entry['probe'];
-    if (!empty($_entry['manual'])) { $migrationManual[$_slug] = true; }
+    if (!empty($_entry['manual']))      { $migrationManual[$_slug] = true; }
+    if (!empty($_entry['dryRunnable'])) { $migrationDryRunnable[$_slug] = true; }
 }
 unset($_slug, $_entry);
 /* Captured during bulk-run so the failure can be surfaced as a visible
@@ -2012,7 +2017,11 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     </span>
                                 <?php endif; ?>
                                 <?php if (!empty($migrationManual[$_pa])): ?>
-                                    <span class="badge bg-danger ms-2">manual &amp; destructive — run by hand, not by &ldquo;Apply all&rdquo;</span>
+                                    <span class="badge bg-danger ms-2"><?=
+                                        !empty($migrationDryRunnable[$_pa])
+                                            ? 'manual data rewrite — run by hand, not by &ldquo;Apply all&rdquo;'
+                                            : 'manual &amp; destructive — run by hand, not by &ldquo;Apply all&rdquo;'
+                                    ?></span>
                                 <?php endif; ?>
                             </span>
                             <?php
@@ -2020,20 +2029,34 @@ if ($hasCredentials && defined('DB_HOST')) {
                                    confirm=1 (the script refuses without it) + a confirm() dialog.
                                    #1298 — plus the type-to-confirm speed-bump (data attribute carries
                                    the exact slug the operator must type). Layered on top of the
-                                   server-side confirm=1 / sentinel gate, never instead of it. */
+                                   server-side confirm=1 / sentinel gate, never instead of it.
+                                   #1380 FIX 4 — a `dryRunnable` manual migration (the SongId backfill)
+                                   tailors the confirm() copy to "applies the data rewrite" and gets a
+                                   distinct report-only run link (below) without &confirm=1. */
                                 $_paManual  = !empty($migrationManual[$_pa]);
+                                $_paDryRun  = !empty($migrationDryRunnable[$_pa]);
                                 $_paHref    = '?action=' . htmlspecialchars($_pa) . ($_paManual ? '&amp;confirm=1' : '');
                                 $_paOnclick = $_paManual
-                                    ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds behind the pre-drop verification gate. Continue?\');"'
+                                    ? ($_paDryRun
+                                        ? ' onclick="return confirm(\'This APPLIES the data rewrite immediately (it mutates the database). Use the Dry-run link first to preview. Continue?\');"'
+                                        : ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds behind the pre-drop verification gate. Continue?\');"')
                                     : '';
                                 $_paType    = $_paManual
                                     ? ' data-type-to-confirm="' . htmlspecialchars($_pa, ENT_QUOTES) . '"'
                                     : '';
                             ?>
-                            <a href="<?= $_paHref ?>"<?= $_paOnclick ?><?= $_paType ?>
-                               class="btn btn-sm <?= $_paManual ? 'btn-danger' : 'btn-outline-info' ?> flex-shrink-0 <?= $hasCredentials ? '' : 'disabled' ?>">
-                                Run &amp; show output
-                            </a>
+                            <span class="d-flex gap-2 flex-shrink-0">
+                                <?php if ($_paManual && $_paDryRun): ?>
+                                    <a href="?action=<?= htmlspecialchars($_pa) ?>"
+                                       class="btn btn-sm btn-outline-info <?= $hasCredentials ? '' : 'disabled' ?>">
+                                        Dry-run (report only)
+                                    </a>
+                                <?php endif; ?>
+                                <a href="<?= $_paHref ?>"<?= $_paOnclick ?><?= $_paType ?>
+                                   class="btn btn-sm <?= $_paManual ? 'btn-danger' : 'btn-outline-info' ?> <?= $hasCredentials ? '' : 'disabled' ?>">
+                                    Run &amp; show output
+                                </a>
+                            </span>
                         </li>
                     <?php endforeach; ?>
                 </ul>
@@ -2168,33 +2191,57 @@ if ($hasCredentials && defined('DB_HOST')) {
             <?php
                 /* Render helper — single card markup reused for both
                    the pending grid and the inside-expander grid. */
-                $_renderCard = static function (string $migAction, array $card, bool $hasCreds, bool $isManual = false): void {
+                $_renderCard = static function (string $migAction, array $card, bool $hasCreds, bool $isManual = false, bool $isDryRunnable = false): void {
                     /* #1235 P4/C6 — a manual/destructive migration's run link carries confirm=1
                        (the script REFUSES a web run without it) + a JS confirm() dialog, mirroring
                        the drop-legacy pattern; the button is danger-styled and the card flagged.
                        ADDITIONAL client speed-bump (#1298): the anchor also carries
                        data-type-to-confirm="<slug>" so the shared inline JS forces the operator to
                        type the exact migration slug before the destructive request fires. This is
-                       layered ON TOP of the server-side confirm=1 / sentinel gate — never instead. */
+                       layered ON TOP of the server-side confirm=1 / sentinel gate — never instead.
+
+                       #1380 FIX 4 — a manual migration that is ALSO `dryRunnable` (the canonical
+                       SongId backfill) is a DATA REWRITE, not a schema drop: its mutate button
+                       still carries confirm=1 + type-to-confirm, but the operator needs a real
+                       report-first path too. So we ALSO render a distinct "Dry-run (report only)"
+                       link WITHOUT &confirm=1 (and without the type-to-confirm), and we tailor the
+                       confirm() / badge wording away from the destructive-DROP defaults (which talk
+                       about a "pre-drop verification gate" that doesn't apply here). */
                     $href    = '?action=' . htmlspecialchars($migAction) . ($isManual ? '&amp;confirm=1' : '');
                     $btnClass = $isManual ? 'btn-danger' : 'btn-info';
                     $onclick = $isManual
-                        ? ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds if the pre-drop verification gate is green and &lt;24h old. Continue?\');"'
+                        ? ($isDryRunnable
+                            ? ' onclick="return confirm(\'This APPLIES the data rewrite immediately (it mutates the database). Run the Dry-run link first to preview. Continue?\');"'
+                            : ' onclick="return confirm(\'This is a DESTRUCTIVE, irreversible migration. It only proceeds if the pre-drop verification gate is green and &lt;24h old. Continue?\');"')
                         : '';
                     /* The required phrase IS the migration slug — shown to the operator in the
                        prompt and matched case-sensitively. htmlspecialchars guards the attribute. */
                     $typeToConfirm = $isManual
                         ? ' data-type-to-confirm="' . htmlspecialchars($migAction, ENT_QUOTES) . '"'
                         : '';
+                    /* #1380 FIX 4 — the report-only run link: same action, NO &confirm=1 → the
+                       script stays in dry-run and only reports. No type-to-confirm / native
+                       confirm() (a read-only report needs no speed-bump). */
+                    $dryRunHref = '?action=' . htmlspecialchars($migAction);
                     ?>
                     <div class="col-md-6">
                         <div class="card bg-dark <?= $isManual ? 'border-danger' : 'border-secondary' ?> h-100">
                             <div class="card-body">
                                 <h5 class="card-title"><?= $card['title'] ?></h5>
                                 <?php if ($isManual): ?>
-                                    <span class="badge bg-danger mb-2">Manual &amp; destructive — NOT run by &ldquo;Apply all&rdquo;</span>
+                                    <span class="badge bg-danger mb-2"><?=
+                                        $isDryRunnable
+                                            ? 'Manual data rewrite — NOT run by &ldquo;Apply all&rdquo;'
+                                            : 'Manual &amp; destructive — NOT run by &ldquo;Apply all&rdquo;'
+                                    ?></span>
                                 <?php endif; ?>
                                 <p class="card-text text-secondary small"><?= $card['body'] ?></p>
+                                <?php if ($isManual && $isDryRunnable): ?>
+                                    <a href="<?= $dryRunHref ?>"
+                                       class="btn btn-outline-info btn-action me-2 <?= $hasCreds ? '' : 'disabled' ?>">
+                                        Dry-run (report only)
+                                    </a>
+                                <?php endif; ?>
                                 <a href="<?= $href ?>"<?= $onclick ?><?= $typeToConfirm ?>
                                    class="btn <?= $btnClass ?> btn-action <?= $hasCreds ? '' : 'disabled' ?>">
                                     <?= htmlspecialchars($card['button']) ?>
@@ -2213,7 +2260,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                 <?php
                     $_card = $migrationCards[$_migAction] ?? null;
                     if (!$_card) continue;     /* slug in $migrationOrder but no card body */
-                    $_renderCard($_migAction, $_card, $hasCredentials, !empty($migrationManual[$_migAction]));
+                    $_renderCard($_migAction, $_card, $hasCredentials, !empty($migrationManual[$_migAction]), !empty($migrationDryRunnable[$_migAction]));
                 ?>
             <?php endforeach; ?>
 
@@ -2244,7 +2291,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <div class="card-body">
                             <div class="row g-3">
                                 <?php foreach ($_appliedRenderable as $_appliedAction): ?>
-                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials, !empty($migrationManual[$_appliedAction])); ?>
+                                    <?php $_renderCard($_appliedAction, $migrationCards[$_appliedAction], $hasCredentials, !empty($migrationManual[$_appliedAction]), !empty($migrationDryRunnable[$_appliedAction])); ?>
                                 <?php endforeach; ?>
                             </div>
                         </div>

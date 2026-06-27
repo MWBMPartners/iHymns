@@ -1472,24 +1472,58 @@ if ($action !== null) {
 
             /* Sanitise inputs */
             $setlistName  = mb_substr(trim($body['name']), 0, 200);
-            /* #1343-B — resolve any PublicId in the song list to its SongId before
-               the existing allow-list regex (unchanged), so a non-web client that
-               built the setlist from opaque permalinks stores canonical SongIds.
-               LAZY (#1343-B review): getDbMysqli() is touched only for a
-               PublicId-shaped token, so SongId-only input (the web app) adds no DB
-               dependency here and a malformed request still 400s before any DB hit.
-               Gated/no-op pre-migration. */
+            /* #1343-B — resolve any PublicId in the song list to its SongId, so a
+               non-web client that built the setlist from opaque permalinks stores
+               canonical SongIds.
+               #1380 — KEEP draft ids: the legacy allow-list regex `^[A-Za-z]+-\d+$`
+               SILENTLY DROPPED any draft-id song (song-XXXX), so a shared setlist
+               that contained an unsaved draft lost it without warning. We now resolve
+               PublicIds and keep every token matching a SAFE charset; the downstream
+               live-link read path resolves the owner's CURRENT setlist anyway, so
+               freezing a filtered subset here was doubly wrong.
+               #1380 SECURITY (XSS) — but we must NOT swing to "keep everything": the
+               shared-page client renders the id verbatim into `data-song-id="…"` and
+               `href="/song/…"`, and its escapeHtml() (the textContent→innerHTML idiom)
+               does NOT escape a double-quote — so an id like `x" onmouseover="…` would
+               break out of the attribute (stored XSS). Re-introduce a SAFE charset
+               filter that STILL admits draft `song-XXXX` AND canonical `<Abbr>-NNNN`
+               but blocks quotes / brackets / spaces / any HTML metacharacter, plus a
+               length cap. A metachar-bearing token is never a real SongId, so dropping
+               it is correct — this is NOT the over-strict `\d+$` form we removed.
+               LAZY: getDbMysqli() is touched only for a PublicId-shaped token, so
+               SongId-only input (the web app) adds no DB dependency here. */
             $setlistSongs = array_values(array_filter(
                 array_map(static function ($s) {
-                    $s = trim($s);
+                    $s = trim((string)$s);
                     if (songPublicId_looksLikePublicId($s)) {
                         $s = songPublicId_resolveToSongId(getDbMysqli(), $s);
                     }
-                    return $s;
+                    /* Cap length BEFORE the charset match so a pathologically long id
+                       (a DoS / payload vector) can never reach the store. */
+                    $s = mb_substr($s, 0, 100);
+                    /* SAFE charset: letters, digits, underscore, hyphen only. Admits
+                       both draft (song-1a2b3c) and canonical (MP-988) ids; rejects
+                       every HTML metacharacter that could break an attribute. */
+                    return preg_match('/^[A-Za-z0-9_-]+$/', $s) === 1 ? $s : '';
                 }, $body['songs']),
-                fn($s) => preg_match('/^[A-Za-z]+-\d+$/', $s)
+                static fn($s) => $s !== ''
             ));
             $ownerId      = preg_replace('/[^a-f0-9\-]/', '', strtolower(trim($body['owner'])));
+
+            /* #1380 — LIVE-LINK resolution. A signed-in owner sharing one of their
+               server-stored setlists (tblUserSetlists) links the share to that LIVE
+               row so their later edits reach link-holders, instead of freezing a
+               snapshot. The anon localStorage UUID ($ownerId) is kept for back-compat
+               (it gates legacy snapshot updates) but is NOT the auth boundary — the
+               live link is gated on a real authenticated user owning the named
+               setlist (IDOR-safe; see the ownership probe below). */
+            $authUser   = getAuthenticatedUser();
+            $authUserId = $authUser ? (int)$authUser['Id'] : null;
+            $sourceSetlistId = isset($body['setlistId'])
+                ? preg_replace('/[^a-zA-Z0-9_\-]/', '', (string)$body['setlistId'])
+                : '';
+            $liveOwnerUserId  = null;   /* set only when ownership is proven */
+            $liveSourceSetlist = null;
 
             if ($setlistName === '' || $ownerId === '') {
                 sendJson(['error' => 'Invalid name or owner ID.'], 400);
@@ -1509,6 +1543,31 @@ if ($action !== null) {
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
+            /* #1380 — IDOR-safe LIVE-LINK gate. Only attach the live link when a
+               REAL authenticated user PROVABLY owns the named setlist. The bound
+               existence probe against (UserId, SetlistId) is the authorisation
+               boundary — a forged `setlistId` for someone else's setlist simply
+               fails the probe and falls through to a harmless snapshot-only share
+               (NOT a 403, because anonymous sharing is a legitimate path). The anon
+               localStorage UUID is never trusted here. */
+            if ($authUserId !== null && $sourceSetlistId !== '') {
+                try {
+                    $ownStmt = getDbMysqli()->prepare(
+                        'SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1'
+                    );
+                    $ownStmt->bind_param('is', $authUserId, $sourceSetlistId);
+                    $ownStmt->execute();
+                    $ownsIt = $ownStmt->get_result()->fetch_row() !== null;
+                    $ownStmt->close();
+                    if ($ownsIt) {
+                        $liveOwnerUserId   = $authUserId;
+                        $liveSourceSetlist = $sourceSetlistId;
+                    }
+                } catch (\Throwable $_e) {
+                    /* Probe failure → fall through to snapshot-only; never elevate. */
+                }
+            }
+
             /* Determine ID: use existing if updating, generate new otherwise */
             $shareId  = null;
             $existing = null;
@@ -1520,9 +1579,27 @@ if ($action !== null) {
                         sendJson(['error' => 'Shared set list not found.'], 404);
                         break;
                     }
-                    if (($existing['owner'] ?? '') !== $ownerId) {
-                        sendJson(['error' => 'You do not own this shared set list.'], 403);
-                        break;
+                    /* #1380 — STRENGTHENED update IDOR. Two ownership models:
+                       (a) the row was created as a LIVE share (it carries an
+                           OwnerUserId) → the ONLY valid editor is that SAME
+                           authenticated user. A request that isn't signed in as the
+                           owner is rejected 403, regardless of the anon UUID it
+                           presents (the UUID is client-controlled and must not be
+                           able to seize a live, user-owned share).
+                       (b) the row is a LEGACY/anonymous snapshot (OwnerUserId NULL)
+                           → fall back to the historical anon-UUID check so existing
+                           snapshot shares keep updating from the same device. */
+                    $existingOwnerUserId = $existing['_ownerUserId'] ?? null;
+                    if ($existingOwnerUserId !== null) {
+                        if ($authUserId === null || $authUserId !== (int)$existingOwnerUserId) {
+                            sendJson(['error' => 'You do not own this shared set list.'], 403);
+                            break;
+                        }
+                    } else {
+                        if (($existing['owner'] ?? '') !== $ownerId) {
+                            sendJson(['error' => 'You do not own this shared set list.'], 403);
+                            break;
+                        }
                     }
                     $shareId = $candidateId;
                 }
@@ -1539,7 +1616,15 @@ if ($action !== null) {
                     if (songPublicId_looksLikePublicId($sid)) {
                         $sid = songPublicId_resolveToSongId(getDbMysqli(), $sid);
                     }
-                    if (!preg_match('/^[A-Za-z]+-\d+$/', $sid)) continue;
+                    /* #1380 — keep arrangements keyed on a draft id (song-XXXX) too
+                       (the old `^[A-Za-z]+-\d+$` regex silently dropped them, mirroring
+                       the song-list bug above), but apply the SAME XSS-safe charset +
+                       length guard as the song list: the arrangement KEY is also a song
+                       id and a metachar-bearing one would be a stored-XSS vector if any
+                       client ever rendered it into an attribute. */
+                    $sid = mb_substr(trim($sid), 0, 100);
+                    if ($sid === '') continue;
+                    if (preg_match('/^[A-Za-z0-9_-]+$/', $sid) !== 1) continue;
                     if (!is_array($arr)) continue;
                     $validArr = array_values(array_filter($arr, fn($v) => is_int($v) && $v >= 0));
                     if (count($validArr) > 0) {
@@ -1563,9 +1648,23 @@ if ($action !== null) {
                 $shareData['arrangements'] = $arrangements;
             }
 
+            /* #1380 — resolve the live-link columns to PERSIST on this write.
+               On UPDATE we must not silently DEMOTE an existing live share back to
+               snapshot-only just because the current request didn't (re)prove the
+               link — so we carry forward the existing OwnerUserId/SourceSetlistId
+               when the request didn't establish a (stronger, equal-owner) link. The
+               update-IDOR gate above already guaranteed that, for a live row, the
+               requester IS the owner, so carrying the link forward is safe. */
+            $persistOwnerUserId   = $liveOwnerUserId;
+            $persistSourceSetlist = $liveSourceSetlist;
+            if ($isUpdate && $persistOwnerUserId === null && ($existing['_ownerUserId'] ?? null) !== null) {
+                $persistOwnerUserId   = (int)$existing['_ownerUserId'];
+                $persistSourceSetlist = $existing['_sourceSetlistId'] ?? null;
+            }
+
             if ($isUpdate) {
                 $shareData['id'] = $shareId;
-                if (!sharedSetlistUpdate($shareId, $shareData)) {
+                if (!sharedSetlistUpdate($shareId, $shareData, $persistOwnerUserId, $persistSourceSetlist, $persistOwnerUserId)) {
                     sendJson(['error' => 'Failed to save shared set list.'], 500);
                     break;
                 }
@@ -1575,7 +1674,7 @@ if ($action !== null) {
                 for ($i = 0; $i < 10; $i++) {
                     $shareId         = bin2hex(random_bytes(4));
                     $shareData['id'] = $shareId;
-                    $result = sharedSetlistInsert($shareId, $shareData);
+                    $result = sharedSetlistInsert($shareId, $shareData, $persistOwnerUserId, $persistSourceSetlist, $persistOwnerUserId);
                     if ($result === true)  { $created = true;  break; }
                     if ($result === null)  { /* hard failure */ break; }
                     /* false = collision; try a new ID */
@@ -1619,23 +1718,51 @@ if ($action !== null) {
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
 
-            $data = sharedSetlistGet($shareId);
-            if ($data === null) {
+            /* #1380 / FIX 5 — the live-vs-snapshot projection (and the XSS-safe id
+               allow-list) now lives in the ONE shared resolver so the social card
+               (og-image.php) and the page meta (index.php) stay live too and don't
+               re-fork it. The resolver does its own row read; we read the raw
+               snapshot ONCE more here ONLY for the wire metadata the resolver does
+               not project (id / created / updated) and to distinguish 404 (no such
+               share) from 410 (live link to a deleted setlist). Two PK lookups on a
+               16-char key is negligible and keeps the projection single-sourced. */
+            $db   = getDbMysqli();
+            $wire = sharedSetlistResolveWire($db, $shareId);
+            if ($wire === null) {
                 sendJson(['error' => 'Shared set list not found.'], 404);
                 break;
             }
+
+            if ($wire['unavailable']) {
+                /* The owner deleted the underlying setlist — the share is a live
+                   link to a row that no longer exists. 410 Gone is the honest
+                   answer: the resource was here, isn't now. */
+                sharedSetlistMarkViewed($shareId);
+                sendJson(['unavailable' => true, 'reason' => 'revoked', 'id' => $shareId], 410);
+                break;
+            }
+
+            /* Raw snapshot — id / created / updated only (the resolver projects
+               name/songs/arrangements/live). Private owner keys are never read here. */
+            $meta = sharedSetlistGet($shareId);
+
             sharedSetlistMarkViewed($shareId);
 
-            /* Return public-safe fields only (exclude owner UUID) */
+            /* PUBLIC-SAFE response — strict ALLOW-LIST. NEVER echo any of the
+               owner-identifying fields: owner (anon UUID), _ownerUserId,
+               _sourceSetlistId, CreatedBy, or any email. The only fields that
+               leave the server are: id, name, songs, live, created, updated, and
+               (optionally) arrangements. (#1380) */
             $response = [
-                'id'      => $data['id'] ?? $shareId,
-                'name'    => $data['name'] ?? 'Untitled',
-                'songs'   => $data['songs'] ?? [],
-                'created' => $data['created'] ?? null,
-                'updated' => $data['updated'] ?? null,
+                'id'      => $meta['id'] ?? $shareId,
+                'name'    => $wire['name'],
+                'songs'   => $wire['songs'],
+                'live'    => $wire['live'],
+                'created' => $meta['created'] ?? null,
+                'updated' => $meta['updated'] ?? null,
             ];
-            if (!empty($data['arrangements'])) {
-                $response['arrangements'] = $data['arrangements'];
+            if (!empty($wire['arrangements'])) {
+                $response['arrangements'] = $wire['arrangements'];
             }
 
             sendJson($response);

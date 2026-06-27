@@ -4903,7 +4903,47 @@ function autoSaveSongsPerSong(ids) {
             }).then(function (res) {
                 return res.json().then(function (data) {
                     if (res.ok && data.ok) {
-                        saved.push(id);
+                        /* #1380 — the server may have promoted a client draft id
+                           (song-XXXX) to a canonical <Abbr>-NNNN id on this first
+                           save. Relabel the in-memory copy so subsequent saves /
+                           navigation use the real id and the sidebar shows it,
+                           WITHOUT a full reload. assignedId/previousId are present
+                           only when a rename happened. */
+                        if (data.assignedId && data.previousId) {
+                            var renamed = (songData.songs || []).find(function (s) {
+                                return s.id === data.previousId;
+                            });
+                            if (renamed) { renamed.id = data.assignedId; }
+                            if (currentSongId === data.previousId) {
+                                currentSongId = data.assignedId;
+                            }
+                            /* #1380 FIX 2 — re-key the two OTHER module-scope refs that
+                               still point at the now-dead draft id, or they silently rot:
+                               (a) modifiedSongIds — if the draft id is still in the dirty
+                                   set, delete it and add the canonical id. Otherwise the
+                                   draft id is NEVER cleared (the save loop only deletes
+                                   ids it was asked to save), so the song shows a stuck
+                                   "modified" badge AND every later autosave that looks up
+                                   the draft id finds nothing → falls back to a full-corpus
+                                   save. */
+                            if (modifiedSongIds.has(data.previousId)) {
+                                modifiedSongIds.delete(data.previousId);
+                                modifiedSongIds.add(data.assignedId);
+                            }
+                            /* (b) _renderedSongId — the id serialiseSongForSave /
+                               syncSongExternalLinksFromDom resolve against. If the
+                               just-renamed song is the one on screen and this still
+                               holds the draft id, a subsequent external-link DOM edit
+                               would mismatch and be dropped. Re-point it at the
+                               canonical id. */
+                            if (_renderedSongId === data.previousId) {
+                                _renderedSongId = data.assignedId;
+                            }
+                            renderSongList();
+                            saved.push(data.assignedId);
+                        } else {
+                            saved.push(id);
+                        }
                     } else {
                         /* Compose a maximally-useful error string. The
                            API ships error_detail (and optionally
@@ -5257,7 +5297,10 @@ function addNewSong() {
        different draft) and producing the ugly ids the owner spotted
        (song-1780869822259-d). base36 timestamp (~8 chars) + 4 random fits with
        room; the 'song-' prefix is preserved (it's how unsaved drafts are
-       detected). [Tracked: server should assign a canonical SongId on first save.] */
+       detected). #1380 — the server NOW assigns a canonical <Abbr>-NNNN SongId on
+       the first save (save_song_core.php) and returns assignedId/previousId;
+       autoSaveSongsPerSong() relabels this in-memory draft to the canonical id
+       on success, so the ugly 'song-XXXX' id is transient (one save) not permanent. */
     var newId = ('song-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)).slice(0, 20);
 
     /* Build the blank song object with all required fields. The
