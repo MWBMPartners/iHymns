@@ -41,6 +41,16 @@ final class SongOfTheDay
      */
     private string $hemisphere = 'n';
 
+    /**
+     * ISO-3166-1 alpha-2 country of the requesting user ('' = unknown). Set
+     * per-call by pickForDate() and read by the NATIONAL-civic theme check
+     * closures (which capture $this), so US/Canadian Thanksgiving etc. fire ONLY
+     * for the right country and are an exact no-op when the signal is absent or
+     * is a country we have no theme for. Liturgical themes ignore it entirely.
+     * (#1376)
+     */
+    private string $country = '';
+
     public function __construct(\mysqli $db)
     {
         $this->db = $db;
@@ -64,11 +74,19 @@ final class SongOfTheDay
      * @param string   $hemisphere  'n' (default) | 's' — shifts the Harvest theme
      *                               into the southern autumn; 's' only when explicitly
      *                               passed, so existing callers are unchanged.
+     * @param string   $country     ISO-3166-1 alpha-2 ('' default) — gates the
+     *                               NATIONAL-civic themes (US/Canadian Thanksgiving,
+     *                               US Independence Day). '' or an un-themed country
+     *                               leaves the pick exactly as it was, so existing
+     *                               callers are unchanged.
      * @return array{song:array<string,mixed>,themeLabel:string,firstLine:string}|null
      */
-    public function pickForDate(\DateTimeImmutable $date, array $langSubtags, string $hemisphere = 'n'): ?array
+    public function pickForDate(\DateTimeImmutable $date, array $langSubtags, string $hemisphere = 'n', string $country = ''): ?array
     {
         $this->hemisphere = ($hemisphere === 's') ? 's' : 'n';
+        /* Normalise to upper-case alpha-2 or '' (the no-op signal); anything
+           malformed degrades to '' so a national theme can never mis-fire. */
+        $this->country = (preg_match('/^[A-Za-z]{2}$/', $country) === 1) ? strtoupper($country) : '';
         $seed  = $this->dateSeed($date);
         $theme = $this->activeTheme($date);
 
@@ -374,6 +392,47 @@ final class SongOfTheDay
                 'check' => fn(\DateTimeImmutable $d): bool =>
                     (int)$d->format('n') === 1 && (int)$d->format('j') >= 1 && (int)$d->format('j') <= 3,
             ],
+
+            /* ---- NATIONAL CIVIC DAYS (#1376) ----
+             * Country-keyed worship-relevant observances. Each is gated on
+             * $this->country, so it fires ONLY for the right country and is an
+             * exact no-op when the signal is absent or is a country we have no
+             * theme for. Placed AFTER the liturgical specifics + New Year, and
+             * BEFORE the broad Harvest range below — important because Canadian
+             * Thanksgiving (2nd Mon Oct = Oct 8–14) overlaps the northern Harvest
+             * window (Oct 1–14), so it must win for a Canadian user. US themes
+             * fall on July 4 / 4th-Thu-Nov, which no other theme claims. We keep
+             * these to clearly Christian, broadly-observed civic days; not an
+             * exhaustive almanac. */
+            [
+                /* United States — Thanksgiving: the 4th Thursday of November.
+                   A church-calendar staple in the US (give-thanks worship), and
+                   distinct from the Nov 9–11 Remembrance theme above. */
+                'name' => 'Thanksgiving',
+                'keywords' => ['thanksgiving', 'thankful', 'grateful', 'gratitude', 'harvest', 'bounty', 'bountiful', 'give thanks', 'come ye thankful', 'count your blessings', 'now thank we', 'all good gifts', 'provision', 'blessings'],
+                'check' => fn(\DateTimeImmutable $d): bool =>
+                    $this->country === 'US' && $this->isNthWeekday($d, 11, 4 /* Thu */, 4),
+            ],
+            [
+                /* Canada — Thanksgiving: the 2nd Monday of October. Same worship
+                   theme as the US day but a month earlier; gated to country=CA
+                   and ordered BEFORE Harvest so it wins inside the Oct 1–14 window. */
+                'name' => 'Thanksgiving',
+                'keywords' => ['thanksgiving', 'thankful', 'grateful', 'gratitude', 'harvest', 'bounty', 'bountiful', 'give thanks', 'come ye thankful', 'count your blessings', 'now thank we', 'all good gifts', 'provision', 'blessings'],
+                'check' => fn(\DateTimeImmutable $d): bool =>
+                    $this->country === 'CA' && $this->isNthWeekday($d, 10, 1 /* Mon */, 2),
+            ],
+            [
+                /* United States — Independence Day (July 4). The worship angle is
+                   gratitude for freedom/liberty + prayer for the nation; deliberately
+                   NOT jingoistic. No other theme claims early July, so its placement
+                   here is unambiguous. */
+                'name' => 'Independence Day',
+                'keywords' => ['freedom', 'liberty', 'nation', 'country', 'land', 'free', 'thanksgiving for', 'god bless', 'beautiful for spacious', 'my country', 'eternal father', 'battle hymn', 'grateful'],
+                'check' => fn(\DateTimeImmutable $d): bool =>
+                    $this->country === 'US' && (int)$d->format('n') === 7 && (int)$d->format('j') === 4,
+            ],
+
             [
                 'name' => 'Reformation',
                 'keywords' => ['mighty fortress', 'reformation', 'faith alone', 'grace alone', 'scripture', 'word of god', 'stand', 'truth', 'anchor', 'foundation', 'rock'],
@@ -484,6 +543,43 @@ final class SongOfTheDay
         $hi = $easter->modify(($endOffset   >= 0 ? '+' : '-') . abs($endOffset)   . ' days');
         $day = $this->dateOnly($d);
         return $day >= $lo && $day <= $hi;
+    }
+
+    /**
+     * The Nth occurrence of a given weekday in a month (#1376). Used for the
+     * national-civic days that fall on a relative weekday rather than a fixed
+     * date — US Thanksgiving (4th Thursday of November), Canadian Thanksgiving
+     * (2nd Monday of October), etc.
+     *
+     * The 1st target weekday is at day-of-month
+     *   1 + ((weekday - dowOfThe1st + 7) % 7)
+     * and each further occurrence is +7 days; this never overflows the month for
+     * the small Nth values we use (1st–4th), all of which land in the first 28
+     * days. Weekday uses the PHP/JS 'w' convention: 0 = Sunday … 6 = Saturday.
+     *
+     * @param int $year    Four-digit year.
+     * @param int $month   1-based month (1 = January).
+     * @param int $weekday 0 = Sunday … 6 = Saturday.
+     * @param int $nth     1-based occurrence (1 = first such weekday in the month).
+     */
+    private function nthWeekdayOfMonth(int $year, int $month, int $weekday, int $nth): \DateTimeImmutable
+    {
+        $first    = new \DateTimeImmutable(sprintf('%04d-%02d-01', $year, $month));
+        $firstDow = (int)$first->format('w');          /* 0=Sun..6=Sat */
+        $offset   = ($weekday - $firstDow + 7) % 7;     /* days from the 1st to the 1st target weekday */
+        $day      = 1 + $offset + ($nth - 1) * 7;       /* the Nth occurrence */
+        return new \DateTimeImmutable(sprintf('%04d-%02d-%02d', $year, $month, $day));
+    }
+
+    /**
+     * True if $d IS the Nth occurrence of $weekday in $month (of $d's own year).
+     * Thin convenience over nthWeekdayOfMonth() for the civic-day check closures;
+     * compares month + day only so any time component on $d is ignored.
+     */
+    private function isNthWeekday(\DateTimeImmutable $d, int $month, int $weekday, int $nth): bool
+    {
+        $target = $this->nthWeekdayOfMonth((int)$d->format('Y'), $month, $weekday, $nth);
+        return $d->format('n-j') === $target->format('n-j');
     }
 
     /**
