@@ -77,6 +77,39 @@ RewriteRule ^og-image$ og-image.php [QSA,L]
 # 404s naturally.
 RewriteRule ^song-media/([0-9]+)$ song-media.php?id=$1 [L]
 
+# /audio/<SongId>.mp3 → audio-media.php?id=<SongId>  (#1358)
+# GATED streaming front door for the legacy static data/audio/*.mp3 files.
+# The SongId shape is `<letters/digits>-<digits>` (rule #1332). This is a NEW
+# URL space — nothing emits /audio/<id>.mp3 until audio_signing_enabled='1'
+# (bulk_audio keeps emitting the legacy /data/audio/<id>.mp3 literal while
+# off), so existing traffic is completely untouched. The handler is
+# byte-equivalent to Apache's static serve when signing is OFF, and verifies a
+# signed URL + the song's access rules when ON. Placed BEFORE the static -f
+# L-stop below so the rewrite wins over a direct match.
+RewriteRule ^audio/([A-Za-z0-9]+-[0-9]+)\.mp3$ audio-media.php?id=$1 [QSA,L]
+
+# --- #1358 SEAL (DO NOT uncomment until rollout step 6) -------------------
+# Once signed /audio/<id>.mp3 playback is verified ON THIS ENV, uncomment the
+# block below to DENY direct access to the static data/audio/*.mp3 files, so
+# the ONLY way to fetch gated audio is through the signed /audio/ route above.
+# This is the one rollout step that FEELS irreversible (a wrong scope blocks
+# legitimate audio) — apply it PER ENV, last, after verification, never as part
+# of shipping this change.
+#
+# It MUST be an access-phase <Files>/<FilesMatch> deny (mod_authz), NOT a
+# RewriteRule: a rewrite could race the static -f passthrough below and is
+# order-sensitive, whereas an access-phase deny is unconditional. Scope it to
+# this server's actual layout — if data/audio is reachable at /data/audio/ from
+# the docroot, a directory-scoped rule (e.g. an .htaccess INSIDE data/audio/
+# with `Require all denied`, or a <Directory> block in the vhost) is cleaner
+# than a docroot-wide FilesMatch that could also catch unrelated *.mp3. Verify
+# the scope against THIS env before uncommenting.
+#
+# <FilesMatch "\.mp3$">
+#   Require all denied
+# </FilesMatch>
+# -------------------------------------------------------------------------
+
 # ==========================================================================
 # SERVICE WORKER ROUTING (#81)
 #

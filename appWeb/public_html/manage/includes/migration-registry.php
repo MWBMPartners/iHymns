@@ -1299,6 +1299,36 @@ return [
             return !($row && (string)$row[0] === '1');
         })($db),
     ],
+    'audio-signing-setting' => [
+        'script' => 'migrate-add-audio-signing-setting.php',
+        'card' => [
+            'title'  => 'Audio Signing Setting (#1358)',
+            'body'   => 'Seeds the <code>audio_signing_enabled</code> flag into'
+                      . ' <code>tblAppSettings</code> (default <code>0</code> = off). The'
+                      . ' second of three dormancy switches for signed-audio sealing —'
+                      . ' the others are <code>content_gating_enabled</code> and the'
+                      . ' operator-provisioned <code>AUDIO_SIGNING_KEY</code> constant in'
+                      . ' <code>.auth/</code>. With this at <code>0</code>, the'
+                      . ' offline audio bundle keeps emitting the legacy'
+                      . ' <code>/data/audio/&lt;id&gt;.mp3</code> literal (a verified'
+                      . ' no-op). No tables or columns — a single non-destructive'
+                      . ' <code>INSERT IGNORE</code>, so re-running NEVER resets a value'
+                      . ' an operator has flipped to <code>1</code>. Idempotent.',
+            'button' => 'Run Audio Signing Setting Migration',
+        ],
+        /* Pending until the seed row exists; applied once it does. The migration
+           INSERT IGNOREs it, so presence == applied. Sentinel-style probe modelled
+           on email-login-token-hashing above. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'audio_signing_enabled' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            return $row === null;   /* row absent → still pending */
+        })($db),
+    ],
     'places' => [
         'script' => 'migrate-places.php',
         'card' => [

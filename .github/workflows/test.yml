@@ -276,6 +276,11 @@ jobs:
           echo "Running content-access action-matcher test..."
           php tests/php/test-content-access-action.php
 
+      - name: Content-gating no-op + signing dormancy (#1357 / #1358)
+        run: |
+          echo "Running content-gating no-op + signing-dormancy test..."
+          php tests/php/test-gating-noop.php
+
       - name: OpenLyrics importer enrichment (#1130)
         run: |
           echo "Running OpenLyrics importer enrichment test..."
@@ -451,6 +456,9 @@ jobs:
 
       - name: Per-action content-gating matcher (#1120)
         run: php tests/php/test-content-access-action.php
+
+      - name: Content-gating no-op + signing dormancy (#1357 / #1358)
+        run: php tests/php/test-gating-noop.php
 
       - name: OpenLyrics importer enrichment (#1130)
         run: php tests/php/test-openlyrics-parser.php
