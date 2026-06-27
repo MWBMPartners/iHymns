@@ -41,6 +41,21 @@ declare(strict_types=1);
         </a>
     </div>
 
+    <!-- Unavailable state (#1380) — a LIVE-linked share whose underlying set list
+         the owner has since deleted (server returns 410). Distinct from the
+         "broken link" error above so a revoked share reads as intentional. -->
+    <div id="shared-setlist-unavailable" class="d-none">
+        <div class="alert alert-secondary" role="alert">
+            <i class="fa-solid fa-circle-info me-2" aria-hidden="true"></i>
+            <strong>No longer shared</strong> — This set list is no longer shared or available.
+            The person who shared it may have removed it.
+        </div>
+        <a href="/setlist" class="btn btn-outline-primary btn-sm" data-navigate="setlist">
+            <i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i>
+            Go to My Set Lists
+        </a>
+    </div>
+
     <!-- Shared set list content (hidden by default, populated by JS) -->
     <div id="shared-setlist-content" class="d-none">
 
@@ -50,6 +65,13 @@ declare(strict_types=1);
             <div>
                 <strong>Shared Set List</strong>
                 <small class="d-block">Someone shared this set list with you. Import it to use it.</small>
+                <!-- Live-link note (#1380) — shown by JS only when the share resolves
+                     the owner's CURRENT set list (data.live === true), so edits the
+                     owner makes flow through to this view. -->
+                <small id="shared-setlist-live-note" class="d-none d-block text-info-emphasis mt-1">
+                    <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
+                    This set list updates live — you&rsquo;ll always see the latest version.
+                </small>
             </div>
         </div>
 

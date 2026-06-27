@@ -1325,6 +1325,12 @@ export class SetList {
             name: list.name,
             songs: list.songs.map(s => s.id),
             owner: this.getOwnerId(),
+            /* #1380 — the LOCAL setlist id doubles as the server-side
+               tblUserSetlists.SetlistId (same id is used by the sync API). Sending
+               it lets the server LIVE-LINK the share to the owner's stored setlist
+               (gated server-side on the authenticated user owning that row), so the
+               owner's later edits reach link-holders instead of freezing a snapshot. */
+            setlistId: listId,
         };
 
         /* Include arrangements map only if any songs have custom arrangements */
@@ -1343,6 +1349,10 @@ export class SetList {
                 headers: {
                     'Content-Type': 'application/json',
                     'X-Requested-With': 'XMLHttpRequest',
+                    /* #1380 — include the bearer token when signed in so the server
+                       can identify the owner and establish the live link. Anonymous
+                       users (no token) still share fine — just snapshot-only. */
+                    ...(this.app?.userAuth?.authHeaders?.() || {}),
                 },
                 body: JSON.stringify(payload),
             });
@@ -1385,6 +1395,15 @@ export class SetList {
 
         /* Show a brief loading indicator */
         this.app.showToast('Creating share link...', 'info', 1500);
+
+        /* #1380 — when signed in, push the current setlists to the server FIRST so
+           the (UserId, SetlistId) row exists when the share API tries to live-link
+           to it. The _scheduleSync debounce (1.5 s) might not have fired yet, so a
+           freshly-created or freshly-edited setlist could otherwise be shared as a
+           snapshot. Best-effort: a sync failure just falls back to snapshot-only. */
+        if (this.app?.userAuth?.isLoggedIn?.()) {
+            try { await this.app.userAuth.syncSetlists(this.getAll(), 'replace'); } catch (_e) {}
+        }
 
         const shareUrl = await this.generateShareLink(listId);
         if (!shareUrl) {
@@ -1465,6 +1484,14 @@ export class SetList {
                 headers: { 'X-Requested-With': 'XMLHttpRequest' },
             });
 
+            /* #1380 — 410 Gone: the share was a LIVE link to a setlist the owner
+               has since deleted (revoked). Signal that distinctly so the page shows
+               a friendly "no longer shared" state instead of the generic "broken
+               link" error (which a null return triggers). */
+            if (response.status === 410) {
+                return { unavailable: true };
+            }
+
             if (!response.ok) return null;
 
             const data = await response.json();
@@ -1474,6 +1501,9 @@ export class SetList {
                 name: data.name,
                 songIds: data.songs,
                 arrangements: data.arrangements || {},
+                /* #1380 — true when the server resolved the owner's CURRENT setlist
+                   (a live link); the page can note "updates live" to the viewer. */
+                live: data.live === true,
             };
         } catch {
             return null;
@@ -1542,6 +1572,9 @@ export class SetList {
         const loadingEl = document.getElementById('shared-setlist-loading');
         const errorEl = document.getElementById('shared-setlist-error');
         const contentEl = document.getElementById('shared-setlist-content');
+        /* #1380 — distinct "no longer shared" state (a revoked LIVE link), so a
+           deleted-by-owner share reads as intentional, not as a broken link. */
+        const unavailableEl = document.getElementById('shared-setlist-unavailable');
 
         if (!loadingEl || !errorEl || !contentEl) return;
 
@@ -1559,6 +1592,22 @@ export class SetList {
             sharedData = this.parseLegacySharedSetlist(shareData);
         }
 
+        /* #1380 — three outcomes:
+           (a) unavailable → the live link's underlying setlist was deleted (410):
+               show the friendly "no longer shared" block (if the page provides it),
+               else fall back to the generic error.
+           (b) null → genuinely broken / malformed link: the existing error block.
+           (c) data → render. */
+        if (sharedData && sharedData.unavailable) {
+            loadingEl.classList.add('d-none');
+            if (unavailableEl) {
+                unavailableEl.classList.remove('d-none');
+            } else {
+                errorEl.classList.remove('d-none');
+            }
+            return;
+        }
+
         if (!sharedData) {
             loadingEl.classList.add('d-none');
             errorEl.classList.remove('d-none');
@@ -1569,6 +1618,12 @@ export class SetList {
         const titleEl = document.getElementById('shared-setlist-title');
         const countEl = document.getElementById('shared-setlist-count');
         const pluralEl = document.getElementById('shared-setlist-plural');
+        /* #1380 — optional "this set list updates live" note when the share is a
+           live link (the owner's edits flow through). */
+        const liveNoteEl = document.getElementById('shared-setlist-live-note');
+        if (liveNoteEl) {
+            liveNoteEl.classList.toggle('d-none', !sharedData.live);
+        }
 
         if (titleEl) titleEl.textContent = sharedData.name;
         if (countEl) countEl.textContent = sharedData.songIds.length;

@@ -2382,4 +2382,72 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'BirthDatePrecision'),
     ],
+
+    'shared-setlist-live-link' => [
+        'script' => 'migrate-shared-setlist-live-link.php',
+        'card' => [
+            'title'  => 'Live-link shared setlists (#1380)',
+            'body'   => 'Adds <code>tblSharedSetlists.OwnerUserId</code> (FK to'
+                      . ' <code>tblUsers</code>) and <code>SourceSetlistId</code> so a public'
+                      . ' share LINKS to the owner&rsquo;s live <code>tblUserSetlists</code> row'
+                      . ' instead of freezing a snapshot — the owner&rsquo;s later edits then'
+                      . ' reach link-holders. Both NULL = legacy/anonymous snapshot-only share'
+                      . ' (existing shares keep working unchanged). Additive, idempotent —'
+                      . ' column-existence + constraint-name guarded, safe to re-run.',
+            'button' => 'Run Live-Link Shared Setlists Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until BOTH columns exist, so a
+           partial apply never shows the card green. Detects real completion. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblSharedSetlists', 'OwnerUserId')
+            || !_migProbe_columnExists($db, 'tblSharedSetlists', 'SourceSetlistId'),
+    ],
+
+    'backfill-canonical-songids' => [
+        'script' => 'migrate-backfill-canonical-songids.php',
+        /* #1380 — DATA REWRITE + manual-only: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and the pending counter. A WEB run defaults
+           to ?dry=1 REPORT-ONLY and REFUSES to mutate without ?confirm=1, so it can NEVER
+           be triggered by an "Apply all" bulk fetch. Renames every draft SongId
+           (song-XXXX) to its canonical <Abbr>-NNNN id; FK children cascade automatically,
+           the non-FK / JSON stores are rewritten in-band, each song in its own transaction. */
+        'manual' => true,
+        /* #1380 FIX 4 — this manual migration has a real DRY-RUN: a web run WITHOUT
+           &confirm=1 only REPORTS (it refuses to mutate). setup-database.php auto-
+           appends &confirm=1 to a `manual` card's run link, so without this flag the
+           ONLY button would mutate — denying the WEB-ONLY operator the dry-run-first
+           path the script was designed around. `dryRunnable` makes the card ALSO
+           render a distinct "Dry-run (report only)" link (no &confirm=1, no type-to-
+           confirm) alongside the confirm/apply button, and tailors the manual-card
+           copy/confirm wording away from the destructive-DROP defaults. The C6
+           JSON-column DROP is `manual` but NOT dryRunnable (it has no report mode), so
+           it keeps the drop-only single button. */
+        'dryRunnable' => true,
+        'card' => [
+            'title'  => 'Backfill canonical SongIds (#1380)',
+            'body'   => 'DATA REWRITE — renames every legacy draft <code>song-XXXX</code>'
+                      . ' SongId to its canonical <code>&lt;Abbr&gt;-NNNN</code> id (the 41 FK'
+                      . ' children cascade via <code>ON UPDATE CASCADE</code>; the non-FK / JSON'
+                      . ' stores — <code>tblContentRestrictions.EntityId</code>,'
+                      . ' <code>tblUserSetlists.SongsJson</code>, <code>tblSharedSetlists.Data</code>'
+                      . ' — are rewritten in-band, and a <code>tblSongRedirects</code> row keeps'
+                      . ' old permalinks alive). Do NOT run via &ldquo;Apply all&rdquo;. Defaults'
+                      . ' to <strong>dry-run</strong> (report only); pass <code>&amp;confirm=1</code>'
+                      . ' to mutate. Per-song transactional + idempotent — safe to re-run.',
+            'button' => 'Backfill Canonical SongIds (dry-run unless confirmed)',
+        ],
+        /* "Pending" while ANY draft-id song remains; self-clears to applied once every
+           SongId is canonical. Detects real completion from live data (never always-true). */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $r = $db->query("SELECT 1 FROM tblSongs WHERE SongId LIKE 'song-%' LIMIT 1");
+                $pending = ($r && $r->fetch_row() !== null);
+                if ($r) { $r->close(); }
+                return $pending;
+            } catch (\Throwable $_e) {
+                /* Table absent (fresh install pre-Install) → not pending. */
+                return false;
+            }
+        },
+    ],
 ];

@@ -1149,6 +1149,8 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
 CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     ShareId         VARCHAR(16)     NOT NULL PRIMARY KEY COMMENT '8 hex chars by default; column wider for forward-compat',
     Data            JSON            NOT NULL COMMENT 'Full setlist payload as written by the share API',
+    OwnerUserId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Live-share link: FK to tblUsers.Id of the authenticated owner. NULL = legacy/anonymous snapshot-only share (#1380).',
+    SourceSetlistId VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Live-share link: the owner''s tblUserSetlists.SetlistId. (OwnerUserId, SourceSetlistId) resolves the CURRENT setlist at read time. NULL = snapshot-only (#1380).',
     CreatedBy       INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers (NULL for guest creates)',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -1156,8 +1158,11 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
 
     INDEX idx_CreatedBy (CreatedBy),
     INDEX idx_CreatedAt (CreatedAt),
+    KEY idx_LiveSource (OwnerUserId, SourceSetlistId),
 
     CONSTRAINT fk_SharedSetlists_User FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)
+        ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_SharedSetlists_OwnerUser FOREIGN KEY (OwnerUserId) REFERENCES tblUsers(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

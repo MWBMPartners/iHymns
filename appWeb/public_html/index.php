@@ -570,8 +570,13 @@ try {
         $pageType = 'other';
         $shareId = $matches[1];
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
-        $shareData = sharedSetlistGet($shareId);
-        if (is_array($shareData)) {
+        /* #1380 / FIX 5 — resolve through the SHARED live-vs-snapshot resolver so the
+           OG/meta tags reflect the owner's CURRENT setlist (name + count) on a live
+           share, not the frozen snapshot. `unavailable` (a live link the owner has
+           since deleted) and null (no such share) both leave the static defaults in
+           place — there's no live preview to advertise for a no-longer-shared link. */
+        $shareData = sharedSetlistResolveWire(getDbMysqli(), $shareId);
+        if (is_array($shareData) && empty($shareData['unavailable'])) {
             $setlistName = $shareData['name'] ?? 'Shared Set List';
             $setlistSongCount = count($shareData['songs'] ?? []);
             $ogTitle = htmlspecialchars($setlistName) . ' — Shared Set List — ' . $app["Application"]["Name"];

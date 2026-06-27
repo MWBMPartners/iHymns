@@ -107,8 +107,17 @@ try {
         $cleanId = preg_replace('/[^a-f0-9]/', '', strtolower(trim($setlistId)));
         if ($cleanId !== '' && strlen($cleanId) <= 16) {
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SharedSetlist.php';
-            $setlistInfo = sharedSetlistGet($cleanId);
-            if (is_array($setlistInfo)) $mode = 'setlist';
+            /* #1380 / FIX 5 — resolve through the SHARED live-vs-snapshot resolver so
+               the social card reflects the owner's CURRENT setlist (name + count),
+               not the frozen share-time snapshot. Returns the same XSS-safe id shape
+               the API serves. `unavailable` (a live link whose underlying setlist the
+               owner deleted) and null (no such share) both fall through to the generic
+               card — there's nothing meaningful to preview. */
+            $wire = sharedSetlistResolveWire(getDbMysqli(), $cleanId);
+            if (is_array($wire) && empty($wire['unavailable'])) {
+                $setlistInfo = $wire;   /* ['name','songs','arrangements','live','unavailable'] */
+                $mode = 'setlist';
+            }
         }
     }
 } catch (\Throwable $e) {

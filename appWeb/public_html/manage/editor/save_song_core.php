@@ -271,9 +271,52 @@ function editorSaveSongCore(): array
         $componentCount = is_array($song['components'] ?? null) ? count($song['components']) : 0;
         $arrangementJson = _sanitiseArrangement($song['arrangement'] ?? null, $componentCount);
 
+        /* #1380 — canonical SongId assignment for DRAFT ids. The editor mints a
+           client-side draft id ("song-" + base36 ts + random) when a curator hits
+           "New Song" (editor.js addNewSong) and the save UPSERTs it verbatim — so a
+           saved song could keep an ugly, non-canonical `song-XXXX` id forever. Mint
+           the proper `<Abbr>-NNNN` id on the FIRST save instead, BEFORE any INSERT,
+           and tell the client to relabel its in-memory copy (assignedId/previousId
+           in the response). A non-draft id (an existing real SongId) is untouched. */
+        $previousId = $songId;                                   /* the id the client sent */
+        $assignedId = null;                                      /* set only when we rename */
+        $isDraftId  = (strncmp($songId, 'song-', 5) === 0);
+
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
+
+            if ($isDraftId) {
+                /* Reuse the bulk-import next-number helper so the editor and the
+                   importer agree on how a songbook's next slot is chosen. The
+                   collision-safe loop walks past any id already taken (the UNIQUE
+                   PK on tblSongs.SongId is the final backstop). $songbookAbbr is
+                   already coerced to 'Misc' when blank, so we always have a book. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
+                $n        = _bulkImport_nextSongNumberFor($db, $songbookAbbr);
+                $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                $candidate  = sprintf('%s-%04d', $songbookAbbr, $n);
+                $existsStmt->bind_param('s', $candidate);
+                $existsStmt->execute();
+                while ($existsStmt->get_result()->fetch_row() !== null) {
+                    $n++;
+                    $candidate = sprintf('%s-%04d', $songbookAbbr, $n);
+                    $existsStmt->bind_param('s', $candidate);
+                    $existsStmt->execute();
+                }
+                $existsStmt->close();
+
+                $songId     = $candidate;        /* canonical id used by ALL inserts below */
+                $assignedId = $candidate;        /* signal the rename to the client */
+
+                /* An official songbook numbers its songs; if the curator hadn't set
+                   a Number yet, adopt the slot we just chose so the number and the id
+                   tail agree. Unofficial / Misc books leave Number NULL (the id is the
+                   cross-record link there — #392). */
+                if ($isOfficialSongbook && $number === null) {
+                    $number = $n;
+                }
+            }
 
             /* Capture previous state for the revision row (#400) */
             $previousData = null;
@@ -305,17 +348,23 @@ function editorSaveSongCore(): array
                 $arrProbe->close();
             } catch (\Throwable $_e) { /* default false */ }
 
-            /* UPSERT tblSongs — now carries TuneName + Iswc (#497) and
-               ArrangementJson (#892) when the column exists. */
-            if ($hasArrangementCol) {
-                $upsert = $db->prepare(
-                    'INSERT INTO tblSongs
-                        (SongId, Number, Title, SongbookAbbr, Language,
-                         Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
-                         MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
-                         ArrangementJson)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
+            /* #1380 FIX 3 — TOCTOU-safe write for a FRESHLY-MINTED canonical id.
+               The mint loop above checks "is this id free?" then we INSERT — a
+               read-then-write window. Two concurrent FIRST saves in one songbook can
+               BOTH pass the existence check before either writes, then both reach the
+               shared UPSERT — and `ON DUPLICATE KEY UPDATE` would SILENTLY OVERWRITE
+               the first song's row with the second's (data loss, no error). So when we
+               just minted a canonical id ($assignedId !== null — always a brand-new
+               CREATE, $prevRow is null), use a PLAIN INSERT with NO ON DUPLICATE KEY
+               UPDATE clause: a colliding PK throws ER_DUP_ENTRY (1062), which the
+               surrounding catch turns into a clean rollback → 500 the client retries
+               (the editor's per-song save loop re-mints a fresh slot on retry).
+               A GENUINE update (or a non-draft create) keeps the existing UPSERT — a
+               re-save of an existing real SongId MUST update it, not error. The
+               ON DUPLICATE KEY UPDATE tail is therefore appended only when NOT minting. */
+            $upsertDuplicateClause = $assignedId !== null
+                ? ''
+                : ' ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
                         SongbookAbbr = VALUES(SongbookAbbr),
                         Language = VALUES(Language), Copyright = VALUES(Copyright),
@@ -325,8 +374,26 @@ function editorSaveSongCore(): array
                         LyricsPublicDomain = VALUES(LyricsPublicDomain),
                         MusicPublicDomain = VALUES(MusicPublicDomain),
                         HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
-                        LyricsText = VALUES(LyricsText),
-                        ArrangementJson = VALUES(ArrangementJson)'
+                        LyricsText = VALUES(LyricsText)';
+
+            /* UPSERT tblSongs — now carries TuneName + Iswc (#497) and
+               ArrangementJson (#892) when the column exists. The duplicate-key tail
+               is conditional per the FIX-3 minted-create rule above. */
+            if ($hasArrangementCol) {
+                /* The ArrangementJson column adds one more VALUES()-updated field to
+                   the (non-minting) UPDATE tail. */
+                $arrUpdateTail = $upsertDuplicateClause === ''
+                    ? ''
+                    : $upsertDuplicateClause . ',
+                        ArrangementJson = VALUES(ArrangementJson)';
+                $upsert = $db->prepare(
+                    'INSERT INTO tblSongs
+                        (SongId, Number, Title, SongbookAbbr, Language,
+                         Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
+                         MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText,
+                         ArrangementJson)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     . $arrUpdateTail
                 );
                 /* SongbookName denorm column dropped (WS-E #1013 ph2) —
                    16 cols / 16 placeholders / 16 bind types. */
@@ -343,18 +410,8 @@ function editorSaveSongCore(): array
                         (SongId, Number, Title, SongbookAbbr, Language,
                          Copyright, TuneName, Ccli, Iswc, Verified, LyricsPublicDomain,
                          MusicPublicDomain, HasAudio, HasSheetMusic, LyricsText)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        Number = VALUES(Number), Title = VALUES(Title),
-                        SongbookAbbr = VALUES(SongbookAbbr),
-                        Language = VALUES(Language), Copyright = VALUES(Copyright),
-                        TuneName = VALUES(TuneName),
-                        Ccli = VALUES(Ccli), Iswc = VALUES(Iswc),
-                        Verified = VALUES(Verified),
-                        LyricsPublicDomain = VALUES(LyricsPublicDomain),
-                        MusicPublicDomain = VALUES(MusicPublicDomain),
-                        HasAudio = VALUES(HasAudio), HasSheetMusic = VALUES(HasSheetMusic),
-                        LyricsText = VALUES(LyricsText)'
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                     . $upsertDuplicateClause
                 );
                 /* SongbookName denorm column dropped (WS-E #1013 ph2) —
                    15 cols / 15 placeholders / 15 bind types. */
@@ -1124,8 +1181,18 @@ function editorSaveSongCore(): array
                file cache + its regeneration hooks were removed. */
 
             /* $action is 'create' or 'edit' here (reassigned in the txn) — preserve
-               the EXACT legacy wire response, which emitted that, not 'save_song'. */
-            return ['status' => 200, 'body' => ['ok' => true, 'songId' => $songId, 'action' => $action]];
+               the EXACT legacy wire response, which emitted that, not 'save_song'.
+               #1380 — when a draft id was promoted to a canonical id, also return
+               assignedId (the new canonical id) + previousId (the draft id the
+               client sent) so editor.js can relabel its in-memory song without a
+               reload. Both are OMITTED on a normal save (non-draft id), so the wire
+               shape is byte-identical to today for the common case. */
+            $respBody = ['ok' => true, 'songId' => $songId, 'action' => $action];
+            if ($assignedId !== null) {
+                $respBody['assignedId'] = $assignedId;
+                $respBody['previousId'] = $previousId;
+            }
+            return ['status' => 200, 'body' => $respBody];
         } catch (\Throwable $e) {
             if (isset($db) && $db instanceof mysqli) {
                 try { $db->rollback(); } catch (\Throwable $_) {}
