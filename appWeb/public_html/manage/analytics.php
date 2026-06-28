@@ -36,8 +36,13 @@ $db = getDbMysqli();
 $exportPanel = (string)($_GET['export'] ?? '');
 if ($exportPanel !== '') {
     $since = (new DateTime("-{$range} days"))->format('Y-m-d H:i:s');
+    /* SECURITY: $exportPanel is raw $_GET reflected into a response header below.
+       header() blocks literal CR/LF, but we still strip to a safe filename charset
+       so no unvalidated request value lands in Content-Disposition (security audit).
+       The switch() further constrains which panel actually exports. */
+    $safePanel = preg_replace('/[^A-Za-z0-9_-]/', '', $exportPanel);
     header('Content-Type: text/csv; charset=UTF-8');
-    header('Content-Disposition: attachment; filename="ihymns-' . $exportPanel . '-' . $range . 'd.csv"');
+    header('Content-Disposition: attachment; filename="ihymns-' . $safePanel . '-' . $range . 'd.csv"');
     $fp = fopen('php://output', 'w');
     try {
         switch ($exportPanel) {

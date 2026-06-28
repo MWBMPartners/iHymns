@@ -1968,7 +1968,7 @@ if ($action !== null) {
                     $verifyData = generateEmailVerificationToken($userId);
                     if ($verifyData !== null) {
                         $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $host   = appCanonicalHost(); // SECURITY: allow-listed host, never raw HTTP_HOST — prevents Host-header injection / reset-link poisoning (CWE-640, security audit)
                         $verifyLink = $scheme . '://' . $host . '/login?verify_token=' . rawurlencode((string)$verifyData['token']);
                         $sendResult = EmailService::sendTemplate('email-verification', $regEmail, [
                             'link'         => $verifyLink,
@@ -2548,7 +2548,7 @@ if ($action !== null) {
             if ($result && (string)($result['email'] ?? '') !== '') {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
                 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                $host   = appCanonicalHost(); // SECURITY: allow-listed host, never raw HTTP_HOST — prevents Host-header injection / reset-link poisoning (CWE-640, security audit)
                 $resetLink = $scheme . '://' . $host . '/login?reset_token=' . rawurlencode((string)$result['token']);
                 $sendResult = EmailService::sendTemplate('password-reset', (string)$result['email'], [
                     'link'         => $resetLink,
@@ -2749,7 +2749,7 @@ if ($action !== null) {
                never enter PHP error_log. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
             $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-            $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+            $host   = appCanonicalHost(); // SECURITY: allow-listed host, never raw HTTP_HOST — prevents Host-header injection / magic-link poisoning (CWE-640, security audit)
             $magicLink = $scheme . '://' . $host . '/login?token=' . rawurlencode((string)$result['token']);
             $sendResult = EmailService::sendTemplate('magic-link-login', $requestEmail, [
                 'code'         => (string)$result['code'],
@@ -5204,12 +5204,44 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            /* SECURITY (IDOR — security audit): verify the caller OWNS this setlist
+               before scheduling it (mirrors the sibling setlist_schedule_set).
+               Without this, any authenticated bearer token could schedule a setlist
+               it does not own. */
+            $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+            $own->bind_param('is', $authUserId, $schedSetlistId);
+            $own->execute();
+            $ownsSetlist = (bool)$own->get_result()->fetch_row();
+            $own->close();
+            if (!$ownsSetlist) {
+                sendJson(['error' => 'Setlist not found or not owned by you.'], 403);
+                break;
+            }
+
+            /* SECURITY (IDOR): an org_id may only be attached if the caller is a
+               member of that org — otherwise a user could tag a schedule onto an
+               arbitrary organisation and have it surface in that org's schedule. */
+            if ($schedOrgId !== null) {
+                $mem = $db->prepare('SELECT 1 FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ? LIMIT 1');
+                $mem->bind_param('ii', $schedOrgId, $authUserId);
+                $mem->execute();
+                $isMember = (bool)$mem->get_result()->fetch_row();
+                $mem->close();
+                if (!$isMember) {
+                    sendJson(['error' => 'You are not a member of that organisation.'], 403);
+                    break;
+                }
+            }
+
+            /* The column is UserId (the old code named a phantom CreatedBy column
+               that does not exist on tblSetlistSchedule — it threw under STRICT
+               mysqli before this fix). OrgId is nullable. */
             $stmt = $db->prepare(
-                'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, CreatedBy)
+                'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, UserId)
                  VALUES (?, ?, ?, ?, ?)'
             );
-            /* OrgId(i nullable). */
-            $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('sssii',
                 $schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUserId);
             $stmt->execute();
@@ -9255,7 +9287,7 @@ if ($action !== null) {
                     require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
                     if (EmailService::isConfigured()) {
                         $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-                        $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+                        $host   = appCanonicalHost(); // SECURITY: allow-listed host, never raw HTTP_HOST — prevents Host-header injection / reset-link poisoning (CWE-640, security audit)
                         $loginUrl = $scheme . '://' . $host . '/login';
                         $sendResult = EmailService::sendTemplate('admin-password-reset', (string)$target['email'], [
                             'username'    => (string)$target['username'],

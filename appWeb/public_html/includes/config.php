@@ -406,6 +406,29 @@ function getRequestPath(): string
 }
 
 /**
+ * Resolve the request Host against the canonical-channel allow-list.
+ *
+ * SECURITY (CWE-640 / Host-header injection): $_SERVER['HTTP_HOST'] is sent by
+ * the client and is therefore attacker-controllable. Interpolating it into an
+ * emailed auth link (password-reset / magic-link / verify), a canonical <link>
+ * URL, or a server-side outbound probe lets an attacker poison those values —
+ * e.g. submit a password reset for a victim with a crafted `Host:` header so the
+ * victim receives a *legitimate* email whose VALID-token link points at the
+ * attacker's domain (token theft on click). We allow only the four canonical
+ * channels and fall back to the production domain otherwise. This is the single
+ * source of truth that the sitemap allow-list (#526) and the email/canonical
+ * builders all share — never read HTTP_HOST directly for these purposes.
+ *
+ * @return string A trusted host that is never attacker-controlled.
+ */
+function appCanonicalHost(): string
+{
+    static $allowed = ['ihymns.app', 'www.ihymns.app', 'dev.ihymns.app', 'beta.ihymns.app'];
+    $requestHost = $_SERVER['HTTP_HOST'] ?? '';
+    return in_array($requestHost, $allowed, true) ? $requestHost : 'ihymns.app';
+}
+
+/**
  * Build the full canonical URL for the current page or a given path.
  *
  * @param string $path Optional path to append (default: current request path)
@@ -414,7 +437,9 @@ function getRequestPath(): string
 function getCanonicalUrl(string $path = ''): string
 {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host   = $_SERVER['HTTP_HOST'] ?? 'ihymns.app';
+    /* SECURITY: allow-listed host, not raw HTTP_HOST — prevents canonical-URL
+       / SEO cache poisoning via a forged Host header (#526 / security audit). */
+    $host   = appCanonicalHost();
 
     if ($path === '') {
         $path = getRequestPath();

@@ -879,7 +879,11 @@ if (!empty($breadcrumbItems)) {
          JSON-LD STRUCTURED DATA — SEO (#151)
          ================================================================ -->
     <?php foreach ($jsonLdScripts as $jsonLd): ?>
-    <script type="application/ld+json" nonce="<?= $cspNonce ?>"><?= json_encode($jsonLd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) ?></script>
+    <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB song/songbook/person name
+             containing a literal </script> (or &, ", ') cannot break out of this
+             <script> element and inject HTML to every visitor (public stored XSS).
+             JSON_HEX_TAG escapes < and > to </>. See security audit. */ ?>
+    <script type="application/ld+json" nonce="<?= $cspNonce ?>"><?= json_encode($jsonLd, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?></script>
     <?php endforeach; ?>
 </head>
 
@@ -1648,7 +1652,10 @@ if (!empty($breadcrumbItems)) {
            songbook name), fall back to a minimal stub so the SPA still
            boots — better than emitting `window.iHymnsConfig = ;` which
            is invalid JS and would reproduce #509. */
-        $iHymnsConfigJson = json_encode($iHymnsConfig, JSON_UNESCAPED_SLASHES);
+        /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT — $iHymnsConfig carries DB
+           songbook names; a name containing </script> must not break out of the
+           inline <script> below (public stored XSS). JSON_HEX_TAG escapes </>. */
+        $iHymnsConfigJson = json_encode($iHymnsConfig, JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
         if ($iHymnsConfigJson === false) {
             error_log('[index.php] json_encode($iHymnsConfig) failed: '
                 . json_last_error_msg());
