@@ -677,9 +677,12 @@ foreach ($discography as $rk => $entry) {
                 'alternateName' => count($ldNames) === 1 ? $ldNames[0] : $ldNames,
             ];
     ?>
+        <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB credit-person name
+                 containing </script> (or &, ", ') cannot break out of this public
+                 <script> element and inject HTML (stored XSS). See security audit. */ ?>
         <script type="application/ld+json"><?= json_encode(
             $ld,
-            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT
         ) ?></script>
     <?php endif; ?>
 

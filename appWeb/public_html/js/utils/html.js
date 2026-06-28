@@ -8,17 +8,26 @@
  */
 
 /**
- * Escape a string for safe insertion into HTML.
- * Uses the browser's own text-node encoding to neutralise &, <, >, ", etc.
+ * Escape a string for safe insertion into HTML — text AND attribute contexts.
+ *
+ * SECURITY: the previous implementation used `_div.textContent = str;
+ * return _div.innerHTML`, which encodes &, <, > but NOT the quote characters
+ * (textContent→innerHTML leaves " and ' intact, since quotes are valid in text
+ * nodes). This helper is interpolated into double-quoted HTML attributes across
+ * 16 modules (title="…", data-*="…", aria-label="…"), so a curator- or
+ * cross-user-controlled value containing a `"` could break out of the attribute
+ * and inject an event handler (attribute-context XSS). We now escape all five
+ * HTML-significant characters with an explicit regex map, making the output
+ * safe in both text and double-/single-quoted attribute contexts.
+ * See OWASP XSS Prevention (rules #1 & #2) and the project security audit.
  *
  * @param {string} str  The raw string to escape
- * @returns {string}    The HTML-safe string
+ * @returns {string}    The HTML-safe string (safe in text and attribute contexts)
  */
-const _div = document.createElement('div');
+const _HTML_ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 
 export function escapeHtml(str) {
-    _div.textContent = str || '';
-    return _div.innerHTML;
+    return String(str ?? '').replace(/[&<>"']/g, function (c) { return _HTML_ESCAPES[c]; });
 }
 
 /**

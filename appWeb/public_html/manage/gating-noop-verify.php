@@ -39,6 +39,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php'; // appCanonicalHost() for the same-origin probe (security audit)
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
 
 requireGlobalAdmin();
@@ -227,7 +228,10 @@ try {
         $songData2  = new SongData();
         $sampleIds  = array_slice(gatingNoop_sampleIds($db), 0, 3);
         $scheme     = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host       = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+        /* SECURITY: allow-listed host, not raw HTTP_HOST — a forged Host would
+           otherwise steer this server-side HEAD probe to an arbitrary host
+           (blind SSRF). The probe is meant to be same-origin anyway. */
+        $host       = appCanonicalHost();
         foreach ($sampleIds as $sid) {
             foreach (['/data/audio/', '/audio/'] as $prefix) {
                 $url  = $scheme . '://' . $host . $prefix . rawurlencode($sid) . '.mp3';

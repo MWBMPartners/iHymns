@@ -6408,7 +6408,7 @@ function openHistoryModal(songId) {
     var titleEl = document.getElementById('history-modal-title');
     if (!listEl || !detailEl) return;
 
-    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + songId;
+    if (titleEl) titleEl.innerHTML = '<i class="bi bi-clock-history me-2"></i>Revision history — ' + escapeHtml(songId);
     listEl.innerHTML = '<div class="text-center p-3"><i class="bi bi-hourglass-split me-1"></i>Loading…</div>';
     detailEl.innerHTML = '';
 
@@ -6431,7 +6431,7 @@ function openHistoryModal(songId) {
             renderHistoryList(res.data.revisions || [], listEl, detailEl);
         })
         .catch(function (err) {
-            listEl.innerHTML = '<div class="text-danger p-3">Request failed: ' + err.message + '</div>';
+            listEl.innerHTML = '<div class="text-danger p-3">Request failed: ' + escapeHtml(err.message) + '</div>';
         });
 }
 
