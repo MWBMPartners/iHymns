@@ -28,6 +28,16 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';
 const SERVICE_MODE_CODE_TTL_SECONDS   = 75;
 /** Hard ceiling on any session / presence lifetime (matches the #1268 spine's 4h). */
 const SERVICE_MODE_HARD_CEILING_HOURS = 4;
+/**
+ * Session-liveness freshness window (seconds). A live session whose
+ * LastHeartbeatAt is older than this is treated as stale and skipped by every
+ * join/poll. UNIFIED across BOTH live systems (#1386 alignment): #1268 Live
+ * Follow (host song-page 30 s heartbeat + visibility/focus wake-beat) AND #1335
+ * Service Mode (projection/leader 30 s code-rotate heartbeat + wake refresh).
+ * 180 s = 6× the 30 s heartbeat, so a briefly-backgrounded/throttled broadcaster
+ * tab survives one or two missed beats without dropping joins or followers.
+ */
+const LIVE_SESSION_FRESHNESS_SECONDS  = 180;
 /** Crockford-ish base32 — no I/L/O/U/0/1 (matches live_follow_create). */
 const SERVICE_MODE_CODE_ALPHABET      = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 
@@ -168,6 +178,9 @@ function serviceMode_mintCode(\mysqli $db, int $sessionId): string
  */
 function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string $channel): ?array
 {
+    /* Unified freshness window (was 90s — aligned to Live Follow's 180s, #1386).
+       Trusted int constant, interpolated (not a bound value). */
+    $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
     $stmt = $db->prepare(
         "SELECT s.Id, s.OrgId, s.VenueId, s.ScheduleId, s.OccurrenceDate, s.Channel
            FROM tblLiveFollowJoinCodes c
@@ -179,7 +192,7 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
             AND s.Channel = ?
             AND s.SessionKind = 'service'
             AND s.IsActive = 1
-            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 SECOND)
+            AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
           ORDER BY s.LastHeartbeatAt DESC
           LIMIT 1"
     );
