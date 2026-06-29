@@ -71,6 +71,7 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 /* Shared external-link helpers (#833/#845) — the SAME loader + save +
    reconcile the songbook / work surfaces use, so the song editor never
    forks the external-links code. Provides loadExternalLinkTypesFor(),
@@ -2004,10 +2005,10 @@ try {
         header('Cache-Control: no-store, no-cache, must-revalidate');
         echo "\xEF\xBB\xBF";   // UTF-8 BOM for Excel
         $out = fopen('php://output', 'w');
-        fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
+        ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
         foreach ($skipped as $sid) {
             $sid = (string)$sid; $r = $byId[$sid] ?? null;
-            fputcsv($out, [$sid, $r ? (string)$r['Title'] : '', $r ? (string)$r['SongbookAbbr'] : '', $r ? (string)$r['SongbookName'] : '', 'existing-in-db']);
+            ihymns_fputcsv($out, [$sid, $r ? (string)$r['Title'] : '', $r ? (string)$r['SongbookAbbr'] : '', $r ? (string)$r['SongbookName'] : '', 'existing-in-db']);
         }
         fclose($out);
         exit;   // CSV already streamed — don't fall through to JSON

@@ -1363,7 +1363,14 @@ if ($action !== null) {
             );
 
             header('Content-Type: application/json; charset=UTF-8');
-            header('Cache-Control: public, max-age=3600, must-revalidate');
+            /* SECURITY (#1386 audit): this bundle renders per-tier once content
+               gating is enabled (song.php honours the requester's tier). A shared
+               / intermediary cache keyed only on URL could then serve one tier's
+               render to another user, so mark it private when gating is on. NO-OP
+               (stays `public`) while content_gating_enabled='0'. */
+            header('Cache-Control: ' . (contentGatingEnabled()
+                ? 'private, max-age=3600, must-revalidate'
+                : 'public, max-age=3600, must-revalidate'));
             echo $json;
             break;
 
@@ -2818,12 +2825,41 @@ if ($action !== null) {
             $verifyEmail = trim($body['email'] ?? '');
             $verifyCode  = trim($body['code'] ?? '');
 
+            /* SECURITY (brute-force — #1386 audit): the email+code path matches
+               `WHERE Email=? AND Code=?` on a 6-digit code (~1M space) valid 10
+               minutes; verifyEmailLoginCode() neither invalidates the code nor
+               counts misses, so without a throttle an attacker who knows a
+               victim's email could guess unlimited codes → account takeover. Cap
+               failed CODE verifies per IP (mirrors auth_login: 10 / 15 min).
+               Magic-link token mode (48-char hex) is not brute-forceable → exempt.
+               REMOTE_ADDR is the non-spoofable key. */
+            $verifyIp   = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+            $isCodeMode = ($verifyEmail !== '' && $verifyCode !== '');
+            if ($isCodeMode && $verifyIp !== '') {
+                $db = getDbMysqli();
+                $bf = $db->prepare(
+                    "SELECT COUNT(*) FROM tblLoginAttempts
+                      WHERE IpAddress = ? AND Success = 0 AND Username = 'email_verify'
+                        AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)"
+                );
+                $bf->bind_param('s', $verifyIp);
+                $bf->execute();
+                $verifyFails = (int)($bf->get_result()->fetch_row()[0] ?? 0);
+                $bf->close();
+                if ($verifyFails >= 10) {
+                    logActivity('auth.login_email_verify', '', '',
+                        ['mode' => 'code', 'email' => $verifyEmail, 'reason' => 'rate_limited'], 'failure');
+                    sendJson(['error' => 'Too many attempts. Please request a new code and try again later.'], 429);
+                    break;
+                }
+            }
+
             $verified = null;
 
             if ($verifyToken !== '') {
                 /* Mode 1: Magic link — verify by token */
                 $verified = verifyEmailLoginToken($verifyToken);
-            } elseif ($verifyEmail !== '' && $verifyCode !== '') {
+            } elseif ($isCodeMode) {
                 /* Mode 2: Code entry — verify by email + code */
                 $verified = verifyEmailLoginCode($verifyEmail, $verifyCode);
             } else {
@@ -2832,6 +2868,15 @@ if ($action !== null) {
             }
 
             if ($verified === null) {
+                /* SECURITY: record a code-mode miss so the per-IP throttle above
+                   sees it (the counter reads Success=0, Username='email_verify'). */
+                if ($isCodeMode && $verifyIp !== '') {
+                    $db = getDbMysqli();
+                    $fa = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'email_verify', 0)");
+                    $fa->bind_param('s', $verifyIp);
+                    $fa->execute();
+                    $fa->close();
+                }
                 logActivity(
                     'auth.login_email_verify',
                     '',
@@ -5355,12 +5400,30 @@ if ($action !== null) {
             $slotsJson = json_encode($cleanSlots, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
             $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            /* SECURITY (IDOR — #1386 audit): an org_id may only be attached if the
+               caller is a member of that org (mirrors the setlist_schedule_save
+               fix). Otherwise any authenticated user could inject a template into
+               an arbitrary org's list — the setlist_templates read returns
+               templates by org membership, so it would surface to that org. */
+            if ($tplOrgId !== null) {
+                $mem = $db->prepare('SELECT 1 FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ? LIMIT 1');
+                $mem->bind_param('ii', $tplOrgId, $authUserId);
+                $mem->execute();
+                $isMember = (bool)$mem->get_result()->fetch_row();
+                $mem->close();
+                if (!$isMember) {
+                    sendJson(['error' => 'You are not a member of that organisation.'], 403);
+                    break;
+                }
+            }
+
             $stmt = $db->prepare(
                 'INSERT INTO tblSetlistTemplates (Name, Description, SlotsJson, OrgId, IsPublic, CreatedBy)
                  VALUES (?, ?, ?, ?, ?, ?)'
             );
             /* OrgId(i nullable), IsPublic(i bool-as-int), CreatedBy(i). */
-            $authUserId = (int)$authUser['Id'];
             $stmt->bind_param('sssiii',
                 $tplName, $tplDesc, $slotsJson, $tplOrgId, $tplIsPublic, $authUserId);
             $stmt->execute();
@@ -8932,8 +8995,16 @@ if ($action !== null) {
             $role        = trim((string)($body['role']         ?? 'editor'));
             $email       = trim((string)($body['email']        ?? ''));
 
-            if (mb_strlen($username) < 3) {
-                sendJson(['error' => 'Username must be at least 3 characters.'], 400);
+            /* SECURITY (#1386 audit): enforce the SAME username charset allow-list
+               as registration and self-rename — admin_user_create previously
+               checked only length, so an admin could create a username containing
+               HTML metacharacters that later render unescaped (e.g. the editor
+               revision-history list). Lowercase to match the case-insensitive
+               login convention. */
+            $username = strtolower($username);
+            if (mb_strlen($username) < 3 || mb_strlen($username) > 50
+                || !preg_match('/^[a-z0-9_.\-]+$/', $username)) {
+                sendJson(['error' => 'Username must be 3–50 characters: letters, numbers, _, -, . only.'], 400);
                 break;
             }
             if (strlen($password) < 8) {

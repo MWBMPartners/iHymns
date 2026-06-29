@@ -95,6 +95,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    overrides and load_song surfaces them — the SAME shared layer api2.php uses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -2922,11 +2923,11 @@ switch ($action) {
             header('Cache-Control: no-store, no-cache, must-revalidate');
             echo "\xEF\xBB\xBF"; /* UTF-8 BOM */
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
+            ihymns_fputcsv($out, ['SongId', 'Title', 'SongbookAbbr', 'SongbookName', 'Reason']);
             foreach ($skipped as $sid) {
                 $sid = (string)$sid;
                 $r   = $rowsBySongId[$sid] ?? null;
-                fputcsv($out, [
+                ihymns_fputcsv($out, [
                     $sid,
                     $r ? (string)$r['Title'] : '',
                     $r ? (string)$r['SongbookAbbr'] : '',

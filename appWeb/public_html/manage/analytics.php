@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 requireAdmin();
 
 $activePage  = 'analytics';
@@ -47,7 +48,7 @@ if ($exportPanel !== '') {
     try {
         switch ($exportPanel) {
             case 'top_songs':
-                fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
+                ihymns_fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
                 $stmt = $db->prepare(
                     'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -59,11 +60,11 @@ if ($exportPanel !== '') {
                 $stmt->bind_param('s', $since);
                 $stmt->execute();
                 $res = $stmt->get_result();
-                while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                while ($row = $res->fetch_row()) { ihymns_fputcsv($fp, $row); }
                 $stmt->close();
                 break;
             case 'top_books':
-                fputcsv($fp, ['SongbookAbbr', 'Views']);
+                ihymns_fputcsv($fp, ['SongbookAbbr', 'Views']);
                 $stmt = $db->prepare(
                     'SELECT s.SongbookAbbr, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -75,11 +76,11 @@ if ($exportPanel !== '') {
                 $stmt->bind_param('s', $since);
                 $stmt->execute();
                 $res = $stmt->get_result();
-                while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                while ($row = $res->fetch_row()) { ihymns_fputcsv($fp, $row); }
                 $stmt->close();
                 break;
             case 'searches':
-                fputcsv($fp, ['Query', 'ResultCount', 'Hits']);
+                ihymns_fputcsv($fp, ['Query', 'ResultCount', 'Hits']);
                 try {
                     $stmt = $db->prepare(
                         'SELECT Query, ResultCount, COUNT(*) AS hits
@@ -91,12 +92,12 @@ if ($exportPanel !== '') {
                     $stmt->bind_param('s', $since);
                     $stmt->execute();
                     $res = $stmt->get_result();
-                    while ($row = $res->fetch_row()) { fputcsv($fp, $row); }
+                    while ($row = $res->fetch_row()) { ihymns_fputcsv($fp, $row); }
                     $stmt->close();
                 } catch (\Throwable $_e) { /* table absent */ }
                 break;
             default:
-                fputcsv($fp, ['Unknown panel: ' . $exportPanel]);
+                ihymns_fputcsv($fp, ['Unknown panel: ' . $exportPanel]);
         }
     } finally {
         fclose($fp);
@@ -184,7 +185,6 @@ try {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Analytics — iHymns Admin</title>
-    <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-libs.php'; ?>
     <?php require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php'; ?>
 </head>

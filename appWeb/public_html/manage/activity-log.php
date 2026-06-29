@@ -19,6 +19,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1315 — ihymns_environment() for the per-env log default
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -583,7 +584,7 @@ if (($_GET['export'] ?? '') === 'csv') {
         $headerRow[] = 'Referrer';
         $headerRow[] = 'Country';
     }
-    fputcsv($out, $headerRow);
+    ihymns_fputcsv($out, $headerRow);
     $stmt = $db->prepare(
         'SELECT a.Id, a.CreatedAt, UNIX_TIMESTAMP(a.CreatedAt) AS CreatedAtTs,
                 u.Username, a.Action, a.EntityType, a.EntityId,
@@ -628,7 +629,7 @@ if (($_GET['export'] ?? '') === 'csv') {
             $csvRow[] = $row['Referrer']    ?? '';
             $csvRow[] = $row['Country']     ?? '';
         }
-        fputcsv($out, $csvRow);
+        ihymns_fputcsv($out, $csvRow);
     }
     $stmt->close();
     fclose($out);
