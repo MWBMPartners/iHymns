@@ -12438,6 +12438,9 @@ if ($action !== null) {
             recordRateLimitHit('live_follow_join', $liveIp);
 
             $db = getDbMysqli();
+            /* 180s = LIVE_SESSION_FRESHNESS_SECONDS (service_mode.php) — the ONE
+               unified live-session window shared with Service Mode; keep this
+               literal in sync (this #1268 handler doesn't load that helper). #1386 */
             $stmt = $db->prepare(
                 'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
                         u.DisplayName AS HostName
@@ -12686,7 +12689,19 @@ if ($action !== null) {
                 break;
             }
 
-            /* service_code_current — projection-page resume after a reload. */
+            /* service_code_current — projection/leader resume after a reload OR the
+               visibility/focus wake refresh. Heartbeat here too (#1386 wake-
+               alignment): the read used to be heartbeat-free, so a backgrounded
+               broadcaster tab that wakes did NOT revive the session until the next
+               30s rotate — leaving a gap where joins/polls saw it stale. Mirrors
+               live-follow.js's wake-beat. Operator-gated + active-only, so only a
+               genuine open operator tab can keep a session alive. */
+            if ((int)$sess['IsActive'] === 1) {
+                $hbc = $db->prepare('UPDATE tblLiveFollowSessions SET LastHeartbeatAt = UTC_TIMESTAMP() WHERE Id = ?');
+                $hbc->bind_param('i', $sessionId);
+                $hbc->execute();
+                $hbc->close();
+            }
             $cur = $db->prepare("SELECT Code FROM tblLiveFollowJoinCodes WHERE SessionId = ? AND Status = 'current' AND ExpiresAt > UTC_TIMESTAMP() ORDER BY Generation DESC LIMIT 1");
             $cur->bind_param('i', $sessionId);
             $cur->execute();
@@ -12855,13 +12870,16 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $channel = serviceMode_channel();
+            /* Unified freshness window (was 120s — aligned to Live Follow's 180s,
+               #1386). Trusted int constant, interpolated (not a bound value). */
+            $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
             $stmt = $db->prepare(
                 "SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision
                    FROM tblServicePresence p
                    JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
                   WHERE p.PresenceToken = ? AND p.IsActive = 1 AND p.ExpiresAt > UTC_TIMESTAMP()
                     AND s.IsActive = 1 AND s.Channel = ?
-                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 120 SECOND)
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
                   LIMIT 1"
             );
             $stmt->bind_param('ss', $token, $channel);
