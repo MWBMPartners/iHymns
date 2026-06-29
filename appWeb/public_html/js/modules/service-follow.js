@@ -95,6 +95,18 @@ export class ServiceFollow {
                 return;
             }
             if (!r.httpOk || !r.data || !r.data.ok) {
+                /* No Service-Mode (#1335) session matched this code. It may be a
+                   worship-team "Go Live" (#1268) code instead: the two systems are
+                   distinct, but a congregant only ever sees this one prominent
+                   "Join a live service" button (the #1268 "Join Live" lives per-song
+                   on the song page), so transparently fall back to the Live-Follow
+                   join. live-follow.js#_doJoin starts following on success and shows
+                   its own "session not found" toast on a genuinely bad code, so we
+                   don't double-toast here. (#1386 — unify the discoverable join.) */
+                if (this.app.liveFollow && typeof this.app.liveFollow._doJoin === 'function') {
+                    await this.app.liveFollow._doJoin(code);
+                    return;
+                }
                 this.app.showToast((r.data && r.data.error) || 'That code isn’t active right now.', 'danger');
                 return;
             }

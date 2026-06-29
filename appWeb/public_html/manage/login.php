@@ -24,6 +24,38 @@ function _manageSafeRedirect(mixed $target): string
         : '/manage/';
 }
 
+/**
+ * Verify a login POST is same-origin WITHOUT relying on the session-baked CSRF
+ * token. That token can vanish if PHP's session garbage collector reaps the
+ * server-side session (shared-hosting `gc_maxlifetime` is often ~24 min) while
+ * the browser cookie persists — leaving an admin who left the login tab open
+ * unable to submit ("Invalid form submission. Please try again."). A genuine
+ * same-origin login POST carries an `Origin`/`Referer` whose host matches
+ * `HTTP_HOST`; a cross-origin login-CSRF forge carries a foreign or absent one.
+ * So we accept the POST when EITHER the baked token validates OR the request is
+ * verifiably same-origin (rule #29 — the same robustness `validateCsrfRequest()`
+ * gives AJAX writes, applied to this plain form). (#1386 / lockout fix.)
+ */
+function _loginRequestIsSameOrigin(): bool
+{
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    if ($host === '') {
+        return false;
+    }
+    $sawHeader = false;
+    foreach ([(string)($_SERVER['HTTP_ORIGIN'] ?? ''), (string)($_SERVER['HTTP_REFERER'] ?? '')] as $u) {
+        if ($u === '') {
+            continue;
+        }
+        $sawHeader = true;
+        $h = parse_url($u, PHP_URL_HOST);
+        if (!is_string($h) || strcasecmp($h, $host) !== 0) {
+            return false; // an explicit cross-origin host → reject
+        }
+    }
+    return $sawHeader; // accept only when at least one header was present AND matched
+}
+
 /* Redirect to setup if no users exist */
 if (needsSetup()) {
     header('Location: /manage/setup');
@@ -61,7 +93,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $username = $_POST['username'] ?? '';
     $password = $_POST['password'] ?? '';
 
-    if (!validateCsrf($token)) {
+    /* Accept when the baked token validates OR the request is verifiably
+       same-origin — so a GC-reaped session token can't lock an admin out. */
+    if (!validateCsrf($token) && !_loginRequestIsSameOrigin()) {
         $error = 'Invalid form submission. Please try again.';
     } elseif ($username === '' || $password === '') {
         $error = 'Username and password are required.';
