@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 
 requireAuth();
 $currentUser = getCurrentUser();
@@ -115,9 +116,9 @@ if (($_GET['export'] ?? '') === 'csv') {
     header('Cache-Control: no-store');
 
     $out = fopen('php://output', 'wb');
-    fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views']);
+    ihymns_fputcsv($out, ['SongId', 'Title', 'Songbook', 'Number', 'CCLI', 'Copyright', 'Views']);
     foreach ($rows as $r) {
-        fputcsv($out, [
+        ihymns_fputcsv($out, [
             $r['song_id'],
             $r['title'],
             $r['songbook'],

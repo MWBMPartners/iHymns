@@ -2631,6 +2631,16 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
     </script>
 
     <script>
+        /* SECURITY (#1386 audit): quote-safe HTML escaper for the merge-preview,
+           which interpolates free-text DB fields (external-link type/label,
+           IPI/ISNI number/name_used/notes) into innerHTML. Without it, a stored
+           payload planted by an edit_people user executes when a global_admin
+           opens the merge modal. Mirrors the 5-char regex map used elsewhere. */
+        function cpEsc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+                return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+            });
+        }
         /* Client-side search + filter. The list is small enough that
            re-applying both predicates over every row on every keystroke
            is comfortably under a frame, no debouncing needed. If the
@@ -3441,8 +3451,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             wrap.className = 'form-check small';
                             wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_link_ids[]" value="' + l.id + '" id="cp-merge-link-' + l.id + '" checked>'
                                            + '<label class="form-check-label" for="cp-merge-link-' + l.id + '">'
-                                           + '<code class="me-1">' + (l.type || 'other') + '</code>'
-                                           + (l.label ? l.label + ' — ' : '')
+                                           + '<code class="me-1">' + cpEsc(l.type || 'other') + '</code>'
+                                           + (l.label ? cpEsc(l.label) + ' — ' : '')
                                            + '<a href="#" class="text-info text-decoration-none cp-merge-link-href"></a>'
                                            + '</label>';
                             const a = wrap.querySelector('.cp-merge-link-href');
@@ -3463,9 +3473,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             wrap.className = 'form-check small';
                             wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_ipi_ids[]" value="' + r.id + '" id="cp-merge-ipi-' + r.id + '" checked>'
                                            + '<label class="form-check-label" for="cp-merge-ipi-' + r.id + '">'
-                                           + '<code class="me-1">' + r.number + '</code>'
-                                           + (r.name_used ? '(as ' + r.name_used + ') ' : '')
-                                           + (r.notes ? '— ' + r.notes : '')
+                                           + '<code class="me-1">' + cpEsc(r.number) + '</code>'
+                                           + (r.name_used ? '(as ' + cpEsc(r.name_used) + ') ' : '')
+                                           + (r.notes ? '— ' + cpEsc(r.notes) : '')
                                            + '</label>';
                             ipiBox.appendChild(wrap);
                         });
@@ -3480,9 +3490,9 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             wrap.className = 'form-check small';
                             wrap.innerHTML = '<input class="form-check-input" type="checkbox" name="keep_ipi_ids[]" value="' + r.id + '" id="cp-merge-isni-' + r.id + '" checked>'
                                            + '<label class="form-check-label" for="cp-merge-isni-' + r.id + '">'
-                                           + '<code class="me-1">' + r.number + '</code>'
-                                           + (r.name_used ? '(as ' + r.name_used + ') ' : '')
-                                           + (r.notes ? '— ' + r.notes : '')
+                                           + '<code class="me-1">' + cpEsc(r.number) + '</code>'
+                                           + (r.name_used ? '(as ' + cpEsc(r.name_used) + ') ' : '')
+                                           + (r.notes ? '— ' + cpEsc(r.notes) : '')
                                            + '</label>';
                             isniBoxMerge.appendChild(wrap);
                         });

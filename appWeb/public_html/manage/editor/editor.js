@@ -6448,11 +6448,14 @@ function renderHistoryList(revisions, listEl, detailEl) {
         var badgeClass = rev.action === 'create' ? 'bg-success'
             : rev.action === 'restore' ? 'bg-info'
             : 'bg-secondary';
+        /* SECURITY: escapeHtml() every DB value (rev.username can carry HTML
+           metacharacters — admin_user_create did not enforce the username
+           charset allow-list; #1386 audit). badgeClass is a fixed internal map. */
         item.innerHTML =
             '<div>' +
-                '<span class="badge ' + badgeClass + ' me-2">' + rev.action + '</span>' +
-                '<span class="small text-muted">' + rev.createdAt + '</span>' +
-                '<span class="ms-2">by ' + (rev.username || '—') + '</span>' +
+                '<span class="badge ' + badgeClass + ' me-2">' + escapeHtml(rev.action) + '</span>' +
+                '<span class="small text-muted">' + escapeHtml(rev.createdAt) + '</span>' +
+                '<span class="ms-2">by ' + escapeHtml(rev.username || '—') + '</span>' +
             '</div>' +
             '<div class="d-flex gap-2">' +
                 '<button class="btn btn-sm btn-outline-info" data-rev-id="' + rev.id + '">View diff</button>' +

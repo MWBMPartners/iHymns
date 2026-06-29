@@ -512,6 +512,31 @@ function attemptLogin(string $username, string $password): ?array
 {
     $normalised = strtolower(trim($username));
     $db = getDbMysqli();
+
+    /* SECURITY (brute-force — #1386 audit): the /manage admin login (the
+       highest-value accounts: admin / global_admin) was previously unthrottled,
+       unlike the public api.php auth_login. Mirror that IP lockout — reject
+       after 10 failed attempts from this IP in 15 minutes BEFORE verifying the
+       password, so the lockout holds even for a correct guess during the window.
+       REMOTE_ADDR (not a spoofable forwarded header) is the rate-limit key. */
+    $clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    if ($clientIp !== '') {
+        $bf = $db->prepare(
+            'SELECT COUNT(*) FROM tblLoginAttempts
+             WHERE IpAddress = ? AND Success = 0
+               AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
+        );
+        $bf->bind_param('s', $clientIp);
+        $bf->execute();
+        $recentFailures = (int)($bf->get_result()->fetch_row()[0] ?? 0);
+        $bf->close();
+        if ($recentFailures >= 10) {
+            logActivity('auth.login', 'user', $normalised,
+                ['reason' => 'rate_limited', 'recent_failures' => $recentFailures], 'failure');
+            return null;
+        }
+    }
+
     $stmt = $db->prepare('SELECT * FROM tblUsers WHERE Username = ? AND IsActive = 1');
     $stmt->bind_param('s', $normalised);
     $stmt->execute();
@@ -519,6 +544,14 @@ function attemptLogin(string $username, string $password): ?array
     $stmt->close();
 
     if (!$user || !password_verify($password, $user['PasswordHash'])) {
+        /* SECURITY: record the failed attempt in tblLoginAttempts so the
+           brute-force counter above can see it (mirrors api.php auth_login). */
+        if ($clientIp !== '') {
+            $fa = $db->prepare('INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)');
+            $fa->bind_param('ss', $clientIp, $normalised);
+            $fa->execute();
+            $fa->close();
+        }
         /* Failed login (#535) — record reason without leaking whether
            the username existed (the `reason` distinguishes "no such
            user" from "wrong password" only at the row level, never
