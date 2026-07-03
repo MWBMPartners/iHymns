@@ -49,6 +49,7 @@
     ]
   },
   "enabledPlugins": {
-    "dev-team@dev-team": true
+    "dev-team@dev-team": true,
+    "codex@openai-codex": true
   }
 }
