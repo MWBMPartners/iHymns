@@ -75,3 +75,62 @@ It won't run green until the Phase-0 XcodeGen project + Fastlane lanes exist; th
 - [ ] **D — Create the App Store Connect record** + turn on **Family Sharing**
 - [ ] **C — Sign in with Apple email domain** SPF/DKIM (before external TestFlight)
 - [ ] **E — Confirm the ASC `.p8` key is available as a secret** (I'll tell you the exact name during Phase 0)
+
+---
+
+# DETAILED STEP-BY-STEP (the long-lead items, click-by-click)
+
+> Sign in to **developer.apple.com** and **appstoreconnect.apple.com** with the **MWBM Partners** Apple Developer account (must have Admin/Account-Holder role to register identifiers + request entitlements).
+
+## ① CarPlay entitlement application — DO FIRST (longest Apple turnaround)
+1. Go to **developer.apple.com** → sign in → top menu **Support** → search **"CarPlay"**, or go directly to **developer.apple.com/carplay/** → scroll to **"Request CarPlay entitlements"** (or **Account → Contact Us → Development and Technical → CarPlay**).
+2. Choose entitlement type: **CarPlay Audio App** (primary — hymn audio playback). *(If the form lets you note additional intended capabilities, add a sentence about a possible future stationary lyric/video display so the video/entertainment use is on record — but do NOT block the audio request on it.)*
+3. Fill the form:
+   - **App name:** iHymns
+   - **Bundle ID:** `app.ihymns`
+   - **Team:** MWBM Partners (Team ID = value in the `APPLE_TEAM_ID` GitHub secret)
+   - **Category:** Audio
+   - **Description:** "iHymns is a worship-song / hymn catalogue. The CarPlay audio app lets a driver browse their favourites and setlists and play hymn audio hands-free via the car display, using standard CPListTemplate + CPNowPlayingTemplate."
+4. Submit. **Expected turnaround: 2–6 weeks (sometimes longer), not guaranteed.** You'll get an email; the entitlement then appears to add in the App ID (step ②-6). **Nothing else waits on this** — the app ships without CarPlay and adds it in Phase 3 once granted.
+
+## ② Register the App ID `app.ihymns` + capabilities
+1. **developer.apple.com** → **Account** → **Certificates, Identifiers & Profiles** → left sidebar **Identifiers** → blue **⊕** (add) button.
+2. Select **App IDs** → **Continue** → type **App** → **Continue**.
+3. Fill:
+   - **Description:** `iHymns`
+   - **Bundle ID:** select **Explicit** → enter **`app.ihymns`** (exactly — lowercase, no spaces).
+4. Scroll the **Capabilities** list and TICK the checkboxes for:
+   - ☑ **Associated Domains**
+   - ☑ **Sign In with Apple** (click **Edit/Configure** → leave as primary App ID)
+   - ☑ **App Groups** (you'll assign the group in step ③)
+   - ☑ **Push Notifications**
+   - ☑ **iCloud** (click Configure → **Include CloudKit support** is optional; we only need Keychain — ticking iCloud is enough)
+   - ☑ **In-App Purchase** (for the future paid tiers)
+   - ☑ **CarPlay** *(only appears/selectable once the step-① entitlement is granted — leave unticked until then; re-edit this App ID later to add it)*
+5. Click **Continue** → **Register**.
+6. **After CarPlay is granted (step ①):** come back to **Identifiers → app.ihymns → Capabilities → tick CarPlay → Save**.
+
+## ③ Create the App Group + child App IDs
+1. Still in **Identifiers** → **⊕** → select **App Groups** → **Continue**.
+2. **Description:** `iHymns Shared`; **Identifier:** **`group.app.ihymns`** → **Continue** → **Register**.
+3. Go back to **Identifiers → app.ihymns → App Groups (Configure) → tick `group.app.ihymns` → Save**.
+4. Register the two **child App IDs** (Explicit App IDs, same steps as ②): **`app.ihymns.watchkitapp`** (description "iHymns Watch") and **`app.ihymns.widgets`** (description "iHymns Widgets"). Give the widgets one **App Groups** = `group.app.ihymns`. (These are internal plumbing, not store products.)
+5. **Reserve a Services ID** for future web Sign-in-with-Apple: **Identifiers → ⊕ → Services IDs → Continue** → Description `iHymns Web`, Identifier **`app.ihymns.web`** → **Register**. (Leave it unconfigured for now.)
+
+## ④ Create the App Store Connect record + Family Sharing
+1. **appstoreconnect.apple.com** → **Apps** → blue **⊕** → **New App**.
+2. Tick platforms: **iOS**, **macOS**, **tvOS**, **visionOS** (do **NOT** tick watchOS — it ships embedded in iOS).
+3. **Name:** `iHymns` · **Primary Language:** English (U.K.) · **Bundle ID:** select **app.ihymns** from the dropdown · **SKU:** `app.ihymns` · **User Access:** Full → **Create**.
+4. Left sidebar → **Pricing and Availability** → **Price:** Free (choose the Free price tier) → **Save**.
+5. Same page → **Family Sharing** → **Set Up Family Sharing** → toggle **ON** (so the future paid unlocks + subscriptions are family-shareable) → **Save**.
+6. **App Privacy** (left sidebar) → **Get Started** → answer per strategy §3.1.3: **"Data Not Used to Track You"**; declare Email + User Content as **Linked to user, App Functionality**; Usage Data as **Not linked, Analytics** (consent-gated). → **Publish**.
+7. **TestFlight** tab → **⊕ next to "Internal Testing"** → create group **"iHymns Team"** (add your own devices) → and under **External** create groups **iOS Beta / macOS Beta / tvOS Beta / visionOS Beta** (external groups get Beta App Review on the first build of each version).
+
+## ⑤ Sign in with Apple — email relay (before EXTERNAL TestFlight)
+1. **developer.apple.com → Account → Certificates, IDs & Profiles → (left) More → Configure "Sign in with Apple for Email Communication"**.
+2. **Register a Domain** = the domain the iHymns backend sends email from (e.g. `mwmail.me` or the ihymns sending domain) → Apple shows **SPF** + **DKIM** DNS records.
+3. Add those DNS records at your domain's DNS host → back in Apple, click **Verify**. (This lets `@privaterelay.appleid.com` users receive our mail.)
+
+## ⑥ GitHub Actions secrets — verify (mostly present already)
+1. **github.com/MWBMPartners/iHymns → Settings → Secrets and variables → Actions.** Confirm the org secrets you already have: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, `ASC_API_KEY`, `ASC_ISSUER_ID`, `ASC_KEY_ID`. ✅
+2. **The one to confirm:** `ASC_API_KEY` — does it hold the **`.p8` file *contents*** (the private key body starting `-----BEGIN PRIVATE KEY-----`), or just the key **ID**? If it's just the ID, add a **New repository/org secret** named **`ASC_KEY_P8`** and paste the **entire `.p8` file contents including the BEGIN/END lines**. *(I'll confirm exactly which during Phase 0 and tell you the precise name — I won't run `gh secret set` myself; you add it via this web UI.)*

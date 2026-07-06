@@ -1,6 +1,19 @@
 # Apple Native Universal App — Crash-Safe HANDOFF
 
-> Resume pointer so a fresh session can pick up WITHOUT re-planning. Last updated 2026-07-04.
+> Resume pointer so a fresh session can pick up WITHOUT re-planning. Last updated 2026-07-06.
+
+## ▶ HOW TO RESUME AFTER QUOTA RESET (paste this one line)
+> **"Resume the Apple native app build — read `.claude/apple-native-handoff.md`, don't re-plan. Start Phase 0 on branch `feat/apple-universal` (no PRs): build #1393 (XcodeGen project) then #1394 (iHymnsKit scaffold) to a green multi-platform CI, then #1395 gates → #1396/#1397/#1398 (models+fixtures, IHAPI, IHAuth) → #1399 E2E slice (song list→detail iOS+macOS) → dev-team-review as the Phase-0 gate. Use Sonnet for builds, Haiku for mechanical tasks, Opus only where the issue flags it. Commit each issue individually referencing it; update the issue + the epic #895 checklist as you go."**
+
+That single instruction is enough — everything else it needs is in this file + `.claude/apple-native-strategy.md` (the full plan) + the GitHub issues below.
+
+## Backlog is CREATED (2026-07-06)
+- **Epic #895** = master tracker (updated with the full phase checklist + `.md` links).
+- **Milestone** "Apple v1.0"; **labels** `platform-apple` + `apple-phase-0..4` + `backend-for-apple`.
+- **Phase 0**: #1393–#1400 (XcodeGen, iHymnsKit, gates, IHModels+fixtures, IHAPI, IHAuth, E2E, Fastlane+deploy) + #1401 (Backend AASA).
+- **Backend critical path**: #1401 AASA, #1402 auth_apple(SIWA), #1403 account_delete, #1404 Safari-handoff, #1405 broadcast-v2, #1406 cheap-poll, #1407 device-code, #1408 control-token, #1409 token/device-metadata, #1410 APNs, #1411 iap_verify(future).
+- **P1**: #180–#190 (update in place) + #1412 (a11y incl. **dyslexia toggle**). **P1.5**: #1413–#1419. **P2 LAN remote**: #1420–#1425. **P2 live**: #1426–#1429. **P3**: #1430–#1433. **Future**: #1434 StoreKit.
+- **CodeQL**: config error worked on 2026-07-06 (disabled+re-enabled default setup → config refreshed, run green). If the "reporting errors" banner persists, the durable fix is to DISABLE default setup + add `.github/workflows/codeql.yml` (advanced) pinning ONLY `javascript-typescript`+`python`+`actions`, PR'd to `main`.
 
 ## Where we are
 **PLANNING COMPLETE. Execution NOT started.** Awaiting owner approval to begin Phase 0.
