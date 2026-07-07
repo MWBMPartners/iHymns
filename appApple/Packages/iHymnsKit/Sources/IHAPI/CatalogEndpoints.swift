@@ -44,4 +44,46 @@ extension Endpoint {
     /// `?action=songbooks` — every songbook in the catalogue. Public, no
     /// auth required.
     public static let songbooks = Endpoint(action: "songbooks")
+
+    /// `?action=search&q=…` — live MySQL full-text search across titles/
+    /// lyrics/writers/composers (#1436). Public, no auth required.
+    ///
+    /// DETAILED: Wired here for completeness/tests only — `CatalogueListView`'s
+    /// PRIMARY search experience is the local, offline `songs_index`-backed
+    /// filter in `AppRootViewModel.filteredSongs`
+    /// (`IHFeatures/AppRootViewModel+Search.swift`), never this server
+    /// round-trip. Kept ready for a future "search the uncached full
+    /// corpus" mode without another endpoint-catalogue change.
+    ///
+    /// - Parameters:
+    ///   - query: The search text, e.g. `"amazing grace"`.
+    ///   - songbookAbbreviation: Optional — scope results to one songbook.
+    ///   - limit: Optional page size (server default 50, max 100).
+    ///   - offset: Optional pagination offset.
+    public static func search(
+        query: String,
+        songbookAbbreviation: String? = nil,
+        limit: Int? = nil,
+        offset: Int? = nil
+    ) -> Endpoint {
+        var items: [(name: String, value: String)] = [("q", query)]
+        if let songbookAbbreviation {
+            items.append(("songbook", songbookAbbreviation))
+        }
+        if let limit {
+            items.append(("limit", String(limit)))
+        }
+        if let offset {
+            items.append(("offset", String(offset)))
+        }
+        return Endpoint(action: "search", queryItems: items)
+    }
+
+    /// `?action=search_num&songbook=…&number=…` — exact by-number lookup
+    /// within one songbook (#1436). Public, no auth required. Same
+    /// "wired for completeness, not the primary UX" posture as
+    /// `search(query:...)` above.
+    public static func searchByNumber(songbookAbbreviation: String, number: Int) -> Endpoint {
+        Endpoint(action: "search_num", queryItems: [("songbook", songbookAbbreviation), ("number", String(number))])
+    }
 }

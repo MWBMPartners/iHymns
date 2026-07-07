@@ -246,6 +246,60 @@ struct NetworkedAPIClientTests {
         }
     }
 
+    // MARK: - Search (#1436 — "wired for completeness/tests", see APIClient+Search.swift)
+
+    @Test("search(query:) decodes a real-shape results envelope end-to-end through the client")
+    func searchDecodesThroughClient() async throws {
+        try await MockTransportLock.shared.withLock {
+            let json = Data("""
+            {
+                "results": [
+                    { "id": "CP-0202", "number": 202, "title": "Amazing Grace", "songbook": "CP", "songbookName": "Christian Praise", "language": "en", "hasAudio": false, "hasSheetMusic": true }
+                ],
+                "total": 1,
+                "hasMore": false,
+                "offset": 0,
+                "query": "amazing grace"
+            }
+            """.utf8)
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), json)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let results = try await client.search(query: "amazing grace", songbookAbbreviation: "CP")
+
+            #expect(seenRequest.current?.url?.query?.contains("action=search") == true)
+            #expect(seenRequest.current?.url?.query?.contains("songbook=CP") == true)
+            #expect(results.count == 1)
+            #expect(results[0].title == "Amazing Grace")
+        }
+    }
+
+    @Test("searchByNumber(songbookAbbreviation:number:) decodes end-to-end through the client")
+    func searchByNumberDecodesThroughClient() async throws {
+        try await MockTransportLock.shared.withLock {
+            let json = Data("""
+            { "results": [ { "id": "MP-1008", "number": 1008, "title": "Amazing Grace", "songbook": "MP", "songbookName": "Mission Praise", "language": "en", "hasAudio": false, "hasSheetMusic": false } ], "total": 1 }
+            """.utf8)
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), json)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let results = try await client.searchByNumber(songbookAbbreviation: "MP", number: 1008)
+
+            #expect(seenRequest.current?.url?.query?.contains("action=search_num") == true)
+            #expect(results.first?.songId.rawValue == "MP-1008")
+        }
+    }
+
     // MARK: - Optional live-integration test (guarded, off by default)
 
     @Test(

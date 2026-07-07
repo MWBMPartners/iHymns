@@ -39,12 +39,16 @@ import IHModels
 /// — if `Wrapped.init(from:)` throws for any reason (a malformed `SongID`,
 /// a genuinely missing required field, ...), `decoded` is simply `nil`
 /// rather than propagating the error up through the array's own decode.
-/// This is the standard "lossy array" Codable pattern; kept private/local
-/// to this file since `songs_index` is (so far) the only endpoint that
-/// needs it — `song_detail`/`songbooks` are fetched/decoded whole, and a
-/// malformed nested row there is a genuine contract-drift signal worth
-/// surfacing as `.decoding`, not silently dropping.
-private struct LossyElement<Wrapped: Decodable>: Decodable {
+/// This is the standard "lossy array" Codable pattern. Deliberately
+/// module-visible (not `private` to this file) — `SearchDecoding.swift`'s
+/// `decodeSearchResults(from:)` (#1436) reuses this SAME wrapper, since a
+/// `search`/`search_num` hit is drawn from the exact same `SongSummary`
+/// -shaped table and can carry the same occasional non-`SongID`-shaped
+/// legacy row `songs_index` does; `song_detail`/`songbooks` are still
+/// fetched/decoded whole (no `LossyElement` involved there) because a
+/// malformed nested row in either of THOSE is a genuine contract-drift
+/// signal worth surfacing as `.decoding`, not silently dropping.
+struct LossyElement<Wrapped: Decodable>: Decodable {
     let decoded: Wrapped?
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()

@@ -70,10 +70,43 @@ public final class AppRootViewModel {
     /// task's "the index is small enough" design call).
     public var searchText: String = ""
 
+    /// The songbook abbreviations currently ticked in `CatalogueListView`'s
+    /// filter menu (#1436) — an EMPTY set means "no songbook filter," never
+    /// "match nothing." See `AppRootViewModel+Search.swift` for how this
+    /// combines with `searchText`/`selectedLanguages` in `filteredSongs`.
+    public var selectedSongbookAbbreviations: Set<String> = []
+
+    /// The BCP-47 language tags currently ticked in the same filter menu
+    /// (#1436) — same "empty = unfiltered" convention as
+    /// `selectedSongbookAbbreviations` above.
+    public var selectedLanguages: Set<String> = []
+
+    /// The last ~10 distinct queries the user has searched, most-recent
+    /// -first (#1436) — mirrored from `recentSearchesStore` on init and
+    /// after every mutation (`AppRootViewModel+Search.swift`'s
+    /// `commitCurrentSearch()`/`clearRecentSearches()`), so
+    /// `CatalogueListView`'s `.searchSuggestions` renders directly from this
+    /// plain array rather than re-reading `UserDefaults` on every body
+    /// evaluation. `internal(set)` (not `private(set)`) because
+    /// `AppRootViewModel+Search.swift` — a Swift EXTENSION in a separate
+    /// file — mutates this after every recent-search bookkeeping call;
+    /// `private` is file-scoped even for a type's own extensions, so the
+    /// setter needs to be at least module-visible for that same-module,
+    /// different-file split to compile.
+    public internal(set) var recentSearches: [String] = []
+
     private let sessionController: SessionController
     private let apiClient: APIClient
     private let offlineStore: OfflineStore
     private let liveFollowEngine: LiveFollowEngine
+
+    /// Persists `recentSearches` (#1436) — see `RecentSearchesStore`'s own
+    /// header for why this is a plain injectable value type rather than
+    /// `@AppStorage` directly on the property above. Deliberately NOT
+    /// `private` (same file-scoping reason as `recentSearches`'s
+    /// `internal(set)` above) — `AppRootViewModel+Search.swift` reads it
+    /// directly.
+    let recentSearchesStore: RecentSearchesStore
 
     /// The background observation loop mirroring `sessionController.stateUpdates`
     /// into `sessionState`. Held so it can be cancelled in `deinit`.
@@ -105,12 +138,15 @@ public final class AppRootViewModel {
         sessionController: SessionController,
         apiClient: APIClient,
         offlineStore: OfflineStore,
-        liveFollowEngine: LiveFollowEngine
+        liveFollowEngine: LiveFollowEngine,
+        recentSearchesStore: RecentSearchesStore = RecentSearchesStore()
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
         self.offlineStore = offlineStore
         self.liveFollowEngine = liveFollowEngine
+        self.recentSearchesStore = recentSearchesStore
+        self.recentSearches = recentSearchesStore.load()
         observeSessionState()
     }
 
@@ -128,24 +164,14 @@ public final class AppRootViewModel {
         try await offlineStore.allSongSummaries()
     }
 
-    /// The songs matching `searchText` — matches on title, display number,
-    /// or songbook abbreviation/name, case-insensitively. The unfiltered
-    /// list (still empty until `loadCatalogue()` completes) when
-    /// `searchText` is empty.
-    ///
-    /// ELI5: "Of the songs we've loaded, which ones match what I typed?"
-    public var filteredSongs: [SongSummary] {
-        guard case .loaded(let songs) = catalogueLoadState else { return [] }
-        guard !searchText.isEmpty else { return songs }
-
-        let needle = searchText.lowercased()
-        return songs.filter {
-            $0.title.lowercased().contains(needle)
-                || $0.displayNumber.contains(needle)
-                || $0.songbookAbbreviation.lowercased().contains(needle)
-                || $0.songbookName.lowercased().contains(needle)
-        }
-    }
+    // `filteredSongs` (#1399's original substring match, now #1436's
+    // number-mode + songbook/language facet filtering on top of it) lives
+    // in `AppRootViewModel+Search.swift` — a Swift extension can't add new
+    // STORED properties, but every property that search/filter logic needs
+    // to read (`searchText`/`selectedSongbookAbbreviations`/
+    // `selectedLanguages`/`catalogueLoadState`) is already declared above,
+    // so the behaviour itself is free to live in its own file purely to
+    // keep this one from re-growing past the repo's LOC-budget tripwire.
 
     /// Fetches the catalogue index over the network — but only if it
     /// hasn't already been fetched (or isn't currently mid-fetch). Safe to
@@ -199,6 +225,18 @@ public final class AppRootViewModel {
     /// ELI5: "What else might I like, based on this song?"
     public func relatedSongs(id: SongID) async throws -> [RelatedSongSummary] {
         try await apiClient.relatedSongs(id: id)
+    }
+
+    /// Fetches every songbook in the catalogue (#1437, `SongbooksViewModel`'s
+    /// only network dependency) — same pass-through pattern as
+    /// `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)` above: exactly
+    /// ONE `APIClient` instance exists per app run (owned here), so every
+    /// screen that needs a network call reaches it through this root view
+    /// model rather than holding an `APIClient` of its own.
+    ///
+    /// ELI5: "Give me the list of hymnals."
+    public func songbooks() async throws -> [Songbook] {
+        try await apiClient.songbooks()
     }
 
     /// Starts a `Task` that mirrors every `SessionState` change published by

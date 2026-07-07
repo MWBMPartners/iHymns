@@ -92,4 +92,53 @@ struct APIClientTests {
         #expect(songs.count == 1)
         #expect(songs[0].title == "Good Row")
     }
+
+    // MARK: - Search (#1436 — "wired for completeness/tests", see APIClient+Search.swift)
+
+    @Test("Endpoint.search builds q + optional songbook/limit/offset query items")
+    func buildsSearchEndpoint() {
+        let full = Endpoint.search(query: "amazing grace", songbookAbbreviation: "CP", limit: 25, offset: 10)
+        #expect(full.action == "search")
+        #expect(full.queryItems.contains { $0.name == "q" && $0.value == "amazing grace" })
+        #expect(full.queryItems.contains { $0.name == "songbook" && $0.value == "CP" })
+        #expect(full.queryItems.contains { $0.name == "limit" && $0.value == "25" })
+        #expect(full.queryItems.contains { $0.name == "offset" && $0.value == "10" })
+
+        // Every optional parameter is genuinely omitted (not sent as an
+        // empty string) when the caller doesn't supply it.
+        let bare = Endpoint.search(query: "amazing grace")
+        #expect(bare.queryItems.count == 1)
+        #expect(bare.queryItems[0] == (name: "q", value: "amazing grace"))
+    }
+
+    @Test("Endpoint.searchByNumber builds songbook + number query items")
+    func buildsSearchByNumberEndpoint() {
+        let endpoint = Endpoint.searchByNumber(songbookAbbreviation: "MP", number: 1008)
+        #expect(endpoint.action == "search_num")
+        #expect(endpoint.queryItems.contains { $0.name == "songbook" && $0.value == "MP" })
+        #expect(endpoint.queryItems.contains { $0.name == "number" && $0.value == "1008" })
+    }
+
+    @Test("Decodes a real-shape search envelope into SongSummary values")
+    func decodesSearchResults() throws {
+        // `search`/`search_num`'s real envelope key is `results`, not
+        // `songs` (unlike `songs_index`) — see `api-docs.yaml`'s
+        // `searchSongs`/`searchByNumber` operations.
+        let json = Data("""
+        {
+            "results": [
+                { "id": "CP-0202", "number": 202, "title": "Amazing Grace", "songbook": "CP", "songbookName": "Christian Praise", "language": "en", "hasAudio": false, "hasSheetMusic": true }
+            ],
+            "total": 1,
+            "hasMore": false,
+            "offset": 0,
+            "query": "amazing grace"
+        }
+        """.utf8)
+
+        let results = try APIClient.decodeSearchResults(from: json)
+        #expect(results.count == 1)
+        #expect(results[0].title == "Amazing Grace")
+        #expect(results[0].songId.rawValue == "CP-0202")
+    }
 }
