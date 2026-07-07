@@ -37,10 +37,10 @@ import IHModels
 /// times to politely retry before giving up.
 public actor APIClient {
 
-    /// Which backend deployment this client instance targets.
-    ///
-    /// ELI5: dev, beta, or prod — chosen once when the client is created.
-    private let environment: APIEnvironment
+    /// Which backend (dev/beta/prod) this client targets. `public
+    /// nonisolated` (#184's `mediaURL(forStreamPath:)` reads it
+    /// synchronously) is sound: `let` + `Sendable` (SE-0316).
+    public nonisolated let environment: APIEnvironment
 
     /// The underlying transport. Injectable (rather than always
     /// `URLSession.shared`) so the test suite can substitute a mock

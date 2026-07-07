@@ -37,6 +37,13 @@
 // whenever `viewModel.isServingCachedCopy` is true — the ONLY user-visible
 // sign that a page was served from the on-device cache rather than the
 // network, per this task's "unobtrusive... indicator" brief.
+//
+// #184 UPDATE (audio & sheet music) — inserts `SongMediaSection` (a new
+// "Media" card: play/pause a recording, view sheet music, download MIDI/
+// MusicXML) right after `SongMetadataView`, `if SongMediaSection
+// .hasAnyMedia(detail)` — the same "just don't render the section" treatment
+// `counterpartsShelf`/`relatedSongsShelf` already use for optional content,
+// so a song with none of these four media kinds shows an unchanged page.
 import IHAuth
 import IHDesign
 import IHModels
@@ -146,6 +153,10 @@ public struct SongDetailView: View {
             }
             header(for: detail)
             SongMetadataView(detail: detail, relatedSongs: relatedSongsIfLoaded, rootViewModel: rootViewModel)
+
+            if SongMediaSection.hasAnyMedia(detail) {
+                SongMediaSection(detail: detail, rootViewModel: rootViewModel)
+            }
 
             ForEach(Array(detail.orderedComponents.enumerated()), id: \.offset) { _, component in
                 SongComponentView(

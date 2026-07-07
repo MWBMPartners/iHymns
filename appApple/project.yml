@@ -64,6 +64,20 @@ targets:
         # an empty `UILaunchScreen` entry so iOS doesn't refuse to launch
         # for want of a launch screen declaration.
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # #184 (audio & sheet music) — `AVFoundationAudioPlaybackEngine`
+        # (`IHFeatures/SongAudioPlaybackEngine.swift`) configures an
+        # `AVAudioSession` `.playback` category, but that alone only keeps
+        # audio alive while the app is FOREGROUND; surviving a screen
+        # lock/backgrounding also needs this `UIBackgroundModes` capability
+        # declared in Info.plist (Apple's own requirement — see "Enabling
+        # Background Audio":
+        # https://developer.apple.com/documentation/avfaudio/configuring-your-app-for-media-playback).
+        # `INFOPLIST_KEY_<key>` build settings accept a space-separated list
+        # for array-typed Info.plist keys (Xcode 13+), so a single value here
+        # still produces the required one-element array. Harmless on the
+        # macOS/visionOS destinations this same multiplatform target also
+        # builds for — `UIBackgroundModes` is simply unused there.
+        INFOPLIST_KEY_UIBackgroundModes: audio
     dependencies:
       # Every shell imports IHFeatures (shared screens/view models) and
       # IHDesign (tokens/glass wrappers) directly — both declared explicitly
