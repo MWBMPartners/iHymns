@@ -28,6 +28,9 @@ struct SongWorksSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Part of: \(work.title)")
                     .font(.headline)
+                    // #188 — a heading so VoiceOver's heading rotor can jump
+                    // between "Part of …" work groups (WCAG 1.3.1 / 2.4.1).
+                    .accessibilityAddTraits(.isHeader)
 
                 ForEach(work.members.filter { $0.songId != currentSongId.rawValue }, id: \.songId) { member in
                     memberRow(member)

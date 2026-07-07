@@ -92,6 +92,10 @@ public struct SongbooksView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(group.title)
                 .font(.title3.bold())
+                // #188 — a heading so VoiceOver's heading rotor can jump
+                // between songbook groups (Official / Unofficial / Series)
+                // instead of swiping every tile (WCAG 1.3.1 / 2.4.1).
+                .accessibilityAddTraits(.isHeader)
 
             LazyVGrid(columns: Self.columns, spacing: 12) {
                 ForEach(group.songbooks) { book in

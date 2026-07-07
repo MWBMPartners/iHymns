@@ -73,6 +73,10 @@ struct RelatedSongsShelfView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
                 .font(.headline)
+                // #188 — marks this as a heading so VoiceOver's heading rotor
+                // can jump straight to each shelf (WCAG 1.3.1 Info &
+                // Relationships / 2.4.1 Bypass Blocks).
+                .accessibilityAddTraits(.isHeader)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 12) {
