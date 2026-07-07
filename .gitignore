@@ -120,6 +120,13 @@ Package.pins
 Package.resolved
 *.xcworkspace
 
+# iHymns Apple native app (#895): the SOURCE SwiftPM package `appApple/Packages/`
+# and its `Package.resolved` lockfile ARE tracked (the generic SPM rules above
+# are legacy Swift-app-template rules that would otherwise swallow our source).
+# appApple/.gitignore still excludes the .build/.swiftpm artefacts inside it.
+!appApple/Packages/
+!appApple/Packages/**/Package.resolved
+
 # Xcode playgrounds
 timeline.xctimeline
 playground.xcworkspace
