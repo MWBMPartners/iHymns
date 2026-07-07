@@ -28,6 +28,13 @@
 # `SongLinkGroup`/`RelatedSongSummary` (IHModels/SongRelations.swift) decode
 # against these. Both are small, full responses; no trimming needed.
 #
+# #183 UPDATE — also re-records `song_of_the_day.json` (a bare, undated
+# `?action=song_of_the_day` pull) — `SongOfTheDay`/`SongOfTheDayCard`
+# (IHModels/SongOfTheDay.swift) decode against it. Small, full response; no
+# trimming needed. The separately-verified themed-date shape
+# (`&date=2026-12-25`) isn't re-recorded here — see
+# `IHModelsTests/SongOfTheDayTests.swift` for that hand-authored variant.
+#
 # Usage:
 #     bash tools/apple-refresh-fixtures.sh [environment]
 #
@@ -73,6 +80,7 @@ curl -fsSL "https://${HOST}/api?action=song_detail&id=${DETAIL_ID}" -o "$TMP_DIR
 curl -fsSL "https://${HOST}/api?action=songbooks" -o "$TMP_DIR/songbooks_full.json"
 curl -fsSL "https://${HOST}/api?action=song_links&id=${DETAIL_ID}" -o "$TMP_DIR/song_links_full.json"
 curl -fsSL "https://${HOST}/api?action=related_songs&id=${DETAIL_ID}" -o "$TMP_DIR/related_songs_full.json"
+curl -fsSL "https://${HOST}/api?action=song_of_the_day" -o "$TMP_DIR/song_of_the_day_full.json"
 
 python3 - "$TMP_DIR/songs_index_full.json" "$FIXTURES_DIR/songs_index.json" <<'PY'
 import json, re, sys
@@ -138,6 +146,14 @@ python3 -c "
 import json
 with open('$TMP_DIR/related_songs_full.json') as f: d = json.load(f)
 with open('$FIXTURES_DIR/related_songs.json', 'w', encoding='utf-8') as out:
+    json.dump(d, out, indent=2, ensure_ascii=False)
+    out.write('\n')
+"
+
+python3 -c "
+import json
+with open('$TMP_DIR/song_of_the_day_full.json') as f: d = json.load(f)
+with open('$FIXTURES_DIR/song_of_the_day.json', 'w', encoding='utf-8') as out:
     json.dump(d, out, indent=2, ensure_ascii=False)
     out.write('\n')
 "

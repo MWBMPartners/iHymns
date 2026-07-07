@@ -300,6 +300,31 @@ struct NetworkedAPIClientTests {
         }
     }
 
+    // MARK: - Song of the Day (#183)
+
+    @Test("songOfTheDay(hemisphere:country:) decodes the real fixture end-to-end through the client")
+    func songOfTheDayDecodesThroughClient() async throws {
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songOfTheDay()
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let sotd = try await client.songOfTheDay(hemisphere: "s", country: "AU")
+
+            let query = try #require(seenRequest.current?.url?.query)
+            #expect(query.contains("action=song_of_the_day"))
+            #expect(query.contains("hemisphere=s"))
+            #expect(query.contains("country=AU"))
+            #expect(sotd.song?.songId.rawValue == "GASD-0019")
+            #expect(sotd.themeLabel == "Song of the Day")
+        }
+    }
+
     // MARK: - Optional live-integration test (guarded, off by default)
 
     @Test(

@@ -119,6 +119,48 @@ struct APIClientTests {
         #expect(endpoint.queryItems.contains { $0.name == "number" && $0.value == "1008" })
     }
 
+    // MARK: - Song of the Day (#183)
+
+    @Test("Endpoint.songOfTheDay always sends hemisphere, omits an empty country")
+    func buildsSongOfTheDayEndpointWithoutCountry() {
+        let endpoint = Endpoint.songOfTheDay(hemisphere: "n", country: "")
+        #expect(endpoint.action == "song_of_the_day")
+        #expect(endpoint.queryItems.count == 1)
+        #expect(endpoint.queryItems[0] == (name: "hemisphere", value: "n"))
+    }
+
+    @Test("Endpoint.songOfTheDay sends both hemisphere and country when both are resolved")
+    func buildsSongOfTheDayEndpointWithCountry() {
+        let endpoint = Endpoint.songOfTheDay(hemisphere: "s", country: "AU")
+        #expect(endpoint.queryItems.contains { $0.name == "hemisphere" && $0.value == "s" })
+        #expect(endpoint.queryItems.contains { $0.name == "country" && $0.value == "AU" })
+    }
+
+    @Test("Decodes a real-shape song_of_the_day envelope into SongOfTheDay")
+    func decodesSongOfTheDay() throws {
+        let json = Data("""
+        {
+            "song": { "id": "CP-0202", "number": 202, "title": "Amazing Grace", "songbook": "CP", "songbookName": "Christian Praise", "verified": true },
+            "themeLabel": "Song of the Day",
+            "firstLine": "Amazing grace! how sweet the sound"
+        }
+        """.utf8)
+
+        let sotd = try APIClient.decodeSongOfTheDay(from: json)
+        #expect(sotd.song?.songId.rawValue == "CP-0202")
+        #expect(sotd.themeLabel == "Song of the Day")
+    }
+
+    @Test("Decodes a null song (empty catalogue) without throwing")
+    func decodesSongOfTheDayNullSong() throws {
+        let json = Data("""
+        { "song": null, "themeLabel": "", "firstLine": "" }
+        """.utf8)
+
+        let sotd = try APIClient.decodeSongOfTheDay(from: json)
+        #expect(sotd.song == nil)
+    }
+
     @Test("Decodes a real-shape search envelope into SongSummary values")
     func decodesSearchResults() throws {
         // `search`/`search_num`'s real envelope key is `results`, not

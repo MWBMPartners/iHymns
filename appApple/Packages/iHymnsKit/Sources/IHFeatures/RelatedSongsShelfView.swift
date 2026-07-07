@@ -1,21 +1,28 @@
 // RelatedSongsShelfView.swift
 // IHFeatures
 //
-// ELI5: One reusable "here are some other songs" list — used both for
-// "Also appears as" (the exact same hymn in a different book) and
-// "Related Songs" (same writer/composer/neighbourhood) on the song screen,
-// so there's only ONE shelf implementation, not two near-identical copies.
+// ELI5: One reusable "here are some other songs" list — used for "Also
+// appears as" (the exact same hymn in a different book) and "Related Songs"
+// (same writer/composer/neighbourhood) on the song screen, PLUS (#183)
+// Home's "Recently Viewed" shelf — so there's only ONE shelf
+// implementation, not three near-identical copies.
 //
 // DETAILED: The repo's modularity rule applied to this Swift layer, same as
 // `SongSummaryRow`'s own header explains — `SongDetailView` (#180) needs
 // TWO shelves that only differ in title + row content, so this file is the
 // ONE shared shelf, parameterized by a small `RelatedShelfItem` the caller
-// builds from either `SongLinkGroup.songs` or `[RelatedSongSummary]` (see
-// the `init` overloads below). `NavigationLink(value: SongID.self)` reuses
-// `CatalogueListView`'s existing `.navigationDestination(for: SongID.self)`
-// — pushing from here lands in the SAME stack `SongDetailView` itself was
-// pushed into, so tapping a related song navigates straight to it with no
-// extra wiring in this file.
+// builds from `SongLinkGroup.songs`, `[RelatedSongSummary]`, or (#183)
+// `[RecentlyViewedSong]` (see the `init` overloads below). `HomeView`
+// reusing this exact type for its "Recently Viewed" shelf — rather than
+// hand-rolling a fourth near-identical horizontally-scrolling row list — is
+// precisely the "if a shared module already exists, reuse it" rule this
+// package's other screens already follow. `NavigationLink(value: SongID.self)`
+// reuses `CatalogueListView`'s existing `.navigationDestination(for:
+// SongID.self)` — pushing from here lands in the SAME stack the hosting
+// screen registered that destination on (`SongDetailView`'s own stack, or
+// `HomeView`'s own — see that file's header for why each hosting stack
+// needs its own copy of the modifier), so tapping a row navigates straight
+// to it with no extra wiring in this file.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -43,6 +50,17 @@ struct RelatedShelfItem: Identifiable {
         id = song.songId
         title = song.title
         subtitle = song.reason ?? song.songbookAbbreviation
+    }
+
+    /// Builds a row from a `RecentlyViewedStore` entry (#183, `HomeView`'s
+    /// "Recently Viewed" shelf) — same songbook-abbreviation-plus-number
+    /// subtitle shape as `init(counterpart:)` above, since both are "just a
+    /// plain song from the catalogue," not a search-match with a reason.
+    init(recentlyViewed song: RecentlyViewedSong) {
+        id = song.songId
+        title = song.title
+        let numberText = song.number.map(String.init) ?? ""
+        subtitle = numberText.isEmpty ? song.songbookAbbreviation : "\(song.songbookAbbreviation) \(numberText)"
     }
 }
 

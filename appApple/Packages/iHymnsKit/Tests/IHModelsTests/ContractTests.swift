@@ -202,4 +202,19 @@ struct ContractTests {
         #expect(dlg.parent?.abbreviation == "CIS")
         #expect(dlg.parent?.relationship == "translation")
     }
+
+    @Test("song_of_the_day.json decodes the real bare/undated envelope (#183)")
+    func decodesSongOfTheDayFixture() throws {
+        let sotd = try JSONDecoder().decode(SongOfTheDay.self, from: ContractFixtures.songOfTheDay())
+
+        let song = try #require(sotd.song)
+        #expect(song.songId.rawValue == "GASD-0019")
+        #expect(song.number == 19)
+        #expect(song.title == "Бог Есть Любовь")
+        #expect(song.songbookAbbreviation == "GASD")
+        #expect(song.songbookName == "Гимн адвентистов седьмого дня")
+        #expect(song.verified == false)
+        #expect(sotd.themeLabel == "Song of the Day")
+        #expect(!sotd.firstLine.isEmpty)
+    }
 }

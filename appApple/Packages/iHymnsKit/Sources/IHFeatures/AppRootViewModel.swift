@@ -35,6 +35,17 @@
 // existing "expose the operation, not the engine" pattern below, so
 // `apiClient` itself stays `private` rather than leaking out to every
 // screen that needs one network call.
+//
+// #183 UPDATE — the Home surface adds two more responsibilities, both
+// following the SAME "one root view model, every screen reaches the
+// engines through it" shape: `songOfTheDay()` (a pass-through, like
+// `songbooks()`, that also resolves `hemisphere`/`country` from the
+// device's own `Locale` via `IHAPI.LocaleRegionSignals` — Home never talks
+// to `LocaleRegionSignals` directly) and `recentlyViewedSongs` +
+// `recordRecentlyViewed(_:)` (the "last opened song" hook this task's brief
+// asks for, mirroring `recentSearches`/`recentSearchesStore` below exactly:
+// an `@Observable` mirror of a `RecentlyViewedStore`, refreshed after every
+// write).
 import Foundation
 import IHAPI
 import IHAuth
@@ -95,6 +106,18 @@ public final class AppRootViewModel {
     /// different-file split to compile.
     public internal(set) var recentSearches: [String] = []
 
+    /// The songs the user has actually opened recently, most-recent-first
+    /// (#183) — `HomeViewModel`'s `resumeSong`/`recentlyViewedShelfSongs`
+    /// read straight from this rather than caching a stale copy of their
+    /// own, so returning to Home after reading a song always reflects the
+    /// latest state. Mirrored from `recentlyViewedStore` on init and after
+    /// every `recordRecentlyViewed(_:)` call — same "`@Observable` mirror
+    /// of a plain `UserDefaults`-backed store" shape as `recentSearches`
+    /// above. `private(set)` (unlike `recentSearches`'s `internal(set)`) —
+    /// `recordRecentlyViewed(_:)` lives in THIS file, not a separate
+    /// extension, so no cross-file mutation access is needed.
+    public private(set) var recentlyViewedSongs: [RecentlyViewedSong] = []
+
     private let sessionController: SessionController
     private let apiClient: APIClient
     private let offlineStore: OfflineStore
@@ -107,6 +130,11 @@ public final class AppRootViewModel {
     /// `internal(set)` above) — `AppRootViewModel+Search.swift` reads it
     /// directly.
     let recentSearchesStore: RecentSearchesStore
+
+    /// Persists `recentlyViewedSongs` (#183) — same injectable-store
+    /// reasoning as `recentSearchesStore` above; `private` here (unlike
+    /// that one) since only THIS file touches it.
+    private let recentlyViewedStore: RecentlyViewedStore
 
     /// The background observation loop mirroring `sessionController.stateUpdates`
     /// into `sessionState`. Held so it can be cancelled in `deinit`.
@@ -139,7 +167,8 @@ public final class AppRootViewModel {
         apiClient: APIClient,
         offlineStore: OfflineStore,
         liveFollowEngine: LiveFollowEngine,
-        recentSearchesStore: RecentSearchesStore = RecentSearchesStore()
+        recentSearchesStore: RecentSearchesStore = RecentSearchesStore(),
+        recentlyViewedStore: RecentlyViewedStore = RecentlyViewedStore()
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -147,6 +176,8 @@ public final class AppRootViewModel {
         self.liveFollowEngine = liveFollowEngine
         self.recentSearchesStore = recentSearchesStore
         self.recentSearches = recentSearchesStore.load()
+        self.recentlyViewedStore = recentlyViewedStore
+        self.recentlyViewedSongs = recentlyViewedStore.load()
         observeSessionState()
     }
 
@@ -237,6 +268,43 @@ public final class AppRootViewModel {
     /// ELI5: "Give me the list of hymnals."
     public func songbooks() async throws -> [Songbook] {
         try await apiClient.songbooks()
+    }
+
+    /// Fetches today's Song of the Day (#183) — `HomeViewModel`'s only
+    /// network dependency, mirroring `songbooks()`'s pass-through pattern
+    /// exactly, PLUS resolving `hemisphere`/`country` from the device's own
+    /// `Locale` (`IHAPI.LocaleRegionSignals`, privacy-safe — no GeoIP, no
+    /// location permission) so `HomeViewModel` never has to know those
+    /// parameters exist at all.
+    ///
+    /// ELI5: "What's today's featured song, for someone roughly where I
+    /// am?"
+    public func songOfTheDay() async throws -> SongOfTheDay {
+        try await apiClient.songOfTheDay(
+            hemisphere: LocaleRegionSignals.hemisphere(),
+            country: LocaleRegionSignals.country()
+        )
+    }
+
+    /// Records that the user just successfully opened `detail`'s song
+    /// (#183) — the "last opened song" hook this task's Home-surface brief
+    /// asks for. Called from `SongDetailViewModel`'s successful primary
+    /// load (see that file's own comment), NEVER from the View layer
+    /// directly: "the song's data finished loading" is a strictly better
+    /// signal than raw view appearance — a song that never finished loading
+    /// (still spinning, or errored) was never actually "opened" from the
+    /// user's perspective, so it shouldn't show up in "Recently Viewed."
+    ///
+    /// ELI5: "Remember: I just read this song."
+    public func recordRecentlyViewed(_ detail: SongDetail) {
+        let entry = RecentlyViewedSong(
+            songId: detail.songId,
+            title: detail.title,
+            songbookAbbreviation: detail.songbookAbbreviation,
+            number: detail.number
+        )
+        recentlyViewedStore.record(entry)
+        recentlyViewedSongs = recentlyViewedStore.load()
     }
 
     /// Starts a `Task` that mirrors every `SessionState` change published by

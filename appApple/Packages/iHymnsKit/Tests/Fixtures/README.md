@@ -53,6 +53,22 @@ in the same commit that first recorded them by hand
   (`songbookName`/`language`/`hasAudio`/`hasSheetMusic`/`publicId`) a
   generic `SongSummary` decode would require — proving `RelatedSongSummary`
   needs to be its own purpose-built shape, not a reuse of `SongSummary`.
+- **`song_of_the_day.json`** — `?action=song_of_the_day` (#183, Apple P1
+  Home surface), a bare/undated/unauthenticated pull from `dev`. Unlike
+  every other fixture in this directory, this endpoint's
+  `api-docs.yaml` schema turned out to be ACCURATE — a second pull with
+  `&date=2026-12-25` against `ihymns.app` returned the exact same envelope
+  shape with a themed `themeLabel` ("Christmas Song of the Day") and a
+  different `song`, confirming `hemisphere`/`country`/`date` are real,
+  working query parameters even though the YAML only documents `lang`/
+  `date` (`appWeb/public_html/api.php`'s `song_of_the_day` case reads
+  `hemisphere`/`country` from `$_GET` directly — #1374/#1376 — a docs-
+  freshness gap worth its own follow-up issue, same posture as the
+  `Songbook.swift`/`SongDetail.swift` findings above). Only the undated
+  default pull is committed as a fixture; the themed variant is exercised
+  via hand-authored JSON in `IHModelsTests/SongOfTheDayTests.swift` instead
+  (matching that file's existing precedent for shapes this task's live
+  survey confirmed but didn't need a second full fixture file to prove).
 
 No token/PII scrubbing was needed: every endpoint here is an unauthenticated
 public read, and the payloads are public hymn catalogue metadata.

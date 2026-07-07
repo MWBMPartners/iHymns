@@ -96,7 +96,8 @@ let package = Package(
                 .copy("song_detail.json"),
                 .copy("songbooks.json"),
                 .copy("song_links.json"),
-                .copy("related_songs.json")
+                .copy("related_songs.json"),
+                .copy("song_of_the_day.json")
             ],
             swiftSettings: sharedSwiftSettings
         ),

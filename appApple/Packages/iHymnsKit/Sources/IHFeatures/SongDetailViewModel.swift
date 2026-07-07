@@ -25,6 +25,16 @@
 // `LoadState`, and `SongDetailView` treats anything other than a non-empty
 // `.loaded` for these two as "just don't show that shelf," never a scary
 // error card (unlike the primary `loadState`, where `.error` IS the screen).
+//
+// #183 UPDATE — `loadPrimaryDetail()` now also calls
+// `rootViewModel.recordRecentlyViewed(detail)` the moment the primary load
+// succeeds. This IS this task's "persist the last-opened SongID... when a
+// SongDetailView appears" hook: anchoring it to a SUCCESSFUL primary load
+// (rather than a separate `.onAppear`/`.task` side effect in the View
+// itself) is a strictly better signal — a song whose fetch is still in
+// flight, or that errored, was never actually "opened" from the user's
+// perspective — and keeps the hook exactly where the load's own
+// success/failure is already known, with no new View-layer wiring needed.
 import IHAPI
 import IHModels
 import Observation
@@ -88,6 +98,10 @@ public final class SongDetailViewModel {
         do {
             let detail = try await rootViewModel.songDetail(id: songId)
             loadState = .loaded(detail)
+            // #183 — see this file's header comment for why this is the
+            // "last opened song" hook, anchored to success rather than a
+            // View-level `.onAppear`.
+            rootViewModel.recordRecentlyViewed(detail)
         } catch let error as APIError {
             loadState = .error(error.userFacingMessage)
         } catch {

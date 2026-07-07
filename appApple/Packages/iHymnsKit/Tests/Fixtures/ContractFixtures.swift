@@ -67,6 +67,14 @@ public enum ContractFixtures {
         try data(named: "related_songs")
     }
 
+    /// Reads `Tests/Fixtures/song_of_the_day.json` — a real, full, undated
+    /// `?action=song_of_the_day` response (#183, recorded 2026-07-07). See
+    /// `README.md` alongside this file for provenance, including the
+    /// separately-verified themed-date shape.
+    public static func songOfTheDay() throws -> Data {
+        try data(named: "song_of_the_day")
+    }
+
     /// Shared lookup: resolves `<name>.json` in this target's resource
     /// bundle and reads it into `Data`.
     private static func data(named name: String) throws -> Data {
