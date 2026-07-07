@@ -22,6 +22,7 @@
 // `RelatedSongsShelfView`s, `LyricLineEnrichmentSheet`) is its own file —
 // this file's job is purely composing them in order and owning the
 // handful of `@State`/`@AppStorage` values they share.
+import IHAuth
 import IHDesign
 import IHModels
 import SwiftUI
@@ -63,7 +64,10 @@ public struct SongDetailView: View {
                 textScale: $textScale,
                 showChords: $showChords,
                 hasChords: hasChords,
-                shareURL: shareURL
+                shareURL: shareURL,
+                isFavorite: viewModel.isFavorite,
+                isSignedIn: rootViewModel.sessionState.isSignedIn,
+                onToggleFavorite: { Task { await viewModel.toggleFavorite() } }
             )
         }
         .sheet(item: $selectedLine) { line in

@@ -129,4 +129,38 @@ public final class SongDetailViewModel {
             relatedSongsState = .error("")
         }
     }
+
+    // MARK: - Favourites (#181)
+
+    /// Whether THIS song is currently favourited — `SongDetailToolbar`'s
+    /// heart icon reads this directly. A thin read-through to
+    /// `AppRootViewModel.isFavorite(_:)`, mirroring every OTHER pass-through
+    /// this view model already does for `rootViewModel`.
+    public var isFavorite: Bool {
+        rootViewModel.isFavorite(songId)
+    }
+
+    /// Adds or removes THIS song from favourites — `SongDetailView` wires
+    /// this straight to the toolbar's heart button (`Task { await
+    /// viewModel.toggleFavorite() }`, since a SwiftUI `Button` action is
+    /// synchronous but this call is `async`).
+    ///
+    /// ELI5: "Tap the heart for the song I'm currently reading."
+    ///
+    /// DETAILED: A no-op while the primary load hasn't succeeded yet
+    /// (`loadState` isn't `.loaded`) — there's no title/songbook/number to
+    /// favourite WITH yet, and the toolbar's heart button only renders once
+    /// `SongDetailView.hasChords`/`shareURL` are already gating on a loaded
+    /// `SongDetail` anyway, so this guard should never actually trip in
+    /// practice; it's the same defensive belt-and-braces posture
+    /// `lineText(forLineId:)` already takes for an out-of-sync `selectedLine`.
+    public func toggleFavorite() async {
+        guard case .loaded(let detail) = loadState else { return }
+        await rootViewModel.toggleFavorite(
+            songId: detail.songId,
+            title: detail.title,
+            songbookAbbreviation: detail.songbookAbbreviation,
+            number: detail.number
+        )
+    }
 }

@@ -17,6 +17,19 @@
 // `NetworkedAPIClientTests`) that also drives the same shared
 // `MockURLProtocol.requestHandler`; see that lock's own header for why
 // `.serialized` alone isn't enough once more than one suite shares it.
+//
+// Native login/account UI task UPDATE — `restoreFromStorage()` now validates
+// a stored token via `auth_me` instead of trusting it blindly (see that
+// method's own doc comment for the full success/`.unauthorized`/transient
+// -failure decision tree); the tests below cover all three outcomes, plus
+// the new `signIn(email:code:)` entry point. `makeController()`'s
+// `APIClient` now passes a tiny `retryBaseDelaySeconds` — `.offline`/
+// `.maintenance` are BOTH retryable (`APIClient.isRetryable(_:)`), and a
+// couple of the new tests deliberately exercise those paths through
+// `authMe()`'s retrying `performIdempotentGET`; the default half-second
+// base delay would have made this whole `.serialized` suite measurably
+// slower for zero additional coverage (the backoff-TIMING behaviour itself
+// is already covered by `IHAPITests/NetworkedAPIClientTests`).
 import Foundation
 import Testing
 import IHAPITestSupport
@@ -38,7 +51,11 @@ struct SessionControllerTests {
     /// to a `MockURLProtocol`-backed `APIClient` — no real Keychain, no real
     /// network, ever.
     private func makeController() -> (controller: SessionController, store: InMemoryTokenStore) {
-        let apiClient = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+        let apiClient = APIClient(
+            environment: .dev,
+            session: MockURLProtocol.makeSession(),
+            retryBaseDelaySeconds: 0.001
+        )
         let store = InMemoryTokenStore()
         return (SessionController(tokenStore: store, apiClient: apiClient), store)
     }
@@ -219,6 +236,114 @@ struct SessionControllerTests {
             let second = await iterator.next()
             #expect(second == .signedOut)
         }
+    }
+
+    // MARK: - restoreFromStorage validation (native login/account UI task)
+
+    @Test("restoreFromStorage validates a stored token via auth_me and stays signed in on success")
+    func restoreValidatesTokenAndStaysSignedIn() async throws {
+        try await MockTransportLock.shared.withLock {
+            let (controller, store) = makeController()
+            try await store.save("good-token")
+            let seenRequest = LockedRequestBox()
+            let responseBody = Data("""
+            {"user": {"id": 1, "username": "jane", "display_name": "Jane Doe", "role": "user"}}
+            """.utf8)
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(status: 200), responseBody)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            try await controller.restoreFromStorage()
+
+            #expect(await controller.state == .signedIn(token: "good-token"))
+            #expect(seenRequest.current?.url?.query?.contains("action=auth_me") == true)
+            #expect(seenRequest.current?.value(forHTTPHeaderField: "Authorization") == "Bearer good-token")
+        }
+    }
+
+    @Test("restoreFromStorage self-heals: a token auth_me rejects as unauthorized is cleared, state stays signedOut")
+    func restoreClearsARevokedToken() async throws {
+        try await MockTransportLock.shared.withLock {
+            let (controller, store) = makeController()
+            try await store.save("dead-token")
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 401), Data()) }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            try await controller.restoreFromStorage()
+
+            #expect(await controller.state == .signedOut)
+            #expect(try await store.load() == nil)
+        }
+    }
+
+    @Test("restoreFromStorage fails OPEN on a transient auth_me failure — still signs in")
+    func restoreFailsOpenOnTransientValidationFailure() async throws {
+        try await MockTransportLock.shared.withLock {
+            let (controller, store) = makeController()
+            try await store.save("good-token")
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 503), Data()) }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            try await controller.restoreFromStorage()
+
+            // A maintenance window / connectivity blip at the exact moment
+            // of a launch-time validation says NOTHING about whether the
+            // token itself is good — this codebase's "never punitive on a
+            // transient failure" posture means the user stays signed in
+            // locally, matching `restoreFromStorage()`'s own doc comment.
+            #expect(await controller.state == .signedIn(token: "good-token"))
+            #expect(try await store.load() == "good-token")
+        }
+    }
+
+    // MARK: - Email-code sign-in (native login/account UI task)
+
+    @Test("signIn(email:code:) calls auth_email_login_verify and adopts the returned token")
+    func signInWithEmailCodeCallsVerify() async throws {
+        try await MockTransportLock.shared.withLock {
+            let (controller, store) = makeController()
+            let seenRequest = LockedRequestBox()
+            let responseBody = Data("""
+            {"token": "email-token-1", "user": {"id": 2, "username": "sam", "display_name": "Sam Doe", "role": "user"}}
+            """.utf8)
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(status: 200), responseBody)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            try await controller.signIn(email: "sam@example.com", code: "123456")
+
+            #expect(await controller.state == .signedIn(token: "email-token-1"))
+            #expect(try await store.load() == "email-token-1")
+            #expect(seenRequest.current?.url?.query?.contains("action=auth_email_login_verify") == true)
+            #expect(seenRequest.current?.httpMethod == "POST")
+        }
+    }
+
+    @Test("signIn(email:code:) surfaces .unauthorized on an invalid code, without persisting anything")
+    func signInWithEmailCodeFailure() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            let (controller, store) = makeController()
+            MockURLProtocol.requestHandler = { _ in (Self.response(status: 401), Data()) }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            await #expect(throws: APIError.unauthorized) {
+                try await controller.signIn(email: "sam@example.com", code: "000000")
+            }
+            #expect(await controller.state == .signedOut)
+            #expect(try await store.load() == nil)
+        }
+    }
+
+    // MARK: - SessionState.isSignedIn convenience
+
+    @Test("SessionState.isSignedIn reflects each case")
+    func isSignedInConvenience() {
+        #expect(SessionState.signedOut.isSignedIn == false)
+        #expect(SessionState.signedIn(token: "x").isSignedIn == true)
     }
 }
 

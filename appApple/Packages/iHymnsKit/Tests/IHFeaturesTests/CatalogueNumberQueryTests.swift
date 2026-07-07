@@ -47,24 +47,24 @@ struct CatalogueNumberQueryTests {
     @Test("matches: a bare number matches that number in ANY songbook")
     func matchesBareNumber() throws {
         let query = try #require(CatalogueNumberQuery(rawQuery: "1008"))
-        let mp = SongSummary(songId: try #require(SongID(rawValue: "MP-1008")),
+        let mpSong = SongSummary(songId: try #require(SongID(rawValue: "MP-1008")),
                              title: "Amazing Grace", songbookAbbreviation: "MP", number: 1008)
-        let cp = SongSummary(songId: try #require(SongID(rawValue: "CP-1008")),
+        let cpSong = SongSummary(songId: try #require(SongID(rawValue: "CP-1008")),
                              title: "Another", songbookAbbreviation: "CP", number: 1008)
-        #expect(query.matches(mp))
-        #expect(query.matches(cp))   // no prefix → any book with number 1008
+        #expect(query.matches(mpSong))
+        #expect(query.matches(cpSong))   // no prefix → any book with number 1008
     }
 
     @Test("matches: a prefixed query is scoped to that songbook AND the exact number")
     func matchesPrefixed() throws {
         let query = try #require(CatalogueNumberQuery(rawQuery: "mp 1008"))
-        let mp = SongSummary(songId: try #require(SongID(rawValue: "MP-1008")),
+        let mpSong = SongSummary(songId: try #require(SongID(rawValue: "MP-1008")),
                              title: "Amazing Grace", songbookAbbreviation: "MP", number: 1008)
         let cpSameNumber = SongSummary(songId: try #require(SongID(rawValue: "CP-1008")),
                                        title: "Another", songbookAbbreviation: "CP", number: 1008)
         let mpWrongNumber = SongSummary(songId: try #require(SongID(rawValue: "MP-100")),
                                         title: "Different", songbookAbbreviation: "MP", number: 100)
-        #expect(query.matches(mp))
+        #expect(query.matches(mpSong))
         #expect(!query.matches(cpSameNumber))  // right number, wrong book
         #expect(!query.matches(mpWrongNumber)) // right book, wrong number
     }

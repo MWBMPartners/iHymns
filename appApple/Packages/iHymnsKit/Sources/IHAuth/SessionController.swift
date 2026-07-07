@@ -36,6 +36,15 @@ import IHAPI
 public enum SessionState: Sendable, Equatable {
     case signedOut
     case signedIn(token: String)
+
+    /// Convenience for the many call sites (native login/account UI task)
+    /// that only care about the yes/no question, not the token itself —
+    /// e.g. gating a favourite-toggle button or the toolbar's account icon.
+    ///
+    /// ELI5: "Am I signed in, yes or no?"
+    public var isSignedIn: Bool {
+        if case .signedIn = self { true } else { false }
+    }
 }
 
 /// Owns the single source of truth for sign-in state and broadcasts every
@@ -97,13 +106,54 @@ public actor SessionController {
     /// renders, so a returning signed-in user never sees a sign-in prompt
     /// flash.
     ///
-    /// ELI5: "Check the safe — were we already signed in?"
+    /// ELI5: "Check the safe — were we already signed in? And if so, is
+    /// that pass still good?"
+    ///
+    /// DETAILED (native login/account UI task, completing #1398's noted
+    /// gap): this used to trust a stored token unconditionally — correct as
+    /// far as it went, but a token can go bad between app launches (revoked
+    /// from another device, expired past its 30-day window, the account
+    /// disabled) with no local signal that it happened. This now validates
+    /// via a lightweight `?action=auth_me` round trip before publishing
+    /// `.signedIn`:
+    ///   - No stored token at all → `.signedOut`, no network call (nothing
+    ///     to validate).
+    ///   - `auth_me` succeeds → the token is genuinely still good →
+    ///     `.signedIn(token:)`.
+    ///   - `auth_me` throws `.unauthorized` → the token is DEFINITIVELY dead
+    ///     server-side → self-heal by clearing the local copy too (mirrors
+    ///     `signOut()`'s "already revoked, nothing left to do" handling)
+    ///     rather than leaving the app claiming a signed-in state that will
+    ///     401 on the very next authenticated call.
+    ///   - `auth_me` throws anything else (`.offline`/`.maintenance`/
+    ///     `.rateLimited`/`.server`/`.decoding`) → fail OPEN: still publish
+    ///     `.signedIn(token:)`. A network blip or a maintenance window at
+    ///     the exact moment the app launches says nothing about whether the
+    ///     token itself is good, and this codebase's whole posture toward
+    ///     transient failures is "never punitive" (mirrors `.claude/CLAUDE.md`
+    ///     rule #17's 503-maintenance handling, and #1010's "DB down = a
+    ///     graceful degrade, never lost state") — bouncing a legitimate,
+    ///     still-signed-in user to a sign-in screen just because launch
+    ///     raced a connectivity hiccup would be a strictly worse experience
+    ///     than briefly trusting a token that turns out, moments later, to
+    ///     still be perfectly valid.
     public func restoreFromStorage() async throws {
-        let token = try await tokenStore.load()
-        if let token {
-            await apiClient.updateBearerToken(token)
+        guard let token = try await tokenStore.load() else {
+            setState(.signedOut)
+            return
         }
-        setState(token.map(SessionState.signedIn) ?? .signedOut)
+
+        await apiClient.updateBearerToken(token)
+        do {
+            _ = try await apiClient.authMe()
+            setState(.signedIn(token: token))
+        } catch APIError.unauthorized {
+            try? await tokenStore.delete()
+            await apiClient.updateBearerToken(nil)
+            setState(.signedOut)
+        } catch {
+            setState(.signedIn(token: token))
+        }
     }
 
     /// Signs in with a username/password pair: exchanges them for a bearer
@@ -122,6 +172,26 @@ public actor SessionController {
     ///   catalogue-read failures (#1399).
     public func signIn(username: String, password: String) async throws {
         let session = try await apiClient.authLogin(username: username, password: password)
+        try await signIn(token: session.token)
+    }
+
+    /// Signs in with an email + 6-digit code pair (the code emailed by a
+    /// prior `?action=auth_email_login_request` call — `AppRootViewModel
+    /// .requestEmailLoginCode(email:)`): exchanges them for a bearer token
+    /// via `?action=auth_email_login_verify`, then persists/publishes it
+    /// exactly like `signIn(username:password:)` above.
+    ///
+    /// ELI5: "Here's the code you emailed me — check it and log me in."
+    ///
+    /// - Throws: Whatever `APIClient.authEmailLoginVerify(email:code:)`
+    ///   throws (`.unauthorized` for an invalid/expired code,
+    ///   `.rateLimited` after 10 failed attempts in 15 minutes — the
+    ///   brute-force guard `api.php`'s `case 'auth_email_login_verify'`
+    ///   applies to the code-entry mode specifically, `.offline`/
+    ///   `.maintenance` for a transient failure, ...) — same "don't swallow
+    ///   or reinterpret" contract as `signIn(username:password:)`.
+    public func signIn(email: String, code: String) async throws {
+        let session = try await apiClient.authEmailLoginVerify(email: email, code: code)
         try await signIn(token: session.token)
     }
 

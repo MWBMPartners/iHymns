@@ -1,9 +1,10 @@
 // APIClient+Auth.swift
 // IHAPI
 //
-// ELI5: The two "phone calls" for signing in and signing out — layered on
-// top of the SAME `APIClient` actor every catalogue read already uses, just
-// split into their own file.
+// ELI5: The "phone calls" for signing in, signing out, checking who's signed
+// in, and emailing yourself a one-time login code — layered on top of the
+// SAME `APIClient` actor every catalogue read already uses, just split into
+// their own file.
 //
 // DETAILED: Split out of `APIClient.swift` (rather than growing that file
 // further, which was already approaching the repo's 400-line LOC-budget
@@ -13,12 +14,15 @@
 // Swift; a same-MODULE extension in a different file needs at least
 // `internal` visibility on the member it calls).
 //
-// Both calls below use `performOnce` — NOT the retrying `performIdempotentGET`
-// — because strategy §1.5 is explicit: "never auto-retry non-idempotent
-// POSTs." Signing in twice because of a client-side retry could double-log
-// a failed-attempt counter server-side; signing out twice is harmless but
-// still not idempotent-safe to blindly retry against an unknown failure
-// mode.
+// Every POST below (`authLogin`/`authLogout`/`authEmailLoginRequest`/
+// `authEmailLoginVerify`) uses `performOnce` — NOT the retrying
+// `performIdempotentGET` — because strategy §1.5 is explicit: "never
+// auto-retry non-idempotent POSTs." Signing in twice because of a
+// client-side retry could double-log a failed-attempt counter server-side;
+// signing out twice is harmless but still not idempotent-safe to blindly
+// retry against an unknown failure mode. `authMe()` IS a bodyless,
+// idempotent GET, so it goes through `performIdempotentGET` like every other
+// read.
 import Foundation
 import IHModels
 
@@ -52,5 +56,51 @@ extension APIClient {
     /// itself is enforced by `SessionController`, not here.
     public func authLogout() async throws {
         _ = try await performOnce(.authLogout)
+    }
+
+    /// `?action=auth_me` — the currently-authenticated user's profile.
+    ///
+    /// ELI5: "Confirm who I'm signed in as."
+    ///
+    /// DETAILED: Called by `IHAuth.SessionController.restoreFromStorage()`
+    /// (completing #1398's "the caller who validates a Keychain token before
+    /// trusting it" gap) and `IHFeatures.AppRootViewModel`'s
+    /// `refreshCurrentUser()` (`AccountView`'s identity display). Throws
+    /// `.unauthorized` for a dead/expired/revoked token — callers treat that
+    /// as authoritative proof the token is no longer good, distinct from a
+    /// transient `.offline`/`.maintenance`/`.server` failure that says
+    /// nothing about the token itself.
+    public func authMe() async throws -> AuthUser {
+        let data = try await performIdempotentGET(.authMe)
+        return try Self.decodeAuthUser(from: data)
+    }
+
+    /// `?action=auth_email_login_request` — emails `email` a magic link + a
+    /// 6-digit code, valid 10 minutes.
+    ///
+    /// ELI5: "Email me a one-time login code."
+    ///
+    /// - Returns: The server's user-facing confirmation message (e.g. "A
+    ///   login code has been sent to your email address. It expires in 10
+    ///   minutes.") — always returned on a 2xx response, even for an unknown
+    ///   email (anti-enumeration design, this file's header /
+    ///   `AuthEndpoints.swift`'s header), so `LoginView` shows the SAME
+    ///   reassuring copy either way rather than confirming/denying whether
+    ///   an account exists for that address.
+    public func authEmailLoginRequest(email: String) async throws -> String {
+        let endpoint = try Endpoint.authEmailLoginRequest(email: email)
+        let data = try await performOnce(endpoint)
+        return try Self.decodeEmailLoginRequestMessage(from: data)
+    }
+
+    /// `?action=auth_email_login_verify` (email + 6-digit code mode) —
+    /// exchanges the code `authEmailLoginRequest(email:)` sent for a 30-day
+    /// bearer token, same shape `authLogin(username:password:)` returns.
+    ///
+    /// ELI5: "Here's the code you emailed me — log me in."
+    public func authEmailLoginVerify(email: String, code: String) async throws -> AuthSession {
+        let endpoint = try Endpoint.authEmailLoginVerify(email: email, code: code)
+        let data = try await performOnce(endpoint)
+        return try Self.decodeAuthSession(from: data)
     }
 }

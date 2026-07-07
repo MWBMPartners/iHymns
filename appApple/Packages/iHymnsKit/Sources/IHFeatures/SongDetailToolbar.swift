@@ -2,7 +2,7 @@
 // IHFeatures
 //
 // ELI5: The little floating control bar under the lyrics — make the text
-// bigger/smaller, show/hide chords, favourite (coming soon), and share.
+// bigger/smaller, show/hide chords, favourite, and share.
 //
 // DETAILED: #180's "A floating glass toolbar: text-size stepper (persist
 // the choice), chords toggle, favourite (stub the action if favourites
@@ -11,6 +11,17 @@
 // treatment automatically on OS 26 with no bespoke glass code needed here —
 // same reasoning `SongDetailView.swift`'s original #1399 header already
 // documented for its own (now-replaced) text-size-only toolbar.
+//
+// #181 UPDATE (native login/account UI + favourites task) — the favourite
+// button is no longer a permanently-disabled stub: it calls
+// `onToggleFavorite` (wired by `SongDetailView` to
+// `SongDetailViewModel.toggleFavorite()`) and reflects `isFavorite`'s
+// current state with a filled/outline heart. It stays `.disabled` ONLY
+// while signed out (`isSignedIn == false`) — favouriting requires an
+// account server-side (`FavoritesEndpoints.swift`'s header: every
+// favourites endpoint is `security: bearerAuth`) — with a `.help()` that
+// explains why, the SAME "disabled + explanatory help, never a silently
+// dead button" pattern the original stub already established.
 //
 // Extracted into its own `ToolbarContent`-conforming type (rather than a
 // `@ToolbarContentBuilder` computed property on `SongDetailView` itself,
@@ -32,6 +43,9 @@ struct SongDetailToolbarContent: ToolbarContent {
     @Binding var showChords: Bool
     let hasChords: Bool
     let shareURL: URL?
+    let isFavorite: Bool
+    let isSignedIn: Bool
+    let onToggleFavorite: () -> Void
 
     private static let minTextScale = 0.75
     private static let maxTextScale = 2.0
@@ -70,17 +84,18 @@ struct SongDetailToolbarContent: ToolbarContent {
                 }
             }
 
-            // Stubbed per this task's explicit instruction: favourites
-            // aren't wired up in the native app yet (no `favorites_sync`
-            // client, no local persistence) — a disabled button with an
-            // explanatory `.help()` is honest about that, rather than
-            // faking a toggle that doesn't actually save anything.
             Button {
+                onToggleFavorite()
             } label: {
-                Label("Favourite", systemImage: "heart")
+                Label(
+                    isFavorite ? "Remove from Favourites" : "Add to Favourites",
+                    systemImage: isFavorite ? "heart.fill" : "heart"
+                )
             }
-            .disabled(true)
-            .help("Favourites are coming soon.")
+            .disabled(!isSignedIn)
+            .help(isSignedIn
+                ? (isFavorite ? "Remove from Favourites" : "Add to Favourites")
+                : "Sign in to save favourites.")
 
             if let shareURL {
                 ShareLink(item: shareURL) {

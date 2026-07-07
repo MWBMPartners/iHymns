@@ -4,12 +4,15 @@
 // ELI5: Decides "does this window look like a phone (one screen at a time)
 // or like an iPad/Mac/Vision (a list + detail side-by-side)?" and builds
 // the right container around the shared `HomeView`/`SongbooksView`/
-// `CatalogueListView` screens either way — so the app shell itself doesn't
-// have to know the difference. Also gives the user a way to REACH every
-// top-level section: a tab on iPhone, a sidebar section on iPad/Mac/vision.
+// `CatalogueListView`/`FavoritesView`/`AccountView` screens either way — so
+// the app shell itself doesn't have to know the difference. Also gives the
+// user a way to REACH every top-level section: a tab on iPhone, a sidebar
+// section on iPad/Mac/vision. Also where the app-launch "were we already
+// signed in?" restore fires (native login/account UI task, completing
+// #1398's noted gap — see `.task` in `body` below).
 //
 // DETAILED: Strategy §2.2's "same codepath" principle, extended first by
-// #1437 (Songbooks) and now by #183's Home-surface brief: "Rework the app
+// #1437 (Songbooks), then #183's Home-surface brief: "Rework the app
 // shell: give RootContainerView a real tab/section structure — Home ·
 // Songbooks · Search... The current catalogue list becomes the 'Search' (or
 // 'Browse') destination." `NavigationLink(value:)` + `.navigationDestination(for:)`
@@ -22,15 +25,22 @@
 // container/section to show, never making a navigation decision of its
 // own.
 //
-// The fourth section, `.live`, is a DELIBERATE, honestly-labelled "coming
-// soon" placeholder (this task's own brief: "a Live tab/Setlists can be a
-// labelled 'coming soon' placeholder for now, don't fake them") — no
-// `IHLive` engine is wired to any UI yet in this package, so pretending
-// there's a real Live/Setlists screen here would be exactly the kind of
-// faked surface this task explicitly rules out. `ContentUnavailableView` is
-// the same "genuinely nothing here yet" idiom the rest of this package
-// already uses for empty/error states, reused here for "not built yet"
-// instead.
+// #181 UPDATE (native login/account UI + favourites task) adds two more
+// sections — `.favorites` (this task's explicit "surface it in the shell"
+// instruction) and `.account` (this task's "An Account surface... in
+// Settings or its own" — given this app has no separate Settings screen
+// yet, its own top-level section is the more discoverable choice) — using
+// the SAME tab-on-iPhone/sidebar-row-elsewhere shape every other section
+// already has, so neither needed any container-picking logic of its own.
+//
+// `.live` remains a DELIBERATE, honestly-labelled "coming soon" placeholder
+// (this task's own brief: "a Live tab/Setlists can be a labelled 'coming
+// soon' placeholder for now, don't fake them") — no `IHLive` engine is
+// wired to any UI yet in this package, so pretending there's a real
+// Live/Setlists screen here would be exactly the kind of faked surface this
+// task explicitly rules out. `ContentUnavailableView` is the same
+// "genuinely nothing here yet" idiom the rest of this package already uses
+// for empty/error states, reused here for "not built yet" instead.
 //
 // Compiles on every platform `IHFeatures` targets (`Package.swift`'s
 // `platforms:` list includes tvOS/watchOS too) even though only the
@@ -65,12 +75,16 @@ public struct RootContainerView: View {
     public var body: some View {
         #if os(macOS) || os(visionOS)
         splitView
+            .task { await restoreAndSync() }
         #elseif os(iOS)
-        if horizontalSizeClass == .compact {
-            tabbedRoot
-        } else {
-            splitView
+        Group {
+            if horizontalSizeClass == .compact {
+                tabbedRoot
+            } else {
+                splitView
+            }
         }
+        .task { await restoreAndSync() }
         #else
         // tvOS/watchOS: not wired to any shell yet (see file header) — a
         // plain stack keeps this FILE compiling on those platforms without
@@ -80,6 +94,33 @@ public struct RootContainerView: View {
             CatalogueListView(viewModel: viewModel)
         }
         #endif
+    }
+
+    /// Runs once per launch (both `restoreSessionIfNeeded()` and
+    /// `loadFavoritesIfNeeded()` are internally one-shot-guarded, so this is
+    /// safe to re-trigger on every `RootContainerView` re-appearance — e.g.
+    /// rotating a compact iPhone window between `tabbedRoot`/`splitView`
+    /// re-evaluates `body`, and therefore this `.task`, but never re-does
+    /// the actual work).
+    ///
+    /// ELI5: "The app just launched — check if we were already signed in,
+    /// and load whatever favourites we already know about."
+    ///
+    /// DETAILED: `restoreSessionIfNeeded()` runs FIRST and is awaited to
+    /// completion before `loadFavoritesIfNeeded()` starts — a returning
+    /// signed-in user's `syncAfterSignIn()` (triggered from INSIDE
+    /// `restoreSessionIfNeeded()` itself, see that method's own doc
+    /// comment) already calls `loadFavoritesIfNeeded()` as part of its own
+    /// sequence, so this second explicit call is a safe, cheap no-op for
+    /// that path (the one-shot guard). For a SIGNED-OUT launch, though, this
+    /// second call is what actually populates `favorites` from anything
+    /// still locally cached from a previous session (e.g. `signOut()`
+    /// hadn't run to completion, or a future "keep last-known favourites
+    /// visible read-only while offline-signed-out" affordance) — belt and
+    /// braces, not redundant plumbing.
+    private func restoreAndSync() async {
+        await viewModel.restoreSessionIfNeeded()
+        await viewModel.loadFavoritesIfNeeded()
     }
 
     /// iPhone/compact-iPad root: one Liquid Glass `TabView` tab per
@@ -104,9 +145,19 @@ public struct RootContainerView: View {
             .tabItem { Label(RootSection.search.title, systemImage: RootSection.search.systemImage) }
 
             NavigationStack {
+                FavoritesView(rootViewModel: viewModel)
+            }
+            .tabItem { Label(RootSection.favorites.title, systemImage: RootSection.favorites.systemImage) }
+
+            NavigationStack {
                 liveComingSoonView
             }
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
+
+            NavigationStack {
+                AccountView(rootViewModel: viewModel)
+            }
+            .tabItem { Label(RootSection.account.title, systemImage: RootSection.account.systemImage) }
         }
     }
 
@@ -128,8 +179,12 @@ public struct RootContainerView: View {
                 SongbooksView(rootViewModel: viewModel)
             case .search:
                 CatalogueListView(viewModel: viewModel)
+            case .favorites:
+                FavoritesView(rootViewModel: viewModel)
             case .live:
                 liveComingSoonView
+            case .account:
+                AccountView(rootViewModel: viewModel)
             }
         } detail: {
             ContentUnavailableView(
@@ -160,7 +215,9 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
     case home
     case songbooks
     case search
+    case favorites
     case live
+    case account
 
     var id: String { rawValue }
 
@@ -169,7 +226,9 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .home: "Home"
         case .songbooks: "Songbooks"
         case .search: "Search"
+        case .favorites: "Favourites"
         case .live: "Live"
+        case .account: "Account"
         }
     }
 
@@ -178,7 +237,9 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .home: "house"
         case .songbooks: "books.vertical"
         case .search: "magnifyingglass"
+        case .favorites: "heart"
         case .live: "dot.radiowaves.left.and.right"
+        case .account: "person.crop.circle"
         }
     }
 }

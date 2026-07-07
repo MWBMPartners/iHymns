@@ -118,9 +118,75 @@ public final class AppRootViewModel {
     /// extension, so no cross-file mutation access is needed.
     public private(set) var recentlyViewedSongs: [RecentlyViewedSong] = []
 
-    private let sessionController: SessionController
-    private let apiClient: APIClient
-    private let offlineStore: OfflineStore
+    /// The current signed-in user's public profile (native login/account UI
+    /// task), refreshed via `?action=auth_me` whenever `sessionState`
+    /// transitions to `.signedIn` (see `observeSessionState()` below and
+    /// `AppRootViewModel+Auth.swift`'s `refreshCurrentUser()`) and cleared
+    /// back to `nil` on sign-out. `AccountView` reads this directly rather
+    /// than issuing its own network call on every appearance.
+    ///
+    /// ELI5: "Who am I signed in as?" — cached here so any screen can show
+    /// it instantly.
+    ///
+    /// `internal(set)` (not `private(set)`) — same cross-file-extension
+    /// reason `recentSearches`/`favorites` document — `AppRootViewModel+Auth.swift`
+    /// sets this from `refreshCurrentUser()`/`signOut()`.
+    public internal(set) var currentUser: AuthUser?
+
+    /// Every favourited song this device knows about, most-recently-added
+    /// first — an OFFLINE-FIRST mirror of `IHPersistence.OfflineStore`'s
+    /// `favorite` table (#181), NOT a `LoadState`-gated network read: it's
+    /// populated from the local cache the moment `loadFavoritesIfNeeded()`
+    /// runs (near-instant, no network needed) and only ever refined
+    /// afterwards by a best-effort server sync
+    /// (`AppRootViewModel+Favorites.swift`'s `refreshFavoritesFromServer()`).
+    /// `internal(set)` (not `private(set)`) for the same cross-file-extension
+    /// reason `recentSearches` above documents — `AppRootViewModel+Favorites.swift`
+    /// mutates this after every cache read/toggle/sync.
+    ///
+    /// ELI5: "Which songs have I favourited?" — answered instantly, even
+    /// offline.
+    public internal(set) var favorites: [FavoriteSong] = []
+
+    /// Whether `loadFavoritesIfNeeded()` has already populated `favorites`
+    /// from the local cache this app run — guards against re-reading the
+    /// (actor-isolated, so never instant) offline store on every
+    /// `FavoritesView`/`SongDetailView` re-appearance, mirroring
+    /// `catalogueLoadState`'s `.idle` guard on `loadCatalogueIfNeeded()`.
+    /// `@ObservationIgnored` + `internal` (not `private`) — pure plumbing a
+    /// SwiftUI view should never re-render over, but still needs to be
+    /// settable from `AppRootViewModel+Favorites.swift`.
+    @ObservationIgnored
+    var hasLoadedFavoritesFromCache = false
+
+    /// Whether `restoreSessionIfNeeded()` (`AppRootViewModel+Auth.swift`) has
+    /// already run this app launch — same one-shot guard shape as
+    /// `hasLoadedFavoritesFromCache` above, for the identical "safe to call
+    /// from `.task {}` on every `RootContainerView` re-appearance" reason.
+    /// `internal` (not `private`) — that method lives in the extension file.
+    @ObservationIgnored
+    var hasAttemptedSessionRestore = false
+
+    /// `internal` (not `private`) — `AppRootViewModel+Auth.swift` calls
+    /// `sessionController.signIn(...)`/`.signOut()` directly, and
+    /// `restoreSessionIfNeeded()`/`isSignedInNow()` in THIS file already
+    /// need it too; same cross-file-extension reasoning as `apiClient`/
+    /// `offlineStore` below.
+    let sessionController: SessionController
+
+    /// The shared network client. `internal` (not `private`) — same
+    /// cross-file-extension reasoning `recentSearchesStore` below documents
+    /// — `AppRootViewModel+Auth.swift`/`AppRootViewModel+Favorites.swift`
+    /// call straight into it (`apiClient.authMe()`, `apiClient.favorites()`,
+    /// ...) the same way `AppRootViewModel+Search.swift` already reads
+    /// this file's OTHER internal-visibility properties.
+    let apiClient: APIClient
+
+    /// The on-device offline cache. `internal`, same reasoning as
+    /// `apiClient` above — `AppRootViewModel+Favorites.swift` reads/writes
+    /// it directly for every favourites cache/queue operation.
+    let offlineStore: OfflineStore
+
     private let liveFollowEngine: LiveFollowEngine
 
     /// Persists `recentSearches` (#1436) — see `RecentSearchesStore`'s own
@@ -195,6 +261,13 @@ public final class AppRootViewModel {
         try await offlineStore.allSongSummaries()
     }
 
+    // `restoreSessionIfNeeded()`/`isSignedInNow()` (native login/account UI
+    // task) live in `AppRootViewModel+Auth.swift` — moved out purely to keep
+    // this file under the repo's LOC-budget tripwire now that it also
+    // carries `favorites`/`currentUser` state; see that file's own header
+    // for the full "why `isSignedInNow()` exists instead of just reading
+    // `sessionState`" race-condition explanation.
+
     // `filteredSongs` (#1399's original substring match, now #1436's
     // number-mode + songbook/language facet filtering on top of it) lives
     // in `AppRootViewModel+Search.swift` — a Swift extension can't add new
@@ -232,59 +305,14 @@ public final class AppRootViewModel {
         }
     }
 
-    /// Fetches one full song record — a thin pass-through to `APIClient`,
-    /// exactly like `cachedSongSummaries()`'s read-through above, so
-    /// `SongDetailViewModel` (#1399) never needs the `APIClient` itself.
-    ///
-    /// ELI5: "Give me everything about this one song."
-    public func songDetail(id: SongID) async throws -> SongDetail {
-        try await apiClient.songDetail(id: id)
-    }
-
-    /// Fetches this song's cross-book counterparts (#180, #807) — same
-    /// pass-through pattern as `songDetail(id:)` above.
-    ///
-    /// ELI5: "Does this exact song also appear, under a different id, in
-    /// some other songbook?"
-    public func songLinks(id: SongID) async throws -> SongLinkGroup {
-        try await apiClient.songLinks(id: id)
-    }
-
-    /// Fetches songs related to this one by shared tag/writer/composer/
-    /// vicinity (#180) — same pass-through pattern as `songDetail(id:)`.
-    ///
-    /// ELI5: "What else might I like, based on this song?"
-    public func relatedSongs(id: SongID) async throws -> [RelatedSongSummary] {
-        try await apiClient.relatedSongs(id: id)
-    }
-
-    /// Fetches every songbook in the catalogue (#1437, `SongbooksViewModel`'s
-    /// only network dependency) — same pass-through pattern as
-    /// `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)` above: exactly
-    /// ONE `APIClient` instance exists per app run (owned here), so every
-    /// screen that needs a network call reaches it through this root view
-    /// model rather than holding an `APIClient` of its own.
-    ///
-    /// ELI5: "Give me the list of hymnals."
-    public func songbooks() async throws -> [Songbook] {
-        try await apiClient.songbooks()
-    }
-
-    /// Fetches today's Song of the Day (#183) — `HomeViewModel`'s only
-    /// network dependency, mirroring `songbooks()`'s pass-through pattern
-    /// exactly, PLUS resolving `hemisphere`/`country` from the device's own
-    /// `Locale` (`IHAPI.LocaleRegionSignals`, privacy-safe — no GeoIP, no
-    /// location permission) so `HomeViewModel` never has to know those
-    /// parameters exist at all.
-    ///
-    /// ELI5: "What's today's featured song, for someone roughly where I
-    /// am?"
-    public func songOfTheDay() async throws -> SongOfTheDay {
-        try await apiClient.songOfTheDay(
-            hemisphere: LocaleRegionSignals.hemisphere(),
-            country: LocaleRegionSignals.country()
-        )
-    }
+    // `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)`/`songbooks()`/
+    // `songOfTheDay()` (#1399/#180/#1437/#183's read pass-throughs to
+    // `APIClient`) live in `AppRootViewModel+Catalog.swift` — moved out
+    // (native login/account UI + favourites task) purely to keep this file
+    // from crossing the repo's LOC-budget tripwire (`Scripts/loc-budget.sh`)
+    // now that it also carries `favorites`/`currentUser` state; every one of
+    // them only touches `apiClient` (already `internal`-visible below), so
+    // the move is behaviourally a no-op.
 
     /// Records that the user just successfully opened `detail`'s song
     /// (#183) — the "last opened song" hook this task's Home-surface brief
@@ -323,6 +351,25 @@ public final class AppRootViewModel {
     /// view model) alive forever — a classic retain cycle. With a weak
     /// capture, once `self` is deallocated the loop simply exits on its
     /// next iteration instead of pinning it in memory.
+    ///
+    /// DELIBERATELY side-effect-free beyond that mirror (native login/
+    /// account UI + favourites task): the "on sign-in, refresh my profile +
+    /// reconcile favourites with the server; on sign-out, forget them
+    /// locally" behaviour lives in `AppRootViewModel+Auth.swift`'s
+    /// `signIn(...)`/`signInWithEmailCode(...)`/`signOut()`/
+    /// `restoreSessionIfNeeded()` themselves, called DIRECTLY right after
+    /// each one's own `sessionController` call succeeds — NOT wired through
+    /// this passive stream. Two reasons: (1) every existing
+    /// `SessionController`-level test (`SessionControllerTests`) and several
+    /// `AppRootViewModelTests` drive `sessionController.signIn(token:)`
+    /// directly, bypassing `AppRootViewModel` entirely — hanging a real
+    /// network call (`apiClient.favorites()`/`authMe()`) off THIS loop would
+    /// have made those pre-existing, already-green tests start issuing real,
+    /// unmocked network requests the moment they touched sign-in state, a
+    /// regression this task must not introduce; (2) calling the sync
+    /// directly from each entry point is strictly more deterministic and
+    /// easier to unit test than racing it against this loop's own
+    /// `AsyncStream` delivery timing.
     private func observeSessionState() {
         sessionObservationTask = Task { [weak self, sessionController] in
             for await state in sessionController.stateUpdates {
@@ -330,46 +377,5 @@ public final class AppRootViewModel {
                 self.sessionState = state
             }
         }
-    }
-}
-
-// MARK: - Live composition (#1399)
-
-extension AppRootViewModel {
-    /// Builds the "real" four-engine composition every live app shell
-    /// should use — Keychain-backed auth, the given API environment, and an
-    /// in-memory offline cache — centralised here so this exact wiring is
-    /// defined ONCE rather than repeated (and inevitably drifting) across
-    /// `IHymnsApp.swift`/a future `IHymnsTVApp.swift`/`IHymnsWatchApp.swift`
-    /// real-screen wiring.
-    ///
-    /// ELI5: "Build me the real app, talking to this environment."
-    ///
-    /// DETAILED: The on-disk GRDB path (rather than this in-memory one)
-    /// lands with strategy §3.4's "#187 offline — GRDB+FTS5 + bulk download"
-    /// Phase-1 work, once there's an actual offline-save feature to
-    /// populate it; an in-memory `OfflineStore` is the honest placeholder
-    /// until then (matching what every existing test in this package
-    /// already does via `OfflineStore(path: nil)`). `OfflineStore.init`
-    /// only throws on a genuine SQLite-open failure, which — for an
-    /// in-memory database — is not a realistic failure mode on any
-    /// supported platform; `try!` here is the same "developer-known-safe,
-    /// force it" posture this package already applies to constant URL
-    /// literals (see `APIEnvironment.baseURL`), not a new precedent.
-    @MainActor
-    public static func makeLive(environment: APIEnvironment) -> AppRootViewModel {
-        let apiClient = APIClient(environment: environment)
-        let tokenStore = KeychainTokenStore()
-        let sessionController = SessionController(tokenStore: tokenStore, apiClient: apiClient)
-        // swiftlint:disable:next force_try
-        let offlineStore = try! OfflineStore(path: nil)
-        let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)
-
-        return AppRootViewModel(
-            sessionController: sessionController,
-            apiClient: apiClient,
-            offlineStore: offlineStore,
-            liveFollowEngine: liveFollowEngine
-        )
     }
 }
