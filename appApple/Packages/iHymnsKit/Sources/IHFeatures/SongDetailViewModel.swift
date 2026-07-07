@@ -35,6 +35,24 @@
 // flight, or that errored, was never actually "opened" from the user's
 // perspective — and keeps the hook exactly where the load's own
 // success/failure is already known, with no new View-layer wiring needed.
+//
+// #187 UPDATE (offline support + data management) — two new
+// responsibilities, both following the SAME "this view model owns the
+// per-song state, the toolbar just renders it" shape `isFavorite`/
+// `toggleFavorite()` already establish: (1) `isSavedOffline` +
+// `toggleOfflineSave()` — whether THIS song has a full offline copy saved,
+// and the toggle `SongDetailToolbar`'s new save/saved button drives; (2)
+// the offline READ-FALLBACK itself — when the network fetch in
+// `loadPrimaryDetail()` fails with exactly `.offline`/`.maintenance` (the
+// two failure kinds that mean "the request never reached the server," per
+// `APIError.swift`'s own doc comments — genuinely never `.unauthorized`/
+// `.decoding`/other `.server` errors, which mean something IS wrong and
+// silently papering over it with a possibly-stale cached copy would hide
+// that), it reaches for `rootViewModel.savedSongDetail(_:)` and, if this
+// device has one, serves that instead of the error card, setting
+// `isServingCachedCopy` so `SongDetailView` can show an unobtrusive
+// "Offline — showing saved copy" indicator rather than pretending the
+// content came in fresh.
 import IHAPI
 import IHModels
 import Observation
@@ -60,6 +78,18 @@ public final class SongDetailViewModel {
     /// SECONDARY, same "just hide the shelf on failure" treatment as
     /// `songLinksState` above.
     public private(set) var relatedSongsState: LoadState<[RelatedSongSummary]> = .idle
+
+    /// Whether THIS song currently has a full offline copy saved (#187) —
+    /// `SongDetailToolbar`'s save/saved button reads this directly, mirroring
+    /// `isFavorite`'s identical role for the heart button.
+    public private(set) var isSavedOffline = false
+
+    /// Whether `loadState`'s current `.loaded` value came from the offline
+    /// cache (a network failure fell back to a saved copy) rather than a
+    /// fresh network response — `SongDetailView`'s "Offline — showing saved
+    /// copy" indicator reads this. `false` on every fresh network success,
+    /// including a RETRY that succeeds after a previous cached fallback.
+    public private(set) var isServingCachedCopy = false
 
     private let songId: SongID
     private let rootViewModel: AppRootViewModel
@@ -91,21 +121,54 @@ public final class SongDetailViewModel {
         async let detail: Void = loadPrimaryDetail()
         async let links: Void = loadSongLinks()
         async let related: Void = loadRelatedSongs()
-        _ = await (detail, links, related)
+        // #187 — independent of the primary/secondary network loads above:
+        // a cheap local existence check, never gated on any of them
+        // succeeding (a song can be "saved offline" regardless of whether
+        // THIS load came from the network or the cache).
+        async let saved: Void = refreshOfflineSavedState()
+        _ = await (detail, links, related, saved)
     }
 
     private func loadPrimaryDetail() async {
         do {
             let detail = try await rootViewModel.songDetail(id: songId)
             loadState = .loaded(detail)
+            isServingCachedCopy = false
             // #183 — see this file's header comment for why this is the
             // "last opened song" hook, anchored to success rather than a
             // View-level `.onAppear`.
             rootViewModel.recordRecentlyViewed(detail)
         } catch let error as APIError {
+            // #187 — the request never reached/returned from the server at
+            // all (`.offline`) or the server itself says "back soon"
+            // (`.maintenance`); if THIS device already saved a full copy of
+            // this exact song, serve that instead of an error card. Any
+            // OTHER `APIError` (`.unauthorized`/`.decoding`/a genuine
+            // `.server` rejection) falls through to the normal error state
+            // below — those mean something IS actually wrong, and silently
+            // masking that with a possibly-stale cached copy would hide it.
+            if Self.isOfflineLikeFailure(error), let cached = await rootViewModel.savedSongDetail(songId) {
+                loadState = .loaded(cached)
+                isServingCachedCopy = true
+                rootViewModel.recordRecentlyViewed(cached)
+                return
+            }
             loadState = .error(error.userFacingMessage)
         } catch {
             loadState = .error("Something went wrong loading this song. Please try again.")
+        }
+    }
+
+    /// Whether `error` means "the request never reached/returned from the
+    /// server" — the ONLY failure kinds worth falling back to a saved
+    /// offline copy for. See `loadPrimaryDetail()`'s own comment for why
+    /// every other `APIError` case is deliberately excluded.
+    private static func isOfflineLikeFailure(_ error: APIError) -> Bool {
+        switch error {
+        case .offline, .maintenance:
+            true
+        default:
+            false
         }
     }
 
@@ -162,5 +225,39 @@ public final class SongDetailViewModel {
             songbookAbbreviation: detail.songbookAbbreviation,
             number: detail.number
         )
+    }
+
+    // MARK: - Offline saving (#187)
+
+    /// Refreshes `isSavedOffline` from the local cache — cheap enough
+    /// (a `COUNT`-only existence check, see `OfflineStore.isSongSaved(_:)`)
+    /// to run on every `load()`, unlike the network-backed
+    /// `loadPrimaryDetail()`/`loadSongLinks()`/`loadRelatedSongs()` it runs
+    /// alongside.
+    private func refreshOfflineSavedState() async {
+        isSavedOffline = await rootViewModel.isSongSavedOffline(songId)
+    }
+
+    /// Saves or removes THIS song's offline copy — `SongDetailToolbar`'s
+    /// save/saved button wires this the same way `onToggleFavorite` wires
+    /// `toggleFavorite()`.
+    ///
+    /// ELI5: "Tap the download button for the song I'm currently reading."
+    ///
+    /// DETAILED: A no-op while the primary load hasn't produced a `SongDetail`
+    /// yet (`loadState` isn't `.loaded`) — same defensive guard
+    /// `toggleFavorite()` already takes, and for the identical reason: there's
+    /// nothing to save WITH yet. Deliberately has NO `isSignedIn` gate —
+    /// unlike favourites/setlists, saving a song offline needs no account at
+    /// all (this file's header explains why in full).
+    public func toggleOfflineSave() async {
+        guard case .loaded(let detail) = loadState else { return }
+        if isSavedOffline {
+            try? await rootViewModel.removeSavedSong(detail.songId)
+            isSavedOffline = false
+        } else {
+            try? await rootViewModel.saveSongForOffline(detail)
+            isSavedOffline = true
+        }
     }
 }

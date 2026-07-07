@@ -25,6 +25,12 @@
 // .defaultForBuild`'s own note on why a `#if` can't distinguish TestFlight
 // from the App Store) so a shipping user can never accidentally point the
 // app at a stale docroot.
+//
+// #187 UPDATE (offline support + data management) — adds `storageSection`,
+// a single `NavigationLink` into the new `OfflineStorageView` (its own
+// screen, not inlined here, so this file doesn't have to grow a whole
+// list-management UI directly) — this task's "Data management UI... a
+// 'Storage & Offline' section reachable from Settings" requirement.
 import IHAPI
 import IHDesign
 import SwiftUI
@@ -53,6 +59,7 @@ public struct SettingsView: View {
             accountSection
             appearanceSection
             accessibilitySection
+            storageSection
             privacySection
             #if DEBUG
             developerSection
@@ -132,6 +139,23 @@ public struct SettingsView: View {
             Text("Accessibility")
         } footer: {
             Text("Renders lyrics with a dyslexia-friendly font and extra spacing between letters and lines.")
+        }
+    }
+
+    // MARK: - Storage & Offline
+
+    /// A single navigation row into `OfflineStorageView` (#187) — mirrors
+    /// `accountSection`'s "one row, real content lives on the pushed
+    /// screen" shape.
+    private var storageSection: some View {
+        Section {
+            NavigationLink {
+                OfflineStorageView(rootViewModel: rootViewModel)
+            } label: {
+                Label("Storage & Offline", systemImage: "arrow.down.circle")
+            }
+        } footer: {
+            Text("See and manage the songs you've saved for offline reading.")
         }
     }
 

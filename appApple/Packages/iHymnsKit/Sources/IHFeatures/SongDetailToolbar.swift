@@ -36,10 +36,19 @@
 // `isPresentingLogin` sheet-trigger `@State` rather than `LoginView`
 // somehow presenting itself.
 //
+// #187 UPDATE (offline support + data management) — adds a sixth control:
+// "Save for Offline" / "Remove Downloaded Copy," toggling
+// `SongDetailViewModel.toggleOfflineSave()` and reflecting
+// `isSavedOffline`'s current state with a download/checkmark icon (mirrors
+// the web's `data-song-download` affordance, `.claude/CLAUDE.md` rule #7).
+// Deliberately NEVER `.disabled` under the `isSignedIn` gate the favourite/
+// setlist buttons use — saving a song offline needs no account at all
+// (`SongDetailViewModel.toggleOfflineSave()`'s own header explains why).
+//
 // Extracted into its own `ToolbarContent`-conforming type (rather than a
 // `@ToolbarContentBuilder` computed property on `SongDetailView` itself,
 // which was #1399's approach) purely to keep `SongDetailView.swift` from
-// re-growing past a manageable size now that this toolbar has four controls
+// re-growing past a manageable size now that this toolbar has six controls
 // instead of one.
 //
 // Placement: `.bottomBar` gives iOS/iPadOS/tvOS/visionOS/watchOS the
@@ -60,6 +69,8 @@ struct SongDetailToolbarContent: ToolbarContent {
     let isSignedIn: Bool
     let onToggleFavorite: () -> Void
     @Binding var isPresentingAddToSetlist: Bool
+    let isSavedOffline: Bool
+    let onToggleOfflineSave: () -> Void
 
     private static let minTextScale = 0.75
     private static let maxTextScale = 2.0
@@ -97,6 +108,18 @@ struct SongDetailToolbarContent: ToolbarContent {
                     )
                 }
             }
+
+            Button {
+                onToggleOfflineSave()
+            } label: {
+                Label(
+                    isSavedOffline ? "Remove Downloaded Copy" : "Save for Offline",
+                    systemImage: isSavedOffline ? "checkmark.circle.fill" : "arrow.down.circle"
+                )
+            }
+            .help(isSavedOffline
+                ? "Remove the downloaded copy of this song."
+                : "Save this song so you can read it without an internet connection.")
 
             Button {
                 onToggleFavorite()

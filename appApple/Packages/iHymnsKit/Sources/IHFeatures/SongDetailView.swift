@@ -30,6 +30,13 @@
 // already establishes on `FavoritesView`. `setlistEntry` derives a
 // `SetlistSongEntry` from the currently-loaded `SongDetail` so the sheet
 // never needs its own second fetch.
+//
+// #187 UPDATE (offline support + data management) — wires the toolbar's new
+// save/saved button straight to `SongDetailViewModel.isSavedOffline`/
+// `toggleOfflineSave()`, and renders `offlineCopyBanner` above the header
+// whenever `viewModel.isServingCachedCopy` is true — the ONLY user-visible
+// sign that a page was served from the on-device cache rather than the
+// network, per this task's "unobtrusive... indicator" brief.
 import IHAuth
 import IHDesign
 import IHModels
@@ -80,7 +87,9 @@ public struct SongDetailView: View {
                 isFavorite: viewModel.isFavorite,
                 isSignedIn: rootViewModel.sessionState.isSignedIn,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
-                isPresentingAddToSetlist: $isPresentingAddToSetlist
+                isPresentingAddToSetlist: $isPresentingAddToSetlist,
+                isSavedOffline: viewModel.isSavedOffline,
+                onToggleOfflineSave: { Task { await viewModel.toggleOfflineSave() } }
             )
         }
         .sheet(item: $selectedLine) { line in
@@ -132,6 +141,9 @@ public struct SongDetailView: View {
         let index = LineEnrichmentIndex(detail: detail)
 
         VStack(alignment: .leading, spacing: 20) {
+            if viewModel.isServingCachedCopy {
+                offlineCopyBanner
+            }
             header(for: detail)
             SongMetadataView(detail: detail, relatedSongs: relatedSongsIfLoaded, rootViewModel: rootViewModel)
 
@@ -152,6 +164,22 @@ public struct SongDetailView: View {
             counterpartsShelf
             relatedSongsShelf
         }
+    }
+
+    /// The "served from the offline cache, not the network" indicator
+    /// (#187) — unobtrusive by design (a small, secondary-styled capsule
+    /// rather than a banner that competes with the lyrics below it), shown
+    /// only when `viewModel.isServingCachedCopy` is true.
+    ///
+    /// ELI5: "Heads up — you're offline, so this is the copy you saved
+    /// earlier, not a fresh download."
+    private var offlineCopyBanner: some View {
+        Label("Offline — showing saved copy", systemImage: "wifi.slash")
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 10)
+            .background(.thinMaterial, in: Capsule())
     }
 
     private func header(for detail: SongDetail) -> some View {

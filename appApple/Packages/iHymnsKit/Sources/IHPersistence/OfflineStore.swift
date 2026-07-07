@@ -4,8 +4,10 @@
 // ELI5: The app's own little offline notebook — it remembers song
 // summaries on the device so search/browsing still works with no internet,
 // and so re-launching the app doesn't need to re-download everything. It
-// also now remembers your favourites (#181) and a small queue of
-// favourite-toggle actions that couldn't reach the server yet.
+// also now remembers your favourites (#181), a small queue of
+// favourite-toggle actions that couldn't reach the server yet, and — since
+// #187 — the FULL text of any song you've explicitly saved for offline
+// reading.
 //
 // DETAILED: This is the Phase-0 skeleton of the GRDB-backed offline cache
 // described in strategy §1.5: "Offline cache = GRDB (pinned)... real
@@ -34,6 +36,16 @@
 // `setlist_pending_op`'s replay strategy differs from
 // `favorite_pending_op`'s (the real API has no per-item setlist
 // delete/upsert endpoint, only a bulk sync).
+//
+// `v4CreateSavedSongs` (#187, offline support + data management) is
+// strategy §1.5's "saved songs" schema piece, finally given a concrete
+// shape: unlike `song_summary` (the SLIM index every song contributes a row
+// to automatically), `saved_song` holds the FULL `SongDetail` — lyrics,
+// credits, everything — for only the songs the user explicitly chose to
+// save, so those songs remain fully READABLE with no connection at all, not
+// just listable. See `CachedSongDetail.swift`'s header for the row shape and
+// why the full record is stored as an encoded JSON blob rather than
+// exploded into columns.
 //
 // See GRDB's own migrations guide:
 // https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/migrations.
@@ -134,6 +146,16 @@ public actor OfflineStore {
                 table.column("createdAt", .text)
                 table.column("updatedAt", .text)
                 table.column("queuedAt", .datetime).notNull()
+            }
+        }
+
+        migrator.registerMigration("v4CreateSavedSongs") { database in
+            try database.create(table: "saved_song") { table in
+                table.primaryKey("songId", .text)
+                table.column("title", .text).notNull()
+                table.column("songbookAbbreviation", .text).notNull()
+                table.column("detailData", .blob).notNull()
+                table.column("savedAt", .datetime).notNull()
             }
         }
 
