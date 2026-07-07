@@ -29,6 +29,7 @@
 // `.onSubmit(of: .search)` is the single point that actually RECORDS a
 // query, mirroring Safari/Mail's own "remember on submit, not on every
 // keystroke" recent-searches convention.
+import IHDesign
 import IHModels
 import SwiftUI
 
@@ -76,11 +77,12 @@ public struct CatalogueListView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Songs",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; `loadCatalogue()` is
+            // the existing "force a refetch" hook `loadCatalogueIfNeeded()`'s
+            // own doc comment already anticipated a future retry using.
+            IHLoadErrorView(title: "Couldn't Load Songs", message: message) {
+                await viewModel.loadCatalogue()
+            }
 
         case .loaded(let songs):
             if songs.isEmpty {
@@ -100,6 +102,10 @@ public struct CatalogueListView: View {
                     }
                 }
                 .listStyle(.plain)
+                // #185 — pull-to-refresh re-fetches the whole catalogue
+                // index, the same "force a refetch" `loadCatalogue()` call a
+                // future retry affordance was always meant to reach.
+                .refreshable { await viewModel.loadCatalogue() }
             }
         }
     }

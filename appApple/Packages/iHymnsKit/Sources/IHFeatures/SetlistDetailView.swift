@@ -48,8 +48,17 @@ public struct SetlistDetailView: View {
     public var body: some View {
         content
             .navigationTitle(setlist?.name ?? "Setlist")
+            // Two SongID-family destinations, kept SIDE BY SIDE (#185) —
+            // see `SongbooksView.swift`'s identical comment for why the
+            // bare-`SongID` destination stays registered even though this
+            // screen's own rows now push `SongPagerRequest` below: anything
+            // pushed from WITHIN a `SongDetailView` reached via either path
+            // (e.g. its "Related Songs" shelf) still needs somewhere to land.
             .navigationDestination(for: SongID.self) { songId in
                 SongDetailView(songId: songId, rootViewModel: rootViewModel)
+            }
+            .navigationDestination(for: SongPagerRequest.self) { request in
+                SongPagerView(initialSongId: request.songId, context: request.context, rootViewModel: rootViewModel)
             }
             .toolbar { toolbarContent }
             .sheet(isPresented: $isPresentingAddSongsSheet) {
@@ -125,6 +134,13 @@ public struct SetlistDetailView: View {
                     .buttonStyle(.borderedProminent)
             }
         } else {
+            // #185 — the whole setlist's current song order, so each row's
+            // push carries "page through the rest of this setlist" context.
+            // Recomputed here (not cached) so it always reflects the LIVE
+            // `setlist.songs` order, including a reorder/add/remove that
+            // just happened — the exact same "root view model IS the state"
+            // freshness every other read in this screen already relies on.
+            let context = SongNavigationContext(songIds: setlist.songs.map(\.songId))
             List {
                 // Indexed by `.offset` (not `SetlistSongEntry.id`/`songId`)
                 // so a legacy/cross-device setlist that happens to contain
@@ -136,7 +152,7 @@ public struct SetlistDetailView: View {
                 // this SAME array-index space, so it's consistent
                 // end-to-end even with a duplicate present.
                 ForEach(Array(setlist.songs.enumerated()), id: \.offset) { _, entry in
-                    NavigationLink(value: entry.songId) {
+                    NavigationLink(value: SongPagerRequest(songId: entry.songId, context: context)) {
                         SongSummaryRow(entry.summary)
                     }
                     .swipeActions(edge: .trailing) {

@@ -67,6 +67,11 @@ public struct FavoritesView: View {
                 }
             }
             .listStyle(.plain)
+            // #185 — pull-to-refresh re-syncs favourites with the server
+            // (favourites has no `LoadState`/error surface by design — see
+            // `AppRootViewModel+Favorites.swift`'s header — so there's no
+            // error-retry card to add here, just a manual sync trigger).
+            .refreshable { await rootViewModel.refreshFavoritesFromServer() }
         }
     }
 

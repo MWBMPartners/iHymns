@@ -21,6 +21,7 @@
 // task's brief lists. Built via `IHAppSupport.CanonicalURL.songbook(abbreviation:)`
 // — the ONE shared URL-builder, never a second hand-rolled string here.
 import IHAppSupport
+import IHDesign
 import IHModels
 import SwiftUI
 
@@ -52,11 +53,13 @@ struct SongbookSongsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Songs",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; this screen filters
+            // the SAME shared `catalogueLoadState` `CatalogueListView`/
+            // `SetlistCatalogueBrowserView` read, so its retry re-fetches
+            // that one shared index, same as theirs.
+            IHLoadErrorView(title: "Couldn't Load Songs", message: message) {
+                await rootViewModel.loadCatalogue()
+            }
 
         case .loaded(let songs):
             let songsInBook = songs.filter {
@@ -69,12 +72,20 @@ struct SongbookSongsView: View {
                     description: Text("This songbook has no songs in the catalogue yet.")
                 )
             } else {
+                // #185 — every row pushes a `SongPagerRequest` (not a bare
+                // `SongID`) carrying this WHOLE book's song order, so the
+                // reading screen can swipe/arrow-key through the rest of the
+                // hymnal — see `SongNavigationContext.swift`'s header.
+                let context = SongNavigationContext(songIds: songsInBook.map(\.id))
                 List(songsInBook) { song in
-                    NavigationLink(value: song.id) {
+                    NavigationLink(value: SongPagerRequest(songId: song.id, context: context)) {
                         SongSummaryRow(song)
                     }
                 }
                 .listStyle(.plain)
+                // #185 — pull-to-refresh re-fetches the shared catalogue
+                // index this book's song list is filtered from.
+                .refreshable { await rootViewModel.loadCatalogue() }
             }
         }
     }

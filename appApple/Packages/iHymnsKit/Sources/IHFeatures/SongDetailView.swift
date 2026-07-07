@@ -153,11 +153,12 @@ public struct SongDetailView: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Song",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card (`IHDesign`);
+            // `viewModel.load()` is the existing hook `SongDetailViewModel`
+            // already exposes for exactly this.
+            IHLoadErrorView(title: "Couldn't Load Song", message: message) {
+                await viewModel.load()
+            }
 
         case .loaded(let detail):
             loadedContent(detail)

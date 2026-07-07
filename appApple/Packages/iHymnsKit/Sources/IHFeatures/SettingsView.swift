@@ -31,6 +31,14 @@
 // screen, not inlined here, so this file doesn't have to grow a whole
 // list-management UI directly) — this task's "Data management UI... a
 // 'Storage & Offline' section reachable from Settings" requirement.
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — adds a
+// "Keyboard Shortcuts" row to `aboutSection`, presenting the SAME
+// `KeyboardShortcutsOverlayView` the Mac ⌘/ command opens
+// (`IHymnsApp.swift`). Kept reachable here on EVERY platform (not just
+// macOS) — an external keyboard can be paired with an iPhone/iPad too, and
+// there's no harm in a sighted list of shortcuts on a device that happens
+// not to have one attached right now.
 import IHAPI
 import IHDesign
 import SwiftUI
@@ -48,6 +56,10 @@ public struct SettingsView: View {
     /// `$settings.theme` etc. yield the two-way bindings `Picker`/`Toggle`
     /// require; the model's own `didSet` observers do the persistence.
     @Bindable private var settings: SettingsViewModel
+
+    /// #185 — flips the "Keyboard Shortcuts" row's sheet; see this file's
+    /// header for why this is reachable from every platform, not just macOS.
+    @State private var isPresentingKeyboardShortcuts = false
 
     public init(rootViewModel: AppRootViewModel, settings: SettingsViewModel) {
         self.rootViewModel = rootViewModel
@@ -67,6 +79,9 @@ public struct SettingsView: View {
             aboutSection
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $isPresentingKeyboardShortcuts) {
+            KeyboardShortcutsOverlayView()
+        }
     }
 
     // MARK: - Account
@@ -205,6 +220,11 @@ public struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             LabeledContent("Version", value: appVersion)
+            Button {
+                isPresentingKeyboardShortcuts = true
+            } label: {
+                Label("Keyboard Shortcuts", systemImage: "keyboard")
+            }
         }
     }
 

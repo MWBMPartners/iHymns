@@ -54,6 +54,12 @@ public struct HomeView: View {
             SongDetailView(songId: songId, rootViewModel: rootViewModel)
         }
         .task { await viewModel.loadIfNeeded() }
+        // #185 — pull-to-refresh: Home's Song of the Day is the one
+        // network-backed piece of this screen (the resume/recently-viewed
+        // sections are local-only), so a manual refresh here re-fetches
+        // JUST that, mirroring `viewModel.load()`'s existing "force a
+        // refetch regardless of current state" contract.
+        .refreshable { await viewModel.load() }
     }
 
     // MARK: - Song of the Day
@@ -67,11 +73,13 @@ public struct HomeView: View {
                 .ihGlassCard(cornerRadius: 28)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Song of the Day",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card (`IHDesign`) instead of
+            // a plain, dead-end `ContentUnavailableView`; `viewModel.load()`
+            // is the exact "future manual retry" hook its own doc comment
+            // already anticipated.
+            IHLoadErrorView(title: "Couldn't Load Song of the Day", message: message) {
+                await viewModel.load()
+            }
 
         case .loaded(let sotd):
             if let song = sotd.song {

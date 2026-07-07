@@ -33,6 +33,7 @@
 // hiding an entry outright would misrepresent what they actually shared.
 import IHAppSupport
 import IHAPI
+import IHDesign
 import IHModels
 import SwiftUI
 
@@ -87,11 +88,11 @@ public struct SharedSetlistView: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Set List",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; `load()` below is
+            // this screen's own existing force-refetch method.
+            IHLoadErrorView(title: "Couldn't Load Set List", message: message) {
+                await load()
+            }
 
         case .loaded(let shared):
             loadedContent(shared)
@@ -121,6 +122,8 @@ public struct SharedSetlistView: View {
             }
         }
         .listStyle(.plain)
+        // #185 — pull-to-refresh re-fetches this shared set list.
+        .refreshable { await load() }
     }
 
     @ViewBuilder

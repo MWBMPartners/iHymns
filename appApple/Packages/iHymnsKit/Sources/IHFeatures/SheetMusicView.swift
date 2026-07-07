@@ -56,11 +56,12 @@ struct SheetMusicView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Sheet Music",
-                systemImage: "doc.text.magnifyingglass",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; `load(url:)` is the
+            // existing hook `SheetMusicViewModel`'s own doc comment already
+            // called "the hook a future manual retry action calls into."
+            IHLoadErrorView(title: "Couldn't Load Sheet Music", message: message, systemImage: "doc.text.magnifyingglass") {
+                await viewModel.load(url: url)
+            }
 
         case .loaded(let data):
             pdfContent(data: data)

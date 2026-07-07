@@ -62,11 +62,12 @@ public struct SetlistCatalogueBrowserView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Songs",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; `loadCatalogue()` is
+            // the SAME shared-index force-refetch `CatalogueListView`/
+            // `SongbookSongsView` retry into.
+            IHLoadErrorView(title: "Couldn't Load Songs", message: message) {
+                await rootViewModel.loadCatalogue()
+            }
 
         case .loaded(let songs):
             if matchingSongs(in: songs).isEmpty {
@@ -76,6 +77,9 @@ public struct SetlistCatalogueBrowserView: View {
                     row(for: song)
                 }
                 .listStyle(.plain)
+                // #185 — pull-to-refresh re-fetches the shared catalogue
+                // index this browser filters.
+                .refreshable { await rootViewModel.loadCatalogue() }
             }
         }
     }

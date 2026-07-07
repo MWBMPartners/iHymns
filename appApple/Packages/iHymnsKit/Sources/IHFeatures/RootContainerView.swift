@@ -74,6 +74,19 @@
 // `RootContainerView(viewModel:)` call site (incl. tvOS/watchOS's own
 // `#else` branch, which never receives a real deep link) keeps compiling
 // unchanged.
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — the former
+// local `@State private var selectedSection` and its `private enum
+// RootSection` moved OUT into the new shared `AppNavigationState.swift`
+// (see that file's header for the full reasoning): this view now takes a
+// `navigationState` parameter (defaulted, so every pre-#185 call site keeps
+// compiling unchanged) instead of owning that state itself, so
+// `IHymnsApp.swift`'s new Mac menu-bar commands can drive section switching
+// from OUTSIDE this view too. Also wires the compact `TabView`'s
+// `selection:` for the first time — it previously had NONE, meaning nothing
+// could ever programmatically switch tabs (a real gap this task's own audit
+// found: neither a Mac command NOR any other in-app affordance could jump
+// to, say, Search).
 import IHAppSupport
 import IHDesign
 import SwiftUI
@@ -84,14 +97,11 @@ import SwiftUI
 public struct RootContainerView: View {
     private let viewModel: AppRootViewModel
 
-    /// Which top-level section the iPad(regular)/Mac/visionOS sidebar is
-    /// currently showing in its CONTENT column — `nil` only if the sidebar
-    /// `List`'s selection is ever cleared by the user; `splitView` treats
-    /// that the same as `.home` (see `content:` below) so the content
-    /// column is never left blank. Defaults to `.home` — the Home surface
-    /// (#183) is now the app's flagship landing screen, not the catalogue
-    /// list.
-    @State private var selectedSection: RootSection? = .home
+    /// Which top-level section is showing, plus whether the
+    /// keyboard-shortcuts help sheet is open (#185) — see
+    /// `AppNavigationState.swift`'s header for why this moved out of a
+    /// local `@State` here.
+    @Bindable private var navigationState: AppNavigationState
 
     /// The most recently resolved inbound Universal Link / Handoff
     /// continuation, set by `IHymnsApp.swift`'s `.onOpenURL`/
@@ -129,8 +139,13 @@ public struct RootContainerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    public init(viewModel: AppRootViewModel, incomingDeepLink: Binding<DeepLink?> = .constant(nil)) {
+    public init(
+        viewModel: AppRootViewModel,
+        navigationState: AppNavigationState = AppNavigationState(),
+        incomingDeepLink: Binding<DeepLink?> = .constant(nil)
+    ) {
         self.viewModel = viewModel
+        self.navigationState = navigationState
         _incomingDeepLink = incomingDeepLink
     }
 
@@ -146,6 +161,12 @@ public struct RootContainerView: View {
                 guard let newValue else { return }
                 presentedDeepLink = DeepLinkPresentation(link: newValue)
                 incomingDeepLink = nil
+            }
+            // #185 — the Mac ⌘/ command (and a Settings row) flip this;
+            // presented HERE rather than per-section so it works no matter
+            // which tab/sidebar section is currently showing.
+            .sheet(isPresented: $navigationState.isPresentingKeyboardShortcutsHelp) {
+                KeyboardShortcutsOverlayView()
             }
     }
 
@@ -215,42 +236,54 @@ public struct RootContainerView: View {
     /// top-level screen, each hosting its OWN `NavigationStack` so pushing
     /// a song from Home, the catalogue, OR a songbook's song list never
     /// contends with a shared navigation path.
+    ///
+    /// #185 — now bound to `navigationState.selectedSection` (previously NO
+    /// `selection:` binding existed at all, so nothing could ever
+    /// programmatically switch tabs); each tab's `.tag(_:)` is what makes
+    /// that binding actually route to the right one.
     private var tabbedRoot: some View {
-        TabView {
+        TabView(selection: $navigationState.selectedSection) {
             NavigationStack {
                 HomeView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.home.title, systemImage: RootSection.home.systemImage) }
+            .tag(RootSection.home)
 
             NavigationStack {
                 SongbooksView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.songbooks.title, systemImage: RootSection.songbooks.systemImage) }
+            .tag(RootSection.songbooks)
 
             NavigationStack {
                 CatalogueListView(viewModel: viewModel)
             }
             .tabItem { Label(RootSection.search.title, systemImage: RootSection.search.systemImage) }
+            .tag(RootSection.search)
 
             NavigationStack {
                 FavoritesView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.favorites.title, systemImage: RootSection.favorites.systemImage) }
+            .tag(RootSection.favorites)
 
             NavigationStack {
                 SetlistsView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.setlists.title, systemImage: RootSection.setlists.systemImage) }
+            .tag(RootSection.setlists)
 
             NavigationStack {
                 liveComingSoonView
             }
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
+            .tag(RootSection.live)
 
             NavigationStack {
                 SettingsView(rootViewModel: viewModel, settings: settingsViewModel)
             }
             .tabItem { Label(RootSection.settings.title, systemImage: RootSection.settings.systemImage) }
+            .tag(RootSection.settings)
         }
     }
 
@@ -260,12 +293,23 @@ public struct RootContainerView: View {
     /// the placeholder) as the DETAIL column.
     private var splitView: some View {
         NavigationSplitView {
-            List(RootSection.allCases, selection: $selectedSection) { section in
+            // `List(selection:)` wants an OPTIONAL binding (a sidebar
+            // selection can be momentarily empty mid-diff); `navigationState
+            // .selectedSection` itself stays non-optional (simpler for
+            // `TabView`/the Mac commands, neither of which has a "nothing
+            // selected" state) — this small adapter bridges the two, folding
+            // a cleared selection straight back to `.home` rather than ever
+            // leaving the content column blank.
+            let sidebarSelection = Binding<RootSection?>(
+                get: { navigationState.selectedSection },
+                set: { navigationState.selectedSection = $0 ?? .home }
+            )
+            List(RootSection.allCases, selection: sidebarSelection) { section in
                 Label(section.title, systemImage: section.systemImage).tag(section)
             }
             .navigationTitle("iHymns")
         } content: {
-            switch selectedSection ?? .home {
+            switch navigationState.selectedSection {
             case .home:
                 HomeView(rootViewModel: viewModel)
             case .songbooks:
@@ -305,45 +349,7 @@ public struct RootContainerView: View {
     }
 }
 
-/// The top-level screens `RootContainerView` switches between — a tab on
-/// iPhone, a sidebar row on iPad/Mac/vision.
-private enum RootSection: String, CaseIterable, Identifiable, Hashable {
-    case home
-    case songbooks
-    case search
-    case favorites
-    case setlists
-    case live
-    // #182 — the former standalone `.account` section became `.settings`:
-    // the Settings screen (`SettingsView`) NESTS the account UI inside it
-    // (an "Account" row → `AccountView`), matching the conventional iOS
-    // "Apple ID sits at the top of Settings" shape and keeping the compact
-    // `TabView` at 7 tabs rather than overflowing into a system "More" tab.
-    case settings
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .home: "Home"
-        case .songbooks: "Songbooks"
-        case .search: "Search"
-        case .favorites: "Favourites"
-        case .setlists: "Setlists"
-        case .live: "Live"
-        case .settings: "Settings"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .home: "house"
-        case .songbooks: "books.vertical"
-        case .search: "magnifyingglass"
-        case .favorites: "heart"
-        case .setlists: "list.bullet.rectangle.portrait"
-        case .live: "dot.radiowaves.left.and.right"
-        case .settings: "gearshape"
-        }
-    }
-}
+// `RootSection` (#185: moved to `AppNavigationState.swift`, and made
+// `public` there so `IHymnsApp.swift`'s Mac menu commands can reference it
+// too) used to live here as a `private enum` — see that file's header for
+// the full reasoning.

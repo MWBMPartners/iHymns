@@ -47,6 +47,18 @@
 // mirroring "Universal Links → open in app if installed, else the PWA"
 // when the app IS installed but doesn't (yet) have a screen for this
 // specific claimed path.
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — owns the one
+// `AppNavigationState` this run of the app uses (mirrors how it already
+// owns the one `AppRootViewModel`), hands it down to `RootContainerView`,
+// and — on macOS only — adds a `.commands` menu-bar block: ⌘1…⌘7 jump
+// straight to a section, ⌘F jumps to Search ("Find," the conventional Mac
+// verb for "take me to the search field"), and ⌘/ opens the Keyboard
+// Shortcuts help sheet. Guarded `#if os(macOS)` per this task's own
+// instruction — this is explicitly a MAC MENU BAR feature (iPad/Mac
+// in-context shortcuts like `SongPagerView`'s ← → Previous/Next buttons
+// live as plain `.keyboardShortcut(_:)` on real, visible controls instead,
+// which works everywhere without needing Scene-level `Commands` at all).
 import IHAPI
 import IHAppSupport
 import IHFeatures
@@ -77,6 +89,13 @@ struct IHymnsApp: App {
     /// comment on why: so tapping the same link twice still re-presents).
     @State private var incomingDeepLink: DeepLink?
 
+    /// #185 — the one `AppNavigationState` this app run uses, mirroring how
+    /// `rootViewModel` above is the one `AppRootViewModel`. Handed down to
+    /// `RootContainerView` AND read/written by this file's own `.commands`
+    /// block below, so a Mac menu click and a sidebar/tab tap change the
+    /// exact same state.
+    @State private var navigationState = AppNavigationState()
+
     /// Lets `handle(url:)` hand an unresolved/undeep-linkable URL to the
     /// system browser instead of the app silently swallowing it.
     @Environment(\.openURL) private var openURL
@@ -87,7 +106,7 @@ struct IHymnsApp: App {
             // (not `Scene` ones) — attached to the content view itself
             // rather than chained after `WindowGroup`, matching Apple's own
             // documented placement for both.
-            RootContainerView(viewModel: rootViewModel, incomingDeepLink: $incomingDeepLink)
+            RootContainerView(viewModel: rootViewModel, navigationState: navigationState, incomingDeepLink: $incomingDeepLink)
                 .onOpenURL { url in
                     handle(url: url)
                 }
@@ -96,7 +115,54 @@ struct IHymnsApp: App {
                     handle(url: url)
                 }
         }
+        #if os(macOS)
+        .commands {
+            // #185 — "Go" menu: ⌘1…⌘7 jump straight to a top-level section,
+            // mirroring `RootSection.keyboardShortcutDigit`'s numbering so
+            // the menu and this list can never silently drift apart.
+            CommandMenu("Go") {
+                sectionCommand(.home)
+                sectionCommand(.songbooks)
+                sectionCommand(.search)
+                sectionCommand(.favorites)
+                sectionCommand(.setlists)
+                sectionCommand(.live)
+                sectionCommand(.settings)
+                Divider()
+                // "Find" is the conventional Mac verb for "take me to the
+                // search field" (Safari, Mail, Xcode all use ⌘F for their
+                // own in-window find/search) — here it means "switch to the
+                // Search section," the closest equivalent this app has.
+                Button("Find") { navigationState.selectedSection = .search }
+                    .keyboardShortcut("f", modifiers: .command)
+            }
+            // `.after(.help)` APPENDS to the existing Help menu rather than
+            // replacing it (`.replacing(.help)` would drop the system's own
+            // "iHymns Help" item) — see `KeyboardShortcutsOverlayView.swift`
+            // for why ⌘/ rather than a bare "?" (typing a literal "?" into
+            // the search field must never accidentally open this sheet).
+            CommandGroup(after: .help) {
+                Button("Keyboard Shortcuts") { navigationState.isPresentingKeyboardShortcutsHelp = true }
+                    .keyboardShortcut("/", modifiers: .command)
+            }
+        }
+        #endif
     }
+
+    #if os(macOS)
+    /// One "Go" menu row for `section` — labelled with its title, jumping
+    /// `navigationState.selectedSection` to it, shortcut ⌘ + its
+    /// `keyboardShortcutDigit`. A plain `View`-returning helper (not a
+    /// `Commands`-returning one) because `CommandMenu`'s own content
+    /// closure is built with the ordinary `@ViewBuilder` (`Button`/
+    /// `Divider`/`Menu`), exactly like any other menu's contents — only the
+    /// OUTER `.commands { }` scene modifier itself uses `@CommandsBuilder`.
+    @ViewBuilder
+    private func sectionCommand(_ section: RootSection) -> some View {
+        Button(section.title) { navigationState.selectedSection = section }
+            .keyboardShortcut(KeyEquivalent(section.keyboardShortcutDigit), modifiers: .command)
+    }
+    #endif
 
     /// Resolves `url` through the router and either presents it in-app
     /// (`incomingDeepLink`) or falls back to the system browser — see this
