@@ -1,0 +1,113 @@
+# Apple Deploy — TestFlight / App Store (#1400)
+#
+# Branch -> destination, per the owner's instruction (strategy §3.4/§4.4,
+# owner runbook §G): push to `alpha` builds + uploads to TestFlight
+# INTERNAL, push to `beta` uploads to TestFlight EXTERNAL, push to `main`
+# uploads to the App Store. Pull requests only build + test (no signing, no
+# upload) via the SAME `fastlane test` lane `.github/workflows/apple.yml`
+# (#1395) already runs on the `feat/apple-universal` branch — this workflow
+# is deliberately narrower: it exists ONLY to run the three signed/uploading
+# lanes, on the three branches that matter for distribution.
+#
+# Uses the org's EXISTING GitHub Actions secrets — direct certificate import
+# (`APPLE_CERTIFICATE` + `APPLE_CERTIFICATE_PASSWORD`) via
+# `appApple/fastlane/Fastfile`, NOT `match` (owner instruction, #1400: no
+# separate certificates repo). ASC upload auth is an App Store Connect API
+# key built from `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_API_KEY`.
+#
+# NOTE (expected, not a bug): this workflow stays DORMANT — it has nothing
+# to build — until the `feat/apple-universal` branch's work actually reaches
+# `alpha` / `beta` / `main` (this native-app branch carries NO PRs yet, per
+# strategy §0/§3.4). It lands now, in Phase 0, alongside the Fastlane lanes
+# it calls, so the pipeline exists and is reviewable before it ever fires.
+name: Apple Deploy
+
+on:
+  push:
+    branches: [alpha, beta, main]
+    paths:
+      - 'appApple/**'
+      - '.github/workflows/apple-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: 'Fastlane lane to run (overrides the branch->lane mapping below)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - alpha
+          - beta
+          - release
+
+permissions:
+  contents: read
+
+# Only one deploy per branch at a time — a second push landing mid-upload
+# should wait, not race the in-flight TestFlight/App Store submission.
+concurrency:
+  group: apple-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build + upload (Fastlane)
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          # Pinned to the same OS-26 toolchain as apple.yml's CI build
+          # (#1395) — Liquid Glass APIs require the OS 26 SDKs.
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | head -1)"
+          xcodebuild -version
+
+      - name: Install tooling
+        run: |
+          brew install xcodegen
+          gem install fastlane --no-document
+
+      - name: Determine Fastlane lane
+        id: lane
+        run: |
+          if [ -n "${{ github.event.inputs.lane }}" ]; then
+            echo "lane=${{ github.event.inputs.lane }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/alpha" ]; then
+            echo "lane=alpha" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/beta" ]; then
+            echo "lane=beta" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "lane=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "error: no lane mapping for ${{ github.ref }} and no manual lane supplied" >&2
+            exit 1
+          fi
+
+      - name: fastlane ${{ steps.lane.outputs.lane }}
+        working-directory: appApple
+        env:
+          # Signing (direct cert import — see Fastfile header comment).
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          # App Store Connect API key (TestFlight/App Store upload auth).
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+        run: fastlane ${{ steps.lane.outputs.lane }}
+
+      - name: Upload build artifacts (.ipa)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-${{ steps.lane.outputs.lane }}-${{ github.sha }}
+          path: appApple/fastlane/builds/
+          retention-days: 30
+          if-no-files-found: ignore

@@ -37,5 +37,14 @@ Packages/**/.swiftpm/
 # instead of the default `~/Library/Developer/Xcode/DerivedData`.
 DerivedData/
 
+# Fastlane run artifacts (#1400) — `fastlane/Appfile`/`fastlane/Fastfile`
+# ARE hand-authored and committed; everything below is written fresh by
+# every `fastlane <lane>` run (locally or in CI) and carries zero review
+# value as a diff.
+fastlane/builds/
+fastlane/report.xml
+fastlane/README.md
+fastlane/test_output/
+
 # macOS Finder noise.
 .DS_Store

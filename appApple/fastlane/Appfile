@@ -1,0 +1,28 @@
+# Appfile
+#
+# ELI5: Tells every Fastlane action WHICH app + WHICH Apple account/team to
+# act on, so no lane has to repeat "app.ihymns" or a team id inline.
+#
+# DETAILED: Per strategy §1.1/§1.7, `app.ihymns` is the ONE bundle id shared
+# across every Apple platform (iOS/iPadOS/macOS/tvOS/visionOS) — that's what
+# makes the single Universal Purchase App Store record work, so there is
+# only ever one `app_identifier` here (never a per-platform variant). All
+# three values are read from the CI environment (the org's existing GitHub
+# Actions secrets, owner runbook §E) rather than hardcoded, so this file
+# carries no account-identifying data in source control.
+#
+# Reference: https://docs.fastlane.tools/advanced/Appfile/
+
+app_identifier("app.ihymns")
+
+# Apple ID email address used for the (fallback) altool/notarization auth
+# path — primary uploads go through the App Store Connect API key (see
+# Fastfile's `asc_api_key` lane), but `apple_id` is still required by some
+# actions (e.g. `pilot`) as the account context.
+apple_id(ENV["APPLE_ID"])
+
+# Developer Portal + App Store Connect team. Both are set to the SAME
+# `APPLE_TEAM_ID` secret because MWBM Partners has one Apple Developer
+# Program membership backing both portals (no separate agency/client split).
+team_id(ENV["APPLE_TEAM_ID"])
+itc_team_id(ENV["APPLE_TEAM_ID"])

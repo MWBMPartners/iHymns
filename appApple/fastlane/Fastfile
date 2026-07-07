@@ -1,0 +1,295 @@
+# Fastfile
+#
+# ELI5: The recipe book for "make the app and send it somewhere" — one lane
+# per destination (`test` just proves it compiles, `alpha`/`beta`/`release`
+# each build the real app and upload it to a different place). The GitHub
+# Actions workflow (`.github/workflows/apple-deploy.yml`, #1400) just calls
+# `fastlane alpha` / `fastlane beta` / `fastlane release` — this file is
+# the only place that knows HOW those lanes actually work.
+#
+# DETAILED: Implements strategy §1.8/§3.1/§3.4 Phase-0 item "Fastlane —
+# match/ASC-key/versioning/TF-internal + secrets runbook" (#1400) — MINUS
+# `match`: the owner's org already has the distribution certificate as a
+# GitHub secret (`APPLE_CERTIFICATE` + `APPLE_CERTIFICATE_PASSWORD`), so
+# this file imports it DIRECTLY into a throwaway CI keychain instead of
+# pulling from a separate "certificates repo" the way `match` would (owner
+# instruction, #1400: "use them; do NOT use match"). Signing itself still
+# goes through Xcode's own AUTOMATIC provisioning (`-allowProvisioningUpdates`
+# + an App Store Connect API key), which is fastlane's documented
+# alternative to `match` for teams that don't want a certs repo:
+# https://docs.fastlane.tools/codesigning/xcode-project/#automatic-provisioning
+#
+# Every lane is fastlane's own vocabulary — actions used here (`build_app`
+# aka `gym`, `upload_to_testflight` aka `pilot`, `upload_to_app_store` aka
+# `deliver`, `import_certificate`, `create_keychain`,
+# `update_code_signing_settings`, `app_store_connect_api_key`) are all
+# documented at https://docs.fastlane.tools/actions/ — this file does not
+# invent any custom Ruby beyond small glue (`archive_scheme`, the
+# `prepare_signed_archives` private lane) to avoid repeating the same
+# options four times.
+#
+# This file CANNOT be run/tested locally in this session (fastlane isn't
+# installed here) — it is written to fastlane's documented, idiomatic
+# patterns and syntax-checked with `ruby -c fastlane/Fastfile` only. The
+# FIRST real run will be CI's `fastlane test` (no signing needed) once the
+# Apple branch reaches a push-triggering event; `alpha`/`beta`/`release`
+# stay dormant (per apple-deploy.yml's own note) until this branch's work
+# reaches alpha/beta/main.
+
+require "securerandom"
+require "base64"
+require "tmpdir"
+require "fileutils"
+require "shellwords"
+
+default_platform(:ios)
+
+# ---------------------------------------------------------------------------
+# Shared paths + constants
+#
+# `__dir__` is THIS file's own directory (`appApple/fastlane`), so every
+# path below is anchored there regardless of the caller's cwd — the same
+# "resolve to a known root" pattern `Scripts/bootstrap.sh` uses.
+# ---------------------------------------------------------------------------
+APP_APPLE_DIR   = File.expand_path("..", __dir__)
+XCODEPROJ_PATH  = File.join(APP_APPLE_DIR, "iHymns.xcodeproj")
+KIT_DIR         = File.join(APP_APPLE_DIR, "Packages", "iHymnsKit")
+SYNC_VERSION_SH = File.join(APP_APPLE_DIR, "Scripts", "sync-version.sh")
+BUILDS_DIR      = File.join(APP_APPLE_DIR, "fastlane", "builds")
+
+# Ephemeral keychain for THIS CI run only — never the developer's own login
+# keychain, never persisted between runs. The `-db` suffix mirrors the real
+# on-disk filename `security`/Keychain Access give a keychain named this way
+# (`~/Library/Keychains/<name>-db` once "-db" isn't already the suffix; it
+# already is here, spelled out so the `after_all`/`error` cleanup below knows
+# exactly which file to look for).
+CI_KEYCHAIN_NAME     = "ihymns-ci.keychain-db"
+CI_KEYCHAIN_PASSWORD = SecureRandom.uuid
+CI_KEYCHAIN_PATH     = File.expand_path("~/Library/Keychains/#{CI_KEYCHAIN_NAME}")
+
+# ---------------------------------------------------------------------------
+# Small Ruby helpers (plain `def`, not lanes — callable from any lane/private
+# lane in this file; fastlane actions are ordinary methods on the Fastfile,
+# so they work here exactly as they would inside a `lane do...end` block).
+# ---------------------------------------------------------------------------
+
+# Archives ONE scheme (an Xcode target's generated scheme — XcodeGen
+# auto-creates one scheme per target since `project.yml` declares no
+# explicit `schemes:` block) and returns the produced .ipa path. The `iHymns`
+# scheme is a MULTIPLATFORM target (`supportedDestinations: [iOS, macOS,
+# visionOS]`, strategy §1.1) — archiving it needs an explicit
+# `-destination 'generic/platform=iOS'` or xcodebuild can't tell which of
+# the three platforms to archive; `iHymnsTV` has only one platform (tvOS) so
+# no destination flag is needed there. `iHymnsWatch`/`iHymnsWidgets` are
+# NEVER archived directly — they embed into the `iHymns` iOS archive
+# automatically (project.yml's `embed: true` dependencies), matching the
+# task brief's "(+ tvOS + embedded watch)".
+def archive_scheme(scheme:, extra_xcargs: nil)
+  xcargs = ["-allowProvisioningUpdates", extra_xcargs].compact.join(" ")
+  build_app(
+    project: XCODEPROJ_PATH,
+    scheme: scheme,
+    configuration: "Release",
+    export_method: "app-store",   # correct for BOTH TestFlight and App Store archives
+    output_directory: BUILDS_DIR,
+    output_name: "#{scheme}.ipa",
+    clean: true,
+    xcargs: xcargs
+  )
+  # `build_app` (gym) returns the absolute path to the produced .ipa.
+end
+
+# Uploads one already-built .ipa to TestFlight, internal or external. Kept
+# as a plain method (not a lane) since it always needs an already-resolved
+# `api_key` + `ipa` from the caller — it is glue, not an entry point.
+def upload_testflight_build(ipa:, api_key:, external:, groups:)
+  options = {
+    api_key: api_key,
+    ipa: ipa,
+    skip_waiting_for_build_processing: true,
+    distribute_external: external,
+    notify_external_testers: external
+  }
+  # Internal builds go to whatever internal testers are already configured
+  # in App Store Connect (owner runbook §D.7 "iHymns Team") — no `groups:`
+  # needed. External builds target the named per-platform Beta group.
+  options[:groups] = groups if external
+  upload_to_testflight(**options)   # `upload_to_testflight` is the modern alias for `pilot`
+end
+
+# ---------------------------------------------------------------------------
+# Private lanes (internal building blocks — not meant to be invoked directly
+# via `fastlane <name>`, only called from the public lanes below).
+# ---------------------------------------------------------------------------
+
+# Regenerates iHymns.xcodeproj from project.yml. Every lane that touches the
+# Xcode project needs this FIRST because the project is gitignored and
+# reproducible-by-design (strategy §1.1) — CI never checks out a stale
+# project, it always builds the one project.yml describes right now.
+private_lane :regenerate_project do
+  sh("cd #{APP_APPLE_DIR.shellescape} && xcodegen generate")
+end
+
+# Stamps CURRENT_PROJECT_VERSION with a fresh UTC-timestamp build number and
+# asserts the shared MAJOR hasn't drifted from the web app's own version.
+# Delegates entirely to Scripts/sync-version.sh (strategy §1.8) — this lane
+# is deliberately a one-line wrapper so the parsing/stamping logic lives in
+# exactly ONE place (the shell script), not duplicated in Ruby here.
+private_lane :bump_build do
+  sh("bash #{SYNC_VERSION_SH.shellescape}")
+end
+
+# Imports the org's distribution certificate (a base64-encoded .p12, the
+# `APPLE_CERTIFICATE` GitHub secret + its `APPLE_CERTIFICATE_PASSWORD`) into
+# a throwaway keychain scoped to this CI run — the owner-instructed
+# alternative to `match` (#1400: "the GitHub ORG already has these secrets
+# ... do NOT use match"). `APPLE_SIGNING_IDENTITY` (also an existing org
+# secret) is NOT passed to any action here: it names the identity for a
+# human running `security find-identity` locally, but fastlane's
+# `import_certificate` + `-allowProvisioningUpdates` resolve the identity
+# themselves from the imported cert + the ASC API key, so there is nothing
+# for this lane to do with the identity string directly.
+private_lane :import_distribution_certificate do
+  create_keychain(
+    name: CI_KEYCHAIN_NAME,
+    password: CI_KEYCHAIN_PASSWORD,
+    default_keychain: true,
+    unlock: true,
+    timeout: 3600,
+    lock_when_sleeps: false
+  )
+
+  cert_path = File.join(Dir.tmpdir, "ihymns-distribution-#{SecureRandom.hex(4)}.p12")
+  begin
+    File.binwrite(cert_path, Base64.decode64(ENV.fetch("APPLE_CERTIFICATE")))
+    import_certificate(
+      certificate_path: cert_path,
+      certificate_password: ENV.fetch("APPLE_CERTIFICATE_PASSWORD", ""),
+      keychain_name: CI_KEYCHAIN_NAME,
+      keychain_password: CI_KEYCHAIN_PASSWORD
+    )
+  ensure
+    # The decoded .p12 is sensitive — it never needs to outlive this one
+    # import step, so it's removed immediately rather than left for the
+    # runner's own teardown to clean up.
+    FileUtils.rm_f(cert_path)
+  end
+end
+
+# Builds the App Store Connect API key object every upload action needs.
+# Built fresh from the three existing org secrets (owner runbook §E) —
+# `ASC_API_KEY` is expected to hold the RAW `.p8` file contents (the
+# BEGIN/END PRIVATE KEY block pasted whole, per the owner's own preference
+# for multi-line secrets), hence `is_key_content_base64: false`. If the
+# owner's secret instead holds a base64-wrapped key, flip that one flag —
+# nothing else about this lane changes.
+private_lane :asc_api_key do
+  app_store_connect_api_key(
+    key_id: ENV.fetch("ASC_KEY_ID"),
+    issuer_id: ENV.fetch("ASC_ISSUER_ID"),
+    key_content: ENV.fetch("ASC_API_KEY"),
+    is_key_content_base64: false,
+    in_house: false   # MWBM Partners is a standard Apple Developer Program account, not Enterprise
+  )
+end
+
+# Shared setup for every "build the real app" lane (alpha/beta/release):
+# regenerate the project, stamp the build number, sign, import the cert,
+# mint the API key, then archive BOTH the iOS scheme (embeds Watch +
+# Widgets automatically) and the tvOS scheme. Returns the two .ipa paths +
+# the api_key object so each public lane only has to decide WHERE to upload.
+private_lane :prepare_signed_archives do
+  regenerate_project
+  bump_build
+
+  # Automatic signing for every target/configuration in one call, pointed
+  # at the org's team — the generated project.yml sets no DEVELOPMENT_TEAM/
+  # CODE_SIGN_STYLE itself (deliberately: signing is a CI/ops concern, not a
+  # source-of-truth-for-the-app-shape concern), so this is the one place
+  # that gets set, fresh, every run.
+  update_code_signing_settings(
+    use_automatic_signing: true,
+    path: XCODEPROJ_PATH,
+    team_id: ENV.fetch("APPLE_TEAM_ID")
+  )
+
+  import_distribution_certificate
+  api_key = asc_api_key
+
+  ios_ipa = archive_scheme(scheme: "iHymns", extra_xcargs: "-destination 'generic/platform=iOS'")
+  tv_ipa  = archive_scheme(scheme: "iHymnsTV")
+
+  { ios_ipa: ios_ipa, tv_ipa: tv_ipa, api_key: api_key }
+end
+
+# ---------------------------------------------------------------------------
+# Public lanes — these are what `.github/workflows/apple-deploy.yml` and a
+# human at a terminal actually invoke.
+# ---------------------------------------------------------------------------
+
+desc "Regenerate the Xcode project and run the iHymnsKit package test suite (fast loop, no signing, macOS host)."
+lane :test do
+  regenerate_project
+  sh("cd #{KIT_DIR.shellescape} && swift test")
+end
+
+desc "Build + archive iOS (with embedded Watch/Widgets) and tvOS, upload both to TestFlight INTERNAL. Triggered by pushes to `alpha`."
+lane :alpha do
+  archives = prepare_signed_archives
+  upload_testflight_build(ipa: archives[:ios_ipa], api_key: archives[:api_key], external: false, groups: nil)
+  upload_testflight_build(ipa: archives[:tv_ipa],  api_key: archives[:api_key], external: false, groups: nil)
+end
+
+desc "Build + archive iOS (with embedded Watch/Widgets) and tvOS, upload both to TestFlight EXTERNAL group(s). Triggered by pushes to `beta`."
+lane :beta do
+  archives = prepare_signed_archives
+  # Group names match the owner runbook §D.7 App Store Connect setup
+  # ("iOS Beta" / "tvOS Beta" external TestFlight groups). If a group
+  # doesn't exist yet in App Store Connect, `pilot` creates it automatically
+  # on first upload.
+  upload_testflight_build(ipa: archives[:ios_ipa], api_key: archives[:api_key], external: true, groups: ["iOS Beta"])
+  upload_testflight_build(ipa: archives[:tv_ipa],  api_key: archives[:api_key], external: true, groups: ["tvOS Beta"])
+end
+
+desc "Build + archive iOS (with embedded Watch/Widgets) and tvOS, upload both to the App Store. Triggered by pushes to `main`."
+lane :release do
+  archives = prepare_signed_archives
+
+  # `submit_for_review: false` — the App Review dossier (rights statement,
+  # demo account, screen-recording notes for Service Mode) is Phase 4 work
+  # (strategy §3.4) that doesn't exist yet; this lane only gets the BUILD
+  # onto App Store Connect. `phased_release: true` is set now so the
+  # staged-rollout preference is already correct in App Store Connect for
+  # whenever a human (or a later automated Phase-4 lane) actually submits.
+  # `skip_screenshots`/`skip_metadata` per the task brief ("skip for now") —
+  # both come from `appApple/fastlane/metadata|screenshots/` once populated
+  # (strategy §3.1, App Review risk register), which is also Phase-4 work.
+  common_options = {
+    api_key: archives[:api_key],
+    skip_screenshots: true,
+    skip_metadata: true,
+    skip_app_version_update: true,
+    submit_for_review: false,
+    phased_release: true,
+    precheck_include_in_app_purchases: false,
+    force: true   # skip deliver's interactive HTML-diff confirmation prompt (non-interactive CI)
+  }
+
+  upload_to_app_store(**common_options.merge(ipa: archives[:ios_ipa], platform: "ios"))
+  upload_to_app_store(**common_options.merge(ipa: archives[:tv_ipa], platform: "appletvos"))
+end
+
+# ---------------------------------------------------------------------------
+# Keychain cleanup — runs after ANY lane finishes (success or failure) so the
+# ephemeral CI keychain never lingers. GitHub-hosted macOS runners are
+# themselves ephemeral per job, so this is belt-and-braces rather than
+# load-bearing, but it matters on a future self-hosted runner and is the
+# behaviour fastlane's own `create_keychain` docs recommend pairing with.
+# ---------------------------------------------------------------------------
+after_all do |_lane|
+  delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+end
+
+error do |_lane, _exception|
+  delete_keychain(name: CI_KEYCHAIN_NAME) if File.exist?(CI_KEYCHAIN_PATH)
+end
