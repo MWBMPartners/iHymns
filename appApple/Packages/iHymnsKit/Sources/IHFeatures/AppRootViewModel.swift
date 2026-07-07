@@ -25,6 +25,16 @@
 // custody rules; a shared library type constructing its own Keychain
 // access-group or a hard-coded file path would bake shell-specific
 // decisions into code that has no business making them.
+//
+// #1399 UPDATE — the E2E slice adds the catalogue-browsing state
+// `CatalogueListView` renders directly against this view model (per this
+// task's brief: "AppRootViewModel: on appear, APIClient.songsIndex() → hold
+// [SongSummary]; a search field filters locally... loading/error/empty
+// states mapped from APIError"), plus a `songDetail(id:)` pass-through
+// `SongDetailViewModel` calls into — mirroring `cachedSongSummaries()`'s
+// existing "expose the operation, not the engine" pattern below, so
+// `apiClient` itself stays `private` rather than leaking out to every
+// screen that needs one network call.
 import Foundation
 import IHAPI
 import IHAuth
@@ -47,6 +57,18 @@ public final class AppRootViewModel {
     /// ELI5: "Are we signed in?" — safe for any SwiftUI view to read
     /// directly, no `await` needed.
     public private(set) var sessionState: SessionState = .signedOut
+
+    /// The current load state of the slim catalogue index (#1399) —
+    /// `CatalogueListView` renders its loading/error/list states directly
+    /// from this. `[SongSummary]` (not a bare `Bool`/`String` pair) so a
+    /// `.loaded` payload IS the data a view needs, no second lookup.
+    public private(set) var catalogueLoadState: LoadState<[SongSummary]> = .idle
+
+    /// Local search text, bound directly to a SwiftUI `.searchable(text:)`
+    /// — filtering is entirely client-side (strategy §2.2's "search text/
+    /// number"; the whole slim index comfortably fits in memory, per this
+    /// task's "the index is small enough" design call).
+    public var searchText: String = ""
 
     private let sessionController: SessionController
     private let apiClient: APIClient
@@ -106,6 +128,62 @@ public final class AppRootViewModel {
         try await offlineStore.allSongSummaries()
     }
 
+    /// The songs matching `searchText` — matches on title, display number,
+    /// or songbook abbreviation/name, case-insensitively. The unfiltered
+    /// list (still empty until `loadCatalogue()` completes) when
+    /// `searchText` is empty.
+    ///
+    /// ELI5: "Of the songs we've loaded, which ones match what I typed?"
+    public var filteredSongs: [SongSummary] {
+        guard case .loaded(let songs) = catalogueLoadState else { return [] }
+        guard !searchText.isEmpty else { return songs }
+
+        let needle = searchText.lowercased()
+        return songs.filter {
+            $0.title.lowercased().contains(needle)
+                || $0.displayNumber.contains(needle)
+                || $0.songbookAbbreviation.lowercased().contains(needle)
+                || $0.songbookName.lowercased().contains(needle)
+        }
+    }
+
+    /// Fetches the catalogue index over the network — but only if it
+    /// hasn't already been fetched (or isn't currently mid-fetch). Safe to
+    /// call from `CatalogueListView`'s `.task {}` on every re-appearance
+    /// (e.g. navigating back from a song and returning to the list) without
+    /// re-issuing the network call each time.
+    ///
+    /// ELI5: "Get the song list, but only if we don't already have it."
+    public func loadCatalogueIfNeeded() async {
+        guard case .idle = catalogueLoadState else { return }
+        await loadCatalogue()
+    }
+
+    /// Forces a catalogue (re)fetch regardless of current state — the hook
+    /// a future manual "retry"/pull-to-refresh action calls into.
+    ///
+    /// ELI5: "Go get the song list right now, even if we already tried."
+    public func loadCatalogue() async {
+        catalogueLoadState = .loading
+        do {
+            let songs = try await apiClient.songsIndex()
+            catalogueLoadState = .loaded(songs)
+        } catch let error as APIError {
+            catalogueLoadState = .error(error.userFacingMessage)
+        } catch {
+            catalogueLoadState = .error("Something went wrong loading the song list. Please try again.")
+        }
+    }
+
+    /// Fetches one full song record — a thin pass-through to `APIClient`,
+    /// exactly like `cachedSongSummaries()`'s read-through above, so
+    /// `SongDetailViewModel` (#1399) never needs the `APIClient` itself.
+    ///
+    /// ELI5: "Give me everything about this one song."
+    public func songDetail(id: SongID) async throws -> SongDetail {
+        try await apiClient.songDetail(id: id)
+    }
+
     /// Starts a `Task` that mirrors every `SessionState` change published by
     /// `sessionController` onto `sessionState`.
     ///
@@ -129,5 +207,46 @@ public final class AppRootViewModel {
                 self.sessionState = state
             }
         }
+    }
+}
+
+// MARK: - Live composition (#1399)
+
+extension AppRootViewModel {
+    /// Builds the "real" four-engine composition every live app shell
+    /// should use — Keychain-backed auth, the given API environment, and an
+    /// in-memory offline cache — centralised here so this exact wiring is
+    /// defined ONCE rather than repeated (and inevitably drifting) across
+    /// `IHymnsApp.swift`/a future `IHymnsTVApp.swift`/`IHymnsWatchApp.swift`
+    /// real-screen wiring.
+    ///
+    /// ELI5: "Build me the real app, talking to this environment."
+    ///
+    /// DETAILED: The on-disk GRDB path (rather than this in-memory one)
+    /// lands with strategy §3.4's "#187 offline — GRDB+FTS5 + bulk download"
+    /// Phase-1 work, once there's an actual offline-save feature to
+    /// populate it; an in-memory `OfflineStore` is the honest placeholder
+    /// until then (matching what every existing test in this package
+    /// already does via `OfflineStore(path: nil)`). `OfflineStore.init`
+    /// only throws on a genuine SQLite-open failure, which — for an
+    /// in-memory database — is not a realistic failure mode on any
+    /// supported platform; `try!` here is the same "developer-known-safe,
+    /// force it" posture this package already applies to constant URL
+    /// literals (see `APIEnvironment.baseURL`), not a new precedent.
+    @MainActor
+    public static func makeLive(environment: APIEnvironment) -> AppRootViewModel {
+        let apiClient = APIClient(environment: environment)
+        let tokenStore = KeychainTokenStore()
+        let sessionController = SessionController(tokenStore: tokenStore, apiClient: apiClient)
+        // swiftlint:disable:next force_try
+        let offlineStore = try! OfflineStore(path: nil)
+        let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)
+
+        return AppRootViewModel(
+            sessionController: sessionController,
+            apiClient: apiClient,
+            offlineStore: offlineStore,
+            liveFollowEngine: liveFollowEngine
+        )
     }
 }

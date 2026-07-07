@@ -69,9 +69,11 @@ targets:
       # IHDesign (tokens/glass wrappers) directly — both declared explicitly
       # even though IHFeatures already depends on IHDesign transitively, so
       # this target's own `import IHDesign` resolves without relying on
-      # re-export behaviour.
+      # re-export behaviour. `IHAPI` is listed too (#1399) — `IHymnsApp.swift`
+      # imports it directly for `APIEnvironment.dev` when building the real
+      # `AppRootViewModel` via `AppRootViewModel.makeLive(environment:)`.
       - package: iHymnsKit
-        products: [IHFeatures, IHDesign]
+        products: [IHFeatures, IHDesign, IHAPI]
       # The watch companion and the widgets extension both embed into the
       # iOS binary specifically (Apple's own convention for a watch
       # companion / widget host) — `destinationFilters: [iOS]` keeps them

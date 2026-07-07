@@ -28,8 +28,12 @@ struct AppRootViewModelTests {
     }
 
     private func makeViewModel() throws -> AppRootViewModel {
-        let sessionController = SessionController(tokenStore: InMemoryTokenStore())
+        // #1398: `SessionController` now composes an `APIClient` too — built
+        // first so both it and the view model itself share the exact same
+        // instance, matching how `AppRootViewModel.makeLive(environment:)`
+        // wires the real app.
         let apiClient = APIClient(environment: .dev)
+        let sessionController = SessionController(tokenStore: InMemoryTokenStore(), apiClient: apiClient)
         let offlineStore = try OfflineStore(path: nil)
         let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)
 
@@ -56,8 +60,8 @@ struct AppRootViewModelTests {
 
     @Test("sessionState mirrors a sign-in that happens on the SessionController actor")
     func sessionStateMirrorsSignIn() async throws {
-        let sessionController = SessionController(tokenStore: InMemoryTokenStore())
         let apiClient = APIClient(environment: .dev)
+        let sessionController = SessionController(tokenStore: InMemoryTokenStore(), apiClient: apiClient)
         let viewModel = AppRootViewModel(
             sessionController: sessionController,
             apiClient: apiClient,
