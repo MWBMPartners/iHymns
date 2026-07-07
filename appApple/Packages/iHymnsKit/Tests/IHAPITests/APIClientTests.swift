@@ -53,17 +53,43 @@ struct APIClientTests {
         #expect(APIClient.classify(httpStatus: 200, retryAfterSeconds: nil) == nil)
     }
 
-    @Test("Decodes a songs_index JSON array into SongSummary values")
+    @Test("Decodes a real-shape songs_index envelope into SongSummary values")
     func decodesSongsIndex() throws {
+        // Real payload shape: a top-level `{"songs": [...]}` envelope (NOT
+        // a bare array — the original Phase-0 stub assumed a bare array,
+        // which would have thrown `.decoding` against every real response;
+        // see `SongsIndexDecoding.swift`'s file header for the #1396 fix).
         let json = Data("""
-        [
-            { "songId": "MP-1", "title": "Song One", "songbookAbbreviation": "MP", "displayNumber": "1" },
-            { "songId": "MP-2", "title": "Song Two", "songbookAbbreviation": "MP", "displayNumber": "2" }
-        ]
+        {
+            "songs": [
+                { "id": "MP-1", "number": 1, "title": "Song One", "songbook": "MP", "songbookName": "Mission Praise", "language": "en", "hasAudio": false, "hasSheetMusic": false },
+                { "id": "MP-2", "number": 2, "title": "Song Two", "songbook": "MP", "songbookName": "Mission Praise", "language": "en", "hasAudio": true, "hasSheetMusic": true }
+            ]
+        }
         """.utf8)
 
         let songs = try APIClient.decodeSongsIndex(from: json)
         #expect(songs.count == 2)
         #expect(songs[0].title == "Song One")
+    }
+
+    @Test("A malformed row's id is silently dropped, not a whole-array failure")
+    func decodesSongsIndexTolerantOfOneMalformedRow() throws {
+        // The live catalogue really does carry a handful of legacy rows
+        // whose `id` isn't `<letters>-<digits>` (e.g. `AH-1777739808685-j`
+        // — see `Tests/Fixtures/songs_index.json`'s README). One bad row
+        // must never sink the other 16,000+ good ones.
+        let json = Data("""
+        {
+            "songs": [
+                { "id": "MP-1", "number": 1, "title": "Good Row", "songbook": "MP", "songbookName": "Mission Praise", "language": "en", "hasAudio": false, "hasSheetMusic": false },
+                { "id": "AH-1777739808685-j", "number": 48, "title": "Legacy Row", "songbook": "AH", "songbookName": "Advent Hymnal", "language": "en", "hasAudio": false, "hasSheetMusic": false }
+            ]
+        }
+        """.utf8)
+
+        let songs = try APIClient.decodeSongsIndex(from: json)
+        #expect(songs.count == 1)
+        #expect(songs[0].title == "Good Row")
     }
 }
