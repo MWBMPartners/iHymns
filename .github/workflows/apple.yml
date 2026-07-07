@@ -1,0 +1,65 @@
+# Apple CI — native app build + quality gates (#1395)
+#
+# Runs on the Apple branch + PRs that touch appApple/. Proves the skeleton
+# stays green: quality gates -> SwiftLint -> package tests -> generate + build.
+# No signing (build only). Deploy to TestFlight/App Store is a SEPARATE workflow
+# (apple-deploy.yml, #1400) triggered on alpha/beta/main.
+name: Apple CI
+
+on:
+  push:
+    branches: [feat/apple-universal]
+    paths:
+      - 'appApple/**'
+      - '.github/workflows/apple.yml'
+  pull_request:
+    paths:
+      - 'appApple/**'
+  workflow_dispatch:
+
+concurrency:
+  group: apple-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          # Pin to an installed Xcode 26 toolchain (OS 26 SDKs = Liquid Glass).
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | head -1)" || true
+          xcodebuild -version
+          swift --version
+
+      - name: Install tooling
+        run: brew install xcodegen swiftlint
+
+      - name: Quality gates (LOC budget + no-secrets)
+        run: |
+          bash appApple/Scripts/loc-budget.sh
+          bash appApple/Scripts/no-secrets-grep.sh
+
+      - name: SwiftLint
+        run: swiftlint --config appApple/.swiftlint.yml appApple
+
+      - name: iHymnsKit package tests
+        working-directory: appApple/Packages/iHymnsKit
+        run: swift test
+
+      - name: Generate Xcode project
+        working-directory: appApple
+        run: xcodegen generate
+
+      - name: Build (macOS destination — proves the skeleton)
+        working-directory: appApple
+        run: |
+          xcodebuild \
+            -project iHymns.xcodeproj \
+            -scheme iHymns \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

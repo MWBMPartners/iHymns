@@ -1,0 +1,94 @@
+# .swiftlint.yml
+#
+# ELI5: The rulebook SwiftLint reads to check every Swift file under
+# `appApple/` for style/quality problems automatically, instead of relying
+# on a human reviewer to spot them by eye every time.
+#
+# DETAILED: One of the three P0 quality gates from strategy §3.3.4/#1395
+# ("SwiftLint + swift-format + the LOC-budget guard... + no-secrets grep —
+# all land P0"), run locally (pre-commit is left to each contributor's own
+# habits for now — CI is the enforced gate, see `.github/workflows/apple.yml`)
+# and in CI via:
+#
+#   swiftlint --config appApple/.swiftlint.yml appApple
+#
+# Rule selection philosophy for Phase 0: start from SwiftLint's own
+# well-maintained default rule set (https://realm.github.io/SwiftLint/rule-directory.html)
+# rather than hand-picking every rule from scratch, opt IN to a small,
+# high-value set of extra rules that catch real Swift-6-era foot-guns
+# (`unused_import`, `force_unwrapping` awareness, redundant `Void`, etc.),
+# and disable exactly the handful of style rules that actively fight this
+# codebase's documentation-heavy convention (`.claude/CLAUDE.md`'s standing
+# task #1: every file/type gets an ELI5 + DETAILED doc comment — long doc
+# comments are a FEATURE here, not a smell, so line-length and
+# doc-comment-shape rules are relaxed rather than fought line by line).
+included:
+  - Packages/iHymnsKit/Sources
+  - Packages/iHymnsKit/Tests
+  - Apps
+
+excluded:
+  - Packages/iHymnsKit/.build
+  - Packages/iHymnsKit/.swiftpm
+  - "**/*.xcodeproj"
+  - Apps/iHymnsWidgets/Generated
+
+# Every rule in SwiftLint's default set stays ON except the two disabled
+# below — Phase 0's codebase is small enough to start from the strictest
+# reasonable baseline rather than opting into rules piecemeal as violations
+# are noticed later.
+disabled_rules:
+  # This codebase's doc comments are intentionally long (ELI5 + DETAILED +
+  # doc links, per `.claude/CLAUDE.md`'s annotation standard) — capping
+  # line length would either truncate that convention or force awkward
+  # mid-sentence wraps that hurt readability more than they help.
+  - line_length
+  # SwiftLint's default heuristic for this rule doesn't understand the
+  # ELI5/DETAILED doc-comment convention's structure and flags accurate,
+  # intentional comments as "not real documentation." Type/file-level
+  # documentation is enforced by review + the standing-tasks checklist
+  # instead (`.claude/standing-tasks.md`), not by this automated rule.
+  - missing_docs
+
+opt_in_rules:
+  # Flags `-> Void` / `: Void` written out explicitly instead of the
+  # idiomatic omission — a small but real Swift-style consistency win.
+  - redundant_void_return
+  # Prefers `[Element]`/`[Key: Value]` sugar over `Array<Element>`/
+  # `Dictionary<Key, Value>` spelled out — matches this codebase's style
+  # throughout iHymnsKit.
+  - syntactic_sugar
+  # Encourages `private(set)` over exposing a fully mutable property when
+  # only the owning type should mutate it — reinforces the actor/value-type
+  # encapsulation this codebase leans on heavily (e.g. `SessionController`).
+  - private_over_fileprivate
+  # Surfaces empty `Task { }`/closure bodies and similar no-op blocks that
+  # usually mean a TODO got left behind by accident.
+  - empty_count
+
+# `unused_import` needs the deeper `swiftlint analyze` mode (a full build
+# log/compilation database), which isn't part of the plain `swiftlint lint`
+# invocation this repo's quality gate runs — listed here so the intent is
+# documented and analyze mode picks it up automatically if/when a CI step
+# adds it.
+analyzer_rules:
+  - unused_import
+
+# Doc-comment-heavy files (see rationale above) push well past SwiftLint's
+# stock 400-line default; the REAL enforcement of "extract when a file gets
+# too big" is the LOC-budget script (`Scripts/loc-budget.sh`), which counts
+# only non-comment/non-blank lines — a much better proxy for "this file is
+# doing too much" than raw line count including documentation.
+file_length:
+  warning: 700
+  error: 1000
+
+# Swift Testing's `@Test`/`@Suite` attribute macros and Testing's `#expect`/
+# `#require` free functions read most naturally as short, single-purpose
+# test methods — keep the default type-body-length ceiling but don't count
+# test suites against the (lower) function-body-length default, since a
+# table-driven `@Test(arguments:)` test can legitimately run a few more
+# lines than a typical production function.
+function_body_length:
+  warning: 60
+  error: 100
