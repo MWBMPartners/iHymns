@@ -8,18 +8,24 @@
 // proves the retry policy actually retries a 503 and actually does NOT
 // retry a 401.
 //
-// DETAILED: `.serialized` on the `@Suite` below is load-bearing — see
-// `MockURLProtocol.swift`'s doc comment on why its static `requestHandler`
-// is safe ONLY because at most one test in this file runs at a time.
-// `#expect`/`#require` are deliberately NOT used inside a
-// `requestHandler` closure itself — `URLProtocol.startLoading()` can run on
-// an arbitrary URLSession-internal queue outside the test's own
-// structured-concurrency `Task`, and Swift Testing's issue-recording macros
-// rely on a task-local pointing back to the current test. Every request the
-// mock receives is instead captured into a `LockedBox` and asserted on
-// AFTER `await`-ing the client call, back on the test's own task.
+// DETAILED: `.serialized` on the `@Suite` below only guarantees THIS file's
+// own tests run one at a time relative to EACH OTHER — it does NOT prevent
+// a DIFFERENT suite (e.g. `IHAuthTests`' `SessionControllerTests`, which
+// also drives `MockURLProtocol` for #1398) from running concurrently and
+// stomping on the same shared `requestHandler` slot. Every test below
+// additionally wraps its handler-setting body in
+// `MockTransportLock.shared.withLock { ... }` (`IHAPITestSupport`) for that
+// cross-suite exclusivity — see that file's header for why. `#expect`/
+// `#require` are deliberately NOT used inside a `requestHandler` closure
+// itself — `URLProtocol.startLoading()` can run on an arbitrary
+// URLSession-internal queue outside the test's own structured-concurrency
+// `Task`, and Swift Testing's issue-recording macros rely on a task-local
+// pointing back to the current test. Every request the mock receives is
+// instead captured into a `LockedBox` and asserted on AFTER `await`-ing the
+// client call, back on the test's own task.
 import Foundation
 import Testing
+import IHAPITestSupport
 import IHTestFixtures
 @testable import IHAPI
 @testable import IHModels
@@ -61,109 +67,122 @@ struct NetworkedAPIClientTests {
 
     @Test("songsIndex() decodes the real fixture end-to-end through the client")
     func songsIndexDecodesThroughClient() async throws {
-        let fixture = try ContractFixtures.songsIndex()
-        let seenRequest = LockedBox<URLRequest>()
-        MockURLProtocol.requestHandler = { request in
-            seenRequest.set(request)
-            return (Self.response(for: request, status: 200), fixture)
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songsIndex()
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songs = try await client.songsIndex()
+
+            #expect(seenRequest.current?.url?.query?.contains("action=songs_index") == true)
+            // 84 rows in the fixture, 10 of which have a legacy id `SongID`
+            // can't parse — see `Tests/Fixtures/README.md`.
+            #expect(songs.count == 74)
         }
-        defer { MockURLProtocol.requestHandler = nil }
-
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
-        let songs = try await client.songsIndex()
-
-        #expect(seenRequest.current?.url?.query?.contains("action=songs_index") == true)
-        // 84 rows in the fixture, 10 of which have a legacy id `SongID`
-        // can't parse — see `Tests/Fixtures/README.md`.
-        #expect(songs.count == 74)
     }
 
     @Test("songDetail(id:) decodes the real fixture end-to-end through the client")
     func songDetailDecodesThroughClient() async throws {
-        let fixture = try ContractFixtures.songDetail()
-        let seenRequest = LockedBox<URLRequest>()
-        MockURLProtocol.requestHandler = { request in
-            seenRequest.set(request)
-            return (Self.response(for: request, status: 200), fixture)
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songDetail()
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            let detail = try await client.songDetail(id: songId)
+
+            #expect(seenRequest.current?.url?.query?.contains("action=song_detail") == true)
+            #expect(seenRequest.current?.url?.query?.contains("id=MP-0031") == true)
+            #expect(detail.title == "Amazing grace")
+            #expect(detail.components.count == 4)
         }
-        defer { MockURLProtocol.requestHandler = nil }
-
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
-        let songId = try #require(SongID(rawValue: "MP-0031"))
-        let detail = try await client.songDetail(id: songId)
-
-        #expect(seenRequest.current?.url?.query?.contains("action=song_detail") == true)
-        #expect(seenRequest.current?.url?.query?.contains("id=MP-0031") == true)
-        #expect(detail.title == "Amazing grace")
-        #expect(detail.components.count == 4)
     }
 
     @Test("songbooks() decodes the real fixture end-to-end through the client")
     func songbooksDecodesThroughClient() async throws {
-        let fixture = try ContractFixtures.songbooks()
-        MockURLProtocol.requestHandler = { request in
-            (Self.response(for: request, status: 200), fixture)
-        }
-        defer { MockURLProtocol.requestHandler = nil }
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songbooks()
+            MockURLProtocol.requestHandler = { request in
+                (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
 
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
-        let books = try await client.songbooks()
-        #expect(books.count == 54)
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let books = try await client.songbooks()
+            #expect(books.count == 54)
+        }
     }
 
     @Test("A 503 with Retry-After retries, then succeeds")
     func retriesOnMaintenanceThenSucceeds() async throws {
-        let fixture = try ContractFixtures.songbooks()
-        let callCount = LockedCounter()
-        MockURLProtocol.requestHandler = { request in
-            let attempt = callCount.increment()
-            if attempt < 2 {
-                return (Self.response(for: request, status: 503, headers: ["Retry-After": "0"]), Data())
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songbooks()
+            let callCount = LockedCounter()
+            MockURLProtocol.requestHandler = { request in
+                let attempt = callCount.increment()
+                if attempt < 2 {
+                    return (Self.response(for: request, status: 503, headers: ["Retry-After": "0"]), Data())
+                }
+                return (Self.response(for: request, status: 200), fixture)
             }
-            return (Self.response(for: request, status: 200), fixture)
-        }
-        defer { MockURLProtocol.requestHandler = nil }
+            defer { MockURLProtocol.requestHandler = nil }
 
-        // Tiny base delay: the `Retry-After: 0` header makes the retry
-        // near-instant anyway, but a small base keeps this test fast even
-        // if the retry policy's exponential-backoff branch is ever hit.
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
-        let books = try await client.songbooks()
-        #expect(books.count == 54)
-        #expect(callCount.current == 2)
+            // Tiny base delay: the `Retry-After: 0` header makes the retry
+            // near-instant anyway, but a small base keeps this test fast
+            // even if the retry policy's exponential-backoff branch is
+            // ever hit.
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
+            let books = try await client.songbooks()
+            #expect(books.count == 54)
+            #expect(callCount.current == 2)
+        }
     }
 
     @Test("A 401 is never retried — surfaces immediately as .unauthorized")
     func doesNotRetryUnauthorized() async throws {
-        let callCount = LockedCounter()
-        MockURLProtocol.requestHandler = { request in
-            callCount.increment()
-            return (Self.response(for: request, status: 401), Data())
-        }
-        defer { MockURLProtocol.requestHandler = nil }
+        try await MockTransportLock.shared.withLock {
+            let callCount = LockedCounter()
+            MockURLProtocol.requestHandler = { request in
+                callCount.increment()
+                return (Self.response(for: request, status: 401), Data())
+            }
+            defer { MockURLProtocol.requestHandler = nil }
 
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
-        await #expect(throws: APIError.unauthorized) {
-            _ = try await client.songbooks()
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
+            await #expect(throws: APIError.unauthorized) {
+                _ = try await client.songbooks()
+            }
+            #expect(callCount.current == 1)
         }
-        #expect(callCount.current == 1)
     }
 
     @Test("A persistent 503 exhausts retries and still surfaces .maintenance")
     func exhaustsRetriesOnPersistentMaintenance() async throws {
-        let callCount = LockedCounter()
-        MockURLProtocol.requestHandler = { request in
-            callCount.increment()
-            return (Self.response(for: request, status: 503, headers: ["Retry-After": "0"]), Data())
-        }
-        defer { MockURLProtocol.requestHandler = nil }
+        try await MockTransportLock.shared.withLock {
+            let callCount = LockedCounter()
+            MockURLProtocol.requestHandler = { request in
+                callCount.increment()
+                return (Self.response(for: request, status: 503, headers: ["Retry-After": "0"]), Data())
+            }
+            defer { MockURLProtocol.requestHandler = nil }
 
-        let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
-        await #expect(throws: APIError.maintenance(retryAfterSeconds: 0)) {
-            _ = try await client.songbooks()
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession(), retryBaseDelaySeconds: 0.001)
+            await #expect(throws: APIError.maintenance(retryAfterSeconds: 0)) {
+                _ = try await client.songbooks()
+            }
+            // maxAttempts is 3 — the first try plus two retries, never more.
+            #expect(callCount.current == 3)
         }
-        // maxAttempts is 3 — the first try plus two retries, never more.
-        #expect(callCount.current == 3)
     }
 
     // MARK: - Optional live-integration test (guarded, off by default)

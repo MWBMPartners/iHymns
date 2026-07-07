@@ -14,6 +14,13 @@
 // tractable and keeps the YAML as the *reference* (feeding contract tests
 // that decode live fixtures in CI) rather than as generated-code input.
 // `Endpoint` is the shared shape every one of those ~60 mappings will use.
+//
+// #1398 UPDATE — `auth_login`/`auth_logout` are the first two POST-with-a-
+// JSON-body endpoints this catalogue needs (every #1397 catalogue read was
+// a bodyless GET). `httpMethod`/`httpBody` are added below with defaults
+// (`"GET"` / `nil`) that make every EXISTING call site — every one of them
+// still builds a bodyless GET `Endpoint` — behave identically to before;
+// only the new `AuthEndpoints.swift` factories opt into the POST shape.
 import Foundation
 
 /// Describes one `?action=` call against the iHymns API — everything
@@ -51,10 +58,31 @@ public struct Endpoint: Sendable, Equatable {
     /// `songs_index`) leave this `false`.
     public let requiresAuth: Bool
 
-    public init(action: String, queryItems: [(name: String, value: String)] = [], requiresAuth: Bool = false) {
+    /// The HTTP method to send this request with. Every #1397 catalogue
+    /// read is a bodyless `"GET"` (the default); `auth_login`/`auth_logout`
+    /// (#1398, `AuthEndpoints.swift`) are the first `"POST"` endpoints.
+    public let httpMethod: String
+
+    /// A pre-encoded JSON request body, or `nil` for a bodyless request
+    /// (every GET). Encoded up front by the `Endpoint` factory (e.g.
+    /// `Endpoint.authLogin(username:password:)`) rather than inside
+    /// `APIClient`, keeping `APIClient.makeURLRequest` a dumb "attach these
+    /// bytes" step with no knowledge of any individual endpoint's payload
+    /// shape.
+    public let httpBody: Data?
+
+    public init(
+        action: String,
+        queryItems: [(name: String, value: String)] = [],
+        requiresAuth: Bool = false,
+        httpMethod: String = "GET",
+        httpBody: Data? = nil
+    ) {
         self.action = action
         self.queryItems = queryItems
         self.requiresAuth = requiresAuth
+        self.httpMethod = httpMethod
+        self.httpBody = httpBody
     }
 
     /// `Equatable` is hand-written (rather than synthesized) only because
@@ -63,6 +91,8 @@ public struct Endpoint: Sendable, Equatable {
     public static func == (lhs: Endpoint, rhs: Endpoint) -> Bool {
         lhs.action == rhs.action
             && lhs.requiresAuth == rhs.requiresAuth
+            && lhs.httpMethod == rhs.httpMethod
+            && lhs.httpBody == rhs.httpBody
             && lhs.queryItems.elementsEqual(rhs.queryItems, by: { $0.name == $1.name && $0.value == $1.value })
     }
 }

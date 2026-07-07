@@ -99,6 +99,27 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
+        // MARK: - IHAPITestSupport (test-only support target, no product —
+        // depended on directly by every test target below that needs to
+        // mock networking)
+        //
+        // Holds `MockURLProtocol` (#1397's `URLProtocol`-stubbing harness)
+        // and `LockedCounter` (a manually-synchronized counter safe to
+        // capture in a `@Sendable` mock request handler). Originally lived
+        // ONLY inside `IHAPITests` — #1398/#1399 need the exact same mock
+        // transport from `IHAuthTests` (`SessionController`'s `auth_login`/
+        // `auth_logout` tests) and `IHFeaturesTests` (`AppRootViewModel`'s
+        // catalogue-load tests), so it moved here rather than being
+        // copy-pasted into each — the repo's modularity rule ("if a shared
+        // module already exists, reuse it — do not duplicate") applies just
+        // as much to test infrastructure as to product code, and mirrors
+        // exactly how `IHTestFixtures` above is already shared the same way.
+        .target(
+            name: "IHAPITestSupport",
+            path: "Tests/IHAPITestSupport",
+            swiftSettings: sharedSwiftSettings
+        ),
+
         // MARK: - IHModels (foundation layer — zero iHymnsKit deps)
         .target(
             name: "IHModels",
@@ -118,7 +139,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IHAPITests",
-            dependencies: ["IHAPI", "IHModels", "IHTestFixtures"],
+            dependencies: ["IHAPI", "IHModels", "IHTestFixtures", "IHAPITestSupport"],
             swiftSettings: sharedSwiftSettings
         ),
 
@@ -130,7 +151,10 @@ let package = Package(
         ),
         .testTarget(
             name: "IHAuthTests",
-            dependencies: ["IHAuth"],
+            // #1398: `SessionController` now composes a real `APIClient` —
+            // its tests need `IHAPI` directly (to construct one against a
+            // mocked `URLSession`) and `IHAPITestSupport` for that mock.
+            dependencies: ["IHAuth", "IHAPI", "IHAPITestSupport"],
             swiftSettings: sharedSwiftSettings
         ),
 
@@ -188,7 +212,15 @@ let package = Package(
         ),
         .testTarget(
             name: "IHFeaturesTests",
-            dependencies: ["IHFeatures", "IHAPI", "IHAuth", "IHLive", "IHModels", "IHPersistence"],
+            // #1399: the catalogue/detail view-model tests decode the same
+            // committed fixtures `IHAPITests`/`IHModelsTests` use, against
+            // the same `MockURLProtocol` mock transport — hence
+            // `IHTestFixtures`/`IHAPITestSupport` alongside the existing
+            // engine dependencies.
+            dependencies: [
+                "IHFeatures", "IHAPI", "IHAuth", "IHLive", "IHModels", "IHPersistence",
+                "IHTestFixtures", "IHAPITestSupport"
+            ],
             swiftSettings: sharedSwiftSettings
         ),
 

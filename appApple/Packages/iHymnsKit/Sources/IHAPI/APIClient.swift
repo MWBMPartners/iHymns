@@ -146,6 +146,15 @@ public actor APIClient {
         // documented on `APIEnvironment.baseURL` itself.
         // swiftlint:disable:next force_unwrapping
         var request = URLRequest(url: components!.url!)
+        request.httpMethod = endpoint.httpMethod
+
+        // #1398: attach a pre-encoded JSON body when the endpoint has one
+        // (e.g. `auth_login`'s username/password) — every #1397 catalogue
+        // read leaves `httpBody` `nil`, so this is a no-op for them.
+        if let body = endpoint.httpBody {
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        }
 
         // Every request — authenticated or not — carries this header so
         // the backend's `validateCsrfRequest()` same-origin check
@@ -176,6 +185,8 @@ public actor APIClient {
             return nil
         case 401:
             return .unauthorized
+        case 423:
+            return .accountLocked(retryAfterSeconds: retryAfterSeconds)
         case 429:
             return .rateLimited(retryAfterSeconds: retryAfterSeconds)
         case 503:
@@ -251,7 +262,17 @@ public actor APIClient {
     /// failure (transport-level `URLError`, non-2xx HTTP status, or any
     /// other thrown error) into the `APIError` taxonomy, so nothing but
     /// `APIError` ever escapes this actor's networking boundary.
-    private func performOnce(_ endpoint: Endpoint) async throws -> Data {
+    ///
+    /// DETAILED: Deliberately `internal` (module-visible), not `private` —
+    /// `APIClient+Auth.swift` (#1398) calls this directly for the
+    /// non-idempotent `auth_login`/`auth_logout` POSTs, which must NEVER
+    /// go through the retrying `performIdempotentGET` above (strategy §1.5:
+    /// "never auto-retry non-idempotent POSTs"). Splitting auth into its
+    /// own file (rather than growing this one further) keeps this file
+    /// under the repo's LOC-budget tripwire (`Scripts/loc-budget.sh`) — this
+    /// access-level relaxation is what makes that same-target file split
+    /// possible (`private` is file-scoped in Swift; `internal` is not).
+    func performOnce(_ endpoint: Endpoint) async throws -> Data {
         let request = Self.makeURLRequest(
             for: endpoint,
             in: environment,
@@ -318,17 +339,19 @@ public actor APIClient {
     /// -testable (`IHAPITests`) without spinning up the actor or any
     /// networking. `.maintenance`/`.rateLimited`/a 5xx `.server` and
     /// `.offline` (see `performOnce`'s reasoning above) are transient —
-    /// worth another attempt. `.unauthorized` (the token itself is bad) and
-    /// `.decoding` (the payload shape is wrong) are NOT — no amount of
-    /// retrying changes either outcome, so failing fast serves the caller
-    /// better than three attempts' worth of wasted latency.
+    /// worth another attempt. `.unauthorized` (the token itself is bad),
+    /// `.accountLocked` (retrying inside a ~3-attempt window can't outlast a
+    /// real lockout), and `.decoding` (the payload shape is wrong) are NOT —
+    /// no amount of retrying changes any of those outcomes, so failing fast
+    /// serves the caller better than three attempts' worth of wasted
+    /// latency.
     nonisolated private static func isRetryable(_ error: APIError) -> Bool {
         switch error {
         case .offline, .maintenance, .rateLimited:
             return true
         case .server(let status, _):
             return (500...599).contains(status)
-        case .unauthorized, .decoding:
+        case .unauthorized, .accountLocked, .decoding:
             return false
         }
     }

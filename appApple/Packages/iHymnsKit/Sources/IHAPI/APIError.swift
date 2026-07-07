@@ -45,6 +45,19 @@ public enum APIError: Error, Sendable, Equatable {
     /// ELI5: "You're not logged in (any more)."
     case unauthorized
 
+    /// The account is temporarily locked out after too many failed sign-in
+    /// attempts (HTTP 423 Locked) — distinct from `.unauthorized`, which
+    /// means "this specific credential/token is wrong/dead," not "wait and
+    /// try again." (#1398 — the web backend's brute-force guard today
+    /// answers with 429 `.rateLimited` for this case, per
+    /// `appWeb/public_html/api.php`'s `auth_login` handler; this case
+    /// exists so the native client is ready the moment a dedicated 423
+    /// lockout response lands server-side, without another taxonomy
+    /// change.)
+    ///
+    /// ELI5: "Too many wrong tries — this account is on a time-out."
+    case accountLocked(retryAfterSeconds: Int?)
+
     /// The per-token/per-presence-token rate limit was hit.
     ///
     /// ELI5: "Slow down — try again in a bit."
