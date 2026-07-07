@@ -1,0 +1,71 @@
+// Shared.xcconfig
+//
+// ELI5: The one settings file every app shell (iPhone/iPad/Mac, tvOS,
+// watchOS, widgets) reads from, so they all agree on "which Swift version,"
+// "how strict about concurrency," and "which OS is the oldest we support."
+//
+// DETAILED: Referenced from every target in `project.yml` via
+// `configFiles:` (never copy-pasted per target) — the repo-wide modularity
+// rule (`.claude/CLAUDE.md`) applied to build configuration itself: "when a
+// setting exists in more than one place, extract it into a shared file."
+// Mirrors `Packages/iHymnsKit/Package.swift`'s `sharedSwiftSettings` so the
+// SwiftPM-built library layer and the Xcode-built app-shell layer enforce
+// the EXACT same Swift 6 strict-concurrency posture (strategy §1.3) — a
+// mismatch here would mean `swift test` passes clean but Xcode's build of
+// the same code surfaces different concurrency diagnostics, or vice versa.
+//
+// Owner ground rule (strategy §0/§1.4): **minimum deployment = OS 26 on
+// every platform, no pre-26 fallback** — that audience is served by the
+// existing PWA instead. This is what lets every shared SwiftUI view lean on
+// Liquid Glass APIs unconditionally.
+//
+// XcodeGen only lets a target/project reference ONE `.xcconfig` per build
+// configuration (see `project.yml`'s top-level `configFiles:`), so
+// `Versioning.xcconfig` is pulled in via a plain xcconfig `#include` below
+// rather than being wired up as a second `configFiles` entry — this keeps
+// versioning in its own reviewable file (per the task brief) while every
+// target still only needs to reference `Shared.xcconfig` once.
+#include "Versioning.xcconfig"
+
+// MARK: - Swift language mode + concurrency
+//
+// SWIFT_VERSION here means the LANGUAGE MODE Xcode compiles against, not
+// the Swift toolchain version installed (that's whichever Xcode/toolchain
+// runs the build — see the repo root README/CI for the pinned Xcode 26.x).
+SWIFT_VERSION = 6.0
+
+// The Swift 6 concurrency-checking strictness dial. `complete` is the
+// strictest tier — every value crossing an isolation boundary must be
+// provably `Sendable`, matching iHymnsKit's `Package.swift` setting. See
+// https://www.swift.org/documentation/concurrency/ and the migration guide
+// https://www.swift.org/migration/documentation/migrationguide/.
+SWIFT_STRICT_CONCURRENCY = complete
+
+// A conservative, currently-relevant set of "upcoming feature" flags.
+// Swift 6 language mode already enables every SE-approved upcoming feature
+// tied to concurrency by default; these two are independent,
+// non-concurrency proposals still worth opting into explicitly for
+// forward-compatibility with a future language-mode bump.
+// - BareSlashRegexLiterals (SE-0354): allow `/regex/` literals without
+//   parentheses disambiguation noise.
+// - ExistentialAny (SE-0335): requires `any` before existential protocol
+//   types, making an existential's runtime-boxing cost visible at the call
+//   site instead of an easily-missed implicit cost.
+SWIFT_UPCOMING_FEATURE_BARE_SLASH_REGEX_LITERALS = YES
+SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY = YES
+
+// MARK: - Deployment targets (every platform, OS 26 floor)
+IPHONEOS_DEPLOYMENT_TARGET = 26.0
+MACOSX_DEPLOYMENT_TARGET = 26.0
+TVOS_DEPLOYMENT_TARGET = 26.0
+WATCHOS_DEPLOYMENT_TARGET = 26.0
+// visionOS's Xcode build-setting key is `XROS_DEPLOYMENT_TARGET` (visionOS
+// is internally named "xrOS"/"xros" throughout Apple's tooling).
+XROS_DEPLOYMENT_TARGET = 26.0
+
+// MARK: - Sensible modern-Xcode defaults
+// String catalogs / modern build system niceties that every target should
+// share; kept here (not per-target) for the same "one place to change it"
+// reason as everything else in this file.
+ENABLE_USER_SCRIPT_SANDBOXING = YES
+SWIFT_EMIT_LOC_STRINGS = YES

@@ -1,0 +1,152 @@
+# project.yml
+#
+# ELI5: The recipe XcodeGen reads to bake `iHymns.xcodeproj` from scratch
+# every time. We never hand-edit the generated `.xcodeproj` (it's
+# gitignored, see `.gitignore`) — we edit THIS file and re-run
+# `Scripts/bootstrap.sh` (or `xcodegen generate` directly).
+#
+# DETAILED: Implements strategy §1.1's project topology: one Xcode project,
+# three thin app shells (`iHymns` multiplatform, `iHymnsTV`, `iHymnsWatch`)
+# plus a widgets extension, with ~90% of real code living in the local
+# Swift package `Packages/iHymnsKit` instead of inside any Xcode target.
+# XcodeGen was chosen over Tuist (heavier) and a hand-maintained `.pbxproj`
+# (binary/plist-ish format, merge-hostile for an AI coding agent) precisely
+# because this YAML is diffable and reviewable like any other source file
+# (strategy §1.1). See https://github.com/yonaskolb/XcodeGen for the full
+# spec this file is written against (XcodeGen 2.45.x, `ProjectSpec.md`).
+name: iHymns
+
+options:
+  # Every target's group in the project navigator mirrors its folder
+  # structure on disk (e.g. `Apps/iHymns/Sources/...`) instead of one flat
+  # bucket — makes the generated project navigable without needing to
+  # cross-reference this file.
+  createIntermediateGroups: true
+  # Keep Xcode's own "helpful" auto-settings scoped to what we explicitly
+  # ask for — every build setting that matters is spelled out in
+  # `Config/*.xcconfig` or below, not left to product/platform preset
+  # guesswork.
+  settingPresets: all
+
+# One `.xcconfig` per configuration, shared by every target below (unless a
+# target overrides a specific key in its own `settings:` block). See
+# `Config/Shared.xcconfig`'s header comment for why `Versioning.xcconfig` is
+# pulled in via an xcconfig `#include` rather than a second `configFiles`
+# entry (XcodeGen only allows one xcconfig path per config here).
+configFiles:
+  Debug: Config/Shared.xcconfig
+  Release: Config/Shared.xcconfig
+
+# The one local Swift package holding ~90% of the app's real code (strategy
+# §1.2). `path` is relative to this file.
+packages:
+  iHymnsKit:
+    path: Packages/iHymnsKit
+
+targets:
+  # MARK: - iHymns (iOS / iPadOS / macOS / visionOS)
+  #
+  # ELI5: One target, THREE platforms — Xcode's "multiplatform app" model
+  # (Xcode 14+), not three copy-pasted targets. iPadOS isn't listed
+  # separately: it's part of the `iOS` destination (the task brief's own
+  # framing — "iPadOS is part of iOS").
+  iHymns:
+    type: application
+    supportedDestinations: [iOS, macOS, visionOS]
+    sources:
+      - path: Apps/iHymns/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ihymns
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: iHymns
+        # SwiftUI apps need no storyboard; this tells Xcode to synthesize
+        # an empty `UILaunchScreen` entry so iOS doesn't refuse to launch
+        # for want of a launch screen declaration.
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    dependencies:
+      # Every shell imports IHFeatures (shared screens/view models) and
+      # IHDesign (tokens/glass wrappers) directly — both declared explicitly
+      # even though IHFeatures already depends on IHDesign transitively, so
+      # this target's own `import IHDesign` resolves without relying on
+      # re-export behaviour.
+      - package: iHymnsKit
+        products: [IHFeatures, IHDesign]
+      # The watch companion and the widgets extension both embed into the
+      # iOS binary specifically (Apple's own convention for a watch
+      # companion / widget host) — `destinationFilters: [iOS]` keeps them
+      # OUT of the macOS/visionOS variants of this multiplatform target,
+      # which have no watch companion or widget host concept.
+      - target: iHymnsWatch
+        embed: true
+        destinationFilters: [iOS]
+      - target: iHymnsWidgets
+        embed: true
+        destinationFilters: [iOS]
+
+  # MARK: - iHymnsTV (tvOS)
+  #
+  # Deliberately the SAME bundle id as `iHymns` — that's what makes this one
+  # universal-purchase App Store listing rather than a second app (strategy
+  # §1.1/§3.1).
+  iHymnsTV:
+    type: application
+    platform: tvOS
+    sources:
+      - path: Apps/iHymnsTV/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ihymns
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: iHymns
+    dependencies:
+      - package: iHymnsKit
+        products: [IHFeatures, IHDesign]
+
+  # MARK: - iHymnsWatch (watchOS — embedded companion)
+  #
+  # Modern single-target watchOS app (no separate WatchKit Extension
+  # target needed) — `WKApplication` marks it as launchable standalone.
+  iHymnsWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: Apps/iHymnsWatch/Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ihymns.watchkitapp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: iHymns
+        INFOPLIST_KEY_WKApplication: YES
+    dependencies:
+      - package: iHymnsKit
+        products: [IHFeatures, IHDesign]
+
+  # MARK: - iHymnsWidgets (WidgetKit extension)
+  #
+  # A widget extension's `NSExtension` Info.plist entry is a NESTED
+  # dictionary (`NSExtensionPointIdentifier`), which the simple
+  # `INFOPLIST_KEY_*` flat build-setting mechanism can't express — so this
+  # target uses XcodeGen's `info:` property to write a real (generated,
+  # gitignored) `Info.plist` instead of `GENERATE_INFOPLIST_FILE`.
+  iHymnsWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Apps/iHymnsWidgets/Sources
+    info:
+      path: Apps/iHymnsWidgets/Generated/Info.plist
+      properties:
+        CFBundleDisplayName: iHymns Widgets
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.ihymns.widgets
+        GENERATE_INFOPLIST_FILE: NO
+    dependencies:
+      # The Phase-0 placeholder widget only needs design tokens; real
+      # widgets (SOTD/favourites/resume, strategy §2.3) will add IHModels/
+      # IHAPI/IHPersistence once they read real data in Phase 1.5.
+      - package: iHymnsKit
+        products: [IHDesign]

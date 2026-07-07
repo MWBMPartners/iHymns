@@ -1,0 +1,41 @@
+# appApple/.gitignore
+#
+# ELI5: Files XcodeGen/Xcode/SwiftPM regenerate every time, so we never
+# commit them — commit `project.yml` (and the Swift sources) instead, and
+# regenerate with `Scripts/bootstrap.sh`.
+#
+# DETAILED: Per strategy §1.1: "gitignore the generated .xcodeproj." The
+# same reasoning extends to every other build-tool-generated artifact under
+# `appApple/` — none of these are hand-authored, all of them are
+# byte-for-byte reproducible from `project.yml` + the Swift sources, and
+# committing them would just create merge-conflict noise with zero
+# information content (a coding agent — or a human — reviewing a diff of a
+# regenerated binary-ish `.xcodeproj` learns nothing `project.yml`'s own
+# diff didn't already say more clearly).
+
+# The Xcode project XcodeGen generates from project.yml.
+*.xcodeproj/
+
+# Per-user Xcode workspace state (breakpoints, window layout, ...) — never
+# meaningful to another contributor or CI.
+xcuserdata/
+*.xcuserstate
+
+# XcodeGen-generated Info.plist files (written fresh by `xcodegen generate`
+# whenever a target's `info:` property is present — see iHymnsWidgets in
+# project.yml).
+Apps/**/Generated/
+
+# SwiftPM build output for the iHymnsKit package (`swift build`/`swift
+# test` artifacts) and its resolved-version lockfile churn during local
+# iteration — `Package.resolved` itself IS worth committing for
+# reproducible dependency resolution, so it is deliberately NOT listed here.
+Packages/**/.build/
+Packages/**/.swiftpm/
+
+# Xcode's own DerivedData, if a contributor ever points it inside the repo
+# instead of the default `~/Library/Developer/Xcode/DerivedData`.
+DerivedData/
+
+# macOS Finder noise.
+.DS_Store

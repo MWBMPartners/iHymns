@@ -1,0 +1,28 @@
+// Versioning.xcconfig
+//
+// ELI5: The one file that says "what version number is this build" — every
+// app shell reads the SAME version, so the iPhone app, the TV app, and the
+// Watch app always ship in lockstep.
+//
+// DETAILED: Implements strategy §1.8's versioning scheme:
+// `MARKETING_VERSION = <sharedMajor>.<appleMinor>.<patch>` — the MAJOR
+// component is shared with the web/PWA's own version (parsed from
+// `infoAppVer.php`, currently major `0`); the MINOR increments
+// independently per Apple release, unsynchronised with web's own minor.
+// `CURRENT_PROJECT_VERSION` is a UTC timestamp `YYYYMMDDHHmm` — monotonic
+// and collision-free by construction (no separate build-counter file to
+// keep in sync, no risk of two builds on the same day colliding the way a
+// simple incrementing integer reset per-release might).
+//
+// `Scripts/sync-version.sh` (Phase 0 item "Fastlane — match/ASC-key/
+// versioning/TF-internal + secrets runbook", strategy §3.4) is the
+// EVENTUAL owner of updating these two values automatically per release —
+// this file's committed values are the Phase-0 starting point until that
+// script exists.
+
+// MAJOR.MINOR.PATCH — major mirrors web's current major (`0`); Apple's own
+// minor starts at `1` for this from-scratch native build; patch `0`.
+MARKETING_VERSION = 0.1.0
+
+// UTC timestamp YYYYMMDDHHmm at the time this Phase-0 skeleton was cut.
+CURRENT_PROJECT_VERSION = 202607070001
