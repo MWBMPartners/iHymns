@@ -36,11 +36,19 @@
 // `.live` remains a DELIBERATE, honestly-labelled "coming soon" placeholder
 // (this task's own brief: "a Live tab/Setlists can be a labelled 'coming
 // soon' placeholder for now, don't fake them") — no `IHLive` engine is
-// wired to any UI yet in this package, so pretending there's a real
-// Live/Setlists screen here would be exactly the kind of faked surface this
-// task explicitly rules out. `ContentUnavailableView` is the same
-// "genuinely nothing here yet" idiom the rest of this package already uses
-// for empty/error states, reused here for "not built yet" instead.
+// wired to any UI yet in this package, so pretending there's a real Live
+// screen here would be exactly the kind of faked surface this task
+// explicitly rules out. `ContentUnavailableView` is the same "genuinely
+// nothing here yet" idiom the rest of this package already uses for
+// empty/error states, reused here for "not built yet" instead.
+//
+// #181 UPDATE (setlists half) — `.setlists` is now a REAL section
+// (`SetlistsView`), split out of what was previously a combined "Live &
+// Setlists" placeholder: setlists are fully built (create/rename/delete,
+// reorder, add/remove songs, live-share), so continuing to lump them in
+// with the still-unbuilt Live placeholder would now be the dishonest
+// surface this file's own header warns against. `.live` alone keeps the
+// placeholder, relabelled to just "Live."
 //
 // Compiles on every platform `IHFeatures` targets (`Package.swift`'s
 // `platforms:` list includes tvOS/watchOS too) even though only the
@@ -150,6 +158,11 @@ public struct RootContainerView: View {
             .tabItem { Label(RootSection.favorites.title, systemImage: RootSection.favorites.systemImage) }
 
             NavigationStack {
+                SetlistsView(rootViewModel: viewModel)
+            }
+            .tabItem { Label(RootSection.setlists.title, systemImage: RootSection.setlists.systemImage) }
+
+            NavigationStack {
                 liveComingSoonView
             }
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
@@ -181,6 +194,8 @@ public struct RootContainerView: View {
                 CatalogueListView(viewModel: viewModel)
             case .favorites:
                 FavoritesView(rootViewModel: viewModel)
+            case .setlists:
+                SetlistsView(rootViewModel: viewModel)
             case .live:
                 liveComingSoonView
             case .account:
@@ -196,15 +211,16 @@ public struct RootContainerView: View {
     }
 
     /// The honestly-labelled "coming soon" placeholder for Live Follow /
-    /// Service Mode / Setlists — see this file's header for why this is a
-    /// real, explicit placeholder rather than a faked screen. Shared by
-    /// both `tabbedRoot`'s Live tab and `splitView`'s `.live` section so
-    /// the wording only lives in one place.
+    /// Service Mode — see this file's header for why this is a real,
+    /// explicit placeholder rather than a faked screen (setlists, formerly
+    /// lumped in here too, now have their own real `.setlists` section
+    /// above). Shared by both `tabbedRoot`'s Live tab and `splitView`'s
+    /// `.live` section so the wording only lives in one place.
     private var liveComingSoonView: some View {
         ContentUnavailableView(
-            "Live & Setlists",
+            "Live",
             systemImage: "dot.radiowaves.left.and.right",
-            description: Text("Live Follow, Service Mode, and Setlists are coming in a future update.")
+            description: Text("Live Follow and Service Mode are coming in a future update.")
         )
     }
 }
@@ -216,6 +232,7 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
     case songbooks
     case search
     case favorites
+    case setlists
     case live
     case account
 
@@ -227,6 +244,7 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .songbooks: "Songbooks"
         case .search: "Search"
         case .favorites: "Favourites"
+        case .setlists: "Setlists"
         case .live: "Live"
         case .account: "Account"
         }
@@ -238,6 +256,7 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .songbooks: "books.vertical"
         case .search: "magnifyingglass"
         case .favorites: "heart"
+        case .setlists: "list.bullet.rectangle.portrait"
         case .live: "dot.radiowaves.left.and.right"
         case .account: "person.crop.circle"
         }

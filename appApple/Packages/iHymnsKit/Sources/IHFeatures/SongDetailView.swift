@@ -22,6 +22,14 @@
 // `RelatedSongsShelfView`s, `LyricLineEnrichmentSheet`) is its own file —
 // this file's job is purely composing them in order and owning the
 // handful of `@State`/`@AppStorage` values they share.
+//
+// #181 UPDATE (setlists half) — owns `isPresentingAddToSetlist` (flipped by
+// `SongDetailToolbarContent`'s new "Add to Setlist" button) and presents
+// `AddToSetlistSheet` from it, the SAME "toolbar flips a bound `Bool`, the
+// hosting view owns the `.sheet`" split `isPresentingLogin`/`LoginView`
+// already establishes on `FavoritesView`. `setlistEntry` derives a
+// `SetlistSongEntry` from the currently-loaded `SongDetail` so the sheet
+// never needs its own second fetch.
 import IHAuth
 import IHDesign
 import IHModels
@@ -46,6 +54,10 @@ public struct SongDetailView: View {
     }
     @State private var selectedLine: SelectedLine?
 
+    /// #181 setlists half — flipped by the toolbar's "Add to Setlist"
+    /// button; see this file's header.
+    @State private var isPresentingAddToSetlist = false
+
     public init(songId: SongID, rootViewModel: AppRootViewModel) {
         _viewModel = State(initialValue: SongDetailViewModel(songId: songId, rootViewModel: rootViewModel))
         self.rootViewModel = rootViewModel
@@ -67,7 +79,8 @@ public struct SongDetailView: View {
                 shareURL: shareURL,
                 isFavorite: viewModel.isFavorite,
                 isSignedIn: rootViewModel.sessionState.isSignedIn,
-                onToggleFavorite: { Task { await viewModel.toggleFavorite() } }
+                onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
+                isPresentingAddToSetlist: $isPresentingAddToSetlist
             )
         }
         .sheet(item: $selectedLine) { line in
@@ -76,6 +89,11 @@ public struct SongDetailView: View {
                 translations: enrichmentIndex.translations(forLineId: line.id),
                 annotations: enrichmentIndex.annotations(forLineId: line.id)
             )
+        }
+        .sheet(isPresented: $isPresentingAddToSetlist) {
+            if let entry = setlistEntry {
+                AddToSetlistSheet(rootViewModel: rootViewModel, song: entry)
+            }
         }
     }
 
@@ -208,6 +226,20 @@ public struct SongDetailView: View {
     private var shareURL: URL? {
         guard case .loaded(let detail) = viewModel.loadState else { return nil }
         return URL(string: "https://ihymns.app/song/\(detail.songId.rawValue)")
+    }
+
+    /// This song as a `SetlistSongEntry`, for `AddToSetlistSheet` — `nil`
+    /// while still loading/errored, which is also why the toolbar's "Add to
+    /// Setlist" sheet content guards on it (this file's `body` above): there
+    /// is nothing meaningful to add yet.
+    private var setlistEntry: SetlistSongEntry? {
+        guard case .loaded(let detail) = viewModel.loadState else { return nil }
+        return SetlistSongEntry(
+            songId: detail.songId,
+            title: detail.title,
+            songbookAbbreviation: detail.songbookAbbreviation,
+            number: detail.number ?? 0
+        )
     }
 
     /// Looks up one line's plain text by its stable `tblLyricLines.Id`, for

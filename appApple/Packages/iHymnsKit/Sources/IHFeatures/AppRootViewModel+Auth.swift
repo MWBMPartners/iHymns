@@ -102,6 +102,12 @@ extension AppRootViewModel {
         favorites = []
         hasLoadedFavoritesFromCache = false
         try? await offlineStore.clearFavorites()
+        // #181 setlists half — same "a shared device's next sign-in must
+        // never see the previous account's data" privacy reasoning as the
+        // favourites clear above.
+        setlists = []
+        hasLoadedSetlistsFromCache = false
+        try? await offlineStore.clearSetlists()
     }
 
     /// Refreshes `currentUser` from `?action=auth_me` — `AccountView`'s
@@ -145,6 +151,13 @@ extension AppRootViewModel {
         await loadFavoritesIfNeeded()
         await flushPendingFavoriteOps()
         await refreshFavoritesFromServer()
+        // #181 setlists half — same flush-before-authoritative-pull ordering
+        // as the favourites sequence above, for the identical reason (a
+        // setlist edited moments ago offline must not be wiped by the
+        // server's still-stale authoritative list arriving first).
+        await loadSetlistsIfNeeded()
+        await flushPendingSetlistOps()
+        await refreshSetlistsFromServer()
     }
 
     /// Re-hydrates sign-in state from the Keychain, but only once per app

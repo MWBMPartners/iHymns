@@ -23,6 +23,19 @@
 // explains why, the SAME "disabled + explanatory help, never a silently
 // dead button" pattern the original stub already established.
 //
+// #181 UPDATE (setlists half) — adds a fifth control: "Add to Setlist,"
+// disabled/`.help`-explained under the SAME `isSignedIn` gate as the
+// favourite button (setlists are just as account-bound —
+// `SetlistsEndpoints.swift`'s header). Presented as a `Binding<Bool>`
+// (`isPresentingAddToSetlist`), NOT a closure like `onToggleFavorite` —
+// unlike a favourite toggle (one immediate, parameterless action),
+// "add to setlist" needs to show a PICKER (which setlist? or make a new
+// one?), so this button's job is only to flip a `Bool` the OWNING
+// `SongDetailView` already presents `AddToSetlistSheet` from via
+// `.sheet(isPresented:)`, mirroring how `FavoritesView` owns its OWN
+// `isPresentingLogin` sheet-trigger `@State` rather than `LoginView`
+// somehow presenting itself.
+//
 // Extracted into its own `ToolbarContent`-conforming type (rather than a
 // `@ToolbarContentBuilder` computed property on `SongDetailView` itself,
 // which was #1399's approach) purely to keep `SongDetailView.swift` from
@@ -46,6 +59,7 @@ struct SongDetailToolbarContent: ToolbarContent {
     let isFavorite: Bool
     let isSignedIn: Bool
     let onToggleFavorite: () -> Void
+    @Binding var isPresentingAddToSetlist: Bool
 
     private static let minTextScale = 0.75
     private static let maxTextScale = 2.0
@@ -96,6 +110,14 @@ struct SongDetailToolbarContent: ToolbarContent {
             .help(isSignedIn
                 ? (isFavorite ? "Remove from Favourites" : "Add to Favourites")
                 : "Sign in to save favourites.")
+
+            Button {
+                isPresentingAddToSetlist = true
+            } label: {
+                Label("Add to Setlist", systemImage: "text.badge.plus")
+            }
+            .disabled(!isSignedIn)
+            .help(isSignedIn ? "Add to Setlist" : "Sign in to use setlists.")
 
             if let shareURL {
                 ShareLink(item: shareURL) {

@@ -159,6 +159,22 @@ public final class AppRootViewModel {
     @ObservationIgnored
     var hasLoadedFavoritesFromCache = false
 
+    /// Every setlist this device knows about, most-recently-touched first
+    /// (#181's setlists half) — an OFFLINE-FIRST mirror of
+    /// `IHPersistence.OfflineStore`'s `setlist` table, refined by a
+    /// best-effort server sync, the exact same "root view model IS the
+    /// state" shape `favorites` above establishes. `internal(set)` for the
+    /// identical cross-file-extension reason `favorites` documents.
+    ///
+    /// ELI5: "What are my setlists?" — answered instantly, even offline.
+    public internal(set) var setlists: [Setlist] = []
+
+    /// Whether `loadSetlistsIfNeeded()` has already populated `setlists`
+    /// from the local cache this app run — same one-shot-guard shape as
+    /// `hasLoadedFavoritesFromCache` above, for the identical reason.
+    @ObservationIgnored
+    var hasLoadedSetlistsFromCache = false
+
     /// Whether `restoreSessionIfNeeded()` (`AppRootViewModel+Auth.swift`) has
     /// already run this app launch — same one-shot guard shape as
     /// `hasLoadedFavoritesFromCache` above, for the identical "safe to call

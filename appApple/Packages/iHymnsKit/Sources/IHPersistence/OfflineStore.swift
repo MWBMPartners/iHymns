@@ -28,6 +28,13 @@
 // header for the two tables' shapes and why `favorite_pending_op` is
 // primary-keyed by `songId` rather than an autoincrement id.
 //
+// `v3CreateSetlists` (#181's setlists half) adds the SECOND instance of that
+// same "mirror + pending-sync queue" shape, for setlists — see
+// `CachedSetlist.swift`'s header for the two tables' shapes, and for why
+// `setlist_pending_op`'s replay strategy differs from
+// `favorite_pending_op`'s (the real API has no per-item setlist
+// delete/upsert endpoint, only a bulk sync).
+//
 // See GRDB's own migrations guide:
 // https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/migrations.
 import Foundation
@@ -40,7 +47,15 @@ import IHModels
 /// ELI5: Ask it to remember some songs, or ask it what it already
 /// remembers.
 public actor OfflineStore {
-    private let dbQueue: DatabaseQueue
+    /// `internal` (not `private`) — `private` is FILE-scoped in Swift, which
+    /// would block `OfflineStore+Setlists.swift` (a separate file, same
+    /// module/type) from reaching it. Mirrors `APIClient.performOnce`/
+    /// `performIdempotentGET`'s identical "relaxed to `internal` so a
+    /// same-target file split can compile" reasoning (`APIClient.swift`'s
+    /// own doc comment) — this property still can't be touched from OUTSIDE
+    /// `IHPersistence` (`internal` is module-, not file-scoped, but is not
+    /// `public`), so `IHFeatures`/callers elsewhere are unaffected.
+    let dbQueue: DatabaseQueue
 
     /// Opens (creating if necessary) the offline database at `path`, or an
     /// ephemeral in-memory database when `path` is `nil` (used by unit
@@ -99,6 +114,26 @@ public actor OfflineStore {
                 table.column("number", .integer)
                 table.column("tagsJson", .text).notNull()
                 table.column("createdAt", .datetime).notNull()
+            }
+        }
+
+        migrator.registerMigration("v3CreateSetlists") { database in
+            try database.create(table: "setlist") { table in
+                table.primaryKey("setlistId", .text)
+                table.column("name", .text).notNull()
+                table.column("songsJson", .text).notNull()
+                table.column("createdAt", .text)
+                table.column("updatedAt", .text)
+                table.column("localUpdatedAt", .datetime).notNull()
+            }
+            try database.create(table: "setlist_pending_op") { table in
+                table.primaryKey("setlistId", .text)
+                table.column("operation", .text).notNull()
+                table.column("name", .text).notNull()
+                table.column("songsJson", .text).notNull()
+                table.column("createdAt", .text)
+                table.column("updatedAt", .text)
+                table.column("queuedAt", .datetime).notNull()
             }
         }
 

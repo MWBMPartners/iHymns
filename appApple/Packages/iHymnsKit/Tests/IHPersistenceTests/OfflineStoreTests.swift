@@ -220,3 +220,9 @@ struct OfflineStoreTests {
         #expect(pendingOp.favoriteToReplay() == nil)
     }
 }
+
+// The setlists half of this suite (#181) continues in
+// `OfflineStoreSetlistsTests.swift` as an `extension OfflineStoreTests` —
+// split out purely to stay under SwiftLint's `type_body_length` threshold
+// now that this suite covers THREE cache families (song summaries,
+// favourites, setlists); see that file's own header.
