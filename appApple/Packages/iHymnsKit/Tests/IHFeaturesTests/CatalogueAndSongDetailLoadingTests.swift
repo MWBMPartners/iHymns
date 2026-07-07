@@ -154,6 +154,90 @@ struct CatalogueAndSongDetailLoadingTests {
         }
     }
 
+    @Test("SongDetailViewModel.load() also populates songLinksState/relatedSongsState (#180)")
+    func songDetailViewModelLoadPopulatesSecondaryShelves() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            let detailFixture = try ContractFixtures.songDetail()
+            let linksFixture = try ContractFixtures.songLinks()
+            let relatedFixture = try ContractFixtures.relatedSongs()
+            // Routes each of the 3 concurrent requests to its OWN fixture by
+            // `action=`, rather than the other tests' "same bytes for every
+            // request" shortcut — needed here because this test asserts on
+            // all three resulting states, not just the primary one.
+            MockURLProtocol.requestHandler = { request in
+                let action = request.url?.query?.contains("action=song_links") == true ? "song_links"
+                    : request.url?.query?.contains("action=related_songs") == true ? "related_songs"
+                    : "song_detail"
+                switch action {
+                case "song_links": return (Self.response(status: 200), linksFixture)
+                case "related_songs": return (Self.response(status: 200), relatedFixture)
+                default: return (Self.response(status: 200), detailFixture)
+                }
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let rootViewModel = try await makeViewModel()
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            let detailViewModel = await SongDetailViewModel(songId: songId, rootViewModel: rootViewModel)
+
+            await detailViewModel.load()
+
+            guard case .loaded(let detail) = await detailViewModel.loadState else {
+                Issue.record("Expected .loaded, got \(await detailViewModel.loadState)")
+                return
+            }
+            #expect(detail.title == "Amazing grace")
+
+            guard case .loaded(let linkGroup) = await detailViewModel.songLinksState else {
+                Issue.record("Expected .loaded, got \(await detailViewModel.songLinksState)")
+                return
+            }
+            #expect(linkGroup.hasCounterparts == false)
+
+            guard case .loaded(let related) = await detailViewModel.relatedSongsState else {
+                Issue.record("Expected .loaded, got \(await detailViewModel.relatedSongsState)")
+                return
+            }
+            #expect(related.count == 10)
+        }
+    }
+
+    @Test("SongDetailViewModel.load() still loads the primary song when the secondary shelves fail")
+    func songDetailViewModelPrimaryLoadSurvivesSecondaryFailure() async throws {
+        try await MockTransportLock.shared.withLock { () async throws in
+            let detailFixture = try ContractFixtures.songDetail()
+            MockURLProtocol.requestHandler = { request in
+                let isSecondary = request.url?.query?.contains("action=song_links") == true
+                    || request.url?.query?.contains("action=related_songs") == true
+                if isSecondary {
+                    return (Self.response(status: 500), Data())
+                }
+                return (Self.response(status: 200), detailFixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let rootViewModel = try await makeViewModel()
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            let detailViewModel = await SongDetailViewModel(songId: songId, rootViewModel: rootViewModel)
+
+            await detailViewModel.load()
+
+            guard case .loaded(let detail) = await detailViewModel.loadState else {
+                Issue.record("Expected primary .loaded despite secondary failures, got \(await detailViewModel.loadState)")
+                return
+            }
+            #expect(detail.title == "Amazing grace")
+            guard case .error = await detailViewModel.songLinksState else {
+                Issue.record("Expected .error, got \(await detailViewModel.songLinksState)")
+                return
+            }
+            guard case .error = await detailViewModel.relatedSongsState else {
+                Issue.record("Expected .error, got \(await detailViewModel.relatedSongsState)")
+                return
+            }
+        }
+    }
+
     @Test("SongDetailViewModel.loadIfNeeded() only fetches once")
     func songDetailViewModelLoadIfNeededFetchesOnlyOnce() async throws {
         try await MockTransportLock.shared.withLock { () async throws in
@@ -172,7 +256,12 @@ struct CatalogueAndSongDetailLoadingTests {
             await detailViewModel.loadIfNeeded()
             await detailViewModel.loadIfNeeded()
 
-            #expect(callCount.current == 1)
+            // #180: one `load()` now fires THREE concurrent requests
+            // (song_detail + song_links + related_songs) — the "only once"
+            // guarantee this test protects is that the SECOND
+            // `loadIfNeeded()` call is a total no-op (still 3, not 6),
+            // not that there's only one request per load.
+            #expect(callCount.current == 3)
         }
     }
 

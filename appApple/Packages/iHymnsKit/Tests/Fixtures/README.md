@@ -1,11 +1,14 @@
 # Contract fixtures — live-recorded, not hand-authored
 
-These three files are **real response bodies** pulled from the `dev`
-deployment (`https://dev.ihymns.app/api?action=…`, no auth needed — all
-three are public reads) on 2026-07-07, then lightly trimmed for size. They
-exist so `IHModelsTests`/`IHAPITests` decode against the ACTUAL shape the
-live API sends, not an assumed/guessed shape — the whole point of #1396.
-Re-record with `tools/apple-refresh-fixtures.sh` (repo root).
+These files are **real response bodies** pulled from the `dev`
+deployment (`https://dev.ihymns.app/api?action=…`, no auth needed — every
+endpoint here is a public read) on 2026-07-07, then lightly trimmed for
+size. They exist so `IHModelsTests`/`IHAPITests` decode against the ACTUAL
+shape the live API sends, not an assumed/guessed shape — the whole point of
+#1396. Re-record ALL FIVE with `tools/apple-refresh-fixtures.sh` (repo root)
+— `song_links.json`/`related_songs.json` (#180) were added to that script
+in the same commit that first recorded them by hand
+(`curl "https://dev.ihymns.app/api?action=song_links&id=MP-0031"` etc.).
 
 - **`songs_index.json`** — `?action=songs_index`. The live corpus is
   16,084 rows (~3.2 MB); trimmed here to 84 representative rows (a couple
@@ -31,6 +34,25 @@ Re-record with `tools/apple-refresh-fixtures.sh` (repo root).
   these are NOT documented in `appWeb/public_html/api-docs.yaml`'s
   `Songbook` schema (which is stale in a few places — see doc comments on
   `IHModels/Songbook.swift`).
+
+- **`song_links.json`** — `?action=song_links&id=MP-0031` (#180, #807).
+  The real, live response is `{"groupId":0,"songs":[]}` — a broad survey
+  across ~60 songs (including THREE other songbooks' own copies of
+  "Amazing grace" itself: `CH-0295`/`JP-0008`/`SDAH-0108`, none linked)
+  found `tblSongLinks` has no curated cross-book counterpart rows on `dev`
+  yet. `IHModels/SongRelations.swift`'s `SongLinkedSong` per-row shape is
+  therefore modelled from `api-docs.yaml`'s documented schema, unverified
+  against a live non-empty payload (same conservative posture as
+  `Work.swift`) — this fixture proves the ENVELOPE (`groupId`/`songs` keys,
+  the `hasCounterparts` false-when-empty check) decodes correctly, not the
+  per-row shape.
+- **`related_songs.json`** — `?action=related_songs&id=MP-0031` (#180).
+  Genuinely rich, non-empty live data: 10 related songs (shared writer
+  "John Newton" / composer "Roland Fudge"), each carrying a `reason` field
+  `api-docs.yaml` doesn't document at all, and each MISSING several fields
+  (`songbookName`/`language`/`hasAudio`/`hasSheetMusic`/`publicId`) a
+  generic `SongSummary` decode would require — proving `RelatedSongSummary`
+  needs to be its own purpose-built shape, not a reuse of `SongSummary`.
 
 No token/PII scrubbing was needed: every endpoint here is an unauthenticated
 public read, and the payloads are public hymn catalogue metadata.

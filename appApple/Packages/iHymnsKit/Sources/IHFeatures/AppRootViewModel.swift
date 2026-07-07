@@ -184,6 +184,23 @@ public final class AppRootViewModel {
         try await apiClient.songDetail(id: id)
     }
 
+    /// Fetches this song's cross-book counterparts (#180, #807) — same
+    /// pass-through pattern as `songDetail(id:)` above.
+    ///
+    /// ELI5: "Does this exact song also appear, under a different id, in
+    /// some other songbook?"
+    public func songLinks(id: SongID) async throws -> SongLinkGroup {
+        try await apiClient.songLinks(id: id)
+    }
+
+    /// Fetches songs related to this one by shared tag/writer/composer/
+    /// vicinity (#180) — same pass-through pattern as `songDetail(id:)`.
+    ///
+    /// ELI5: "What else might I like, based on this song?"
+    public func relatedSongs(id: SongID) async throws -> [RelatedSongSummary] {
+        try await apiClient.relatedSongs(id: id)
+    }
+
     /// Starts a `Task` that mirrors every `SessionState` change published by
     /// `sessionController` onto `sessionState`.
     ///

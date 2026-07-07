@@ -27,6 +27,17 @@
 // behavioural value; the compiler-synthesized memberwise init (available
 // because no custom `init(from:)` is written either — see `CodingKeys`
 // below) is what tests actually use.
+//
+// Apple P1 (#180) UPDATE — a deep survey of the dev API's `include=`
+// opt-in enrichment mechanism (#1099, see `SongLineEnrichment.swift`'s
+// header) added `royaltyIds`/`annotations` and changed `translations`' TYPE
+// (still the SAME wire key) to `SongDetailTranslationsField`, which resolves
+// a real key-collision between that field's two possible live shapes — see
+// that type's own doc comment. All three are only ever populated when this
+// client's own fetch asked for them via `include=` (`APIClient.songDetail
+// (id:)` always does — see that file); every song this task could find on
+// `dev` has none of the three, so in practice they decode to `nil` today,
+// same as `translations` already did before this update.
 import Foundation
 
 /// The complete song record: metadata, every credit role, lyric components,
@@ -86,10 +97,41 @@ public struct SongDetail: Sendable, Hashable, Codable, Identifiable {
     public let publicId: String?
 
     /// Curator-chosen display order for `components`, as a list of
-    /// `tblSongComponents` row ids — `nil` when the server falls back to
-    /// plain insertion order (the common case; see `SongData::_decodeArrangement()`,
-    /// which returns `nil` for anything that isn't a clean list of ints).
+    /// **0-based ordinal indices into the `components` array** — `nil` when
+    /// the server falls back to plain insertion order (the common case; see
+    /// `SongData::_decodeArrangement()`, which returns `nil` for anything
+    /// that isn't a clean list of ints).
+    ///
+    /// DETAILED (#180 correction): an earlier version of this doc comment
+    /// said these were `tblSongComponents` row ids — verified WRONG by
+    /// reading how the web renderer actually consumes this field
+    /// (`includes/pages/song.php`: `array_map(fn($i) => $components[$i] ??
+    /// null, $arrangement)`, i.e. positional array indices, confirmed by
+    /// `includes/lyric_lines_sync.php`'s own comment that these ordinals
+    /// stay "contiguous 0..n-1"). `orderedComponents` below reproduces that
+    /// EXACT web behaviour (including silently dropping an out-of-range
+    /// index via `array_filter`) so native rendering matches the web
+    /// pixel-for-pixel — this task's own #1399-era `SongDetailView` never
+    /// applied `arrangement` at all before this fix, always rendering plain
+    /// `components` order.
     public let arrangement: [Int]?
+
+    /// `components`, reordered per `arrangement` when present — the ONE
+    /// property `SongDetailView`/any future renderer should actually
+    /// iterate, never `components` directly, so a curator-set custom
+    /// arrangement is never silently ignored.
+    ///
+    /// ELI5: "The verses/choruses, in the order the curator actually wants
+    /// them sung — not just the order they happen to be stored in."
+    public var orderedComponents: [SongComponent] {
+        guard let arrangement else { return components }
+        let reordered = arrangement.compactMap { index in
+            components.indices.contains(index) ? components[index] : nil
+        }
+        // A malformed arrangement (every index out of range) degrades to
+        // the plain stored order rather than rendering an empty song.
+        return reordered.isEmpty ? components : reordered
+    }
 
     public let writers: [String]
     public let composers: [String]
@@ -118,14 +160,24 @@ public struct SongDetail: Sendable, Hashable, Codable, Identifiable {
     /// only, never raw bytes (streaming goes through `streamUrl`).
     public let media: [SongMediaAsset]
 
-    /// Cross-language translation links — SPARSE: the server only emits
-    /// this key at all when the list is non-empty
-    /// (`SongData::_fetchSongRow()`: `if (!empty($translations)) { … }`), so
-    /// modelling it `Optional` (rather than defaulting to `[]`) preserves
-    /// that distinction for any caller that cares about "never computed"
-    /// vs "computed and empty" — though in practice both currently mean
-    /// "no translations."
-    public let translations: [SongTranslationRef]?
+    /// Cross-language translation links, OR this song's own per-line
+    /// translation/romanization rows — see `SongDetailTranslationsField`'s
+    /// doc comment for the real wire-level ambiguity behind this one key.
+    /// SPARSE either way: `nil` when the server sent neither shape (the
+    /// base field is only emitted when non-empty; the `include=translations`
+    /// block is only emitted when this song's lyrics have approved rows).
+    public let translations: SongDetailTranslationsField?
+
+    /// Per-line explanatory annotations (#1088) — opt-in via
+    /// `include=annotations` (`APIClient.songDetail(id:)` always requests
+    /// it); `nil` when not requested, or the song's lyrics have none.
+    public let annotations: [LyricLineAnnotation]?
+
+    /// Per-song PRO/royalty-authority registrations (#1140) — opt-in via
+    /// `include=royaltyIds`; `nil` when not requested or the song has none.
+    /// Distinct from the single top-level `ccli`/`iswc` fields above — a
+    /// song can be registered with several societies at once.
+    public let royaltyIds: [SongRoyaltyId]?
 
     private enum CodingKeys: String, CodingKey {
         case songId = "id"
@@ -160,6 +212,8 @@ public struct SongDetail: Sendable, Hashable, Codable, Identifiable {
         case works
         case media
         case translations
+        case annotations
+        case royaltyIds
     }
 }
 

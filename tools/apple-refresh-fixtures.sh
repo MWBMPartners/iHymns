@@ -23,6 +23,11 @@
 # `Sources/IHAPI/SongsIndexDecoding.swift`). `song_detail.json` and
 # `songbooks.json` are recorded in full — both are already small.
 #
+# #180 UPDATE — also re-records `song_links.json`/`related_songs.json`
+# (both `?action=…&id=MP-0031`, the same song `song_detail.json` uses) —
+# `SongLinkGroup`/`RelatedSongSummary` (IHModels/SongRelations.swift) decode
+# against these. Both are small, full responses; no trimming needed.
+#
 # Usage:
 #     bash tools/apple-refresh-fixtures.sh [environment]
 #
@@ -66,6 +71,8 @@ echo "Using song_detail id: ${DETAIL_ID}"
 
 curl -fsSL "https://${HOST}/api?action=song_detail&id=${DETAIL_ID}" -o "$TMP_DIR/song_detail_full.json"
 curl -fsSL "https://${HOST}/api?action=songbooks" -o "$TMP_DIR/songbooks_full.json"
+curl -fsSL "https://${HOST}/api?action=song_links&id=${DETAIL_ID}" -o "$TMP_DIR/song_links_full.json"
+curl -fsSL "https://${HOST}/api?action=related_songs&id=${DETAIL_ID}" -o "$TMP_DIR/related_songs_full.json"
 
 python3 - "$TMP_DIR/songs_index_full.json" "$FIXTURES_DIR/songs_index.json" <<'PY'
 import json, re, sys
@@ -115,6 +122,22 @@ python3 -c "
 import json
 with open('$TMP_DIR/songbooks_full.json') as f: d = json.load(f)
 with open('$FIXTURES_DIR/songbooks.json', 'w', encoding='utf-8') as out:
+    json.dump(d, out, indent=2, ensure_ascii=False)
+    out.write('\n')
+"
+
+python3 -c "
+import json
+with open('$TMP_DIR/song_links_full.json') as f: d = json.load(f)
+with open('$FIXTURES_DIR/song_links.json', 'w', encoding='utf-8') as out:
+    json.dump(d, out, indent=2, ensure_ascii=False)
+    out.write('\n')
+"
+
+python3 -c "
+import json
+with open('$TMP_DIR/related_songs_full.json') as f: d = json.load(f)
+with open('$FIXTURES_DIR/related_songs.json', 'w', encoding='utf-8') as out:
     json.dump(d, out, indent=2, ensure_ascii=False)
     out.write('\n')
 "

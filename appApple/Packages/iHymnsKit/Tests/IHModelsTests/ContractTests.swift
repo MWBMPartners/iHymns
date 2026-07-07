@@ -79,6 +79,104 @@ struct ContractTests {
         // all (see this file's header + `SongDetail.swift`'s doc comment).
         #expect(song.publicId == "QAJA39W25W")
         #expect(song.verified == false)
+        // #180 additions — this fixture predates `include=`, so both new
+        // opt-in blocks are simply absent; must decode to nil, not throw.
+        #expect(song.annotations == nil)
+        #expect(song.royaltyIds == nil)
+    }
+
+    @Test("song_links.json (MP-0031) decodes the real empty-counterpart-group envelope")
+    func decodesSongLinksFixture() throws {
+        // The live answer for every song this task sampled is a genuinely
+        // empty group — see `Tests/Fixtures/README.md`. This proves the
+        // ENVELOPE (`groupId`/`songs` + the `hasCounterparts` derived check)
+        // decodes correctly against real bytes, not a per-row shape no live
+        // payload has ever populated.
+        let group = try JSONDecoder().decode(SongLinkGroup.self, from: ContractFixtures.songLinks())
+        #expect(group.groupId == 0)
+        #expect(group.songs.isEmpty)
+        #expect(group.hasCounterparts == false)
+    }
+
+    @Test("related_songs.json (MP-0031) decodes 10 real related songs with match reasons")
+    func decodesRelatedSongsFixture() throws {
+        struct Envelope: Decodable { let related: [RelatedSongSummary] }
+        let envelope = try JSONDecoder().decode(Envelope.self, from: ContractFixtures.relatedSongs())
+        #expect(envelope.related.count == 10)
+
+        let first = try #require(envelope.related.first)
+        #expect(first.songId.rawValue == "JP-0008")
+        #expect(first.title == "Amazing grace")
+        #expect(first.reason == "Same writer: John Newton")
+
+        // `related_songs`' real rows omit `songbookName`/`language`/
+        // `hasAudio`/`hasSheetMusic`/`publicId` — this decode succeeding at
+        // all (rather than throwing on a missing required key) is what
+        // proves `RelatedSongSummary` is correctly its OWN shape, not a
+        // reuse of the stricter `SongSummary`.
+        #expect(envelope.related.allSatisfy { !$0.songbookAbbreviation.isEmpty })
+    }
+
+    @Test("SongDetailTranslationsField decodes the per-line shape when lineId/text/isPrimary are present")
+    func decodesPerLineTranslationsShape() throws {
+        // Hand-constructed (no live song has this populated yet — see
+        // `SongLineEnrichment.swift`'s header) directly from
+        // `SongData::getSongDetailExtras()`'s SQL column aliases: `lineId`,
+        // `kind`, `targetLanguage`, `text`, `isPrimary`.
+        let json = Data("""
+        [{"lineId": 768565, "kind": "translation", "targetLanguage": "es", "text": "Sublime gracia", "isPrimary": true}]
+        """.utf8)
+        let field = try JSONDecoder().decode(SongDetailTranslationsField.self, from: json)
+        guard case .perLine(let rows) = field else {
+            Issue.record("Expected .perLine, got \(field)")
+            return
+        }
+        #expect(rows.count == 1)
+        #expect(rows[0].lineId == 768565)
+        #expect(rows[0].kind == "translation")
+        #expect(rows[0].targetLanguage == "es")
+        #expect(rows[0].isPrimary == true)
+    }
+
+    @Test("SongDetailTranslationsField decodes the whole-song cross-language-sibling shape when songId/language are present")
+    func decodesCrossLanguageSiblingsShape() throws {
+        // The OTHER real shape the exact same wire key can carry
+        // (`SongData::_fetchSongRow()`) — proves the two shapes never get
+        // confused for one another (see this type's own doc comment for the
+        // key collision this resolves).
+        let json = Data("""
+        [{"songId": "ES-0031", "language": "es"}]
+        """.utf8)
+        let field = try JSONDecoder().decode(SongDetailTranslationsField.self, from: json)
+        guard case .crossLanguageSiblings(let refs) = field else {
+            Issue.record("Expected .crossLanguageSiblings, got \(field)")
+            return
+        }
+        #expect(refs.count == 1)
+        #expect(refs[0].songId == "ES-0031")
+        #expect(refs[0].language == "es")
+    }
+
+    @Test("LyricLineAnnotation and SongRoyaltyId decode their PHP-verified shapes")
+    func decodesAnnotationAndRoyaltyIdShapes() throws {
+        // Hand-constructed from `SongData::getSongDetailExtras()`'s SQL
+        // column aliases, same reasoning as the translations test above.
+        let annotationJson = Data("""
+        [{"startLineId": 768565, "endLineId": 768566, "annotationType": "scripture", "body": "Cf. Ephesians 2:8", "bodyFormat": "plain", "isVerified": true}]
+        """.utf8)
+        let annotations = try JSONDecoder().decode([LyricLineAnnotation].self, from: annotationJson)
+        #expect(annotations.count == 1)
+        #expect(annotations[0].startLineId == 768565)
+        #expect(annotations[0].endLineId == 768566)
+        #expect(annotations[0].isVerified == true)
+
+        let royaltyJson = Data("""
+        [{"authority": "ASCAP", "authorityId": "123456789", "note": null}]
+        """.utf8)
+        let royaltyIds = try JSONDecoder().decode([SongRoyaltyId].self, from: royaltyJson)
+        #expect(royaltyIds.count == 1)
+        #expect(royaltyIds[0].authority == "ASCAP")
+        #expect(royaltyIds[0].note == nil)
     }
 
     @Test("songbooks.json decodes all 54 songbooks, including a translation parent + a series")

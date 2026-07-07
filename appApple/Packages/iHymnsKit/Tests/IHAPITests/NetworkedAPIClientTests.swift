@@ -108,6 +108,67 @@ struct NetworkedAPIClientTests {
         }
     }
 
+    @Test("songDetail(id:) requests the #180 opt-in enrichment blocks")
+    func songDetailRequestsEnrichmentBlocks() async throws {
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songDetail()
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            _ = try await client.songDetail(id: songId)
+
+            // Every song-display screen fetch should ask for the three
+            // enrichment blocks (#180) — proves `APIClient.songDetail(id:)`
+            // isn't just a bare `?action=song_detail&id=…` request anymore.
+            let query = try #require(seenRequest.current?.url?.query)
+            #expect(query.contains("include=translations,annotations,royaltyIds"))
+        }
+    }
+
+    @Test("songLinks(id:) decodes the real (empty) counterpart-group fixture end-to-end")
+    func songLinksDecodesThroughClient() async throws {
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.songLinks()
+            let seenRequest = LockedBox<URLRequest>()
+            MockURLProtocol.requestHandler = { request in
+                seenRequest.set(request)
+                return (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            let group = try await client.songLinks(id: songId)
+
+            #expect(seenRequest.current?.url?.query?.contains("action=song_links") == true)
+            #expect(group.hasCounterparts == false)
+        }
+    }
+
+    @Test("relatedSongs(id:) decodes the real fixture end-to-end through the client")
+    func relatedSongsDecodesThroughClient() async throws {
+        try await MockTransportLock.shared.withLock {
+            let fixture = try ContractFixtures.relatedSongs()
+            MockURLProtocol.requestHandler = { request in
+                (Self.response(for: request, status: 200), fixture)
+            }
+            defer { MockURLProtocol.requestHandler = nil }
+
+            let client = APIClient(environment: .dev, session: MockURLProtocol.makeSession())
+            let songId = try #require(SongID(rawValue: "MP-0031"))
+            let related = try await client.relatedSongs(id: songId)
+
+            #expect(related.count == 10)
+            #expect(related.first?.reason == "Same writer: John Newton")
+        }
+    }
+
     @Test("songbooks() decodes the real fixture end-to-end through the client")
     func songbooksDecodesThroughClient() async throws {
         try await MockTransportLock.shared.withLock {

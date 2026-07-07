@@ -1,0 +1,74 @@
+{
+  "related": [
+    {
+      "id": "JP-0008",
+      "title": "Amazing grace",
+      "songbook": "JP",
+      "number": 8,
+      "reason": "Same writer: John Newton"
+    },
+    {
+      "id": "MP-0173",
+      "title": "Glorious things of thee are spoken",
+      "songbook": "MP",
+      "number": 173,
+      "reason": "Same writer: John Newton"
+    },
+    {
+      "id": "MP-0251",
+      "title": "How sweet the name of Jesus",
+      "songbook": "MP",
+      "number": 251,
+      "reason": "Same writer: John Newton"
+    },
+    {
+      "id": "MP-0542",
+      "title": "One there is, above all others",
+      "songbook": "MP",
+      "number": 542,
+      "reason": "Same writer: John Newton"
+    },
+    {
+      "id": "JP-0002",
+      "title": "Abba Father",
+      "songbook": "JP",
+      "number": 2,
+      "reason": "Same composer: Roland Fudge"
+    },
+    {
+      "id": "JP-0005",
+      "title": "All over the world",
+      "songbook": "JP",
+      "number": 5,
+      "reason": "Same composer: Roland Fudge"
+    },
+    {
+      "id": "JP-0019",
+      "title": "Bless the Lord, O my soul",
+      "songbook": "JP",
+      "number": 19,
+      "reason": "Same composer: Roland Fudge"
+    },
+    {
+      "id": "JP-0022",
+      "title": "Be still and know",
+      "songbook": "JP",
+      "number": 22,
+      "reason": "Same composer: Roland Fudge"
+    },
+    {
+      "id": "JP-0075",
+      "title": "He is Lord, He is Lord",
+      "songbook": "JP",
+      "number": 75,
+      "reason": "Same composer: Roland Fudge"
+    },
+    {
+      "id": "JP-0100",
+      "title": "I hear the sound",
+      "songbook": "JP",
+      "number": 100,
+      "reason": "Same composer: Roland Fudge"
+    }
+  ]
+}

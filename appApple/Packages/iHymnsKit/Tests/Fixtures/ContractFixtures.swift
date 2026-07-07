@@ -52,6 +52,21 @@ public enum ContractFixtures {
         try data(named: "songbooks")
     }
 
+    /// Reads `Tests/Fixtures/song_links.json` — a real (but empty)
+    /// `?action=song_links&id=MP-0031` response (#180). See `README.md`
+    /// alongside this file for why an empty group is the honest live
+    /// answer today.
+    public static func songLinks() throws -> Data {
+        try data(named: "song_links")
+    }
+
+    /// Reads `Tests/Fixtures/related_songs.json` — the full, real
+    /// `?action=related_songs&id=MP-0031` response (#180): 10 genuinely
+    /// related songs with human-readable match reasons.
+    public static func relatedSongs() throws -> Data {
+        try data(named: "related_songs")
+    }
+
     /// Shared lookup: resolves `<name>.json` in this target's resource
     /// bundle and reads it into `Data`.
     private static func data(named name: String) throws -> Data {

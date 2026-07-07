@@ -94,7 +94,9 @@ let package = Package(
             resources: [
                 .copy("songs_index.json"),
                 .copy("song_detail.json"),
-                .copy("songbooks.json")
+                .copy("songbooks.json"),
+                .copy("song_links.json"),
+                .copy("related_songs.json")
             ],
             swiftSettings: sharedSwiftSettings
         ),

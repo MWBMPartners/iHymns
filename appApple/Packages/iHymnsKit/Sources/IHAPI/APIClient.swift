@@ -206,13 +206,27 @@ public actor APIClient {
         return try Self.decodeSongsIndex(from: data)
     }
 
-    /// `?action=song_detail&id=…` — one full song record.
+    /// `?action=song_detail&id=…` — one full song record, always requesting
+    /// the #1099 opt-in enrichment blocks a full song-display screen wants
+    /// (Apple P1, #180): per-line translations/romanizations, per-line
+    /// annotations, and royalty-authority ids. Harmless on a server/song
+    /// that has none of these — the blocks are simply omitted from the
+    /// response, and `SongDetail`'s three corresponding properties decode
+    /// to `nil`, exactly as if `include=` had never been sent.
     ///
-    /// ELI5: "Give me everything about this one song."
+    /// ELI5: "Give me everything about this one song — including any
+    /// translations, footnotes, or royalty ids it has."
     public func songDetail(id: SongID) async throws -> SongDetail {
-        let data = try await performIdempotentGET(.songDetail(id: id))
+        let data = try await performIdempotentGET(.songDetail(id: id, include: Self.songDetailIncludeBlocks))
         return try Self.decodeSongDetail(from: data)
     }
+
+    /// The `include=` block names `songDetail(id:)` always requests — kept
+    /// as one named constant (rather than an inline array literal at the
+    /// call site) so every caller of this method asks for the exact same
+    /// set, and so `IHFeatures`/tests can reference the same list if they
+    /// ever need to reason about which blocks a song-display screen expects.
+    static let songDetailIncludeBlocks = ["translations", "annotations", "royaltyIds"]
 
     /// `?action=songbooks` — every songbook in the catalogue.
     ///
@@ -236,11 +250,15 @@ public actor APIClient {
     /// one) — strategy §1.5 is explicit that non-idempotent POSTs must
     /// NEVER be auto-retried this way (they go through
     /// `IHPersistence`'s pending-sync queue with server-side dedupe
-    /// instead, a Phase-1 concern). `isRetryable(_:)` decides WHICH
+    /// instead, a Phase-1 concern). Deliberately `internal` (module-visible),
+    /// not `private` — `APIClient+Discovery.swift` (#180) calls this
+    /// directly for its two idempotent GETs, the same same-target-file-split
+    /// reason `performOnce` below was already relaxed to `internal` for
+    /// `APIClient+Auth.swift` (#1398). `isRetryable(_:)` decides WHICH
     /// `APIError` cases are worth another attempt; `.unauthorized` and
     /// `.decoding` never are (retrying either can't possibly succeed —
     /// the token is bad, or the payload is wrong shape).
-    private func performIdempotentGET(_ endpoint: Endpoint) async throws -> Data {
+    func performIdempotentGET(_ endpoint: Endpoint) async throws -> Data {
         var attempt = 1
         while true {
             do {

@@ -23,9 +23,22 @@ extension Endpoint {
     /// `?action=song_detail&id=…` — one full song record. Public, no auth
     /// required.
     ///
-    /// - Parameter id: The song to fetch, e.g. `SongID(rawValue: "MP-1008")`.
-    public static func songDetail(id: SongID) -> Endpoint {
-        Endpoint(action: "song_detail", queryItems: [("id", id.rawValue)])
+    /// - Parameters:
+    ///   - id: The song to fetch, e.g. `SongID(rawValue: "MP-1008")`.
+    ///   - include: Opt-in enrichment block names (#1099 — see
+    ///     `SongLineEnrichment.swift`'s header), e.g.
+    ///     `["translations", "annotations", "royaltyIds"]`. Defaults to
+    ///     empty — every #1397/#1399 call site that predates this parameter
+    ///     keeps building the exact same bodyless-of-extras request it
+    ///     always did. Unknown block names are silently ignored server-side
+    ///     (`SongData::songDetailIncludeBlocks()`'s allow-list), so passing
+    ///     a name this server version doesn't yet recognise is harmless.
+    public static func songDetail(id: SongID, include: [String] = []) -> Endpoint {
+        var items: [(name: String, value: String)] = [("id", id.rawValue)]
+        if !include.isEmpty {
+            items.append(("include", include.joined(separator: ",")))
+        }
+        return Endpoint(action: "song_detail", queryItems: items)
     }
 
     /// `?action=songbooks` — every songbook in the catalogue. Public, no
