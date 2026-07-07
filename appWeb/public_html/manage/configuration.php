@@ -401,6 +401,42 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_maintenance] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_apple') {
+            /* Apple native app — Team ID (#1401). A single free-text
+               tblAppSettings row, no schema change: the AASA responder
+               (.well-known/apple-app-site-association.php) reads it via
+               getAppSetting('apple_team_id', null) and falls back to an
+               obviously-fake 'TEAMID' placeholder when this is unset. This
+               is the ONE place the owner sets it — never hard-code the
+               Team ID in source (it identifies the Apple Developer account). */
+            try {
+                /* Apple Team IDs are exactly 10 uppercase alphanumeric
+                   characters (e.g. "ABCDE12345") — validate the shape so a
+                   pasted mistake (extra whitespace, a bundle id instead of
+                   the Team ID, etc.) is caught here rather than silently
+                   producing a broken AASA appID. Empty clears the setting
+                   back to the placeholder state (a deliberate "unset"). */
+                $teamIdVal = strtoupper(trim((string)($_POST['apple_team_id'] ?? '')));
+                if ($teamIdVal !== '' && !preg_match('/^[A-Z0-9]{10}$/', $teamIdVal)) {
+                    throw new \RuntimeException('Apple Team ID must be exactly 10 letters/digits (e.g. "ABCDE12345"), or left blank.');
+                }
+                $saveSetting($db, 'apple_team_id', $teamIdVal);
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        'apple_team_id',
+                        ['keys' => ['apple_team_id']],
+                        'success'
+                    );
+                }
+                $saveSuccess = $teamIdVal !== ''
+                    ? 'Apple Team ID saved — the AASA file now emits real appIDs.'
+                    : 'Apple Team ID cleared — the AASA file will emit the placeholder "TEAMID" until it is set again.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_apple] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -425,6 +461,11 @@ $maintenanceAllowAdm = ($maintenanceSettings['maintenance_allow_admins_' . $envC
    no drift between what the admin sees and what visitors get. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 $maintenanceRefresh  = maintenanceRefreshSeconds();
+
+/* Apple native app Team ID (#1401) — read via the same shared, DB-safe
+   getAppSetting() the AASA responder itself uses, so this admin page can
+   never disagree with what the AASA file actually emits. */
+$appleTeamId = (string)(getAppSetting('apple_team_id', '') ?? '');
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -547,6 +588,48 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-save me-1"></i>Save maintenance settings
                 </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         APPLE NATIVE APP SECTION (#1401)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-apple me-2"></i>Apple native app
+            </h2>
+            <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
+                <?= $appleTeamId === '' ? 'Not set (AASA uses placeholder)' : 'Set' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                The Apple Developer <strong>Team ID</strong> for the <code>app.ihymns</code> bundle
+                (developer.apple.com &rarr; Membership, or the <code>APPLE_TEAM_ID</code> GitHub secret
+                used by the Apple deploy pipeline). It is embedded into
+                <code>/.well-known/apple-app-site-association</code> so Universal Links can open the
+                native app instead of Safari. Left blank, that file still serves valid JSON with an
+                obviously-fake <code>TEAMID</code> placeholder — safe, but Universal Links won't
+                actually resolve until a real value is saved here.
+            </p>
+            <form method="post" class="row g-3 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_apple">
+                <div class="col-md-4">
+                    <label for="apple_team_id" class="form-label">Apple Team ID</label>
+                    <input type="text" name="apple_team_id" id="apple_team_id" class="form-control"
+                           style="text-transform: uppercase;" maxlength="10" pattern="[A-Za-z0-9]{10}"
+                           placeholder="ABCDE12345"
+                           value="<?= htmlspecialchars($appleTeamId, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Exactly 10 letters/digits. Leave blank to clear.</div>
+                </div>
+                <div class="col-md-4">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save Team ID
+                    </button>
+                </div>
             </form>
         </div>
     </div>

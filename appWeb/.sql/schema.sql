@@ -1692,7 +1692,8 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
     ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
     ('ccli_validation_enabled', '0', 'Require valid CCLI licence for copyrighted songs (0=off, 1=on)'),
-    ('audio_signing_enabled', '0', 'Sign /audio MP3 URLs so gated audio streams via the gated route (#1358); 0=off (serve static /data/audio literal), 1=on (mint signed /audio URLs). Requires content_gating_enabled=1 AND the AUDIO_SIGNING_KEY constant.');
+    ('audio_signing_enabled', '0', 'Sign /audio MP3 URLs so gated audio streams via the gated route (#1358); 0=off (serve static /data/audio literal), 1=on (mint signed /audio URLs). Requires content_gating_enabled=1 AND the AUDIO_SIGNING_KEY constant.'),
+    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder "TEAMID" appID. Set via manage/configuration.php "Apple native app" card — never hard-code in source.');
 
 
 -- Default access tiers (#346)

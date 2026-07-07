@@ -131,6 +131,23 @@ RewriteRule ^service-worker\.js$ service-worker.js.php [L]
 RewriteRule ^sitemap\.xml$ sitemap.xml.php [L]
 
 # ==========================================================================
+# APPLE APP SITE ASSOCIATION ROUTING (#1401)
+#
+# /.well-known/apple-app-site-association → .well-known/apple-app-site-association.php
+# Apple's Universal Links fetcher requires this exact, extensionless path
+# (no redirect, HTTPS, application/json). It is PHP-generated (not a static
+# file) so the Apple Team ID it embeds can be updated from tblAppSettings
+# without a code deploy — see the .php file's header comment. The dotfile
+# block rule above already carves out `.well-known/` (`(?!well-known)`), so
+# this clean extensionless request reaches this rule; the ".php file direct
+# access" block earlier only inspects the ORIGINAL request line, so this
+# internal rewrite target is unaffected (same pattern as /api, /sitemap.xml,
+# /service-worker.js above).
+# ==========================================================================
+
+RewriteRule ^\.well-known/apple-app-site-association$ .well-known/apple-app-site-association.php [L]
+
+# ==========================================================================
 # STATIC ASSET PASSTHROUGH
 #
 # Allow direct access to static files (CSS, JS, images, fonts, data).
@@ -176,8 +193,13 @@ RewriteRule ^ index.php [QSA,L]
     # Web App Manifest
     AddType application/manifest+json .json
 
-    # Apple App Site Association — must be application/json (#99)
-    <FilesMatch "apple-app-site-association">
+    # Apple App Site Association — must be application/json (#99, #1401)
+    # Anchored to the EXACT extensionless filename: the PHP responder
+    # (.well-known/apple-app-site-association.php, #1401) sets its own
+    # Content-Type via header() and must NOT also match this FilesMatch —
+    # an unanchored substring match would hit both filenames and risk
+    # Apache's ForceType racing the script's own header.
+    <FilesMatch "^apple-app-site-association$">
         ForceType application/json
     </FilesMatch>
 
