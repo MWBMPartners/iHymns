@@ -30,7 +30,25 @@
 // `iHymnsApp` — SwiftLint's `type_name` rule requires an uppercase first
 // character, and this keeps every shell's `@main` type consistent with
 // `IHymnsWidgetsBundle` rather than carving out a per-file lint exception.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — wires Universal Links
+// (`.onOpenURL`) and Handoff continuations (`.onContinueUserActivity`)
+// straight to `DeepLinkRouter.resolve(_:)` (`IHAppSupport`) and hands the
+// result to `RootContainerView`'s `incomingDeepLink` binding. This file
+// stays PURE WIRING per the repo's modularity rule — it calls the router,
+// it never re-implements URL-shape parsing itself. The one decision made
+// HERE (not in the router, which stays a pure `URL → DeepLink?` function)
+// is what to do with an unresolved result: `DeepLinkRouter` returns `nil`
+// for a `.work` link (no native screen exists yet, see `DeepLink.swift`'s
+// header) and for anything the AASA claims but this Phase 1 doesn't route
+// yet (`/person/*`, `/live/*`) — in BOTH cases the honest, non-broken
+// behaviour is to hand the URL to the system browser (`openURL`) rather
+// than silently doing nothing or presenting an empty screen, exactly
+// mirroring "Universal Links → open in app if installed, else the PWA"
+// when the app IS installed but doesn't (yet) have a screen for this
+// specific claimed path.
 import IHAPI
+import IHAppSupport
 import IHFeatures
 import SwiftUI
 
@@ -53,9 +71,48 @@ struct IHymnsApp: App {
         environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
     )
 
+    /// The most recently resolved inbound deep link — `nil` bound directly
+    /// to `RootContainerView.incomingDeepLink`, which presents it and
+    /// resets this back to `nil` once consumed (see that type's own doc
+    /// comment on why: so tapping the same link twice still re-presents).
+    @State private var incomingDeepLink: DeepLink?
+
+    /// Lets `handle(url:)` hand an unresolved/undeep-linkable URL to the
+    /// system browser instead of the app silently swallowing it.
+    @Environment(\.openURL) private var openURL
+
     var body: some Scene {
         WindowGroup {
-            RootContainerView(viewModel: rootViewModel)
+            // `.onOpenURL`/`.onContinueUserActivity` are `View` modifiers
+            // (not `Scene` ones) — attached to the content view itself
+            // rather than chained after `WindowGroup`, matching Apple's own
+            // documented placement for both.
+            RootContainerView(viewModel: rootViewModel, incomingDeepLink: $incomingDeepLink)
+                .onOpenURL { url in
+                    handle(url: url)
+                }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    handle(url: url)
+                }
         }
+    }
+
+    /// Resolves `url` through the router and either presents it in-app
+    /// (`incomingDeepLink`) or falls back to the system browser — see this
+    /// file's header for why `.work` and any AASA-claimed-but-unrouted
+    /// shape take the browser path even though the app itself handled the
+    /// tap.
+    private func handle(url: URL) {
+        guard let link = DeepLinkRouter.resolve(url), !requiresBrowserFallback(link) else {
+            openURL(url)
+            return
+        }
+        incomingDeepLink = link
+    }
+
+    private func requiresBrowserFallback(_ link: DeepLink) -> Bool {
+        if case .work = link { return true }
+        return false
     }
 }

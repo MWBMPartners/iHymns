@@ -78,6 +78,42 @@ targets:
         # macOS/visionOS destinations this same multiplatform target also
         # builds for — `UIBackgroundModes` is simply unused there.
         INFOPLIST_KEY_UIBackgroundModes: audio
+    # #186 (Apple Phase 1, "Sharing & social") — claims Universal Links for
+    # every host `DeepLinkRouter.allowedHosts` (`IHAppSupport`) resolves a
+    # `DeepLink` from, so a tapped `https://ihymns.app/song/...`-shaped link
+    # opens straight into this app instead of Safari when it's installed
+    # (the AASA the OS checks before honouring this is already served
+    # server-side, `.well-known/apple-app-site-association.php`, #1401 —
+    # this entitlement is the missing app-side half). `activitycontinuation:`
+    # mirrors the SAME hosts in the AASA's own `activitycontinuation` key —
+    # Apple's documented requirement for "Handing off to your app from
+    # Safari" (`.onContinueUserActivity(NSUserActivityTypeBrowsingWeb)`,
+    # `IHymnsApp.swift`), the browsing-web half of this task's Handoff scope
+    # (`SongDetailView.swift`'s `.userActivity` modifier advertises the
+    # OTHER half — device-to-device continuation, which needs no entitlement
+    # at all beyond both devices sharing an iCloud account).
+    #
+    # Deliberately NOT included: `webcredentials:` — the AASA already
+    # advertises it (AutoFill offering the PWA's saved sign-in on this app's
+    # login form), but wiring the entitlement is `LoginView`/native-auth's
+    # concern (#182), not this sharing/deep-link task's; left for a future
+    # pass rather than bundled in here unreviewed.
+    #
+    # Generated into the SAME gitignored `Apps/**/Generated/` location
+    # `iHymnsWidgets`' own `info:` block below already establishes — never
+    # hand-maintain a checked-in `.entitlements` file, edit THIS block.
+    entitlements:
+      path: Apps/iHymns/Generated/iHymns.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:ihymns.app
+          - applinks:www.ihymns.app
+          - applinks:beta.ihymns.app
+          - applinks:dev.ihymns.app
+          - activitycontinuation:ihymns.app
+          - activitycontinuation:www.ihymns.app
+          - activitycontinuation:beta.ihymns.app
+          - activitycontinuation:dev.ihymns.app
     dependencies:
       # Every shell imports IHFeatures (shared screens/view models) and
       # IHDesign (tokens/glass wrappers) directly — both declared explicitly
@@ -86,8 +122,14 @@ targets:
       # re-export behaviour. `IHAPI` is listed too (#1399) — `IHymnsApp.swift`
       # imports it directly for `APIEnvironment.dev` when building the real
       # `AppRootViewModel` via `AppRootViewModel.makeLive(environment:)`.
+      # `IHAppSupport` is listed for the SAME reason (#186) — `IHymnsApp.swift`
+      # calls `DeepLinkRouter.resolve(_:)` directly from its `.onOpenURL`/
+      # `.onContinueUserActivity` handlers, which needs `IHAppSupport` as a
+      # DIRECT product dependency of this target (SPM doesn't let a target
+      # `import` a module it only pulls in transitively through another
+      # product).
       - package: iHymnsKit
-        products: [IHFeatures, IHDesign, IHAPI]
+        products: [IHFeatures, IHDesign, IHAPI, IHAppSupport]
       # The watch companion and the widgets extension both embed into the
       # iOS binary specifically (Apple's own convention for a watch
       # companion / widget host) — `destinationFilters: [iOS]` keeps them

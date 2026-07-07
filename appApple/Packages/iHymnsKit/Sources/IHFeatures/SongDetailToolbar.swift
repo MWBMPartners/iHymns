@@ -57,6 +57,15 @@
 // `.primaryAction` (the window toolbar) there — the SAFE, definitely-
 // supported placement on every platform this package targets, matching
 // this task's macOS build-verification step.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — the Share button now
+// carries a `SharePreview` (`shareTitle`) alongside the URL, so the system
+// share sheet/Messages/AirDrop preview shows "Amazing Grace — Mission
+// Praise #12" instead of a bare, unhelpful link. `SharePreview`'s public
+// API is title-only (no separate subtitle parameter — Apple's own
+// `SharePreview` docs: https://developer.apple.com/documentation/swiftui/sharepreview),
+// so the songbook context is folded into ONE combined title string rather
+// than left off entirely.
 import SwiftUI
 
 /// The floating glass toolbar under a song's lyrics.
@@ -65,6 +74,11 @@ struct SongDetailToolbarContent: ToolbarContent {
     @Binding var showChords: Bool
     let hasChords: Bool
     let shareURL: URL?
+    /// A human-readable "Title — Songbook" string for the `ShareLink`'s
+    /// `SharePreview` — `nil` is fine (falls back to a bare, title-less
+    /// preview) but `shareURL` should never be non-`nil` while this is,
+    /// since both are derived from the same loaded `SongDetail`.
+    let shareTitle: String?
     let isFavorite: Bool
     let isSignedIn: Bool
     let onToggleFavorite: () -> Void
@@ -143,8 +157,14 @@ struct SongDetailToolbarContent: ToolbarContent {
             .help(isSignedIn ? "Add to Setlist" : "Sign in to use setlists.")
 
             if let shareURL {
-                ShareLink(item: shareURL) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                if let shareTitle {
+                    ShareLink(item: shareURL, preview: SharePreview(shareTitle)) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
+                } else {
+                    ShareLink(item: shareURL) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
                 }
             }
         }

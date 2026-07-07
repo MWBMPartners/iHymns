@@ -14,6 +14,13 @@
 // there's no reason to hit the network again for data already sitting in
 // `catalogueLoadState`). Reuses `SongSummaryRow` — the shared song-list row
 // — exactly like `CatalogueListView` does, per the repo's modularity rule.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — adds the same "Share"
+// toolbar affordance `SongDetailToolbarContent`/`SetlistDetailView` already
+// have, so a songbook is one of the "every shareable entity" surfaces this
+// task's brief lists. Built via `IHAppSupport.CanonicalURL.songbook(abbreviation:)`
+// — the ONE shared URL-builder, never a second hand-rolled string here.
+import IHAppSupport
 import IHModels
 import SwiftUI
 
@@ -26,6 +33,15 @@ struct SongbookSongsView: View {
         content
             .navigationTitle(songbook.name)
             .task { await rootViewModel.loadCatalogueIfNeeded() }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    if let shareURL = CanonicalURL.songbook(abbreviation: songbook.id) {
+                        ShareLink(item: shareURL, preview: SharePreview(songbook.name)) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                }
+            }
     }
 
     @ViewBuilder

@@ -44,6 +44,25 @@
 // .hasAnyMedia(detail)` — the same "just don't render the section" treatment
 // `counterpartsShelf`/`relatedSongsShelf` already use for optional content,
 // so a song with none of these four media kinds shows an unchanged page.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — two changes: (1)
+// `shareURL` now goes through `IHAppSupport.CanonicalURL.song(_:)` (the ONE
+// shared web-URL builder, per this task's explicit "extract it if it's
+// currently duplicated" instruction) instead of hand-building the string
+// inline, and a new `shareTitle` feeds `SongDetailToolbarContent`'s
+// `SharePreview`; (2) advertises the loaded song as a Handoff activity
+// (`.userActivity(NSUserActivityTypeBrowsingWeb)`) so a reader can pick the
+// SAME song back up on another Apple device, or hand off straight into
+// Safari — kept to song-detail only (this task's own "highest-value case…
+// don't over-reach" scoping; setlists/songbooks don't get one). Guarded to
+// iOS/macOS/visionOS only: `IHFeatures` also compiles for tvOS/watchOS
+// (this file's own header, `RootContainerView.swift`'s header), and Handoff
+// is not a meaningful concept on either — matching the task's explicit
+// "guard any iOS-only Handoff… API" instruction with the SAME three-platform
+// split `RootContainerView`'s own `#if os(macOS) || os(visionOS) /
+// #elseif os(iOS)` already establishes.
+import Foundation
+import IHAppSupport
 import IHAuth
 import IHDesign
 import IHModels
@@ -85,12 +104,14 @@ public struct SongDetailView: View {
         }
         .navigationTitle(navigationTitleText)
         .task { await viewModel.loadIfNeeded() }
+        .handoffActivity(webpageURL: shareURL, title: navigationTitleText)
         .toolbar {
             SongDetailToolbarContent(
                 textScale: $textScale,
                 showChords: $showChords,
                 hasChords: hasChords,
                 shareURL: shareURL,
+                shareTitle: shareTitle,
                 isFavorite: viewModel.isFavorite,
                 isSignedIn: rootViewModel.sessionState.isSignedIn,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
@@ -262,9 +283,26 @@ public struct SongDetailView: View {
     /// "every share surface must emit the canonical web URL"). `nil` while
     /// still loading/errored, which hides the Share button entirely rather
     /// than sharing a broken/placeholder link.
+    ///
+    /// #186 — now built via `IHAppSupport.CanonicalURL.song(_:)` (the ONE
+    /// shared URL-builder) rather than an inline `URL(string:)` — see this
+    /// file's header.
     private var shareURL: URL? {
         guard case .loaded(let detail) = viewModel.loadState else { return nil }
-        return URL(string: "https://ihymns.app/song/\(detail.songId.rawValue)")
+        return CanonicalURL.song(detail.songId)
+    }
+
+    /// "Title — Songbook #Number" for the `ShareLink`'s `SharePreview` —
+    /// `nil` while still loading/errored, mirroring `shareURL`'s own guard
+    /// (`SongDetailToolbarContent` only builds a `SharePreview` when both
+    /// are non-`nil`).
+    private var shareTitle: String? {
+        guard case .loaded(let detail) = viewModel.loadState else { return nil }
+        var title = "\(detail.title) — \(detail.songbookName.isEmpty ? detail.songbookAbbreviation : detail.songbookName)"
+        if let number = detail.number {
+            title += " #\(number)"
+        }
+        return title
     }
 
     /// This song as a `SetlistSongEntry`, for `AddToSetlistSheet` — `nil`
@@ -302,5 +340,49 @@ public struct SongDetailView: View {
     private var enrichmentIndex: LineEnrichmentIndex {
         guard case .loaded(let detail) = viewModel.loadState else { return .empty }
         return LineEnrichmentIndex(detail: detail)
+    }
+}
+
+/// #186 — the Handoff modifier, isolated in its own `private extension`
+/// purely to keep the `#if os(...)` platform-guard block out of `body`
+/// itself.
+private extension View {
+    /// Advertises `webpageURL` as an `NSUserActivityTypeBrowsingWeb` Handoff
+    /// activity for as long as this view is on screen — a no-op (returns
+    /// `self` unmodified) while `webpageURL` is `nil` (still loading/
+    /// errored, mirroring `shareURL`'s own guard) so nothing is ever
+    /// advertised for a song that hasn't actually loaded.
+    ///
+    /// ELI5: "Let this song follow you to another Apple device — or hand
+    /// off straight into Safari from here."
+    ///
+    /// DETAILED: `NSUserActivityTypeBrowsingWeb` (Foundation's Handoff
+    /// activity type for "continuing a web page," available since iOS 8/
+    /// macOS 10.10) pairs with the AASA's own `activitycontinuation` key
+    /// (`.well-known/apple-app-site-association.php`, #1401) and
+    /// `IHymnsApp.swift`'s `.onContinueUserActivity(NSUserActivityTypeBrowsingWeb)`
+    /// handler — a Handoff continuation's `webpageURL` runs through the
+    /// SAME `DeepLinkRouter.resolve(_:)` a Universal Link tap does, so
+    /// resuming on another device lands on this exact song either way.
+    /// Guarded to iOS/macOS/visionOS only — see this file's #186 header
+    /// comment for why tvOS/watchOS (which `IHFeatures` also compiles for,
+    /// per `RootContainerView.swift`'s own header) are deliberately
+    /// excluded, matching this task's explicit "guard any iOS-only
+    /// Handoff… API" instruction.
+    @ViewBuilder
+    func handoffActivity(webpageURL: URL?, title: String) -> some View {
+        #if os(iOS) || os(macOS) || os(visionOS)
+        if let webpageURL {
+            self.userActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                activity.webpageURL = webpageURL
+                activity.title = title
+                activity.isEligibleForHandoff = true
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }

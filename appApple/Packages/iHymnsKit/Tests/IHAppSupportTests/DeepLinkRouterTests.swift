@@ -3,6 +3,13 @@
 //
 // ELI5: Feeds the router a handful of URLs — good ones and bad ones — and
 // checks it only ever "goes somewhere" for the good ones.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — extends Phase 0's
+// song-only coverage to every shape `DeepLink.swift`'s header now documents
+// (songbook/songbooksList/setlistShare/work), each verified against the
+// LIVE web route regex it mirrors (`appWeb/public_html/index.php`, read
+// 2026-07-07) — every "rejects a malformed X" case below uses an input that
+// the WEB router itself would also 404 on, not an arbitrary invalid string.
 import Foundation
 import Testing
 @testable import IHAppSupport
@@ -35,13 +42,99 @@ struct DeepLinkRouterTests {
 
     @Test("Rejects an unrecognised path shape")
     func rejectsUnrecognisedPath() throws {
-        let url = try #require(URL(string: "https://ihymns.app/songbooks"))
+        let url = try #require(URL(string: "https://ihymns.app/does-not-exist"))
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
 
     @Test("Rejects a malformed SongID in an otherwise well-shaped path")
     func rejectsMalformedSongID() throws {
         let url = try #require(URL(string: "https://ihymns.app/song/not-a-song-id-1008"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Rejects a bare /song with no id — a missing trailing segment is malformed, not 'close enough'")
+    func rejectsBareSongPath() throws {
+        let url = try #require(URL(string: "https://ihymns.app/song"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    // MARK: - Songbook
+
+    @Test("Resolves a valid songbook Universal Link")
+    func resolvesValidSongbookLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/songbook/MP"))
+        #expect(DeepLinkRouter.resolve(url) == .songbook(abbreviation: "MP"))
+    }
+
+    @Test("Rejects a songbook abbreviation with digits — the web route is letters-only")
+    func rejectsSongbookAbbreviationWithDigits() throws {
+        let url = try #require(URL(string: "https://ihymns.app/songbook/MP1"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Resolves the songbooks browse index")
+    func resolvesSongbooksList() throws {
+        let url = try #require(URL(string: "https://ihymns.app/songbooks"))
+        #expect(DeepLinkRouter.resolve(url) == .songbooksList)
+    }
+
+    // MARK: - Shared set list
+
+    @Test("Resolves a valid shared-set-list Universal Link")
+    func resolvesValidSetlistShareLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/setlist/shared/1a2b3c4d"))
+        #expect(DeepLinkRouter.resolve(url) == .setlistShare(shareId: "1a2b3c4d"))
+    }
+
+    @Test("Rejects an uppercase-hex share id — the web route is lowercase-only")
+    func rejectsUppercaseShareId() throws {
+        let url = try #require(URL(string: "https://ihymns.app/setlist/shared/1A2B3C4D"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Rejects a non-hex share id")
+    func rejectsNonHexShareId() throws {
+        let url = try #require(URL(string: "https://ihymns.app/setlist/shared/not-hex-at-all"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Rejects a bare /setlist/shared with no id")
+    func rejectsBareSetlistSharedPath() throws {
+        let url = try #require(URL(string: "https://ihymns.app/setlist/shared"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    // MARK: - Work
+
+    @Test("Resolves a valid work Universal Link")
+    func resolvesValidWorkLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/work/amazing-grace"))
+        #expect(DeepLinkRouter.resolve(url) == .work(slug: "amazing-grace"))
+    }
+
+    @Test("Rejects an uppercase work slug — the web route is lowercase-only")
+    func rejectsUppercaseWorkSlug() throws {
+        let url = try #require(URL(string: "https://ihymns.app/work/Amazing-Grace"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    // MARK: - Not-yet-native shapes (AASA-claimed, correctly un-routed)
+
+    @Test("Does not resolve a credit-person link — no native screen exists for it yet")
+    func doesNotResolvePersonLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/person/some-writer"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Does not resolve a Live Follow join link — no native screen exists for it yet")
+    func doesNotResolveLiveLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/live/abc123"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Never crashes on a URL with no path at all")
+    func neverCrashesOnBareHost() throws {
+        let url = try #require(URL(string: "https://ihymns.app/"))
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
 }

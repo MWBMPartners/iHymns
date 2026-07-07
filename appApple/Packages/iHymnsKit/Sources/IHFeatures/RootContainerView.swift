@@ -64,6 +64,17 @@
 // iOS/iPadOS/macOS/visionOS `IHymns` app shell (`Apps/iHymns/`) actually
 // instantiates this type today — tvOS/watch keep `PhaseZeroSkeletonView`
 // per this task's explicit scope ("Keep the tvOS/watch shells compiling").
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — adds `incomingDeepLink`,
+// a `Binding<DeepLink?>` `IHymnsApp.swift` sets from its `.onOpenURL`/
+// `.onContinueUserActivity` handlers. Presented as its OWN `.sheet(item:)`
+// (see `DeepLinkDestinationView.swift`'s header for why a sheet rather than
+// trying to programmatically drive one of the seven independent per-section
+// `NavigationStack`s below) — defaults to `.constant(nil)` so every existing
+// `RootContainerView(viewModel:)` call site (incl. tvOS/watchOS's own
+// `#else` branch, which never receives a real deep link) keeps compiling
+// unchanged.
+import IHAppSupport
 import IHDesign
 import SwiftUI
 
@@ -81,6 +92,22 @@ public struct RootContainerView: View {
     /// (#183) is now the app's flagship landing screen, not the catalogue
     /// list.
     @State private var selectedSection: RootSection? = .home
+
+    /// The most recently resolved inbound Universal Link / Handoff
+    /// continuation, set by `IHymnsApp.swift`'s `.onOpenURL`/
+    /// `.onContinueUserActivity` handlers — `nil` the rest of the time.
+    /// Consumed (reset to `nil`) the instant it's turned into a
+    /// `presentedDeepLink` below, so tapping the SAME link twice in a row
+    /// still re-presents (a `Binding`'s `onChange` only fires on an actual
+    /// nil→non-nil transition, not a same-value re-assignment).
+    @Binding private var incomingDeepLink: DeepLink?
+
+    /// The `.sheet(item:)` binding that actually shows a deep link's
+    /// destination — a `DeepLinkPresentation` (UUID-`Identifiable` wrapper,
+    /// see `DeepLinkDestinationView.swift`) rather than `DeepLink` itself,
+    /// so re-presenting an identical link is never suppressed by
+    /// `Identifiable`-based sheet diffing.
+    @State private var presentedDeepLink: DeepLinkPresentation?
 
     /// The ONE `SettingsViewModel` for this app run (#182) — held here, not
     /// in the app shell, per `SettingsViewModel`'s own header ("`RootContainerView`
@@ -102,11 +129,28 @@ public struct RootContainerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    public init(viewModel: AppRootViewModel) {
+    public init(viewModel: AppRootViewModel, incomingDeepLink: Binding<DeepLink?> = .constant(nil)) {
         self.viewModel = viewModel
+        _incomingDeepLink = incomingDeepLink
     }
 
     public var body: some View {
+        platformRoot
+            // #186 — a deep link lands in its own sheet regardless of which
+            // platform layout is showing underneath (see this file's header
+            // for why a sheet rather than a per-section `NavigationPath`).
+            .sheet(item: $presentedDeepLink) { presentation in
+                DeepLinkDestinationView(link: presentation.link, rootViewModel: viewModel)
+            }
+            .onChange(of: incomingDeepLink) { _, newValue in
+                guard let newValue else { return }
+                presentedDeepLink = DeepLinkPresentation(link: newValue)
+                incomingDeepLink = nil
+            }
+    }
+
+    @ViewBuilder
+    private var platformRoot: some View {
         #if os(macOS) || os(visionOS)
         splitView
             .task { await restoreAndSync() }
