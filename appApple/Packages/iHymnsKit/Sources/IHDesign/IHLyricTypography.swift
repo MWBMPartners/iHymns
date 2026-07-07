@@ -42,18 +42,43 @@ public enum IHLyricTypography {
 
 public extension View {
     /// Applies the shared lyric-reading font, scaled by `textScale`, plus
-    /// the conditional chorus/refrain/bridge italic (`IHLyricTypography`).
+    /// the conditional chorus/refrain/bridge italic (`IHLyricTypography`) and
+    /// the active reading mode (`\.ihReadingMode`, #1412).
     ///
     /// ELI5: `.ihLyricLineStyle(componentType: "chorus")` — draws this text
-    /// like a lyric line, slanted if it's a chorus/refrain/bridge line.
+    /// like a lyric line, slanted if it's a chorus/refrain/bridge line, in
+    /// whichever reading style (normal / dyslexia-friendly) is switched on.
     ///
     /// - Parameters:
     ///   - componentType: The owning `SongComponent.type`, e.g. `"verse"`.
     ///   - textScale: A user-controlled size multiplier (#1399's toolbar
     ///     "text-size is enough for now" control) applied on top of the
-    ///     base 17pt reading size.
+    ///     base reading size.
+    ///
+    /// The font/spacing now come from the environment's `IHReadingMode` so a
+    /// single injection at `RootContainerView` re-renders EVERY lyric line
+    /// on toggle — the call sites (e.g. `SongComponentView`) are unchanged.
     func ihLyricLineStyle(componentType: String, textScale: CGFloat = 1.0) -> some View {
-        italic(IHLyricTypography.isItalic(componentType: componentType))
-            .font(.system(size: 17 * textScale, weight: .regular, design: .serif))
+        modifier(LyricLineStyleModifier(componentType: componentType, textScale: textScale))
+    }
+}
+
+/// The `ViewModifier` backing `ihLyricLineStyle` — a struct (not an inline
+/// closure) purely so it can read `@Environment(\.ihReadingMode)`, which a
+/// plain `View`-extension method cannot. Applies, in order: the
+/// chorus/refrain/bridge italic, the reading-mode font, and the reading-mode
+/// line/letter spacing (`.standard` spacing is the pre-#1412 look, so the
+/// modifier is a verified no-op for users who never enable dyslexia mode).
+private struct LyricLineStyleModifier: ViewModifier {
+    @Environment(\.ihReadingMode) private var readingMode
+    let componentType: String
+    let textScale: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .italic(IHLyricTypography.isItalic(componentType: componentType))
+            .font(readingMode.lyricFont(textScale: textScale))
+            .lineSpacing(readingMode.lineSpacing)
+            .tracking(readingMode.letterTracking)
     }
 }

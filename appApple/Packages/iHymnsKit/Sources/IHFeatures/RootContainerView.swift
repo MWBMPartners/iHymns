@@ -64,6 +64,7 @@
 // iOS/iPadOS/macOS/visionOS `IHymns` app shell (`Apps/iHymns/`) actually
 // instantiates this type today — tvOS/watch keep `PhaseZeroSkeletonView`
 // per this task's explicit scope ("Keep the tvOS/watch shells compiling").
+import IHDesign
 import SwiftUI
 
 /// The shared adaptive root: a Liquid Glass `TabView` on a compact-width
@@ -90,6 +91,13 @@ public struct RootContainerView: View {
     /// reading whatever was last persisted to `UserDefaults.standard`.
     @State private var settingsViewModel = SettingsViewModel()
 
+    /// The reading mode to inject into `\.ihReadingMode` (#1412) — derived
+    /// from the persisted dyslexia toggle. A tiny mapping helper so the two
+    /// `.environment(...)` call sites (compact vs. regular width) never drift.
+    private var readingMode: IHReadingMode {
+        settingsViewModel.dyslexiaReadingModeEnabled ? .dyslexiaFriendly : .standard
+    }
+
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -103,6 +111,7 @@ public struct RootContainerView: View {
         splitView
             .task { await restoreAndSync() }
             .preferredColorScheme(settingsViewModel.theme.colorScheme)
+            .environment(\.ihReadingMode, readingMode)
         #elseif os(iOS)
         Group {
             if horizontalSizeClass == .compact {
@@ -117,6 +126,9 @@ public struct RootContainerView: View {
         // `.highContrast` force that scheme. Applied at the ROOT so every
         // pushed screen re-themes the instant the picker changes.
         .preferredColorScheme(settingsViewModel.theme.colorScheme)
+        // #1412 — every lyric line reads its font/spacing from this one
+        // injection, so toggling dyslexia mode re-renders the whole app.
+        .environment(\.ihReadingMode, readingMode)
         #else
         // tvOS/watchOS: not wired to any shell yet (see file header) — a
         // plain stack keeps this FILE compiling on those platforms without
