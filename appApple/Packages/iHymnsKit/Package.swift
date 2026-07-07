@@ -73,6 +73,32 @@ let package = Package(
     ],
 
     targets: [
+        // MARK: - IHTestFixtures (test-only support target, no product —
+        // depended on directly by the test targets below)
+        //
+        // Holds the LIVE-RECORDED contract fixtures (#1396,
+        // `Tests/Fixtures/README.md`) as bundled SwiftPM resources, plus one
+        // tiny loader (`ContractFixtures`) so `IHModelsTests` and
+        // `IHAPITests` both read the exact same JSON files via
+        // `Bundle.module` instead of each re-implementing its own resource
+        // lookup — the repo's modularity rule ("if a shared module already
+        // exists, reuse it — do not duplicate") applies just as much to
+        // test infrastructure as to product code. `path:` points directly
+        // at `Tests/Fixtures/` (not a `Sources/`-rooted default) so the
+        // fixture JSON lives exactly where #1396 was asked to record it,
+        // with the loader `.swift` file alongside it.
+        .target(
+            name: "IHTestFixtures",
+            path: "Tests/Fixtures",
+            exclude: ["README.md"],
+            resources: [
+                .copy("songs_index.json"),
+                .copy("song_detail.json"),
+                .copy("songbooks.json")
+            ],
+            swiftSettings: sharedSwiftSettings
+        ),
+
         // MARK: - IHModels (foundation layer — zero iHymnsKit deps)
         .target(
             name: "IHModels",
@@ -80,7 +106,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IHModelsTests",
-            dependencies: ["IHModels"],
+            dependencies: ["IHModels", "IHTestFixtures"],
             swiftSettings: sharedSwiftSettings
         ),
 
@@ -92,7 +118,7 @@ let package = Package(
         ),
         .testTarget(
             name: "IHAPITests",
-            dependencies: ["IHAPI", "IHModels"],
+            dependencies: ["IHAPI", "IHModels", "IHTestFixtures"],
             swiftSettings: sharedSwiftSettings
         ),
 

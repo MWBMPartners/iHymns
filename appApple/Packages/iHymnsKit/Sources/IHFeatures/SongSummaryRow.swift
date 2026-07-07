@@ -63,7 +63,7 @@ public struct SongSummaryRow: View {
             songId: SongID(rawValue: "MP-1008") ?? SongID(songbookAbbreviation: "MP", number: 1008),
             title: "Amazing Grace",
             songbookAbbreviation: "MP",
-            displayNumber: "1008"
+            number: 1008
         )
     )
     .padding()

@@ -40,6 +40,18 @@ struct CachedSongSummary: Codable, FetchableRecord, PersistableRecord, Sendable,
     /// Builds a database row from a domain `SongSummary`.
     ///
     /// ELI5: Turns the "business card" into a database row ready to save.
+    ///
+    /// DETAILED: Persists `SongSummary.displayNumber` (the ready-to-render
+    /// `String`, `""` when there is no number) rather than the raw
+    /// `number: Int?` — keeps this table's column shape/migration
+    /// (`OfflineStore.makeMigrator()`'s `v1CreateSongSummary`) unchanged
+    /// across the #1396 DTO update. `toSongSummary()` below round-trips
+    /// `""` back to `nil` via `Int("")` failing, so no information is lost.
+    /// The songbook-name/language/hasAudio/hasSheetMusic/publicId fields
+    /// #1396 added to `SongSummary` aren't cached here yet — extending this
+    /// table's schema is tracked as its own follow-up (IHPersistence is out
+    /// of scope for #1396/#1397), so `toSongSummary()` reconstructs them
+    /// via `SongSummary.init`'s defaults for now.
     init(_ summary: SongSummary) {
         self.songId = summary.songId.rawValue
         self.title = summary.title
@@ -62,7 +74,7 @@ struct CachedSongSummary: Codable, FetchableRecord, PersistableRecord, Sendable,
             songId: parsedID,
             title: title,
             songbookAbbreviation: songbookAbbreviation,
-            displayNumber: displayNumber
+            number: Int(displayNumber)
         )
     }
 }

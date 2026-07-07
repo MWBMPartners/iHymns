@@ -24,13 +24,13 @@ struct OfflineStoreTests {
             songId: try #require(SongID(rawValue: "MP-2")),
             title: "Song Two",
             songbookAbbreviation: "MP",
-            displayNumber: "2"
+            number: 2
         )
         let two = SongSummary(
             songId: try #require(SongID(rawValue: "MP-1")),
             title: "Song One",
             songbookAbbreviation: "MP",
-            displayNumber: "1"
+            number: 1
         )
 
         try await store.upsert([one, two])
@@ -45,8 +45,8 @@ struct OfflineStoreTests {
     func upsertReplacesExistingRow() async throws {
         let store = try OfflineStore(path: nil)
         let songId = try #require(SongID(rawValue: "MP-1"))
-        let original = SongSummary(songId: songId, title: "Original Title", songbookAbbreviation: "MP", displayNumber: "1")
-        let updated = SongSummary(songId: songId, title: "Updated Title", songbookAbbreviation: "MP", displayNumber: "1")
+        let original = SongSummary(songId: songId, title: "Original Title", songbookAbbreviation: "MP", number: 1)
+        let updated = SongSummary(songId: songId, title: "Updated Title", songbookAbbreviation: "MP", number: 1)
 
         try await store.upsert([original])
         try await store.upsert([updated])
