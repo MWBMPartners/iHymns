@@ -33,6 +33,15 @@
 // the SAME tab-on-iPhone/sidebar-row-elsewhere shape every other section
 // already has, so neither needed any container-picking logic of its own.
 //
+// #182 UPDATE — now that a real Settings screen exists, the standalone
+// `.account` section became `.settings` (hosting `SettingsView`), and the
+// account UI moved to a row INSIDE it (Settings → Account → `AccountView`).
+// This is the conventional iOS "Apple ID at the top of Settings" shape and
+// keeps the compact `TabView` at 7 tabs rather than overflowing into a
+// system "More" tab. `RootContainerView` also now owns the one
+// `SettingsViewModel` and applies its `theme` as `.preferredColorScheme` on
+// the whole app.
+//
 // `.live` remains a DELIBERATE, honestly-labelled "coming soon" placeholder
 // (this task's own brief: "a Live tab/Setlists can be a labelled 'coming
 // soon' placeholder for now, don't fake them") — no `IHLive` engine is
@@ -72,6 +81,15 @@ public struct RootContainerView: View {
     /// list.
     @State private var selectedSection: RootSection? = .home
 
+    /// The ONE `SettingsViewModel` for this app run (#182) — held here, not
+    /// in the app shell, per `SettingsViewModel`'s own header ("`RootContainerView`
+    /// holds ONE instance of each … and hands both down"). Its `theme`
+    /// drives `.preferredColorScheme` on the whole app below; it is handed to
+    /// the `Settings` section's `SettingsView`. `@State` with a default-value
+    /// initializer so it's built exactly once at first `body` evaluation,
+    /// reading whatever was last persisted to `UserDefaults.standard`.
+    @State private var settingsViewModel = SettingsViewModel()
+
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
@@ -84,6 +102,7 @@ public struct RootContainerView: View {
         #if os(macOS) || os(visionOS)
         splitView
             .task { await restoreAndSync() }
+            .preferredColorScheme(settingsViewModel.theme.colorScheme)
         #elseif os(iOS)
         Group {
             if horizontalSizeClass == .compact {
@@ -93,6 +112,11 @@ public struct RootContainerView: View {
             }
         }
         .task { await restoreAndSync() }
+        // #182 — the whole app honours the user's chosen theme. `nil`
+        // (`.system`) lets SwiftUI follow the OS; `.light`/`.dark`/
+        // `.highContrast` force that scheme. Applied at the ROOT so every
+        // pushed screen re-themes the instant the picker changes.
+        .preferredColorScheme(settingsViewModel.theme.colorScheme)
         #else
         // tvOS/watchOS: not wired to any shell yet (see file header) — a
         // plain stack keeps this FILE compiling on those platforms without
@@ -168,9 +192,9 @@ public struct RootContainerView: View {
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
 
             NavigationStack {
-                AccountView(rootViewModel: viewModel)
+                SettingsView(rootViewModel: viewModel, settings: settingsViewModel)
             }
-            .tabItem { Label(RootSection.account.title, systemImage: RootSection.account.systemImage) }
+            .tabItem { Label(RootSection.settings.title, systemImage: RootSection.settings.systemImage) }
         }
     }
 
@@ -198,8 +222,8 @@ public struct RootContainerView: View {
                 SetlistsView(rootViewModel: viewModel)
             case .live:
                 liveComingSoonView
-            case .account:
-                AccountView(rootViewModel: viewModel)
+            case .settings:
+                SettingsView(rootViewModel: viewModel, settings: settingsViewModel)
             }
         } detail: {
             ContentUnavailableView(
@@ -234,7 +258,12 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
     case favorites
     case setlists
     case live
-    case account
+    // #182 — the former standalone `.account` section became `.settings`:
+    // the Settings screen (`SettingsView`) NESTS the account UI inside it
+    // (an "Account" row → `AccountView`), matching the conventional iOS
+    // "Apple ID sits at the top of Settings" shape and keeping the compact
+    // `TabView` at 7 tabs rather than overflowing into a system "More" tab.
+    case settings
 
     var id: String { rawValue }
 
@@ -246,7 +275,7 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .favorites: "Favourites"
         case .setlists: "Setlists"
         case .live: "Live"
-        case .account: "Account"
+        case .settings: "Settings"
         }
     }
 
@@ -258,7 +287,7 @@ private enum RootSection: String, CaseIterable, Identifiable, Hashable {
         case .favorites: "heart"
         case .setlists: "list.bullet.rectangle.portrait"
         case .live: "dot.radiowaves.left.and.right"
-        case .account: "person.crop.circle"
+        case .settings: "gearshape"
         }
     }
 }

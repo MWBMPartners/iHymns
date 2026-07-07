@@ -31,6 +31,37 @@ public enum APIEnvironment: String, Sendable, CaseIterable, Codable {
     case beta
     case prod
 
+    /// The environment the app shell targets when the user hasn't set an
+    /// explicit override (`IHSettingsStore.apiEnvironmentOverride`).
+    ///
+    /// ELI5: "If nobody picked one, which site should we talk to?"
+    ///
+    /// DETAILED: The honest 2-way split a compile flag can actually express —
+    /// `DEBUG` builds hit `dev`, everything else (Release, i.e. TestFlight +
+    /// App Store) hits `prod`. Strategy §3.1's finer Debug→dev / Internal-TF
+    /// →beta / External-TF+AppStore→prod mapping needs a RUNTIME TestFlight
+    /// signal (the app-store receipt path) to distinguish TF from App Store,
+    /// which a `#if` cannot; a beta tester who needs `beta` sets it via the
+    /// Settings → Developer picker (compiled in only under `DEBUG`, see
+    /// `SettingsView`), and the shell reads that override first regardless.
+    public static var defaultForBuild: APIEnvironment {
+        #if DEBUG
+        .dev
+        #else
+        .prod
+        #endif
+    }
+
+    /// A human-readable label for the Settings → Developer environment
+    /// picker (`SettingsView`, #182).
+    public var displayName: String {
+        switch self {
+        case .dev: "Development"
+        case .beta: "Beta"
+        case .prod: "Production"
+        }
+    }
+
     /// The base URL every `?action=` request is built against for this
     /// environment.
     ///

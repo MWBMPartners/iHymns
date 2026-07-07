@@ -40,7 +40,18 @@ struct IHymnsApp: App {
     /// `@State`'s default-value expression (evaluated exactly once, at
     /// scene creation) and handed down to `RootContainerView`, which
     /// composes every screen from it.
-    @State private var rootViewModel = AppRootViewModel.makeLive(environment: .dev)
+    ///
+    /// #182 UPDATE — the environment is no longer hard-coded to `.dev`: it
+    /// reads the user's persisted `IHSettingsStore.apiEnvironmentOverride`
+    /// (set from Settings → Developer, `DEBUG`-only) and falls back to
+    /// `APIEnvironment.defaultForBuild` (Debug→dev, Release→prod). Read once
+    /// at launch because `APIClient` is an immutable-once-built `actor`
+    /// (`APIEnvironment` is a `let` on it) — changing the override takes
+    /// effect on the NEXT launch, exactly as `IHSettingsStore
+    /// .apiEnvironmentOverride`'s own doc comment promises the user.
+    @State private var rootViewModel = AppRootViewModel.makeLive(
+        environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
+    )
 
     var body: some Scene {
         WindowGroup {
