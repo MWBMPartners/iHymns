@@ -43,6 +43,32 @@
 //   5. Lines within a both-sides pair are compared BY INDEX (hymn
 //      counterpart verses almost always line up positionally; an LCS
 //      alignment would be deliberate over-engineering for v1).
+//
+// #1454 UPDATE — word-level diff (`wordDiff(primaryLine:secondaryLine:)`).
+// Once `pairs(primary:secondary:)` has already flagged a line pair as
+// differing (`ComparisonComponentPair.differingLineIndices`), this answers
+// the finer-grained "which WORDS actually changed?" question for that one
+// line pair. Deliberately NOT folded into `pairs(...)` itself — computing a
+// word diff for every line up front would waste work on the (common) case
+// where the user has the line-level toggle on but never even looks closely
+// enough to need word granularity, and `SongComparisonViewModel.pairs`'
+// own header already establishes the "recompute on demand, it's cheap"
+// posture this mirrors.
+//
+// Algorithm: tokenise both lines on whitespace (`tokenize(_:)`, real text —
+// punctuation intact, so the rendered highlight shows exactly what the user
+// typed), then align them with a common-prefix + common-suffix scan — NOT a
+// full Myers/LCS diff, per this issue's own "a simple LCS or common-prefix/
+// suffix + middle-diff is fine" allowance. Token EQUALITY during that scan
+// reuses `normalise(_:)` (applied per-token) — the SAME fold the line-level
+// comparison already uses — so "grace," vs "grace" is never flagged as a
+// word-level change just because line-level already treats it as identical.
+// Every token strictly between the matched prefix and matched suffix is
+// marked `.changed` on ITS OWN side (the two sides can, and usually do, have
+// different word counts there); every prefix/suffix token is `.unchanged`.
+// This correctly localises a single swapped word in the middle of a line,
+// and an inserted/deleted word at either end — see
+// `SongComparisonEngineTests`' word-diff cases for both.
 import Foundation
 import IHModels
 import SwiftUI
@@ -94,6 +120,19 @@ public struct ComparisonComponentPair: Sendable, Hashable, Identifiable {
         self.differingLineIndices = differingLineIndices
         self.secondaryOnlyLineIndices = secondaryOnlyLineIndices
     }
+}
+
+/// One token of a word-level line diff (#1454) — either it matches the
+/// counterpart line's token at the aligned position (`.unchanged`) or it's
+/// part of the span that differs (`.changed`). Carries the REAL token text
+/// (not the normalised fold), so the rendered highlight shows the user's
+/// actual wording, punctuation and all.
+///
+/// ELI5: "This word is the same in both versions" vs "this word is where
+/// they differ."
+public enum WordDiffSegment: Sendable, Hashable {
+    case unchanged(String)
+    case changed(String)
 }
 
 /// Whether `SongComparisonView` should render its two songs as one
@@ -172,6 +211,60 @@ public enum SongComparisonEngine {
         let stripped = String(String.UnicodeScalarView(keptScalars))
         let words = stripped.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }
         return words.joined(separator: " ")
+    }
+
+    /// Splits `line` into its real, whitespace-separated words — punctuation
+    /// stays attached to whichever word it was next to (this is a display
+    /// tokeniser, not a normalising one; `normalise(_:)` is applied
+    /// SEPARATELY, per-token, wherever `wordDiff` needs to compare two
+    /// tokens for equality).
+    ///
+    /// ELI5: "Break this lyric line into its individual words."
+    public static func tokenize(_ line: String) -> [String] {
+        line.split(whereSeparator: \.isWhitespace).map(String.init)
+    }
+
+    /// Word-level diff between two lines ALREADY known to differ at the
+    /// line level (`ComparisonComponentPair.differingLineIndices`) — see
+    /// this file's header for the common-prefix/common-suffix algorithm.
+    /// Returns one `[WordDiffSegment]` per side, in that side's own
+    /// original token order.
+    ///
+    /// ELI5: "Here are the two versions of this line — tell me exactly
+    /// which words differ, on each side."
+    public static func wordDiff(primaryLine: String, secondaryLine: String) -> (primary: [WordDiffSegment], secondary: [WordDiffSegment]) {
+        let primaryTokens = tokenize(primaryLine)
+        let secondaryTokens = tokenize(secondaryLine)
+        let sharedCount = min(primaryTokens.count, secondaryTokens.count)
+
+        var prefixLength = 0
+        while prefixLength < sharedCount, normalise(primaryTokens[prefixLength]) == normalise(secondaryTokens[prefixLength]) {
+            prefixLength += 1
+        }
+
+        // Bounded by `sharedCount - prefixLength` so the prefix and suffix
+        // scans can never overlap the same token twice.
+        var suffixLength = 0
+        while suffixLength < (sharedCount - prefixLength),
+              normalise(primaryTokens[primaryTokens.count - 1 - suffixLength]) == normalise(secondaryTokens[secondaryTokens.count - 1 - suffixLength]) {
+            suffixLength += 1
+        }
+
+        return (
+            primary: wordDiffSegments(for: primaryTokens, prefixLength: prefixLength, suffixLength: suffixLength),
+            secondary: wordDiffSegments(for: secondaryTokens, prefixLength: prefixLength, suffixLength: suffixLength)
+        )
+    }
+
+    /// Marks every token of `tokens` outside the matched `[0..<prefixLength)`
+    /// / `[tokens.count - suffixLength..<tokens.count)` bookends as
+    /// `.changed` — the shared middle-marking step `wordDiff(primaryLine:
+    /// secondaryLine:)` applies identically to each side.
+    private static func wordDiffSegments(for tokens: [String], prefixLength: Int, suffixLength: Int) -> [WordDiffSegment] {
+        let changedUpperBound = tokens.count - suffixLength
+        return tokens.enumerated().map { index, token in
+            (index < prefixLength || index >= changedUpperBound) ? .unchanged(token) : .changed(token)
+        }
     }
 
     /// The `(type, number)` match key two components must share to be

@@ -31,6 +31,19 @@
 // Praise version. Verse 1. …"). Both default to their pre-#1445 no-op
 // values (`[]`/`nil`), so every existing call site (`SongDetailView`)
 // compiles and renders unchanged.
+//
+// #1454 UPDATE — a THIRD additive, defaulted parameter, `wordDiffs`, carries
+// `SongComparisonEngine.wordDiff(primaryLine:secondaryLine:)`'s per-line
+// output (keyed by the SAME index `highlightedLineIndices` uses) for the
+// finer "which WORDS changed" grain. A line index present in `wordDiffs`
+// renders word-by-word (only the `.changed` tokens tinted+bold+underlined —
+// still NOT colour-only, mirroring #1445's own line-level rule); a line
+// index that's highlighted but ABSENT from `wordDiffs` (an overflow line
+// with no counterpart to word-diff against, or any caller that simply
+// doesn't pass this parameter) falls back to #1445's original whole-line
+// tint. Empty (the default) is a verified no-op for every pre-#1454 call
+// site, including #1445's own original `SongComparisonView` cells until
+// that file is updated in this same change.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -60,6 +73,12 @@ struct SongComponentView: View {
     /// `nil` (the default) leaves the announcement exactly as it was before
     /// #1445.
     var accessibilityLabelPrefix: String?
+
+    /// Per-line word-level diff segments for THIS side (#1454), keyed by the
+    /// same line index `highlightedLineIndices` uses. See this file's
+    /// header for the fallback-to-whole-line rule when a highlighted index
+    /// has no entry here. Empty (the default) is a verified no-op.
+    var wordDiffs: [Int: [WordDiffSegment]] = [:]
 
     var body: some View {
         content
@@ -107,7 +126,24 @@ struct SongComponentView: View {
             let count = highlightedLineIndices.count
             parts.append(count == 1 ? "1 line differs from the compared version" : "\(count) lines differ from the compared version")
         }
+        // #1454 — one SUMMARY count, not a per-word announcement (the
+        // header's own "too noisy" reasoning) — deliberately appended after
+        // the line-count sentence, not interleaved with it.
+        if changedWordCount > 0 {
+            parts.append(changedWordCount == 1 ? "1 word changed" : "\(changedWordCount) words changed")
+        }
         return parts.joined(separator: ". ")
+    }
+
+    /// Total `.changed` tokens across every line in `wordDiffs` — the
+    /// VoiceOver summary count `comparisonAccessibilityLabel` appends.
+    private var changedWordCount: Int {
+        wordDiffs.values.reduce(0) { total, segments in
+            total + segments.filter {
+                if case .changed = $0 { return true }
+                return false
+            }.count
+        }
     }
 
     @ViewBuilder
@@ -116,6 +152,14 @@ struct SongComponentView: View {
         let lineId = index < component.lineIds.count ? component.lineIds[index] : nil
         let hasEnrichment = lineId.map(enrichmentIndex.hasEnrichment(forLineId:)) ?? false
         let isHighlighted = highlightedLineIndices.contains(index)
+        // #1454 — only a NON-EMPTY, genuinely-changed segment list opts
+        // this line into word-level rendering; a `wordDiffs[index]` entry
+        // with nothing `.changed` in it (shouldn't occur in practice — see
+        // `SongComparisonView`'s own caller comment — but defensive rather
+        // than silently rendering an all-plain "highlighted" line with no
+        // visible cue at all) still falls back to the whole-line tint.
+        let wordSegments = wordDiffs[index]
+        let hasWordLevelDiff = wordSegments?.contains { if case .changed = $0 { return true }; return false } ?? false
 
         VStack(alignment: .leading, spacing: 0) {
             if showChords, let chord = chord(atIndex: index) {
@@ -133,7 +177,8 @@ struct SongComponentView: View {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 if isHighlighted {
                     // #1445 — the diff marker is NEVER colour-only (WCAG
-                    // 1.4.1): a glyph here, a background tint below, AND the
+                    // 1.4.1): a glyph here, a background tint below (or,
+                    // #1454, per-word bold+underline instead), AND the
                     // spoken suffix `comparisonAccessibilityLabel` appends —
                     // three independent signals for the one difference.
                     Image(systemName: "asterisk")
@@ -141,13 +186,22 @@ struct SongComponentView: View {
                         .foregroundStyle(IHColorTokens.accent)
                         .accessibilityHidden(true)
                 }
-                Text(line)
-                    .ihLyricLineStyle(componentType: component.type, textScale: textScale)
+                if hasWordLevelDiff, let wordSegments {
+                    wordDiffText(wordSegments)
+                        .ihLyricLineStyle(componentType: component.type, textScale: textScale)
+                } else {
+                    Text(line)
+                        .ihLyricLineStyle(componentType: component.type, textScale: textScale)
+                }
             }
         }
-        .padding(isHighlighted ? 4 : 0)
+        // #1454 — the whole-line background tint is SKIPPED when a word-
+        // level diff is already drawing attention to the specific changed
+        // tokens; showing both at once would double-signal the same line
+        // and read as noisier, not clearer.
+        .padding(isHighlighted && !hasWordLevelDiff ? 4 : 0)
         .background {
-            if isHighlighted {
+            if isHighlighted, !hasWordLevelDiff {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(IHColorTokens.accent.opacity(0.12))
             }
@@ -162,6 +216,37 @@ struct SongComponentView: View {
                 Button("Show Line Details") { onSelectLine(lineId) }
             }
         }
+    }
+
+    /// Composes `segments` into one `Text` via `AttributedString` runs —
+    /// `.changed` tokens get `.stronglyEmphasized` (bold) + an underline +
+    /// a tint (three signals stacked on top of the line-level asterisk/
+    /// spoken-summary cues `lineView(atIndex:)` already adds, none of them
+    /// colour-only), `.unchanged` tokens carry no attributes at all. Deliberately
+    /// `AttributedString` runs rather than `Text` concatenation (`+`) —
+    /// SwiftUI's own `Text.+` is deprecated on this SDK in favour of exactly
+    /// this pattern, and per-run attributes (bold/underline/tint) compose
+    /// cleanly with the BASE font `.ihLyricLineStyle` sets on the whole
+    /// returned `Text`, rather than each run hard-coding its own font/size
+    /// and silently stopping honouring the user's text-scale setting.
+    /// Single spaces are re-inserted between tokens (`tokenize(_:)` split
+    /// them out) so the rejoined line reads naturally.
+    private func wordDiffText(_ segments: [WordDiffSegment]) -> Text {
+        var attributed = AttributedString()
+        for (offset, segment) in segments.enumerated() {
+            if offset > 0 { attributed += AttributedString(" ") }
+            switch segment {
+            case .unchanged(let word):
+                attributed += AttributedString(word)
+            case .changed(let word):
+                var run = AttributedString(word)
+                run.inlinePresentationIntent = .stronglyEmphasized
+                run.underlineStyle = .single
+                run.foregroundColor = IHColorTokens.accent
+                attributed += run
+            }
+        }
+        return Text(attributed)
     }
 
     /// The chord string for `index`, if `component.chords` both exists and

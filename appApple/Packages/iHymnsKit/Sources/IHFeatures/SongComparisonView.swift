@@ -19,9 +19,20 @@
 // the SAME `@AppStorage("ihLyricsTextScale")` key `SongDetailView` persists,
 // so the user's chosen reading size carries straight into this screen.
 //
-// Diff rendering reuses `SongComponentView`'s two #1445 additive params
+// Diff rendering reuses `SongComponentView`'s #1445 additive params
 // (`highlightedLineIndices`/`accessibilityLabelPrefix`) rather than forking
 // a second lyric renderer — see that file's own #1445 header note.
+//
+// #1454 UPDATE — `wordDiffs(for:isPrimary:)` below now also computes
+// `SongComponentView`'s third additive param, `wordDiffs`, for every SHARED
+// (both-sides-present) line index already flagged as differing —
+// `SongComparisonEngine.wordDiff(primaryLine:secondaryLine:)` needs an
+// actual counterpart line to diff against, so a primary/secondary-ONLY
+// overflow index (no counterpart at all) is deliberately left out and keeps
+// #1445's original whole-line highlight instead (`SongComponentView`'s own
+// fallback rule). The #1445 line-level toggle (`highlightDiffs`) still gates
+// this entirely — turning highlighting off skips both the line AND word
+// computation, exactly as before.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -168,7 +179,8 @@ public struct SongComparisonView: View {
                 enrichmentIndex: .empty,
                 onSelectLine: { _ in },
                 highlightedLineIndices: highlightDiffs ? highlightIndices(for: pair, isPrimary: isPrimary) : [],
-                accessibilityLabelPrefix: sideLabel(isPrimary: isPrimary)
+                accessibilityLabelPrefix: sideLabel(isPrimary: isPrimary),
+                wordDiffs: highlightDiffs ? wordDiffs(for: pair, isPrimary: isPrimary) : [:]
             )
         } else {
             Text("Only in \(sideLabel(isPrimary: !isPrimary))")
@@ -195,6 +207,26 @@ public struct SongComparisonView: View {
         guard let secondaryLineCount = pair.secondary?.lines.count else { return [] }
         let sharedMismatches = pair.differingLineIndices.filter { $0 < secondaryLineCount }
         return sharedMismatches.union(pair.secondaryOnlyLineIndices)
+    }
+
+    /// #1454 — word-level diff segments for THIS side, one entry per SHARED
+    /// differing line index (see this file's header for why overflow-only
+    /// indices are excluded). `isPrimary` selects which half of
+    /// `SongComparisonEngine.wordDiff(primaryLine:secondaryLine:)`'s tuple
+    /// result this side renders.
+    private func wordDiffs(for pair: ComparisonComponentPair, isPrimary: Bool) -> [Int: [WordDiffSegment]] {
+        guard let primaryComponent = pair.primary, let secondaryComponent = pair.secondary else { return [:] }
+        let sharedCount = min(primaryComponent.lines.count, secondaryComponent.lines.count)
+
+        var result: [Int: [WordDiffSegment]] = [:]
+        for index in 0..<sharedCount where pair.differingLineIndices.contains(index) {
+            let diff = SongComparisonEngine.wordDiff(
+                primaryLine: primaryComponent.lines[index],
+                secondaryLine: secondaryComponent.lines[index]
+            )
+            result[index] = isPrimary ? diff.primary : diff.secondary
+        }
+        return result
     }
 
     private func titleCard(for detail: SongDetail?) -> some View {
