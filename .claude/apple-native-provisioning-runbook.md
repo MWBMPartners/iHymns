@@ -118,7 +118,7 @@
 ## Master verification checklist
 - [ ] App ID `app.ihymns` registered; **Sign in with Apple** + **Associated Domains** enabled
 - [ ] App Store Connect **iHymns** record created (all platforms, Universal Purchase)
-- [ ] CarPlay entitlement **request submitted** (approval by email, weeks later)
+- [x] CarPlay entitlement **request submitted** (2026-07-08, confirmation email received) — ⏳ awaiting the separate entitlement-*grant* email before `com.apple.developer.carplay-audio` is usable
 - [ ] SIWA key created; `.p8` + **Key ID** stored securely
 - [ ] **Team ID** captured
 - [ ] *(deferred)* APNs key — only at #1410
