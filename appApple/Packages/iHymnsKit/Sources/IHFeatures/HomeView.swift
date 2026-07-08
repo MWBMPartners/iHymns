@@ -24,6 +24,13 @@
 // why every stack that might push a `SongID` needs its own copy of that
 // modifier even though the destination VIEW (`SongDetailView`) is fully
 // shared.
+//
+// #1457 UPDATE — a compact "Your Activity" card (`HomeActivityCard`) now
+// sits between the resume card and "Browse Songbooks," surfacing #1446's
+// local reading-activity store (songs read this week + current streak,
+// plus an optional Swift Charts sparkline) with a tap-through to the full
+// "Your Activity" screen. Hidden entirely on a fresh install — see
+// `activitySummarySection`'s own doc comment.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -44,6 +51,7 @@ public struct HomeView: View {
             VStack(alignment: .leading, spacing: 24) {
                 songOfTheDaySection
                 resumeSection
+                activitySummarySection
                 browseSongbooksCard
                 recentlyViewedSection
             }
@@ -133,6 +141,35 @@ public struct HomeView: View {
         // "continue" — an empty-state card here would just be noise above
         // the "Browse Songbooks" card that already invites the user to
         // start reading something.
+    }
+
+    // MARK: - Your Activity (#1457)
+
+    /// The compact "Your Activity" card — reuses `viewModel.activitySummary`
+    /// (#1446's local store, `HomeActivitySummary`'s own pure "is this
+    /// worth showing" gate) and pushes the full "Your Activity" screen on
+    /// tap. Hidden entirely when there's nothing recorded yet (a fresh
+    /// install), matching `resumeSection`'s identical "render nothing when
+    /// nothing to show" idiom one section up — a card full of zeros would
+    /// be noise, not a feature.
+    @ViewBuilder
+    private var activitySummarySection: some View {
+        if let summary = viewModel.activitySummary {
+            NavigationLink {
+                UsageStatsView(rootViewModel: rootViewModel)
+            } label: {
+                HomeActivityCard(summary: summary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(activityAccessibilityLabel(for: summary))
+        }
+    }
+
+    private func activityAccessibilityLabel(for summary: HomeActivitySummary) -> String {
+        let weekPart = summary.songsReadThisWeek == 1 ? "1 song this week" : "\(summary.songsReadThisWeek) songs this week"
+        let streakPart = summary.currentStreak == 1 ? "1 day streak" : "\(summary.currentStreak) day streak"
+        return "Your Activity. \(weekPart). \(streakPart)."
     }
 
     // MARK: - Browse Songbooks
