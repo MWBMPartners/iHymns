@@ -60,7 +60,16 @@
 // is not a meaningful concept on either — matching the task's explicit
 // "guard any iOS-only Handoff… API" instruction with the SAME three-platform
 // split `RootContainerView`'s own `#if os(macOS) || os(visionOS) /
-// #elseif os(iOS)` already establishes.
+// #elseif os(iOS)` already establishes. The `handoffActivity(webpageURL:title:)`
+// modifier itself now lives in `SongDetailView+Handoff.swift` (a pure move,
+// purely for the LOC-budget tripwire — see that file's own header).
+//
+// #1445 UPDATE (song comparison) — applies `SongCompareEntryModifier`,
+// which owns the toolbar's new "Compare With…" button, the picker sheet,
+// and the push to `SongComparisonView`. `songId` is now a stored property
+// (previously only threaded into `viewModel`'s own init) purely so this
+// entry point has a stable id to compare FROM even before the primary load
+// completes (the button itself stays disabled until it does).
 import Foundation
 import IHAppSupport
 import IHAuth
@@ -74,6 +83,12 @@ import SwiftUI
 public struct SongDetailView: View {
     @State private var viewModel: SongDetailViewModel
     private let rootViewModel: AppRootViewModel
+
+    /// #1445 — kept as its own stored property (rather than re-deriving it
+    /// from `viewModel.loadState` every time) so `SongCompareEntryModifier`
+    /// always has a stable "compare FROM" id, even before the primary load
+    /// completes (its own toolbar button stays `.disabled` until then).
+    private let songId: SongID
 
     @AppStorage("ihLyricsTextScale") private var textScale: Double = 1.0
     @AppStorage("ihLyricsShowChords") private var showChords: Bool = true
@@ -94,6 +109,7 @@ public struct SongDetailView: View {
     public init(songId: SongID, rootViewModel: AppRootViewModel) {
         _viewModel = State(initialValue: SongDetailViewModel(songId: songId, rootViewModel: rootViewModel))
         self.rootViewModel = rootViewModel
+        self.songId = songId
     }
 
     public var body: some View {
@@ -132,6 +148,39 @@ public struct SongDetailView: View {
                 AddToSetlistSheet(rootViewModel: rootViewModel, song: entry)
             }
         }
+        // #1445 — the "Compare With…" toolbar button + picker + push;
+        // owns its OWN toolbar/sheet/navigationDestination, so this is the
+        // entire wiring cost on this file (see that modifier's own header).
+        .modifier(SongCompareEntryModifier(
+            songId: songId,
+            isPrimaryLoaded: isPrimaryLoaded,
+            counterparts: counterpartsForCompare,
+            relatedSongs: relatedSongsForCompare,
+            rootViewModel: rootViewModel
+        ))
+    }
+
+    /// Whether the primary load has succeeded — `SongCompareEntryModifier`'s
+    /// "nothing to compare FROM yet" gate, mirroring `shareURL`'s own
+    /// `.loaded`-only guard.
+    private var isPrimaryLoaded: Bool {
+        if case .loaded = viewModel.loadState { return true }
+        return false
+    }
+
+    /// This song's counterparts, already fetched by `viewModel
+    /// .songLinksState` — handed to the picker so it never issues a second
+    /// fetch for suggestions it already has.
+    private var counterpartsForCompare: [SongLinkedSong] {
+        if case .loaded(let group) = viewModel.songLinksState { return group.songs }
+        return []
+    }
+
+    /// Same "already fetched, no second call" reasoning as
+    /// `counterpartsForCompare` above, for `viewModel.relatedSongsState`.
+    private var relatedSongsForCompare: [RelatedSongSummary] {
+        if case .loaded(let related) = viewModel.relatedSongsState { return related }
+        return []
     }
 
     /// The nav-bar/window title — the real song title once loaded, a
@@ -333,46 +382,7 @@ public struct SongDetailView: View {
     }
 }
 
-/// #186 — the Handoff modifier, isolated in its own `private extension`
-/// purely to keep the `#if os(...)` platform-guard block out of `body`
-/// itself.
-private extension View {
-    /// Advertises `webpageURL` as an `NSUserActivityTypeBrowsingWeb` Handoff
-    /// activity for as long as this view is on screen — a no-op (returns
-    /// `self` unmodified) while `webpageURL` is `nil` (still loading/
-    /// errored, mirroring `shareURL`'s own guard) so nothing is ever
-    /// advertised for a song that hasn't actually loaded.
-    ///
-    /// ELI5: "Let this song follow you to another Apple device — or hand
-    /// off straight into Safari from here."
-    ///
-    /// DETAILED: `NSUserActivityTypeBrowsingWeb` (Foundation's Handoff
-    /// activity type for "continuing a web page," available since iOS 8/
-    /// macOS 10.10) pairs with the AASA's own `activitycontinuation` key
-    /// (`.well-known/apple-app-site-association.php`, #1401) and
-    /// `IHymnsApp.swift`'s `.onContinueUserActivity(NSUserActivityTypeBrowsingWeb)`
-    /// handler — a Handoff continuation's `webpageURL` runs through the
-    /// SAME `DeepLinkRouter.resolve(_:)` a Universal Link tap does, so
-    /// resuming on another device lands on this exact song either way.
-    /// Guarded to iOS/macOS/visionOS only — see this file's #186 header
-    /// comment for why tvOS/watchOS (which `IHFeatures` also compiles for,
-    /// per `RootContainerView.swift`'s own header) are deliberately
-    /// excluded, matching this task's explicit "guard any iOS-only
-    /// Handoff… API" instruction.
-    @ViewBuilder
-    func handoffActivity(webpageURL: URL?, title: String) -> some View {
-        #if os(iOS) || os(macOS) || os(visionOS)
-        if let webpageURL {
-            self.userActivity(NSUserActivityTypeBrowsingWeb) { activity in
-                activity.webpageURL = webpageURL
-                activity.title = title
-                activity.isEligibleForHandoff = true
-            }
-        } else {
-            self
-        }
-        #else
-        self
-        #endif
-    }
-}
+// `handoffActivity(webpageURL:title:)` (#186) moved to
+// `SongDetailView+Handoff.swift` — a pure move, purely for the LOC-budget
+// tripwire now that #1445 added the "Compare With…" entry point above; see
+// that file's own header.
