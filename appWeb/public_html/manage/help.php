@@ -234,6 +234,21 @@ $sections = [
         'title' => 'Database Setup',
         'group' => 'Operations',
     ],
+    /* ELI5: this tells the site "here's where to find our app on the App
+       Store / Google Play / Amazon Appstore" — once you fill it in,
+       visitors on that platform see a "Get the app" banner instead of
+       the browser's PWA install prompt.
+       DETAILED (#1462): documents /manage/configuration's "Native app
+       stores" card, which moved native_app_ios / native_app_android /
+       native_app_amazon out of the APP_CONFIG['native_apps'] code
+       constant into tblAppSettings (commit 8c5dda87) so an admin can
+       set/change store IDs without a deploy. */
+    [
+        'id'    => 'configuration',
+        'icon'  => 'bi-phone',
+        'title' => 'Native app stores',
+        'group' => 'Operations',
+    ],
     [
         'id'    => 'native-api',
         'icon'  => 'bi-broadcast',
@@ -1408,6 +1423,47 @@ foreach ($sections as $s) {
                     </div>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Restore overwrites everything. There is no &ldquo;merge&rdquo; option.
+                    </div>
+                </section>
+
+                <?php /* ELI5: this section explains the form fields that
+                         tell the site where to find our app on each store.
+                         DETAILED (#1462): documents /manage/configuration's
+                         "Native app stores" card (commit 8c5dda87), which
+                         moved native_app_ios / native_app_android /
+                         native_app_amazon out of the code-level
+                         APP_CONFIG['native_apps'] constant into
+                         tblAppSettings so a global admin can set/change
+                         store IDs without a deploy. Deliberately silent on
+                         store availability — the Apple app is still
+                         in-progress and unpublished, so this card is
+                         commonly left blank. */ ?>
+                <section id="configuration" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-phone me-2"></i>Native app stores</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        A card on <a href="/manage/configuration">Configuration</a> that tells the site where each
+                        platform's native app is listed &mdash; Apple App Store, Google Play, and the Amazon
+                        Appstore (Fire OS). It's just an address book entry: it doesn't publish anything, it only
+                        tells the site what to link to once an app <em>is</em> published.
+                    </p>
+                    <h3 class="h6">What to paste in each field</h3>
+                    <ul>
+                        <li><strong>Apple App Store</strong> &mdash; the numeric App Store ID, or the full <code>apps.apple.com</code> URL. One listing covers the universal app across iOS/iPadOS/macOS/tvOS/watchOS/visionOS.</li>
+                        <li><strong>Google Play</strong> &mdash; the Android package name, or the full Play Store URL.</li>
+                        <li><strong>Amazon Appstore</strong> &mdash; the 10-character ASIN, or the full Amazon Appstore URL.</li>
+                    </ul>
+                    <p class="small">
+                        Either form works &mdash; paste a bare ID/package/ASIN or the whole store URL, whichever you have to hand. The save handler parses out the canonical ID either way, so what's stored is always consistent.
+                    </p>
+                    <h3 class="h6">What changes once a field is set</h3>
+                    <p>
+                        The public site shows a platform-aware native-app download banner &mdash; on that platform only &mdash; in place of the browser's PWA "Add to Home Screen" prompt, and emits the matching app-store meta tag.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> it's safe &mdash; and normal &mdash; to leave every field blank until an app is actually live on that store. Blank falls back to the ordinary PWA install prompt; nothing breaks and no banner claims an app exists before it does.
                     </div>
                 </section>
 
