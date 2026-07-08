@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PrivacyInfo.xcprivacy — app-wide Apple privacy manifest (#1449)
+
+  ELI5: A form Apple makes every App Store app fill in that says "here's
+  whether we track people across other apps/websites, here's what personal
+  info we collect (if any), and here's exactly why we use a short list of
+  sensitive system APIs" — checked by Xcode/App Store Connect at archive
+  and submission time.
+
+  DETAILED: Covers the `iHymns` target — the universal iOS/iPadOS/macOS/
+  visionOS app shell (`appApple/project.yml`'s `iHymns` target,
+  `supportedDestinations: [iOS, macOS, visionOS]`). This is the ONLY app
+  shell that currently reaches any code using a "required reason" API (see
+  the `NSPrivacyAccessedAPITypes` entry below) — `iHymnsTV`/`iHymnsWatch`
+  still render only `PhaseZeroSkeletonView`, and `iHymnsWidgets` doesn't
+  even import `IHFeatures` yet, so all three ship their own EMPTY manifests
+  (`Apps/iHymnsTV/Sources/PrivacyInfo.xcprivacy`,
+  `Apps/iHymnsWatch/Sources/PrivacyInfo.xcprivacy`,
+  `Apps/iHymnsWidgets/Sources/PrivacyInfo.xcprivacy`) rather than copying
+  this one — a manifest must be ACCURATE to what that specific bundle
+  actually does, not a blanket copy-paste (this issue's own "accuracy
+  matters more than completeness-theatre" framing). Each of those three
+  gets the identical `NSPrivacyAccessedAPICategoryUserDefaults` entry added
+  the moment Phase 1 actually wires it to `IHSettingsStore`/etc.
+
+  This file was written by hand after auditing the ENTIRE `appApple/`
+  source tree for every required-reason API category Apple's 2024 policy
+  gates (`grep`-swept for `UserDefaults`, file-timestamp APIs
+  [`creationDate`/`contentModificationDate`/`fileModificationDate`/
+  `getattrlist`/`attributesOfItem`/`stat`/`lstat`/`fstat`], disk-space APIs
+  [`volumeAvailableCapacity*`/`systemFreeSize`/`statfs`/`statvfs`], and
+  system-boot-time APIs [`systemUptime`/`mach_absolute_time`]) — see each
+  section below for exactly which files justify which declaration, and
+  which categories were found UNUSED and correctly omitted.
+
+  Reference: Apple's "Describing use of required reason API" —
+  https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api
+  and "Privacy manifest files" —
+  https://developer.apple.com/documentation/bundleresources/privacy_manifest_files.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+      NSPrivacyTracking = false: iHymns does no cross-app/cross-website
+      tracking (Apple's definition — linking data to a third party's data
+      for targeted advertising/ad measurement, or sharing with a data
+      broker). #189's analytics pipeline (`IHAnalyticsService.swift`) is
+      first-party-only, consent-gated (`IHSettingsStore.analyticsConsentEnabled`,
+      `ihAnalyticsConsentEnabled` key), and — as of this audit — its ONLY
+      conformer, `IHAnalyticsLogSink` (`IHAppSupport/IHAnalyticsSink.swift`),
+      is a `#if DEBUG`-only `os.Logger` call: nothing is transmitted
+      off-device at all in Release builds (no `URLSession`-based sink
+      exists yet; that's #1448, still pending). No App Tracking Transparency
+      (`ATTrackingManager`) code exists anywhere in the tree either — grepped
+      and confirmed zero hits. `NSPrivacyTrackingDomains` is correctly empty
+      to match.
+    -->
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <!--
+      NSPrivacyCollectedDataTypes = []: genuinely empty, not an oversight.
+      The app collects no PII from the user (no account-required signup for
+      the core reading experience; native sign-in, where it exists, is
+      email-magic-link only and its token lives in the Keychain, not
+      analytics). #189's analytics currently records nothing off-device (see
+      the `NSPrivacyTracking` comment above) — the moment #1448 gives it a
+      real transmitting sink, this array gets a
+      `NSPrivacyCollectedDataTypeProductInteraction` entry with
+      `NSPrivacyCollectedDataTypeLinked = false` and
+      `NSPrivacyCollectedDataTypeTracking = false` (first-party, anonymous,
+      consent-gated product-interaction counts only) — NOT before, per this
+      issue's own "reflect reality" instruction.
+    -->
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <!--
+      NSPrivacyAccessedAPITypes — audited every one of Apple's required-
+      reason categories against the full `appApple/Packages/iHymnsKit/Sources`
+      + `appApple/Apps/*/Sources` tree. Only ONE category has a real,
+      first-party usage:
+
+      UserDefaults (NSPrivacyAccessedAPICategoryUserDefaults, reason CA92.1
+      — "access user defaults to read/write information that is only
+      accessible to the app itself"; the other three approved reason codes
+      for this category don't fit: 1C8F.1 is for an App Group container
+      shared with other apps/extensions from the SAME developer, which
+      nothing here uses; AC6B.1 is MDM-managed app configuration; C56D.1 is
+      a third-party SDK wrapping UserDefaults on the app's behalf — this is
+      first-party app code calling `UserDefaults.standard` directly).
+      Concrete call sites (`IHFeatures` target, `IHymnsKit` package):
+        - `IHSettingsStore.swift` (init `defaults: UserDefaults = .standard`)
+          — appearance theme, colour-vision-deficiency mode, dyslexia
+          reading mode, analytics-consent flag, onboarding-seen flag, API
+          environment override.
+        - `RecentSearchesStore.swift` — the last ~10 distinct catalogue
+          search terms (`ihRecentCatalogueSearches` key).
+        - `RecentlyViewedStore.swift` — the last ~12 recently-opened songs,
+          JSON-encoded (`ihRecentlyViewedSongs` key).
+      All three are reached from this target via `AppRootViewModel.swift`,
+      `RootContainerView.swift`, and `Apps/iHymns/Sources/IHymnsApp.swift`.
+
+      Every OTHER required-reason category was checked and found UNUSED,
+      so is correctly OMITTED (not declared with a bogus reason) rather
+      than included "just in case":
+        - File timestamps (`NSPrivacyAccessedAPICategoryFileTimestamp`) —
+          every `FileManager` call in the tree (`OfflineStore.swift`,
+          `OfflineStore+MediaCache.swift`, `MediaDownloadViewModel.swift`,
+          `AppRootViewModel+Live.swift`) is a non-gated existence/write/
+          delete/directory-creation call; nothing reads a creation/
+          modification timestamp.
+        - Disk space (`NSPrivacyAccessedAPICategoryDiskSpace`) — no
+          `volumeAvailableCapacity*`/`systemFreeSize`/`statfs` call
+          anywhere; the Storage & Offline screen (`OfflineStorageView.swift`)
+          reports the app's OWN cache size via `SUM(...)` SQL aggregates
+          (`OfflineStore+SavedSongs.swift`/`+MediaCache.swift`), never the
+          volume's free space.
+        - System boot time (`NSPrivacyAccessedAPICategorySystemBootTime`) —
+          no `systemUptime`/`mach_absolute_time` call anywhere.
+        - Active keyboards — no `UITextInputMode`/`activeInputModes` call
+          anywhere.
+
+      GRDB.swift (the SQLite engine backing `IHPersistence.OfflineStore`,
+      pinned exact at 7.11.1, `Package.swift`) ships its OWN
+      `PrivacyInfo.xcprivacy` (`.build/checkouts/GRDB.swift/GRDB/
+      PrivacyInfo.xcprivacy`) declaring ZERO required-reason API usage of
+      its own — nothing to merge in from that dependency.
+    -->
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

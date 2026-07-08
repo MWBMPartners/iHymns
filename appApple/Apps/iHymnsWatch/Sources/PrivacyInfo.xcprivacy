@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PrivacyInfo.xcprivacy — `iHymnsWatch` (watchOS shell), #1449.
+
+  ELI5: Same idea as the main app's privacy form (see
+  `Apps/iHymns/Sources/PrivacyInfo.xcprivacy` for the full explanation) —
+  this one just covers the Apple Watch app, which today does a lot less.
+
+  DETAILED: `IHymnsWatchApp.swift` renders ONLY the shared
+  `PhaseZeroSkeletonView` placeholder (`IHFeatures/PhaseZeroSkeletonView.swift`
+  — confirmed by direct read: a static `SwiftUI.View` with no persistence
+  of any kind, no `UserDefaults`, no file/disk/boot-time API). It does NOT
+  reach `AppRootViewModel`/`RootContainerView`/`IHSettingsStore`/
+  `RecentSearchesStore`/`RecentlyViewedStore` at all — the real glance/
+  remote-companion UI (strategy §2.2) is Phase 1 work. Every
+  `NSPrivacyAccessedAPITypes` category was independently re-checked for
+  this target's actual reachable code (not just copied from the main app's
+  manifest) and found unused, so this manifest is correctly EMPTY rather
+  than declaring the main app's UserDefaults usage speculatively. Update
+  this file — adding the identical
+  `NSPrivacyAccessedAPICategoryUserDefaults`/`CA92.1` entry the main app's
+  manifest documents — the moment this shell starts composing
+  `IHSettingsStore`/`AppRootViewModel` for a real watchOS screen.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+</dict>
+</plist>

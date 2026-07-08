@@ -53,6 +53,13 @@ targets:
   iHymns:
     type: application
     supportedDestinations: [iOS, macOS, visionOS]
+    # `Apps/iHymns/Sources/PrivacyInfo.xcprivacy` (#1449, App Store privacy
+    # manifest) lives INSIDE this `sources:` path — XcodeGen 2.45.x
+    # auto-classifies a `.xcprivacy` file as a resource (verified: it lands
+    # in this target's "Copy Bundle Resources" build phase, never
+    # "Compile Sources") purely from its file extension, so no separate
+    # `resources:` list entry is needed here. See that file's own header
+    # for the full audit backing its declarations.
     sources:
       - path: Apps/iHymns/Sources
     settings:
@@ -150,6 +157,10 @@ targets:
   iHymnsTV:
     type: application
     platform: tvOS
+    # `Apps/iHymnsTV/Sources/PrivacyInfo.xcprivacy` (#1449) — same
+    # auto-bundled-as-a-resource mechanism the `iHymns` target's own
+    # comment above documents; this shell's manifest is currently EMPTY
+    # (see that file's header for why).
     sources:
       - path: Apps/iHymnsTV/Sources
     settings:
@@ -186,6 +197,10 @@ targets:
   iHymnsWatch:
     type: application
     platform: watchOS
+    # `Apps/iHymnsWatch/Sources/PrivacyInfo.xcprivacy` (#1449) — same
+    # auto-bundled-as-a-resource mechanism the `iHymns` target's own
+    # comment above documents; this shell's manifest is currently EMPTY
+    # (see that file's header for why).
     sources:
       - path: Apps/iHymnsWatch/Sources
     settings:
@@ -229,6 +244,11 @@ targets:
   iHymnsWidgets:
     type: app-extension
     platform: iOS
+    # `Apps/iHymnsWidgets/Sources/PrivacyInfo.xcprivacy` (#1449) — same
+    # auto-bundled-as-a-resource mechanism the `iHymns` target's own
+    # comment above documents; a widget EXTENSION is its own bundle
+    # (`.appex`), so it needs — and gets — its own manifest, not a copy of
+    # the host app's. Currently EMPTY (see that file's header for why).
     sources:
       - path: Apps/iHymnsWidgets/Sources
     info:
