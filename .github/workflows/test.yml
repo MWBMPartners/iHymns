@@ -302,6 +302,61 @@ jobs:
           php tests/php/test-song-public-id.php
 
       # -----------------------------------------------------------------------
+      # Step 5g: Sign in with Apple — RS256 verify core, attacked (#1402)
+      # Locally-generated test RSA keypair only — no committed key, no
+      # network. Attacks the verifier with algorithm-confusion, signature
+      # tampering, aud/iss/exp/iat/nonce mismatches, and malformed JWS shapes.
+      # -----------------------------------------------------------------------
+      - name: Sign in with Apple — RS256 verify core (#1402)
+        run: |
+          echo "Running Apple SIWA RS256 verify test..."
+          php tests/php/test-apple-siwa-verify.php
+
+      # -----------------------------------------------------------------------
+      # Step 5h: Sign in with Apple — ES256 client_secret minting (#1402)
+      # Locally-generated test EC P-256 keypair. Proves the DER<->JOSE raw
+      # signature conversion both directions and the exp-iat=300 claim shape.
+      # -----------------------------------------------------------------------
+      - name: Sign in with Apple — ES256 client_secret (#1402)
+        run: |
+          echo "Running Apple SIWA client_secret test..."
+          php tests/php/test-apple-client-secret.php
+
+      # -----------------------------------------------------------------------
+      # Step 5i: auth_login / auth_apple response-shape parity lock (#1402)
+      # Pins apiAuthSuccessPayload()'s exact key set (the native AuthSession
+      # DTO contract) and source-grep-confirms both handlers call it.
+      # -----------------------------------------------------------------------
+      - name: Auth response-shape parity lock (#1402)
+        run: |
+          echo "Running auth response-shape parity test..."
+          php tests/php/test-auth-response-shape.php
+
+      # -----------------------------------------------------------------------
+      # Step 5j: Sign in with Apple — static source guards (#1402 / #1403)
+      # Locks in: the tblUserAuthProviders dormancy probe, no disabled TLS
+      # verification in apple_siwa.php, the 1062 replay catch, and no
+      # error_log/logActivity call anywhere in the SIWA surface referencing a
+      # raw identityToken/RefreshToken/nonce value.
+      # -----------------------------------------------------------------------
+      - name: Sign in with Apple — static source guards (#1402/#1403)
+        run: |
+          echo "Running Apple SIWA static source guard test..."
+          php tests/php/test-apple-siwa-sources.php
+
+      # -----------------------------------------------------------------------
+      # Step 5k: account_delete cascade completeness guard (#1403)
+      # Asserts every FK referencing tblUsers(Id) is CASCADE or SET NULL
+      # (never RESTRICT/NO ACTION, which would throw mid-delete), and that
+      # the handler still names the two PII-scrub tables the FK graph does
+      # not clean.
+      # -----------------------------------------------------------------------
+      - name: account_delete FK cascade coverage (#1403)
+        run: |
+          echo "Running account_delete FK cascade coverage test..."
+          php tests/php/test-account-delete-fk-coverage.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -471,3 +526,18 @@ jobs:
 
       - name: Song PublicId helper (#1343-B)
         run: php tests/php/test-song-public-id.php
+
+      - name: Sign in with Apple — RS256 verify core (#1402)
+        run: php tests/php/test-apple-siwa-verify.php
+
+      - name: Sign in with Apple — ES256 client_secret (#1402)
+        run: php tests/php/test-apple-client-secret.php
+
+      - name: Auth response-shape parity lock (#1402)
+        run: php tests/php/test-auth-response-shape.php
+
+      - name: Sign in with Apple — static source guards (#1402/#1403)
+        run: php tests/php/test-apple-siwa-sources.php
+
+      - name: account_delete FK cascade coverage (#1403)
+        run: php tests/php/test-account-delete-fk-coverage.php
