@@ -402,37 +402,97 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
         } elseif ($action === 'save_apple') {
-            /* Apple native app — Team ID (#1401). A single free-text
-               tblAppSettings row, no schema change: the AASA responder
-               (.well-known/apple-app-site-association.php) reads it via
-               getAppSetting('apple_team_id', null) and falls back to an
-               obviously-fake 'TEAMID' placeholder when this is unset. This
-               is the ONE place the owner sets it — never hard-code the
-               Team ID in source (it identifies the Apple Developer account). */
+            /* Apple native app — Team ID (#1401) + Sign in with Apple Key ID
+               and .p8 private key (#1402). Three tblAppSettings rows, no
+               schema change:
+                 - apple_team_id           (#1401, existing) — the AASA
+                   responder (.well-known/apple-app-site-association.php)
+                   reads it via getAppSetting('apple_team_id', null) and
+                   falls back to an obviously-fake 'TEAMID' placeholder when
+                   unset.
+                 - apple_siwa_key_id       (#1402, NEW) — the SIWA key's Key
+                   ID, used as the ES256 client_secret's `kid` header
+                   (includes/apple_siwa.php::appleSiwaBuildClientSecret()).
+                 - apple_siwa_private_key  (#1402, NEW, SECRET) — the
+                   downloaded .p8's raw contents. auth_apple's RS256
+                   identity-token VERIFY needs NONE of these three (Apple's
+                   JWKS is public) — only the best-effort refresh-token
+                   exchange (auth_apple) and Apple-side revoke
+                   (account_delete) need the trio, and both degrade
+                   gracefully (skip the step) while it is unset, so sign-in
+                   and deletion both keep working the moment this card is
+                   saved with just the Team ID, or before it is saved at all.
+               This is the ONE place the owner sets any of them — never
+               hard-code an Apple credential in source. */
             try {
-                /* Apple Team IDs are exactly 10 uppercase alphanumeric
-                   characters (e.g. "ABCDE12345") — validate the shape so a
-                   pasted mistake (extra whitespace, a bundle id instead of
-                   the Team ID, etc.) is caught here rather than silently
-                   producing a broken AASA appID. Empty clears the setting
-                   back to the placeholder state (a deliberate "unset"). */
+                /* Apple Team IDs / Key IDs are exactly 10 uppercase
+                   alphanumeric characters (e.g. "ABCDE12345") — validate the
+                   shape so a pasted mistake (extra whitespace, a bundle id
+                   instead of the Team ID, etc.) is caught here rather than
+                   silently producing a broken AASA appID / client_secret.
+                   Empty clears the setting back to the "unset" state. */
                 $teamIdVal = strtoupper(trim((string)($_POST['apple_team_id'] ?? '')));
                 if ($teamIdVal !== '' && !preg_match('/^[A-Z0-9]{10}$/', $teamIdVal)) {
                     throw new \RuntimeException('Apple Team ID must be exactly 10 letters/digits (e.g. "ABCDE12345"), or left blank.');
                 }
+
+                $keyIdVal = strtoupper(trim((string)($_POST['apple_siwa_key_id'] ?? '')));
+                if ($keyIdVal !== '' && !preg_match('/^[A-Z0-9]{10}$/', $keyIdVal)) {
+                    throw new \RuntimeException('SIWA Key ID must be exactly 10 letters/digits (e.g. "ABCDE12345"), or left blank.');
+                }
+
+                /* Secret field — a BLANK submission means "leave the
+                   existing value alone" (the form never echoes the current
+                   key back), mirroring the email_gmail_sa_json convention
+                   elsewhere on this page. A NON-blank value must parse as a
+                   PKCS#8 EC PRIVATE KEY on the P-256 curve — that is exactly
+                   the shape Apple issues a "Sign in with Apple" key as;
+                   anything else (an RSA key, a public key, the DIFFERENT
+                   App Store Connect API deploy key, garbage) is rejected
+                   with a specific message so a paste mistake is caught here
+                   rather than surfacing later as a silent
+                   skipped_no_key/"could not build client secret" on
+                   production. */
+                $privateKeyRaw = (string)($_POST['apple_siwa_private_key'] ?? '');
+                $privateKeyVal = null; /* null = "don't touch the stored value" */
+                if (trim($privateKeyRaw) !== '') {
+                    $candidate = trim($privateKeyRaw);
+                    if (!str_starts_with($candidate, '-----BEGIN PRIVATE KEY-----')) {
+                        throw new \RuntimeException('SIWA private key must be the raw .p8 file contents, starting with "-----BEGIN PRIVATE KEY-----" (paste the ENTIRE downloaded file, including the BEGIN/END lines).');
+                    }
+                    $parsedKey = @openssl_pkey_get_private($candidate);
+                    if ($parsedKey === false) {
+                        throw new \RuntimeException('SIWA private key could not be parsed — check you pasted the complete, unmodified .p8 file contents.');
+                    }
+                    $keyDetails = @openssl_pkey_get_details($parsedKey);
+                    $curveName  = is_array($keyDetails) ? ($keyDetails['ec']['curve_name'] ?? null) : null;
+                    $isEcP256   = is_array($keyDetails)
+                        && ($keyDetails['type'] ?? null) === OPENSSL_KEYTYPE_EC
+                        && ($curveName === 'prime256v1' || $curveName === 'secp256r1');
+                    if (!$isEcP256) {
+                        throw new \RuntimeException('SIWA private key must be an EC P-256 key (the .p8 Apple issues for a "Sign in with Apple" key) — this parsed as a different key type. Do NOT paste the App Store Connect API deploy key (APPLE_ASC_KEY_P8) here; that is a separate, unrelated key.');
+                    }
+                    $privateKeyVal = $candidate;
+                }
+
+                $changedKeys = ['apple_team_id', 'apple_siwa_key_id'];
                 $saveSetting($db, 'apple_team_id', $teamIdVal);
+                $saveSetting($db, 'apple_siwa_key_id', $keyIdVal);
+                if ($privateKeyVal !== null) {
+                    $changedKeys[] = 'apple_siwa_private_key';
+                    $saveSetting($db, 'apple_siwa_private_key', $privateKeyVal);
+                }
+
                 if (function_exists('logActivity')) {
                     logActivity(
                         'app_setting.update',
                         'app_setting',
                         'apple_team_id',
-                        ['keys' => ['apple_team_id']],
+                        ['keys' => $changedKeys], /* key NAMES only — the private key value is never logged */
                         'success'
                     );
                 }
-                $saveSuccess = $teamIdVal !== ''
-                    ? 'Apple Team ID saved — the AASA file now emits real appIDs.'
-                    : 'Apple Team ID cleared — the AASA file will emit the placeholder "TEAMID" until it is set again.';
+                $saveSuccess = 'Apple native app settings saved.';
             } catch (\Throwable $e) {
                 error_log('[manage configuration save_apple] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
@@ -466,6 +526,14 @@ $maintenanceRefresh  = maintenanceRefreshSeconds();
    getAppSetting() the AASA responder itself uses, so this admin page can
    never disagree with what the AASA file actually emits. */
 $appleTeamId = (string)(getAppSetting('apple_team_id', '') ?? '');
+
+/* Sign in with Apple Key ID + .p8 private key (#1402) — same getAppSetting()
+   read path includes/apple_siwa.php's callers use. The private key's VALUE
+   is deliberately never read into a form-echoable variable — only whether
+   it is set is needed for the status badge (secret convention, mirrors
+   email_gmail_sa_json above). */
+$appleSiwaKeyId = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
+$appleSiwaPrivateKeySet = ((string)(getAppSetting('apple_siwa_private_key', '') ?? '')) !== '';
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -593,7 +661,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
     </div>
 
     <!-- ===========================
-         APPLE NATIVE APP SECTION (#1401)
+         APPLE NATIVE APP SECTION (#1401 Team ID + #1402 Sign in with Apple)
          =========================== -->
     <div class="card bg-dark border-secondary mb-4">
         <div class="card-header d-flex align-items-center justify-content-between">
@@ -601,7 +669,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <i class="bi bi-apple me-2"></i>Apple native app
             </h2>
             <span class="badge <?= $appleTeamId === '' ? 'bg-secondary' : 'bg-success' ?>">
-                <?= $appleTeamId === '' ? 'Not set (AASA uses placeholder)' : 'Set' ?>
+                <?= $appleTeamId === '' ? 'Team ID not set (AASA uses placeholder)' : 'Team ID set' ?>
             </span>
         </div>
         <div class="card-body">
@@ -614,7 +682,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 obviously-fake <code>TEAMID</code> placeholder — safe, but Universal Links won't
                 actually resolve until a real value is saved here.
             </p>
-            <form method="post" class="row g-3 align-items-end">
+            <form method="post" class="row g-3 align-items-end mb-4">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_apple">
                 <div class="col-md-4">
@@ -625,9 +693,61 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                            value="<?= htmlspecialchars($appleTeamId, ENT_QUOTES, 'UTF-8') ?>">
                     <div class="form-text">Exactly 10 letters/digits. Leave blank to clear.</div>
                 </div>
+
+                <div class="col-12"><hr class="text-secondary my-2"></div>
+
+                <div class="col-12">
+                    <h3 class="h6 mb-1">
+                        <i class="bi bi-key me-1"></i>Sign in with Apple (#1402)
+                        <span class="badge <?= $appleSiwaKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleSiwaKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
+                        </span>
+                        <span class="badge <?= $appleSiwaPrivateKeySet ? 'bg-success' : 'bg-secondary' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleSiwaPrivateKeySet ? '.p8 key set' : '.p8 key not set' ?>
+                        </span>
+                    </h3>
+                    <p class="small text-secondary mb-3">
+                        Only needed for the best-effort Apple refresh-token exchange (on sign-in) and the
+                        Apple-side <code>/auth/revoke</code> call (on account deletion) — verifying an
+                        Apple identity token at sign-in needs NEITHER of these (Apple's public key set is
+                        fetched directly), so <code>?action=auth_apple</code> works before this section is
+                        filled in. developer.apple.com &rarr; Certificates, Identifiers &amp; Profiles
+                        &rarr; Keys &rarr; create a key with the <strong>Sign in with Apple</strong>
+                        capability enabled for <code>app.ihymns</code> &rarr; download the <code>.p8</code>
+                        (one-time download) and note its 10-character Key ID.
+                    </p>
+                </div>
                 <div class="col-md-4">
+                    <label for="apple_siwa_key_id" class="form-label">SIWA Key ID</label>
+                    <input type="text" name="apple_siwa_key_id" id="apple_siwa_key_id" class="form-control"
+                           style="text-transform: uppercase;" maxlength="10" pattern="[A-Za-z0-9]{10}"
+                           placeholder="ABCDE12345" autocomplete="off"
+                           value="<?= htmlspecialchars($appleSiwaKeyId, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Exactly 10 letters/digits. Leave blank to clear.</div>
+                </div>
+                <div class="col-md-8">
+                    <label for="apple_siwa_private_key" class="form-label">
+                        SIWA private key (.p8)
+                        <?php if ($appleSiwaPrivateKeySet): ?>
+                            <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">saved — leave blank to keep</span>
+                        <?php endif; ?>
+                    </label>
+                    <textarea name="apple_siwa_private_key" id="apple_siwa_private_key" class="form-control font-monospace"
+                              rows="4" autocomplete="off" spellcheck="false"
+                              placeholder="<?= $appleSiwaPrivateKeySet ? '•••••••• (saved — paste a new .p8 to replace)' : "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----" ?>"></textarea>
+                    <div class="form-text">
+                        Paste the ENTIRE downloaded <code>.p8</code> file contents, including the
+                        <code>-----BEGIN/END PRIVATE KEY-----</code> lines. Stored in
+                        <code>tblAppSettings</code>; never echoed back to this form. This is
+                        <strong>not</strong> the App Store Connect API deploy key
+                        (<code>APPLE_ASC_KEY_P8</code>) — that is a different key, used only by the
+                        release pipeline.
+                    </div>
+                </div>
+
+                <div class="col-12">
                     <button type="submit" class="btn btn-primary">
-                        <i class="bi bi-save me-1"></i>Save Team ID
+                        <i class="bi bi-save me-1"></i>Save Apple settings
                     </button>
                 </div>
             </form>
