@@ -25,33 +25,40 @@
 //   .songbook        — `/songbook/<abbr>`
 //   .songbooksList   — `/songbooks` (the index, no id)
 //   .setlistShare    — `/setlist/shared/<hex>`
-//   .work            — `/work/<slug>` — parsed (AASA claims `/work/*`) but
-//                       the app has NO native Work-detail screen yet
-//                       (`SongWorksSection` only lists a work's MEMBER
-//                       songs inline on `SongDetailView`, never a
-//                       standalone work page) — kept as a real, typed case
-//                       so the router's coverage is complete and honest
-//                       rather than silently swallowing a recognised shape,
-//                       but `IHymnsApp.swift`'s `onOpenURL`/
-//                       `onContinueUserActivity` deliberately hands `.work`
-//                       straight to the system browser instead of trying to
-//                       fake a screen that doesn't exist — same "don't fake
-//                       it" posture `RootContainerView`'s honestly-labelled
-//                       Live placeholder already established. A native
-//                       Work-detail screen is filed separately for a future
-//                       phase (see the #186 close comment).
+//   .work            — `/work/<slug>`
+//   .person          — `/person/<slug>`
 //
-// AASA also claims `/person/*` and `/live/*` (credit-person pages, Live
-// Follow / Service Mode join links) — deliberately NOT modelled as
-// `DeepLink` cases yet: neither has a native screen in the app at all
-// (`RootContainerView`'s `.live` section is an honest "coming soon"
-// placeholder, and there is no credit-person detail screen anywhere in
-// `IHFeatures`), so adding typed-but-unusable cases for them here would
-// just be dead code with no consumer. `DeepLinkRouter.resolve(_:)` returns
-// `nil` for both today; the app shell's own "unresolved → hand the URL to
-// the system browser" fallback (see `IHymnsApp.swift`) already degrades
-// them gracefully to the PWA, which is the correct behaviour until a
-// future phase adds the native screens.
+// #1443 UPDATE — `.work` and `.person` now BOTH resolve to real native
+// screens (`WorkDetailView`/`CreditPersonDetailView`, `IHFeatures`,
+// `DeepLinkDestinationView.swift`'s switch) — `IHymnsApp.swift` no longer
+// special-cases either into the system-browser fallback. `.person` is a NEW
+// case (previously deliberately un-modelled — see the superseded comment
+// this replaces below); it carries a `slug`, mirroring `.work` exactly.
+//
+// A real, pre-existing mismatch this task's backend survey surfaced while
+// adding `.person`: the AASA claims `/person/*`, but
+// `appWeb/public_html/index.php`'s own direct-load route regex only matches
+// `/people/<slug>` (PLURAL) — `/person/<slug>` 404s there today for a
+// browser/non-UL context. This router still resolves `/person/<slug>`
+// (matching what AASA — and therefore Apple's Universal Link matching —
+// actually claims, which is what determines whether iOS hands the tap to
+// this app at all) rather than the PHP route, since native decoding never
+// touches `index.php` (it calls the new `?action=work`/`?action=credit_person`
+// JSON reads directly). The web-side mismatch is filed as its own issue —
+// see this task's PR/close comment — rather than fixed here; a native
+// deep-link router has no way to fix a web routing table, and guessing at
+// one risks breaking already-circulating `/people/<slug>` links.
+//
+// AASA also claims `/live/*` (Live Follow / Service Mode join links) —
+// deliberately NOT modelled as a `DeepLink` case yet: there is no native
+// Live UI anywhere in the app at all (`RootContainerView`'s `.live` section
+// is an honest "coming soon" placeholder — Apple native app epic #895
+// Phase 2), so adding a typed-but-unusable case here would just be dead
+// code with no consumer. `DeepLinkRouter.resolve(_:)` returns `nil` for it
+// today; the app shell's own "unresolved → hand the URL to the system
+// browser" fallback (`IHymnsApp.swift`) already degrades it gracefully to
+// the PWA, which is the correct behaviour until Phase 2 adds a native
+// Live-join screen.
 import Foundation
 import IHModels
 
@@ -83,9 +90,13 @@ public enum DeepLink: Sendable, Equatable {
     /// — `shareId` is the 8-character hex id `SharedSetlist.id` mirrors.
     case setlistShare(shareId: String)
 
-    /// A recognised `/work/<slug>` link — see this file's header for why
-    /// this case exists but is never actually presented in-app today.
+    /// Navigate to a Work's detail screen. `/work/<slug>` (#840, #1443).
     case work(slug: String)
+
+    /// Navigate to a credit person's detail screen. `/person/<slug>`
+    /// (#1443, #1444) — see this file's header for the `/person/*` vs
+    /// `/people/<slug>` web-route note.
+    case person(slug: String)
 }
 
 /// Parses incoming URLs (Universal Links, and eventually the app's own
@@ -150,9 +161,10 @@ public enum DeepLinkRouter {
         }
     }
 
-    /// The `/song/<id>` · `/songbook/<abbr>` · `/work/<slug>` family — every
-    /// web route whose shape is `/<kind>/<value>`, split out purely to keep
-    /// `resolve(_:)`'s own `switch` readable at a glance.
+    /// The `/song/<id>` · `/songbook/<abbr>` · `/work/<slug>` ·
+    /// `/person/<slug>` family — every web route whose shape is
+    /// `/<kind>/<value>`, split out purely to keep `resolve(_:)`'s own
+    /// `switch` readable at a glance.
     private static func resolveTwoSegments(_ segments: [String]) -> DeepLink? {
         switch segments[0] {
         case "song":
@@ -166,6 +178,10 @@ public enum DeepLinkRouter {
         case "work":
             guard isValidWorkSlug(segments[1]) else { return nil }
             return .work(slug: segments[1])
+
+        case "person":
+            guard isValidPersonSlug(segments[1]) else { return nil }
+            return .person(slug: segments[1])
 
         default:
             return nil
@@ -187,6 +203,16 @@ public enum DeepLinkRouter {
         try! NSRegularExpression(pattern: "^[a-z0-9\\-]+$")
     }()
 
+    /// Matches `index.php`'s `/people/<slug>` route regex `^[a-z0-9\-]+$`
+    /// (this file's header explains why the PATH SEGMENT this router
+    /// resolves is `/person/`, singular, matching AASA — the slug CHARSET
+    /// itself is identical to the web route's either way, since both are
+    /// generated by the same slugify convention).
+    private static let personSlugPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "^[a-z0-9\\-]+$")
+    }()
+
     /// Matches `index.php`'s `/setlist/shared/<id>` route regex
     /// `^[a-f0-9]+$` — lowercase hex only, mirroring `SharedSetlist.id`'s
     /// own doc comment ("the 8-character hex share id").
@@ -201,6 +227,10 @@ public enum DeepLinkRouter {
 
     private static func isValidWorkSlug(_ value: String) -> Bool {
         matches(value, pattern: workSlugPattern)
+    }
+
+    private static func isValidPersonSlug(_ value: String) -> Bool {
+        matches(value, pattern: personSlugPattern)
     }
 
     private static func isValidShareId(_ value: String) -> Bool {

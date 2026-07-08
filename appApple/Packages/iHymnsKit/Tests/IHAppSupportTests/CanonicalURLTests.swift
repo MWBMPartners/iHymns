@@ -44,6 +44,11 @@ struct CanonicalURLTests {
         #expect(CanonicalURL.work(slug: "amazing-grace")?.absoluteString == "https://ihymns.app/work/amazing-grace")
     }
 
+    @Test("Builds the canonical credit-person URL")
+    func buildsPersonURL() {
+        #expect(CanonicalURL.person(slug: "fanny-crosby")?.absoluteString == "https://ihymns.app/person/fanny-crosby")
+    }
+
     // MARK: - #190 (help / legal) — these are NOT deep-linkable app
     // destinations (they open in the system browser), so unlike every URL
     // above they have no `DeepLinkRouter.resolve(_:)` round trip to prove.
@@ -94,5 +99,11 @@ struct CanonicalURLTests {
     func workURLRoundTrips() throws {
         let url = try #require(CanonicalURL.work(slug: "how-great-thou-art"))
         #expect(DeepLinkRouter.resolve(url) == .work(slug: "how-great-thou-art"))
+    }
+
+    @Test("A built credit-person URL resolves back to the exact same DeepLink")
+    func personURLRoundTrips() throws {
+        let url = try #require(CanonicalURL.person(slug: "fanny-crosby"))
+        #expect(DeepLinkRouter.resolve(url) == .person(slug: "fanny-crosby"))
     }
 }

@@ -38,15 +38,21 @@
 // stays PURE WIRING per the repo's modularity rule — it calls the router,
 // it never re-implements URL-shape parsing itself. The one decision made
 // HERE (not in the router, which stays a pure `URL → DeepLink?` function)
-// is what to do with an unresolved result: `DeepLinkRouter` returns `nil`
-// for a `.work` link (no native screen exists yet, see `DeepLink.swift`'s
-// header) and for anything the AASA claims but this Phase 1 doesn't route
-// yet (`/person/*`, `/live/*`) — in BOTH cases the honest, non-broken
-// behaviour is to hand the URL to the system browser (`openURL`) rather
-// than silently doing nothing or presenting an empty screen, exactly
-// mirroring "Universal Links → open in app if installed, else the PWA"
-// when the app IS installed but doesn't (yet) have a screen for this
-// specific claimed path.
+// is what to do with an unresolved result — `DeepLinkRouter` returns `nil`
+// for anything the AASA claims but has no native screen yet (`/live/*` —
+// Apple native app epic #895 Phase 2) — the honest, non-broken behaviour is
+// to hand the URL to the system browser (`openURL`) rather than silently
+// doing nothing or presenting an empty screen, exactly mirroring "Universal
+// Links → open in app if installed, else the PWA" when the app IS installed
+// but doesn't (yet) have a screen for this specific claimed path.
+//
+// #1443 UPDATE — every `DeepLink` case `DeepLinkRouter.resolve(_:)` can
+// return (`.song`/`.songbook`/`.songbooksList`/`.setlistShare`/`.work`/
+// `.person`) now has a real native screen (`DeepLinkDestinationView.swift`'s
+// switch), so `requiresBrowserFallback(_:)` — which used to special-case
+// `.work` into the browser — is removed entirely; `handle(url:)` now only
+// ever falls back to the browser when the router itself returns `nil`
+// (i.e. `/live/*`, or a host/path shape it doesn't recognise at all).
 //
 // #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — owns the one
 // `AppNavigationState` this run of the app uses (mirrors how it already
@@ -166,19 +172,14 @@ struct IHymnsApp: App {
 
     /// Resolves `url` through the router and either presents it in-app
     /// (`incomingDeepLink`) or falls back to the system browser — see this
-    /// file's header for why `.work` and any AASA-claimed-but-unrouted
-    /// shape take the browser path even though the app itself handled the
+    /// file's header for why any AASA-claimed-but-unrouted shape (`/live/*`
+    /// today) takes the browser path even though the app itself handled the
     /// tap.
     private func handle(url: URL) {
-        guard let link = DeepLinkRouter.resolve(url), !requiresBrowserFallback(link) else {
+        guard let link = DeepLinkRouter.resolve(url) else {
             openURL(url)
             return
         }
         incomingDeepLink = link
-    }
-
-    private func requiresBrowserFallback(_ link: DeepLink) -> Bool {
-        if case .work = link { return true }
-        return false
     }
 }

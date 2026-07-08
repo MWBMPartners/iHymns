@@ -83,13 +83,25 @@ public enum CanonicalURL {
         URL(string: "\(host)/setlist/shared/\(id)")
     }
 
-    /// `https://ihymns.app/work/<slug>` — built even though the app has no
-    /// native Work-detail screen yet (`DeepLink.work`'s own doc comment):
-    /// this is what `IHymnsApp.swift` hands to the SYSTEM BROWSER when a
-    /// `/work/*` Universal Link arrives, so the fallback still opens the
-    /// exact page the user tapped rather than some reconstructed guess.
+    /// `https://ihymns.app/work/<slug>` — `WorkDetailView`'s `ShareLink`
+    /// (#1443) uses this, mirroring `song(_:)`'s "always the real, public,
+    /// permanent address" reasoning.
     public static func work(slug: String) -> URL? {
         URL(string: "\(host)/work/\(slug)")
+    }
+
+    /// `https://ihymns.app/person/<slug>` — `CreditPersonDetailView`'s
+    /// `ShareLink` (#1443/#1444). Deliberately `/person/`, singular,
+    /// matching the AASA `components` entry (and therefore what
+    /// `DeepLinkRouter` resolves) — NOT `index.php`'s own `/people/<slug>`
+    /// page route, which is a real, separate web-side mismatch this task's
+    /// backend survey found and filed as its own issue rather than papering
+    /// over here (see `DeepLink.swift`'s header for the full explanation).
+    /// A link built here that's opened WITHOUT the app installed currently
+    /// 404s on the web; the fix belongs in `index.php`'s route table, not in
+    /// this native URL builder.
+    public static func person(slug: String) -> URL? {
+        URL(string: "\(host)/person/\(slug)")
     }
 
     // MARK: - #190 (help / legal / first-run)

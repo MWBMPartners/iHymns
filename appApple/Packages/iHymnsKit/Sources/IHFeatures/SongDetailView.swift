@@ -174,7 +174,7 @@ public struct SongDetailView: View {
                 offlineCopyBanner
             }
             header(for: detail)
-            SongMetadataView(detail: detail, relatedSongs: relatedSongsIfLoaded, rootViewModel: rootViewModel)
+            SongMetadataView(detail: detail, rootViewModel: rootViewModel)
 
             if SongMediaSection.hasAnyMedia(detail) {
                 SongMediaSection(detail: detail, rootViewModel: rootViewModel)
@@ -191,7 +191,7 @@ public struct SongDetailView: View {
             }
 
             if !detail.works.isEmpty {
-                SongWorksSection(works: detail.works, currentSongId: detail.songId)
+                SongWorksSection(works: detail.works, currentSongId: detail.songId, rootViewModel: rootViewModel)
             }
 
             counterpartsShelf
@@ -255,17 +255,6 @@ public struct SongDetailView: View {
                 title: "Related Songs",
                 items: related.map(RelatedShelfItem.init(related:))
             )
-        }
-    }
-
-    /// `related_songs`, once loaded — `[]` otherwise. Handed to
-    /// `SongMetadataView` for its credit "more by X" lookups, which degrade
-    /// gracefully to an empty result set while this is still loading.
-    private var relatedSongsIfLoaded: [RelatedSongSummary] {
-        if case .loaded(let related) = viewModel.relatedSongsState {
-            related
-        } else {
-            []
         }
     }
 

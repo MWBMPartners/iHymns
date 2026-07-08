@@ -118,13 +118,21 @@ struct DeepLinkRouterTests {
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
 
-    // MARK: - Not-yet-native shapes (AASA-claimed, correctly un-routed)
+    // MARK: - Credit person (#1443)
 
-    @Test("Does not resolve a credit-person link — no native screen exists for it yet")
-    func doesNotResolvePersonLink() throws {
+    @Test("Resolves a valid credit-person Universal Link")
+    func resolvesValidPersonLink() throws {
         let url = try #require(URL(string: "https://ihymns.app/person/some-writer"))
+        #expect(DeepLinkRouter.resolve(url) == .person(slug: "some-writer"))
+    }
+
+    @Test("Rejects an uppercase credit-person slug — the web route is lowercase-only")
+    func rejectsUppercasePersonSlug() throws {
+        let url = try #require(URL(string: "https://ihymns.app/person/Some-Writer"))
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
+
+    // MARK: - Not-yet-native shapes (AASA-claimed, correctly un-routed)
 
     @Test("Does not resolve a Live Follow join link — no native screen exists for it yet")
     func doesNotResolveLiveLink() throws {

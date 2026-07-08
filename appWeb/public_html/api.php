@@ -1042,6 +1042,67 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
+         * Get one Work (#840) — composition grouping across songbooks, with
+         * member songs, parent/children Work headers and external links.
+         * Exposed as JSON for the native app's Work detail screen (#1443).
+         * SongData::getWork() already powers the web's ?page=work&slug=…
+         * page (includes/pages/work.php) — this is a thin JSON wrapper
+         * around that SAME function, not a new data shape.
+         * Parameters: slug (or id) — required, one of the two
+         * ----------------------------------------------------------------- */
+        case 'work':
+            enforceReadRateLimitKeyed('work', 120);
+            $workSlug   = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            $workIdRaw  = isset($_GET['id']) ? trim($_GET['id']) : '';
+            $workLookup = $workSlug !== '' ? $workSlug : $workIdRaw;
+            if ($workLookup === '') {
+                sendJson(['error' => 'A work slug or id is required.'], 400);
+                break;
+            }
+            $work = $songData->getWork($workLookup);
+            if ($work === null) {
+                sendJson(['error' => 'Work not found.'], 404);
+            } else {
+                sendJson(['work' => $work]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Get one credit person (#1443/#1444) — a tblCreditPeople row's
+         * bio/lifespan/external links plus every song they're credited on,
+         * grouped by role (writer/composer/arranger/adaptor/translator/
+         * artist). Mirrors includes/pages/person.php's own query logic (a
+         * NAME match — tblCreditPeople has no direct FK from the per-role
+         * credit tables today, same as that page) as JSON for the native
+         * app's credit-person detail screen. `name` is accepted (in
+         * addition to slug/id) because SongDetail's writers/composers/etc.
+         * are plain strings with no CreditPersonId of their own — the
+         * native "tap a composer name" flow has only the name to look up
+         * with (#1444).
+         * Parameters: slug, or id, or name — at least one required
+         * ----------------------------------------------------------------- */
+        case 'credit_person':
+            enforceReadRateLimitKeyed('credit_person', 120);
+            $personSlug     = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            $personIdRaw    = isset($_GET['id']) ? trim($_GET['id']) : '';
+            $personNameRaw  = isset($_GET['name']) ? trim($_GET['name']) : '';
+            if ($personSlug === '' && $personIdRaw === '' && $personNameRaw === '') {
+                sendJson(['error' => 'A credit-person slug, id, or name is required.'], 400);
+                break;
+            }
+            $person = $songData->getCreditPerson(
+                $personIdRaw !== '' && ctype_digit($personIdRaw) ? (int)$personIdRaw : null,
+                $personSlug !== '' ? $personSlug : null,
+                $personNameRaw !== '' ? $personNameRaw : null
+            );
+            if ($person === null) {
+                sendJson(['error' => 'Credit person not found.'], 404);
+            } else {
+                sendJson(['person' => $person]);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
          * Get all songbooks (filtered by user's preferred languages, #736)
          * ----------------------------------------------------------------- */
         case 'songbooks':

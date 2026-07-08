@@ -24,11 +24,11 @@
 // disturbs whatever the user was already doing in the tab/sidebar
 // underneath — closing the sheet returns exactly there.
 //
-// `.work` is included in the `switch` purely for EXHAUSTIVENESS — the app
-// shell (`IHymnsApp.swift`) never actually constructs a `DeepLinkPresentation`
-// for a `.work` link at all (it hands the URL straight to the system
-// browser instead, since no native Work-detail screen exists yet — see
-// `DeepLink.swift`'s header). `EmptyView` here is unreachable in practice.
+// #1443 UPDATE — `.work`/`.person` now render REAL screens
+// (`WorkDetailView`/`CreditPersonDetailView`, `IHymnsApp.swift` no longer
+// diverts either to the system browser). `.person` looks up by the SAME
+// `slug` the deep link carries (`CreditPersonLookup.slug(_:)`).
+import IHAPI
 import IHAppSupport
 import IHModels
 import SwiftUI
@@ -58,6 +58,25 @@ struct DeepLinkDestinationView: View {
     var body: some View {
         NavigationStack {
             destination
+                // #1443 fix — a genuine pre-existing gap this task's Work/
+                // credit-person navigation work surfaced: `SongDetailView`'s
+                // "Related Songs" shelf and "Part of Work" sibling rows both
+                // push via `NavigationLink(value: SongID)`
+                // (`RelatedSongsShelfView.swift`/`SongWorksSection.swift`),
+                // which needs SOME ancestor in this stack to register
+                // `.navigationDestination(for: SongID.self)` — every OTHER
+                // host of `SongDetailView` already does (`CatalogueListView`,
+                // `SongbooksView`, …), but THIS stack (a `/song/<id>`
+                // Universal Link's own fresh `NavigationStack`) never did,
+                // so tapping a related/sibling song from a deep-link-opened
+                // song silently failed to navigate. Mirrors
+                // `CreditRelatedSongsSheet`'s own identical fix for its own
+                // separate sheet-presented stack (that file's own doc
+                // comment: "a sheet gets its own fresh NavigationStack...
+                // this file registers its own .navigationDestination").
+                .navigationDestination(for: SongID.self) { songId in
+                    SongDetailView(songId: songId, rootViewModel: rootViewModel)
+                }
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Done") { dismiss() }
@@ -81,9 +100,11 @@ struct DeepLinkDestinationView: View {
         case .setlistShare(let shareId):
             SharedSetlistView(shareId: shareId, rootViewModel: rootViewModel)
 
-        case .work:
-            // Unreachable — see this file's header.
-            EmptyView()
+        case .work(let slug):
+            WorkDetailView(slug: slug, rootViewModel: rootViewModel)
+
+        case .person(let slug):
+            CreditPersonDetailView(lookup: .slug(slug), rootViewModel: rootViewModel)
         }
     }
 }

@@ -9,12 +9,22 @@
 // DETAILED: #180's "Metadata + credits section: songbook + number +
 // language badge(s); credit people (writer/composer/etc.) tappable;
 // authority IDs behind a disclosure." Split out of `SongDetailView` to keep
-// that file's own body short (this repo's LOC-budget discipline). Credit
-// "tappability" is `CreditRelatedSongsSheet` (see that file's header for
-// why it reuses `related_songs` rather than a fictional credit-person
-// screen); the authority-ids `DisclosureGroup` only renders when there's
-// genuinely at least one id to show, so a song with no ccli/iswc/royaltyIds
-// shows nothing rather than an empty, pointless disclosure triangle.
+// that file's own body short (this repo's LOC-budget discipline). The
+// authority-ids `DisclosureGroup` only renders when there's genuinely at
+// least one id to show, so a song with no ccli/iswc/royaltyIds shows
+// nothing rather than an empty, pointless disclosure triangle.
+//
+// #1443/#1444 UPDATE — credit "tappability" now pushes straight to the real
+// `CreditPersonDetailView` (bio + full discography, looked up by NAME —
+// `CreditPersonLookup.name(_:)`, since a plain credit string has no id)
+// instead of opening `CreditRelatedSongsSheet` (deleted alongside this
+// change — that sheet's own header called itself a stand-in for exactly
+// this screen: "there is no dedicated credit-person detail screen/endpoint
+// in the native app yet... that's a separate, unbuilt feature"). Dropped
+// the `relatedSongs`/`.sheet` machinery that existed purely to feed that
+// sheet — `CreditPersonDetailView` does its own fetch, no longer riding
+// along on `SongDetailViewModel.relatedSongsState`.
+import IHAPI
 import IHDesign
 import IHModels
 import SwiftUI
@@ -22,33 +32,13 @@ import SwiftUI
 /// The songbook/number/language + credits + authority-ids block.
 struct SongMetadataView: View {
     let detail: SongDetail
-    let relatedSongs: [RelatedSongSummary]
     let rootViewModel: AppRootViewModel
-
-    /// The credit name currently being looked up in the "more by X" sheet —
-    /// `nil` when no sheet is presented.
-    @State private var creditQuery: CreditQuery?
-
-    /// A tiny `Identifiable` wrapper around a credit name, purely so
-    /// `.sheet(item:)` (which requires `Identifiable`) can present one —
-    /// kept file-private and wrapper-only rather than retroactively
-    /// conforming `String` itself to `Identifiable`, which would be a
-    /// public, cross-module-visible conformance a shared library target
-    /// shouldn't add (risk of colliding with another dependency doing the
-    /// same thing).
-    private struct CreditQuery: Identifiable {
-        let id: String
-        var name: String { id }
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             languageBadges
             creditsSection
             authorityIdsDisclosure
-        }
-        .sheet(item: $creditQuery) { query in
-            CreditRelatedSongsSheet(name: query.name, allRelatedSongs: relatedSongs, rootViewModel: rootViewModel)
         }
     }
 
@@ -100,15 +90,19 @@ struct SongMetadataView: View {
                         Text("\(role.role):")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        // A `Menu`-free flow layout of tappable names — kept
-                        // as simple wrapping `Button`s rather than a custom
+                        // A flow of tappable names, each pushing straight to
+                        // that person's real detail screen — kept as simple
+                        // wrapping `NavigationLink`s rather than a custom
                         // flow layout, since a handful of names per role
                         // fits comfortably on one or two lines already.
                         ForEach(role.names, id: \.self) { name in
-                            Button(name) { creditQuery = CreditQuery(id: name) }
-                                .font(.caption.bold())
-                                .buttonStyle(.plain)
-                                .foregroundStyle(IHColorTokens.accent)
+                            NavigationLink(
+                                destination: CreditPersonDetailView(lookup: .name(name), rootViewModel: rootViewModel)
+                            ) {
+                                Text(name)
+                                    .font(.caption.bold())
+                                    .foregroundStyle(IHColorTokens.accent)
+                            }
                         }
                     }
                 }

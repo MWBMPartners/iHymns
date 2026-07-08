@@ -15,6 +15,25 @@
 // result: `songId` on `WorkMember` stays a plain `String` rather than the
 // stricter `SongID` (see its doc comment below) precisely because this
 // corner of the contract is unverified against a real response.
+//
+// #1443 FIX — reading the ACTUAL PHP source this task's backend survey
+// required (`includes/SongData.php::_worksMap()`, the function that builds
+// `SongDetail.works`) found a real, previously-undetected decode bug: each
+// entry in the EMBEDDED `song_detail.works[]` array carries `id`/
+// `parentId`/`title`/`slug`/`iswc`/`isCanonical`/`memberNote`/`members`/
+// `links` but — unlike the STANDALONE `getWork()` response (`?action=work`,
+// new in #1443) — never carries a `children` key at all (`_worksMap()`
+// simply never sets one). Swift's synthesized `Decodable` conformance
+// requires every non-Optional property's key to be PRESENT, so decoding any
+// song belonging to a real Work would have thrown `.decoding` and blanked
+// the ENTIRE `song_detail` response the moment a curator attached the first
+// Work (#840 has shipped schema but, per this file's own header, zero live
+// Work↔song associations existed to catch this until now). Fixed below with
+// a hand-written `init(from:)` that treats `children` as `decodeIfPresent(
+// ...) ?? []` — present-and-populated (the `getWork()` shape) decodes
+// exactly as before; absent (the embedded shape) now degrades to "no known
+// children" instead of throwing, matching how `parent`/`notes`/
+// `createdAt`/`updatedAt` (already `Optional`) already tolerated absence.
 import Foundation
 
 /// A lightweight header reference to a Work — used both for `Work.parent`
@@ -118,4 +137,32 @@ public struct Work: Sendable, Hashable, Codable, Identifiable {
     /// assumption this file's header warns against.
     public let createdAt: String?
     public let updatedAt: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id, parentId, title, slug, iswc, notes, parent, children, members, links, createdAt, updatedAt
+    }
+
+    /// Hand-written (rather than compiler-synthesized) SOLELY so `children`
+    /// can tolerate a missing key — see this file's #1443 header comment for
+    /// exactly which real server response omits it and why the synthesized
+    /// conformance would have thrown for it. Every other property still
+    /// decodes with the same semantics the synthesized initializer would
+    /// have used (a plain `decode`/`decodeIfPresent` per its own
+    /// `Optional`-ness); this is NOT a hand-rolled reinterpretation of the
+    /// contract, just the one targeted tolerance.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(Int.self, forKey: .id)
+        parentId = try container.decodeIfPresent(Int.self, forKey: .parentId)
+        title = try container.decode(String.self, forKey: .title)
+        slug = try container.decode(String.self, forKey: .slug)
+        iswc = try container.decodeIfPresent(String.self, forKey: .iswc)
+        notes = try container.decodeIfPresent(String.self, forKey: .notes)
+        parent = try container.decodeIfPresent(WorkSummary.self, forKey: .parent)
+        children = try container.decodeIfPresent([WorkSummary].self, forKey: .children) ?? []
+        members = try container.decode([WorkMember].self, forKey: .members)
+        links = try container.decode([ExternalLink].self, forKey: .links)
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
 }
