@@ -111,16 +111,23 @@ public final class SongDetailViewModel {
     /// identical injectable-fetcher pattern.
     private let mediaFetcher: @Sendable (URL) async throws -> Data
 
+    /// #1460 — the SEPARATE conditional-GET fetcher `MediaCacheRevalidator`
+    /// uses ONLY for an asset that already has a stored ETag; defaults to
+    /// `MediaCacheRevalidator.defaultConditionalFetcher` (real `URLSession`).
+    private let mediaConditionalFetcher: MediaConditionalFetcher
+
     public init(
         songId: SongID,
         rootViewModel: AppRootViewModel,
         mediaFetcher: @escaping @Sendable (URL) async throws -> Data = { url in
             try await URLSession.shared.data(from: url).0
-        }
+        },
+        mediaConditionalFetcher: @escaping MediaConditionalFetcher = MediaCacheRevalidator.defaultConditionalFetcher
     ) {
         self.songId = songId
         self.rootViewModel = rootViewModel
         self.mediaFetcher = mediaFetcher
+        self.mediaConditionalFetcher = mediaConditionalFetcher
     }
 
     /// Fetches everything, but only if it hasn't already been fetched (or
@@ -171,7 +178,7 @@ public final class SongDetailViewModel {
             // files server-side; see `MediaCacheRevalidator.swift`'s header
             // for the full "why only here, why this is still safe offline"
             // reasoning. A no-op for a song with nothing cached.
-            await MediaCacheRevalidator.revalidate(detail: detail, fetcher: mediaFetcher, rootViewModel: rootViewModel)
+            await MediaCacheRevalidator.revalidate(detail: detail, fetcher: mediaFetcher, conditionalFetcher: mediaConditionalFetcher, rootViewModel: rootViewModel)
         } catch let error as APIError {
             // #187 — the request never reached/returned from the server at
             // all (`.offline`) or the server itself says "back soon"

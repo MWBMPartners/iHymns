@@ -35,6 +35,14 @@
 // `IHFeatures.MediaCacheRevalidator` reaches when the server's metadata
 // still matches what's cached, so re-confirming freshness never has to
 // re-write the file or `cachedAt` just to record that the check happened.
+//
+// #1460 UPDATE — `cacheMedia(songId:asset:data:)` gains two ADDITIVE,
+// DEFAULTED (`nil`) parameters, `etag`/`lastModified`, stored alongside the
+// bytes so the NEXT revalidation can send a real conditional GET instead of
+// only comparing `sizeBytes`. `nil` (every pre-#1460 call site) is a
+// verified no-op — the row simply has no ETag yet, and
+// `MediaCacheRevalidator` already treats that as "use the sizeBytes+TTL
+// heuristic for this asset" rather than an error.
 import Foundation
 import GRDB
 import IHModels
@@ -53,7 +61,7 @@ extension OfflineStore {
     ///   equivalents/`ShareLink`, exactly like a fresh network fetch's
     ///   result would be.
     @discardableResult
-    public func cacheMedia(songId: SongID, asset: SongMediaAsset, data: Data) async throws -> URL {
+    public func cacheMedia(songId: SongID, asset: SongMediaAsset, data: Data, etag: String? = nil, lastModified: String? = nil) async throws -> URL {
         // `<songId>/<mediaAssetId>-<sanitizedFileName>` — namespaced by
         // song first so `removeAllCachedMedia(forSong:)` below can drop an
         // entire song's cached files by removing one subdirectory, and by
@@ -84,7 +92,9 @@ extension OfflineStore {
             sizeBytes: data.count,
             relativePath: relativePath,
             cachedAt: now,
-            lastValidatedAt: now
+            lastValidatedAt: now,
+            etag: etag,
+            lastModified: lastModified
         )
         try await dbQueue.write { database in
             try row.insert(database, onConflict: .replace)

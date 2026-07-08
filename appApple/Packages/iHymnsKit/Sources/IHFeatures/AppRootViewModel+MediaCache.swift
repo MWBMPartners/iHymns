@@ -52,9 +52,15 @@ extension AppRootViewModel {
     /// per this feature's own GitHub issue's "Rough approach."
     ///
     /// ELI5: "Here are this file's bytes — keep them on the device."
+    ///
+    /// `etag`/`lastModified` (#1460) are ADDITIVE, DEFAULTED (`nil`)
+    /// pass-throughs to `OfflineStore.cacheMedia(...)` — every pre-#1460
+    /// call site (the plain "Save for Offline" download path) is unaffected;
+    /// `MediaCacheRevalidator`'s conditional-GET refetch path is the one
+    /// caller that actually supplies them.
     @discardableResult
-    public func cacheMediaForOffline(songId: SongID, asset: SongMediaAsset, data: Data) async throws -> URL {
-        try await offlineStore.cacheMedia(songId: songId, asset: asset, data: data)
+    public func cacheMediaForOffline(songId: SongID, asset: SongMediaAsset, data: Data, etag: String? = nil, lastModified: String? = nil) async throws -> URL {
+        try await offlineStore.cacheMedia(songId: songId, asset: asset, data: data, etag: etag, lastModified: lastModified)
     }
 
     /// Removes every media file cached for one song — called alongside

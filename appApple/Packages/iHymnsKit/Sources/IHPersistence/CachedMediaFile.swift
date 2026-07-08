@@ -77,6 +77,22 @@ struct CachedMediaFile: Codable, FetchableRecord, PersistableRecord, Sendable, E
     /// give it.
     var lastValidatedAt: Date?
 
+    /// The server's `ETag` response header for this exact file, captured on
+    /// whichever download most recently wrote it (#1460) — `nil` for any
+    /// row cached before the `v7AddMediaCacheEtag` migration, or if the
+    /// server response simply didn't carry one. `MediaCacheRevalidator`
+    /// treats a `nil` here as "no conditional-GET signal for this asset
+    /// yet — fall back to the #1450 sizeBytes+TTL heuristic," never as an
+    /// error.
+    var etag: String?
+
+    /// The server's `Last-Modified` response header, captured alongside
+    /// `etag` — kept as a raw `String` (the server's own HTTP-date format,
+    /// never parsed into a `Date` here) purely as a secondary signal a
+    /// future revalidation path could send as `If-Modified-Since`; today
+    /// only `etag`/`If-None-Match` is actually used.
+    var lastModified: String?
+
     /// Converts this row into the public shape callers outside
     /// `IHPersistence` actually see — everything except `relativePath` (this
     /// file's header explains why that stays private).
@@ -90,7 +106,9 @@ struct CachedMediaFile: Codable, FetchableRecord, PersistableRecord, Sendable, E
             mimeType: mimeType,
             sizeBytes: sizeBytes,
             cachedAt: cachedAt,
-            lastValidatedAt: lastValidatedAt ?? cachedAt
+            lastValidatedAt: lastValidatedAt ?? cachedAt,
+            etag: etag,
+            lastModified: lastModified
         )
     }
 }
@@ -122,7 +140,20 @@ public struct CachedMediaInfo: Sendable, Hashable, Identifiable {
     /// `lastValidatedAt` argument.
     public let lastValidatedAt: Date
 
-    public init(songId: SongID, mediaAssetId: Int, kind: String, fileName: String, mimeType: String, sizeBytes: Int, cachedAt: Date, lastValidatedAt: Date) {
+    /// The server's `ETag` for this exact file, if this device has ever
+    /// captured one (#1460) — `nil` for a row cached before the #1460
+    /// migration, or whose most recent download simply had no `ETag`
+    /// header. `MediaCacheRevalidator` reads this directly: non-`nil` means
+    /// "send a real conditional GET"; `nil` means "fall back to the #1450
+    /// sizeBytes+TTL heuristic for this one asset."
+    public let etag: String?
+
+    /// The server's `Last-Modified` header, captured alongside `etag` — see
+    /// `CachedMediaFile.lastModified`'s doc comment for why this is stored
+    /// but not yet actively used as a fallback signal.
+    public let lastModified: String?
+
+    public init(songId: SongID, mediaAssetId: Int, kind: String, fileName: String, mimeType: String, sizeBytes: Int, cachedAt: Date, lastValidatedAt: Date, etag: String? = nil, lastModified: String? = nil) {
         self.songId = songId
         self.mediaAssetId = mediaAssetId
         self.kind = kind
@@ -131,5 +162,7 @@ public struct CachedMediaInfo: Sendable, Hashable, Identifiable {
         self.sizeBytes = sizeBytes
         self.cachedAt = cachedAt
         self.lastValidatedAt = lastValidatedAt
+        self.etag = etag
+        self.lastModified = lastModified
     }
 }

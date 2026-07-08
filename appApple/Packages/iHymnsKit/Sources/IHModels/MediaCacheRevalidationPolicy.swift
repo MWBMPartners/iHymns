@@ -55,6 +55,23 @@
 // file untouched, because THIS type is never even consulted for anything
 // beyond its return value — no I/O, no side effects, testable with zero
 // mocking.
+//
+// #1460 UPDATE — the "(a) ETag/Last-Modified conditional GET" alternative
+// this header originally deferred is now IMPLEMENTED client-side, using
+// #1452's shipped backend support. `isDueForRecheck(lastValidatedAt:...)`
+// is `decide(...)`'s own TTL gate, extracted so `IHFeatures
+// .MediaCacheRevalidator` can apply the IDENTICAL "don't even bother
+// checking yet" window BEFORE choosing which comparison mechanism to use —
+// a real conditional GET is still a real network request (cheap, but not
+// free), so it deserves the same gate the sizeBytes path already had.
+// `decideConditional(outcome:)` maps a REAL 304/200 server answer to the
+// SAME three-case `MediaCacheRevalidationDecision` `decide(...)` returns,
+// so the revalidator treats both mechanisms identically once a verdict is
+// in hand. `decide(...)` itself is UNCHANGED (still the sizeBytes+TTL
+// heuristic) — it remains the fallback `MediaCacheRevalidator` uses for any
+// asset that hasn't picked up a stored ETag yet (an older cached row, or
+// one written before the #1460 migration), per this feature's own "keep
+// the heuristic as the fallback" instruction.
 import Foundation
 
 /// What `MediaCacheRevalidationPolicy.decide(...)` recommends doing with one
@@ -79,6 +96,19 @@ public enum MediaCacheRevalidationDecision: Sendable, Equatable {
     /// replace the cached file (see this file's header for why a FAILED
     /// re-download must never delete the existing, still-serviceable copy).
     case staleNeedsRefetch
+}
+
+/// What a real conditional media GET (#1460) came back with — the
+/// server's own, authoritative answer, strictly stronger than the
+/// `sizeBytes` proxy `decide(...)` compares (a same-size content
+/// replacement is invisible to `sizeBytes`, but never to a real ETag).
+public enum MediaCacheConditionalOutcome: Sendable, Equatable {
+    /// A real HTTP `304 Not Modified` — the cached bytes are still exactly
+    /// current.
+    case notModified
+
+    /// A real HTTP `200` with a fresh body — the cached bytes are stale.
+    case replaced
 }
 
 /// Pure, side-effect-free staleness arithmetic for one cached media asset —
@@ -122,9 +152,40 @@ public enum MediaCacheRevalidationPolicy {
         now: Date = Date(),
         staleAfter: TimeInterval = defaultStaleAfter
     ) -> MediaCacheRevalidationDecision {
-        guard now.timeIntervalSince(lastValidatedAt) >= staleAfter else {
+        guard isDueForRecheck(lastValidatedAt: lastValidatedAt, now: now, staleAfter: staleAfter) else {
             return .skipTooRecent
         }
         return cachedSizeBytes == serverSizeBytes ? .stillFresh : .staleNeedsRefetch
+    }
+
+    /// Whether `staleAfter` has elapsed since `lastValidatedAt` — the shared
+    /// "don't even bother checking yet" gate BOTH `decide(...)`'s sizeBytes
+    /// comparison and #1460's conditional-GET path use, extracted (#1460) so
+    /// the caller can apply it BEFORE deciding which comparison mechanism to
+    /// even reach for (a conditional GET is still a real request).
+    ///
+    /// ELI5: "Has it been long enough since we last checked that we should
+    /// even bother looking again?"
+    public static func isDueForRecheck(lastValidatedAt: Date, now: Date = Date(), staleAfter: TimeInterval = defaultStaleAfter) -> Bool {
+        now.timeIntervalSince(lastValidatedAt) >= staleAfter
+    }
+
+    /// Maps a REAL conditional GET's 304/200 answer to the same
+    /// three-case decision `decide(...)` returns (#1460) — always either
+    /// `.stillFresh` or `.staleNeedsRefetch`, never `.skipTooRecent`: by the
+    /// time this is called, a real network request has already happened,
+    /// which only makes sense after the caller has ALREADY confirmed
+    /// `isDueForRecheck(lastValidatedAt:...)` — this function has no TTL
+    /// logic of its own to avoid re-deriving that same gate twice.
+    ///
+    /// ELI5: "The server just told us straight up whether this file changed
+    /// — here's what to do about it."
+    public static func decideConditional(outcome: MediaCacheConditionalOutcome) -> MediaCacheRevalidationDecision {
+        switch outcome {
+        case .notModified:
+            .stillFresh
+        case .replaced:
+            .staleNeedsRefetch
+        }
     }
 }

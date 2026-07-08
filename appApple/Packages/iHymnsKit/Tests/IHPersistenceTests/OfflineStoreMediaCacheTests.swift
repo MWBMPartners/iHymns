@@ -194,6 +194,39 @@ struct OfflineStoreMediaCacheTests {
         #expect(try Data(contentsOf: againURL) == Data([9]))
     }
 
+    @Test("cacheMedia stores the etag/lastModified it's given (#1460), and both default to nil when omitted")
+    func cacheMediaRoundTripsEtagAndLastModified() async throws {
+        let store = try Self.makeStore()
+        let songId = try #require(SongID(rawValue: "MP-1"))
+
+        _ = try await store.cacheMedia(songId: songId, asset: Self.makeAsset(id: 1), data: Data([1]))
+        let withoutEtag = try await store.cachedMedia(forSong: songId)
+        #expect(withoutEtag.first?.etag == nil)
+        #expect(withoutEtag.first?.lastModified == nil)
+
+        _ = try await store.cacheMedia(
+            songId: songId, asset: Self.makeAsset(id: 2, fileName: "tune.mid"), data: Data([2]),
+            etag: "\"abc123\"", lastModified: "Wed, 08 Jul 2026 12:00:00 GMT"
+        )
+        let withEtag = try await store.cachedMedia(forSong: songId).first { $0.mediaAssetId == 2 }
+        #expect(withEtag?.etag == "\"abc123\"")
+        #expect(withEtag?.lastModified == "Wed, 08 Jul 2026 12:00:00 GMT")
+    }
+
+    @Test("re-caching the same asset with a NEW etag replaces the stored one, not append/duplicate")
+    func recachingReplacesStoredEtag() async throws {
+        let store = try Self.makeStore()
+        let songId = try #require(SongID(rawValue: "MP-1"))
+        let asset = Self.makeAsset()
+
+        _ = try await store.cacheMedia(songId: songId, asset: asset, data: Data([1]), etag: "\"old\"")
+        _ = try await store.cacheMedia(songId: songId, asset: asset, data: Data([2]), etag: "\"new\"")
+
+        let all = try await store.cachedMedia(forSong: songId)
+        #expect(all.count == 1)
+        #expect(all.first?.etag == "\"new\"")
+    }
+
     @Test("a path-traversal-shaped media file name is reduced to a safe leaf name (shared MediaFileNaming sanitizer)")
     func sanitizesPathTraversalAttempts() async throws {
         let store = try Self.makeStore()

@@ -80,6 +80,19 @@
 // column backs, and `MediaCacheRevalidationPolicy.swift`'s header for the
 // full "why sizeBytes + a TTL, not ETag/Last-Modified" reasoning.
 //
+// `v7AddMediaCacheEtag` (#1460, the client half of #1452's backend
+// ETag/Last-Modified + 304 support on `/song-media/<id>`) adds TWO more
+// additive, nullable columns — `cached_media.etag` / `.lastModified` — so
+// `MediaCacheRevalidator` (`IHFeatures`) can send a real conditional GET
+// (`If-None-Match`) instead of only comparing `sizeBytes`, which is blind to
+// a same-size content replacement (documented gap in
+// `MediaCacheRevalidationPolicy.swift`'s own header). NULL for every row
+// cached before this migration (and for every row an ETag-less server
+// response would still leave NULL) — `CachedMediaFile
+// .toCachedMediaInfo()`'s own comment explains why a NULL `etag` means
+// "fall back to the #1450 sizeBytes+TTL heuristic for this asset," never a
+// crash or a forced re-download.
+//
 // See GRDB's own migrations guide:
 // https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/migrations.
 import Foundation
@@ -222,7 +235,21 @@ public actor OfflineStore {
 
         migrator.registerMigration("v6AddMediaCacheLastValidated", migrate: Self.addMediaCacheLastValidatedColumn)
 
+        migrator.registerMigration("v7AddMediaCacheEtag", migrate: Self.addMediaCacheEtagColumns)
+
         return migrator
+    }
+
+    /// The `v7AddMediaCacheEtag` migration body (#1460) — split out for the
+    /// same `function_body_length` lint-ceiling reason `createCachedMediaTable`/
+    /// `addMediaCacheLastValidatedColumn` above already document.
+    private static func addMediaCacheEtagColumns(_ database: Database) throws {
+        try database.alter(table: "cached_media") { table in
+            // Both nullable — see this file's header for why NULL is the
+            // correct, expected, non-error state for a pre-#1460 row.
+            table.add(column: "etag", .text)
+            table.add(column: "lastModified", .text)
+        }
     }
 
     /// The `v6AddMediaCacheLastValidated` migration body (#1450) — split out

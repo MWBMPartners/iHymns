@@ -106,4 +106,41 @@ struct MediaCacheRevalidationPolicyTests {
     func defaultStaleAfterIsOneDay() {
         #expect(MediaCacheRevalidationPolicy.defaultStaleAfter == 86_400)
     }
+
+    // MARK: - isDueForRecheck / decideConditional (#1460)
+
+    @Test("isDueForRecheck is false within the TTL window")
+    func isDueForRecheckFalseWithinWindow() {
+        let justValidated = Self.referenceNow.addingTimeInterval(-60)
+        #expect(MediaCacheRevalidationPolicy.isDueForRecheck(lastValidatedAt: justValidated, now: Self.referenceNow, staleAfter: 3_600) == false)
+    }
+
+    @Test("isDueForRecheck is true past the TTL window, inclusive at the exact boundary")
+    func isDueForRecheckTruePastWindow() {
+        let longAgo = Self.referenceNow.addingTimeInterval(-100_000)
+        #expect(MediaCacheRevalidationPolicy.isDueForRecheck(lastValidatedAt: longAgo, now: Self.referenceNow, staleAfter: 3_600))
+        let exactlyStaleAfter = Self.referenceNow.addingTimeInterval(-3_600)
+        #expect(MediaCacheRevalidationPolicy.isDueForRecheck(lastValidatedAt: exactlyStaleAfter, now: Self.referenceNow, staleAfter: 3_600))
+    }
+
+    @Test("decide(...) and isDueForRecheck agree on the same TTL gate")
+    func decideAndIsDueForRecheckAgree() {
+        let justValidated = Self.referenceNow.addingTimeInterval(-60)
+        #expect(MediaCacheRevalidationPolicy.isDueForRecheck(lastValidatedAt: justValidated, now: Self.referenceNow, staleAfter: 3_600) == false)
+        #expect(
+            MediaCacheRevalidationPolicy.decide(
+                cachedSizeBytes: 10, serverSizeBytes: 999, lastValidatedAt: justValidated, now: Self.referenceNow, staleAfter: 3_600
+            ) == .skipTooRecent
+        )
+    }
+
+    @Test("decideConditional maps a real 304 (notModified) to stillFresh")
+    func decideConditionalNotModifiedIsStillFresh() {
+        #expect(MediaCacheRevalidationPolicy.decideConditional(outcome: .notModified) == .stillFresh)
+    }
+
+    @Test("decideConditional maps a real 200 (replaced) to staleNeedsRefetch")
+    func decideConditionalReplacedIsStaleNeedsRefetch() {
+        #expect(MediaCacheRevalidationPolicy.decideConditional(outcome: .replaced) == .staleNeedsRefetch)
+    }
 }
