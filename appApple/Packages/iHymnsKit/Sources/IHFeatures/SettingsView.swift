@@ -32,6 +32,13 @@
 // list-management UI directly) — this task's "Data management UI... a
 // 'Storage & Offline' section reachable from Settings" requirement.
 //
+// #1446 UPDATE — adds `activitySection` (a "Your Activity" row into the new
+// `UsageStatsView`), placed between `storageSection` and `privacySection`
+// per the comparison-usage plan's §2.4: NOT a new tab/sidebar section
+// (`RootContainerView` deliberately caps the compact `TabView` at 7 tabs,
+// its own #182 header) — this is the SAME "one row, real content lives on
+// the pushed screen" shape `storageSection` already established.
+//
 // #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — adds a
 // "Keyboard Shortcuts" row to `aboutSection`, presenting the SAME
 // `KeyboardShortcutsOverlayView` the Mac ⌘/ command opens
@@ -82,6 +89,7 @@ public struct SettingsView: View {
             appearanceSection
             accessibilitySection
             storageSection
+            activitySection
             privacySection
             helpSection
             #if DEBUG
@@ -182,6 +190,24 @@ public struct SettingsView: View {
             }
         } footer: {
             Text("See and manage the songs you've saved for offline reading.")
+        }
+    }
+
+    // MARK: - Your Activity
+
+    /// A single navigation row into `UsageStatsView` (#1446) — mirrors
+    /// `storageSection`'s "one row, real content lives on the pushed
+    /// screen" shape. Local-only: see that screen's own header for why this
+    /// is NOT gated on `analyticsConsentEnabled` below.
+    private var activitySection: some View {
+        Section {
+            NavigationLink {
+                UsageStatsView(rootViewModel: rootViewModel)
+            } label: {
+                Label("Your Activity", systemImage: "chart.bar.fill")
+            }
+        } footer: {
+            Text("Your reading streak, most-viewed songs, and more — calculated on this device only.")
         }
     }
 

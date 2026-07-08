@@ -102,7 +102,19 @@
           search terms (`ihRecentCatalogueSearches` key).
         - `RecentlyViewedStore.swift` — the last ~12 recently-opened songs,
           JSON-encoded (`ihRecentlyViewedSongs` key).
-      All three are reached from this target via `AppRootViewModel.swift`,
+        - `UsageActivityStore.swift` (#1446) — the LOCAL-ONLY "Your Activity"
+          dashboard's day-by-day distinct-songs-opened counts + per-song
+          open counts, JSON-encoded (`ihUsageActivity` key). Written from
+          `AppRootViewModel+Activity.swift`'s `recordRecentlyViewed(_:)`
+          (the SAME successful-song-load hook `RecentlyViewedStore` above
+          already uses), read by `UsageStatsViewModel`/`UsageStatsView`
+          (Settings → "Your Activity"). This is NOT a new collected-data
+          type — see the `NSPrivacyCollectedDataTypes` comment above and
+          that screen's own header: on-device display of a user's own data
+          is not "collection," and this store is never read by
+          `IHAnalyticsService`/any sink, nor gated on
+          `analyticsConsentEnabled`.
+      All four are reached from this target via `AppRootViewModel.swift`,
       `RootContainerView.swift`, and `Apps/iHymns/Sources/IHymnsApp.swift`.
 
       Every OTHER required-reason category was checked and found UNUSED,
