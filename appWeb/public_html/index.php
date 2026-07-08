@@ -134,10 +134,23 @@ enforceMaintenanceForPublicSite();
  * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */
 
+/* Native app store IDs (#1403) — admin-editable via /manage/configuration
+   ("Native app stores" card → tblAppSettings: native_app_ios /
+   native_app_android / native_app_amazon), falling back to the
+   APP_CONFIG['native_apps'] code-constant when the admin hasn't set a
+   value (keeps a fresh/un-migrated install working). getAppSetting() is
+   DB-safe (returns the default on any error), so this can never throw;
+   ihymnsResolveNativeAppSetting() is the pure precedence function both
+   this and tests/php/test-native-app-stores.php exercise. */
+$nativeAppsFallback  = APP_CONFIG['native_apps'];
+$nativeAppIosVal     = ihymnsResolveNativeAppSetting(getAppSetting('native_app_ios', ''), $nativeAppsFallback['ios'] ?? null);
+$nativeAppAndroidVal = ihymnsResolveNativeAppSetting(getAppSetting('native_app_android', ''), $nativeAppsFallback['android'] ?? null);
+$nativeAppAmazonVal  = ihymnsResolveNativeAppSetting(getAppSetting('native_app_amazon', ''), $nativeAppsFallback['amazon'] ?? null);
+
 /* Verify native app availability (cached, 24h TTL) */
-$nativeApps = APP_CONFIG['native_apps'];
-$iosApp     = verifyAppStoreApp('ios', $nativeApps['ios'] ?? null);
-$androidApp = verifyAppStoreApp('android', $nativeApps['android'] ?? null);
+$iosApp     = verifyAppStoreApp('ios', $nativeAppIosVal);
+$androidApp = verifyAppStoreApp('android', $nativeAppAndroidVal);
+$amazonApp  = verifyAppStoreApp('amazon', $nativeAppAmazonVal);
 
 /** Build a display version string (e.g., "0.1.5 Beta") */
 $versionDisplay = $app["Application"]["Version"]["Number"];
@@ -744,6 +757,8 @@ if (!empty($breadcrumbItems)) {
     <?php if ($androidApp['verified']): ?>
         <meta name="google-play-app" content="app-id=<?= htmlspecialchars($androidApp['appId']) ?>">
     <?php endif; ?>
+    <!-- Amazon Appstore (Fire OS, #1403) has no standard smart-banner meta tag —
+         it's covered by the native-app banner in pwa.js + the manifest, not here. -->
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
     <meta name="format-detection" content="telephone=no">
@@ -1647,10 +1662,16 @@ if (!empty($breadcrumbItems)) {
                whole-song corpus. Online reads are always the live API. */
             'dataUrl'         => '/api?action=songs_index',
             'nativeApps'      => [
-                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
+                /* Always a canonical, template-built store URL (see
+                   ihymnsAppStoreCanonicalUrl() in includes/config.php) —
+                   never the admin's raw pasted string — so pwa.js can put
+                   this straight into a link href with no further parsing. */
+                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? null) : null,
                 'iosVerified'     => $iosApp['verified'],
-                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? $nativeApps['android']) : null,
+                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? null) : null,
                 'androidVerified' => $androidApp['verified'],
+                'amazon'          => $amazonApp['verified'] ? ($amazonApp['storeUrl'] ?? null) : null,
+                'amazonVerified'  => $amazonApp['verified'],
             ],
             'features'        => APP_CONFIG['features'],
             'toneJsCdn'       => $libs['tonejs']['js_cdn'],

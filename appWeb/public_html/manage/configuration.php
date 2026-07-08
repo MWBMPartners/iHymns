@@ -497,6 +497,68 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_apple] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_native_apps') {
+            /* Native app store IDs (#1403/#1462) — Apple App Store /
+               Google Play / Amazon Appstore. Moves this OUT of the
+               APP_CONFIG['native_apps'] code constant into tblAppSettings
+               so the owner can set/change store IDs without a deploy.
+               index.php reads these three keys FIRST via getAppSetting(),
+               falling back to the constant only when unset.
+
+               Each field accepts either a bare ID/package/ASIN or a full
+               store URL — ihymnsParseAppStoreId() (includes/config.php) is
+               the SAME parser verifyAppStoreApp() uses to resolve the
+               saved value later, so what's accepted here can never
+               disagree with what the public site does with it. Only the
+               parsed, CANONICAL id is ever stored — never the admin's raw
+               pasted string — and a value that doesn't match the
+               platform's expected shape at all is rejected outright
+               (nothing free-form ever reaches tblAppSettings). Blank
+               clears the setting back to "unset" (falls back to the
+               APP_CONFIG constant, or hides that platform's banner). */
+            try {
+                $NATIVE_APP_FIELDS = [
+                    'native_app_ios'     => ['ios',     'Apple App Store'],
+                    'native_app_android' => ['android', 'Google Play'],
+                    'native_app_amazon'  => ['amazon',  'Amazon Appstore'],
+                ];
+                $parsedValues = [];
+                foreach ($NATIVE_APP_FIELDS as $settingKey => [$platform, $label]) {
+                    if (!array_key_exists($settingKey, $_POST)) continue;
+                    $raw = trim((string)$_POST[$settingKey]);
+                    if ($raw === '') {
+                        $parsedValues[$settingKey] = '';
+                        continue;
+                    }
+                    $appId = ihymnsParseAppStoreId($platform, $raw);
+                    if ($appId === null) {
+                        throw new \RuntimeException(
+                            $label . ' value doesn\'t look like a valid ID/package/ASIN or store URL — check it and try again.'
+                        );
+                    }
+                    $parsedValues[$settingKey] = $appId;
+                }
+
+                $changedKeys = [];
+                foreach ($parsedValues as $settingKey => $val) {
+                    $saveSetting($db, $settingKey, $val);
+                    $changedKeys[] = $settingKey;
+                }
+
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        'native_app_ios',
+                        ['keys' => $changedKeys],
+                        'success'
+                    );
+                }
+                $saveSuccess = 'Native app store settings saved.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_native_apps] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -534,6 +596,15 @@ $appleTeamId = (string)(getAppSetting('apple_team_id', '') ?? '');
    email_gmail_sa_json above). */
 $appleSiwaKeyId = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
 $appleSiwaPrivateKeySet = ((string)(getAppSetting('apple_siwa_private_key', '') ?? '')) !== '';
+
+/* Native app store IDs (#1403/#1462) — the values echoed back are the
+   CANONICAL, parsed IDs saved by save_native_apps above (never a raw
+   pasted URL), read via the same getAppSetting() index.php resolves
+   against, so this admin page can never disagree with what the public
+   site actually shows. */
+$nativeAppIos     = (string)(getAppSetting('native_app_ios', '') ?? '');
+$nativeAppAndroid = (string)(getAppSetting('native_app_android', '') ?? '');
+$nativeAppAmazon  = (string)(getAppSetting('native_app_amazon', '') ?? '');
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -748,6 +819,74 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <div class="col-12">
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-save me-1"></i>Save Apple settings
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         NATIVE APP STORES SECTION (#1403/#1462)
+         =========================== -->
+    <?php $nativeAppsAnySet = ($nativeAppIos !== '' || $nativeAppAndroid !== '' || $nativeAppAmazon !== ''); ?>
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-phone me-2"></i>Native app stores
+            </h2>
+            <span class="badge <?= $nativeAppsAnySet ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $nativeAppsAnySet ? 'Configured' : 'Not configured — PWA install prompt only' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                When set, the public site shows a platform-aware <strong>native app download banner</strong>
+                (replacing the browser's PWA install prompt on that platform) and emits the matching
+                app-store meta tags. Paste either the <strong>full store URL</strong> or the
+                <strong>bare ID / package / ASIN</strong> — either is accepted and normalised to the
+                canonical value on save. Leave a field blank to clear it (falls back to the PWA install
+                prompt, or to the code-level default if one is set).
+            </p>
+            <form method="post" class="row g-3 align-items-end">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_native_apps">
+
+                <div class="col-md-4">
+                    <label for="native_app_ios" class="form-label">
+                        <i class="bi bi-apple me-1"></i>Apple App Store
+                    </label>
+                    <input type="text" name="native_app_ios" id="native_app_ios" class="form-control"
+                           placeholder="https://apps.apple.com/app/id1234567890 or 1234567890"
+                           value="<?= htmlspecialchars($nativeAppIos, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">
+                        Numeric App Store ID, or the full store URL. Covers the universal app
+                        (iOS/iPadOS/macOS/tvOS/watchOS/visionOS share one listing).
+                    </div>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="native_app_android" class="form-label">
+                        <i class="bi bi-google-play me-1"></i>Google Play
+                    </label>
+                    <input type="text" name="native_app_android" id="native_app_android" class="form-control"
+                           placeholder="https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns or ltd.mwbmpartners.ihymns"
+                           value="<?= htmlspecialchars($nativeAppAndroid, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Android package name, or the full Play Store URL.</div>
+                </div>
+
+                <div class="col-md-4">
+                    <label for="native_app_amazon" class="form-label">
+                        <i class="bi bi-amazon me-1"></i>Amazon Appstore
+                    </label>
+                    <input type="text" name="native_app_amazon" id="native_app_amazon" class="form-control"
+                           placeholder="https://www.amazon.com/dp/B0XXXXXXXX or B0XXXXXXXX"
+                           value="<?= htmlspecialchars($nativeAppAmazon, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">10-character ASIN, or the full Amazon Appstore (Fire OS) URL.</div>
+                </div>
+
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save native app settings
                     </button>
                 </div>
             </form>
