@@ -49,6 +49,13 @@ struct CanonicalURLTests {
         #expect(CanonicalURL.person(slug: "fanny-crosby")?.absoluteString == "https://ihymns.app/person/fanny-crosby")
     }
 
+    @Test("Builds the canonical compare URL")
+    func buildsCompareURL() throws {
+        let primaryId = try #require(SongID(rawValue: "MP-1008"))
+        let secondaryId = try #require(SongID(rawValue: "SDAH-0042"))
+        #expect(CanonicalURL.compare(primaryId: primaryId, secondaryId: secondaryId)?.absoluteString == "https://ihymns.app/compare/MP-1008/SDAH-0042")
+    }
+
     // MARK: - #190 (help / legal) — these are NOT deep-linkable app
     // destinations (they open in the system browser), so unlike every URL
     // above they have no `DeepLinkRouter.resolve(_:)` round trip to prove.
@@ -105,5 +112,13 @@ struct CanonicalURLTests {
     func personURLRoundTrips() throws {
         let url = try #require(CanonicalURL.person(slug: "fanny-crosby"))
         #expect(DeepLinkRouter.resolve(url) == .person(slug: "fanny-crosby"))
+    }
+
+    @Test("A built compare URL resolves back to the exact same DeepLink — see DeepLink.swift's header for why this is app-internal only today")
+    func compareURLRoundTrips() throws {
+        let primaryId = try #require(SongID(rawValue: "MP-1008"))
+        let secondaryId = try #require(SongID(rawValue: "SDAH-0042"))
+        let url = try #require(CanonicalURL.compare(primaryId: primaryId, secondaryId: secondaryId))
+        #expect(DeepLinkRouter.resolve(url) == .compare(primaryId: primaryId, secondaryId: secondaryId))
     }
 }

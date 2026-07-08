@@ -21,6 +21,14 @@
 // in whatever stack the song screen already lives in — a REAL push, not a
 // sheet, the same reasoning `HomeView`/`SongbooksView` already document for
 // registering their own `SongID` destinations on their own hosting stacks.
+//
+// #1455 UPDATE — `comparisonTargetId` is now an EXTERNAL `Binding<SongID?>`
+// (owned by `SongDetailView`, previously private `@State` here) so a SECOND
+// entry point — a shelf row's "Compare with This" context menu
+// (`RelatedSongsShelfView`'s `onCompare`) — can start the exact same push
+// without going through this modifier's own toolbar/picker at all. Both
+// entry points still land on the SAME `.navigationDestination(item:)`
+// below, so there is only ever one comparison-push code path.
 import IHModels
 import SwiftUI
 
@@ -36,17 +44,33 @@ struct SongCompareEntryModifier: ViewModifier {
     let relatedSongs: [RelatedSongSummary]
     let rootViewModel: AppRootViewModel
 
-    @State private var isPresentingPicker = false
-    @State private var comparisonTarget: ComparisonTarget?
+    /// The song to compare `songId` against, once chosen — externally
+    /// owned (#1455) so both the toolbar picker AND a shelf's context menu
+    /// can drive the same push. `nil` = nothing chosen yet.
+    @Binding var comparisonTargetId: SongID?
 
-    /// A trivial `Identifiable` + `Hashable` wrapper around the picked
-    /// SECOND song's id — `.navigationDestination(item:)` requires BOTH
+    @State private var isPresentingPicker = false
+
+    /// A trivial `Identifiable` + `Hashable` wrapper around
+    /// `comparisonTargetId` — `.navigationDestination(item:)` requires BOTH
     /// conformances, and a bare `SongID` (already `Hashable`, not
     /// `Identifiable`) doesn't qualify on its own without adding a
     /// conformance to a type this package doesn't own the meaning of
     /// everywhere.
     private struct ComparisonTarget: Identifiable, Hashable {
         let id: SongID
+    }
+
+    /// Bridges `comparisonTargetId` (the plain `SongID?` every caller
+    /// shares) to the `Identifiable` wrapper `.navigationDestination(item:)`
+    /// needs — a computed `Binding`, not a second stored value, so there is
+    /// exactly ONE source of truth for "what's the current comparison
+    /// target."
+    private var comparisonTarget: Binding<ComparisonTarget?> {
+        Binding(
+            get: { comparisonTargetId.map(ComparisonTarget.init) },
+            set: { comparisonTargetId = $0?.id }
+        )
     }
 
     func body(content: Content) -> some View {
@@ -68,10 +92,10 @@ struct SongCompareEntryModifier: ViewModifier {
                     counterparts: counterparts,
                     relatedSongs: relatedSongs
                 ) { selectedId in
-                    comparisonTarget = ComparisonTarget(id: selectedId)
+                    comparisonTargetId = selectedId
                 }
             }
-            .navigationDestination(item: $comparisonTarget) { target in
+            .navigationDestination(item: comparisonTarget) { target in
                 SongComparisonView(primaryId: songId, secondaryId: target.id, rootViewModel: rootViewModel)
             }
     }

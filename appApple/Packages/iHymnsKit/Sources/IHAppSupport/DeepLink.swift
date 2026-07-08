@@ -59,6 +59,27 @@
 // browser" fallback (`IHymnsApp.swift`) already degrades it gracefully to
 // the PWA, which is the correct behaviour until Phase 2 adds a native
 // Live-join screen.
+//
+// #1455 UPDATE — `.compare` is the OPPOSITE situation from `/live/*` above,
+// and deliberately breaks this file's own "only real AASA+web route
+// intersections get modelled" pattern every other case follows: there IS a
+// real native screen for it (`SongComparisonView`, #1445) and no reason NOT
+// to resolve `/compare/<SongIdA>/<SongIdB>` if one ever arrives, but — this
+// task's own backend survey confirmed — NEITHER the AASA
+// (`.well-known/apple-app-site-association.php`'s `components` list) NOR
+// the web itself (`appWeb/public_html/index.php`'s route table) has a
+// `/compare/*` entry today. Concretely: a real device will never actually
+// hand this app a `/compare/...` Universal Link tap (Apple's own OS won't
+// route an AASA-unclaimed path to the app at all), and a recipient without
+// the app who somehow got such a URL would 404 on the web too. This case
+// still exists because (a) it costs nothing to resolve — the router is a
+// pure `URL → DeepLink?` function with no side effects either way, (b) it
+// gives `CanonicalURL.compare(primaryId:secondaryId:)` a real round-trip to
+// prove against in tests, and (c) it's ready the INSTANT a future web route
+// + AASA entry land, with no native-side follow-up needed. The web-route +
+// AASA gap is filed as its own `for consideration` follow-up issue rather
+// than guessed at here — a native router has no way to add a PHP route or
+// edit the AASA responder's `$components` array.
 import Foundation
 import IHModels
 
@@ -97,6 +118,11 @@ public enum DeepLink: Sendable, Equatable {
     /// (#1443, #1444) — see this file's header for the `/person/*` vs
     /// `/people/<slug>` web-route note.
     case person(slug: String)
+
+    /// Push the two-song comparison screen. `/compare/<primaryId>/<secondaryId>`
+    /// (#1455) — see this file's header for why this is app-internal-only
+    /// today (no AASA/web route claims this path yet).
+    case compare(primaryId: SongID, secondaryId: SongID)
 }
 
 /// Parses incoming URLs (Universal Links, and eventually the app's own
@@ -160,6 +186,15 @@ public enum DeepLinkRouter {
         case 3 where segments[0] == "setlist" && segments[1] == "shared":
             guard isValidShareId(segments[2]) else { return nil }
             return .setlistShare(shareId: segments[2])
+
+        case 3 where segments[0] == "compare":
+            // #1455 — BOTH ids validated against the exact same `SongID`
+            // shape `.song` uses (rule #27's charset), mirroring every
+            // other id-carrying case in this switch; either side failing
+            // to parse means the whole link is malformed, not "compare the
+            // valid one against nothing."
+            guard let primaryID = SongID(rawValue: segments[1]), let secondaryID = SongID(rawValue: segments[2]) else { return nil }
+            return .compare(primaryId: primaryID, secondaryId: secondaryID)
 
         default:
             return nil

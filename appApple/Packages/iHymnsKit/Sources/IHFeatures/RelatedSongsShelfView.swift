@@ -23,6 +23,20 @@
 // `HomeView`'s own — see that file's header for why each hosting stack
 // needs its own copy of the modifier), so tapping a row navigates straight
 // to it with no extra wiring in this file.
+//
+// #1455 UPDATE — an additive, defaulted `onCompare` closure adds a
+// "Compare with This" context-menu action per row, reusing #1445's
+// `SongComparisonView` push. SHELF-LEVEL (not per-`RelatedShelfItem`,
+// despite this feature's own GitHub issue sketching it as a per-item
+// property): every row in one shelf instance compares against the SAME
+// "current song" the hosting screen anchors to, so one closure taking the
+// tapped row's id is simpler than threading an identical callback onto
+// every item. `nil` (the default, and `HomeView`'s own "Recently Viewed"
+// call site) omits the context menu entirely — Home's shelf has no natural
+// "current song" to compare FROM (this feature's issue explicitly flags
+// that as a separate, undecided "pick both sides" design), so it
+// deliberately stays out of scope here rather than shipping a half-built
+// picker.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -69,6 +83,10 @@ struct RelatedSongsShelfView: View {
     let title: String
     let items: [RelatedShelfItem]
 
+    /// #1455 — see this file's header for why this is shelf-level and why
+    /// `nil` (the default) is a real, intentional state, not deferred work.
+    var onCompare: ((SongID) -> Void)?
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
@@ -95,6 +113,15 @@ struct RelatedSongsShelfView: View {
                             .ihGlassCard()
                         }
                         .buttonStyle(.plain)
+                        .contextMenu {
+                            if let onCompare {
+                                Button {
+                                    onCompare(item.id)
+                                } label: {
+                                    Label("Compare with This", systemImage: "rectangle.split.2x1")
+                                }
+                            }
+                        }
                     }
                 }
             }

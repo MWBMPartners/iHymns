@@ -106,6 +106,12 @@ public struct SongDetailView: View {
     /// button; see this file's header.
     @State private var isPresentingAddToSetlist = false
 
+    /// #1455 — owned here (not inside `SongCompareEntryModifier`) so BOTH
+    /// that modifier's toolbar/picker AND a shelf row's "Compare with This"
+    /// context menu can drive the same comparison push; see that modifier's
+    /// own header.
+    @State private var comparisonTargetId: SongID?
+
     public init(songId: SongID, rootViewModel: AppRootViewModel) {
         _viewModel = State(initialValue: SongDetailViewModel(songId: songId, rootViewModel: rootViewModel))
         self.rootViewModel = rootViewModel
@@ -156,7 +162,8 @@ public struct SongDetailView: View {
             isPrimaryLoaded: isPrimaryLoaded,
             counterparts: counterpartsForCompare,
             relatedSongs: relatedSongsForCompare,
-            rootViewModel: rootViewModel
+            rootViewModel: rootViewModel,
+            comparisonTargetId: $comparisonTargetId
         ))
     }
 
@@ -289,7 +296,8 @@ public struct SongDetailView: View {
         if case .loaded(let group) = viewModel.songLinksState, group.hasCounterparts {
             RelatedSongsShelfView(
                 title: "Also Appears As",
-                items: group.songs.map(RelatedShelfItem.init(counterpart:))
+                items: group.songs.map(RelatedShelfItem.init(counterpart:)),
+                onCompare: { comparisonTargetId = $0 }
             )
         }
     }
@@ -302,7 +310,8 @@ public struct SongDetailView: View {
         if case .loaded(let related) = viewModel.relatedSongsState, !related.isEmpty {
             RelatedSongsShelfView(
                 title: "Related Songs",
-                items: related.map(RelatedShelfItem.init(related:))
+                items: related.map(RelatedShelfItem.init(related:)),
+                onCompare: { comparisonTargetId = $0 }
             )
         }
     }

@@ -132,6 +132,36 @@ struct DeepLinkRouterTests {
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
 
+    // MARK: - Compare (#1455) — app-internal only, see DeepLink.swift's header
+
+    @Test("Resolves a valid compare Universal Link shape")
+    func resolvesValidCompareLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/compare/MP-1008/SDAH-0042"))
+        let link = DeepLinkRouter.resolve(url)
+        #expect(link == .compare(
+            primaryId: try #require(SongID(rawValue: "MP-1008")),
+            secondaryId: try #require(SongID(rawValue: "SDAH-0042"))
+        ))
+    }
+
+    @Test("Rejects a compare link with a malformed primary id")
+    func rejectsCompareLinkWithMalformedPrimaryId() throws {
+        let url = try #require(URL(string: "https://ihymns.app/compare/not-a-song-id/SDAH-0042"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Rejects a compare link with a malformed secondary id")
+    func rejectsCompareLinkWithMalformedSecondaryId() throws {
+        let url = try #require(URL(string: "https://ihymns.app/compare/MP-1008/not-a-song-id"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
+    @Test("Rejects a bare /compare with only one id — a missing trailing segment is malformed, not 'close enough'")
+    func rejectsCompareLinkWithOnlyOneId() throws {
+        let url = try #require(URL(string: "https://ihymns.app/compare/MP-1008"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
     // MARK: - Not-yet-native shapes (AASA-claimed, correctly un-routed)
 
     @Test("Does not resolve a Live Follow join link — no native screen exists for it yet")

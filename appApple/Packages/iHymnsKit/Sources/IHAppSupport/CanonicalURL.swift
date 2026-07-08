@@ -104,6 +104,24 @@ public enum CanonicalURL {
         URL(string: "\(host)/person/\(slug)")
     }
 
+    /// `https://ihymns.app/compare/<primaryId>/<secondaryId>` (#1455).
+    ///
+    /// UNLIKE every other builder in this file, this URL is NOT currently a
+    /// working Universal Link, and isn't even a resolvable web page: this
+    /// task's backend survey confirmed neither the AASA (`components` list)
+    /// nor `index.php`'s route table claims `/compare/*` — see
+    /// `DeepLink.swift`'s header for the full reasoning. This exists so
+    /// `DeepLinkRouter.resolve(_:)` has a round trip to prove
+    /// (`CanonicalURLTests`) and so the shape is ready the moment a
+    /// matching web route + AASA entry land (filed as its own `for
+    /// consideration` follow-up, not a promise this works today).
+    /// Deliberately NOT wired into any `ShareLink`/UI anywhere in this
+    /// package — sharing this URL today would silently 404 for anyone
+    /// without the app already installed.
+    public static func compare(primaryId: SongID, secondaryId: SongID) -> URL? {
+        URL(string: "\(host)/compare/\(primaryId.rawValue)/\(secondaryId.rawValue)")
+    }
+
     // MARK: - #190 (help / legal / first-run)
 
     /// `https://ihymns.app/help` — the SAME help/FAQ page the web app's

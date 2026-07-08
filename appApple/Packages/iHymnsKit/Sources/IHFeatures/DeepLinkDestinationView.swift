@@ -28,6 +28,11 @@
 // (`WorkDetailView`/`CreditPersonDetailView`, `IHymnsApp.swift` no longer
 // diverts either to the system browser). `.person` looks up by the SAME
 // `slug` the deep link carries (`CreditPersonLookup.slug(_:)`).
+//
+// #1455 UPDATE — `.compare` pushes `SongComparisonView` directly (both ids
+// are already validated `SongID`s, unlike `.songbook`'s bare-abbreviation
+// case, so no async resolver view is needed here). See `DeepLink.swift`'s
+// header for why this route is app-internal-only today.
 import IHAPI
 import IHAppSupport
 import IHModels
@@ -105,6 +110,9 @@ struct DeepLinkDestinationView: View {
 
         case .person(let slug):
             CreditPersonDetailView(lookup: .slug(slug), rootViewModel: rootViewModel)
+
+        case .compare(let primaryId, let secondaryId):
+            SongComparisonView(primaryId: primaryId, secondaryId: secondaryId, rootViewModel: rootViewModel)
         }
     }
 }
