@@ -44,8 +44,9 @@
 
 ### Step 4 — CarPlay entitlement  *(long lead — start early; Phase 3 #1431)*
 1. **developer.apple.com/contact/carplay/** (CarPlay entitlement request form).
-2. Choose the **Audio** app category; describe the worship/audio use case.
-3. Submit. Apple review takes **weeks**; approval arrives **by email** and adds the `com.apple.developer.carplay-audio` entitlement.
+2. Choose the **Audio** app category, provide the app/bundle-ID, and **accept the CarPlay addendum/terms** (submit is usually gated on that checkbox).
+3. ⚠️ **The Audio path does NOT ask you to describe/justify the app** — that free-text step is only for the hand-reviewed categories (navigation, EV, parking, driving-task, communication). For Audio, category + terms **is** the whole request; a missing description prompt is normal, not a skipped step.
+4. Confirm you got an **on-screen "submitted" confirmation and/or an email**. Approval (for Audio, often quick) arrives **by email** and makes `com.apple.developer.carplay-audio` available to add to the app's entitlements — only relevant once #1431 is built. Nothing downstream is blocked on it.
 
 ### Step 5 — APNs key  ⚠️ **CORRECTED: defer to Phase 2 (#1410)**
 - Only needed for **Live Activities / Dynamic Island (#1410 / #1429)** — **unused today**. Recommendation: **don't create it now** (unused credential = extra thing to guard).
