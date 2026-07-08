@@ -2175,16 +2175,16 @@ if ($action !== null) {
                 (int)$user['Id']
             );
 
-            sendJson([
-                'token' => $token,
-                'user'  => [
-                    'id'             => (int)$user['Id'],
-                    'username'       => $user['Username'],
-                    'display_name'   => $user['DisplayName'],
-                    'role'           => $user['Role'],
-                    'avatar_service' => $user['AvatarService'] ?? null,   /* #616 */
-                ],
-            ]);
+            /* #1402 — shared shape with auth_apple via apiAuthSuccessPayload().
+               Output is byte-identical to the pre-refactor inline array. */
+            sendJson(apiAuthSuccessPayload(
+                $token,
+                (int)$user['Id'],
+                $user['Username'],
+                $user['DisplayName'],
+                $user['Role'],
+                $user['AvatarService'] ?? null   /* #616 */
+            ));
             break;
 
         /* -----------------------------------------------------------------
@@ -12981,6 +12981,64 @@ function sendJson(array $data, int $statusCode = 200): void
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-cache, must-revalidate');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+}
+
+/**
+ * Build the standard bearer-auth success payload (#1402 prep — Apple
+ * backend-auth plan §8 task B).
+ *
+ * WHY THIS EXISTS: `case 'auth_login'` (api.php:2178, pre-refactor) hand-built
+ * this shape inline. The forthcoming `?action=auth_apple` (#1402) endpoint
+ * MUST return a byte-identical shape — the native client's DTO
+ * (`appApple/Packages/iHymnsKit/Sources/IHModels/AuthSession.swift`) decodes
+ * exactly `token` + `user.{id, username, display_name, role,
+ * avatar_service}`, and any drift between the two login paths (e.g. auth_apple
+ * accidentally adding an `email` key, the way `auth_email_login_verify`'s
+ * response does) would silently break Sign-in-with-Apple on the native app
+ * while the PWA's own login kept working — a hard bug to spot without a
+ * shared source of truth. Extracting the shape into one function makes
+ * "does auth_apple match auth_login" a structural property instead of a
+ * copy-paste convention; tests/php/test-auth-response-shape.php pins both the
+ * key set AND (via a source grep) that every login-style case calls this
+ * helper instead of hand-rolling the array again.
+ *
+ * ELI5: this is the one place that decides what a successful "you're logged
+ * in" reply looks like, no matter which door (password, magic link, Apple)
+ * the user walked through.
+ *
+ * @param string      $token          Raw (unhashed) bearer token — the caller
+ *                                      already minted + persisted the sha256
+ *                                      hash in tblApiTokens before calling this.
+ * @param int         $userId         tblUsers.Id
+ * @param string      $username       tblUsers.Username
+ * @param string      $displayName    tblUsers.DisplayName
+ * @param string      $role           tblUsers.Role
+ * @param string|null $avatarService  tblUsers.AvatarService, or null when the
+ *                                      column doesn't exist yet on this docroot
+ *                                      (#616 column-existence gate, api.php:2073)
+ *                                      or the user has no override.
+ * @return array{token:string,user:array{id:int,username:string,display_name:string,role:string,avatar_service:?string}}
+ *
+ * @link https://developer.apple.com/documentation/sign_in_with_apple  auth_apple's consumer (#1402)
+ */
+function apiAuthSuccessPayload(
+    string $token,
+    int $userId,
+    string $username,
+    string $displayName,
+    string $role,
+    ?string $avatarService
+): array {
+    return [
+        'token' => $token,
+        'user'  => [
+            'id'             => $userId,
+            'username'       => $username,
+            'display_name'   => $displayName,
+            'role'           => $role,
+            'avatar_service' => $avatarService,
+        ],
+    ];
 }
 
 /**
