@@ -38,10 +38,14 @@ jobs:
       - name: Install tooling
         run: brew install xcodegen swiftlint
 
-      - name: Quality gates (LOC budget + no-secrets)
+      - name: Quality gates (LOC budget + no-secrets + privacy manifest)
         run: |
           bash appApple/Scripts/loc-budget.sh
           bash appApple/Scripts/no-secrets-grep.sh
+          # #1451 — fails if a required-reason API (UserDefaults, file
+          # timestamp, disk space, system boot time, active keyboard) is
+          # used without a matching PrivacyInfo.xcprivacy declaration.
+          bash appApple/Scripts/privacy-manifest-guard.sh
 
       - name: SwiftLint
         run: swiftlint --config appApple/.swiftlint.yml appApple
