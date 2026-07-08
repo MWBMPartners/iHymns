@@ -19,7 +19,9 @@ DEFERRED APPLE BACKLOG (work with the right model per task; Fable 5 for the deep
 
 ★★ **THE APPLE-NATIVE DEFERRED BACKLOG (#1438–#1450) IS COMPLETE.** All of Phase 0 + Phase 1 (client #180–#190/#1412 + backend #1401/#1402/#1403) + the 12-item deferred backlog are shipped on `feat/apple-universal` (local, unpushed, no PRs). 449 tests, 0 lint, macOS BUILD SUCCEEDED throughout.
 
-REMAINING (all owner decisions / can't-do-here — NOT auto-actioned):
+✅ **PHASE-1 DEV-TEAM-REVIEW GATE DONE (2026-07-08)** — two parallel Opus adversarial reviews (backend PHP + Swift client). **No critical/high defects.** SIWA auth/`account_delete`/all migrations/config card = clean (second-pass confirm). Fixed: analytics rate-limiter counted only successful ingests (MEDIUM A1) + body cap (A3) + 90-day retention purge (A4) → `41c550e2`; SongID path-traversal invariant + `sanitizedFileName` "/" + deep-link host case (all LOW) → `f615df6b` (+5 regression tests, 454 total). Owner-decision residuals (analytics param-value PII, deletion IP residue, `tblLoginAttempts` username/action namespace overlap [pre-existing], deep-link sheet serialization) → tracked in **#1459**.
+
+REMAINING (owner decisions / can't-do-here):
 - Fresh `for consideration` follow-ups #1451–#1458 (spawned by the backlog work — parked for owner decision per policy; do NOT auto-build, else infinite regress).
 - **Deploy/promotion** of the backend-for-apple PHP (#1401/#1402/#1403/#1448) to live docroots via the alpha→beta→main pipeline (owner decision, plan §8) — the app can't authenticate/ingest until then.
 - **Owner provisioning**: Apple SIWA Key ID + `.p8` (config UI) + run the migration cards; OpenDyslexic OTF for #1412; real Apple Team ID for live Universal Links (#1401); the App-Store-Connect/entitlement long-lead items in `apple-native-owner-runbook.md`.
