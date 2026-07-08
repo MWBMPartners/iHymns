@@ -168,6 +168,16 @@ public struct RootContainerView: View {
             .sheet(isPresented: $navigationState.isPresentingKeyboardShortcutsHelp) {
                 KeyboardShortcutsOverlayView()
             }
+            // #189 — one wiring point covers "screen appears" for every
+            // top-level section: `initial: true` fires immediately for the
+            // launch screen too (SwiftUI's documented `onChange(of:initial:
+            // _:)` behaviour), not just on later tab/sidebar switches. A
+            // fresh `IHAnalyticsService()` per change is intentional — see
+            // that type's own header for why it's cheap and correct to
+            // construct on demand rather than held as long-lived state here.
+            .onChange(of: navigationState.selectedSection, initial: true) { _, newSection in
+                IHAnalyticsService().screenViewed(newSection.title)
+            }
     }
 
     @ViewBuilder

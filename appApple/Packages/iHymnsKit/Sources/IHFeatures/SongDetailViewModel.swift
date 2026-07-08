@@ -138,6 +138,9 @@ public final class SongDetailViewModel {
             // "last opened song" hook, anchored to success rather than a
             // View-level `.onAppear`.
             rootViewModel.recordRecentlyViewed(detail)
+            // #189 — same anchor as `recordRecentlyViewed` above: a still-
+            // loading fetch was never actually "opened."
+            IHAnalyticsService().songOpened(songId: songId.rawValue)
         } catch let error as APIError {
             // #187 — the request never reached/returned from the server at
             // all (`.offline`) or the server itself says "back soon"
@@ -151,6 +154,7 @@ public final class SongDetailViewModel {
                 loadState = .loaded(cached)
                 isServingCachedCopy = true
                 rootViewModel.recordRecentlyViewed(cached)
+                IHAnalyticsService().songOpened(songId: songId.rawValue)
                 return
             }
             loadState = .error(error.userFacingMessage)
@@ -258,6 +262,9 @@ public final class SongDetailViewModel {
         } else {
             try? await rootViewModel.saveSongForOffline(detail)
             isSavedOffline = true
+            // #189 — only the SAVE path; "offline_save" measures the save
+            // action, not "offline storage state changed" in general.
+            IHAnalyticsService().offlineSaveToggled(songId: detail.songId.rawValue)
         }
     }
 }
