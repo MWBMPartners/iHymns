@@ -221,7 +221,7 @@ public struct RootContainerView: View {
         splitView
             .task { await restoreAndSync() }
             .preferredColorScheme(settingsViewModel.theme.colorScheme)
-            .environment(\.ihReadingMode, readingMode)
+            .ihAppearanceEnvironment(readingMode: readingMode, theme: settingsViewModel.theme)
         #elseif os(iOS)
         Group {
             if horizontalSizeClass == .compact {
@@ -236,9 +236,9 @@ public struct RootContainerView: View {
         // `.highContrast` force that scheme. Applied at the ROOT so every
         // pushed screen re-themes the instant the picker changes.
         .preferredColorScheme(settingsViewModel.theme.colorScheme)
-        // #1412 — every lyric line reads its font/spacing from this one
-        // injection, so toggling dyslexia mode re-renders the whole app.
-        .environment(\.ihReadingMode, readingMode)
+        // #1412/#1438 — reading mode + theme-derived contrast boost, see
+        // IHAppearanceTheme.swift's `ihAppearanceEnvironment` doc comment.
+        .ihAppearanceEnvironment(readingMode: readingMode, theme: settingsViewModel.theme)
         #else
         // tvOS/watchOS: not wired to any shell yet (see file header) — a
         // plain stack keeps this FILE compiling on those platforms without

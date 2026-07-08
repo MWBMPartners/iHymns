@@ -189,8 +189,19 @@ let package = Package(
         ),
 
         // MARK: - IHDesign (no iHymnsKit deps beyond SwiftUI)
+        //
+        // `resources: [.process("Resources/Colors.xcassets")]` (#1438) —
+        // the ONE Asset Catalog `IHColorTokens` reads its Any/Dark/High-
+        // Contrast colour sets from (`Color("Accent", bundle: .module)`).
+        // `.process` (not `.copy`) so SwiftPM invokes `actool` to compile
+        // it the same way Xcode would for an app target's own catalog —
+        // `IHTestFixtures`'s `.copy(_:)` precedent (Package.swift's other
+        // `resources:` user) is for raw JSON, which needs no compilation.
         .target(
             name: "IHDesign",
+            resources: [
+                .process("Resources/Colors.xcassets")
+            ],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(

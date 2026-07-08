@@ -17,13 +17,33 @@
 // strategy note: "synced to the account preference like the web") never
 // needs a translation table between platforms.
 //
-// `.highContrast` maps to the same `ColorScheme.dark` as `.dark` for now
-// (see `colorScheme` below) — an HONEST partial build, not a fake one: the
-// picker genuinely switches to dark mode today; #188 (Apple P1
-// accessibility pass) is what layers the ACTUAL increased-contrast token
-// boost on top (`IHColorTokens.accent(increaseContrast:)` +
-// `Environment(\.ihIncreaseContrast)`), per this task's own instruction to
-// land that wiring there rather than duplicating it here.
+// `.highContrast` still maps to `ColorScheme.dark` for `.preferredColorScheme`
+// (see `colorScheme` below) — that part was never fake, dark IS the right
+// base scheme for this theme. What #1438 (Apple P1 accessibility follow-up,
+// deferred from #188) adds is the ACTUAL contrast boost on top, via
+// `ihAppearanceEnvironment(readingMode:theme:)` below.
+//
+// WIRING DECISION (#1438): the obvious-looking approach — reuse SwiftUI's
+// OWN `\.colorSchemeContrast` (`ColorSchemeContrast`) environment key,
+// forcing `.increased` when the theme is `.highContrast` — does NOT
+// compile: `EnvironmentValues.colorSchemeContrast` is **read-only** in
+// this SDK (`public var colorSchemeContrast: ColorSchemeContrast { get }`,
+// no `set`; confirmed against the installed `SwiftUICore.swiftinterface`
+// — a private `_colorSchemeContrast` has a setter but is an
+// underscored/unstable SDK symbol, off-limits). So there is no PUBLIC way
+// to force an Asset-Catalog colour's High-Contrast appearance to activate
+// independent of the OS's own real Increase Contrast setting.
+// `ihAppearanceEnvironment` below therefore injects iHymns' OWN
+// `\.ihIncreaseContrast` Bool key (`IHColorTokens.swift`) instead — a
+// value the app fully owns and controls, entirely orthogonal to (never
+// overriding, never able to cancel) the OS's real, read-only
+// `colorSchemeContrast`. `IHColorTokens.accent(increaseContrast:)`
+// consumes it by picking a DIFFERENT, dedicated `AccentHighContrast`
+// colour set — see that function's own doc comment for the full
+// reasoning. Because this key is purely additive (not an override of
+// anything OS-owned), the injection below is UNCONDITIONAL — no
+// `@ViewBuilder` branching needed to "leave the OS setting alone," unlike
+// the abandoned `colorSchemeContrast` approach would have required.
 import SwiftUI
 
 /// The four appearance choices `Settings → Appearance` offers, mirroring
@@ -62,5 +82,44 @@ public enum IHAppearanceTheme: String, Sendable, CaseIterable, Codable {
         case .dark: "Dark"
         case .highContrast: "High Contrast"
         }
+    }
+
+    /// Whether this theme should force the app's contrast-boosted colour
+    /// tokens on (`\.ihIncreaseContrast`, `IHColorTokens.swift`) — true
+    /// only for `.highContrast` today. A real `enum` computed property
+    /// (not inlined at the one call site, `ihAppearanceEnvironment` below)
+    /// so it stays independently testable/reusable without duplicating the
+    /// decision.
+    ///
+    /// ELI5: "Does picking this look also mean 'and make the colours
+    /// punchier'?"
+    public var forcesIncreaseContrast: Bool {
+        self == .highContrast
+    }
+}
+
+// MARK: - Environment plumbing (#1438)
+
+public extension View {
+    /// Applies BOTH the reading-mode (#1412) and the theme-derived
+    /// contrast-boost (#1438) environment values in ONE call.
+    ///
+    /// ELI5: "Apply the reading style, AND tell every colour token whether
+    /// the user picked the app's own High Contrast theme."
+    ///
+    /// DETAILED: Kept as a single combined modifier — rather than two
+    /// separate `.environment(...)` calls at each of `RootContainerView`'s
+    /// two injection sites (macOS/visionOS and iOS) — specifically so
+    /// adding this second injection didn't grow that file (already sitting
+    /// exactly at `Scripts/loc-budget.sh`'s 400-line tripwire) by a single
+    /// line; each call site there does a straight 1-for-1 REPLACE of its
+    /// existing `.environment(\.ihReadingMode, readingMode)` line for this
+    /// one, net zero LOC change. See this file's header for the full
+    /// contrast-wiring decision (why `\.ihIncreaseContrast`, not
+    /// `\.colorSchemeContrast`).
+    func ihAppearanceEnvironment(readingMode: IHReadingMode, theme: IHAppearanceTheme) -> some View {
+        self
+            .environment(\.ihReadingMode, readingMode)
+            .environment(\.ihIncreaseContrast, theme.forcesIncreaseContrast)
     }
 }
