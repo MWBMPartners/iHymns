@@ -1,5 +1,6 @@
 ## [unreleased] — feat/apple-universal (branch, not merged or deployed)
 
+- chore(version): **milestone bump to 0.2500.0** for the native Apple app release train (`includes/infoAppVer.php`; README badge + OpenAPI `info.version` synced to match; the PWA service-worker cache version auto-syncs off it, #81). Up from `0.1321.0`.
 - feat(apple): **native Apple Universal app — Phase 1 client + backend built** — the in-development native Apple app (one Universal app across iOS / iPadOS / macOS / tvOS / watchOS / visionOS, epic #895) reached Phase 1 web-app feature parity on the `feat/apple-universal` branch, together with the backend endpoints and Apple App Site Association (AASA) it depends on. The branch has not been merged to `alpha` or deployed to any live environment.
 - feat(auth): **Sign in with Apple** (`?action=auth_apple`, #1402) — verifies the Apple identity-token JWT against Apple's published JWKS and mints the standard iHymns bearer token.
 - feat(auth): **self-service account deletion** (`?action=account_delete`, #1403) — bearer-authed, re-authenticated deletion of the caller's own account, satisfying App Store Review Guideline 5.1.1(v) for the native app.

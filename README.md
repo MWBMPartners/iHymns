@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.1317.0 Alpha](https://img.shields.io/badge/Version-0.1317.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.2500.0 Alpha](https://img.shields.io/badge/Version-0.2500.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.1317.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.2500.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 (web-app parity) complete; in development on `feat/apple-universal`, not yet released |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
