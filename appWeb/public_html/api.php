@@ -2934,6 +2934,292 @@ if ($action !== null) {
             sendJson($loginResult);
             break;
 
+        /* -----------------------------------------------------------------
+         * Sign in with Apple (#1402) — App-Store-review-blocking.
+         *
+         * POST body (JSON): {
+         *   "identityToken": "<compact JWS from ASAuthorizationAppleIDCredential>",
+         *   "nonce": "<raw nonce the client hashed into the SIWA request>",
+         *   "authorizationCode": "<optional — enables best-effort refresh-token capture>",
+         *   "email": "<optional convenience copy — the JWT claim always wins>",
+         *   "fullName": {"givenName": "...", "familyName": "..."},   // optional, first-authorization only
+         *   "link": "1"   // optional — attach to the CURRENT bearer instead of sign-in
+         * }
+         * Returns: the SAME shape as auth_login (apiAuthSuccessPayload) — the
+         * native client's AuthSession DTO decodes token + user.{id, username,
+         * display_name, role, avatar_service}.
+         *
+         * Full design: .claude/apple-backend-auth-plan.md §2. ELI5: this is the
+         * "continue with Apple" button's backend — it checks Apple's signature
+         * on the credential the phone handed us, then either finds the iHymns
+         * account that Apple ID already belongs to, links it to whichever
+         * account the caller is currently signed into (if `link` was sent), or
+         * makes a brand-new account — then hands back a normal bearer token so
+         * everything downstream (favourites, setlists, …) works exactly like a
+         * password or magic-link sign-in.
+         * ----------------------------------------------------------------- */
+        case 'auth_apple':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+
+            $db = getDbMysqli();
+
+            /* Feature gate (#1402, rule #19 dormancy): migrations are web-run,
+               never auto-applied on deploy, so tblUserAuthProviders may not
+               exist yet on this docroot. mysqli runs under
+               MYSQLI_REPORT_STRICT — a bare query against a missing table
+               THROWS (the #1228 lesson) — so existence-probe first and
+               degrade to a clean 503 instead of white-screening. */
+            $siwaProbe = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserAuthProviders' LIMIT 1"
+            );
+            $siwaReady = ($siwaProbe && $siwaProbe->fetch_row() !== null);
+            if ($siwaProbe) { $siwaProbe->close(); }
+            if (!$siwaReady) {
+                sendJson(['error' => 'Sign in with Apple is not yet available.'], 503);
+                break;
+            }
+
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Brute-force protection — same sentinel-username pattern as
+               auth_email_login_verify's 'email_verify' counter (api.php:2842),
+               mirroring auth_login's IP-window check (api.php:2047). */
+            $stmt = $db->prepare(
+                "SELECT COUNT(*) FROM tblLoginAttempts
+                  WHERE IpAddress = ? AND Success = 0 AND Username = 'auth_apple'
+                    AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)"
+            );
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            if ((int)($row[0] ?? 0) >= 10) {
+                logActivity('auth.login_apple', '', '', ['reason' => 'rate_limited'], 'failure');
+                sendJson(['error' => 'Too many attempts. Please try again later.'], 429);
+                break;
+            }
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            if (!is_array($body)) { $body = []; }
+
+            $identityToken = $body['identityToken'] ?? null;
+            if (!is_string($identityToken) || $identityToken === '') {
+                sendJson(['error' => 'identityToken is required.'], 400);
+                break;
+            }
+
+            /* Nonce contract (plan §2.1): the client hashes this RAW value into
+               the SIWA request; we recompute the hash and compare to the JWT
+               `nonce` claim. Charset/length pinned so a malformed value fails
+               fast as a 400 rather than reaching the crypto core. */
+            $rawNonce = $body['nonce'] ?? null;
+            if (!is_string($rawNonce) || strlen($rawNonce) < 16 || strlen($rawNonce) > 255
+                || !preg_match('/^[A-Za-z0-9._~-]+$/', $rawNonce)) {
+                sendJson(['error' => 'nonce is required (16-255 chars, charset [A-Za-z0-9._~-]).'], 400);
+                break;
+            }
+
+            /* authorizationCode is optional and only ever used for a
+               best-effort refresh-token capture (§2.6) — malformed/absent
+               both just mean "skip the exchange", never an error response. */
+            $authorizationCode = $body['authorizationCode'] ?? null;
+            if (!is_string($authorizationCode) || $authorizationCode === ''
+                || strlen($authorizationCode) > 1024
+                || !preg_match('/^[A-Za-z0-9._~\/+=-]+$/', $authorizationCode)) {
+                $authorizationCode = null;
+            }
+
+            /* The client MAY send an `email` field (plan §2.1) as a convenience
+               copy, but §2.5's account-mapping logic resolves identity/email
+               EXCLUSIVELY from the verified JWT claim — a client-supplied
+               value is untrusted request input and is never given any
+               authority here. Accepted-but-ignored rather than rejected, so
+               a client that sends it doesn't get a spurious 400. */
+
+            /* fullName is ONLY present on Apple's FIRST authorization for this
+               user — snapshot it now (used for DisplayName on create + stored
+               in IdentityJson) since a later sign-in will never see it again. */
+            $fullName = null;
+            if (isset($body['fullName']) && is_array($body['fullName'])) {
+                $fullName = [
+                    'givenName'  => isset($body['fullName']['givenName'])  ? (string)$body['fullName']['givenName']  : '',
+                    'familyName' => isset($body['fullName']['familyName']) ? (string)$body['fullName']['familyName'] : '',
+                ];
+            }
+
+            $linkModeRaw = $body['link'] ?? null;
+            $linkMode = ($linkModeRaw === '1' || $linkModeRaw === 1 || $linkModeRaw === true);
+
+            /* Peek at the header to read `kid` — needed to resolve the right
+               JWKS entry BEFORE the full verify runs. Re-decoded again inside
+               appleSiwaVerifyIdentityToken() (cheap; keeps that function the
+               single source of truth for "is this JWT well-formed"). */
+            $peekParts = appleSiwaDecodeJwtParts($identityToken);
+            if ($peekParts === null) {
+                _authAppleRecordFailure($db, $clientIp, 'malformed_jwt');
+                sendJson(['error' => 'Invalid Apple identity token.'], 401);
+                break;
+            }
+            $peekKid = $peekParts['header']['kid'] ?? null;
+            $peekKid = is_string($peekKid) ? $peekKid : null;
+
+            $jwks = appleSiwaJwksCached($db, $peekKid);
+            if ($jwks === null || empty($jwks['keys'])) {
+                _authAppleRecordFailure($db, $clientIp, 'jwks_unavailable');
+                header('Retry-After: 30');
+                sendJson(['error' => 'Sign in with Apple is temporarily unavailable.'], 503);
+                break;
+            }
+
+            $verifyNow = time();
+            $verify = appleSiwaVerifyIdentityToken($identityToken, $jwks, IHYMNS_SIWA_CLIENT_ID, $rawNonce, $verifyNow);
+            if ($verify['ok'] !== true) {
+                /* ONE generic message for every verify failure — no replay/
+                   enumeration oracle (§2.7). The precise reason is a fixed
+                   short code (never token/claim content), safe for the audit
+                   log only. */
+                _authAppleRecordFailure($db, $clientIp, (string)($verify['reason'] ?? 'verify_failed'));
+                sendJson(['error' => 'Invalid Apple identity token.'], 401);
+                break;
+            }
+            $claims = $verify['claims'];
+            $sub = (string)$claims['sub'];
+
+            /* Anti-replay consume — AFTER full verification (appleSiwaConsumeNonce's
+               docblock explains why the order matters: consuming before
+               verification would let an attacker burn a victim's in-flight
+               nonce with a garbage-signature token). */
+            if (!appleSiwaConsumeNonce($db, 'siwa_login', $rawNonce)) {
+                _authAppleRecordFailure($db, $clientIp, 'nonce_replay');
+                sendJson(['error' => 'Invalid Apple identity token.'], 401);
+                break;
+            }
+
+            /* Link mode requires an ALREADY-authenticated bearer — an
+               unauthenticated caller must never attach an Apple identity to
+               an arbitrary account (that would let a stolen identityToken
+               hijack any victim account by POSTing link=1 against it). */
+            $linkBearerUserId = null;
+            if ($linkMode) {
+                $linkBearerUser = getAuthenticatedUser();
+                if ($linkBearerUser === null) {
+                    _authAppleRecordFailure($db, $clientIp, 'link_not_authenticated');
+                    sendJson(['error' => 'Not authenticated.'], 401);
+                    break;
+                }
+                $linkBearerUserId = (int)$linkBearerUser['Id'];
+            }
+
+            $mapResult = _authAppleMapAccount($db, $sub, $claims, $linkBearerUserId, $fullName, $linkMode);
+            if ($mapResult['ok'] !== true) {
+                _authAppleRecordFailure($db, $clientIp, 'map_' . ($mapResult['status'] ?? 0));
+                sendJson(['error' => $mapResult['message']], (int)$mapResult['status']);
+                break;
+            }
+
+            $userId  = (int)$mapResult['userId'];
+            $flow    = (string)$mapResult['flow'];
+            $userRow = $mapResult['user'];
+
+            /* §2.6 — best-effort refresh-token capture, AFTER the mapping
+               transaction commits. NEVER fatal: sign-in must succeed even if
+               Apple's token endpoint hiccups or the owner hasn't provisioned
+               the .p8 key yet (account_delete's revoke then just degrades to
+               `skipped_no_token`). */
+            if ($authorizationCode !== null) {
+                try {
+                    $teamId = (string)(getAppSetting('apple_team_id', '') ?? '');
+                    $keyId  = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
+                    $p8Pem  = (string)(getAppSetting('apple_siwa_private_key', '') ?? '');
+                    if ($teamId !== '' && $keyId !== '' && $p8Pem !== '') {
+                        $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, IHYMNS_SIWA_CLIENT_ID, $p8Pem, time());
+                        if ($clientSecret !== null) {
+                            $tokenResp = appleSiwaExchangeCode($authorizationCode, $clientSecret, IHYMNS_SIWA_CLIENT_ID);
+                            if ($tokenResp !== null && !empty($tokenResp['refresh_token']) && is_string($tokenResp['refresh_token'])) {
+                                $refreshToken = $tokenResp['refresh_token'];
+                                $updStmt = $db->prepare(
+                                    "UPDATE tblUserAuthProviders SET RefreshToken = ? WHERE Provider = 'apple' AND Subject = ?"
+                                );
+                                $updStmt->bind_param('ss', $refreshToken, $sub);
+                                $updStmt->execute();
+                                $updStmt->close();
+                            }
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    /* Non-fatal by design (§2.6) — never log token/claim content. */
+                    error_log('[api/auth_apple token_exchange] ' . $e->getMessage());
+                }
+            }
+
+            /* Mint the standard bearer token — byte-identical machinery to
+               auth_login (api.php ~2151). */
+            $token = bin2hex(random_bytes(32));
+            $expiresAtTs = time() + 30 * 86400;
+            $expiresAt   = gmdate('c', $expiresAtTs);
+            $tokenHash   = hash('sha256', $token);
+            $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+            $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
+            $stmt->execute();
+            $stmt->close();
+
+            setAuthTokenCookie($token, $expiresAtTs);
+
+            $stmt = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
+            $stmt->bind_param('i', $userId);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $db->prepare("UPDATE tblUserAuthProviders SET LastLoginAt = NOW() WHERE Provider = 'apple' AND Subject = ?");
+            $stmt->bind_param('s', $sub);
+            $stmt->execute();
+            $stmt->close();
+
+            $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_apple', 1)");
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $stmt->close();
+
+            $isPrivateRelayFlag = false;
+            $claimEmailForFlag = is_string($claims['email'] ?? null) ? $claims['email'] : '';
+            $atPos = strrpos($claimEmailForFlag, '@');
+            if ($atPos !== false) {
+                $isPrivateRelayFlag = (strtolower(substr($claimEmailForFlag, $atPos + 1)) === 'privaterelay.appleid.com');
+            }
+
+            /* Audit (#535) — NEVER the sub, email claim, nonce, identityToken,
+               or refresh token (§2.2 step 12). */
+            logActivity(
+                'auth.login_apple',
+                'user',
+                (string)$userId,
+                [
+                    'username'      => $userRow['Username'],
+                    'flow'          => $flow,
+                    'private_relay' => $isPrivateRelayFlag,
+                    'token_prefix'  => substr(hash('sha256', $token), 0, 12),
+                ],
+                'success',
+                $userId
+            );
+
+            sendJson(apiAuthSuccessPayload(
+                $token,
+                $userId,
+                $userRow['Username'],
+                $userRow['DisplayName'],
+                $userRow['Role'],
+                $userRow['AvatarService'] ?? null
+            ));
+            break;
+
         /* =================================================================
          * USER FAVORITES — Server-side sync (#284)
          * ================================================================= */
@@ -13039,6 +13325,371 @@ function apiAuthSuccessPayload(
             'avatar_service' => $avatarService,
         ],
     ];
+}
+
+/* =============================================================================
+ * SIGN IN WITH APPLE — account-mapping helpers (#1402)
+ *
+ * The `case 'auth_apple'` handler (above) delegates the `sub` → account
+ * resolution here so the case block itself stays a readable top-to-bottom
+ * sequence. All of §2.5's create-or-link decision lives in
+ * _authAppleMapAccountTxn(); its wrapper _authAppleMapAccount() owns the
+ * transaction boundary + the one-shot race retry §2.5(d) calls for.
+ * ========================================================================= */
+
+/**
+ * Record a failed auth_apple attempt: a Success=0 tblLoginAttempts row (feeds
+ * the per-IP rate-limit counter, mirroring auth_login) plus an
+ * `auth.login_apple` failure row in tblActivityLog carrying ONLY the fixed
+ * `$reason` code — never token/claim content (#1402 §2.7 — the client always
+ * sees the SAME generic 401 message; the reason is for operator triage only).
+ */
+function _authAppleRecordFailure(\mysqli $db, string $clientIp, string $reason): void
+{
+    try {
+        $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'auth_apple', 0)");
+        $stmt->bind_param('s', $clientIp);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* Best-effort — a rate-limit bookkeeping failure must never block
+           the (already-failing) response from going out. */
+    }
+    logActivity('auth.login_apple', '', '', ['reason' => $reason], 'failure');
+}
+
+/**
+ * Fetch an active user's core fields in the exact shape apiAuthSuccessPayload()
+ * needs, applying the same #616 AvatarService column-existence gate
+ * getAuthenticatedUser()/auth_login use (api.php ~2073/~13104) so a
+ * partly-migrated install still works. Returns null when the row is missing
+ * OR IsActive = 0 — auth_apple's caller treats both the same way (a link
+ * whose target account no longer exists would be an FK-integrity bug, and an
+ * inactive account must be rejected exactly like auth_login does, api.php ~2129).
+ *
+ * @return array{Id:int,Username:string,DisplayName:string,Role:string,AvatarService:?string}|null
+ */
+function _authAppleFetchActiveUser(\mysqli $db, int $userId): ?array
+{
+    static $hasAvatarSvcCol = null;
+    if ($hasAvatarSvcCol === null) {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblUsers'
+                AND COLUMN_NAME  = 'AvatarService' LIMIT 1"
+        );
+        $hasAvatarSvcCol = ($r && $r->fetch_row() !== null);
+        if ($r) { $r->close(); }
+    }
+    $avatarSel = $hasAvatarSvcCol ? ', AvatarService' : ', NULL AS AvatarService';
+    $stmt = $db->prepare("SELECT Id, Username, DisplayName, Role, IsActive {$avatarSel} FROM tblUsers WHERE Id = ?");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row || (int)$row['IsActive'] !== 1) {
+        return null;
+    }
+    $row['Id'] = (int)$row['Id'];
+    return $row;
+}
+
+/**
+ * Build the IdentityJson snapshot stored on a NEW/newly-linked
+ * tblUserAuthProviders row (plan §2.5d) — a forward-looking capture of the
+ * data Apple only ever sends once: `fullName` is present ONLY on the FIRST
+ * authorization for a given Apple ID + app pair, so if we don't snapshot it
+ * here it is gone forever.
+ */
+function _authAppleIdentityJson(array $claims, ?array $fullName): string
+{
+    $data = [];
+    if (is_array($fullName)) {
+        $given  = isset($fullName['givenName'])  ? mb_substr(trim((string)$fullName['givenName']), 0, 100)  : '';
+        $family = isset($fullName['familyName']) ? mb_substr(trim((string)$fullName['familyName']), 0, 100) : '';
+        if ($given !== '' || $family !== '') {
+            $data['fullName'] = ['givenName' => $given, 'familyName' => $family];
+        }
+    }
+    if (isset($claims['real_user_status'])) {
+        $data['real_user_status'] = $claims['real_user_status'];
+    }
+    $data['email_verified'] = in_array($claims['email_verified'] ?? null, [true, 'true'], true);
+
+    $encoded = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return $encoded !== false ? $encoded : '{}';
+}
+
+/**
+ * Insert a NEW tblUserAuthProviders row linking $userId to the verified
+ * Apple `sub`, then re-fetch the (now-linked) active user. Shared by §2.5(b)
+ * link-mode and §2.5(c) email-auto-link.
+ *
+ * Duplicate-key handling (both UNIQUE constraints on the table):
+ *   - `uq_user_provider` (UserId, Provider) — this account already has a
+ *     DIFFERENT Apple identity linked → 409 "already linked to a different
+ *     Apple ID."
+ *   - `uq_provider_subject` (Provider, Subject) — this Apple identity is
+ *     already linked to a DIFFERENT account (a race with a concurrent
+ *     request) → 409 "already linked to another iHymns account."
+ *
+ * @return array{ok:true,userId:int,flow:string,user:array}|array{ok:false,status:int,message:string}
+ */
+function _authAppleInsertLink(\mysqli $db, int $userId, string $sub, array $claims, ?array $fullName, string $flow): array
+{
+    $claimEmail = is_string($claims['email'] ?? null) ? mb_strtolower(trim($claims['email'])) : '';
+    $emailHost  = '';
+    $atPos = strrpos($claimEmail, '@');
+    if ($atPos !== false) {
+        $emailHost = substr($claimEmail, $atPos + 1);
+    }
+    $isPrivateRelay = ($emailHost === 'privaterelay.appleid.com') ? 1 : 0;
+    $identityJson   = _authAppleIdentityJson($claims, $fullName);
+
+    try {
+        $stmt = $db->prepare(
+            "INSERT INTO tblUserAuthProviders (UserId, Provider, Subject, Email, EmailIsPrivateRelay, IdentityJson, LastLoginAt)
+             VALUES (?, 'apple', ?, ?, ?, ?, NOW())"
+        );
+        $stmt->bind_param('issis', $userId, $sub, $claimEmail, $isPrivateRelay, $identityJson);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\mysqli_sql_exception $e) {
+        if ($e->getCode() === 1062) {
+            if (str_contains($e->getMessage(), 'uq_user_provider')) {
+                return ['ok' => false, 'status' => 409, 'message' => 'This account is already linked to a different Apple ID.'];
+            }
+            return ['ok' => false, 'status' => 409, 'message' => 'This Apple ID is already linked to another iHymns account.'];
+        }
+        throw $e;
+    }
+
+    $userRow = _authAppleFetchActiveUser($db, $userId);
+    if ($userRow === null) {
+        /* The target account is disabled (or, in theory, vanished mid-flight).
+           Reject WITHOUT persisting — the caller (_authAppleMapAccount) rolls
+           back the whole transaction on any non-ok result, so the link row
+           just inserted above never survives. */
+        return ['ok' => false, 'status' => 403, 'message' => 'Account is disabled.'];
+    }
+    return ['ok' => true, 'userId' => $userId, 'flow' => $flow, 'user' => $userRow];
+}
+
+/**
+ * §2.5(d) — nothing matched an existing/linkable account: create a brand-new
+ * iHymns user (mirroring `_completeEmailLoginTxn()`, manage/includes/auth.php
+ * ~1624) and link it to the verified Apple `sub`.
+ *
+ * Role is HARD-CODED to 'user' — deliberately NOT the first-user→global_admin
+ * bootstrap `_completeEmailLoginTxn()` uses. A fresh-install race where the
+ * very first account arrives via a public, replayable-looking endpoint must
+ * never mint an admin; the web installer owns that bootstrap.
+ *
+ * @return array{ok:true,userId:int,flow:'created',user:array}|array{retry:true}
+ */
+function _authAppleCreateAndLink(\mysqli $db, string $sub, array $claims, ?array $fullName): array
+{
+    $emailVerifiedClaim = in_array($claims['email_verified'] ?? null, [true, 'true'], true);
+    $claimEmail = is_string($claims['email'] ?? null) ? mb_strtolower(trim($claims['email'])) : '';
+
+    /* Username: sanitised local-part of the claim email, or a random
+       apple_<hex> handle when the email is absent or too short to sanitise
+       into something usable (mirrors _completeEmailLoginTxn's fallback). */
+    $username = '';
+    if ($claimEmail !== '') {
+        $localPart = strstr($claimEmail, '@', true);
+        $username  = preg_replace('/[^a-z0-9_.\-]/', '', mb_strtolower((string)$localPart));
+    }
+    if (!is_string($username) || strlen($username) < 3) {
+        $username = 'apple_' . bin2hex(random_bytes(3));
+    }
+
+    $baseUsername = $username;
+    $counter = 1;
+    $countStmt = $db->prepare('SELECT COUNT(*) FROM tblUsers WHERE Username = ?');
+    $countStmt->bind_param('s', $username);
+    while (true) {
+        $countStmt->execute();
+        $countRow = $countStmt->get_result()->fetch_row();
+        if ((int)($countRow[0] ?? 0) === 0) { break; }
+        $username = $baseUsername . $counter;
+        $counter++;
+    }
+    $countStmt->close();
+
+    $displayName = '';
+    if (is_array($fullName)) {
+        $given  = isset($fullName['givenName'])  ? mb_substr(trim((string)$fullName['givenName']), 0, 100)  : '';
+        $family = isset($fullName['familyName']) ? mb_substr(trim((string)$fullName['familyName']), 0, 100) : '';
+        $displayName = trim($given . ' ' . $family);
+    }
+    if ($displayName === '') {
+        $displayName = ucfirst($baseUsername);
+    }
+
+    $emailVerifiedInt = $emailVerifiedClaim ? 1 : 0;
+    $emptyPwHash = ''; /* Passwordless account sentinel (matches tblUsers.PasswordHash's documented convention). */
+    $roleUser = 'user';
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblUsers (Username, Email, EmailVerified, PasswordHash, DisplayName, Role)
+         VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    $stmt->bind_param('ssisss', $username, $claimEmail, $emailVerifiedInt, $emptyPwHash, $displayName, $roleUser);
+    $stmt->execute();
+    $newUserId = (int)$db->insert_id;
+    $stmt->close();
+
+    $emailHost = '';
+    $atPos = strrpos($claimEmail, '@');
+    if ($atPos !== false) {
+        $emailHost = substr($claimEmail, $atPos + 1);
+    }
+    $isPrivateRelay = ($emailHost === 'privaterelay.appleid.com') ? 1 : 0;
+    $identityJson   = _authAppleIdentityJson($claims, $fullName);
+
+    try {
+        $stmt = $db->prepare(
+            "INSERT INTO tblUserAuthProviders (UserId, Provider, Subject, Email, EmailIsPrivateRelay, IdentityJson, LastLoginAt)
+             VALUES (?, 'apple', ?, ?, ?, ?, NOW())"
+        );
+        $stmt->bind_param('issis', $newUserId, $sub, $claimEmail, $isPrivateRelay, $identityJson);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\mysqli_sql_exception $e) {
+        if ($e->getCode() === 1062) {
+            /* Concurrent duplicate on uq_provider_subject: another request
+               for this EXACT Apple `sub` won the race between our (a) lookup
+               (which found nothing) and this INSERT. Signal the wrapper to
+               roll back this whole attempt (including the tblUsers row just
+               created above) and re-resolve via a fresh (a) lookup — see
+               _authAppleMapAccount()'s retry loop. (uq_user_provider cannot
+               fire here: $newUserId was just minted, so it cannot already
+               hold a link.) */
+            return ['retry' => true];
+        }
+        throw $e;
+    }
+
+    $userRow = _authAppleFetchActiveUser($db, $newUserId);
+    if ($userRow === null) {
+        /* Should be unreachable — the row was just created with IsActive's
+           schema default (1). A defensive throw beats indexing a null user. */
+        throw new \RuntimeException('auth_apple: newly created user not found/active after insert (id ' . $newUserId . ')');
+    }
+    return ['ok' => true, 'userId' => $newUserId, 'flow' => 'created', 'user' => $userRow];
+}
+
+/**
+ * §2.5 core — resolve the verified Apple `sub` to an iHymns account, in
+ * priority order: (a) an existing link (the 99% warm path — never touches
+ * email, so a user who disables their private-relay alias or flips
+ * share-my-email keeps signing in fine) → (b) explicit link-mode against the
+ * caller's current bearer → (c) strict email auto-link (JWT-verified email,
+ * exactly one matching verified account, no existing Apple link) → (d) create
+ * a brand-new account.
+ *
+ * Runs entirely inside its own transaction (mirrors completeEmailLogin()'s
+ * #1011 wrapper). ANY throw rolls back and re-throws (the case block's
+ * caller then hits the api.php global exception handler, api.php ~81, for a
+ * clean JSON 500 — the account/link state is left exactly as it was before
+ * this call). A non-'ok' result (conflict, disabled account, not-
+ * authenticated for link mode) ALSO rolls back — even a rejected attempt
+ * that inserted a link row (then discovered the target is disabled) must
+ * leave no trace.
+ *
+ * @return array{ok:true,userId:int,flow:string,user:array}|array{ok:false,status:int,message:string}
+ */
+function _authAppleMapAccount(\mysqli $db, string $sub, array $claims, ?int $linkBearerUserId, ?array $fullName, bool $linkMode): array
+{
+    for ($attempt = 0; $attempt < 2; $attempt++) {
+        $db->begin_transaction();
+        try {
+            $result = _authAppleMapAccountTxn($db, $sub, $claims, $linkBearerUserId, $fullName, $linkMode);
+        } catch (\Throwable $e) {
+            try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+            throw $e;
+        }
+
+        if (($result['retry'] ?? false) === true) {
+            try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+            continue; /* Re-run (a) fresh — see _authAppleCreateAndLink()'s retry comment. */
+        }
+
+        if (($result['ok'] ?? false) === true) {
+            $db->commit();
+        } else {
+            try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        }
+        return $result;
+    }
+
+    /* Unreachable in practice — the retry always resolves via (a) on attempt
+       2 once the winning transaction has committed — but never leave a
+       function without a typed return on every path. */
+    return ['ok' => false, 'status' => 500, 'message' => 'Could not resolve Apple account link.'];
+}
+
+/** Inner body of _authAppleMapAccount(), executed inside its transaction. See that function's docblock. */
+function _authAppleMapAccountTxn(\mysqli $db, string $sub, array $claims, ?int $linkBearerUserId, ?array $fullName, bool $linkMode): array
+{
+    /* (a) Existing link — identity is ALWAYS (Provider, Subject), never email. */
+    $stmt = $db->prepare("SELECT UserId FROM tblUserAuthProviders WHERE Provider = 'apple' AND Subject = ?");
+    $stmt->bind_param('s', $sub);
+    $stmt->execute();
+    $linkRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if ($linkRow) {
+        $userId = (int)$linkRow['UserId'];
+        $userRow = _authAppleFetchActiveUser($db, $userId);
+        if ($userRow === null) {
+            return ['ok' => false, 'status' => 403, 'message' => 'Account is disabled.'];
+        }
+        return ['ok' => true, 'userId' => $userId, 'flow' => 'matched', 'user' => $userRow];
+    }
+
+    /* (b) No link + explicit link mode + valid bearer (checked by the case
+       block before calling here — $linkBearerUserId is non-null only then). */
+    if ($linkMode) {
+        if ($linkBearerUserId === null) {
+            return ['ok' => false, 'status' => 401, 'message' => 'Not authenticated.'];
+        }
+        return _authAppleInsertLink($db, $linkBearerUserId, $sub, $claims, $fullName, 'linked');
+    }
+
+    /* (c) Strict email auto-link. ALL FOUR conditions must hold:
+       (1) JWT asserts email_verified; (2) EXACTLY ONE tblUsers row matches
+       (Email has no UNIQUE constraint — 0 or ≥2 matches means no auto-link);
+       (3) that row is itself EmailVerified — the account-takeover kill: an
+       attacker who pre-registers an unverified account with the victim's
+       address must never inherit it on the victim's first SIWA login;
+       (4) that row has no existing Apple link (checked explicitly here so we
+       never even attempt an INSERT that would race the uq_user_provider
+       constraint for a no-op). */
+    $emailVerifiedClaim = in_array($claims['email_verified'] ?? null, [true, 'true'], true);
+    $claimEmail = is_string($claims['email'] ?? null) ? mb_strtolower(trim($claims['email'])) : '';
+    if ($claimEmail !== '' && $emailVerifiedClaim) {
+        $stmt = $db->prepare('SELECT Id, EmailVerified FROM tblUsers WHERE LOWER(Email) = ?');
+        $stmt->bind_param('s', $claimEmail);
+        $stmt->execute();
+        $matches = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+        if (count($matches) === 1 && (int)$matches[0]['EmailVerified'] === 1) {
+            $candidateId = (int)$matches[0]['Id'];
+            $existingStmt = $db->prepare("SELECT 1 FROM tblUserAuthProviders WHERE UserId = ? AND Provider = 'apple'");
+            $existingStmt->bind_param('i', $candidateId);
+            $existingStmt->execute();
+            $alreadyLinked = $existingStmt->get_result()->fetch_row() !== null;
+            $existingStmt->close();
+            if (!$alreadyLinked) {
+                return _authAppleInsertLink($db, $candidateId, $sub, $claims, $fullName, 'linked');
+            }
+        }
+    }
+
+    /* (d) Nothing matched — create a brand-new account. */
+    return _authAppleCreateAndLink($db, $sub, $claims, $fullName);
 }
 
 /**

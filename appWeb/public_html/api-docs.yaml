@@ -2450,6 +2450,119 @@ paths:
               example:
                 error: Account is disabled.
 
+  /api.php?action=auth_apple:
+    post:
+      operationId: authApple
+      tags: [Authentication]
+      summary: Sign in with Apple (#1402)
+      description: |
+        Verify an Apple `identityToken` (RS256, checked against Apple's
+        published JWKS) and either sign in to the iHymns account already
+        linked to that Apple ID, link the Apple ID to the account of the
+        CURRENT bearer token (`link: true`), auto-link to an existing
+        account whose verified email matches the token's `email` claim, or
+        create a brand-new account. Returns the SAME response shape as
+        `auth_login` — the native app's `AuthSession` model decodes
+        `token` + `user.{id, username, display_name, role,
+        avatar_service}` from either endpoint identically.
+
+        `nonce` is the RAW (unhashed) value the client used when building
+        the `ASAuthorizationAppleIDRequest` — the client sets
+        `request.nonce = sha256Hex(nonce)` and sends the raw `nonce` here;
+        the server recomputes the hash and compares it to the token's
+        `nonce` claim. Each nonce is single-use (replay is rejected).
+
+        `authorizationCode` and `fullName` are optional and only present
+        on Apple's FIRST authorization for a given Apple ID + app pair —
+        send them when available so the server can capture a refresh
+        token (needed later for `account_delete`'s Apple-side revoke) and
+        a display name.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_apple]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityToken, nonce]
+              properties:
+                identityToken:
+                  type: string
+                  description: Compact JWS from ASAuthorizationAppleIDCredential.identityToken.
+                nonce:
+                  type: string
+                  description: RAW (unhashed) nonce the client used in the SIWA request (16-255 chars).
+                authorizationCode:
+                  type: string
+                  description: Optional — enables a best-effort Apple refresh-token capture.
+                email:
+                  type: string
+                  format: email
+                  description: Optional convenience copy — the verified JWT `email` claim always takes priority.
+                fullName:
+                  type: object
+                  description: Optional — Apple sends this ONLY on the first authorization.
+                  properties:
+                    givenName: { type: string }
+                    familyName: { type: string }
+                link:
+                  type: boolean
+                  description: When true, link this Apple ID to the CURRENT bearer's account instead of signing in. Requires Authorization header.
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Signed in (or linked) successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing/malformed identityToken or nonce
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid/expired/replayed Apple identity token, or link mode without a valid bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Invalid Apple identity token.
+        "403":
+          description: Account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This Apple ID / account is already linked to a different party
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many attempts from this IP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Sign in with Apple not yet migrated on this environment, or Apple's key set is temporarily unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api.php?action=auth_logout:
     post:
       operationId: logout
