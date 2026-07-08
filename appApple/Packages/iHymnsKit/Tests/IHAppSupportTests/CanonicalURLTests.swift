@@ -44,6 +44,25 @@ struct CanonicalURLTests {
         #expect(CanonicalURL.work(slug: "amazing-grace")?.absoluteString == "https://ihymns.app/work/amazing-grace")
     }
 
+    // MARK: - #190 (help / legal) — these are NOT deep-linkable app
+    // destinations (they open in the system browser), so unlike every URL
+    // above they have no `DeepLinkRouter.resolve(_:)` round trip to prove.
+
+    @Test("Builds the canonical help URL")
+    func buildsHelpURL() {
+        #expect(CanonicalURL.help?.absoluteString == "https://ihymns.app/help")
+    }
+
+    @Test("Builds the canonical privacy policy URL")
+    func buildsPrivacyPolicyURL() {
+        #expect(CanonicalURL.privacyPolicy?.absoluteString == "https://ihymns.app/privacy")
+    }
+
+    @Test("Builds the canonical terms of use URL")
+    func buildsTermsOfUseURL() {
+        #expect(CanonicalURL.termsOfUse?.absoluteString == "https://ihymns.app/terms")
+    }
+
     // MARK: - Round trip: CanonicalURL → DeepLinkRouter must always agree
 
     @Test("A built song URL resolves back to the exact same DeepLink")

@@ -91,4 +91,31 @@ public enum CanonicalURL {
     public static func work(slug: String) -> URL? {
         URL(string: "\(host)/work/\(slug)")
     }
+
+    // MARK: - #190 (help / legal / first-run)
+
+    /// `https://ihymns.app/help` — the SAME help/FAQ page the web app's
+    /// footer and nav-dropdown link to (`appWeb/public_html/includes/pages
+    /// /help.php`, served via `index.php`'s `/help` route). `HelpView`'s
+    /// "More on the web" link uses this rather than inventing a
+    /// `/support`/`/contact` URL — the web app has no separate support page,
+    /// `/help` already fills that role.
+    public static var help: URL? {
+        URL(string: "\(host)/help")
+    }
+
+    /// `https://ihymns.app/privacy` — the real, already-shipping Privacy
+    /// Policy (`includes/pages/privacy.php`). `LegalView` links out to this
+    /// rather than bundling a native copy, so the native app can never show
+    /// a STALE policy after the web one is updated.
+    public static var privacyPolicy: URL? {
+        URL(string: "\(host)/privacy")
+    }
+
+    /// `https://ihymns.app/terms` — the real, already-shipping Terms of Use
+    /// (`includes/pages/terms.php`). Same "link out, never a stale bundled
+    /// copy" reasoning as `privacyPolicy` above.
+    public static var termsOfUse: URL? {
+        URL(string: "\(host)/terms")
+    }
 }

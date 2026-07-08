@@ -128,6 +128,13 @@ public struct RootContainerView: View {
     /// reading whatever was last persisted to `UserDefaults.standard`.
     @State private var settingsViewModel = SettingsViewModel()
 
+    /// #190 — whether `OnboardingView` should currently be showing. Seeded
+    /// from `IHSettingsStore.hasSeenOnboarding` at first `body` evaluation
+    /// (same "read once via `@State`'s default-value expression" shape
+    /// `settingsViewModel` above already uses) — `true` (never seen) on a
+    /// genuinely fresh install, `false` on every later launch.
+    @State private var isPresentingOnboarding = !IHSettingsStore().hasSeenOnboarding
+
     /// The reading mode to inject into `\.ihReadingMode` (#1412) — derived
     /// from the persisted dyslexia toggle. A tiny mapping helper so the two
     /// `.environment(...)` call sites (compact vs. regular width) never drift.
@@ -178,6 +185,23 @@ public struct RootContainerView: View {
             .onChange(of: navigationState.selectedSection, initial: true) { _, newSection in
                 IHAnalyticsService().screenViewed(newSection.title)
             }
+            // #190 — a plain `.sheet` (not `.fullScreenCover`, which has no
+            // macOS support — see `OnboardingView`'s own header) gated on
+            // `isPresentingOnboarding`. `onDismiss` persists "seen" no
+            // matter HOW the sheet closed — `OnboardingView`'s own Skip/Get
+            // Started (which flip the binding directly) OR a swipe-to-
+            // dismiss on iOS — so onboarding can never accidentally
+            // re-appear on the next launch either way.
+            .sheet(isPresented: $isPresentingOnboarding, onDismiss: markOnboardingSeen) {
+                OnboardingView { isPresentingOnboarding = false }
+            }
+    }
+
+    /// Persists `IHSettingsStore.hasSeenOnboarding = true` — see the
+    /// `.sheet(onDismiss:)` call above for why this fires regardless of
+    /// which affordance closed the sheet.
+    private func markOnboardingSeen() {
+        IHSettingsStore().hasSeenOnboarding = true
     }
 
     @ViewBuilder

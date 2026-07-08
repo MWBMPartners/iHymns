@@ -39,7 +39,17 @@
 // macOS) — an external keyboard can be paired with an iPhone/iPad too, and
 // there's no harm in a sighted list of shortcuts on a device that happens
 // not to have one attached right now.
+//
+// #190 UPDATE (Apple Phase 1, help/legal/first-run) — adds `helpSection`:
+// three `NavigationLink`s into `HelpView`/`LegalView`/`AcknowledgementsView`
+// (their own screens, not inlined here — same "one row, real content lives
+// on the pushed screen" shape `storageSection` already established). Also
+// replaces the former private `appVersion` computed property with the
+// shared `IHAppSupport.IHAppVersion.marketingAndBuild` the moment
+// `AcknowledgementsView` needed the identical value too (the repo's
+// modularity rule).
 import IHAPI
+import IHAppSupport
 import IHDesign
 import SwiftUI
 
@@ -73,6 +83,7 @@ public struct SettingsView: View {
             accessibilitySection
             storageSection
             privacySection
+            helpSection
             #if DEBUG
             developerSection
             #endif
@@ -189,6 +200,30 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: - Help & Legal (#190)
+
+    /// Three rows into their own screens — mirrors `storageSection`'s "one
+    /// row, real content lives on the pushed screen" shape exactly.
+    private var helpSection: some View {
+        Section {
+            NavigationLink {
+                HelpView()
+            } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            NavigationLink {
+                LegalView()
+            } label: {
+                Label("Legal", systemImage: "doc.text")
+            }
+            NavigationLink {
+                AcknowledgementsView()
+            } label: {
+                Label("Acknowledgements", systemImage: "text.book.closed")
+            }
+        }
+    }
+
     // MARK: - Developer (DEBUG-only)
 
     #if DEBUG
@@ -219,23 +254,12 @@ public struct SettingsView: View {
     /// could drift from `Config/Versioning.xcconfig`).
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent("Version", value: appVersion)
+            LabeledContent("Version", value: IHAppVersion.marketingAndBuild)
             Button {
                 isPresentingKeyboardShortcuts = true
             } label: {
                 Label("Keyboard Shortcuts", systemImage: "keyboard")
             }
         }
-    }
-
-    /// e.g. `"0.1.0 (1720000000)"` — `CFBundleShortVersionString` (marketing)
-    /// + `CFBundleVersion` (build), the two values `project.yml`'s
-    /// `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` feed. An em dash if a
-    /// value is somehow absent (e.g. a preview/host with no `Info.plist`).
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let marketing = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "\(marketing) (\(build))"
     }
 }

@@ -36,6 +36,7 @@ struct IHSettingsStoreTests {
         #expect(store.cvdMode == .none)           // no colour adjustment
         #expect(store.dyslexiaReadingModeEnabled == false)
         #expect(store.analyticsConsentEnabled == false)  // strategy §3.1: OFF by default
+        #expect(store.hasSeenOnboarding == false)        // #190: unset = genuinely fresh install
         #expect(store.apiEnvironmentOverride == nil)     // use the build default
     }
 
@@ -49,6 +50,7 @@ struct IHSettingsStoreTests {
         writer.cvdMode = .deuteranopia
         writer.dyslexiaReadingModeEnabled = true
         writer.analyticsConsentEnabled = true
+        writer.hasSeenOnboarding = true
         writer.apiEnvironmentOverride = .beta
 
         // A DIFFERENT store instance on the same underlying suite must see
@@ -59,7 +61,29 @@ struct IHSettingsStoreTests {
         #expect(reader.cvdMode == .deuteranopia)
         #expect(reader.dyslexiaReadingModeEnabled == true)
         #expect(reader.analyticsConsentEnabled == true)
+        #expect(reader.hasSeenOnboarding == true)
         #expect(reader.apiEnvironmentOverride == .beta)
+    }
+
+    @Test("#190: onboarding 'seen' gate — false until explicitly marked, then stays true across instances")
+    func onboardingSeenGate() {
+        let suite = "ihtest.settings.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+
+        // A fresh install (nothing written yet) must show onboarding —
+        // this is the exact condition `RootContainerView.isPresentingOnboarding`
+        // seeds itself from at launch.
+        let firstLaunch = IHSettingsStore(defaults: defaults)
+        #expect(firstLaunch.hasSeenOnboarding == false)
+
+        // Simulates `RootContainerView.markOnboardingSeen()` firing once
+        // the user skips or finishes the flow.
+        firstLaunch.hasSeenOnboarding = true
+
+        // A later launch (a brand-new `IHSettingsStore` instance, same
+        // underlying suite) must never show it again.
+        let secondLaunch = IHSettingsStore(defaults: defaults)
+        #expect(secondLaunch.hasSeenOnboarding == true)
     }
 
     @Test("Clearing the environment override removes the key, not stores a sentinel")
