@@ -22,13 +22,13 @@
 // exists to gate cross-app/cross-company user- or device-level tracking
 // (https://developer.apple.com/documentation/apptrackingtransparency) —
 // IDFA, fingerprinting, sharing identifiers with third parties/ad networks.
-// This service does none of that: every event is FIRST-PARTY (recorded and
-// — once a backend exists, see `IHAnalyticsSink`'s header — sent only to
-// iHymns' own infrastructure), carries no device/user identifier of any
-// kind, and `IHAnalyticsEvent`'s closed factory list (never a free-form
-// payload) makes "no PII ever sneaks in" an auditable property of that one
-// file rather than a promise every call site has to keep. That is precisely
-// the class of first-party analytics Apple's own guidance says does NOT
+// This service does none of that: every event is FIRST-PARTY (recorded and,
+// since #1448, sent only to iHymns' own `?action=analytics_ingest`
+// endpoint), carries no device/user identifier of any kind, and
+// `IHAnalyticsEvent`'s closed factory list (never a free-form payload)
+// makes "no PII ever sneaks in" an auditable property of that one file
+// rather than a promise every call site has to keep. That is precisely the
+// class of first-party analytics Apple's own guidance says does NOT
 // require an ATT prompt or a "tracking" declaration in
 // `PrivacyInfo.xcprivacy`.
 //
@@ -44,10 +44,22 @@
 // synchronization needed. `recordedEvents` below is therefore
 // PROCESS-LOCAL to whichever instance recorded them (useful for tests, and
 // for any call site that wants to inspect what it just queued) rather than
-// a single cross-call-site ledger — see `IHAnalyticsSink`'s header for why
-// a real batching network sink is a natural trigger to revisit this once
-// one exists (tracked in the same `for consideration` backend-endpoint
-// issue).
+// a single cross-call-site ledger.
+//
+// #1448 UPDATE — `IHAnalyticsNetworkSink` (`IHFeatures`) is now the
+// PRODUCTION default sink (Release builds only — `DEBUG` keeps the inert
+// `IHAnalyticsLogSink`, so `swift test`/local development never fires real
+// network traffic). Constructing a FRESH `IHAnalyticsService()` at every
+// call site (this file's own convention, above) would defeat that sink's
+// batching if it were ALSO constructed fresh each time — a queue-of-one
+// flushed on every single call is not batching. `productionNetworkSink`
+// below is therefore a `static let` (Swift guarantees exactly-once,
+// thread-safe lazy initialization of a static stored property), so every
+// default-constructed `IHAnalyticsService()` across the app shares the
+// SAME long-lived sink instance and its queue actually accumulates across
+// the 7 independent call sites (`RootContainerView`, `SongDetailViewModel`,
+// …) — the "revisit this once a real batching sink exists" this comment
+// used to flag.
 import IHAppSupport
 
 /// Records first-party, anonymous analytics events — a verified no-op
@@ -79,15 +91,47 @@ public final class IHAnalyticsService {
     /// The most events `recordedEvents` will ever hold at once.
     private static let recordedEventsCap = 500
 
+    /// The ONE shared `IHAnalyticsNetworkSink` every default-constructed,
+    /// Release-build `IHAnalyticsService()` forwards to — see this file's
+    /// "#1448 UPDATE" header note for why a `static let` singleton (not a
+    /// fresh sink per call site) is what makes batching actually work.
+    /// `public`, not `private` — despite existing purely as internal
+    /// wiring for `init`'s default parameter below, Swift requires a
+    /// default-argument EXPRESSION to be at least as accessible as the
+    /// function itself (it's re-evaluated at each call site, which for a
+    /// `public init` can be a different module entirely — e.g.
+    /// `Apps/iHymns/Sources/IHymnsApp.swift`); `private`/`internal` here
+    /// fails to build with "cannot be referenced from a default argument
+    /// value." No call site outside this file is expected to reference it
+    /// directly.
+    public static let productionNetworkSink: any IHAnalyticsSink = IHAnalyticsNetworkSink()
+
+    /// `DEBUG` (incl. `swift test`) keeps the inert `IHAnalyticsLogSink` —
+    /// no unit test or local run should ever fire a real network request
+    /// just because it happened to construct a default `IHAnalyticsService()`.
+    /// Release (TestFlight + App Store) gets the real, batched network sink.
+    /// Mirrors `APIEnvironment.defaultForBuild`'s identical `#if DEBUG` shape.
+    /// `public` for the same default-argument-accessibility reason as
+    /// `productionNetworkSink` above.
+    public static var defaultSink: any IHAnalyticsSink {
+        #if DEBUG
+        IHAnalyticsLogSink()
+        #else
+        productionNetworkSink
+        #endif
+    }
+
     /// - Parameters:
     ///   - settingsStore: Where to read `analyticsConsentEnabled` from;
     ///     defaults to the real `IHSettingsStore()`. Tests inject a store
     ///     built on a throwaway `UserDefaults(suiteName:)`, the same seam
     ///     `SettingsViewModel`'s own tests already use.
     ///   - sink: Where a consent-approved event is forwarded; defaults to
-    ///     `IHAnalyticsLogSink()`. Tests inject a recording spy to assert on
-    ///     what actually reached the "sink seam" versus what stayed queued.
-    public init(settingsStore: IHSettingsStore = IHSettingsStore(), sink: any IHAnalyticsSink = IHAnalyticsLogSink()) {
+    ///     `defaultSink` above (`IHAnalyticsLogSink()` in `DEBUG`, the
+    ///     shared `IHAnalyticsNetworkSink` in Release). Tests inject a
+    ///     recording spy to assert on what actually reached the "sink seam"
+    ///     versus what stayed queued.
+    public init(settingsStore: IHSettingsStore = IHSettingsStore(), sink: any IHAnalyticsSink = IHAnalyticsService.defaultSink) {
         self.settingsStore = settingsStore
         self.sink = sink
     }

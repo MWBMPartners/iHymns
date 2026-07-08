@@ -177,6 +177,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    "Go Live" never started (latent since #1335; surfaced on first live use).
    Load it top-level so it is always defined for every endpoint. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'rate_limit.php';
+/* #1448 — validation helpers for the first-party analytics ingestion
+   endpoint (analyticsIngestValidateEvent()/analyticsIngestValidatePlatform()).
+   Loaded top-level like its rate-limiting neighbours above. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'analytics_ingest.php';
 /* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
    validators below can defensively resolve a PublicId passed by a non-web
    client back to its underlying SongId before the existing allow-list regex
@@ -8547,6 +8551,97 @@ if ($action !== null) {
                 $respondErr('Could not save your request. Please try again.', 500);
             }
             break;
+
+        /* -----------------------------------------------------------------
+         * #1448 — First-party analytics event ingestion (Apple app #189's
+         * consent-gated, anonymous analytics sink). POST a JSON body:
+         *   { "platform": "apple", "events": [
+         *       { "name": "song_opened", "parameters": {"song_id":"MP-1008"},
+         *         "clientTimestamp": "2026-07-06T12:34:56Z" }, ... ] }
+         * Anonymous — no auth required, no CSRF token — protected by the
+         * mandatory X-Requested-With same-origin header (this file's CSRF
+         * policy block above) plus a per-IP rate limit. Every event is
+         * validated INDEPENDENTLY against a closed allow-list
+         * (includes/analytics_ingest.php); a malformed event is dropped and
+         * counted in `rejected`, never failing the whole batch. See that
+         * file's header for the full PII/retention stance — this table
+         * carries no user id, no device id, and no IP address.
+         * ----------------------------------------------------------------- */
+        case 'analytics_ingest': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* Reuses tblLoginAttempts's generic (IpAddress, Username-as-
+               action, AttemptedAt) counter — zero new migration for the
+               rate-limit part itself. A batching client makes few CALLS per
+               minute even with many queued events, so this budgets calls,
+               not individual events. */
+            checkRateLimit('analytics_ingest', $ip, 20, 60, true);
+
+            $body = json_decode((string)file_get_contents('php://input'), true);
+            if (!is_array($body)) {
+                sendJson(['error' => 'Invalid JSON body.'], 400);
+                break;
+            }
+
+            $rawEvents = $body['events'] ?? null;
+            if (!is_array($rawEvents) || $rawEvents === []) {
+                sendJson(['error' => 'events must be a non-empty array.'], 400);
+                break;
+            }
+            if (count($rawEvents) > ANALYTICS_INGEST_MAX_BATCH) {
+                sendJson(['error' => 'Batch too large (max ' . ANALYTICS_INGEST_MAX_BATCH . ' events).'], 400);
+                break;
+            }
+
+            $platform = analyticsIngestValidatePlatform($body['platform'] ?? null);
+
+            $accepted = [];
+            $rejected = 0;
+            foreach ($rawEvents as $rawEvent) {
+                $validated = analyticsIngestValidateEvent($rawEvent);
+                if ($validated === null) {
+                    $rejected++;
+                    continue;
+                }
+                $accepted[] = $validated;
+            }
+
+            if ($accepted === []) {
+                sendJson(['ok' => true, 'accepted' => 0, 'rejected' => $rejected]);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare(
+                    "INSERT INTO tblAppAnalyticsEvents (EventName, ParametersJson, ClientTimestamp, Platform, ReceivedAt)
+                     VALUES (?, ?, ?, ?, UTC_TIMESTAMP())"
+                );
+                foreach ($accepted as $event) {
+                    $stmt->bind_param(
+                        'ssss',
+                        $event['name'],
+                        $event['paramsJson'],
+                        $event['clientTimestamp'],
+                        $platform
+                    );
+                    $stmt->execute();
+                }
+                $stmt->close();
+
+                recordRateLimitHit('analytics_ingest', $ip);
+                sendJson(['ok' => true, 'accepted' => count($accepted), 'rejected' => $rejected]);
+            } catch (\Throwable $e) {
+                error_log('[analytics_ingest] ' . $e->getMessage());
+                logActivityError('analytics.ingest', 'analytics_event', '', $e);
+                sendJson(['error' => 'Could not record events.'], 500);
+            }
+            break;
+        }
 
         /* -----------------------------------------------------------------
          * #462 — Effective licence set for a given user (admin-only).

@@ -2466,4 +2466,20 @@ return [
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblUserAuthProviders')
                                           || !_migProbe_tableExists($db, 'tblAuthNonces'),
     ],
+
+    'analytics-events' => [
+        'script' => 'migrate-add-analytics-events.php',
+        'card' => [
+            'title'  => 'First-party analytics event storage (#1448)',
+            'body'   => 'Creates <code>tblAppAnalyticsEvents</code> — storage for the native-app'
+                      . ' analytics ingestion endpoint (<code>?action=analytics_ingest</code>).'
+                      . ' Deliberately carries NO user/device identifier and NO IP address column'
+                      . ' (see <code>includes/analytics_ingest.php</code>&rsquo;s header for the'
+                      . ' full PII/retention stance) — abuse mitigation is via per-IP rate limiting'
+                      . ' on the endpoint itself, never by retaining IP alongside the event.'
+                      . ' Additive, idempotent — safe to re-run.',
+            'button' => 'Run Analytics Events Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblAppAnalyticsEvents'),
+    ],
 ];

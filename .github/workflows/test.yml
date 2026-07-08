@@ -357,6 +357,18 @@ jobs:
           php tests/php/test-account-delete-fk-coverage.php
 
       # -----------------------------------------------------------------------
+      # Step 5l: Analytics-ingestion validation (#1448)
+      # Guards the closed event-name allow-list, batch/name/param caps, and
+      # the client-timestamp plausibility clamp that `?action=analytics_ingest`
+      # runs on every event in a POSTed batch from the Apple app's consent-
+      # gated analytics sink.
+      # -----------------------------------------------------------------------
+      - name: Analytics-ingestion validation (#1448)
+        run: |
+          echo "Running analytics-ingestion validation test..."
+          php tests/php/test-analytics-ingest.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -541,3 +553,6 @@ jobs:
 
       - name: account_delete FK cascade coverage (#1403)
         run: php tests/php/test-account-delete-fk-coverage.php
+
+      - name: Analytics-ingestion validation (#1448)
+        run: php tests/php/test-analytics-ingest.php

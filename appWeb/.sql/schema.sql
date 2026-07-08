@@ -3776,6 +3776,28 @@ CREATE TABLE IF NOT EXISTS tblReadRateLimit (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Public-read fixed-window rate-limit counters, keyed by token-or-IP (#1354).';
 
+
+-- ----------------------------------------------------------------------------
+-- tblAppAnalyticsEvents (#1448) — first-party, anonymous analytics events
+-- ingested from native app clients (`?action=analytics_ingest` in api.php).
+-- Deliberately carries NO user/device identifier and NO IP address column —
+-- see includes/analytics_ingest.php's header for the full PII/retention
+-- stance. EventName is an app-level allow-listed VARCHAR (rule #20, growable
+-- vocabulary — never an ENUM).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblAppAnalyticsEvents (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    EventName       VARCHAR(64)     NOT NULL COMMENT 'app-level allow-listed event name, e.g. song_opened -- VARCHAR not ENUM per CLAUDE.md rule #20 (growable vocabulary)',
+    ParametersJson  JSON            NULL COMMENT 'small, non-identifying event context -- flat string map, no PII, validated + length-capped before insert',
+    ClientTimestamp DATETIME        NULL COMMENT 'client-reported event time (UTC), best-effort only -- never trusted for anything except display/ordering',
+    Platform        VARCHAR(20)     NOT NULL DEFAULT 'unknown' COMMENT 'reporting client platform, e.g. apple | android | web',
+    ReceivedAt      DATETIME        NOT NULL COMMENT 'server receipt time (UTC, set via UTC_TIMESTAMP() at insert) -- the trustworthy timestamp for querying/retention',
+
+    INDEX idx_EventName_ReceivedAt (EventName, ReceivedAt),
+    INDEX idx_ReceivedAt (ReceivedAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='First-party anonymous analytics events ingested from native app clients (#1448). Deliberately carries NO user/device identifier and NO IP address -- abuse mitigation is via per-IP request rate limiting on the ingest endpoint (tblLoginAttempts reuse via checkRateLimit()), not by retaining IP alongside the event.';
+
 -- ============================================================================
 -- AUTH PROVIDERS (Sign in with Apple) — #1402
 -- External identity-provider links + a single-use anti-replay nonce ledger.
