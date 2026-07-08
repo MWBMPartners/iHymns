@@ -22,6 +22,20 @@
 // (`AppRootViewModel+Media.swift`) — `SongMediaAsset.streamUrl` is a
 // SERVER-RELATIVE path (`"/song-media/<id>"`), never something this view
 // can hand a player/downloader directly.
+//
+// #1440 UPDATE (offline media caching) — `mediaURL(for:)` is now the ONE
+// seam every row (`audioRow`/`sheetMusicRow`/the MIDI+MusicXML `ForEach`s)
+// already funnels through, so patching JUST this function to prefer a
+// cached local `file://` URL over the remote stream URL (when
+// `AppRootViewModel.cachedMediaURL(songId:mediaAssetId:)` has one) makes
+// EVERY consumer — `AVPlayer` playback, `PDFDocument(data:)`, the MIDI/
+// MusicXML download/share control — transparently prefer the cache with NO
+// changes needed to `SongAudioPlayerViewModel`/`SheetMusicViewModel`/
+// `MediaDownloadViewModel` themselves: all three already fetch via a plain
+// `URLSession.shared.data(from:)`-shaped call, and `URLSession` handles a
+// local `file://` URL exactly like a remote one (Apple's documented
+// `file://`-scheme support), so a cached asset "downloads" instantly from
+// disk instead of the network, with zero special-casing anywhere else.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -42,6 +56,14 @@ struct SongMediaSection: View {
     /// of one song's playback state leaking into another's.
     @State private var playerViewModel = SongAudioPlayerViewModel()
     @State private var isPresentingSheetMusic = false
+
+    /// Which of `detail.media`'s assets (keyed by `SongMediaAsset.id`)
+    /// already have a cached local copy (#1440), and where — populated by
+    /// `loadCachedMediaURLs()` below. Empty (never cached) is the correct
+    /// starting state for a song that was never saved offline, matching
+    /// `SongDetailViewModel.isSavedOffline`'s equivalent "assume not, prove
+    /// otherwise" default elsewhere in this feature.
+    @State private var cachedMediaURLs: [Int: URL] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -80,6 +102,25 @@ struct SongMediaSection: View {
         // cross-screen mini-player. A persistent player is a natural v2 and
         // is out of THIS task's scope.
         .onDisappear { playerViewModel.stop() }
+        // #1440 — checks the offline cache for every attached asset once
+        // per appearance; cheap (a handful of `COUNT`-free existence checks
+        // at most) and safe to re-run on every re-appearance, mirroring
+        // `SongDetailViewModel.loadIfNeeded()`'s general "re-run cheap local
+        // reads on every visit" posture elsewhere in this feature.
+        .task { await loadCachedMediaURLs() }
+    }
+
+    /// Populates `cachedMediaURLs` from the offline cache — see this file's
+    /// header for why patching THIS is enough to make every media row
+    /// prefer a cached copy.
+    private func loadCachedMediaURLs() async {
+        var result: [Int: URL] = [:]
+        for asset in detail.media {
+            if let url = await rootViewModel.cachedMediaURL(songId: detail.songId, mediaAssetId: asset.id) {
+                result[asset.id] = url
+            }
+        }
+        cachedMediaURLs = result
     }
 
     /// Whether this section has anything at all to show — `SongDetailView`
@@ -90,7 +131,10 @@ struct SongMediaSection: View {
     }
 
     private func mediaURL(for asset: SongMediaAsset) -> URL? {
-        rootViewModel.mediaURL(forStreamPath: asset.streamUrl)
+        // #1440 — prefer an already-cached local copy (instant, works
+        // offline) over resolving the remote stream URL; see this file's
+        // header for why patching just this one seam is sufficient.
+        cachedMediaURLs[asset.id] ?? rootViewModel.mediaURL(forStreamPath: asset.streamUrl)
     }
 
     // MARK: - Audio

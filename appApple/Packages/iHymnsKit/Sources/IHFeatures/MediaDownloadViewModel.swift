@@ -29,7 +29,15 @@
 // "fetch-or-not" reasoning `SheetMusicViewModel.swift`'s header documents —
 // a one-shot download either hasn't started, is in flight, succeeded (here:
 // with the LOCAL file's `URL` as the payload), or failed.
+//
+// #1440 UPDATE (offline media caching) — `sanitizedFileName(_:)` moved OUT
+// to `IHModels.MediaFileNaming` so the NEW permanent offline media cache
+// (`IHPersistence.OfflineStore+MediaCache.swift`) can reuse the exact same
+// sanitizer instead of forking a second copy; this file now just calls
+// through to it. See that type's own header for the full layering
+// rationale.
 import Foundation
+import IHModels
 
 /// Downloads one media asset to a local temporary file, ready to hand to a
 /// `ShareLink`.
@@ -86,31 +94,12 @@ public final class MediaDownloadViewModel {
             // by a differently-named-but-colliding file.
             let directory = temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let fileURL = directory.appendingPathComponent(Self.sanitizedFileName(suggestedFileName))
+            let fileURL = directory.appendingPathComponent(MediaFileNaming.sanitizedFileName(suggestedFileName))
             try data.write(to: fileURL, options: .atomic)
             state = .loaded(fileURL)
         } catch {
             state = .error(Self.userFacingMessage(for: error))
         }
-    }
-
-    /// Strips path separators out of a server-supplied file name before it
-    /// ever reaches `FileManager` — `SongMediaAsset.fileName` comes from the
-    /// backend (curator-entered, not raw user input, but this client has no
-    /// way to independently verify that at read time), so treating it as
-    /// untrusted rather than assuming it's always a clean leaf name is the
-    /// same defensive posture `.claude/CLAUDE.md`'s input-handling rules ask
-    /// of every layer that touches externally-sourced strings — a name
-    /// containing `"/"` or `".."` must never be able to escape the fresh
-    /// per-download temp subdirectory `download(url:suggestedFileName:)`
-    /// just created.
-    ///
-    /// ELI5: "Make sure the file's name can't secretly mean 'save this
-    /// somewhere else entirely.'"
-    private static func sanitizedFileName(_ raw: String) -> String {
-        let lastComponent = (raw as NSString).lastPathComponent
-        let cleaned = lastComponent.replacingOccurrences(of: "..", with: "")
-        return cleaned.isEmpty ? "download" : cleaned
     }
 
     private static func userFacingMessage(for error: Error) -> String {

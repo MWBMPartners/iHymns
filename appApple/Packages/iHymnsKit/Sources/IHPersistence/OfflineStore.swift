@@ -47,6 +47,24 @@
 // why the full record is stored as an encoded JSON blob rather than
 // exploded into columns.
 //
+// `v5CreateCachedMedia` (#1440, offline media caching) extends the #187
+// offline story to a saved song's ATTACHED FILES — audio recordings,
+// sheet-music PDFs, MIDI, MusicXML — deliberately NOT stored the same way
+// `saved_song` stores lyrics (a JSON blob column): those files can run to
+// several MB each (a recording especially), and SQLite blob columns are the
+// wrong tool for that — every write/vacuum/backup of the whole database
+// would drag the largest cached recording along with it, and neither
+// `AVPlayer` (streaming playback) nor `PDFKit`'s `PDFView` can consume a
+// blob without first re-materialising it to a temp file anyway. Instead,
+// `cached_media` is a lightweight INDEX row (`CachedMediaFile.swift`)
+// pointing at bytes written directly to a file under
+// `OfflineStore.mediaCacheDirectory` (a device-local directory this actor
+// now also owns) — mirroring the exact same "audio-on-filesystem, index in
+// the database" split the WEB backend already uses server-side
+// (`SongMediaStorage.php`, referenced by this feature's own GitHub issue).
+// See `OfflineStore+MediaCache.swift`'s header for the full read/write API
+// this table backs.
+//
 // See GRDB's own migrations guide:
 // https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/migrations.
 import Foundation
@@ -69,18 +87,44 @@ public actor OfflineStore {
     /// `public`), so `IHFeatures`/callers elsewhere are unaffected.
     let dbQueue: DatabaseQueue
 
+    /// Where `cached_media` (#1440) writes each downloaded media file's
+    /// actual bytes — see this file's header (`v5CreateCachedMedia`) for why
+    /// media lives on the filesystem rather than in a SQLite blob column.
+    /// `internal` (not `private`), same file-scoping reason `dbQueue`
+    /// documents above — `OfflineStore+MediaCache.swift` is a separate file,
+    /// same type/module.
+    let mediaCacheDirectory: URL
+
     /// Opens (creating if necessary) the offline database at `path`, or an
     /// ephemeral in-memory database when `path` is `nil` (used by unit
     /// tests and SwiftUI previews so nothing touches disk).
     ///
-    /// - Parameter path: Absolute file path for the SQLite database, or
-    ///   `nil` for an in-memory database.
-    public init(path: String? = nil) throws {
+    /// - Parameters:
+    ///   - path: Absolute file path for the SQLite database, or `nil` for
+    ///     an in-memory database.
+    ///   - mediaCacheDirectory: Where cached media FILES (not the SQLite
+    ///     index rows) get written (#1440) — `AppRootViewModel+Live.swift`'s
+    ///     live factory passes a stable on-disk directory (mirroring
+    ///     `offlineStorePath()`'s own "iHymns" Application Support
+    ///     subfolder); `nil` (every existing call site, including every
+    ///     pre-#1440 test) gets a fresh, uniquely-named directory under the
+    ///     system temp root instead, so those call sites need no changes at
+    ///     all and never collide with one another or with a real device
+    ///     cache. Created eagerly (`withIntermediateDirectories: true`) so
+    ///     every later `OfflineStore+MediaCache.swift` write can assume it
+    ///     already exists.
+    public init(path: String? = nil, mediaCacheDirectory: URL? = nil) throws {
         if let path {
             dbQueue = try DatabaseQueue(path: path)
         } else {
             dbQueue = try DatabaseQueue()
         }
+        let resolvedMediaCacheDirectory = mediaCacheDirectory
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+                "ihymns-media-cache-\(UUID().uuidString)", isDirectory: true
+            )
+        try FileManager.default.createDirectory(at: resolvedMediaCacheDirectory, withIntermediateDirectories: true)
+        self.mediaCacheDirectory = resolvedMediaCacheDirectory
         try Self.makeMigrator().migrate(dbQueue)
     }
 
@@ -159,7 +203,49 @@ public actor OfflineStore {
             }
         }
 
+        migrator.registerMigration("v5CreateCachedMedia", migrate: Self.createCachedMediaTable)
+
         return migrator
+    }
+
+    /// The `v5CreateCachedMedia` migration body (#1440) — split out of
+    /// `makeMigrator()` itself purely to keep that function under the
+    /// repo's `function_body_length` lint ceiling now that a fifth
+    /// migration has landed; behaviourally identical to being written
+    /// inline, same as every other `registerMigration(_:migrate:)` call
+    /// above.
+    private static func createCachedMediaTable(_ database: Database) throws {
+        try database.create(table: "cached_media") { table in
+            // Composite primary key (rather than a surrogate autoincrement
+            // id) — this file's header explains WHY media caches by
+            // `(songId, mediaAssetId)`; GRDB's `TableDefinition
+            // .primaryKey(_:)` overload accepting an array of column names
+            // is exactly this "no single column is unique on its own, the
+            // PAIR is" shape.
+            table.column("songId", .text).notNull()
+            table.column("mediaAssetId", .integer).notNull()
+            // `SongMediaAsset.Kind` (`"audio" | "sheet-music" | "midi" |
+            // "musicxml"`, `SongDetail+Media.swift`) — denormalised here
+            // (same reasoning `CachedSongDetail.title`/
+            // `.songbookAbbreviation` document) purely so a future "what
+            // kind of file is this?" query never needs to cross-reference
+            // `saved_song`'s own JSON blob.
+            table.column("kind", .text).notNull()
+            table.column("fileName", .text).notNull()
+            table.column("mimeType", .text).notNull()
+            table.column("sizeBytes", .integer).notNull()
+            // Stored RELATIVE to `mediaCacheDirectory`, never an absolute
+            // path — an absolute path baked in today could point at a
+            // sandbox container path that changes across an app reinstall/
+            // update (Apple's own documented behaviour: a container's
+            // absolute path is not guaranteed stable), which would
+            // silently orphan every cached file. Resolving
+            // relative-to-`mediaCacheDirectory` at READ time instead means
+            // a container-path change is transparent.
+            table.column("relativePath", .text).notNull()
+            table.column("cachedAt", .datetime).notNull()
+            table.primaryKey(["songId", "mediaAssetId"])
+        }
     }
 
     /// Inserts or replaces a batch of song summaries — the offline mirror
