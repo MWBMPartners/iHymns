@@ -26,6 +26,15 @@
 // — see that file's `cacheMediaForOffline(_:)` for the actual download
 // trigger, wired to the existing "Save for Offline" toggle per this
 // feature's own GitHub issue's "Rough approach").
+//
+// #1450 UPDATE (cached-media staleness) — `cacheMedia(songId:asset:data:)`
+// now stamps BOTH `cachedAt` and `lastValidatedAt` to the same "now" on
+// every write (a fresh download IS, by definition, freshly validated), and
+// `markCachedMediaValidated(songId:mediaAssetId:at:)` is a new, narrower
+// write that bumps ONLY `lastValidatedAt` — for the `.stillFresh` case
+// `IHFeatures.MediaCacheRevalidator` reaches when the server's metadata
+// still matches what's cached, so re-confirming freshness never has to
+// re-write the file or `cachedAt` just to record that the check happened.
 import Foundation
 import GRDB
 import IHModels
@@ -57,6 +66,9 @@ extension OfflineStore {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: fileURL, options: .atomic)
 
+        // One shared timestamp for both columns — a freshly (re-)downloaded
+        // file is, by definition, validated as of this exact moment (#1450).
+        let now = Date()
         let row = CachedMediaFile(
             songId: songId.rawValue,
             mediaAssetId: asset.id,
@@ -65,12 +77,36 @@ extension OfflineStore {
             mimeType: asset.mimeType,
             sizeBytes: data.count,
             relativePath: relativePath,
-            cachedAt: Date()
+            cachedAt: now,
+            lastValidatedAt: now
         )
         try await dbQueue.write { database in
             try row.insert(database, onConflict: .replace)
         }
         return fileURL
+    }
+
+    /// Bumps ONLY `lastValidatedAt` for one already-cached asset — the
+    /// `.stillFresh` half of #1450's revalidation story
+    /// (`MediaCacheRevalidationPolicy`): the server's metadata was
+    /// re-checked and still matches what's on disk, so there's nothing to
+    /// re-download, just a record that the check happened (so the NEXT
+    /// re-check's "is it even time yet?" TTL window starts counting from
+    /// now, not from whenever this file was first cached). A harmless no-op
+    /// if the asset isn't cached at all (e.g. it was removed between the
+    /// check starting and this write landing) — same idempotent-write
+    /// posture `cacheMedia(songId:asset:data:)`'s own `onConflict: .replace`
+    /// upsert takes.
+    ///
+    /// ELI5: "We just double-checked this downloaded file — it's still
+    /// good, so note that we checked."
+    public func markCachedMediaValidated(songId: SongID, mediaAssetId: Int, at date: Date = Date()) async throws {
+        _ = try await dbQueue.write { database in
+            try database.execute(
+                sql: "UPDATE cached_media SET lastValidatedAt = ? WHERE songId = ? AND mediaAssetId = ?",
+                arguments: [date, songId.rawValue, mediaAssetId]
+            )
+        }
     }
 
     /// The absolute local file `URL` for one cached asset, if this device

@@ -165,6 +165,13 @@ public final class SongDetailViewModel {
             // #189 — same anchor as `recordRecentlyViewed` above: a still-
             // loading fetch was never actually "opened."
             IHAnalyticsService().songOpened(songId: songId.rawValue)
+            // #1450 — a FRESH network success (never the offline-fallback
+            // branch below) is the ONE trigger point this device gets to
+            // notice a curator replaced one of this song's cached media
+            // files server-side; see `MediaCacheRevalidator.swift`'s header
+            // for the full "why only here, why this is still safe offline"
+            // reasoning. A no-op for a song with nothing cached.
+            await MediaCacheRevalidator.revalidate(detail: detail, fetcher: mediaFetcher, rootViewModel: rootViewModel)
         } catch let error as APIError {
             // #187 — the request never reached/returned from the server at
             // all (`.offline`) or the server itself says "back soon"

@@ -65,6 +65,18 @@ struct CachedMediaFile: Codable, FetchableRecord, PersistableRecord, Sendable, E
     /// When this device last (re-)downloaded this file.
     var cachedAt: Date
 
+    /// When this asset's freshness was last actually CONFIRMED against the
+    /// server (#1450) — distinct from `cachedAt`: a `.stillFresh`
+    /// revalidation decision (`MediaCacheRevalidationPolicy`) bumps THIS
+    /// without touching the file or `cachedAt` at all. `nil` for any row a
+    /// pre-#1450 app version wrote (the `v6AddMediaCacheLastValidated`
+    /// migration adds this column with no backfill) — `toCachedMediaInfo()`
+    /// below folds that `nil` to `cachedAt`, so an old row simply reads as
+    /// "last validated when it was cached," which is both true and exactly
+    /// the "due for a re-check" answer `MediaCacheRevalidationPolicy` should
+    /// give it.
+    var lastValidatedAt: Date?
+
     /// Converts this row into the public shape callers outside
     /// `IHPersistence` actually see — everything except `relativePath` (this
     /// file's header explains why that stays private).
@@ -77,7 +89,8 @@ struct CachedMediaFile: Codable, FetchableRecord, PersistableRecord, Sendable, E
             fileName: fileName,
             mimeType: mimeType,
             sizeBytes: sizeBytes,
-            cachedAt: cachedAt
+            cachedAt: cachedAt,
+            lastValidatedAt: lastValidatedAt ?? cachedAt
         )
     }
 }
@@ -101,7 +114,15 @@ public struct CachedMediaInfo: Sendable, Hashable, Identifiable {
     public let sizeBytes: Int
     public let cachedAt: Date
 
-    public init(songId: SongID, mediaAssetId: Int, kind: String, fileName: String, mimeType: String, sizeBytes: Int, cachedAt: Date) {
+    /// When this asset's freshness was last confirmed against the server
+    /// (#1450) — see `CachedMediaFile.lastValidatedAt`'s doc comment for the
+    /// full "distinct from `cachedAt`, and why a pre-#1450 row still gets a
+    /// sensible value" explanation. `MediaCacheRevalidator` reads this
+    /// directly as `MediaCacheRevalidationPolicy.decide(...)`'s
+    /// `lastValidatedAt` argument.
+    public let lastValidatedAt: Date
+
+    public init(songId: SongID, mediaAssetId: Int, kind: String, fileName: String, mimeType: String, sizeBytes: Int, cachedAt: Date, lastValidatedAt: Date) {
         self.songId = songId
         self.mediaAssetId = mediaAssetId
         self.kind = kind
@@ -109,5 +130,6 @@ public struct CachedMediaInfo: Sendable, Hashable, Identifiable {
         self.mimeType = mimeType
         self.sizeBytes = sizeBytes
         self.cachedAt = cachedAt
+        self.lastValidatedAt = lastValidatedAt
     }
 }

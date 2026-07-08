@@ -107,6 +107,29 @@ extension AppRootViewModel {
         try await offlineStore.totalCachedMediaBytes()
     }
 
+    /// Every media file cached for one song — `MediaCacheRevalidator`'s
+    /// (#1450) starting point: nothing to revalidate for a song with no
+    /// cached media at all. Best-effort: a store read failure degrades to
+    /// "nothing cached" rather than throwing, matching `isSongSavedOffline(_:)`'s
+    /// identical low-stakes posture in `AppRootViewModel+Offline.swift`.
+    ///
+    /// ELI5: "What files have we saved for this one song?"
+    public func cachedMedia(forSong songId: SongID) async -> [CachedMediaInfo] {
+        (try? await offlineStore.cachedMedia(forSong: songId)) ?? []
+    }
+
+    /// Bumps one cached asset's `lastValidatedAt` without re-downloading it
+    /// — `MediaCacheRevalidator`'s (#1450) `.stillFresh` outcome. Best-effort
+    /// like every other write in this file: a failure here just means the
+    /// next revalidation check runs a little sooner than strictly
+    /// necessary, never a user-visible error.
+    ///
+    /// ELI5: "Note that we just double-checked this file and it's still
+    /// good."
+    public func markCachedMediaValidated(songId: SongID, mediaAssetId: Int, at date: Date = Date()) async {
+        try? await offlineStore.markCachedMediaValidated(songId: songId, mediaAssetId: mediaAssetId, at: date)
+    }
+
     /// Deletes every cached media file for every song in one shot — composed
     /// with `removeAllSavedSongs()` by `OfflineStorageViewModel.removeAll()`
     /// for the Storage & Offline screen's confirmed "Remove All Downloads"

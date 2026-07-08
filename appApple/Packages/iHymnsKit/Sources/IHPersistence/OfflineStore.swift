@@ -65,6 +65,21 @@
 // See `OfflineStore+MediaCache.swift`'s header for the full read/write API
 // this table backs.
 //
+// `v6AddMediaCacheLastValidated` (#1450, cached-media staleness) adds ONE
+// additive, nullable column — `cached_media.lastValidatedAt` — the
+// bookkeeping `MediaCacheRevalidationPolicy` (`IHModels`) needs to decide
+// "is it even time to re-check this asset yet?" without re-querying the
+// server on every single song-screen visit. NULL for every row a
+// pre-#1450 app version already wrote (SQLite `ALTER TABLE ADD COLUMN`
+// can't backfill a NOT-NULL default from another column's value in one
+// statement) — `CachedMediaFile.toCachedMediaInfo()` treats a NULL as
+// "last validated when it was cached" (`lastValidatedAt ?? cachedAt`), so
+// an old row degrades to "due for a re-check" rather than crashing or
+// needing a data migration of its own. See
+// `OfflineStore+MediaCache.swift`'s header for the read/write API this
+// column backs, and `MediaCacheRevalidationPolicy.swift`'s header for the
+// full "why sizeBytes + a TTL, not ETag/Last-Modified" reasoning.
+//
 // See GRDB's own migrations guide:
 // https://swiftpackageindex.com/groue/grdb.swift/documentation/grdb/migrations.
 import Foundation
@@ -205,7 +220,23 @@ public actor OfflineStore {
 
         migrator.registerMigration("v5CreateCachedMedia", migrate: Self.createCachedMediaTable)
 
+        migrator.registerMigration("v6AddMediaCacheLastValidated", migrate: Self.addMediaCacheLastValidatedColumn)
+
         return migrator
+    }
+
+    /// The `v6AddMediaCacheLastValidated` migration body (#1450) — split out
+    /// of `makeMigrator()` for the exact same `function_body_length`
+    /// lint-ceiling reason `createCachedMediaTable` below already documents
+    /// for `v5CreateCachedMedia`.
+    private static func addMediaCacheLastValidatedColumn(_ database: Database) throws {
+        try database.alter(table: "cached_media") { table in
+            // Nullable (no `.notNull()`) — see this file's header for why a
+            // NOT-NULL-with-backfill isn't possible in one `ALTER TABLE ADD
+            // COLUMN` statement, and how a NULL is handled at the read
+            // boundary instead.
+            table.add(column: "lastValidatedAt", .datetime)
+        }
     }
 
     /// The `v5CreateCachedMedia` migration body (#1440) — split out of
@@ -282,116 +313,13 @@ public actor OfflineStore {
         return rows.compactMap { $0.toSongSummary() }
     }
 
-    // MARK: - Favourites (#181)
-
-    /// Every cached favourite, most-recently-added first — `FavoritesView`'s
-    /// offline-first data source (never blocks on the network, unlike
-    /// `catalogueLoadState`'s server-only `songsIndex()` fetch).
-    ///
-    /// ELI5: "What have I favourited?" — answered from the device, instantly.
-    public func allFavorites() async throws -> [FavoriteSong] {
-        let rows = try await dbQueue.read { database in
-            try CachedFavorite.order(Column("addedAt").desc).fetchAll(database)
-        }
-        return rows.compactMap { $0.toFavoriteSong() }
-    }
-
-    /// Inserts or replaces one favourite (upsert by `songId`) — used both by
-    /// an optimistic `toggleFavorite` add and by reconciling a server pull.
-    public func upsertFavorite(_ favorite: FavoriteSong) async throws {
-        try await dbQueue.write { database in
-            try CachedFavorite(favorite).insert(database, onConflict: .replace)
-        }
-    }
-
-    /// Removes one favourite by id — a no-op (not an error) if it isn't
-    /// cached at all, matching `KeychainTokenStore.delete()`'s "already
-    /// absent = successfully removed" idempotent-delete posture.
-    public func removeFavorite(_ songId: SongID) async throws {
-        _ = try await dbQueue.write { database in
-            try CachedFavorite.deleteOne(database, key: songId.rawValue)
-        }
-    }
-
-    /// Reconciles the local favourite cache with an AUTHORITATIVE server
-    /// list (`?action=favorites`/`?action=favorites_sync`'s response) —
-    /// deletes any cached favourite absent from `authoritative`, and upserts
-    /// every entry `authoritative` DOES carry, PRESERVING each song's
-    /// already-known local title/songbook/number when this device already
-    /// had a richer cached row for it (a server pull only ever carries
-    /// `{id, tags}` — see `FavoriteSong`'s own header) rather than
-    /// clobbering good metadata with the placeholder `""`/`nil` a brand-new
-    /// entry would otherwise get.
-    ///
-    /// ELI5: "The server just told us the REAL, complete favourites list —
-    /// match our notebook to it exactly, but don't forget the titles we
-    /// already knew."
-    public func replaceFavorites(with authoritative: [FavoriteEntry]) async throws {
-        try await dbQueue.write { database in
-            let existing = try CachedFavorite.fetchAll(database)
-            var knownMetadata: [String: CachedFavorite] = [:]
-            for row in existing { knownMetadata[row.songId] = row }
-
-            try CachedFavorite.deleteAll(database)
-            for entry in authoritative {
-                let known = knownMetadata[entry.songId.rawValue]
-                let merged = FavoriteSong(
-                    songId: entry.songId,
-                    title: known?.title ?? "",
-                    songbookAbbreviation: known?.songbookAbbreviation ?? "",
-                    number: known?.number,
-                    tags: entry.tags,
-                    addedAt: known?.addedAt ?? Date()
-                )
-                try CachedFavorite(merged).insert(database)
-            }
-        }
-    }
-
-    /// Deletes every cached favourite AND any still-queued pending ops —
-    /// called on sign-out (`AppRootViewModel+Auth.swift`) so a second
-    /// account signing in on a shared device never sees the previous
-    /// account's favourites, and no stale queued action survives to be
-    /// replayed against the wrong account's token.
-    ///
-    /// ELI5: "Forget every favourite and every pending change — a new
-    /// person is signing in."
-    public func clearFavorites() async throws {
-        try await dbQueue.write { database in
-            try CachedFavorite.deleteAll(database)
-            try PendingFavoriteOp.deleteAll(database)
-        }
-    }
-
-    // MARK: - Favourites offline queue (#181)
-
-    /// Queues (or replaces any already-queued action for the SAME song —
-    /// see `PendingFavoriteOp`'s own header) an add/remove to replay once
-    /// the immediate network attempt fails.
-    ///
-    /// ELI5: "Remember to tell the server about this, later."
-    public func enqueuePendingFavoriteOp(_ pendingOp: PendingFavoriteOp) async throws {
-        try await dbQueue.write { database in
-            try pendingOp.insert(database, onConflict: .replace)
-        }
-    }
-
-    /// Every currently-queued favourite action, oldest first (replay order
-    /// matters if a device queues multiple DIFFERENT songs' toggles while
-    /// offline — each song has at most one queued op, per
-    /// `PendingFavoriteOp`'s primary-key-by-`songId` design, but the QUEUE
-    /// itself can hold many songs at once).
-    public func pendingFavoriteOps() async throws -> [PendingFavoriteOp] {
-        try await dbQueue.read { database in
-            try PendingFavoriteOp.order(Column("createdAt")).fetchAll(database)
-        }
-    }
-
-    /// Removes one queued action once it has been successfully replayed
-    /// against the server.
-    public func dequeuePendingFavoriteOp(songId: SongID) async throws {
-        _ = try await dbQueue.write { database in
-            try PendingFavoriteOp.deleteOne(database, key: songId.rawValue)
-        }
-    }
+    // Favourites (#181) — `allFavorites()`/`upsertFavorite(_:)`/
+    // `removeFavorite(_:)`/`replaceFavorites(with:)`/`clearFavorites()` +
+    // the offline queue (`enqueuePendingFavoriteOp(_:)`/`pendingFavoriteOps()`/
+    // `dequeuePendingFavoriteOp(songId:)`) live in
+    // `OfflineStore+Favorites.swift` — moved out (#1450) purely to keep
+    // THIS file under the repo's LOC-budget tripwire now that the `v6`
+    // migration has landed; a pure file move, not a behavioural edit, the
+    // same reasoning `OfflineStore+SavedSongs.swift`/`+MediaCache.swift`'s
+    // own earlier extractions already document.
 }
