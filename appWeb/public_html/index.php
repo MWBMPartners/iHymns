@@ -435,10 +435,35 @@ try {
             $jsonLdScripts[] = $musicAlbum;
         }
     }
-    /* Person page: /people/<slug> (#833 — sameAs JSON-LD) */
-    elseif (preg_match('#^/people/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+    /* Person page: /people/<slug> (#833 — sameAs JSON-LD)
+       ELI5: this also answers to the singular spelling /person/<slug>,
+       same as the "people"/"person" pages on Wikipedia work either way.
+       DETAILED (#1453): the Apple app's AASA + Universal Links claim the
+       SINGULAR `/person/*` component (`.well-known/apple-app-site-
+       association.php`), and the client-side SPA router already treats
+       `/people/<slug>` and `/person/<slug>` as equivalent forgiving
+       aliases (`js/modules/router.js`, #588 — same convention as
+       `/work` vs `/works`, #840). This server-side OG/JSON-LD detection
+       block only matched the plural form, so a social-media crawler or
+       search engine fetching the singular `/person/<slug>` (e.g. a link
+       shared FROM the native app, whose CanonicalURL.person(slug:)
+       emits the singular form to match AASA) got the generic homepage
+       preview instead of the person's actual name — not a literal HTTP
+       404 (the SPA shell always renders 200 and the client router still
+       resolves it), but a broken social-preview / SEO signal for any
+       non-JS fetch of that URL. Widened to match both spellings so both
+       resolve identically; the canonical URL is then force-normalized
+       below to the plural form (mirroring the song route's PublicId
+       normalization, #1343-B) so search engines consolidate signal onto
+       ONE indexed URL regardless of which spelling was requested. */
+    elseif (preg_match('#^/(?:people|person)/([a-z0-9\-]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $personSlug = $matches[1];
+        /* #1453 — always advertise the plural form as canonical, even
+           when this request came in via the singular AASA-matching
+           spelling. Both spellings render identically; this just picks
+           ONE URL for search engines / social crawlers to converge on. */
+        $canonicalUrl = getCanonicalUrl('/people/' . rawurlencode($personSlug));
         try {
             $personDb = getDbMysqli();
             $stmt = $personDb->prepare(
