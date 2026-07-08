@@ -8370,6 +8370,83 @@ paths:
           description: Not authenticated, or current password wrong
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
+  /api.php?action=account_delete:
+    post:
+      operationId: deleteAccount
+      tags: [Authentication]
+      summary: Permanently delete the authenticated account (#1403)
+      description: |
+        Self-service, irreversible account deletion (App Review 5.1.1(v)).
+        The account is ALWAYS the current bearer — there is no id/username
+        selector, so this can never delete a different account. Requires
+        the custom `X-Requested-With` header (a browser cannot set it
+        cross-origin without a CORS preflight this server never grants) —
+        see the CSRF note below — PLUS exactly one fresh re-authentication
+        proof:
+          - `password` — accounts with a password set.
+          - `identityToken` + `nonce` (+ optional `authorizationCode`) — a
+            FRESH Sign-in-with-Apple assertion, for accounts with an Apple
+            link. The verified `sub` must match this account's own linked
+            Apple identity.
+          - `email_code` — a 6-digit code from `auth_email_login_request`,
+            for passwordless email accounts.
+          - `confirm: "DELETE"` — degenerate accounts only (no password, no
+            email, no Apple link).
+
+        Deletes/anonymises every per-user row (favourites, setlists,
+        provider links, …), revokes ALL bearer tokens, best-effort revokes
+        the Apple grant (never blocks deletion — see `apple_revoke` in the
+        audit log), and clears the `ihymns_auth` cookie. A repeat call with
+        an already-invalidated token returns 401 (terminal); a narrow
+        double-tap race returns the SAME `{"ok":true,"deleted":true}` both
+        times (idempotent).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [account_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:          { type: string, format: password }
+                identityToken:     { type: string }
+                nonce:             { type: string }
+                authorizationCode: { type: string }
+                email_code:        { type: string, example: "123456" }
+                confirm:           { type: string, enum: [DELETE] }
+      responses:
+        "200":
+          description: Account deleted (or already gone — idempotent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  deleted: { type: boolean }
+        "400":
+          description: No re-authentication proof supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated, or the supplied re-auth proof is wrong
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Caller is the last active global_admin — transfer first
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: Too many re-auth attempts from this IP
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
   # ===========================================================================
   # CARD LAYOUT (#516) — admin / user reorder + hide on dashboard surfaces
   # ===========================================================================

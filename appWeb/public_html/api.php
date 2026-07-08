@@ -4664,6 +4664,220 @@ if ($action !== null) {
             ]);
             break;
 
+        /* -----------------------------------------------------------------
+         * Self-service account deletion (#1403) — App Review 5.1.1(v)
+         * blocker: Apple requires an in-app path to permanently delete the
+         * account, not just sign out / disable notifications.
+         *
+         * POST body (JSON) — the account is ALWAYS the current bearer, NEVER
+         * a supplied id/username/email (structurally kills "delete someone
+         * else's account"). Re-authentication requires exactly ONE of:
+         *   { "password": "..." }                              — has a password
+         *   { "identityToken": "...", "nonce": "...",
+         *     "authorizationCode": "..." (optional) }           — has an Apple link
+         *   { "email_code": "123456" }                          — passwordless email account
+         *   { "confirm": "DELETE" }                             — degenerate account only
+         * Requires: Authorization: Bearer <token> + the custom
+         * X-Requested-With header (or a valid session csrf_token) — see the
+         * CSRF gate below.
+         * Returns: { "ok": true, "deleted": true } — idempotent on retry.
+         *
+         * Full design: .claude/apple-backend-auth-plan.md §3.
+         * ----------------------------------------------------------------- */
+        case 'account_delete':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29): getAuthBearerToken() (api.php ~13023) falls
+               back to the ihymns_auth COOKIE, so a bare cookie-authenticated
+               POST here would be cross-site forgeable without this gate.
+               The re-auth rung below is a SECOND, independent barrier — an
+               attacker who somehow cleared this gate still cannot forge a
+               password / email code / SIWA assertion. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $authUserId = (int)$authUser['Id'];
+            $db = getDbMysqli();
+            $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
+
+            /* Rate-limit re-auth guesses — without this, the re-auth rungs
+               below (password / email code) are a guessing oracle. */
+            $stmt = $db->prepare(
+                "SELECT COUNT(*) FROM tblLoginAttempts
+                  WHERE IpAddress = ? AND Success = 0 AND Username = 'account_delete'
+                    AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)"
+            );
+            $stmt->bind_param('s', $clientIp);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            if ((int)($row[0] ?? 0) >= 10) {
+                logActivity('account.delete', 'user', (string)$authUserId, ['reason' => 'rate_limited'], 'failure');
+                sendJson(['error' => 'Too many attempts. Please try again later.'], 429);
+                break;
+            }
+
+            /* getAuthenticatedUser() deliberately doesn't select PasswordHash
+               (it's never needed by the other bearer-gated endpoints) — fetch
+               it fresh here for the re-auth check, plus Role for the
+               last-global-admin guard. */
+            $stmt = $db->prepare('SELECT PasswordHash, Email, Role FROM tblUsers WHERE Id = ?');
+            $stmt->bind_param('i', $authUserId);
+            $stmt->execute();
+            $userDetail = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$userDetail) {
+                /* Bearer was valid a moment ago but the row is already gone
+                   (a concurrent delete won the race) — 401 is the correct,
+                   terminal response; the client's own next auth check agrees. */
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $reauth = _accountDeleteReauth($db, $authUserId, $userDetail, $body);
+            if ($reauth['ok'] !== true) {
+                if (($reauth['recordFailure'] ?? false) === true) {
+                    _accountDeleteRecordFailure($db, $clientIp, $authUserId, (string)($reauth['reason'] ?? 'reauth_failed'));
+                }
+                sendJson(['error' => $reauth['message']], (int)$reauth['status']);
+                break;
+            }
+            $reauthMethod = (string)$reauth['method'];
+
+            /* Last-global-admin guard — self-service deletion must never
+               brick /manage by removing the only remaining admin. */
+            if ((string)($userDetail['Role'] ?? '') === 'global_admin') {
+                $stmt = $db->prepare("SELECT COUNT(*) FROM tblUsers WHERE Role = 'global_admin' AND IsActive = 1 AND Id != ?");
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $otherAdmins = (int)($stmt->get_result()->fetch_row()[0] ?? 0);
+                $stmt->close();
+                if ($otherAdmins === 0) {
+                    sendJson(['error' => 'Transfer Global Admin to another account first.'], 409);
+                    break;
+                }
+            }
+
+            /* Pre-transaction (§3.3A): best-effort Apple revoke, BEFORE the
+               local delete — after the delete, the stored refresh token is
+               gone forever (a delete rollback is possible; re-obtaining a
+               revoke token after the fact is not). NEVER blocks deletion —
+               the user's right to delete wins over a courtesy call to Apple;
+               the outcome is recorded in the audit row so systematic
+               failures are visible to the owner. */
+            $hadAppleLink  = false;
+            $revokeOutcome = 'skipped_no_link';
+            if (_accountDeleteSiwaTablesReady($db)) {
+                $stmt = $db->prepare("SELECT Subject, RefreshToken FROM tblUserAuthProviders WHERE UserId = ? AND Provider = 'apple'");
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $linkRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if ($linkRow) {
+                    $hadAppleLink  = true;
+                    $revokeOutcome = _accountDeleteRevokeApple($linkRow, $reauthMethod, $body);
+                }
+            }
+
+            /* B. The destructive transaction (§3.3): T1 FOR UPDATE lock +
+               idempotency check, T2 explicit token revoke, T3 the two PII
+               scrubs (§3.2) that the FK graph does NOT clean, T4 the user
+               delete itself (the whole cascade/anonymise graph fires
+               atomically as part of this ONE transaction — a mid-cascade
+               failure rolls EVERYTHING back, leaving the account intact). */
+            $tokensRevoked = 0;
+            $db->begin_transaction();
+            try {
+                $lockStmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ? FOR UPDATE');
+                $lockStmt->bind_param('i', $authUserId);
+                $lockStmt->execute();
+                $stillExists = $lockStmt->get_result()->fetch_row() !== null;
+                $lockStmt->close();
+
+                if ($stillExists) {
+                    $countStmt = $db->prepare('SELECT COUNT(*) FROM tblApiTokens WHERE UserId = ?');
+                    $countStmt->bind_param('i', $authUserId);
+                    $countStmt->execute();
+                    $tokensRevoked = (int)($countStmt->get_result()->fetch_row()[0] ?? 0);
+                    $countStmt->close();
+
+                    /* Explicit even though tblApiTokens.UserId FK cascades —
+                       token revocation is a STATED security requirement, not
+                       merely an FK side effect, and the affected count feeds
+                       the audit row. */
+                    $delTok = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
+                    $delTok->bind_param('i', $authUserId);
+                    $delTok->execute();
+                    $delTok->close();
+
+                    /* §3.2 PII stragglers the FK graph does NOT clean. */
+                    $blank = '';
+                    $scrubRequests = $db->prepare('UPDATE tblSongRequests SET ContactEmail = ?, IpAddress = ? WHERE UserId = ?');
+                    $scrubRequests->bind_param('ssi', $blank, $blank, $authUserId);
+                    $scrubRequests->execute();
+                    $scrubRequests->close();
+
+                    $usernameForScrub = (string)$authUser['Username'];
+                    $scrubAttempts = $db->prepare('DELETE FROM tblLoginAttempts WHERE Username = ?');
+                    $scrubAttempts->bind_param('s', $usernameForScrub);
+                    $scrubAttempts->execute();
+                    $scrubAttempts->close();
+
+                    $delUser = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
+                    $delUser->bind_param('i', $authUserId);
+                    $delUser->execute();
+                    $delUser->close();
+                }
+                /* else: the T1 no-row race — a concurrent request already
+                   deleted this account between our getAuthenticatedUser()
+                   and this lock. Commit this empty transaction and fall
+                   through to the SAME idempotent 200 the winner returned. */
+                $db->commit();
+            } catch (\Throwable $e) {
+                try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+                throw $e; /* → api.php's global exception handler (~line 81): clean 500, account left fully intact. */
+            }
+
+            clearAuthTokenCookie();
+
+            /* Audit (#535/§3.5) — deliberately STRICTER than the legacy
+               deleteUser() convention: numeric user id only, NO username, NO
+               email, NO display name, NO tokens, NO Apple sub. */
+            logActivity(
+                'account.delete',
+                'user',
+                (string)$authUserId,
+                [
+                    'apple_revoke'   => $revokeOutcome,
+                    'tokens_revoked' => $tokensRevoked,
+                    'had_apple_link' => $hadAppleLink,
+                    'reauth_method'  => $reauthMethod,
+                ],
+                'success',
+                null
+            );
+
+            sendJson(['ok' => true, 'deleted' => true]);
+            break;
+
         /* =================================================================
          * ADMIN USER MANAGEMENT — API endpoints for /manage/ panel
          * Requires: admin+ role via Bearer token
@@ -13690,6 +13904,255 @@ function _authAppleMapAccountTxn(\mysqli $db, string $sub, array $claims, ?int $
 
     /* (d) Nothing matched — create a brand-new account. */
     return _authAppleCreateAndLink($db, $sub, $claims, $fullName);
+}
+
+/* =============================================================================
+ * ACCOUNT DELETION — self-service helpers (#1403)
+ *
+ * The `case 'account_delete'` handler (above) delegates its re-auth check and
+ * Apple-revoke step here so the case block itself stays a readable
+ * top-to-bottom sequence. Shares the SIWA crypto core (includes/apple_siwa.php)
+ * with `case 'auth_apple'` above — a `siwa_reauth` nonce purpose keeps a
+ * login nonce from being replayed into a delete and vice versa.
+ * ========================================================================= */
+
+/**
+ * Memoized existence probe for the SIWA tables (mirrors the same
+ * INFORMATION_SCHEMA pattern as auth_apple's feature gate). account_delete
+ * treats absence as "no Apple-specific work to do" rather than an error —
+ * deletion must work identically on a docroot where the #1402 migration
+ * hasn't been run yet.
+ */
+function _accountDeleteSiwaTablesReady(\mysqli $db): bool
+{
+    static $ready = null;
+    if ($ready === null) {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserAuthProviders' LIMIT 1"
+        );
+        $ready = ($r && $r->fetch_row() !== null);
+        if ($r) { $r->close(); }
+    }
+    return $ready;
+}
+
+/** True when $userId has an Apple identity linked. Used by the degenerate-account rung (§3.1). */
+function _accountDeleteHasAppleLink(\mysqli $db, int $userId): bool
+{
+    if (!_accountDeleteSiwaTablesReady($db)) {
+        return false;
+    }
+    $stmt = $db->prepare("SELECT 1 FROM tblUserAuthProviders WHERE UserId = ? AND Provider = 'apple'");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $has = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $has;
+}
+
+/**
+ * Record a failed account_delete re-auth attempt: a Success=0
+ * tblLoginAttempts row (feeds the per-IP rate limit) plus an
+ * `account.delete` failure row in tblActivityLog carrying ONLY the fixed
+ * `$reason` code and the (already-known, non-PII) numeric user id — never a
+ * password, code, or token value.
+ */
+function _accountDeleteRecordFailure(\mysqli $db, string $clientIp, int $userId, string $reason): void
+{
+    try {
+        $stmt = $db->prepare("INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, 'account_delete', 0)");
+        $stmt->bind_param('s', $clientIp);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* Best-effort — a rate-limit bookkeeping failure must never block
+           the (already-failing) response from going out. */
+    }
+    logActivity('account.delete', 'user', (string)$userId, ['reason' => $reason], 'failure');
+}
+
+/**
+ * §3.1 rung 2 — verify a FRESH SIWA identity-token assertion for re-auth
+ * purposes. Runs the FULL RS256 verify (same core as auth_apple) with nonce
+ * Purpose `siwa_reauth` (kept separate from `siwa_login` so a sign-in nonce
+ * can never be replayed into a delete, or vice versa), then requires the
+ * verified `sub` to equal THIS account's own linked Apple Subject — a valid-
+ * but-DIFFERENT Apple identity must not authorise deleting someone else's
+ * account.
+ *
+ * @return array{ok:true,method:'siwa'}|array{ok:false,status:int,message:string,recordFailure?:bool,reason?:string}
+ */
+function _accountDeleteReauthSiwa(\mysqli $db, int $userId, string $identityToken, string $rawNonce): array
+{
+    if (!_accountDeleteSiwaTablesReady($db)) {
+        return ['ok' => false, 'status' => 503, 'message' => 'Sign in with Apple is not yet available.'];
+    }
+
+    $stmt = $db->prepare("SELECT Subject FROM tblUserAuthProviders WHERE UserId = ? AND Provider = 'apple'");
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $linkRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$linkRow) {
+        return ['ok' => false, 'status' => 401, 'message' => 'Invalid Apple identity token.', 'recordFailure' => true, 'reason' => 'no_apple_link'];
+    }
+    $expectedSub = (string)$linkRow['Subject'];
+
+    $peekParts = appleSiwaDecodeJwtParts($identityToken);
+    if ($peekParts === null) {
+        return ['ok' => false, 'status' => 401, 'message' => 'Invalid Apple identity token.', 'recordFailure' => true, 'reason' => 'malformed_jwt'];
+    }
+    $peekKid = $peekParts['header']['kid'] ?? null;
+    $peekKid = is_string($peekKid) ? $peekKid : null;
+
+    $jwks = appleSiwaJwksCached($db, $peekKid);
+    if ($jwks === null || empty($jwks['keys'])) {
+        return ['ok' => false, 'status' => 503, 'message' => 'Sign in with Apple is temporarily unavailable.'];
+    }
+
+    $verify = appleSiwaVerifyIdentityToken($identityToken, $jwks, IHYMNS_SIWA_CLIENT_ID, $rawNonce, time());
+    if ($verify['ok'] !== true) {
+        return ['ok' => false, 'status' => 401, 'message' => 'Invalid Apple identity token.', 'recordFailure' => true, 'reason' => (string)($verify['reason'] ?? 'verify_failed')];
+    }
+
+    $claimSub = (string)$verify['claims']['sub'];
+    if (!hash_equals($expectedSub, $claimSub)) {
+        return ['ok' => false, 'status' => 401, 'message' => 'Invalid Apple identity token.', 'recordFailure' => true, 'reason' => 'sub_mismatch'];
+    }
+
+    if (!appleSiwaConsumeNonce($db, 'siwa_reauth', $rawNonce)) {
+        return ['ok' => false, 'status' => 401, 'message' => 'Invalid Apple identity token.', 'recordFailure' => true, 'reason' => 'nonce_replay'];
+    }
+
+    return ['ok' => true, 'method' => 'siwa'];
+}
+
+/**
+ * §3.1 rung selector — checks the body for exactly the FIRST applicable
+ * re-auth proof, in priority order: password → SIWA assertion → email code →
+ * (degenerate-account only) an explicit `confirm: "DELETE"`. Every branch
+ * that represents a WRONG proof (not merely an absent one) sets
+ * `recordFailure` so the caller feeds the per-IP rate-limit counter.
+ *
+ * @return array{ok:true,method:string}|array{ok:false,status:int,message:string,recordFailure?:bool,reason?:string}
+ */
+function _accountDeleteReauth(\mysqli $db, int $userId, array $userDetail, array $body): array
+{
+    $password = $body['password'] ?? null;
+    if (is_string($password) && $password !== '') {
+        /* password_verify() against an empty hash (passwordless accounts,
+           tblUsers.PasswordHash = '') safely returns false — same behaviour
+           case 'auth_login' already relies on — so no separate "does this
+           account even have a password" branch is needed. */
+        if (!password_verify($password, (string)($userDetail['PasswordHash'] ?? ''))) {
+            return ['ok' => false, 'status' => 401, 'message' => 'Current password is incorrect.', 'recordFailure' => true, 'reason' => 'wrong_password'];
+        }
+        return ['ok' => true, 'method' => 'password'];
+    }
+
+    $identityToken = $body['identityToken'] ?? null;
+    $nonce = $body['nonce'] ?? null;
+    if (is_string($identityToken) && $identityToken !== '' && is_string($nonce) && $nonce !== '') {
+        return _accountDeleteReauthSiwa($db, $userId, $identityToken, $nonce);
+    }
+
+    $emailCode = $body['email_code'] ?? null;
+    if (is_string($emailCode) && $emailCode !== '') {
+        $email = (string)($userDetail['Email'] ?? '');
+        if ($email === '') {
+            return ['ok' => false, 'status' => 400, 'message' => 'Re-authentication required: provide password, identityToken+nonce, or email_code.'];
+        }
+        /* verifyEmailLoginCode() (manage/includes/auth.php) is single-use +
+           10-minute-expiry already — the SAME code minted by the existing
+           auth_email_login_request flow to the account's OWN email. */
+        $verified = verifyEmailLoginCode($email, $emailCode);
+        if ($verified === null) {
+            return ['ok' => false, 'status' => 401, 'message' => 'Invalid or expired code.', 'recordFailure' => true, 'reason' => 'wrong_email_code'];
+        }
+        return ['ok' => true, 'method' => 'email_code'];
+    }
+
+    $confirm = $body['confirm'] ?? null;
+    if (is_string($confirm) && $confirm === 'DELETE') {
+        /* Degenerate account only (no password, no email, no Apple link) —
+           there is no credential to prove, so the bearer alone (plus this
+           explicit type-to-confirm literal) is accepted. Not reachable via
+           any current signup path; documented + accepted per plan §8
+           open-decision 3. */
+        $degenerate = ((string)($userDetail['PasswordHash'] ?? '') === '')
+            && ((string)($userDetail['Email'] ?? '') === '')
+            && !_accountDeleteHasAppleLink($db, $userId);
+        if ($degenerate) {
+            return ['ok' => true, 'method' => 'confirm'];
+        }
+    }
+
+    return ['ok' => false, 'status' => 400, 'message' => 'Re-authentication required: provide password, identityToken+nonce, or email_code.'];
+}
+
+/**
+ * §3.3A — best-effort Apple `/auth/revoke`. Returns one of the plan's
+ * outcome enum values; NEVER throws (every failure is caught and mapped to
+ * `failed`) so the caller can safely treat this as a pure side-effect step
+ * that cannot abort the deletion.
+ *
+ * @param array  $linkRow      The tblUserAuthProviders row (Subject, RefreshToken).
+ * @param string $reauthMethod Which re-auth rung succeeded — 'siwa' unlocks
+ *                               the just-in-time code exchange below when no
+ *                               refresh token was already stored.
+ * @param array  $body         The request body — read for `authorizationCode`
+ *                               ONLY when $reauthMethod === 'siwa'.
+ * @return string 'ok'|'failed'|'skipped_no_key'|'skipped_no_token'
+ */
+function _accountDeleteRevokeApple(array $linkRow, string $reauthMethod, array $body): string
+{
+    $revokeToken = isset($linkRow['RefreshToken']) && $linkRow['RefreshToken'] !== null
+        ? (string)$linkRow['RefreshToken']
+        : null;
+
+    $teamId = (string)(getAppSetting('apple_team_id', '') ?? '');
+    $keyId  = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
+    $p8Pem  = (string)(getAppSetting('apple_siwa_private_key', '') ?? '');
+    $hasKey = ($teamId !== '' && $keyId !== '' && $p8Pem !== '');
+
+    /* No stored refresh token, but THIS request's re-auth was itself a fresh
+       SIWA assertion carrying an authorizationCode (§2.6 machinery) — spend
+       it now purely to obtain a revocable token before it's gone. */
+    if ($revokeToken === null && $reauthMethod === 'siwa' && $hasKey) {
+        $authCode = $body['authorizationCode'] ?? null;
+        if (is_string($authCode) && $authCode !== '') {
+            try {
+                $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, IHYMNS_SIWA_CLIENT_ID, $p8Pem, time());
+                if ($clientSecret !== null) {
+                    $tokenResp = appleSiwaExchangeCode($authCode, $clientSecret, IHYMNS_SIWA_CLIENT_ID);
+                    if ($tokenResp !== null && !empty($tokenResp['refresh_token']) && is_string($tokenResp['refresh_token'])) {
+                        $revokeToken = $tokenResp['refresh_token'];
+                    }
+                }
+            } catch (\Throwable $e) {
+                error_log('[api/account_delete token_exchange] ' . $e->getMessage());
+            }
+        }
+    }
+
+    if ($revokeToken === null) {
+        return 'skipped_no_token';
+    }
+    if (!$hasKey) {
+        return 'skipped_no_key';
+    }
+
+    try {
+        $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, IHYMNS_SIWA_CLIENT_ID, $p8Pem, time());
+        if ($clientSecret === null) {
+            return 'skipped_no_key'; /* .p8 present but doesn't parse as an EC key — treat as "no usable key". */
+        }
+        return appleSiwaRevokeToken($revokeToken, 'refresh_token', $clientSecret, IHYMNS_SIWA_CLIENT_ID) ? 'ok' : 'failed';
+    } catch (\Throwable $e) {
+        error_log('[api/account_delete revoke] ' . $e->getMessage());
+        return 'failed';
+    }
 }
 
 /**
