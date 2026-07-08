@@ -157,6 +157,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.ihymns
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: iHymns
+        # #1442 — tvOS's own background-audio capability, the SAME
+        # `UIBackgroundModes` key (not a tvOS-specific spelling) the
+        # `iHymns` multiplatform target already declares for iOS/macOS/
+        # visionOS above (#184). Apple documents tvOS as a supported
+        # platform for this exact key/value pair ("Configuring your app
+        # for media playback" —
+        # https://developer.apple.com/documentation/avfaudio/configuring-your-app-for-media-playback
+        # lists iOS/iPadOS/tvOS/visionOS together) precisely for the
+        # "audio keeps playing after the user presses the TV/Home button to
+        # switch away" case tvOS's Music/podcast-style apps rely on — a real
+        # capability, not a no-op on this platform, so `SongAudioPlaybackEngine`'s
+        # `.playback`-category `AVAudioSession` configuration (already
+        # `#if os(tvOS)`-included, `SongAudioPlaybackEngine.swift`) now has
+        # the matching Info.plist declaration it needs to actually survive
+        # backgrounding here too, once a tvOS shell screen wires up
+        # `SongMediaSection`/audio playback (still `PhaseZeroSkeletonView`
+        # today — see `IHymnsTVApp.swift`).
+        INFOPLIST_KEY_UIBackgroundModes: audio
     dependencies:
       - package: iHymnsKit
         products: [IHFeatures, IHDesign]
@@ -176,6 +194,27 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: iHymns
         INFOPLIST_KEY_WKApplication: YES
+        # #1442 — watchOS's OWN background-modes key: `WKBackgroundModes`,
+        # NOT `UIBackgroundModes` (the `iHymns`/`iHymnsTV` targets' key
+        # above) — the two platforms use genuinely different Info.plist
+        # keys for the same concept, which is exactly why #184 left this
+        # target without ANY capability declared rather than guessing.
+        # Apple's WatchKit "Preparing your WatchKit app to run in the
+        # background" reference documents `audio` as a valid
+        # `WKBackgroundModes` array value (alongside `location`/
+        # `self-care`/`workout-processing`/…) specifically for a watch app
+        # that keeps `AVAudioSession`-based playback going once the user
+        # switches away from it — the SAME real, documented capability
+        # `SongAudioPlaybackEngine.swift`'s already-`#if os(watchOS)`-included
+        # `.playback` category configuration needs. `INFOPLIST_KEY_<key>`
+        # (Xcode 13+) accepts a bare scalar for an array-typed key exactly
+        # as the `iHymns` target's own `INFOPLIST_KEY_UIBackgroundModes: audio`
+        # already relies on, producing the one-element `["audio"]` array
+        # watchOS expects. No separate entitlement/capability is needed
+        # beyond this Info.plist key — unlike, say, background location,
+        # background audio on watchOS does not require a paired
+        # `.entitlements` grant.
+        INFOPLIST_KEY_WKBackgroundModes: audio
     dependencies:
       - package: iHymnsKit
         products: [IHFeatures, IHDesign]
