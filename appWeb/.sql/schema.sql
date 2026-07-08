@@ -3775,3 +3775,59 @@ CREATE TABLE IF NOT EXISTS tblReadRateLimit (
     INDEX      idx_WindowStart (WindowStart)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Public-read fixed-window rate-limit counters, keyed by token-or-IP (#1354).';
+
+-- ============================================================================
+-- AUTH PROVIDERS (Sign in with Apple) — #1402
+-- External identity-provider links + a single-use anti-replay nonce ledger.
+-- Mirrors appWeb/.sql/migrate-user-auth-providers.php (rule #19 — DDL here
+-- must stay byte-identical, COMMENT text included).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblUserAuthProviders (#1402)
+-- External identity-provider links (Sign in with Apple first; forward-looking
+-- for any future provider — Provider is VARCHAR, app-validated, never ENUM,
+-- rule #20). Identity is ALWAYS (Provider, Subject) — NEVER email (Apple
+-- private-relay addresses are per-app aliases the user can disable/rotate).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserAuthProviders (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    UserId          INT UNSIGNED    NOT NULL COMMENT 'FK to tblUsers — the iHymns account this provider identity signs in as',
+    Provider        VARCHAR(30)     NOT NULL COMMENT 'apple | (future: google, …) — app-validated vocabulary, VARCHAR not ENUM (rule #20)',
+    Subject         VARCHAR(128)    NOT NULL COMMENT 'Provider-stable subject claim (Apple JWT `sub`, e.g. 001234.<32hex>.5678) — the ONE durable identity key',
+    Email           VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Provider-asserted email at link time (may be @privaterelay.appleid.com); INFORMATIONAL ONLY — never an identity key',
+    EmailIsPrivateRelay TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1 = Email is an Apple private-relay alias (host privaterelay.appleid.com)',
+    RefreshToken    TEXT            NULL COMMENT 'Provider refresh token (Apple: minted by /auth/token code exchange at first sign-in) — required by account_delete to call Apple /auth/revoke. Useless without the owner-provisioned .p8 client secret; NEVER logged, NEVER echoed by any API',
+    IdentityJson    JSON            NULL COMMENT 'Forward-looking provider extras captured at link time: fullName snapshot (Apple sends it ONLY on first authorization), real_user_status, email_verified — additive without a second migration (rule #20)',
+    LastLoginAt     TIMESTAMP       NULL DEFAULT NULL COMMENT 'Last successful sign-in through this provider link',
+    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_provider_subject (Provider, Subject),
+    UNIQUE KEY uq_user_provider    (UserId, Provider),
+    INDEX      idx_User            (UserId),
+
+    CONSTRAINT fk_AuthProviders_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ----------------------------------------------------------------------------
+-- tblAuthNonces (#1402)
+-- Single-use nonce consumption ledger (anti-replay) for provider sign-in
+-- assertions. A nonce is CONSUMED by inserting its hash; the UNIQUE key makes
+-- a second consumption a duplicate-key error = replay = reject. Purpose is a
+-- VARCHAR discriminator (rule #20) so future flows (siwa_reauth, handoff, …)
+-- share the table without a second migration. Rows are prunable after
+-- ExpiresAt (DATETIME not TIMESTAMP — the #1066 TTL convention).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblAuthNonces (
+    Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Purpose         VARCHAR(30)     NOT NULL COMMENT 'siwa_login | siwa_reauth | … — app-validated vocabulary, VARCHAR not ENUM (rule #20)',
+    NonceHash       CHAR(64)        NOT NULL COMMENT 'sha256 hex of the RAW client nonce (raw nonce never stored)',
+    UsedAt          TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    ExpiresAt       DATETIME        NOT NULL COMMENT 'Prune horizon (UsedAt + 15 min — longer than any Apple identity-token exp window)',
+
+    UNIQUE KEY uq_purpose_nonce (Purpose, NonceHash),
+    INDEX      idx_Expires      (ExpiresAt)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
