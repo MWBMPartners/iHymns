@@ -75,6 +75,10 @@
 // `#else` branch, which never receives a real deep link) keeps compiling
 // unchanged.
 //
+// #1441 UPDATE — owns the ONE `NowPlayingViewModel` (mirrors
+// `settingsViewModel` below), `.environment(_:)`-injects it, renders
+// `NowPlayingBar` via `.safeAreaInset`. Design in those two types' headers.
+//
 // #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — the former
 // local `@State private var selectedSection` and its `private enum
 // RootSection` moved OUT into the new shared `AppNavigationState.swift`
@@ -128,6 +132,9 @@ public struct RootContainerView: View {
     /// reading whatever was last persisted to `UserDefaults.standard`.
     @State private var settingsViewModel = SettingsViewModel()
 
+    /// The ONE `NowPlayingViewModel` this app run uses (#1441).
+    @State private var nowPlayingViewModel = NowPlayingViewModel()
+
     /// #190 — whether `OnboardingView` should currently be showing. Seeded
     /// from `IHSettingsStore.hasSeenOnboarding` at first `body` evaluation
     /// (same "read once via `@State`'s default-value expression" shape
@@ -158,6 +165,10 @@ public struct RootContainerView: View {
 
     public var body: some View {
         platformRoot
+            // #1441 — every descendant reads the ONE shared player;
+            // `NowPlayingBar` renders nothing while idle.
+            .environment(nowPlayingViewModel)
+            .safeAreaInset(edge: .bottom) { NowPlayingBar(rootViewModel: viewModel) }
             // #186 — a deep link lands in its own sheet regardless of which
             // platform layout is showing underneath (see this file's header
             // for why a sheet rather than a per-section `NavigationPath`).

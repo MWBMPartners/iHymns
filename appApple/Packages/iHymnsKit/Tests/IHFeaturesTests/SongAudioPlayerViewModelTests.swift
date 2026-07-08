@@ -126,6 +126,35 @@ struct SongAudioPlayerViewModelTests {
         #expect(engine.prepareCallURLs == [Self.songURL, Self.otherSongURL])
     }
 
+    @Test("A different url while PLAYING starts the new song, rather than just pausing the old one (#1441)")
+    func differentURLWhilePlayingStartsNewSong() async {
+        // Regression test for the bug #1441 (persistent cross-screen
+        // "now playing" bar) exposed: promoting this view model to an
+        // app-level shared instance means `togglePlayPause(url:)` can now
+        // genuinely be called with a DIFFERENT url while already
+        // `.playing` — a real scenario the old one-player-per-screen
+        // ownership could never actually reach (see this method's own
+        // updated doc comment).
+        let engine = MockAudioPlaybackEngine()
+        let viewModel = SongAudioPlayerViewModel(engine: engine)
+
+        viewModel.togglePlayPause(url: Self.songURL)
+        await Self.waitUntil { viewModel.state == .playing }
+        #expect(engine.pauseCallCount == 0)
+
+        // Tapping "play" on a DIFFERENT song while this one is still
+        // playing must START the new song — NOT silently pause the old
+        // one and do nothing else.
+        viewModel.togglePlayPause(url: Self.otherSongURL)
+        #expect(viewModel.state == .loading)
+        #expect(viewModel.loadedURL == Self.otherSongURL)
+        #expect(engine.pauseCallCount == 0)
+
+        await Self.waitUntil { viewModel.state == .playing }
+        #expect(viewModel.loadedURL == Self.otherSongURL)
+        #expect(engine.prepareCallURLs == [Self.songURL, Self.otherSongURL])
+    }
+
     @Test("stop() cancels playback, forgets the loaded url, and returns to idle")
     func stopReturnsToIdle() async {
         let engine = MockAudioPlaybackEngine()

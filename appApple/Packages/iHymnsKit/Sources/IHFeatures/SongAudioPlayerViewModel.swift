@@ -80,13 +80,29 @@ public final class SongAudioPlayerViewModel {
     /// playing," "resume," or "pause."
     ///
     /// ELI5: "Tap." Works out what that should do right now.
+    ///
+    /// DETAILED (#1441 fix): `.playing`/`.paused` both now guard on
+    /// `loadedURL == url` before treating the tap as "control THIS
+    /// instance's playback" — under #184's original one-player-per-screen
+    /// ownership, `togglePlayPause(url:)` was only ever called with the
+    /// SAME url a given `SongMediaSection` instance ever held, so
+    /// `loadedURL` trivially always equalled `url` whenever `state ==
+    /// .playing`, and the un-guarded `case .playing: pause()` below was
+    /// behaviourally indistinguishable from a guarded one. Promoting this
+    /// view model to an app-level shared instance (`NowPlayingViewModel`)
+    /// makes that assumption false for the first time: tapping "play" on a
+    /// DIFFERENT song while another is already playing must START the new
+    /// song, not just pause the old one. Every PRE-#1441 call site keeps
+    /// behaving identically (its own single, unchanging url), so this is a
+    /// pure bug fix / capability addition, not a behaviour change for
+    /// existing callers.
     public func togglePlayPause(url: URL) {
         switch state {
-        case .playing:
+        case .playing where loadedURL == url:
             pause()
         case .paused where loadedURL == url:
             resume()
-        case .idle, .paused, .loading, .error:
+        case .idle, .paused, .loading, .error, .playing:
             play(url: url)
         }
     }

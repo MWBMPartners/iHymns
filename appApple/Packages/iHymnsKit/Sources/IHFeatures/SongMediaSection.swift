@@ -36,6 +36,18 @@
 // local `file://` URL exactly like a remote one (Apple's documented
 // `file://`-scheme support), so a cached asset "downloads" instantly from
 // disk instead of the network, with zero special-casing anywhere else.
+//
+// #1441 UPDATE (persistent cross-screen "now playing" bar) — the per-screen
+// `@State private var playerViewModel = SongAudioPlayerViewModel()` this
+// file used to own is GONE: playback now lives on the app-level
+// `NowPlayingViewModel` (read via `@Environment`, injected once at
+// `RootContainerView` — see that type's own header), so a recording keeps
+// playing (and the persistent `NowPlayingBar` keeps showing it) even after
+// navigating away from THIS screen. The old `.onDisappear { playerViewModel
+// .stop() }` is gone too, for the identical reason — stopping playback the
+// instant this section leaves the view hierarchy would defeat the entire
+// point of a cross-screen player; `NowPlayingBar` now owns the explicit
+// "stop" action instead.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -49,12 +61,9 @@ struct SongMediaSection: View {
     let detail: SongDetail
     let rootViewModel: AppRootViewModel
 
-    /// One player per `SongDetailView` instance (a fresh `SongMediaSection`
-    /// is created every time a new song is opened, since `SongDetailView`
-    /// itself constructs a fresh `SongDetailViewModel` per `songId` — see
-    /// that file's header) — never reused across songs, so there is no risk
-    /// of one song's playback state leaking into another's.
-    @State private var playerViewModel = SongAudioPlayerViewModel()
+    /// The ONE shared player every screen reads (#1441) — NOT owned by this
+    /// view; see this file's header.
+    @Environment(NowPlayingViewModel.self) private var nowPlayingViewModel
     @State private var isPresentingSheetMusic = false
 
     /// Which of `detail.media`'s assets (keyed by `SongMediaAsset.id`)
@@ -95,13 +104,6 @@ struct SongMediaSection: View {
             }
         }
         .ihGlassCard()
-        // Stops audio the moment this section leaves the view hierarchy
-        // (navigating back / to a different song) — a v1 "one song at a
-        // time, no persistent now-playing bar" posture matching #184's
-        // scoped brief ("a play/pause control on SongDetailView"), not a
-        // cross-screen mini-player. A persistent player is a natural v2 and
-        // is out of THIS task's scope.
-        .onDisappear { playerViewModel.stop() }
         // #1440 — checks the offline cache for every attached asset once
         // per appearance; cheap (a handful of `COUNT`-free existence checks
         // at most) and safe to re-run on every re-appearance, mirroring
@@ -151,7 +153,12 @@ struct SongMediaSection: View {
 
     @ViewBuilder
     private func audioControl(url: URL) -> some View {
-        switch playerViewModel.state {
+        // Only reflects `nowPlayingViewModel.player.state` as "this song's"
+        // state when `loadedURL` actually matches THIS asset's `url` — the
+        // shared player may currently be loaded with a DIFFERENT song
+        // (#1441), in which case this row must show its own idle "play"
+        // affordance, not a stale/foreign playing-or-paused state.
+        switch nowPlayingViewModel.player.loadedURL == url ? nowPlayingViewModel.player.state : .idle {
         case .idle, .paused:
             playPauseButton(systemImage: "play.circle.fill", accessibilityLabel: "Play", url: url)
 
@@ -164,7 +171,7 @@ struct SongMediaSection: View {
 
         case .error(let message):
             Button {
-                playerViewModel.togglePlayPause(url: url)
+                nowPlayingViewModel.togglePlayPause(song: nowPlayingSongInfo, url: url)
             } label: {
                 Image(systemName: "exclamationmark.triangle")
             }
@@ -176,13 +183,22 @@ struct SongMediaSection: View {
 
     private func playPauseButton(systemImage: String, accessibilityLabel: String, url: URL) -> some View {
         Button {
-            playerViewModel.togglePlayPause(url: url)
+            nowPlayingViewModel.togglePlayPause(song: nowPlayingSongInfo, url: url)
         } label: {
             Image(systemName: systemImage)
                 .font(.title2)
         }
         .foregroundStyle(IHColorTokens.accent)
         .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// This screen's song, reduced to what `NowPlayingViewModel`/
+    /// `NowPlayingBar` need (#1441) — built fresh on every call rather than
+    /// cached, mirroring `SongDetailView.setlistEntry`'s identical
+    /// "cheap enough to derive on demand" posture for an equivalent small
+    /// receipt type.
+    private var nowPlayingSongInfo: NowPlayingSongInfo {
+        NowPlayingSongInfo(songId: detail.songId, title: detail.title, songbookAbbreviation: detail.songbookAbbreviation, number: detail.number)
     }
 
     // MARK: - Sheet music
