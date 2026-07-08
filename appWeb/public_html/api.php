@@ -7672,13 +7672,30 @@ if ($action !== null) {
             $deletedLoginAttempts = $stmt->affected_rows;
             $stmt->close();
 
+            /* Old analytics events (90+ days) — retention purge (#1448 review
+               finding A4). The ingest table stores no PII/user/IP, but it
+               shouldn't grow unbounded. Guarded: tblAppAnalyticsEvents may
+               not exist on an un-migrated docroot (migrations are web-run),
+               and under mysqli STRICT a missing-table DELETE THROWS — skip it
+               gracefully rather than failing the whole GC run. */
+            $deletedAnalyticsEvents = 0;
+            try {
+                $stmt = $db->prepare('DELETE FROM tblAppAnalyticsEvents WHERE ReceivedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 90 DAY)');
+                $stmt->execute();
+                $deletedAnalyticsEvents = $stmt->affected_rows;
+                $stmt->close();
+            } catch (\Throwable $_e) {
+                /* Table absent on this docroot — nothing to purge. */
+            }
+
             sendJson([
                 'ok' => true,
                 'deleted' => [
-                    'apiTokens'     => $deletedApiTokens,
-                    'emailTokens'   => $deletedEmailTokens,
-                    'resetTokens'   => $deletedResetTokens,
-                    'loginAttempts' => $deletedLoginAttempts,
+                    'apiTokens'       => $deletedApiTokens,
+                    'emailTokens'     => $deletedEmailTokens,
+                    'resetTokens'     => $deletedResetTokens,
+                    'loginAttempts'   => $deletedLoginAttempts,
+                    'analyticsEvents' => $deletedAnalyticsEvents,
                 ],
             ]);
             break;
@@ -8580,8 +8597,25 @@ if ($action !== null) {
                minute even with many queued events, so this budgets calls,
                not individual events. */
             checkRateLimit('analytics_ingest', $ip, 20, 60, true);
+            /* Count EVERY request toward the cap, before validation — not
+               only successful inserts (review finding A1). A flood of
+               malformed / all-rejected bodies still costs a rate-limit
+               SELECT against the auth-shared tblLoginAttempts, so it must be
+               throttled by the same 20/60s budget; recording only on the
+               success path let that exact flood bypass the limiter. Recorded
+               once here and NOT again on success (avoids double-counting). */
+            recordRateLimitHit('analytics_ingest', $ip);
 
-            $body = json_decode((string)file_get_contents('php://input'), true);
+            $rawBody = (string)file_get_contents('php://input');
+            /* Explicit inner body cap before decode (review finding A3):
+               50 small events fit well under 256 KB; a larger body is
+               rejected without materialising a big decoded structure.
+               php.ini post_max_size is the outer bound; this is the inner. */
+            if (strlen($rawBody) > 262144) {
+                sendJson(['error' => 'Request body too large.'], 413);
+                break;
+            }
+            $body = json_decode($rawBody, true);
             if (!is_array($body)) {
                 sendJson(['error' => 'Invalid JSON body.'], 400);
                 break;
@@ -8633,7 +8667,8 @@ if ($action !== null) {
                 }
                 $stmt->close();
 
-                recordRateLimitHit('analytics_ingest', $ip);
+                /* Rate-limit hit already recorded before validation (A1) —
+                   not repeated here. */
                 sendJson(['ok' => true, 'accepted' => count($accepted), 'rejected' => $rejected]);
             } catch (\Throwable $e) {
                 error_log('[analytics_ingest] ' . $e->getMessage());
