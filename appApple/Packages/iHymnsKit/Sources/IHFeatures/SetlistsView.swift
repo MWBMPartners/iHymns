@@ -112,6 +112,10 @@ public struct SetlistsView: View {
                 }
             }
             .listStyle(.plain)
+            // #185 — pull-to-refresh re-syncs setlists with the server (no
+            // `LoadState`/error surface here either — same reasoning as
+            // `FavoritesView`'s own `.refreshable` above).
+            .refreshable { await rootViewModel.refreshSetlistsFromServer() }
         }
     }
 

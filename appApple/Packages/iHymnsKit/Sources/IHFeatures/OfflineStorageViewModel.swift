@@ -16,6 +16,15 @@
 // `OfflineStore` of its own, the same "reach the ONE engine instance
 // through the root view model" rule every other screen in this package
 // follows (`SongDetailViewModel`'s own header states it explicitly).
+//
+// #1440 UPDATE (offline media caching) — `totalBytes` (lyrics only) now
+// has a sibling, `totalMediaBytes` (cached audio/PDF/MIDI/MusicXML), and
+// `totalSizeDisplay` reports their COMBINED figure — the screen's headline
+// "Total Size" should read as "everything this device downloaded for
+// offline use," not just the lyrics half. `remove(_:)`/`removeAll()` both
+// now cascade into the media cache too, so removing a song (or everything)
+// here never leaves orphaned cached files behind with no surviving
+// `saved_song` row.
 import Foundation
 import IHModels
 import IHPersistence
@@ -40,6 +49,14 @@ public final class OfflineStorageViewModel {
 
     /// The combined size, in bytes, of every saved song's cached lyrics.
     public private(set) var totalBytes = 0
+
+    /// The combined size, in bytes, of every cached media file (audio/
+    /// sheet-music/MIDI/MusicXML, #1440) across every song — a SEPARATE
+    /// figure from `totalBytes` above (lyrics text is typically a few KB;
+    /// a single cached recording can be several MB), surfaced as its own
+    /// "Media Downloads" row so the split is honest rather than folded
+    /// silently into one number.
+    public private(set) var totalMediaBytes = 0
 
     /// Whether `loadIfNeeded()` has already populated this view model this
     /// screen visit — same one-shot-guard shape as
@@ -68,29 +85,44 @@ public final class OfflineStorageViewModel {
     public func refresh() async {
         savedSongs = (try? await rootViewModel.allSavedSongs()) ?? []
         totalBytes = (try? await rootViewModel.totalSavedSongBytes()) ?? 0
+        totalMediaBytes = (try? await rootViewModel.totalCachedMediaBytes()) ?? 0
     }
 
-    /// Removes one saved song (swipe-to-delete), then refreshes.
+    /// Removes one saved song (swipe-to-delete) AND any media cached
+    /// alongside it (#1440), then refreshes.
     ///
-    /// ELI5: "Forget just this one saved song."
+    /// ELI5: "Forget just this one saved song, and anything downloaded for
+    /// it."
     public func remove(_ songId: SongID) async {
         try? await rootViewModel.removeSavedSong(songId)
+        try? await rootViewModel.removeAllCachedMedia(forSong: songId)
         await refresh()
     }
 
-    /// Removes EVERY saved song, then refreshes — `OfflineStorageView`'s
-    /// confirmed "Remove All Downloads" action.
+    /// Removes EVERY saved song AND every cached media file (#1440), then
+    /// refreshes — `OfflineStorageView`'s confirmed "Remove All Downloads"
+    /// action.
     ///
-    /// ELI5: "Forget everything I've saved for offline."
+    /// ELI5: "Forget everything I've saved for offline — songs and
+    /// downloaded files both."
     public func removeAll() async {
         try? await rootViewModel.removeAllSavedSongs()
+        try? await rootViewModel.removeAllCachedMedia()
         await refresh()
     }
 
-    /// `totalBytes`, formatted for display (e.g. `"4.2 MB"`) —
-    /// `ByteCountFormatter` is available on every Apple platform this
-    /// package targets, so this needs no platform-specific fallback.
+    /// `totalBytes` + `totalMediaBytes` combined, formatted for display
+    /// (e.g. `"4.2 MB"`) — `ByteCountFormatter` is available on every Apple
+    /// platform this package targets, so this needs no platform-specific
+    /// fallback.
     public var totalSizeDisplay: String {
-        ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file)
+        ByteCountFormatter.string(fromByteCount: Int64(totalBytes + totalMediaBytes), countStyle: .file)
+    }
+
+    /// `totalMediaBytes` alone, formatted the same way — `OfflineStorageView`'s
+    /// separate "Media Downloads" row (#1440), so a user can see the
+    /// lyrics-vs-media split rather than only the combined total above.
+    public var mediaSizeDisplay: String {
+        ByteCountFormatter.string(fromByteCount: Int64(totalMediaBytes), countStyle: .file)
     }
 }

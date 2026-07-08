@@ -36,6 +36,28 @@ declare(strict_types=1);
  * cache lifetime is one day (re-validation cost is negligible vs the
  * benefit of the audio element NOT re-fetching the whole file when
  * the user clicks elsewhere on the song page).
+ *
+ * CONDITIONAL GET (#1452):
+ * ELI5 — every media row already carries a fingerprint (Sha256) and a
+ * "last touched" timestamp (UpdatedAt); we hand those back as ETag /
+ * Last-Modified so a client that already has the bytes can ask "is this
+ * still current?" instead of re-downloading.
+ * DETAILED — #1450 (native offline media cache) shipped a client-side
+ * sizeBytes+TTL heuristic specifically because this route sent no
+ * validators, which misses the narrow case of a same-size replacement
+ * file. `tblSongMedia.Sha256` is a real content hash computed at upload
+ * time (SongMediaStorage::store(), every INSERT site) — a stronger,
+ * cheaper-to-check validator than re-hashing the body per request, so
+ * it's used as-is for a strong ETag; `UpdatedAt` (ON UPDATE
+ * CURRENT_TIMESTAMP) backs Last-Modified as a fallback for clients that
+ * only implement date-based revalidation. Mirrors the ETag/304 pattern
+ * already used for cacheable SPA fragments in api.php (queue the
+ * validator headers unconditionally, then short-circuit to 304 with no
+ * body when the client's cached copy still matches) — see api.php's
+ * `$_shouldCachePage` block. The conditional check runs AFTER
+ * checkContentAccess() below, never before: a 304 short-circuit must
+ * never leak "yes, this exists and is unchanged" to a caller who isn't
+ * even allowed to see it turn into a 403.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
@@ -127,7 +149,7 @@ if (!$hasSchema) {
 try {
     $stmt = $db->prepare(
         'SELECT Id, SongId, Kind, StorageBackend, FileName, MimeType,
-                SizeBytes, Content, StoragePath
+                SizeBytes, Content, StoragePath, Sha256, UpdatedAt
            FROM tblSongMedia WHERE Id = ? LIMIT 1'
     );
     $stmt->bind_param('i', $id);
@@ -174,6 +196,50 @@ $disposition = ($kind === 'audio') ? 'inline' : 'attachment';
 $cdAscii     = preg_replace('/[^\x20-\x7e]/', '_', $fileName) ?: 'file';
 $cdUtf8      = rawurlencode($fileName);
 
+/* ---------- Conditional GET (#1452) -------------------------------- */
+
+/* ELI5: turn the row's fingerprint + last-touched time into the two
+   standard "have you already got this?" headers.
+   DETAILED: Sha256 is a real content hash computed once at upload time
+   (SongMediaStorage::store()), so it's used verbatim as a STRONG ETag —
+   no re-hashing the blob/file per request. UpdatedAt backs Last-Modified
+   for clients that only implement date-based revalidation. Both are
+   queued unconditionally (same pattern as api.php's cacheable-page ETag
+   block) so they're present on the 200/206 response too, and on the 304
+   short-circuit below. */
+$etag = '"' . (string)$row['Sha256'] . '"';
+$lastModifiedTs   = strtotime((string)$row['UpdatedAt'] . ' UTC') ?: null;
+$lastModifiedHttp = ($lastModifiedTs !== null) ? gmdate('D, d M Y H:i:s', $lastModifiedTs) . ' GMT' : null;
+
+header('ETag: ' . $etag);
+if ($lastModifiedHttp !== null) {
+    header('Last-Modified: ' . $lastModifiedHttp);
+}
+header('Cache-Control: private, max-age=86400');
+
+/* Per RFC 7232 §6, a GET/HEAD with If-None-Match present ignores
+   If-Modified-Since entirely — only fall back to the date check when
+   the client sent no ETag validator at all. */
+$ifNoneMatch = trim((string)($_SERVER['HTTP_IF_NONE_MATCH'] ?? ''));
+$notModified = false;
+if ($ifNoneMatch !== '') {
+    $notModified = ($ifNoneMatch === '*') || ($ifNoneMatch === $etag);
+} elseif ($lastModifiedTs !== null) {
+    $ifModifiedSince = trim((string)($_SERVER['HTTP_IF_MODIFIED_SINCE'] ?? ''));
+    if ($ifModifiedSince !== '') {
+        $imsTs = strtotime($ifModifiedSince);
+        $notModified = ($imsTs !== false && $lastModifiedTs <= $imsTs);
+    }
+}
+
+/* checkContentAccess() above has ALREADY run — a 304 here only ever
+   confirms "unchanged" to a caller who was just proven allowed to see
+   the 200 body in the first place. Never move this check earlier. */
+if ($notModified) {
+    http_response_code(304);
+    exit;
+}
+
 /* ---------- Range parsing ----------------------------------------- */
 
 $rangeHeader = $_SERVER['HTTP_RANGE'] ?? '';
@@ -212,9 +278,11 @@ $length = $rangeEnd - $rangeStart + 1;
 
 /* ---------- Headers ---------------------------------------------- */
 
+/* Cache-Control / ETag / Last-Modified were already queued in the
+   Conditional GET block above (#1452) — set once, applies to this
+   200/206 response the same as it would have to a 304. */
 header('Content-Type: ' . $mime);
 header('Accept-Ranges: bytes');
-header('Cache-Control: private, max-age=86400');
 header('Content-Length: ' . $length);
 header(
     'Content-Disposition: ' . $disposition

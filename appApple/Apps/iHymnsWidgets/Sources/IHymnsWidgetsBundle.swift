@@ -18,6 +18,16 @@
 // the iOS variant of the multiplatform host app for now; Phase 1.5 widens
 // this alongside the real widget set strategy §2.3 describes for macOS/
 // visionOS too.
+//
+// #1412 NOTE — `IHFonts.registerBundledFonts()` (`IHDesign`) is
+// deliberately NOT called from this shell yet: this Phase-0 placeholder
+// renders only the literal string "iHymns" in the system `.headline` font,
+// no lyric/song text (`PhaseZeroWidgetView` below), so there is nothing
+// here for the bundled OpenDyslexic font to apply to. Wire it in
+// alongside the real Song-of-the-Day/favourites/resume widgets (Phase
+// 1.5, strategy §2.3) if/when they render lyric snippets — this extension
+// is its own separate process, so it needs its own registration call at
+// that point, exactly like the three `App` shells' `init()`.
 import IHDesign
 import SwiftUI
 import WidgetKit

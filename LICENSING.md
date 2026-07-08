@@ -55,6 +55,17 @@ Integrity where applicable). On any dependency add/update: record it here with
 its licence, confirm licence compatibility with proprietary distribution, and
 check the version against published CVEs.
 
+### Apple app (`appApple/`)
+
+| Component | Version | Licence | Notes |
+|---|---|---|---|
+| **GRDB.swift** | 7.11.1 (exact-pinned, `Package.swift`) | MIT — © 2015-2025 Gwendal Roué | The offline cache engine (`IHPersistence`) — full-text search, on-disk migrations, Swift 6 concurrency support for saved songs, setlists, and favourites |
+| **OpenDyslexic** | Regular/Bold/Italic/BoldItalic | **SIL Open Font License 1.1** — © 2019 Abbie Gonzalez, Reserved Font Name "OpenDyslexic" ([scripts.sil.org/OFL](https://scripts.sil.org/OFL)) | Bundled font for the dyslexia-friendly reading mode (`IHDesign/IHReadingMode.swift`'s `dyslexiaFontName`/`dyslexiaItalicFontName`), registered at launch via CoreText (`IHDesign/IHFonts.swift`). The four `.otf` files + the full licence text ship at `appApple/Packages/iHymnsKit/Sources/IHDesign/Resources/Fonts/` (incl. `OpenDyslexic-OFL.txt`) |
+
+Surfaced to the user in-app via Settings → Legal → Acknowledgements
+(`IHFeatures/AcknowledgementsView.swift`, backed by
+`IHAppSupport/IHAcknowledgement.swift`'s `IHAcknowledgements.all()` — #190).
+
 ## 3. Song content — copyright
 
 iHymns is a catalogue/reader; it **does not claim ownership of the hymns and

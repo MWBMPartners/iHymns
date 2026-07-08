@@ -26,6 +26,7 @@
 // Never filters `Songbook.isOfficial == false` books out (CLAUDE.md rule
 // #24) — every songbook the server returns gets a tile, official or not,
 // distinguished only by `IHUnofficialBadge`.
+import IHDesign
 import IHModels
 import SwiftUI
 
@@ -48,8 +49,21 @@ public struct SongbooksView: View {
             .navigationDestination(for: Songbook.self) { songbook in
                 SongbookSongsView(songbook: songbook, rootViewModel: rootViewModel)
             }
+            // Two SongID-family destinations, kept SIDE BY SIDE (#185): a
+            // bare `SongID` still lands on a plain `SongDetailView` (nothing
+            // inside `SongbookSongsView` pushes that anymore, but
+            // `SongMetadataView`/`RelatedSongsShelfView`/`SongWorksSection`
+            // INSIDE whichever `SongDetailView` is currently showing still
+            // push bare `SongID`s of their own — e.g. tapping a "Related
+            // Songs" shelf item — and those pushes bubble up to THIS stack's
+            // nearest registered destination, so removing this would silently
+            // break them). `SongPagerRequest` is the new swipe/keyboard
+            // -paged destination `SongbookSongsView`'s own rows push instead.
             .navigationDestination(for: SongID.self) { songId in
                 SongDetailView(songId: songId, rootViewModel: rootViewModel)
+            }
+            .navigationDestination(for: SongPagerRequest.self) { request in
+                SongPagerView(initialSongId: request.songId, context: request.context, rootViewModel: rootViewModel)
             }
             .task { await viewModel.loadIfNeeded() }
     }
@@ -62,11 +76,12 @@ public struct SongbooksView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Songbooks",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card; `viewModel.load()` is
+            // the exact "future manual retry" hook its own doc comment
+            // already anticipated.
+            IHLoadErrorView(title: "Couldn't Load Songbooks", message: message) {
+                await viewModel.load()
+            }
 
         case .loaded(let songbooks):
             if songbooks.isEmpty {
@@ -84,6 +99,8 @@ public struct SongbooksView: View {
                     }
                     .padding()
                 }
+                // #185 — pull-to-refresh re-fetches the songbook list.
+                .refreshable { await viewModel.load() }
             }
         }
     }

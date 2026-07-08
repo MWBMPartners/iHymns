@@ -143,6 +143,10 @@ extension AppRootViewModel {
         guard !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         recentSearchesStore.record(searchText)
         recentSearches = recentSearchesStore.load()
+        // #189 — the query text itself is never recorded (see
+        // `IHAnalyticsEvent.searchPerformed`'s own header for why), only how
+        // many results it produced.
+        IHAnalyticsService().searchPerformed(resultCount: filteredSongs.count)
     }
 
     /// Re-runs a previously recorded search — sets `searchText` directly,

@@ -64,6 +64,34 @@
 // iOS/iPadOS/macOS/visionOS `IHymns` app shell (`Apps/iHymns/`) actually
 // instantiates this type today — tvOS/watch keep `PhaseZeroSkeletonView`
 // per this task's explicit scope ("Keep the tvOS/watch shells compiling").
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — adds `incomingDeepLink`,
+// a `Binding<DeepLink?>` `IHymnsApp.swift` sets from its `.onOpenURL`/
+// `.onContinueUserActivity` handlers. Presented as its OWN `.sheet(item:)`
+// (see `DeepLinkDestinationView.swift`'s header for why a sheet rather than
+// trying to programmatically drive one of the seven independent per-section
+// `NavigationStack`s below) — defaults to `.constant(nil)` so every existing
+// `RootContainerView(viewModel:)` call site (incl. tvOS/watchOS's own
+// `#else` branch, which never receives a real deep link) keeps compiling
+// unchanged.
+//
+// #1441 UPDATE — owns the ONE `NowPlayingViewModel` (mirrors
+// `settingsViewModel` below), `.environment(_:)`-injects it, renders
+// `NowPlayingBar` via `.safeAreaInset`. Design in those two types' headers.
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — the former
+// local `@State private var selectedSection` and its `private enum
+// RootSection` moved OUT into the new shared `AppNavigationState.swift`
+// (see that file's header for the full reasoning): this view now takes a
+// `navigationState` parameter (defaulted, so every pre-#185 call site keeps
+// compiling unchanged) instead of owning that state itself, so
+// `IHymnsApp.swift`'s new Mac menu-bar commands can drive section switching
+// from OUTSIDE this view too. Also wires the compact `TabView`'s
+// `selection:` for the first time — it previously had NONE, meaning nothing
+// could ever programmatically switch tabs (a real gap this task's own audit
+// found: neither a Mac command NOR any other in-app affordance could jump
+// to, say, Search).
+import IHAppSupport
 import IHDesign
 import SwiftUI
 
@@ -73,14 +101,27 @@ import SwiftUI
 public struct RootContainerView: View {
     private let viewModel: AppRootViewModel
 
-    /// Which top-level section the iPad(regular)/Mac/visionOS sidebar is
-    /// currently showing in its CONTENT column — `nil` only if the sidebar
-    /// `List`'s selection is ever cleared by the user; `splitView` treats
-    /// that the same as `.home` (see `content:` below) so the content
-    /// column is never left blank. Defaults to `.home` — the Home surface
-    /// (#183) is now the app's flagship landing screen, not the catalogue
-    /// list.
-    @State private var selectedSection: RootSection? = .home
+    /// Which top-level section is showing, plus whether the
+    /// keyboard-shortcuts help sheet is open (#185) — see
+    /// `AppNavigationState.swift`'s header for why this moved out of a
+    /// local `@State` here.
+    @Bindable private var navigationState: AppNavigationState
+
+    /// The most recently resolved inbound Universal Link / Handoff
+    /// continuation, set by `IHymnsApp.swift`'s `.onOpenURL`/
+    /// `.onContinueUserActivity` handlers — `nil` the rest of the time.
+    /// Consumed (reset to `nil`) the instant it's turned into a
+    /// `presentedDeepLink` below, so tapping the SAME link twice in a row
+    /// still re-presents (a `Binding`'s `onChange` only fires on an actual
+    /// nil→non-nil transition, not a same-value re-assignment).
+    @Binding private var incomingDeepLink: DeepLink?
+
+    /// The `.sheet(item:)` binding that actually shows a deep link's
+    /// destination — a `DeepLinkPresentation` (UUID-`Identifiable` wrapper,
+    /// see `DeepLinkDestinationView.swift`) rather than `DeepLink` itself,
+    /// so re-presenting an identical link is never suppressed by
+    /// `Identifiable`-based sheet diffing.
+    @State private var presentedDeepLink: DeepLinkPresentation?
 
     /// The ONE `SettingsViewModel` for this app run (#182) — held here, not
     /// in the app shell, per `SettingsViewModel`'s own header ("`RootContainerView`
@@ -90,6 +131,16 @@ public struct RootContainerView: View {
     /// initializer so it's built exactly once at first `body` evaluation,
     /// reading whatever was last persisted to `UserDefaults.standard`.
     @State private var settingsViewModel = SettingsViewModel()
+
+    /// The ONE `NowPlayingViewModel` this app run uses (#1441).
+    @State private var nowPlayingViewModel = NowPlayingViewModel()
+
+    /// #190 — whether `OnboardingView` should currently be showing. Seeded
+    /// from `IHSettingsStore.hasSeenOnboarding` at first `body` evaluation
+    /// (same "read once via `@State`'s default-value expression" shape
+    /// `settingsViewModel` above already uses) — `true` (never seen) on a
+    /// genuinely fresh install, `false` on every later launch.
+    @State private var isPresentingOnboarding = !IHSettingsStore().hasSeenOnboarding
 
     /// The reading mode to inject into `\.ihReadingMode` (#1412) — derived
     /// from the persisted dyslexia toggle. A tiny mapping helper so the two
@@ -102,16 +153,75 @@ public struct RootContainerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
-    public init(viewModel: AppRootViewModel) {
+    public init(
+        viewModel: AppRootViewModel,
+        navigationState: AppNavigationState = AppNavigationState(),
+        incomingDeepLink: Binding<DeepLink?> = .constant(nil)
+    ) {
         self.viewModel = viewModel
+        self.navigationState = navigationState
+        _incomingDeepLink = incomingDeepLink
     }
 
     public var body: some View {
+        platformRoot
+            // #1441 — every descendant reads the ONE shared player;
+            // `NowPlayingBar` renders nothing while idle.
+            .environment(nowPlayingViewModel)
+            .safeAreaInset(edge: .bottom) { NowPlayingBar(rootViewModel: viewModel) }
+            // #186 — a deep link lands in its own sheet regardless of which
+            // platform layout is showing underneath (see this file's header
+            // for why a sheet rather than a per-section `NavigationPath`).
+            .sheet(item: $presentedDeepLink) { presentation in
+                DeepLinkDestinationView(link: presentation.link, rootViewModel: viewModel)
+            }
+            .onChange(of: incomingDeepLink) { _, newValue in
+                guard let newValue else { return }
+                presentedDeepLink = DeepLinkPresentation(link: newValue)
+                incomingDeepLink = nil
+            }
+            // #185 — the Mac ⌘/ command (and a Settings row) flip this;
+            // presented HERE rather than per-section so it works no matter
+            // which tab/sidebar section is currently showing.
+            .sheet(isPresented: $navigationState.isPresentingKeyboardShortcutsHelp) {
+                KeyboardShortcutsOverlayView()
+            }
+            // #189 — one wiring point covers "screen appears" for every
+            // top-level section: `initial: true` fires immediately for the
+            // launch screen too (SwiftUI's documented `onChange(of:initial:
+            // _:)` behaviour), not just on later tab/sidebar switches. A
+            // fresh `IHAnalyticsService()` per change is intentional — see
+            // that type's own header for why it's cheap and correct to
+            // construct on demand rather than held as long-lived state here.
+            .onChange(of: navigationState.selectedSection, initial: true) { _, newSection in
+                IHAnalyticsService().screenViewed(newSection.title)
+            }
+            // #190 — a plain `.sheet` (not `.fullScreenCover`, which has no
+            // macOS support — see `OnboardingView`'s own header) gated on
+            // `isPresentingOnboarding`. `onDismiss` persists "seen" no
+            // matter HOW the sheet closed — `OnboardingView`'s own Skip/Get
+            // Started (which flip the binding directly) OR a swipe-to-
+            // dismiss on iOS — so onboarding can never accidentally
+            // re-appear on the next launch either way.
+            .sheet(isPresented: $isPresentingOnboarding, onDismiss: markOnboardingSeen) {
+                OnboardingView { isPresentingOnboarding = false }
+            }
+    }
+
+    /// Persists `IHSettingsStore.hasSeenOnboarding = true` — see the
+    /// `.sheet(onDismiss:)` call above for why this fires regardless of
+    /// which affordance closed the sheet.
+    private func markOnboardingSeen() {
+        IHSettingsStore().hasSeenOnboarding = true
+    }
+
+    @ViewBuilder
+    private var platformRoot: some View {
         #if os(macOS) || os(visionOS)
         splitView
             .task { await restoreAndSync() }
             .preferredColorScheme(settingsViewModel.theme.colorScheme)
-            .environment(\.ihReadingMode, readingMode)
+            .ihAppearanceEnvironment(readingMode: readingMode, theme: settingsViewModel.theme)
         #elseif os(iOS)
         Group {
             if horizontalSizeClass == .compact {
@@ -126,9 +236,9 @@ public struct RootContainerView: View {
         // `.highContrast` force that scheme. Applied at the ROOT so every
         // pushed screen re-themes the instant the picker changes.
         .preferredColorScheme(settingsViewModel.theme.colorScheme)
-        // #1412 — every lyric line reads its font/spacing from this one
-        // injection, so toggling dyslexia mode re-renders the whole app.
-        .environment(\.ihReadingMode, readingMode)
+        // #1412/#1438 — reading mode + theme-derived contrast boost, see
+        // IHAppearanceTheme.swift's `ihAppearanceEnvironment` doc comment.
+        .ihAppearanceEnvironment(readingMode: readingMode, theme: settingsViewModel.theme)
         #else
         // tvOS/watchOS: not wired to any shell yet (see file header) — a
         // plain stack keeps this FILE compiling on those platforms without
@@ -171,42 +281,54 @@ public struct RootContainerView: View {
     /// top-level screen, each hosting its OWN `NavigationStack` so pushing
     /// a song from Home, the catalogue, OR a songbook's song list never
     /// contends with a shared navigation path.
+    ///
+    /// #185 — now bound to `navigationState.selectedSection` (previously NO
+    /// `selection:` binding existed at all, so nothing could ever
+    /// programmatically switch tabs); each tab's `.tag(_:)` is what makes
+    /// that binding actually route to the right one.
     private var tabbedRoot: some View {
-        TabView {
+        TabView(selection: $navigationState.selectedSection) {
             NavigationStack {
                 HomeView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.home.title, systemImage: RootSection.home.systemImage) }
+            .tag(RootSection.home)
 
             NavigationStack {
                 SongbooksView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.songbooks.title, systemImage: RootSection.songbooks.systemImage) }
+            .tag(RootSection.songbooks)
 
             NavigationStack {
                 CatalogueListView(viewModel: viewModel)
             }
             .tabItem { Label(RootSection.search.title, systemImage: RootSection.search.systemImage) }
+            .tag(RootSection.search)
 
             NavigationStack {
                 FavoritesView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.favorites.title, systemImage: RootSection.favorites.systemImage) }
+            .tag(RootSection.favorites)
 
             NavigationStack {
                 SetlistsView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.setlists.title, systemImage: RootSection.setlists.systemImage) }
+            .tag(RootSection.setlists)
 
             NavigationStack {
                 liveComingSoonView
             }
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
+            .tag(RootSection.live)
 
             NavigationStack {
                 SettingsView(rootViewModel: viewModel, settings: settingsViewModel)
             }
             .tabItem { Label(RootSection.settings.title, systemImage: RootSection.settings.systemImage) }
+            .tag(RootSection.settings)
         }
     }
 
@@ -216,12 +338,23 @@ public struct RootContainerView: View {
     /// the placeholder) as the DETAIL column.
     private var splitView: some View {
         NavigationSplitView {
-            List(RootSection.allCases, selection: $selectedSection) { section in
+            // `List(selection:)` wants an OPTIONAL binding (a sidebar
+            // selection can be momentarily empty mid-diff); `navigationState
+            // .selectedSection` itself stays non-optional (simpler for
+            // `TabView`/the Mac commands, neither of which has a "nothing
+            // selected" state) — this small adapter bridges the two, folding
+            // a cleared selection straight back to `.home` rather than ever
+            // leaving the content column blank.
+            let sidebarSelection = Binding<RootSection?>(
+                get: { navigationState.selectedSection },
+                set: { navigationState.selectedSection = $0 ?? .home }
+            )
+            List(RootSection.allCases, selection: sidebarSelection) { section in
                 Label(section.title, systemImage: section.systemImage).tag(section)
             }
             .navigationTitle("iHymns")
         } content: {
-            switch selectedSection ?? .home {
+            switch navigationState.selectedSection {
             case .home:
                 HomeView(rootViewModel: viewModel)
             case .songbooks:
@@ -261,45 +394,7 @@ public struct RootContainerView: View {
     }
 }
 
-/// The top-level screens `RootContainerView` switches between — a tab on
-/// iPhone, a sidebar row on iPad/Mac/vision.
-private enum RootSection: String, CaseIterable, Identifiable, Hashable {
-    case home
-    case songbooks
-    case search
-    case favorites
-    case setlists
-    case live
-    // #182 — the former standalone `.account` section became `.settings`:
-    // the Settings screen (`SettingsView`) NESTS the account UI inside it
-    // (an "Account" row → `AccountView`), matching the conventional iOS
-    // "Apple ID sits at the top of Settings" shape and keeping the compact
-    // `TabView` at 7 tabs rather than overflowing into a system "More" tab.
-    case settings
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .home: "Home"
-        case .songbooks: "Songbooks"
-        case .search: "Search"
-        case .favorites: "Favourites"
-        case .setlists: "Setlists"
-        case .live: "Live"
-        case .settings: "Settings"
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .home: "house"
-        case .songbooks: "books.vertical"
-        case .search: "magnifyingglass"
-        case .favorites: "heart"
-        case .setlists: "list.bullet.rectangle.portrait"
-        case .live: "dot.radiowaves.left.and.right"
-        case .settings: "gearshape"
-        }
-    }
-}
+// `RootSection` (#185: moved to `AppNavigationState.swift`, and made
+// `public` there so `IHymnsApp.swift`'s Mac menu commands can reference it
+// too) used to live here as a `private enum` — see that file's header for
+// the full reasoning.

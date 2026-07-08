@@ -58,11 +58,21 @@ define('USER_DNT', (
 ));
 
 /* =========================================================================
- * APP STORE VERIFICATION
+ * APP STORE VERIFICATION (#1403)
  *
  * Checks whether a native app is actually published and available in the
  * relevant app store. Results are cached for 24 hours (file-based) so we
  * don't call the API on every page load.
+ *
+ * The store ID/ASIN/package can come from TWO sources — the admin-editable
+ * tblAppSettings rows set on /manage/configuration (native_app_ios /
+ * _android / _amazon, read via getAppSetting()) OR the legacy
+ * APP_CONFIG['native_apps'] code-constant fallback — and either source may
+ * hold a bare ID or a full store URL. ihymnsParseAppStoreId() below is the
+ * ONE parser both this function AND the admin save handler
+ * (manage/configuration.php's save_native_apps) call, so what the admin's
+ * paste is validated against can never drift from what this function later
+ * resolves.
  *
  * Usage:
  *   $result = verifyAppStoreApp('ios', 'https://apps.apple.com/app/ihymns/id1234567890');
@@ -71,34 +81,122 @@ define('USER_DNT', (
  * ========================================================================= */
 
 /**
+ * Parse a native-app-store identifier out of either a bare ID/ASIN/package
+ * or a full store URL. Shared by verifyAppStoreApp() (below) and the
+ * /manage/configuration save_native_apps handler — ONE place decides what
+ * counts as a valid ID per platform, so the admin's saved value and the
+ * public site's resolution of it can never disagree.
+ *
+ * @param string $platform 'ios' | 'android' | 'amazon'
+ * @param string $input    Bare ID/ASIN/package, OR a full store URL
+ * @return string|null Canonical ID (uppercased for the Amazon ASIN),
+ *                      or null when $input doesn't match the platform's
+ *                      expected shape at all (caller should reject/ignore).
+ */
+function ihymnsParseAppStoreId(string $platform, string $input): ?string {
+    $input = trim($input);
+    if ($input === '') {
+        return null;
+    }
+
+    if ($platform === 'ios') {
+        /* Apple App Store: .../id1234567890, or a bare numeric ID. The
+           universal app (iOS/iPadOS/macOS/tvOS/watchOS/visionOS) shares
+           this one App Store listing/ID. */
+        if (preg_match('/id(\d{5,})/', $input, $m)) {
+            return $m[1];
+        }
+        if (preg_match('/^\d{5,}$/', $input)) {
+            return $input;
+        }
+        return null;
+    }
+
+    if ($platform === 'android') {
+        /* Google Play: ...?id=com.example.app, or a bare package name. */
+        if (preg_match('/[?&]id=([a-zA-Z0-9_.]+)/', $input, $m)) {
+            return $m[1];
+        }
+        if (preg_match('/^[a-zA-Z0-9_.]+$/', $input)) {
+            return $input;
+        }
+        return null;
+    }
+
+    if ($platform === 'amazon') {
+        /* Amazon Appstore (Fire OS): .../dp/B0XXXXXXXX (10-char ASIN), or
+           a bare ASIN. */
+        if (preg_match('#/dp/([A-Za-z0-9]{10})(?:[/?]|$)#', $input, $m)) {
+            return strtoupper($m[1]);
+        }
+        if (preg_match('/^[A-Za-z0-9]{10}$/', $input)) {
+            return strtoupper($input);
+        }
+        return null;
+    }
+
+    return null;
+}
+
+/**
+ * Build the canonical, template-based store URL for a validated app ID.
+ * NEVER built from the admin's raw pasted string — only from an ID that
+ * has already passed ihymnsParseAppStoreId() — so a malformed or
+ * attacker-controlled value can never reach the DOM (meta tags, the
+ * window.iHymnsConfig JSON island, or pwa.js's native-app banner link).
+ *
+ * @param string $platform 'ios' | 'android' | 'amazon'
+ * @param string $appId    Canonical ID, as returned by ihymnsParseAppStoreId()
+ * @return string|null
+ */
+function ihymnsAppStoreCanonicalUrl(string $platform, string $appId): ?string {
+    return match ($platform) {
+        'ios'     => 'https://apps.apple.com/app/id' . $appId,
+        'android' => 'https://play.google.com/store/apps/details?id=' . $appId,
+        'amazon'  => 'https://www.amazon.com/dp/' . $appId,
+        default   => null,
+    };
+}
+
+/**
+ * Resolve a native-app store value: the admin-set tblAppSettings row (read
+ * by the caller via getAppSetting()) FIRST, falling back to the
+ * APP_CONFIG['native_apps'] code constant only when the setting is unset/
+ * empty (including "DB unavailable", since getAppSetting() itself already
+ * degrades to '' on any DB error). A pure function — deliberately takes
+ * the ALREADY-READ setting value rather than calling getAppSetting()
+ * itself — so the admin-overrides-constant precedence is unit-testable
+ * without a live DB (tests/php/test-native-app-stores.php). index.php is
+ * the one caller today.
+ *
+ * @param string|null $settingValue getAppSetting('native_app_...', '') result
+ * @param string|null $fallback     APP_CONFIG['native_apps'][...] value
+ * @return string|null
+ */
+function ihymnsResolveNativeAppSetting(?string $settingValue, ?string $fallback): ?string {
+    return ($settingValue !== null && $settingValue !== '') ? $settingValue : $fallback;
+}
+
+/**
  * Verify that a native app exists and is published in the app store.
  *
- * @param string      $platform  'ios' or 'android'
- * @param string|null $storeUrl  The app store URL (nullable — returns unverified if null)
+ * @param string      $platform  'ios' | 'android' | 'amazon'
+ * @param string|null $storeUrl  Bare ID/ASIN/package OR a full store URL
+ *                               (nullable — returns unverified if null/empty)
  * @return array{verified: bool, appId?: string, name?: string, storeUrl?: string}
  */
 function verifyAppStoreApp(string $platform, ?string $storeUrl): array {
-    if (empty($storeUrl)) {
+    if ($storeUrl === null || trim($storeUrl) === '') {
         return ['verified' => false];
     }
 
-    /* Extract the numeric app ID from the store URL */
-    $appId = null;
-    if ($platform === 'ios') {
-        /* Apple App Store: .../id1234567890 */
-        if (preg_match('/id(\d{5,})/', $storeUrl, $m)) {
-            $appId = $m[1];
-        }
-    } elseif ($platform === 'android') {
-        /* Google Play: ...?id=com.example.app */
-        if (preg_match('/[?&]id=([a-zA-Z0-9_.]+)/', $storeUrl, $m)) {
-            $appId = $m[1];
-        }
-    }
-
-    if (!$appId) {
+    $appId = ihymnsParseAppStoreId($platform, $storeUrl);
+    if ($appId === null) {
         return ['verified' => false];
     }
+
+    /* Always a template-built URL — see ihymnsAppStoreCanonicalUrl() above. */
+    $canonicalUrl = ihymnsAppStoreCanonicalUrl($platform, $appId);
 
     /* Check the file-based cache (24-hour TTL) */
     $cacheDir = sys_get_temp_dir() . '/ihymns_cache';
@@ -115,16 +213,29 @@ function verifyAppStoreApp(string $platform, ?string $storeUrl): array {
         }
     }
 
-    /* Call the store lookup API */
-    $result = ['verified' => false, 'appId' => $appId];
+    $skipCache = false;
 
     if ($platform === 'ios') {
-        $result = _verifyAppleAppStore($appId, $storeUrl);
+        /* Live iTunes lookup — a genuine "not found" (wrong ID / app pulled)
+           still hides the banner, but a NETWORK failure fails OPEN: the
+           admin explicitly set a well-formed ID, so a transient outage of
+           itunes.apple.com must not hide a real, working store link. */
+        $result = _verifyAppleAppStore($appId, $canonicalUrl);
+        $skipCache = !empty($result['_transient']);
+        unset($result['_transient']);
+    } else {
+        /* Google Play and Amazon have no free, ToS-compliant live-lookup
+           API — a set + well-formed ID/ASIN is treated as showable (#1403
+           fail-open; the owner explicitly configured it). */
+        $result = ['verified' => true, 'appId' => $appId, 'storeUrl' => $canonicalUrl];
     }
-    /* Android Play Store lookup can be added here in future */
 
-    /* Cache the result */
-    @file_put_contents($cacheFile, json_encode($result), LOCK_EX);
+    /* Cache the result (skipped for a transient network failure so the
+       NEXT request retries the live check instead of being stuck on the
+       fail-open result for a full 24h TTL). */
+    if (!$skipCache) {
+        @file_put_contents($cacheFile, json_encode($result), LOCK_EX);
+    }
 
     return $result;
 }
@@ -133,8 +244,8 @@ function verifyAppStoreApp(string $platform, ?string $storeUrl): array {
  * Check the Apple iTunes Lookup API for an app by ID.
  *
  * @param string $appId    Numeric Apple app ID
- * @param string $storeUrl Original App Store URL
- * @return array{verified: bool, appId: string, name?: string, storeUrl: string}
+ * @param string $storeUrl Canonical App Store URL
+ * @return array{verified: bool, appId: string, name?: string, storeUrl: string, _transient?: bool}
  */
 function _verifyAppleAppStore(string $appId, string $storeUrl): array {
     $lookupUrl = 'https://itunes.apple.com/lookup?id=' . urlencode($appId);
@@ -149,12 +260,17 @@ function _verifyAppleAppStore(string $appId, string $storeUrl): array {
 
     $response = @file_get_contents($lookupUrl, false, $ctx);
     if ($response === false) {
-        /* Network error — don't cache, return unverified */
-        return ['verified' => false, 'appId' => $appId, 'storeUrl' => $storeUrl];
+        /* Network error — fail OPEN (#1403): the admin explicitly set this
+           well-formed ID, so a transient itunes.apple.com outage must not
+           hide a real, working App Store link. `_transient` tells the
+           caller not to cache this result. */
+        return ['verified' => true, 'appId' => $appId, 'storeUrl' => $storeUrl, '_transient' => true];
     }
 
     $data = json_decode($response, true);
     if (!is_array($data) || ($data['resultCount'] ?? 0) < 1) {
+        /* A real answer came back and the app genuinely isn't there — fail
+           CLOSED (most likely a wrong/unpublished ID). */
         return ['verified' => false, 'appId' => $appId, 'storeUrl' => $storeUrl];
     }
 
@@ -320,10 +436,20 @@ define('APP_CONFIG', [
     /* -----------------------------------------------------------------
      * Native app store URLs for PWA install banner redirection.
      * Set to null if no native app exists for that platform yet.
+     *
+     * #1403 — this constant is now only the FALLBACK. The primary,
+     * admin-editable source is tblAppSettings (native_app_ios /
+     * native_app_android / native_app_amazon, set on
+     * /manage/configuration → "Native app stores"), read via
+     * getAppSetting() in index.php. This constant still works for a
+     * fresh/un-migrated install, or if an admin prefers to pin it in
+     * code — either a bare ID/package/ASIN or a full store URL is
+     * accepted by verifyAppStoreApp().
      * ----------------------------------------------------------------- */
     'native_apps' => [
         'ios'     => null,  /* e.g., 'https://apps.apple.com/app/ihymns/id1234567890' */
         'android' => null,  /* e.g., 'https://play.google.com/store/apps/details?id=ltd.mwbmpartners.ihymns' */
+        'amazon'  => null,  /* e.g., 'https://www.amazon.com/dp/B0XXXXXXXX' (Fire OS) */
     ],
 
     /* -----------------------------------------------------------------

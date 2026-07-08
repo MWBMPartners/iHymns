@@ -53,6 +53,17 @@
 // `isServingCachedCopy` so `SongDetailView` can show an unobtrusive
 // "Offline — showing saved copy" indicator rather than pretending the
 // content came in fresh.
+//
+// #1440 UPDATE (offline media caching) — `toggleOfflineSave()` now also
+// downloads+caches every one of `detail.media`'s attached files right after
+// a successful save, per this feature's own GitHub issue's "Rough
+// approach": "SongDetailToolbar's existing 'Save for Offline' toggle... is
+// the natural trigger point." `mediaFetcher` is an INJECTABLE closure (the
+// SAME "real `URLSession.shared.data(from:)` in production, a canned fake in
+// tests" shape `SheetMusicViewModel`/`MediaDownloadViewModel` already
+// establish) so this new behaviour is fully testable without ever touching
+// the network — see `cacheMediaForOffline(_:)` below.
+import Foundation
 import IHAPI
 import IHModels
 import Observation
@@ -94,9 +105,29 @@ public final class SongDetailViewModel {
     private let songId: SongID
     private let rootViewModel: AppRootViewModel
 
-    public init(songId: SongID, rootViewModel: AppRootViewModel) {
+    /// Fetches one media asset's raw bytes for offline caching (#1440) —
+    /// defaults to a real `URLSession` fetch; tests inject a canned closure
+    /// instead, mirroring `SheetMusicViewModel`/`MediaDownloadViewModel`'s
+    /// identical injectable-fetcher pattern.
+    private let mediaFetcher: @Sendable (URL) async throws -> Data
+
+    /// #1460 — the SEPARATE conditional-GET fetcher `MediaCacheRevalidator`
+    /// uses ONLY for an asset that already has a stored ETag; defaults to
+    /// `MediaCacheRevalidator.defaultConditionalFetcher` (real `URLSession`).
+    private let mediaConditionalFetcher: MediaConditionalFetcher
+
+    public init(
+        songId: SongID,
+        rootViewModel: AppRootViewModel,
+        mediaFetcher: @escaping @Sendable (URL) async throws -> Data = { url in
+            try await URLSession.shared.data(from: url).0
+        },
+        mediaConditionalFetcher: @escaping MediaConditionalFetcher = MediaCacheRevalidator.defaultConditionalFetcher
+    ) {
         self.songId = songId
         self.rootViewModel = rootViewModel
+        self.mediaFetcher = mediaFetcher
+        self.mediaConditionalFetcher = mediaConditionalFetcher
     }
 
     /// Fetches everything, but only if it hasn't already been fetched (or
@@ -138,6 +169,16 @@ public final class SongDetailViewModel {
             // "last opened song" hook, anchored to success rather than a
             // View-level `.onAppear`.
             rootViewModel.recordRecentlyViewed(detail)
+            // #189 — same anchor as `recordRecentlyViewed` above: a still-
+            // loading fetch was never actually "opened."
+            IHAnalyticsService().songOpened(songId: songId.rawValue)
+            // #1450 — a FRESH network success (never the offline-fallback
+            // branch below) is the ONE trigger point this device gets to
+            // notice a curator replaced one of this song's cached media
+            // files server-side; see `MediaCacheRevalidator.swift`'s header
+            // for the full "why only here, why this is still safe offline"
+            // reasoning. A no-op for a song with nothing cached.
+            await MediaCacheRevalidator.revalidate(detail: detail, fetcher: mediaFetcher, conditionalFetcher: mediaConditionalFetcher, rootViewModel: rootViewModel)
         } catch let error as APIError {
             // #187 — the request never reached/returned from the server at
             // all (`.offline`) or the server itself says "back soon"
@@ -151,6 +192,7 @@ public final class SongDetailViewModel {
                 loadState = .loaded(cached)
                 isServingCachedCopy = true
                 rootViewModel.recordRecentlyViewed(cached)
+                IHAnalyticsService().songOpened(songId: songId.rawValue)
                 return
             }
             loadState = .error(error.userFacingMessage)
@@ -254,10 +296,46 @@ public final class SongDetailViewModel {
         guard case .loaded(let detail) = loadState else { return }
         if isSavedOffline {
             try? await rootViewModel.removeSavedSong(detail.songId)
+            // #1440 — cached media has no reason to survive a song the user
+            // explicitly un-saved; leaving it behind would be an orphaned
+            // file with no `saved_song` row to associate it with.
+            try? await rootViewModel.removeAllCachedMedia(forSong: detail.songId)
             isSavedOffline = false
         } else {
             try? await rootViewModel.saveSongForOffline(detail)
             isSavedOffline = true
+            // #189 — only the SAVE path; "offline_save" measures the save
+            // action, not "offline storage state changed" in general.
+            IHAnalyticsService().offlineSaveToggled(songId: detail.songId.rawValue)
+            // #1440 — best-effort, AFTER the song text itself is already
+            // safely saved; see `cacheMediaForOffline(_:)`'s own comment for
+            // why a media download failure must never undo the save above.
+            await cacheMediaForOffline(detail)
         }
+    }
+
+    // MARK: - Offline media caching (#1440)
+
+    /// Downloads and permanently caches every one of `detail.media`'s
+    /// attached files (audio/sheet-music/MIDI/MusicXML), alongside the
+    /// just-saved song record — `SongMediaSection`'s player/PDF viewer/
+    /// download rows then prefer these cached copies over a fresh network
+    /// fetch (`AppRootViewModel.cachedMediaURL(songId:mediaAssetId:)`).
+    ///
+    /// ELI5: "Now that the song text is saved, also grab its recording/
+    /// sheet music/MIDI/MusicXML so THOSE work offline too."
+    ///
+    /// DETAILED: A thin pass-through to `AppRootViewModel.cacheAllMedia(for:
+    /// fetcher:)` (#1439 extracted this method's own former per-asset loop
+    /// up into `AppRootViewModel+MediaCache.swift` so `SongbookBulkSaveViewModel`
+    /// could reuse the EXACT same best-effort download behaviour rather than
+    /// forking a second copy — see that method's own header for the full
+    /// "why extracted" reasoning). This wrapper still exists (rather than
+    /// every call site here reaching `rootViewModel.cacheAllMedia` directly)
+    /// purely so `toggleOfflineSave()` above reads as "save the text, then
+    /// cache the media" without an extra `mediaFetcher` parameter leaking
+    /// into that call site.
+    private func cacheMediaForOffline(_ detail: SongDetail) async {
+        await rootViewModel.cacheAllMedia(for: detail, fetcher: mediaFetcher)
     }
 }

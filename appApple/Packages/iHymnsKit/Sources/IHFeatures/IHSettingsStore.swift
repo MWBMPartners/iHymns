@@ -96,6 +96,22 @@ public struct IHSettingsStore: @unchecked Sendable {
         nonmutating set { defaults.set(newValue, forKey: Keys.analyticsConsent) }
     }
 
+    /// Whether the user has already been shown the first-launch onboarding
+    /// flow (#190's "shown once, skippable" requirement) — `RootContainerView`
+    /// checks this once at launch to decide whether to present
+    /// `OnboardingView` at all. Defaults to `false`: an unset key means a
+    /// genuinely fresh install, which is exactly when onboarding should
+    /// show. Set to `true` the moment the user dismisses it (tapping either
+    /// "Skip" or the final page's "Get Started" — both count as "seen," per
+    /// this task's own "skippable" brief: skipping must not re-show it on
+    /// the very next launch).
+    ///
+    /// ELI5: "Have you already seen the welcome tour?"
+    public var hasSeenOnboarding: Bool {
+        get { defaults.bool(forKey: Keys.hasSeenOnboarding) }
+        nonmutating set { defaults.set(newValue, forKey: Keys.hasSeenOnboarding) }
+    }
+
     /// An explicit override of which backend deployment (`IHAPI
     /// .APIEnvironment`) this device targets, or `nil` to use the app
     /// shell's own compiled-in default (`IHymnsApp.swift`'s `.dev`, per
@@ -132,6 +148,7 @@ public struct IHSettingsStore: @unchecked Sendable {
         static let cvdMode = "ihCvdMode"
         static let dyslexiaReadingMode = "ihDyslexiaReadingModeEnabled"
         static let analyticsConsent = "ihAnalyticsConsentEnabled"
+        static let hasSeenOnboarding = "ihHasSeenOnboarding"
         static let apiEnvironment = "ihApiEnvironmentOverride"
     }
 }

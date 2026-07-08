@@ -54,7 +54,7 @@ extension AppRootViewModel {
         let tokenStore = KeychainTokenStore()
         let sessionController = SessionController(tokenStore: tokenStore, apiClient: apiClient)
         // swiftlint:disable:next force_try
-        let offlineStore = try! OfflineStore(path: offlineStorePath())
+        let offlineStore = try! OfflineStore(path: offlineStorePath(), mediaCacheDirectory: mediaCacheDirectory())
         let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)
 
         return AppRootViewModel(
@@ -90,5 +90,22 @@ extension AppRootViewModel {
         let directory = base.appendingPathComponent("iHymns", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory.appendingPathComponent("offline.sqlite").path
+    }
+
+    /// The on-disk directory for the live app's cached media FILES (#1440)
+    /// — a `MediaCache` subfolder alongside `offlineStorePath()`'s own
+    /// `offline.sqlite`, inside the SAME `iHymns` Application Support
+    /// folder (never a second top-level location) so both halves of this
+    /// device's offline data live under one predictable root. `OfflineStore
+    /// .init(path:mediaCacheDirectory:)` itself creates this directory if
+    /// it doesn't already exist, so this function only needs to compute the
+    /// path — see that initializer's own doc comment.
+    ///
+    /// ELI5: "Where on this device should we keep downloaded audio/PDF/MIDI/
+    /// MusicXML files?"
+    private static func mediaCacheDirectory() -> URL {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        return base.appendingPathComponent("iHymns", isDirectory: true).appendingPathComponent("MediaCache", isDirectory: true)
     }
 }

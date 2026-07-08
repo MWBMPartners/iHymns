@@ -134,10 +134,23 @@ enforceMaintenanceForPublicSite();
  * APPLICATION METADATA — accessed directly via $app array
  * ========================================================================= */
 
+/* Native app store IDs (#1403) — admin-editable via /manage/configuration
+   ("Native app stores" card → tblAppSettings: native_app_ios /
+   native_app_android / native_app_amazon), falling back to the
+   APP_CONFIG['native_apps'] code-constant when the admin hasn't set a
+   value (keeps a fresh/un-migrated install working). getAppSetting() is
+   DB-safe (returns the default on any error), so this can never throw;
+   ihymnsResolveNativeAppSetting() is the pure precedence function both
+   this and tests/php/test-native-app-stores.php exercise. */
+$nativeAppsFallback  = APP_CONFIG['native_apps'];
+$nativeAppIosVal     = ihymnsResolveNativeAppSetting(getAppSetting('native_app_ios', ''), $nativeAppsFallback['ios'] ?? null);
+$nativeAppAndroidVal = ihymnsResolveNativeAppSetting(getAppSetting('native_app_android', ''), $nativeAppsFallback['android'] ?? null);
+$nativeAppAmazonVal  = ihymnsResolveNativeAppSetting(getAppSetting('native_app_amazon', ''), $nativeAppsFallback['amazon'] ?? null);
+
 /* Verify native app availability (cached, 24h TTL) */
-$nativeApps = APP_CONFIG['native_apps'];
-$iosApp     = verifyAppStoreApp('ios', $nativeApps['ios'] ?? null);
-$androidApp = verifyAppStoreApp('android', $nativeApps['android'] ?? null);
+$iosApp     = verifyAppStoreApp('ios', $nativeAppIosVal);
+$androidApp = verifyAppStoreApp('android', $nativeAppAndroidVal);
+$amazonApp  = verifyAppStoreApp('amazon', $nativeAppAmazonVal);
 
 /** Build a display version string (e.g., "0.1.5 Beta") */
 $versionDisplay = $app["Application"]["Version"]["Number"];
@@ -435,10 +448,35 @@ try {
             $jsonLdScripts[] = $musicAlbum;
         }
     }
-    /* Person page: /people/<slug> (#833 — sameAs JSON-LD) */
-    elseif (preg_match('#^/people/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+    /* Person page: /people/<slug> (#833 — sameAs JSON-LD)
+       ELI5: this also answers to the singular spelling /person/<slug>,
+       same as the "people"/"person" pages on Wikipedia work either way.
+       DETAILED (#1453): the Apple app's AASA + Universal Links claim the
+       SINGULAR `/person/*` component (`.well-known/apple-app-site-
+       association.php`), and the client-side SPA router already treats
+       `/people/<slug>` and `/person/<slug>` as equivalent forgiving
+       aliases (`js/modules/router.js`, #588 — same convention as
+       `/work` vs `/works`, #840). This server-side OG/JSON-LD detection
+       block only matched the plural form, so a social-media crawler or
+       search engine fetching the singular `/person/<slug>` (e.g. a link
+       shared FROM the native app, whose CanonicalURL.person(slug:)
+       emits the singular form to match AASA) got the generic homepage
+       preview instead of the person's actual name — not a literal HTTP
+       404 (the SPA shell always renders 200 and the client router still
+       resolves it), but a broken social-preview / SEO signal for any
+       non-JS fetch of that URL. Widened to match both spellings so both
+       resolve identically; the canonical URL is then force-normalized
+       below to the plural form (mirroring the song route's PublicId
+       normalization, #1343-B) so search engines consolidate signal onto
+       ONE indexed URL regardless of which spelling was requested. */
+    elseif (preg_match('#^/(?:people|person)/([a-z0-9\-]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $personSlug = $matches[1];
+        /* #1453 — always advertise the plural form as canonical, even
+           when this request came in via the singular AASA-matching
+           spelling. Both spellings render identically; this just picks
+           ONE URL for search engines / social crawlers to converge on. */
+        $canonicalUrl = getCanonicalUrl('/people/' . rawurlencode($personSlug));
         try {
             $personDb = getDbMysqli();
             $stmt = $personDb->prepare(
@@ -719,6 +757,8 @@ if (!empty($breadcrumbItems)) {
     <?php if ($androidApp['verified']): ?>
         <meta name="google-play-app" content="app-id=<?= htmlspecialchars($androidApp['appId']) ?>">
     <?php endif; ?>
+    <!-- Amazon Appstore (Fire OS, #1403) has no standard smart-banner meta tag —
+         it's covered by the native-app banner in pwa.js + the manifest, not here. -->
     <meta name="msapplication-TileColor" content="#4f46e5">
     <meta name="msapplication-config" content="none">
     <meta name="format-detection" content="telephone=no">
@@ -1622,10 +1662,16 @@ if (!empty($breadcrumbItems)) {
                whole-song corpus. Online reads are always the live API. */
             'dataUrl'         => '/api?action=songs_index',
             'nativeApps'      => [
-                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? $nativeApps['ios']) : null,
+                /* Always a canonical, template-built store URL (see
+                   ihymnsAppStoreCanonicalUrl() in includes/config.php) —
+                   never the admin's raw pasted string — so pwa.js can put
+                   this straight into a link href with no further parsing. */
+                'ios'             => $iosApp['verified'] ? ($iosApp['storeUrl'] ?? null) : null,
                 'iosVerified'     => $iosApp['verified'],
-                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? $nativeApps['android']) : null,
+                'android'         => $androidApp['verified'] ? ($androidApp['storeUrl'] ?? null) : null,
                 'androidVerified' => $androidApp['verified'],
+                'amazon'          => $amazonApp['verified'] ? ($amazonApp['storeUrl'] ?? null) : null,
+                'amazonVerified'  => $amazonApp['verified'],
             ],
             'features'        => APP_CONFIG['features'],
             'toneJsCdn'       => $libs['tonejs']['js_cdn'],

@@ -2450,4 +2450,36 @@ return [
             }
         },
     ],
+
+    'user-auth-providers' => [
+        'script' => 'migrate-user-auth-providers.php',
+        'card' => [
+            'title'  => 'Sign in with Apple — provider links + nonce ledger (#1402)',
+            'body'   => 'Creates <code>tblUserAuthProviders</code> (external identity-provider'
+                      . ' links — Apple <code>sub</code> → iHymns user, refresh-token custody for'
+                      . ' account-deletion revocation) and <code>tblAuthNonces</code> (single-use'
+                      . ' sign-in nonce ledger, anti-replay). Additive, dormant until the'
+                      . ' <code>auth_apple</code> endpoint is called. Idempotent — safe to re-run.',
+            'button' => 'Run Auth Providers Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): a partial apply must never show green. */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblUserAuthProviders')
+                                          || !_migProbe_tableExists($db, 'tblAuthNonces'),
+    ],
+
+    'analytics-events' => [
+        'script' => 'migrate-add-analytics-events.php',
+        'card' => [
+            'title'  => 'First-party analytics event storage (#1448)',
+            'body'   => 'Creates <code>tblAppAnalyticsEvents</code> — storage for the native-app'
+                      . ' analytics ingestion endpoint (<code>?action=analytics_ingest</code>).'
+                      . ' Deliberately carries NO user/device identifier and NO IP address column'
+                      . ' (see <code>includes/analytics_ingest.php</code>&rsquo;s header for the'
+                      . ' full PII/retention stance) — abuse mitigation is via per-IP rate limiting'
+                      . ' on the endpoint itself, never by retaining IP alongside the event.'
+                      . ' Additive, idempotent — safe to re-run.',
+            'button' => 'Run Analytics Events Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblAppAnalyticsEvents'),
+    ],
 ];

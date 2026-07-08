@@ -4498,4 +4498,222 @@ class SongData
             return null;
         }
     }
+
+    /* =====================================================================
+     * CREDIT PEOPLE — writer/composer/etc. bio + discography (#1443/#1444)
+     *
+     * JSON twin of includes/pages/person.php's own query logic (the public
+     * /people/<slug> HTML page — see that file's header). Deliberately NOT
+     * a copy-paste fork: both this method and person.php independently
+     * query tblCreditPeople + the six per-role credit tables because
+     * tblCreditPeople has no direct FK from tblSongWriters/tblSongComposers/
+     * etc. today (a name-string match, same as person.php) — a future
+     * schema change adding that FK should update BOTH read paths together.
+     * ===================================================================== */
+
+    /**
+     * One credit person's registry row (bio/lifespan/links, when a
+     * tblCreditPeople row exists) plus every song they are credited on,
+     * grouped by role. Exactly ONE of $id/$slug/$name should be given by
+     * the caller (api.php's `credit_person` action resolves which); when
+     * none of the id/slug lookups finds a registry row, $name (or the
+     * row's own Name once found) still drives the discography query — a
+     * writer/composer with no curated tblCreditPeople row yet still has a
+     * usable "songs by this name" result, mirroring person.php's own
+     * slug-has-no-row fallback.
+     *
+     * Returns null only when NEITHER a registry row NOR any credited song
+     * could be found — nothing to show at all (same 404 condition
+     * person.php uses).
+     *
+     * @return array<string,mixed>|null
+     */
+    public function getCreditPerson(?int $id = null, ?string $slug = null, ?string $name = null): ?array
+    {
+        $row = null;
+        try {
+            if ($id !== null) {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                            COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
+                            COALESCE(IsGroup, 0)       AS IsGroup
+                       FROM tblCreditPeople WHERE Id = ? LIMIT 1'
+                );
+                $stmt->bind_param('i', $id);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+            } elseif ($slug !== null && $slug !== '') {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                            COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
+                            COALESCE(IsGroup, 0)       AS IsGroup
+                       FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $slug);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+            }
+            /* Slug/id lookup found nothing (or wasn't attempted) — try an
+               exact Name match (tblCreditPeople.Name is UNIQUE). Mirrors
+               person.php's own "no registry row, fall back to a name" path. */
+            if ($row === null && $name !== null && $name !== '') {
+                $stmt = $this->db->prepare(
+                    'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
+                            COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
+                            COALESCE(IsGroup, 0)       AS IsGroup
+                       FROM tblCreditPeople WHERE Name = ? LIMIT 1'
+                );
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+            }
+        } catch (\Throwable $e) {
+            error_log('[SongData::getCreditPerson] registry lookup failed: ' . $e->getMessage());
+            $row = null;
+        }
+
+        /* The name the discography query below matches against — the
+           registry row's own Name once one is found (authoritative),
+           otherwise whatever the caller passed in (a plain writer/composer
+           string tapped from a song, with no registry row yet). */
+        $matchName = $row ? (string)$row['Name'] : (string)($name ?? '');
+        if ($row === null && $matchName === '') {
+            return null; /* nothing to look up at all */
+        }
+
+        $person = [
+            'id'            => $row ? (int)$row['Id'] : null,
+            'slug'          => $row ? (string)($row['Slug'] ?? '') : null,
+            'name'          => $row ? (string)$row['Name'] : $matchName,
+            'notes'         => ($row && $row['Notes'] !== null) ? (string)$row['Notes'] : null,
+            'birthPlace'    => ($row && $row['BirthPlace'] !== null) ? (string)$row['BirthPlace'] : null,
+            'birthDate'     => ($row && $row['BirthDate'] !== null) ? (string)$row['BirthDate'] : null,
+            'deathPlace'    => ($row && $row['DeathPlace'] !== null) ? (string)$row['DeathPlace'] : null,
+            'deathDate'     => ($row && $row['DeathDate'] !== null) ? (string)$row['DeathDate'] : null,
+            'isSpecialCase' => $row ? (bool)$row['IsSpecialCase'] : false,
+            'isGroup'       => $row ? (bool)$row['IsGroup'] : false,
+            'discography'   => [],
+            'links'         => [],
+            'totalSongs'    => 0,
+        ];
+
+        /* Discography by role — same six tables + labels person.php uses,
+           minus the #587 'artist' role when tblSongArtists hasn't been
+           migrated yet (probe, exactly like person.php's own guard). */
+        $roleTables = [
+            'writer'     => ['table' => 'tblSongWriters',     'label' => 'As Writer'],
+            'composer'   => ['table' => 'tblSongComposers',   'label' => 'As Composer'],
+            'arranger'   => ['table' => 'tblSongArrangers',   'label' => 'As Arranger'],
+            'adaptor'    => ['table' => 'tblSongAdaptors',    'label' => 'As Adaptor'],
+            'translator' => ['table' => 'tblSongTranslators', 'label' => 'As Translator'],
+            'artist'     => ['table' => 'tblSongArtists',     'label' => 'As Artist'],
+        ];
+        try {
+            $probe = $this->db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongArtists' LIMIT 1"
+            );
+            if (!($probe && $probe->fetch_row() !== null)) {
+                unset($roleTables['artist']);
+            }
+            if ($probe) { $probe->close(); }
+        } catch (\Throwable $_e) {
+            unset($roleTables['artist']);
+        }
+
+        $matchedSongIds = [];
+        foreach ($roleTables as $roleKey => $cfg) {
+            try {
+                $stmt = $this->db->prepare(
+                    "SELECT s.SongId AS songId, s.Title AS title, s.Number AS number,
+                            s.SongbookAbbr AS songbook, sb.Name AS songbookName
+                       FROM {$cfg['table']} c
+                       JOIN tblSongs s ON s.SongId = c.SongId
+                       LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                      WHERE c.Name = ?
+                      ORDER BY s.SongbookAbbr ASC, s.Number ASC"
+                );
+                $stmt->bind_param('s', $matchName);
+                $stmt->execute();
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+                if ($rows) {
+                    $songs = [];
+                    foreach ($rows as $r) {
+                        $songs[] = [
+                            'songId'       => (string)$r['songId'],
+                            'title'        => (string)$r['title'],
+                            'number'       => normaliseSongNumber($r['number']),
+                            'songbook'     => (string)$r['songbook'],
+                            'songbookName' => (string)($r['songbookName'] ?? ''),
+                        ];
+                        $matchedSongIds[(string)$r['songId']] = true;
+                    }
+                    $person['discography'][] = [
+                        'role'  => $roleKey,
+                        'label' => $cfg['label'],
+                        'songs' => $songs,
+                    ];
+                }
+            } catch (\Throwable $_e) {
+                /* Table missing / query failed — skip this role, matching
+                   person.php's own per-role try/catch. */
+            }
+        }
+        $person['totalSongs'] = count($matchedSongIds);
+
+        if ($row === null && $person['totalSongs'] === 0) {
+            return null; /* no registry row AND no credited songs — genuinely unknown */
+        }
+
+        /* External links — unified system only (#833). The legacy
+           tblCreditPersonLinks fallback person.php still renders is a
+           display-only shim with no new rows since #833 shipped; not worth
+           carrying into this newer JSON contract. */
+        if ($row && (int)$row['Id'] > 0) {
+            try {
+                $probe = $this->db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                );
+                $hasLinks = $probe && $probe->fetch_row() !== null;
+                if ($probe) { $probe->close(); }
+            } catch (\Throwable $_e) {
+                $hasLinks = false;
+            }
+            if ($hasLinks) {
+                $pid = (int)$row['Id'];
+                $stmt = $this->db->prepare(
+                    'SELECT t.Slug AS slug, t.Name AS name, t.Category AS category, t.IconClass AS iconClass,
+                            el.Url AS url, el.Note AS note, el.Verified AS verified, el.SortOrder AS sortOrder
+                       FROM tblCreditPersonExternalLinks el
+                       JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
+                      WHERE el.CreditPersonId = ?
+                        AND COALESCE(t.IsActive, 1) = 1
+                      ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC'
+                );
+                $stmt->bind_param('i', $pid);
+                $stmt->execute();
+                $lres = $stmt->get_result();
+                while ($lrow = $lres->fetch_assoc()) {
+                    $person['links'][] = [
+                        'slug'      => (string)$lrow['slug'],
+                        'name'      => (string)$lrow['name'],
+                        'category'  => (string)$lrow['category'],
+                        'iconClass' => (string)($lrow['iconClass'] ?? ''),
+                        'url'       => (string)$lrow['url'],
+                        'note'      => $lrow['note'] !== null ? (string)$lrow['note'] : null,
+                        'verified'  => (bool)$lrow['verified'],
+                        'sortOrder' => (int)$lrow['sortOrder'],
+                    ];
+                }
+                $stmt->close();
+            }
+        }
+
+        return $person;
+    }
 }

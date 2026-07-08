@@ -2,35 +2,127 @@
 // IHAppSupport
 //
 // ELI5: The list of "places inside the app" a shared link can point at —
-// like "a specific song" — spelled out as real Swift values instead of
-// loose strings, so the app can never accidentally navigate somewhere that
-// doesn't exist.
+// like "a specific song" or "a shared set list" — spelled out as real Swift
+// values instead of loose strings, so the app can never accidentally
+// navigate somewhere that doesn't exist.
 //
 // DETAILED: The `DeepLink` enum named in strategy §1.7 ("DeepLinkRouter
-// (IHAppSupport): URL→DeepLink enum→per-shell navigation"). Phase 0 seeds
-// the one case every other deep-link case will look like structurally —
+// (IHAppSupport): URL→DeepLink enum→per-shell navigation"). Phase 0 seeded
+// the one case every other deep-link case looks like structurally —
 // `.song(SongID)` — proving the IHAppSupport→IHModels dependency and the
 // "typed route enum only" security posture strategy §3.2 requires
 // ("Deep-link validation: host allowlist; typed route enum only; SongId
-// shape-checked (#27) before fetch"). Phase 1 (strategy §3.4, "#186 sharing
-// + deep links") grows this to the full set: `.songbook`, `.songbooksList`,
-// `.person`, `.work`, `.setlist`, `.live`, `.service`.
+// shape-checked (#27) before fetch").
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") grows this from the
+// Phase-0 single case to every route shape this task verified against the
+// LIVE web router (`appWeb/public_html/index.php`'s OG-tag route-detection
+// block, read 2026-07-07) AND the AASA's own claimed `components` list
+// (`.well-known/apple-app-site-association.php`, #1401) — the intersection
+// of "a real web route" and "Apple will actually hand the app this URL" is
+// what determines which shapes belong here:
+//   .song            — `/song/<SongId>` (existing)
+//   .songbook        — `/songbook/<abbr>`
+//   .songbooksList   — `/songbooks` (the index, no id)
+//   .setlistShare    — `/setlist/shared/<hex>`
+//   .work            — `/work/<slug>`
+//   .person          — `/person/<slug>`
+//
+// #1443 UPDATE — `.work` and `.person` now BOTH resolve to real native
+// screens (`WorkDetailView`/`CreditPersonDetailView`, `IHFeatures`,
+// `DeepLinkDestinationView.swift`'s switch) — `IHymnsApp.swift` no longer
+// special-cases either into the system-browser fallback. `.person` is a NEW
+// case (previously deliberately un-modelled — see the superseded comment
+// this replaces below); it carries a `slug`, mirroring `.work` exactly.
+//
+// A real, pre-existing mismatch this task's backend survey surfaced while
+// adding `.person`: the AASA claims `/person/*`, but
+// `appWeb/public_html/index.php`'s own direct-load route regex only matches
+// `/people/<slug>` (PLURAL) — `/person/<slug>` 404s there today for a
+// browser/non-UL context. This router still resolves `/person/<slug>`
+// (matching what AASA — and therefore Apple's Universal Link matching —
+// actually claims, which is what determines whether iOS hands the tap to
+// this app at all) rather than the PHP route, since native decoding never
+// touches `index.php` (it calls the new `?action=work`/`?action=credit_person`
+// JSON reads directly). The web-side mismatch is filed as its own issue —
+// see this task's PR/close comment — rather than fixed here; a native
+// deep-link router has no way to fix a web routing table, and guessing at
+// one risks breaking already-circulating `/people/<slug>` links.
+//
+// AASA also claims `/live/*` (Live Follow / Service Mode join links) —
+// deliberately NOT modelled as a `DeepLink` case yet: there is no native
+// Live UI anywhere in the app at all (`RootContainerView`'s `.live` section
+// is an honest "coming soon" placeholder — Apple native app epic #895
+// Phase 2), so adding a typed-but-unusable case here would just be dead
+// code with no consumer. `DeepLinkRouter.resolve(_:)` returns `nil` for it
+// today; the app shell's own "unresolved → hand the URL to the system
+// browser" fallback (`IHymnsApp.swift`) already degrades it gracefully to
+// the PWA, which is the correct behaviour until Phase 2 adds a native
+// Live-join screen.
+//
+// #1455 UPDATE — `.compare` is the OPPOSITE situation from `/live/*` above,
+// and deliberately breaks this file's own "only real AASA+web route
+// intersections get modelled" pattern every other case follows: there IS a
+// real native screen for it (`SongComparisonView`, #1445) and no reason NOT
+// to resolve `/compare/<SongIdA>/<SongIdB>` if one ever arrives, but — this
+// task's own backend survey confirmed — NEITHER the AASA
+// (`.well-known/apple-app-site-association.php`'s `components` list) NOR
+// the web itself (`appWeb/public_html/index.php`'s route table) has a
+// `/compare/*` entry today. Concretely: a real device will never actually
+// hand this app a `/compare/...` Universal Link tap (Apple's own OS won't
+// route an AASA-unclaimed path to the app at all), and a recipient without
+// the app who somehow got such a URL would 404 on the web too. This case
+// still exists because (a) it costs nothing to resolve — the router is a
+// pure `URL → DeepLink?` function with no side effects either way, (b) it
+// gives `CanonicalURL.compare(primaryId:secondaryId:)` a real round-trip to
+// prove against in tests, and (c) it's ready the INSTANT a future web route
+// + AASA entry land, with no native-side follow-up needed. The web-route +
+// AASA gap is filed as its own `for consideration` follow-up issue rather
+// than guessed at here — a native router has no way to add a PHP route or
+// edit the AASA responder's `$components` array.
 import Foundation
 import IHModels
 
 /// A validated, typed destination inside the app, parsed from a Universal
 /// Link or a custom-scheme fallback.
 ///
-/// ELI5: "Go to this song" as a real, checked value — never a raw
-/// unvalidated URL string threaded through the navigation code.
+/// ELI5: "Go to this song" (or songbook, or shared set list…) as a real,
+/// checked value — never a raw unvalidated URL string threaded through the
+/// navigation code.
 ///
 /// DETAILED: `Sendable` + `Equatable` so a parsed `DeepLink` can travel from
 /// wherever URL-parsing happens (often a background context — e.g. a
 /// `NSUserActivity`/scene-delegate callback) to the `@MainActor` navigation
 /// layer, and so navigation-routing tests can assert exact equality.
 public enum DeepLink: Sendable, Equatable {
-    /// Navigate directly to a single song's detail screen.
+    /// Navigate directly to a single song's detail screen. `/song/<SongId>`.
     case song(SongID)
+
+    /// Navigate to one songbook's song list. `/songbook/<abbreviation>` —
+    /// carries only the raw abbreviation (never a full `Songbook` value,
+    /// which the router has no way to fetch synchronously); the presenting
+    /// screen resolves it against the live songbook list.
+    case songbook(abbreviation: String)
+
+    /// Navigate to the songbooks browse index. `/songbooks`.
+    case songbooksList
+
+    /// Open someone else's publicly shared set list. `/setlist/shared/<id>`
+    /// — `shareId` is the 8-character hex id `SharedSetlist.id` mirrors.
+    case setlistShare(shareId: String)
+
+    /// Navigate to a Work's detail screen. `/work/<slug>` (#840, #1443).
+    case work(slug: String)
+
+    /// Navigate to a credit person's detail screen. `/person/<slug>`
+    /// (#1443, #1444) — see this file's header for the `/person/*` vs
+    /// `/people/<slug>` web-route note.
+    case person(slug: String)
+
+    /// Push the two-song comparison screen. `/compare/<primaryId>/<secondaryId>`
+    /// (#1455) — see this file's header for why this is app-internal-only
+    /// today (no AASA/web route claims this path yet).
+    case compare(primaryId: SongID, secondaryId: SongID)
 }
 
 /// Parses incoming URLs (Universal Links, and eventually the app's own
@@ -61,16 +153,132 @@ public enum DeepLinkRouter {
     /// - Parameter url: A candidate Universal Link, e.g.
     ///   `https://ihymns.app/song/MP-1008`.
     /// - Returns: A validated `DeepLink`, or `nil` if the host isn't
-    ///   allow-listed, the path shape isn't recognised, or the trailing
-    ///   segment isn't a valid `SongID` (strategy §3.2: "SongId
-    ///   shape-checked (#27) before fetch").
+    ///   allow-listed, the path shape isn't recognised, or the id/slug/hex
+    ///   segment doesn't match the SAME shape the live web router
+    ///   (`appWeb/public_html/index.php`) requires — strategy §3.2: "SongId
+    ///   shape-checked (#27) before fetch," extended by #186 to every other
+    ///   segment kind below.
+    ///
+    /// DETAILED: Dispatches purely on path-SEGMENT COUNT + first segment,
+    /// mirroring `index.php`'s own `elseif (preg_match(...))` chain
+    /// (read 2026-07-07) one-for-one so a URL this router accepts is
+    /// GUARANTEED to also be a real, resolvable web route (and vice versa —
+    /// see `CanonicalURLTests`' round-trip coverage). `/song` (bare, no id)
+    /// and `/setlist` (bare) intentionally fall through to `nil` rather than
+    /// a partial match — a Universal Link with a missing trailing segment
+    /// is malformed, never "close enough."
     public static func resolve(_ url: URL) -> DeepLink? {
-        guard let host = url.host, allowedHosts.contains(host) else { return nil }
+        // Host compared case-insensitively — DNS hosts are case-insensitive,
+        // and while Apple normally normalizes the delivered host, an
+        // uppercased `HTTPS://IHYMNS.APP/...` link would otherwise fail-closed
+        // to Safari (Phase-1 review finding: fail-closed is safe, but this is
+        // the correct, spec-accurate comparison; `allowedHosts` are lowercase).
+        guard let host = url.host?.lowercased(), allowedHosts.contains(host) else { return nil }
 
         let segments = url.pathComponents.filter { $0 != "/" }
-        guard segments.count == 2, segments[0] == "song" else { return nil }
+        switch segments.count {
+        case 1 where segments[0] == "songbooks":
+            return .songbooksList
 
-        guard let songID = SongID(rawValue: segments[1]) else { return nil }
-        return .song(songID)
+        case 2:
+            return resolveTwoSegments(segments)
+
+        case 3 where segments[0] == "setlist" && segments[1] == "shared":
+            guard isValidShareId(segments[2]) else { return nil }
+            return .setlistShare(shareId: segments[2])
+
+        case 3 where segments[0] == "compare":
+            // #1455 — BOTH ids validated against the exact same `SongID`
+            // shape `.song` uses (rule #27's charset), mirroring every
+            // other id-carrying case in this switch; either side failing
+            // to parse means the whole link is malformed, not "compare the
+            // valid one against nothing."
+            guard let primaryID = SongID(rawValue: segments[1]), let secondaryID = SongID(rawValue: segments[2]) else { return nil }
+            return .compare(primaryId: primaryID, secondaryId: secondaryID)
+
+        default:
+            return nil
+        }
+    }
+
+    /// The `/song/<id>` · `/songbook/<abbr>` · `/work/<slug>` ·
+    /// `/person/<slug>` family — every web route whose shape is
+    /// `/<kind>/<value>`, split out purely to keep `resolve(_:)`'s own
+    /// `switch` readable at a glance.
+    private static func resolveTwoSegments(_ segments: [String]) -> DeepLink? {
+        switch segments[0] {
+        case "song":
+            guard let songID = SongID(rawValue: segments[1]) else { return nil }
+            return .song(songID)
+
+        case "songbook":
+            guard isValidSongbookAbbreviation(segments[1]) else { return nil }
+            return .songbook(abbreviation: segments[1])
+
+        case "work":
+            guard isValidWorkSlug(segments[1]) else { return nil }
+            return .work(slug: segments[1])
+
+        case "person":
+            guard isValidPersonSlug(segments[1]) else { return nil }
+            return .person(slug: segments[1])
+
+        default:
+            return nil
+        }
+    }
+
+    /// Matches `index.php`'s `/songbook/CP` route regex `^[A-Za-z]+$` —
+    /// letters only (no digits, unlike `SongID.songbookAbbreviation`'s more
+    /// permissive rule #27 charset), so this router only ever accepts a
+    /// shape the web side would actually resolve rather than 404 on.
+    private static let songbookAbbreviationPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "^[A-Za-z]+$")
+    }()
+
+    /// Matches `index.php`'s `/work/<slug>` route regex `^[a-z0-9\-]+$`.
+    private static let workSlugPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "^[a-z0-9\\-]+$")
+    }()
+
+    /// Matches `index.php`'s `/people/<slug>` route regex `^[a-z0-9\-]+$`
+    /// (this file's header explains why the PATH SEGMENT this router
+    /// resolves is `/person/`, singular, matching AASA — the slug CHARSET
+    /// itself is identical to the web route's either way, since both are
+    /// generated by the same slugify convention).
+    private static let personSlugPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "^[a-z0-9\\-]+$")
+    }()
+
+    /// Matches `index.php`'s `/setlist/shared/<id>` route regex
+    /// `^[a-f0-9]+$` — lowercase hex only, mirroring `SharedSetlist.id`'s
+    /// own doc comment ("the 8-character hex share id").
+    private static let shareIdPattern: NSRegularExpression = {
+        // swiftlint:disable:next force_try
+        try! NSRegularExpression(pattern: "^[a-f0-9]+$")
+    }()
+
+    private static func isValidSongbookAbbreviation(_ value: String) -> Bool {
+        matches(value, pattern: songbookAbbreviationPattern)
+    }
+
+    private static func isValidWorkSlug(_ value: String) -> Bool {
+        matches(value, pattern: workSlugPattern)
+    }
+
+    private static func isValidPersonSlug(_ value: String) -> Bool {
+        matches(value, pattern: personSlugPattern)
+    }
+
+    private static func isValidShareId(_ value: String) -> Bool {
+        matches(value, pattern: shareIdPattern)
+    }
+
+    private static func matches(_ value: String, pattern: NSRegularExpression) -> Bool {
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return pattern.firstMatch(in: value, range: range) != nil
     }
 }

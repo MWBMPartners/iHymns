@@ -113,10 +113,12 @@ public final class AppRootViewModel {
     /// latest state. Mirrored from `recentlyViewedStore` on init and after
     /// every `recordRecentlyViewed(_:)` call — same "`@Observable` mirror
     /// of a plain `UserDefaults`-backed store" shape as `recentSearches`
-    /// above. `private(set)` (unlike `recentSearches`'s `internal(set)`) —
-    /// `recordRecentlyViewed(_:)` lives in THIS file, not a separate
-    /// extension, so no cross-file mutation access is needed.
-    public private(set) var recentlyViewedSongs: [RecentlyViewedSong] = []
+    /// above. `#1446 UPDATE`: now `internal(set)` (previously `private(set)`)
+    /// — `recordRecentlyViewed(_:)` moved OUT to
+    /// `AppRootViewModel+Activity.swift`, so this needs the SAME
+    /// cross-file-extension mutation access `recentSearches` above already
+    /// has.
+    public internal(set) var recentlyViewedSongs: [RecentlyViewedSong] = []
 
     /// The current signed-in user's public profile (native login/account UI
     /// task), refreshed via `?action=auth_me` whenever `sessionState`
@@ -214,9 +216,16 @@ public final class AppRootViewModel {
     let recentSearchesStore: RecentSearchesStore
 
     /// Persists `recentlyViewedSongs` (#183) — same injectable-store
-    /// reasoning as `recentSearchesStore` above; `private` here (unlike
-    /// that one) since only THIS file touches it.
-    private let recentlyViewedStore: RecentlyViewedStore
+    /// reasoning as `recentSearchesStore` above. No longer `private`
+    /// (#1446): `recordRecentlyViewed(_:)` moved to
+    /// `AppRootViewModel+Activity.swift` (LOC-budget tripwire), so this
+    /// needs the same cross-file visibility `recentSearchesStore` has.
+    let recentlyViewedStore: RecentlyViewedStore
+
+    /// Persists local, on-device-only reading activity for the "Your
+    /// Activity" dashboard (#1446) — day-by-day distinct songs opened plus
+    /// per-song open counts. `internal`, for `AppRootViewModel+Activity.swift`.
+    let usageActivityStore: UsageActivityStore
 
     /// The background observation loop mirroring `sessionController.stateUpdates`
     /// into `sessionState`. Held so it can be cancelled in `deinit`.
@@ -250,7 +259,8 @@ public final class AppRootViewModel {
         offlineStore: OfflineStore,
         liveFollowEngine: LiveFollowEngine,
         recentSearchesStore: RecentSearchesStore = RecentSearchesStore(),
-        recentlyViewedStore: RecentlyViewedStore = RecentlyViewedStore()
+        recentlyViewedStore: RecentlyViewedStore = RecentlyViewedStore(),
+        usageActivityStore: UsageActivityStore = UsageActivityStore()
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -260,6 +270,7 @@ public final class AppRootViewModel {
         self.recentSearches = recentSearchesStore.load()
         self.recentlyViewedStore = recentlyViewedStore
         self.recentlyViewedSongs = recentlyViewedStore.load()
+        self.usageActivityStore = usageActivityStore
         observeSessionState()
     }
 
@@ -330,26 +341,14 @@ public final class AppRootViewModel {
     // them only touches `apiClient` (already `internal`-visible below), so
     // the move is behaviourally a no-op.
 
-    /// Records that the user just successfully opened `detail`'s song
-    /// (#183) — the "last opened song" hook this task's Home-surface brief
-    /// asks for. Called from `SongDetailViewModel`'s successful primary
-    /// load (see that file's own comment), NEVER from the View layer
-    /// directly: "the song's data finished loading" is a strictly better
-    /// signal than raw view appearance — a song that never finished loading
-    /// (still spinning, or errored) was never actually "opened" from the
-    /// user's perspective, so it shouldn't show up in "Recently Viewed."
-    ///
-    /// ELI5: "Remember: I just read this song."
-    public func recordRecentlyViewed(_ detail: SongDetail) {
-        let entry = RecentlyViewedSong(
-            songId: detail.songId,
-            title: detail.title,
-            songbookAbbreviation: detail.songbookAbbreviation,
-            number: detail.number
-        )
-        recentlyViewedStore.record(entry)
-        recentlyViewedSongs = recentlyViewedStore.load()
-    }
+    // `recordRecentlyViewed(_:)` (#183, the "last opened song" hook called
+    // from `SongDetailViewModel`'s successful primary load) lives in
+    // `AppRootViewModel+Activity.swift` — moved out (#1446) to keep THIS
+    // file under the LOC-budget tripwire now that it also carries the new
+    // `usageActivityStore` property above; same reasoning
+    // `AppRootViewModel+Catalog.swift`'s header documents. A pure move —
+    // its ONE #1446 addition (recording the open into `usageActivityStore`)
+    // is unchanged from being called at this exact call site.
 
     /// Starts a `Task` that mirrors every `SessionState` change published by
     /// `sessionController` onto `sessionState`.

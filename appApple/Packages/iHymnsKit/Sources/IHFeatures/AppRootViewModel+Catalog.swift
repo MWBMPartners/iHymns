@@ -73,4 +73,20 @@ extension AppRootViewModel {
             country: LocaleRegionSignals.country()
         )
     }
+
+    /// Fetches one Work (composition grouping) by slug (#840, #1443) — same
+    /// pass-through pattern as `songDetail(id:)`/`songbooks()` above.
+    ///
+    /// ELI5: "Give me everything about this one composition grouping."
+    public func work(slug: String) async throws -> Work {
+        try await apiClient.work(slug: slug)
+    }
+
+    /// Fetches one credit person's bio + discography (#1443, #1444) — same
+    /// pass-through pattern as `songDetail(id:)`/`songbooks()` above.
+    ///
+    /// ELI5: "Give me everything about this one writer/composer."
+    public func creditPerson(_ lookup: CreditPersonLookup) async throws -> CreditPerson {
+        try await apiClient.creditPerson(lookup)
+    }
 }

@@ -37,6 +37,41 @@
 // whenever `viewModel.isServingCachedCopy` is true — the ONLY user-visible
 // sign that a page was served from the on-device cache rather than the
 // network, per this task's "unobtrusive... indicator" brief.
+//
+// #184 UPDATE (audio & sheet music) — inserts `SongMediaSection` (a new
+// "Media" card: play/pause a recording, view sheet music, download MIDI/
+// MusicXML) right after `SongMetadataView`, `if SongMediaSection
+// .hasAnyMedia(detail)` — the same "just don't render the section" treatment
+// `counterpartsShelf`/`relatedSongsShelf` already use for optional content,
+// so a song with none of these four media kinds shows an unchanged page.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — two changes: (1)
+// `shareURL` now goes through `IHAppSupport.CanonicalURL.song(_:)` (the ONE
+// shared web-URL builder, per this task's explicit "extract it if it's
+// currently duplicated" instruction) instead of hand-building the string
+// inline, and a new `shareTitle` feeds `SongDetailToolbarContent`'s
+// `SharePreview`; (2) advertises the loaded song as a Handoff activity
+// (`.userActivity(NSUserActivityTypeBrowsingWeb)`) so a reader can pick the
+// SAME song back up on another Apple device, or hand off straight into
+// Safari — kept to song-detail only (this task's own "highest-value case…
+// don't over-reach" scoping; setlists/songbooks don't get one). Guarded to
+// iOS/macOS/visionOS only: `IHFeatures` also compiles for tvOS/watchOS
+// (this file's own header, `RootContainerView.swift`'s header), and Handoff
+// is not a meaningful concept on either — matching the task's explicit
+// "guard any iOS-only Handoff… API" instruction with the SAME three-platform
+// split `RootContainerView`'s own `#if os(macOS) || os(visionOS) /
+// #elseif os(iOS)` already establishes. The `handoffActivity(webpageURL:title:)`
+// modifier itself now lives in `SongDetailView+Handoff.swift` (a pure move,
+// purely for the LOC-budget tripwire — see that file's own header).
+//
+// #1445 UPDATE (song comparison) — applies `SongCompareEntryModifier`,
+// which owns the toolbar's new "Compare With…" button, the picker sheet,
+// and the push to `SongComparisonView`. `songId` is now a stored property
+// (previously only threaded into `viewModel`'s own init) purely so this
+// entry point has a stable id to compare FROM even before the primary load
+// completes (the button itself stays disabled until it does).
+import Foundation
+import IHAppSupport
 import IHAuth
 import IHDesign
 import IHModels
@@ -48,6 +83,12 @@ import SwiftUI
 public struct SongDetailView: View {
     @State private var viewModel: SongDetailViewModel
     private let rootViewModel: AppRootViewModel
+
+    /// #1445 — kept as its own stored property (rather than re-deriving it
+    /// from `viewModel.loadState` every time) so `SongCompareEntryModifier`
+    /// always has a stable "compare FROM" id, even before the primary load
+    /// completes (its own toolbar button stays `.disabled` until then).
+    private let songId: SongID
 
     @AppStorage("ihLyricsTextScale") private var textScale: Double = 1.0
     @AppStorage("ihLyricsShowChords") private var showChords: Bool = true
@@ -65,9 +106,16 @@ public struct SongDetailView: View {
     /// button; see this file's header.
     @State private var isPresentingAddToSetlist = false
 
+    /// #1455 — owned here (not inside `SongCompareEntryModifier`) so BOTH
+    /// that modifier's toolbar/picker AND a shelf row's "Compare with This"
+    /// context menu can drive the same comparison push; see that modifier's
+    /// own header.
+    @State private var comparisonTargetId: SongID?
+
     public init(songId: SongID, rootViewModel: AppRootViewModel) {
         _viewModel = State(initialValue: SongDetailViewModel(songId: songId, rootViewModel: rootViewModel))
         self.rootViewModel = rootViewModel
+        self.songId = songId
     }
 
     public var body: some View {
@@ -78,12 +126,14 @@ public struct SongDetailView: View {
         }
         .navigationTitle(navigationTitleText)
         .task { await viewModel.loadIfNeeded() }
+        .handoffActivity(webpageURL: shareURL, title: navigationTitleText)
         .toolbar {
             SongDetailToolbarContent(
                 textScale: $textScale,
                 showChords: $showChords,
                 hasChords: hasChords,
                 shareURL: shareURL,
+                shareTitle: shareTitle,
                 isFavorite: viewModel.isFavorite,
                 isSignedIn: rootViewModel.sessionState.isSignedIn,
                 onToggleFavorite: { Task { await viewModel.toggleFavorite() } },
@@ -104,6 +154,40 @@ public struct SongDetailView: View {
                 AddToSetlistSheet(rootViewModel: rootViewModel, song: entry)
             }
         }
+        // #1445 — the "Compare With…" toolbar button + picker + push;
+        // owns its OWN toolbar/sheet/navigationDestination, so this is the
+        // entire wiring cost on this file (see that modifier's own header).
+        .modifier(SongCompareEntryModifier(
+            songId: songId,
+            isPrimaryLoaded: isPrimaryLoaded,
+            counterparts: counterpartsForCompare,
+            relatedSongs: relatedSongsForCompare,
+            rootViewModel: rootViewModel,
+            comparisonTargetId: $comparisonTargetId
+        ))
+    }
+
+    /// Whether the primary load has succeeded — `SongCompareEntryModifier`'s
+    /// "nothing to compare FROM yet" gate, mirroring `shareURL`'s own
+    /// `.loaded`-only guard.
+    private var isPrimaryLoaded: Bool {
+        if case .loaded = viewModel.loadState { return true }
+        return false
+    }
+
+    /// This song's counterparts, already fetched by `viewModel
+    /// .songLinksState` — handed to the picker so it never issues a second
+    /// fetch for suggestions it already has.
+    private var counterpartsForCompare: [SongLinkedSong] {
+        if case .loaded(let group) = viewModel.songLinksState { return group.songs }
+        return []
+    }
+
+    /// Same "already fetched, no second call" reasoning as
+    /// `counterpartsForCompare` above, for `viewModel.relatedSongsState`.
+    private var relatedSongsForCompare: [RelatedSongSummary] {
+        if case .loaded(let related) = viewModel.relatedSongsState { return related }
+        return []
     }
 
     /// The nav-bar/window title — the real song title once loaded, a
@@ -125,11 +209,12 @@ public struct SongDetailView: View {
                 .frame(maxWidth: .infinity, minHeight: 200)
 
         case .error(let message):
-            ContentUnavailableView(
-                "Couldn't Load Song",
-                systemImage: "wifi.exclamationmark",
-                description: Text(message)
-            )
+            // #185 — shared retry-capable error card (`IHDesign`);
+            // `viewModel.load()` is the existing hook `SongDetailViewModel`
+            // already exposes for exactly this.
+            IHLoadErrorView(title: "Couldn't Load Song", message: message) {
+                await viewModel.load()
+            }
 
         case .loaded(let detail):
             loadedContent(detail)
@@ -145,7 +230,11 @@ public struct SongDetailView: View {
                 offlineCopyBanner
             }
             header(for: detail)
-            SongMetadataView(detail: detail, relatedSongs: relatedSongsIfLoaded, rootViewModel: rootViewModel)
+            SongMetadataView(detail: detail, rootViewModel: rootViewModel)
+
+            if SongMediaSection.hasAnyMedia(detail) {
+                SongMediaSection(detail: detail, rootViewModel: rootViewModel)
+            }
 
             ForEach(Array(detail.orderedComponents.enumerated()), id: \.offset) { _, component in
                 SongComponentView(
@@ -158,7 +247,7 @@ public struct SongDetailView: View {
             }
 
             if !detail.works.isEmpty {
-                SongWorksSection(works: detail.works, currentSongId: detail.songId)
+                SongWorksSection(works: detail.works, currentSongId: detail.songId, rootViewModel: rootViewModel)
             }
 
             counterpartsShelf
@@ -207,7 +296,8 @@ public struct SongDetailView: View {
         if case .loaded(let group) = viewModel.songLinksState, group.hasCounterparts {
             RelatedSongsShelfView(
                 title: "Also Appears As",
-                items: group.songs.map(RelatedShelfItem.init(counterpart:))
+                items: group.songs.map(RelatedShelfItem.init(counterpart:)),
+                onCompare: { comparisonTargetId = $0 }
             )
         }
     }
@@ -220,19 +310,9 @@ public struct SongDetailView: View {
         if case .loaded(let related) = viewModel.relatedSongsState, !related.isEmpty {
             RelatedSongsShelfView(
                 title: "Related Songs",
-                items: related.map(RelatedShelfItem.init(related:))
+                items: related.map(RelatedShelfItem.init(related:)),
+                onCompare: { comparisonTargetId = $0 }
             )
-        }
-    }
-
-    /// `related_songs`, once loaded — `[]` otherwise. Handed to
-    /// `SongMetadataView` for its credit "more by X" lookups, which degrade
-    /// gracefully to an empty result set while this is still loading.
-    private var relatedSongsIfLoaded: [RelatedSongSummary] {
-        if case .loaded(let related) = viewModel.relatedSongsState {
-            related
-        } else {
-            []
         }
     }
 
@@ -251,9 +331,26 @@ public struct SongDetailView: View {
     /// "every share surface must emit the canonical web URL"). `nil` while
     /// still loading/errored, which hides the Share button entirely rather
     /// than sharing a broken/placeholder link.
+    ///
+    /// #186 — now built via `IHAppSupport.CanonicalURL.song(_:)` (the ONE
+    /// shared URL-builder) rather than an inline `URL(string:)` — see this
+    /// file's header.
     private var shareURL: URL? {
         guard case .loaded(let detail) = viewModel.loadState else { return nil }
-        return URL(string: "https://ihymns.app/song/\(detail.songId.rawValue)")
+        return CanonicalURL.song(detail.songId)
+    }
+
+    /// "Title — Songbook #Number" for the `ShareLink`'s `SharePreview` —
+    /// `nil` while still loading/errored, mirroring `shareURL`'s own guard
+    /// (`SongDetailToolbarContent` only builds a `SharePreview` when both
+    /// are non-`nil`).
+    private var shareTitle: String? {
+        guard case .loaded(let detail) = viewModel.loadState else { return nil }
+        var title = "\(detail.title) — \(detail.songbookName.isEmpty ? detail.songbookAbbreviation : detail.songbookName)"
+        if let number = detail.number {
+            title += " #\(number)"
+        }
+        return title
     }
 
     /// This song as a `SetlistSongEntry`, for `AddToSetlistSheet` — `nil`
@@ -293,3 +390,8 @@ public struct SongDetailView: View {
         return LineEnrichmentIndex(detail: detail)
     }
 }
+
+// `handoffActivity(webpageURL:title:)` (#186) moved to
+// `SongDetailView+Handoff.swift` — a pure move, purely for the LOC-budget
+// tripwire now that #1445 added the "Compare With…" entry point above; see
+// that file's own header.

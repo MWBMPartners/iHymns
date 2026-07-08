@@ -18,6 +18,13 @@
 // its own — there is exactly ONE `APIClient` instance per app run (owned by
 // `AppRootViewModel`), and every screen that needs a network call reaches
 // it through that one root view model.
+//
+// #1457 UPDATE — `activitySummary` reads `UsageActivityStore` (#1446, the
+// SAME local-only store the full "Your Activity" screen uses — never a
+// second copy) directly, purely LOCAL and synchronous (no network, no
+// `AppRootViewModel` pass-through needed), so it's a plain computed
+// property rather than a `load()`-populated stored one — mirrors
+// `resumeSong`'s identical "recompute at render time" shape one section up.
 import IHAPI
 import IHModels
 import Observation
@@ -35,8 +42,24 @@ public final class HomeViewModel {
 
     private let rootViewModel: AppRootViewModel
 
-    public init(rootViewModel: AppRootViewModel) {
+    /// #1457 — injectable purely for test isolation (a throwaway
+    /// `UserDefaults` suite), mirroring `UsageStatsViewModel`'s identical
+    /// `store:` parameter; the real app always uses the default.
+    private let usageActivityStore: UsageActivityStore
+
+    public init(rootViewModel: AppRootViewModel, usageActivityStore: UsageActivityStore = UsageActivityStore()) {
         self.rootViewModel = rootViewModel
+        self.usageActivityStore = usageActivityStore
+    }
+
+    /// The Home "Your Activity" card's data — `nil` hides the card
+    /// entirely. See `HomeActivitySummary`'s own header for the full "why
+    /// this reuses UsageStatsCalculator, never re-forks it" reasoning.
+    ///
+    /// ELI5: "Is there enough reading activity yet to show a Home card, and
+    /// if so, what should it say?"
+    public var activitySummary: HomeActivitySummary? {
+        HomeActivitySummary.make(from: usageActivityStore.snapshot())
     }
 
     /// Fetches the Song of the Day, but only if it hasn't already been

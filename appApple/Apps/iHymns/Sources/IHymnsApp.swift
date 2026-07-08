@@ -30,12 +30,62 @@
 // `iHymnsApp` — SwiftLint's `type_name` rule requires an uppercase first
 // character, and this keeps every shell's `@main` type consistent with
 // `IHymnsWidgetsBundle` rather than carving out a per-file lint exception.
+//
+// #186 UPDATE (Apple Phase 1, "Sharing & social") — wires Universal Links
+// (`.onOpenURL`) and Handoff continuations (`.onContinueUserActivity`)
+// straight to `DeepLinkRouter.resolve(_:)` (`IHAppSupport`) and hands the
+// result to `RootContainerView`'s `incomingDeepLink` binding. This file
+// stays PURE WIRING per the repo's modularity rule — it calls the router,
+// it never re-implements URL-shape parsing itself. The one decision made
+// HERE (not in the router, which stays a pure `URL → DeepLink?` function)
+// is what to do with an unresolved result — `DeepLinkRouter` returns `nil`
+// for anything the AASA claims but has no native screen yet (`/live/*` —
+// Apple native app epic #895 Phase 2) — the honest, non-broken behaviour is
+// to hand the URL to the system browser (`openURL`) rather than silently
+// doing nothing or presenting an empty screen, exactly mirroring "Universal
+// Links → open in app if installed, else the PWA" when the app IS installed
+// but doesn't (yet) have a screen for this specific claimed path.
+//
+// #1443 UPDATE — every `DeepLink` case `DeepLinkRouter.resolve(_:)` can
+// return (`.song`/`.songbook`/`.songbooksList`/`.setlistShare`/`.work`/
+// `.person`) now has a real native screen (`DeepLinkDestinationView.swift`'s
+// switch), so `requiresBrowserFallback(_:)` — which used to special-case
+// `.work` into the browser — is removed entirely; `handle(url:)` now only
+// ever falls back to the browser when the router itself returns `nil`
+// (i.e. `/live/*`, or a host/path shape it doesn't recognise at all).
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — owns the one
+// `AppNavigationState` this run of the app uses (mirrors how it already
+// owns the one `AppRootViewModel`), hands it down to `RootContainerView`,
+// and — on macOS only — adds a `.commands` menu-bar block: ⌘1…⌘7 jump
+// straight to a section, ⌘F jumps to Search ("Find," the conventional Mac
+// verb for "take me to the search field"), and ⌘/ opens the Keyboard
+// Shortcuts help sheet. Guarded `#if os(macOS)` per this task's own
+// instruction — this is explicitly a MAC MENU BAR feature (iPad/Mac
+// in-context shortcuts like `SongPagerView`'s ← → Previous/Next buttons
+// live as plain `.keyboardShortcut(_:)` on real, visible controls instead,
+// which works everywhere without needing Scene-level `Commands` at all).
+//
+// #1412 UPDATE — this is the SHELL that renders lyrics + the dyslexia-mode
+// toggle, so it's the one place that MUST call
+// `IHFonts.registerBundledFonts()` (`IHDesign`) before any lyric view can
+// resolve the bundled OpenDyslexic OTFs by PostScript name — see that
+// function's own doc comment for why a package resource bundle needs this
+// explicit runtime step. Called from `init()` (the earliest point this
+// shell runs its own code, before `body` builds any scene/view) so it has
+// already happened by the time the first `Font.custom(...)` is resolved.
 import IHAPI
+import IHAppSupport
+import IHDesign
 import IHFeatures
 import SwiftUI
 
 @main
 struct IHymnsApp: App {
+    init() {
+        IHFonts.registerBundledFonts()
+    }
+
     /// The one `AppRootViewModel` this app run uses — built once via
     /// `@State`'s default-value expression (evaluated exactly once, at
     /// scene creation) and handed down to `RootContainerView`, which
@@ -53,9 +103,97 @@ struct IHymnsApp: App {
         environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
     )
 
+    /// The most recently resolved inbound deep link — `nil` bound directly
+    /// to `RootContainerView.incomingDeepLink`, which presents it and
+    /// resets this back to `nil` once consumed (see that type's own doc
+    /// comment on why: so tapping the same link twice still re-presents).
+    @State private var incomingDeepLink: DeepLink?
+
+    /// #185 — the one `AppNavigationState` this app run uses, mirroring how
+    /// `rootViewModel` above is the one `AppRootViewModel`. Handed down to
+    /// `RootContainerView` AND read/written by this file's own `.commands`
+    /// block below, so a Mac menu click and a sidebar/tab tap change the
+    /// exact same state.
+    @State private var navigationState = AppNavigationState()
+
+    /// Lets `handle(url:)` hand an unresolved/undeep-linkable URL to the
+    /// system browser instead of the app silently swallowing it.
+    @Environment(\.openURL) private var openURL
+
     var body: some Scene {
         WindowGroup {
-            RootContainerView(viewModel: rootViewModel)
+            // `.onOpenURL`/`.onContinueUserActivity` are `View` modifiers
+            // (not `Scene` ones) — attached to the content view itself
+            // rather than chained after `WindowGroup`, matching Apple's own
+            // documented placement for both.
+            RootContainerView(viewModel: rootViewModel, navigationState: navigationState, incomingDeepLink: $incomingDeepLink)
+                .onOpenURL { url in
+                    handle(url: url)
+                }
+                .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                    guard let url = activity.webpageURL else { return }
+                    handle(url: url)
+                }
         }
+        #if os(macOS)
+        .commands {
+            // #185 — "Go" menu: ⌘1…⌘7 jump straight to a top-level section,
+            // mirroring `RootSection.keyboardShortcutDigit`'s numbering so
+            // the menu and this list can never silently drift apart.
+            CommandMenu("Go") {
+                sectionCommand(.home)
+                sectionCommand(.songbooks)
+                sectionCommand(.search)
+                sectionCommand(.favorites)
+                sectionCommand(.setlists)
+                sectionCommand(.live)
+                sectionCommand(.settings)
+                Divider()
+                // "Find" is the conventional Mac verb for "take me to the
+                // search field" (Safari, Mail, Xcode all use ⌘F for their
+                // own in-window find/search) — here it means "switch to the
+                // Search section," the closest equivalent this app has.
+                Button("Find") { navigationState.selectedSection = .search }
+                    .keyboardShortcut("f", modifiers: .command)
+            }
+            // `.after(.help)` APPENDS to the existing Help menu rather than
+            // replacing it (`.replacing(.help)` would drop the system's own
+            // "iHymns Help" item) — see `KeyboardShortcutsOverlayView.swift`
+            // for why ⌘/ rather than a bare "?" (typing a literal "?" into
+            // the search field must never accidentally open this sheet).
+            CommandGroup(after: .help) {
+                Button("Keyboard Shortcuts") { navigationState.isPresentingKeyboardShortcutsHelp = true }
+                    .keyboardShortcut("/", modifiers: .command)
+            }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    /// One "Go" menu row for `section` — labelled with its title, jumping
+    /// `navigationState.selectedSection` to it, shortcut ⌘ + its
+    /// `keyboardShortcutDigit`. A plain `View`-returning helper (not a
+    /// `Commands`-returning one) because `CommandMenu`'s own content
+    /// closure is built with the ordinary `@ViewBuilder` (`Button`/
+    /// `Divider`/`Menu`), exactly like any other menu's contents — only the
+    /// OUTER `.commands { }` scene modifier itself uses `@CommandsBuilder`.
+    @ViewBuilder
+    private func sectionCommand(_ section: RootSection) -> some View {
+        Button(section.title) { navigationState.selectedSection = section }
+            .keyboardShortcut(KeyEquivalent(section.keyboardShortcutDigit), modifiers: .command)
+    }
+    #endif
+
+    /// Resolves `url` through the router and either presents it in-app
+    /// (`incomingDeepLink`) or falls back to the system browser — see this
+    /// file's header for why any AASA-claimed-but-unrouted shape (`/live/*`
+    /// today) takes the browser path even though the app itself handled the
+    /// tap.
+    private func handle(url: URL) {
+        guard let link = DeepLinkRouter.resolve(url) else {
+            openURL(url)
+            return
+        }
+        incomingDeepLink = link
     }
 }

@@ -78,6 +78,16 @@ extension AppRootViewModel {
         try await offlineStore.totalSavedSongBytes()
     }
 
+    /// How many songs currently have a saved offline copy — a cheap
+    /// `COUNT`-only pass-through (#1446's "Your Activity" dashboard's
+    /// "Saved Offline" stat tile), rather than fetching every
+    /// `SavedSongInfo` row via `allSavedSongs()` just to count them.
+    ///
+    /// ELI5: "How many songs have I saved for offline reading?"
+    public func savedSongCount() async throws -> Int {
+        try await offlineStore.savedSongCount()
+    }
+
     /// Deletes every saved song in one shot — the Storage & Offline screen's
     /// confirmed "Remove All Downloads" action.
     ///

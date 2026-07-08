@@ -7,11 +7,14 @@
 // scales with the user's size control, and a screen that was never told
 // which style to use defaults to normal.
 //
-// DETAILED: Covers #1412's `IHReadingMode`. Verifiable WITHOUT the
-// OpenDyslexic binary present (see the type's header): the spacing/mode
-// logic and the default environment value are pure values, and the font
-// name is a constant, so these assertions hold whether or not the OTF has
-// been bundled yet.
+// DETAILED: Covers #1412's `IHReadingMode`. The spacing/mode logic, the
+// default environment value, and the font-name constants are all pure
+// values — these assertions hold regardless of whether `IHFonts
+// .registerBundledFonts()` has run in this process (that mechanism itself
+// is `IHFontsTests`'s job). The italic-face tests below additionally cover
+// the #1412 real-italic-face completion: dyslexia mode's italic request
+// resolves to a genuinely DIFFERENT font (the real `OpenDyslexic-Italic`
+// face) rather than the same font SwiftUI would then synthetically slant.
 import Foundation
 import SwiftUI
 import Testing
@@ -37,10 +40,34 @@ struct IHReadingModeTests {
 
     @Test("The dyslexia font name is the expected OpenDyslexic PostScript name")
     func fontName() {
-        // Guards the contract the eventual bundled OTF must satisfy — if this
-        // constant changes, the font-registration + LICENSING.md follow-up
-        // must change with it.
+        // Guards the contract the bundled OTF must satisfy — if this
+        // constant changes, `IHFontsTests`' registration test and
+        // `LICENSING.md` must change with it.
         #expect(IHReadingMode.dyslexiaFontName == "OpenDyslexic-Regular")
+    }
+
+    @Test("The dyslexia italic font name is the expected OpenDyslexic-Italic PostScript name")
+    func italicFontName() {
+        #expect(IHReadingMode.dyslexiaItalicFontName == "OpenDyslexic-Italic")
+    }
+
+    @Test("Dyslexia mode's italic font genuinely differs from its non-italic font (real italic face, not synthesis)")
+    func dyslexiaItalicFontDiffersFromNonItalic() {
+        let upright = IHReadingMode.dyslexiaFriendly.lyricFont(textScale: 1.0, italic: false)
+        let italic = IHReadingMode.dyslexiaFriendly.lyricFont(textScale: 1.0, italic: true)
+        #expect(upright != italic)
+    }
+
+    @Test("Standard mode's font ignores the italic parameter — still the same serif system font either way")
+    func standardModeIgnoresItalicParam() {
+        // Proves standard mode is a verified no-op for this new parameter:
+        // the font-selection path never touches `italic` when `self ==
+        // .standard`, so the pre-existing look is byte-identical — the
+        // `.italic()` synthesis modifier is applied separately by
+        // `LyricLineStyleModifier`, not by this function.
+        let upright = IHReadingMode.standard.lyricFont(textScale: 1.0, italic: false)
+        let italic = IHReadingMode.standard.lyricFont(textScale: 1.0, italic: true)
+        #expect(upright == italic)
     }
 
     @Test("The lyric font scales with the manual text-size multiplier")

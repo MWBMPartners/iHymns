@@ -13,6 +13,16 @@
 // Work groupings exist yet there), so `SongDetailView` only shows this
 // panel `if !works.isEmpty` and it is, in practice, never visible today —
 // the honest "render gracefully-empty" outcome for this sub-feature.
+//
+// #1443 UPDATE — the "Part of: <title>" heading is now a real
+// `NavigationLink` into the standalone `WorkDetailView` (title/ISWC/notes/
+// parent/children/EVERY member/links — richer than this inline panel's own
+// member-sibling list), closing the "no native Work-detail screen" gap this
+// file used to describe. Always fetches by SLUG (never reuses this
+// embedded `Work` value directly) — see `WorkDetailView.swift`'s header for
+// why: the embedded shape here omits `notes`/`parent`/`children`/timestamps
+// entirely (`Work.swift`'s own #1443 fix comment), so a single "always
+// fetch the full record" path is simpler than reconciling two shapes.
 import IHDesign
 import IHModels
 import SwiftUI
@@ -22,15 +32,19 @@ import SwiftUI
 struct SongWorksSection: View {
     let works: [Work]
     let currentSongId: SongID
+    let rootViewModel: AppRootViewModel
 
     var body: some View {
         ForEach(works) { work in
             VStack(alignment: .leading, spacing: 8) {
-                Text("Part of: \(work.title)")
-                    .font(.headline)
-                    // #188 — a heading so VoiceOver's heading rotor can jump
-                    // between "Part of …" work groups (WCAG 1.3.1 / 2.4.1).
-                    .accessibilityAddTraits(.isHeader)
+                NavigationLink(destination: WorkDetailView(slug: work.slug, rootViewModel: rootViewModel)) {
+                    Text("Part of: \(work.title)")
+                        .font(.headline)
+                        // #188 — a heading so VoiceOver's heading rotor can
+                        // jump between "Part of …" work groups (WCAG 1.3.1 /
+                        // 2.4.1).
+                        .accessibilityAddTraits(.isHeader)
+                }
 
                 ForEach(work.members.filter { $0.songId != currentSongId.rawValue }, id: \.songId) { member in
                     memberRow(member)

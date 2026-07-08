@@ -15,6 +15,12 @@
 // it can discard many songs' cached lyrics at once and — unlike a single
 // swipe-to-delete, which is a small, easily-repeated action — has no
 // individual undo.
+//
+// #1440 UPDATE (offline media caching) — `summarySection` gains a "Media
+// Downloads" row alongside "Total Size" (now the COMBINED lyrics+media
+// figure, `OfflineStorageViewModel.totalSizeDisplay`), and the "Remove All
+// Downloads" confirmation copy now mentions media explicitly — this screen
+// stays a pure renderer of the view model either way, no new logic here.
 import IHModels
 import IHPersistence
 import SwiftUI
@@ -39,7 +45,7 @@ public struct OfflineStorageView: View {
                     Task { await viewModel.removeAll() }
                 }
             } message: {
-                Text("Every song you've saved for offline reading will be removed from this device. This can't be undone.")
+                Text("Every song you've saved for offline reading, and any downloaded audio/sheet-music/MIDI/MusicXML files, will be removed from this device. This can't be undone.")
             }
     }
 
@@ -61,10 +67,16 @@ public struct OfflineStorageView: View {
         }
     }
 
-    /// The headline "Total Size" / "Saved Songs" figures.
+    /// The headline "Total Size" / "Media Downloads" / "Saved Songs"
+    /// figures — "Total Size" is lyrics+media COMBINED
+    /// (`OfflineStorageViewModel.totalSizeDisplay`); "Media Downloads"
+    /// breaks out just the cached audio/sheet-music/MIDI/MusicXML portion
+    /// of it (#1440), so the split is visible rather than hidden inside one
+    /// number.
     private var summarySection: some View {
         Section {
             LabeledContent("Total Size", value: viewModel.totalSizeDisplay)
+            LabeledContent("Media Downloads", value: viewModel.mediaSizeDisplay)
             LabeledContent("Saved Songs", value: "\(viewModel.savedSongs.count)")
         }
     }

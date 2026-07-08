@@ -16,15 +16,20 @@
 // toggle with no per-view plumbing). Kept in IHDesign, alongside the
 // typography rule it feeds, per the repo's modularity rule.
 //
-// FONT STATUS — the dyslexia mode names the OpenDyslexic family
-// (`dyslexiaFontName`). This build does NOT bundle the binary yet, so
-// `Font.custom(_:size:)` gracefully falls back to the system font (Apple's
-// documented behaviour for an unregistered family name,
+// FONT STATUS (#1412 FONT-PENDING — now RESOLVED) — the dyslexia mode names
+// the OpenDyslexic family (`dyslexiaFontName`/`dyslexiaItalicFontName`), and
+// the four licensed OTFs (Regular/Bold/Italic/BoldItalic, SIL OFL 1.1) now
+// ship as an `IHDesign` package resource (`Package.swift`'s
+// `.copy("Resources/Fonts")`) with `IHFonts.registerBundledFonts()`
+// (`IHFonts.swift`) registering them with CoreText at app launch. The
+// graceful fallback is KEPT regardless: if registration is skipped, fails,
+// or runs in a host that hasn't called it yet, `Font.custom(_:size:)`
+// degrades to the system font (Apple's documented behaviour for an
+// unregistered family name,
 // https://developer.apple.com/documentation/swiftui/font/custom(_:size:)) —
-// the mode is STILL genuinely different because the increased letter/line
-// spacing below applies regardless. Once the licensed OTF is dropped in the
-// mechanism lights up with zero code change (see the FONT-PENDING note on
-// `dyslexiaFontName`).
+// the mode is STILL genuinely different in that case because the increased
+// letter/line spacing below applies regardless, so a mis-registered font is
+// a visual downgrade, never a broken or crashing mode.
 import SwiftUI
 
 /// The app's lyric/prose reading style — the normal look, or the
@@ -35,14 +40,28 @@ public enum IHReadingMode: String, Sendable, Equatable, CaseIterable {
     case standard
     case dyslexiaFriendly
 
-    /// The font family the dyslexia mode requests.
-    ///
-    /// FONT-PENDING (#1412): bundle `OpenDyslexic-Regular.otf` (SIL OFL 1.1)
-    /// under an IHDesign resource bundle + register it (and add the OFL entry
-    /// to `LICENSING.md`). Until then `lyricFont(…)` falls back to the system
-    /// font — see this file's header. The name must match the font's
-    /// PostScript name once bundled.
+    /// The upright/bold font family the dyslexia mode requests — the
+    /// bundled OTF's verified PostScript name (`OpenDyslexic-Bold.otf`
+    /// shares this SAME family, `Font.custom` picks the weight via
+    /// `.bold()`/`Text`'s own bold styling, matching how the standard
+    /// mode's `.system(design: .serif)` already lets SwiftUI pick weights
+    /// within one family). See this file's header (#1412) for the bundling
+    /// + registration mechanism this name resolves against.
     public static let dyslexiaFontName = "OpenDyslexic-Regular"
+
+    /// The italic font family the dyslexia mode requests for
+    /// chorus/refrain/bridge lines (`IHLyricTypography`, rule #1337).
+    ///
+    /// DETAILED: OpenDyslexic's hand-designed italic face ships as its OWN
+    /// distinct font FAMILY (`OpenDyslexic-Italic.otf`'s PostScript name is
+    /// `OpenDyslexic-Italic`, family `"OpenDyslexic Italic"` — verified via
+    /// fontTools against the bundled file, NOT a `Regular` weight within the
+    /// `OpenDyslexic` family the way most typefaces model italics). That
+    /// means SwiftUI's synthetic `.italic()` modifier (which slants the
+    /// `OpenDyslexic-Regular` glyphs algorithmically) would look worse than
+    /// the real drawn italic — `lyricFont(italic: true)` below requests
+    /// THIS name directly instead or letting `.italic()` synthesize on top.
+    public static let dyslexiaItalicFontName = "OpenDyslexic-Italic"
 
     /// The base reading size (points) before the user's manual `textScale`
     /// multiplier — the same 17pt `IHLyricTypography` used before this mode
@@ -73,20 +92,31 @@ public enum IHReadingMode: String, Sendable, Equatable, CaseIterable {
 
     /// The lyric `Font` for this mode at `baseSize * textScale`.
     ///
-    /// ELI5: "Which actual font, at what size, for this reading style?"
+    /// ELI5: "Which actual font, at what size, for this reading style — and
+    /// should it be the slanted (italic) version?"
     ///
     /// DETAILED: Standard → the serif system font (unchanged from the
-    /// pre-#1412 look). Dyslexia → `Font.custom(dyslexiaFontName, size:)`,
-    /// which SwiftUI resolves to OpenDyslexic once bundled and otherwise
-    /// falls back to the system font (see file header) — either way the
-    /// spacing above still applies, so the mode is never a silent no-op.
-    public func lyricFont(baseSize: CGFloat = IHReadingMode.baseLyricSize, textScale: CGFloat = 1.0) -> Font {
+    /// pre-#1412 look) regardless of `italic` — `LyricLineStyleModifier`
+    /// applies SwiftUI's synthetic `.italic()` on top for that mode instead
+    /// (`IHLyricTypography.swift`), exactly as before this parameter
+    /// existed. Dyslexia + `italic: false` → `Font.custom(dyslexiaFontName,
+    /// size:)`. Dyslexia + `italic: true` → `Font.custom
+    /// (dyslexiaItalicFontName, size:)`, the real hand-drawn italic face
+    /// (see that constant's doc comment for why NOT `.italic()` synthesis
+    /// here) — chosen over calling `.italic()` from the modifier because
+    /// `dyslexiaItalicFontName` is a genuinely different FONT FAMILY, not a
+    /// style variant `Font.custom` can select on its own. `italic` defaults
+    /// to `false` so every pre-existing call site keeps compiling and
+    /// behaving identically. Either way the spacing below still applies, so
+    /// the mode is never a silent no-op.
+    public func lyricFont(baseSize: CGFloat = IHReadingMode.baseLyricSize, textScale: CGFloat = 1.0, italic: Bool = false) -> Font {
         let size = baseSize * textScale
         switch self {
         case .standard:
             return .system(size: size, weight: .regular, design: .serif)
         case .dyslexiaFriendly:
-            return .custom(IHReadingMode.dyslexiaFontName, size: size)
+            let fontName = italic ? IHReadingMode.dyslexiaItalicFontName : IHReadingMode.dyslexiaFontName
+            return .custom(fontName, size: size)
         }
     }
 }

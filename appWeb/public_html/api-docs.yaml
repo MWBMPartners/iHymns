@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.1317.0"
+  version: "0.2500.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -2449,6 +2449,119 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: Account is disabled.
+
+  /api.php?action=auth_apple:
+    post:
+      operationId: authApple
+      tags: [Authentication]
+      summary: Sign in with Apple (#1402)
+      description: |
+        Verify an Apple `identityToken` (RS256, checked against Apple's
+        published JWKS) and either sign in to the iHymns account already
+        linked to that Apple ID, link the Apple ID to the account of the
+        CURRENT bearer token (`link: true`), auto-link to an existing
+        account whose verified email matches the token's `email` claim, or
+        create a brand-new account. Returns the SAME response shape as
+        `auth_login` — the native app's `AuthSession` model decodes
+        `token` + `user.{id, username, display_name, role,
+        avatar_service}` from either endpoint identically.
+
+        `nonce` is the RAW (unhashed) value the client used when building
+        the `ASAuthorizationAppleIDRequest` — the client sets
+        `request.nonce = sha256Hex(nonce)` and sends the raw `nonce` here;
+        the server recomputes the hash and compares it to the token's
+        `nonce` claim. Each nonce is single-use (replay is rejected).
+
+        `authorizationCode` and `fullName` are optional and only present
+        on Apple's FIRST authorization for a given Apple ID + app pair —
+        send them when available so the server can capture a refresh
+        token (needed later for `account_delete`'s Apple-side revoke) and
+        a display name.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_apple]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityToken, nonce]
+              properties:
+                identityToken:
+                  type: string
+                  description: Compact JWS from ASAuthorizationAppleIDCredential.identityToken.
+                nonce:
+                  type: string
+                  description: RAW (unhashed) nonce the client used in the SIWA request (16-255 chars).
+                authorizationCode:
+                  type: string
+                  description: Optional — enables a best-effort Apple refresh-token capture.
+                email:
+                  type: string
+                  format: email
+                  description: Optional convenience copy — the verified JWT `email` claim always takes priority.
+                fullName:
+                  type: object
+                  description: Optional — Apple sends this ONLY on the first authorization.
+                  properties:
+                    givenName: { type: string }
+                    familyName: { type: string }
+                link:
+                  type: boolean
+                  description: When true, link this Apple ID to the CURRENT bearer's account instead of signing in. Requires Authorization header.
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Signed in (or linked) successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Missing/malformed identityToken or nonce
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid/expired/replayed Apple identity token, or link mode without a valid bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Invalid Apple identity token.
+        "403":
+          description: Account disabled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: This Apple ID / account is already linked to a different party
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: Too many attempts from this IP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Sign in with Apple not yet migrated on this environment, or Apple's key set is temporarily unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 
   /api.php?action=auth_logout:
     post:
@@ -8255,6 +8368,83 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated, or current password wrong
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=account_delete:
+    post:
+      operationId: deleteAccount
+      tags: [Authentication]
+      summary: Permanently delete the authenticated account (#1403)
+      description: |
+        Self-service, irreversible account deletion (App Review 5.1.1(v)).
+        The account is ALWAYS the current bearer — there is no id/username
+        selector, so this can never delete a different account. Requires
+        the custom `X-Requested-With` header (a browser cannot set it
+        cross-origin without a CORS preflight this server never grants) —
+        see the CSRF note below — PLUS exactly one fresh re-authentication
+        proof:
+          - `password` — accounts with a password set.
+          - `identityToken` + `nonce` (+ optional `authorizationCode`) — a
+            FRESH Sign-in-with-Apple assertion, for accounts with an Apple
+            link. The verified `sub` must match this account's own linked
+            Apple identity.
+          - `email_code` — a 6-digit code from `auth_email_login_request`,
+            for passwordless email accounts.
+          - `confirm: "DELETE"` — degenerate accounts only (no password, no
+            email, no Apple link).
+
+        Deletes/anonymises every per-user row (favourites, setlists,
+        provider links, …), revokes ALL bearer tokens, best-effort revokes
+        the Apple grant (never blocks deletion — see `apple_revoke` in the
+        audit log), and clears the `ihymns_auth` cookie. A repeat call with
+        an already-invalidated token returns 401 (terminal); a narrow
+        double-tap race returns the SAME `{"ok":true,"deleted":true}` both
+        times (idempotent).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [account_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password:          { type: string, format: password }
+                identityToken:     { type: string }
+                nonce:             { type: string }
+                authorizationCode: { type: string }
+                email_code:        { type: string, example: "123456" }
+                confirm:           { type: string, enum: [DELETE] }
+      responses:
+        "200":
+          description: Account deleted (or already gone — idempotent)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  deleted: { type: boolean }
+        "400":
+          description: No re-authentication proof supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated, or the supplied re-auth proof is wrong
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Caller is the last active global_admin — transfer first
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          description: Too many re-auth attempts from this IP
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   # ===========================================================================

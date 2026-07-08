@@ -31,7 +31,32 @@
 // screen, not inlined here, so this file doesn't have to grow a whole
 // list-management UI directly) — this task's "Data management UI... a
 // 'Storage & Offline' section reachable from Settings" requirement.
+//
+// #1446 UPDATE — adds `activitySection` (a "Your Activity" row into the new
+// `UsageStatsView`), placed between `storageSection` and `privacySection`
+// per the comparison-usage plan's §2.4: NOT a new tab/sidebar section
+// (`RootContainerView` deliberately caps the compact `TabView` at 7 tabs,
+// its own #182 header) — this is the SAME "one row, real content lives on
+// the pushed screen" shape `storageSection` already established.
+//
+// #185 UPDATE (Apple Phase 1, navigation & UX consolidation) — adds a
+// "Keyboard Shortcuts" row to `aboutSection`, presenting the SAME
+// `KeyboardShortcutsOverlayView` the Mac ⌘/ command opens
+// (`IHymnsApp.swift`). Kept reachable here on EVERY platform (not just
+// macOS) — an external keyboard can be paired with an iPhone/iPad too, and
+// there's no harm in a sighted list of shortcuts on a device that happens
+// not to have one attached right now.
+//
+// #190 UPDATE (Apple Phase 1, help/legal/first-run) — adds `helpSection`:
+// three `NavigationLink`s into `HelpView`/`LegalView`/`AcknowledgementsView`
+// (their own screens, not inlined here — same "one row, real content lives
+// on the pushed screen" shape `storageSection` already established). Also
+// replaces the former private `appVersion` computed property with the
+// shared `IHAppSupport.IHAppVersion.marketingAndBuild` the moment
+// `AcknowledgementsView` needed the identical value too (the repo's
+// modularity rule).
 import IHAPI
+import IHAppSupport
 import IHDesign
 import SwiftUI
 
@@ -49,6 +74,10 @@ public struct SettingsView: View {
     /// require; the model's own `didSet` observers do the persistence.
     @Bindable private var settings: SettingsViewModel
 
+    /// #185 — flips the "Keyboard Shortcuts" row's sheet; see this file's
+    /// header for why this is reachable from every platform, not just macOS.
+    @State private var isPresentingKeyboardShortcuts = false
+
     public init(rootViewModel: AppRootViewModel, settings: SettingsViewModel) {
         self.rootViewModel = rootViewModel
         self._settings = Bindable(settings)
@@ -60,13 +89,18 @@ public struct SettingsView: View {
             appearanceSection
             accessibilitySection
             storageSection
+            activitySection
             privacySection
+            helpSection
             #if DEBUG
             developerSection
             #endif
             aboutSection
         }
         .navigationTitle("Settings")
+        .sheet(isPresented: $isPresentingKeyboardShortcuts) {
+            KeyboardShortcutsOverlayView()
+        }
     }
 
     // MARK: - Account
@@ -159,6 +193,24 @@ public struct SettingsView: View {
         }
     }
 
+    // MARK: - Your Activity
+
+    /// A single navigation row into `UsageStatsView` (#1446) — mirrors
+    /// `storageSection`'s "one row, real content lives on the pushed
+    /// screen" shape. Local-only: see that screen's own header for why this
+    /// is NOT gated on `analyticsConsentEnabled` below.
+    private var activitySection: some View {
+        Section {
+            NavigationLink {
+                UsageStatsView(rootViewModel: rootViewModel)
+            } label: {
+                Label("Your Activity", systemImage: "chart.bar.fill")
+            }
+        } footer: {
+            Text("Your reading streak, most-viewed songs, and more — calculated on this device only.")
+        }
+    }
+
     // MARK: - Privacy
 
     /// First-party, consent-gated analytics opt-in — default OFF, no Apple
@@ -171,6 +223,30 @@ public struct SettingsView: View {
             Text("Privacy")
         } footer: {
             Text("Off by default. When on, iHymns collects anonymous, first-party usage counts to improve the app — never your identity, and never shared with third parties or ad networks.")
+        }
+    }
+
+    // MARK: - Help & Legal (#190)
+
+    /// Three rows into their own screens — mirrors `storageSection`'s "one
+    /// row, real content lives on the pushed screen" shape exactly.
+    private var helpSection: some View {
+        Section {
+            NavigationLink {
+                HelpView()
+            } label: {
+                Label("Help", systemImage: "questionmark.circle")
+            }
+            NavigationLink {
+                LegalView()
+            } label: {
+                Label("Legal", systemImage: "doc.text")
+            }
+            NavigationLink {
+                AcknowledgementsView()
+            } label: {
+                Label("Acknowledgements", systemImage: "text.book.closed")
+            }
         }
     }
 
@@ -204,18 +280,12 @@ public struct SettingsView: View {
     /// could drift from `Config/Versioning.xcconfig`).
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent("Version", value: appVersion)
+            LabeledContent("Version", value: IHAppVersion.marketingAndBuild)
+            Button {
+                isPresentingKeyboardShortcuts = true
+            } label: {
+                Label("Keyboard Shortcuts", systemImage: "keyboard")
+            }
         }
-    }
-
-    /// e.g. `"0.1.0 (1720000000)"` — `CFBundleShortVersionString` (marketing)
-    /// + `CFBundleVersion` (build), the two values `project.yml`'s
-    /// `MARKETING_VERSION`/`CURRENT_PROJECT_VERSION` feed. An em dash if a
-    /// value is somehow absent (e.g. a preview/host with no `Info.plist`).
-    private var appVersion: String {
-        let info = Bundle.main.infoDictionary
-        let marketing = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "\(marketing) (\(build))"
     }
 }

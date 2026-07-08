@@ -13,7 +13,15 @@
  *   - Safari macOS: "File → Add to Dock" instructions
  *   - iOS non-Safari (Chrome, Edge, Firefox, Opera): banner hidden,
  *     since only Safari can install PWAs on iOS
- *   - Native app stores: redirects to app store if configured
+ *   - Amazon Fire OS (Silk browser): routed to the Amazon Appstore, never
+ *     the PWA a2hs flow (#1403)
+ *   - Native app stores: when the ADMIN has configured a store ID for the
+ *     visitor's detected platform (Apple App Store / Google Play / Amazon
+ *     Appstore — /manage/configuration → "Native app stores", #1403), a
+ *     native-app download banner REPLACES the PWA install prompt for that
+ *     platform entirely (getNativeAppUrl() / checkNativeAppRedirect()).
+ *     The instructional a2hs banners above are only a FALLBACK for a
+ *     platform with no native app configured.
  *
  * The banner HTML starts empty (no default content) — all text, icons, and
  * buttons are populated by JS based on platform detection. This prevents
@@ -148,7 +156,7 @@ export class PWA {
      *
      * @returns {string} Platform identifier:
      *   'ios-safari', 'ios-chrome', 'ios-edge', 'ios-firefox', 'ios-other',
-     *   'macos-safari', 'android', 'desktop', or 'unknown'
+     *   'macos-safari', 'fireos', 'android', 'desktop', or 'unknown'
      */
     detectPlatform() {
         const ua = navigator.userAgent || '';
@@ -168,6 +176,16 @@ export class PWA {
         if (/Macintosh/.test(ua) && /Safari/.test(ua) &&
             !/Chrome|CriOS|FxiOS|EdgiOS/.test(ua)) {
             return 'macos-safari';
+        }
+
+        /* Amazon Fire OS (Kindle Fire tablets, #1403). Fire OS is an
+           Android fork, so its UA also contains "Android" — this check
+           MUST run before the generic Android test below. The Silk
+           browser UA carries "Silk"; device build IDs like "KFONWI"
+           ("KF" + tablet code) appear on both Silk and any other browser
+           installed on a Fire tablet. */
+        if (/Silk/.test(ua) || /\bKF[A-Z0-9]+\b/i.test(ua)) {
+            return 'fireos';
         }
 
         if (/Android/.test(ua)) return 'android';
@@ -403,19 +421,37 @@ export class PWA {
      * ===================================================================== */
 
     /**
+     * Per-platform store branding for the native-app banner (#1403).
+     * Keyed by the store the visitor's platform maps to (NOT by
+     * detectPlatform()'s finer-grained ios-safari/ios-chrome/... values —
+     * see the lookup in checkNativeAppRedirect()). Icon/name are fixed,
+     * hardcoded strings — never derived from admin input — so they're
+     * safe to drop straight into innerHTML via showPlatformBanner().
+     */
+    static NATIVE_STORE_META = {
+        ios:     { icon: 'fa-brands fa-apple',       name: 'App Store' },
+        android: { icon: 'fa-brands fa-google-play', name: 'Google Play' },
+        amazon:  { icon: 'fa-brands fa-amazon',      name: 'Amazon Appstore' },
+    };
+
+    /**
      * Check if the current platform has a native app available.
-     * If so, populate the banner and redirect to the app store.
+     * If so, show the native-app download banner (REPLACES the PWA a2hs
+     * instructional banner for this platform — see getNativeAppUrl()).
      */
     checkNativeAppRedirect() {
         const nativeUrl = this.getNativeAppUrl();
         if (!nativeUrl) return;
 
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-            (navigator.maxTouchPoints > 1 && 'ontouchend' in document);
+        const platform = this.detectPlatform();
+        const storeKey = platform === 'fireos'
+            ? 'amazon'
+            : (platform.startsWith('ios-') ? 'ios' : 'android');
+        const meta = PWA.NATIVE_STORE_META[storeKey];
 
         this.showPlatformBanner({
-            icon: isIOS ? 'fa-brands fa-apple' : 'fa-brands fa-google-play',
-            text: 'Get the full <strong>iHymns</strong> experience!',
+            icon: meta.icon,
+            text: 'Get the <strong>iHymns</strong> app on the ' + meta.name,
             showButton: true,
             buttonIcon: 'fa-solid fa-arrow-up-right-from-square',
             buttonText: 'Get the App',
@@ -424,21 +460,31 @@ export class PWA {
 
     /**
      * Detect the user's platform and return the native app URL if available.
-     * Only returns a URL when the server has verified the app is published
-     * in the app store (iosVerified / androidVerified flags in config).
+     * Only returns a URL when the server has verified/accepted the app for
+     * that store (iosVerified / androidVerified / amazonVerified flags
+     * already gated this value server-side — see index.php's
+     * iHymnsConfig.nativeApps). The URL itself is always a canonical,
+     * template-built store link (ihymnsAppStoreCanonicalUrl() in
+     * includes/config.php) — never a raw admin-entered string — so it's
+     * safe to assign straight to window.location.href / an <a href>.
+     *
+     * Reuses detectPlatform() rather than re-sniffing the UA here, so
+     * platform detection lives in exactly ONE place.
      *
      * @returns {string|null} Native app store URL or null
      */
     getNativeAppUrl() {
         const nativeApps = this.app.config.nativeApps || {};
-        const ua = navigator.userAgent || '';
+        const platform = this.detectPlatform();
 
-        if ((/iPad|iPhone|iPod/.test(ua) ||
-            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) && nativeApps.ios) {
-            return nativeApps.ios;
+        if (platform.startsWith('ios-')) {
+            return nativeApps.ios || null;
         }
-        if (/Android/.test(ua) && nativeApps.android) {
-            return nativeApps.android;
+        if (platform === 'fireos') {
+            return nativeApps.amazon || null;
+        }
+        if (platform === 'android') {
+            return nativeApps.android || null;
         }
         return null;
     }

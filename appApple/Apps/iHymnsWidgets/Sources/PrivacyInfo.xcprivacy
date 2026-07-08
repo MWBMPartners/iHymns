@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PrivacyInfo.xcprivacy — `iHymnsWidgets` (WidgetKit extension shell), #1449.
+
+  ELI5: Same idea as the main app's privacy form (see
+  `Apps/iHymns/Sources/PrivacyInfo.xcprivacy` for the full explanation) —
+  this one covers the widget extension specifically, which App Store
+  Connect's manifest tooling checks as its OWN bundle (a widget extension
+  is a separate `.appex`, not just more code inside the host app).
+
+  DETAILED: `IHymnsWidgetsBundle.swift` renders ONLY `PhaseZeroWidget` — a
+  static placeholder `TimelineProvider` that always returns "now"
+  (`PhaseZeroEntry(date: .now)`, `.never` reload policy) and a `Text("iHymns")`
+  view. It doesn't `import IHFeatures` at all (only `IHDesign`/`WidgetKit`),
+  so it has zero reachable path to `IHSettingsStore`/`AppRootViewModel`/any
+  `UserDefaults` usage, and (independently re-checked) zero use of any
+  file-timestamp/disk-space/system-boot-time/active-keyboard API either.
+  This manifest is correctly EMPTY. Real widgets (Song of the Day,
+  favourites, resume-last-song — strategy §2.3, Phase 1.5) will very likely
+  need `NSPrivacyAccessedAPICategoryUserDefaults`/`CA92.1` once they read
+  app state to render — update this file at that point, matching the main
+  app's manifest.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+</dict>
+</plist>
