@@ -115,6 +115,32 @@
 
 ---
 
+## Verification walkthrough — where to look & what "good" looks like
+
+Three buckets: what you can verify **now** (Apple portals), what's **blocked on §1.1 deploy**, and what needs a **signed device build**.
+
+### A. Verify now (Apple portals — you look)
+| What | Where | "Good" looks like |
+|------|-------|-------------------|
+| **App ID** | developer.apple.com → Certificates, Identifiers & Profiles → **Identifiers** → click `app.ihymns` | **Sign in with Apple** ✅ + **Associated Domains** ✅ both enabled |
+| **SIWA key** | same portal → **Keys** | a key named `iHymns Sign in with Apple` is listed; you hold its `.p8` + 10-char Key ID |
+| **Team ID** | developer.apple.com → **Membership details** | 10-char Team ID captured |
+| **App Store Connect record** | appstoreconnect.apple.com → **Apps** | an `iHymns` record exists with your platforms |
+| **CarPlay** | your inbox | ✅ "request submitted" confirmation received (grant email later) |
+
+### B. Blocked on §1.1 (deploy) — nothing to verify until the branch PHP is live
+- **AASA** — after deploy, `curl -s https://ihymns.app/.well-known/apple-app-site-association` must return **HTTP 200** + `Content-Type: application/json` with `"appID": "<TeamID>.app.ihymns"`.
+  - ⚠️ **Checked 2026-07-08: all three envs (`ihymns.app`, `dev.`, `beta.`) currently return a `301` redirect — the #1401 AASA responder isn't deployed yet.** Apple **does NOT follow redirects** for the AASA, so a 301 = Universal Links fail. The deploy's `.htaccess` rewrite (#1401) must make this a **direct 200 JSON**, taking precedence over any existing HTTPS/canonical redirect. **Re-run the curl after deploy and confirm 200, not 301.**
+- **SIWA config card** — `/manage/configuration` → "Apple native app" shows Team ID / Key ID / private-key as **"set."**
+- **Migration cards** — `/manage/setup-database` shows **"Sign in with Apple — provider links + nonce ledger"** and the **analytics events** card **applied/green.**
+
+### C. Needs a signed device / TestFlight build (not possible in the build env)
+- **End-to-end Sign in with Apple**: tap the button on a device → account created/linked, token issued.
+- **Universal Link → app**: tap an `ihymns.app/song/<id>` link on a device with the app installed → opens in-app (Safari fallback if not installed).
+- **On-device VoiceOver / Dynamic Type** (#1458).
+
+---
+
 ## Master verification checklist
 - [ ] App ID `app.ihymns` registered; **Sign in with Apple** + **Associated Domains** enabled
 - [ ] App Store Connect **iHymns** record created (all platforms, Universal Purchase)
@@ -126,7 +152,7 @@
 - [ ] **`ihymns.app` sending domain** (owner preference, §1.2 Step 3): DNS access → SPF + DKIM + DMARC published → registered + verified (✅) in Apple's email-sources
 - [ ] **After §1.1 deploy:** Team ID + Key ID + `.p8` pasted into `/manage/configuration`
 - [ ] **After §1.1 deploy:** SIWA + analytics migration cards run
-- [ ] AASA serves the real Team ID
+- [ ] **AASA returns 200 JSON** with the real Team ID (⚠️ currently `301`-redirects pre-deploy on all envs — Apple won't follow it; must be a direct 200 after §1.1)
 - [ ] *(device build)* end-to-end Sign in with Apple verified on TestFlight
 
 ---
