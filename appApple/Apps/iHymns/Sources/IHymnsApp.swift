@@ -65,13 +65,27 @@
 // in-context shortcuts like `SongPagerView`'s ← → Previous/Next buttons
 // live as plain `.keyboardShortcut(_:)` on real, visible controls instead,
 // which works everywhere without needing Scene-level `Commands` at all).
+//
+// #1412 UPDATE — this is the SHELL that renders lyrics + the dyslexia-mode
+// toggle, so it's the one place that MUST call
+// `IHFonts.registerBundledFonts()` (`IHDesign`) before any lyric view can
+// resolve the bundled OpenDyslexic OTFs by PostScript name — see that
+// function's own doc comment for why a package resource bundle needs this
+// explicit runtime step. Called from `init()` (the earliest point this
+// shell runs its own code, before `body` builds any scene/view) so it has
+// already happened by the time the first `Font.custom(...)` is resolved.
 import IHAPI
 import IHAppSupport
+import IHDesign
 import IHFeatures
 import SwiftUI
 
 @main
 struct IHymnsApp: App {
+    init() {
+        IHFonts.registerBundledFonts()
+    }
+
     /// The one `AppRootViewModel` this app run uses — built once via
     /// `@State`'s default-value expression (evaluated exactly once, at
     /// scene creation) and handed down to `RootContainerView`, which

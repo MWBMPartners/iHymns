@@ -69,15 +69,28 @@ public extension View {
 /// chorus/refrain/bridge italic, the reading-mode font, and the reading-mode
 /// line/letter spacing (`.standard` spacing is the pre-#1412 look, so the
 /// modifier is a verified no-op for users who never enable dyslexia mode).
+///
+/// DETAILED (#1412 real-italic-face completion): whether a line SHOULD read
+/// italic is decided once (`isItalic`) and then applied ONE of two ways
+/// depending on `readingMode` — never both, to avoid double-slanting:
+///   - `.standard`: SwiftUI's synthetic `.italic()` modifier, exactly the
+///     pre-existing behaviour (byte-identical — this mode never touches the
+///     font-selection path at all).
+///   - `.dyslexiaFriendly`: `.italic()` is left OFF, and `isItalic` is
+///     threaded into `lyricFont(italic:)` instead, which resolves to the
+///     real hand-drawn `OpenDyslexic-Italic` face (`IHReadingMode
+///     .dyslexiaItalicFontName`'s doc comment) rather than an algorithmic
+///     slant on top of the upright glyphs.
 private struct LyricLineStyleModifier: ViewModifier {
     @Environment(\.ihReadingMode) private var readingMode
     let componentType: String
     let textScale: CGFloat
 
     func body(content: Content) -> some View {
+        let isItalic = IHLyricTypography.isItalic(componentType: componentType)
         content
-            .italic(IHLyricTypography.isItalic(componentType: componentType))
-            .font(readingMode.lyricFont(textScale: textScale))
+            .italic(readingMode == .standard && isItalic)
+            .font(readingMode.lyricFont(textScale: textScale, italic: isItalic))
             .lineSpacing(readingMode.lineSpacing)
             .tracking(readingMode.letterTracking)
     }

@@ -190,17 +190,28 @@ let package = Package(
 
         // MARK: - IHDesign (no iHymnsKit deps beyond SwiftUI)
         //
-        // `resources: [.process("Resources/Colors.xcassets")]` (#1438) —
+        // `resources: [.process("Resources/Colors.xcassets"), ...]` (#1438) —
         // the ONE Asset Catalog `IHColorTokens` reads its Any/Dark/High-
         // Contrast colour sets from (`Color("Accent", bundle: .module)`).
         // `.process` (not `.copy`) so SwiftPM invokes `actool` to compile
         // it the same way Xcode would for an app target's own catalog —
         // `IHTestFixtures`'s `.copy(_:)` precedent (Package.swift's other
         // `resources:` user) is for raw JSON, which needs no compilation.
+        //
+        // `.copy("Resources/Fonts")` (#1412 FONT-PENDING completion) bundles
+        // the four OpenDyslexic OTFs + their `OpenDyslexic-OFL.txt` licence
+        // as-is under `Bundle.module`'s `Fonts/` subdirectory — a raw font
+        // file needs no `actool`-style compilation, so `.copy` (not
+        // `.process`) is the correct resource kind here, mirroring
+        // `IHTestFixtures`'s reasoning above rather than `Colors.xcassets`'s.
+        // `IHFonts.registerBundledFonts()` (`IHFonts.swift`) is what reads
+        // this directory back out at runtime via `Bundle.module.urls(
+        // forResourcesWithExtension:subdirectory:)`.
         .target(
             name: "IHDesign",
             resources: [
-                .process("Resources/Colors.xcassets")
+                .process("Resources/Colors.xcassets"),
+                .copy("Resources/Fonts")
             ],
             swiftSettings: sharedSwiftSettings
         ),

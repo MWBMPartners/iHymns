@@ -19,14 +19,17 @@
 // array names exactly one external package — GRDB.swift (pinned `7.11.1`,
 // MIT, © Gwendal Roué — verified against the actual checked-out `LICENSE`
 // file, not assumed). OpenDyslexic is NOT a Swift package dependency but IS
-// a third-party asset the dyslexia-friendly reading mode (#1412) already
-// NAMES (`IHDesign/IHReadingMode.swift`'s `dyslexiaFontName`) — that file's
-// own header is explicit the binary `.otf` isn't bundled yet
-// ("FONT-PENDING"), so it's listed here with the same status rather than
-// silently omitted or claimed as shipped. Every OTHER piece of this app
-// (SwiftUI, Observation, Foundation, GRDB's own further dependencies if
-// any) is either an Apple system framework (no separate acknowledgement
-// needed) or has no additional transitive third-party licence to surface.
+// a third-party asset the dyslexia-friendly reading mode (#1412) NAMES
+// (`IHDesign/IHReadingMode.swift`'s `dyslexiaFontName`/
+// `dyslexiaItalicFontName`) — its four OTFs + `OpenDyslexic-OFL.txt` now
+// SHIP as an `IHDesign` package resource (`Package.swift`'s
+// `.copy("Resources/Fonts")`) and are registered at launch
+// (`IHDesign/IHFonts.swift`), so it's listed here as a shipped, bundled
+// asset rather than the earlier "FONT-PENDING" placeholder status. Every
+// OTHER piece of this app (SwiftUI, Observation, Foundation, GRDB's own
+// further dependencies if any) is either an Apple system framework (no
+// separate acknowledgement needed) or has no additional transitive
+// third-party licence to surface.
 import Foundation
 
 /// One third-party component the app ships, for the Acknowledgements
@@ -44,8 +47,8 @@ public struct IHAcknowledgement: Sendable, Equatable, Identifiable {
     public let licenseName: String
 
     /// Short context — what it's used for, and (for OpenDyslexic) its
-    /// FONT-PENDING bundling status. `nil` when the name + licence alone
-    /// are self-explanatory.
+    /// bundling status. `nil` when the name + licence alone are
+    /// self-explanatory.
     public let note: String?
 
     public init(name: String, licenseName: String, note: String? = nil) {
@@ -69,7 +72,7 @@ public enum IHAcknowledgements {
             IHAcknowledgement(
                 name: "OpenDyslexic",
                 licenseName: "SIL Open Font License 1.1",
-                note: "FONT-PENDING — named by the dyslexia-friendly reading mode (Settings → Accessibility) but the licensed font file is not yet bundled, so that mode currently falls back to the system font with wider letter/line spacing still applied."
+                note: "© 2019 Abbie Gonzalez, Reserved Font Name \"OpenDyslexic\" — bundled with the app and used by the dyslexia-friendly reading mode (Settings → Accessibility). Full licence text ships alongside the font files."
             )
         ]
     }
