@@ -77,10 +77,23 @@
 5. **Note the Key ID** (10 chars) → **Download** `AuthKey_XXXXXXXXXX.p8`.
    - 🔐 **Downloadable ONCE.** Store in your password manager/vault. Private key — never email it, never commit it to git.
 
-### Step 3 — Private-relay email forwarding  ⚠️ **CORRECTED: OPTIONAL — skip for now**
-- This screen ("Sign in with Apple for Email Communication") only matters if the **server emails SIWA users who chose "Hide My Email"** (relay addresses).
-- **The iHymns app does not email SIWA users**, so **none of the `ihymns.app` sources need to verify** — ignore the red-X SPF on `ihymns.app` (which you can't edit anyway).
-- If a future feature ever needs to email relay users, send from **`mwbmpartners.ltd`** (already SPF-verified). **Action now: none.**
+### Step 3 — Email from `ihymns.app` + Apple private-relay verification  *(owner preference — set up ahead)*
+
+> **This is the "email sources" config, NOT a `.p8` key** — screen: *developer.apple.com → Certificates, Identifiers & Profiles → **More** → **Configure** (Sign in with Apple for Email Communication)*. It's independent of the SIWA key; do it whenever.
+>
+> **Not required for core auth today** (the app never emails SIWA "Hide My Email" users), but the owner's preference is to make `ihymns.app` a first-class sending domain now so *all* app email (magic links, receipts, future notifications) and the SIWA relay path are ready.
+
+**Why `ihymns.app` shows ❌ SPF while `mwbmpartners.ltd` shows ✅:** Apple does **not** issue an SPF record — it *verifies* that the sending domain already publishes a valid **SPF** (or **DKIM**) record authorizing your mail sender. `mwbmpartners.ltd`'s DNS already has that; `ihymns.app`'s doesn't yet. **The real work is DNS on `ihymns.app`, not Apple's console.**
+
+1. **Access `ihymns.app`'s DNS zone** — most likely the **DreamHost panel** (Domains → Manage → DNS), else the registrar holding `ihymns.app`. (This is the previously-blocked step — the unblock is getting into that zone.)
+2. **Choose the sender for `@ihymns.app`** — simplest is the same service the app already sends magic-link mail through. Given the app's Gmail/Workspace integration (`email_gmail_sa_json` service account), that likely means adding `ihymns.app` to **Google Workspace** + Google SPF/DKIM; a transactional provider is the alternative (add `ihymns.app` as a verified sending domain there).
+3. **Publish 3 DNS records on `ihymns.app`** (exact values come from the provider):
+   - **SPF** — one TXT at `@`, e.g. Google: `v=spf1 include:_spf.google.com ~all`. ⚠️ Only ONE SPF record allowed — **merge**, don't add a second.
+   - **DKIM** — the TXT/CNAME the provider issues (Google Workspace: a `google._domainkey` TXT generated in Admin → Apps → Gmail → Authenticate email).
+   - **DMARC** — TXT at `_dmarc`, start monitor-only: `v=DMARC1; p=none; rua=mailto:dmarc@ihymns.app` (tighten to `quarantine`/`reject` later).
+4. **Register in Apple** (the screen above): add **Domain** `ihymns.app` + specific **Email address** sources (`no-reply@ihymns.app`, `support@ihymns.app`, …). After DNS propagates (minutes–hours) the ❌ flips to ✅ automatically.
+
+> **To get exact records:** tell the build assistant (a) where `ihymns.app` DNS is hosted and (b) which email sender the app uses (Google Workspace vs a transactional provider), and it can write out the precise SPF/DKIM/DMARC values to paste.
 
 ### Step 4 — Paste secrets into iHymns  *(after §1.1 deploy)*
 1. iHymns admin → **`/manage/configuration`** → **"Apple native app"** card.
@@ -109,7 +122,7 @@
 - [ ] **Team ID** captured
 - [ ] *(deferred)* APNs key — only at #1410
 - [ ] *(N/A)* Family Sharing — only at #1434 (per-IAP)
-- [ ] *(N/A)* private-relay email — only if server emails SIWA relay users
+- [ ] **`ihymns.app` sending domain** (owner preference, §1.2 Step 3): DNS access → SPF + DKIM + DMARC published → registered + verified (✅) in Apple's email-sources
 - [ ] **After §1.1 deploy:** Team ID + Key ID + `.p8` pasted into `/manage/configuration`
 - [ ] **After §1.1 deploy:** SIWA + analytics migration cards run
 - [ ] AASA serves the real Team ID
