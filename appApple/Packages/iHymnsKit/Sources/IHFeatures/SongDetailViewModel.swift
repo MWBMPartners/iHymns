@@ -311,25 +311,17 @@ public final class SongDetailViewModel {
     /// ELI5: "Now that the song text is saved, also grab its recording/
     /// sheet music/MIDI/MusicXML so THOSE work offline too."
     ///
-    /// DETAILED: Each asset is downloaded independently and BEST-EFFORT
-    /// (`try?`-equivalent via an explicit `catch` that just moves on) — a
-    /// large audio file failing to download over a slow/flaky connection
-    /// must never (a) undo the song-text save that already committed above,
-    /// or (b) block the OTHER, possibly-smaller attached files (a MIDI file
-    /// is typically a few KB) from caching successfully. `SongMediaSection`
-    /// simply falls back to on-demand network streaming for whatever didn't
-    /// get cached, exactly as it already does for a song with NO offline
-    /// copy saved at all.
+    /// DETAILED: A thin pass-through to `AppRootViewModel.cacheAllMedia(for:
+    /// fetcher:)` (#1439 extracted this method's own former per-asset loop
+    /// up into `AppRootViewModel+MediaCache.swift` so `SongbookBulkSaveViewModel`
+    /// could reuse the EXACT same best-effort download behaviour rather than
+    /// forking a second copy — see that method's own header for the full
+    /// "why extracted" reasoning). This wrapper still exists (rather than
+    /// every call site here reaching `rootViewModel.cacheAllMedia` directly)
+    /// purely so `toggleOfflineSave()` above reads as "save the text, then
+    /// cache the media" without an extra `mediaFetcher` parameter leaking
+    /// into that call site.
     private func cacheMediaForOffline(_ detail: SongDetail) async {
-        for asset in detail.media {
-            guard let url = rootViewModel.mediaURL(forStreamPath: asset.streamUrl) else { continue }
-            do {
-                let data = try await mediaFetcher(url)
-                guard !data.isEmpty else { continue }
-                try await rootViewModel.cacheMediaForOffline(songId: detail.songId, asset: asset, data: data)
-            } catch {
-                continue
-            }
-        }
+        await rootViewModel.cacheAllMedia(for: detail, fetcher: mediaFetcher)
     }
 }

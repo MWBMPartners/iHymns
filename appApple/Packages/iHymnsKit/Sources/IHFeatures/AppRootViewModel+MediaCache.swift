@@ -16,6 +16,21 @@
 // package-wide). Every method here is a thin, `try?`-softened pass-through
 // to `offlineStore` — the exact same "expose the operation, not the engine"
 // shape `AppRootViewModel+Offline.swift`'s own header documents.
+//
+// #1439 UPDATE (songbook "Save All for Offline") — `cacheAllMedia(for:
+// fetcher:)` below is a NEW shared entry point, extracted from what used to
+// be `SongDetailViewModel.cacheMediaForOffline(_:)`'s own private per-asset
+// loop. Two independent callers now need the EXACT same "download every one
+// of a song's attached media files, best-effort, one asset's failure never
+// aborting the rest" behaviour: the per-song "Save for Offline" toggle
+// (#1440, still `SongDetailViewModel.toggleOfflineSave()`) and the new
+// songbook-level bulk action (`SongbookBulkSaveViewModel`, #1439). Per the
+// repo's modularity rule ("when logic exists in more than one place,
+// extract it into a shared module"), that loop now lives HERE — the one
+// place both `IHFeatures` call sites already reach for every other
+// media-cache operation — rather than being copy-pasted into the new bulk
+// view model, or the bulk view model reaching into `SongDetailViewModel`'s
+// private implementation detail.
 import Foundation
 import IHModels
 import IHPersistence
@@ -50,6 +65,40 @@ extension AppRootViewModel {
     /// ELI5: "Forget every downloaded file for this song."
     public func removeAllCachedMedia(forSong songId: SongID) async throws {
         try await offlineStore.removeAllCachedMedia(forSong: songId)
+    }
+
+    /// Downloads and permanently caches EVERY one of `detail.media`'s
+    /// attached files (audio/sheet-music/MIDI/MusicXML) — the ONE shared
+    /// implementation both `SongDetailViewModel.toggleOfflineSave()` (#1440)
+    /// and `SongbookBulkSaveViewModel` (#1439) call into; see this file's
+    /// header for why the loop lives here instead of being duplicated.
+    ///
+    /// ELI5: "Grab every recording/sheet-music/MIDI/MusicXML file attached
+    /// to this song so it all works offline too."
+    ///
+    /// DETAILED: Each asset is downloaded independently and BEST-EFFORT — a
+    /// large audio file failing to download over a slow/flaky connection
+    /// must never (a) undo whatever song-text save already committed, or
+    /// (b) block the OTHER, possibly-smaller attached files (a MIDI file is
+    /// typically a few KB) from caching successfully. `fetcher` is injected
+    /// (never a hard-coded `URLSession.shared.data(from:)` call here) so
+    /// EVERY caller — the real app AND every test — controls how bytes get
+    /// fetched, mirroring `SongDetailViewModel`'s own `mediaFetcher`
+    /// property one layer up.
+    public func cacheAllMedia(
+        for detail: SongDetail,
+        fetcher: @Sendable (URL) async throws -> Data
+    ) async {
+        for asset in detail.media {
+            guard let url = mediaURL(forStreamPath: asset.streamUrl) else { continue }
+            do {
+                let data = try await fetcher(url)
+                guard !data.isEmpty else { continue }
+                try await cacheMediaForOffline(songId: detail.songId, asset: asset, data: data)
+            } catch {
+                continue
+            }
+        }
     }
 
     /// The total on-disk size, in bytes, of every cached media file across
