@@ -61,6 +61,12 @@ extension OfflineStore {
         // naming a file `"sheet.pdf"` (the exact collision
         // `MediaDownloadViewModel.download(url:suggestedFileName:)`'s own
         // header calls out) can never collide on disk.
+        // Every dynamic path component is traversal-safe: `songId.rawValue`
+        // by the `SongID` type invariant (both initializers now guarantee an
+        // alphanumeric-only prefix — see `SongID.swift`), `asset.id` is an
+        // `Int` (can never contain a separator), and the only free-text
+        // component, the server-supplied `asset.fileName`, goes through
+        // `sanitizedFileName` — so nothing here can escape `mediaCacheDirectory`.
         let relativePath = "\(songId.rawValue)/\(asset.id)-\(MediaFileNaming.sanitizedFileName(asset.fileName))"
         let fileURL = mediaCacheDirectory.appendingPathComponent(relativePath)
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)

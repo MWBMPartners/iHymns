@@ -145,4 +145,12 @@ struct DeepLinkRouterTests {
         let url = try #require(URL(string: "https://ihymns.app/"))
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
+
+    @Test("Resolves an uppercased host case-insensitively (Phase-1 review fix)")
+    func resolvesUppercasedHost() throws {
+        // A Universal Link delivered with an uppercased host must still route
+        // in-app, not fail-closed to Safari (DNS hosts are case-insensitive).
+        let url = try #require(URL(string: "https://IHYMNS.APP/song/MP-1008"))
+        #expect(DeepLinkRouter.resolve(url) != nil)
+    }
 }

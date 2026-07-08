@@ -148,9 +148,19 @@ public struct SongID: Sendable, Hashable, Codable, CustomStringConvertible {
     /// and `SongID(rawValue:)` always produce equal values for the "same"
     /// song, regardless of which constructor was used.
     public init(songbookAbbreviation: String, number: Int) {
-        self.songbookAbbreviation = songbookAbbreviation.uppercased()
+        // Unlike `init?(rawValue:)` (regex-validated) this initializer is
+        // non-failable, so it must not let an unvalidated abbreviation put a
+        // path separator / traversal sequence into `rawValue` — the type's
+        // load-bearing invariant is that `rawValue` is safe to use as a
+        // filesystem path component (e.g. `OfflineStore` media cache). Keep
+        // only ASCII alphanumerics; every real songbook abbreviation is
+        // already `[A-Za-z0-9]` (rule #27), so this is a no-op for legit
+        // values and neutralizes a hostile `"../.."` at construction (Phase-1
+        // review finding — latent, not currently reachable, closed anyway).
+        let safeAbbr = songbookAbbreviation.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) }
+        self.songbookAbbreviation = safeAbbr
         self.number = number
-        self.rawValue = "\(self.songbookAbbreviation)-\(number)"
+        self.rawValue = "\(safeAbbr)-\(number)"
     }
 
     /// `CustomStringConvertible` conformance — printing a `SongID` shows the

@@ -63,4 +63,18 @@ struct SongIDTests {
             _ = try JSONDecoder().decode(SongID.self, from: badJSON)
         }
     }
+
+    @Test("The convenience init keeps rawValue traversal-free (Phase-1 review fix)")
+    func convenienceInitStripsUnsafeAbbreviation() {
+        // Legit abbreviations are untouched (no-op for every real value).
+        #expect(SongID(songbookAbbreviation: "mp", number: 1008).rawValue == "MP-1008")
+        // A hostile abbreviation carrying path separators / traversal can
+        // never produce a rawValue with "/" or ".." — SongID.rawValue is
+        // trusted as a filesystem path component by the media cache.
+        for hostile in ["../..", "a/b", "..", "/", "x/../y"] {
+            let raw = SongID(songbookAbbreviation: hostile, number: 5).rawValue
+            #expect(!raw.contains("/"), "\(hostile) leaked a '/' into \(raw)")
+            #expect(!raw.contains(".."), "\(hostile) leaked a '..' into \(raw)")
+        }
+    }
 }

@@ -43,7 +43,16 @@ public enum MediaFileNaming {
     ///   escape that directory.
     public static func sanitizedFileName(_ raw: String) -> String {
         let lastComponent = (raw as NSString).lastPathComponent
-        let cleaned = lastComponent.replacingOccurrences(of: "..", with: "")
-        return cleaned.isEmpty ? "download" : cleaned
+        let cleaned = lastComponent
+            .replacingOccurrences(of: "..", with: "")
+            // A pathological input of `"/"` (or `"//"`) has a `lastPathComponent`
+            // of `"/"` that survives the `..`-strip as a bare separator — strip
+            // any residual separator so the result is always a single safe leaf
+            // (Phase-1 review finding: a returned `"/"` made `data.write(to:)`
+            // throw and the asset silently fail to cache).
+            .replacingOccurrences(of: "/", with: "")
+        // Reject anything that reduced to empty or a lone dot — never a valid
+        // leaf a caller can append to a directory URL.
+        return (cleaned.isEmpty || cleaned == ".") ? "download" : cleaned
     }
 }

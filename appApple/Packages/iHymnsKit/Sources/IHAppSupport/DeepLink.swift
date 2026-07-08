@@ -142,7 +142,12 @@ public enum DeepLinkRouter {
     /// a partial match — a Universal Link with a missing trailing segment
     /// is malformed, never "close enough."
     public static func resolve(_ url: URL) -> DeepLink? {
-        guard let host = url.host, allowedHosts.contains(host) else { return nil }
+        // Host compared case-insensitively — DNS hosts are case-insensitive,
+        // and while Apple normally normalizes the delivered host, an
+        // uppercased `HTTPS://IHYMNS.APP/...` link would otherwise fail-closed
+        // to Safari (Phase-1 review finding: fail-closed is safe, but this is
+        // the correct, spec-accurate comparison; `allowedHosts` are lowercase).
+        guard let host = url.host?.lowercased(), allowedHosts.contains(host) else { return nil }
 
         let segments = url.pathComponents.filter { $0 != "/" }
         switch segments.count {
