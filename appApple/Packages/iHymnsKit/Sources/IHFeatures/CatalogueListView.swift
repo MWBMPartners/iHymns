@@ -29,6 +29,13 @@
 // `.onSubmit(of: .search)` is the single point that actually RECORDS a
 // query, mirroring Safari/Mail's own "remember on submit, not on every
 // keystroke" recent-searches convention.
+//
+// #1447 UPDATE — the empty-SEARCH-results state (as opposed to the empty-
+// FILTERS state just above it) now offers a "Request This Song" action
+// beneath the system's standard `ContentUnavailableView.search` copy,
+// presenting `SongRequestView` pre-filled with the text the user already
+// typed — closing #185's original "linked from search no-results" ask for
+// the missing-song request form (see that file's own header).
 import IHDesign
 import IHModels
 import SwiftUI
@@ -43,6 +50,10 @@ public struct CatalogueListView: View {
     /// `@State`, which OWNS its value; this view does not own
     /// `viewModel`, `AppRootViewModel.makeLive(environment:)` does).
     @Bindable private var viewModel: AppRootViewModel
+
+    /// Flipped by the empty-search-results "Request This Song" button
+    /// (#1447) — presents `SongRequestView` as a sheet.
+    @State private var isPresentingSongRequestForm = false
 
     public init(viewModel: AppRootViewModel) {
         self.viewModel = viewModel
@@ -67,6 +78,9 @@ public struct CatalogueListView: View {
                 }
             }
             .task { await viewModel.loadCatalogueIfNeeded() }
+            .sheet(isPresented: $isPresentingSongRequestForm) {
+                SongRequestView(rootViewModel: viewModel, prefillTitle: viewModel.searchText)
+            }
     }
 
     @ViewBuilder
@@ -126,7 +140,11 @@ public struct CatalogueListView: View {
                 Button("Clear Filters") { viewModel.clearFilters() }
             }
         } else {
-            ContentUnavailableView.search(text: viewModel.searchText)
+            VStack(spacing: 16) {
+                ContentUnavailableView.search(text: viewModel.searchText)
+                Button("Request This Song") { isPresentingSongRequestForm = true }
+                    .buttonStyle(.bordered)
+            }
         }
     }
 
