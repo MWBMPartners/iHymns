@@ -187,12 +187,15 @@ tmp/
 temp/
 
 # ----------------------------------------------------------------------------
-# Database Credentials (appWeb/.auth/)
-# The real credentials file is never committed; only the example template.
+# Secrets in appWeb/.auth/ (DB credentials + the secret-encryption master key, #1466)
+# The REAL files (db_credentials.php, secrets_master_key.php) are NEVER committed —
+# the `appWeb/.auth/*` glob ignores everything; only the *.example.php templates and
+# the deny-all .htaccess are un-ignored below.
 # ----------------------------------------------------------------------------
 appWeb/.auth/*
 !appWeb/.auth/.htaccess
 !appWeb/.auth/db_credentials.example.php
+!appWeb/.auth/secrets_master_key.example.php
 
 # ----------------------------------------------------------------------------
 # Secrets / Credentials (NEVER commit these)

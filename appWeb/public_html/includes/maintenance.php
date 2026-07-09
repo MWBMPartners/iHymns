@@ -27,6 +27,21 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 /* #1233 — maintenance mode is PER-ENVIRONMENT (alpha/beta/production share one
    DB), so every flag is keyed by the current environment. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';
+/* Secret encryption-at-rest engine (#1466) — provides secretDecrypt() /
+   secretIsEncrypted() so getAppSetting() transparently decrypts enc:v1
+   envelopes. Loaded DEFENSIVELY (only if the file is present) on purpose:
+   maintenance.php is bootstrap-critical on EVERY request, including the public
+   site, so a docroot that has not yet received secret_crypto.php (a lagged
+   mirror during the readers-first rollout) must degrade to raw passthrough —
+   nothing is encrypted before the engine ships fleet-wide — rather than
+   white-screen the whole site on a hard `require`. The function_exists() guard
+   in getAppSetting() below is what turns that missing-file case into a real,
+   safe passthrough instead of a fatal. (Admin WRITE paths that must fail CLOSED
+   — e.g. manage/configuration.php — require this engine HARD themselves.) */
+$secretCryptoFile = __DIR__ . DIRECTORY_SEPARATOR . 'secret_crypto.php';
+if (is_file($secretCryptoFile)) {
+    require_once $secretCryptoFile;
+}
 
 /** Env-suffixed settings key, e.g. maintenance_mode_alpha / _beta / _production. */
 function maintenanceSettingKey(string $base): string
@@ -55,13 +70,30 @@ function getAppSetting(string $key, ?string $default = null): ?string
         $stmt->execute();
         $row = $stmt->get_result()->fetch_row();
         $stmt->close();
-        $cache[$key] = $row !== null ? (string)$row[0] : $default;
     } catch (\Throwable $_e) {
         /* DB unavailable — the caller treats the default as authoritative;
            the DB-down 503 is rendered by the entry point's bootstrap. */
-        $cache[$key] = $default;
+        return $cache[$key] = $default;
     }
-    return $cache[$key];
+    if ($row === null) {
+        return $cache[$key] = $default;
+    }
+    $raw = (string)$row[0];
+
+    /* Transparent secret decryption (#1466). secretDecrypt() returns a legacy
+       PLAINTEXT value UNCHANGED (a verified no-op until the encrypt-in-place
+       migration runs) and the decrypted plaintext for an enc:v1 envelope. A
+       decrypt failure (master key absent/wrong on this docroot) is FAIL-SAFE:
+       the value reads as its $default (unset), so the dependent feature goes
+       dormant rather than receiving ciphertext. function_exists-guarded so a
+       docroot that hasn't yet received secret_crypto.php degrades to raw
+       passthrough — correct, since nothing is encrypted before the engine
+       ships fleet-wide (the readers-first migration gate). */
+    if (function_exists('secretIsEncrypted') && secretIsEncrypted($raw)) {
+        $decrypted = secretDecrypt($raw);
+        return $cache[$key] = ($decrypted !== null ? $decrypted : $default);
+    }
+    return $cache[$key] = $raw;
 }
 
 /** Is THIS environment in admin-triggered maintenance mode? (false on a DB error.) */

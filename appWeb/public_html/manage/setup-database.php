@@ -63,6 +63,49 @@ if ($hasCredentials && !defined('DB_HOST')) {
 }
 
 /* =========================================================================
+ * SECRET ENCRYPTION-AT-REST — admin/migration layer (#1466)
+ * ============================================================================
+ * ELI5: this loads the "toolbox" that knows how to check + change the
+ * lock-and-key system protecting secrets (email passwords, API keys, the
+ * Sign-in-with-Apple .p8) stored in the database. The Global-Admin panel
+ * further down this file (search "Secret encryption (#1466)") and the two
+ * POST actions a little further below (`secret_generate_key` /
+ * `secret_rotate`) both call INTO this module — nothing here re-implements
+ * crypto or DB access.
+ *
+ * DETAILED / WHY:
+ * `secret_crypto_admin.php` transitively requires the pure crypto engine
+ * (`includes/secret_crypto.php`) and adds the DB-touching status/mutation
+ * helpers this page needs (`secretSentinelStatus()`, `secretInventory()`,
+ * `secretRotateReencrypt()`, …). It is required here — once, near the top —
+ * rather than lazily where first used, so BOTH the early POST dispatcher
+ * (which must run before this page's normal HTML render) and the later
+ * dashboard render (which reads the status) share the SAME single load, per
+ * the repo's modularity rule (never duplicate an include). Full design:
+ * `.claude/secret-encryption-strategy.md` §8 (fingerprint canary), §10
+ * (hardening the rotate card), §10b (this exact panel's spec).
+ *
+ * DEFENSIVE LOAD (#1466 review finding 11): unlike most of this page's
+ * includes, this one used to be an UNCONDITIONAL `require_once` — meaning a
+ * docroot that received a lagging deploy WITHOUT this file yet (the three
+ * docroots roll out independently) would fatal on the very FIRST line of
+ * THIS page, before anything else ran. That is exactly backwards: this is
+ * the migration dashboard, the tool an operator opens to DIAGNOSE a broken
+ * or partial deploy, so it must be the LAST thing to go dark, not the
+ * first. `is_file()`-gated exactly like `includes/maintenance.php` gates its
+ * own load of `secret_crypto.php` (search that file for "DEFENSIVELY") —
+ * when the module is missing, every helper function below is simply
+ * undefined, so the POST dispatcher and panel-render blocks further down
+ * both re-check `function_exists('secretCryptoReady')` before touching any
+ * of them, and the rest of the dashboard (Install Tables, Migrate Users,
+ * Backup, …) renders completely unaffected.
+ * ========================================================================= */
+$secretAdminFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto_admin.php';
+if (is_file($secretAdminFile)) {
+    require_once $secretAdminFile;
+}
+
+/* =========================================================================
  * SAVE CREDENTIALS (POST) — writes appWeb/.auth/db_credentials.php
  * ========================================================================= */
 
@@ -76,6 +119,260 @@ $credFormValues = [
 ];
 $credError   = '';
 $credSuccess = '';
+
+/* =========================================================================
+ * SECRET ENCRYPTION-AT-REST — POST actions (#1466, strategy §10 / §10b)
+ * ============================================================================
+ * ELI5: these are the only two buttons on the "Secret encryption" panel
+ * (further down this page) that actually change something: "make me a new
+ * key" and "swap every secret over to a new key." Because rotate touches
+ * every secret's plaintext in one pass (strategy §10 calls it the single
+ * highest-value endpoint this whole feature introduces), it gets its OWN
+ * small, early gate here — checked BEFORE this page's normal `?action=` GET
+ * dispatch and BEFORE the blanket form-CSRF gate below, so the panel's
+ * fetch()-based JSON POST never has to touch either of those.
+ *
+ * DETAILED / WHY:
+ * Mirrors manage/api-keys.php's dispatcher shape (JSON in / JSON out, a
+ * small $_POST['action'] allow-list, validateCsrfRequest() instead of the
+ * stale-prone baked-token validateCsrf()) rather than this page's `?action=`
+ * GET convention, because §10 explicitly calls for RE-AUTH + a robust CSRF
+ * check on the rotate endpoint — a GET link can't safely carry a password.
+ * `secret_generate_key` NEVER writes anything, not even the .auth/ file — it
+ * is deliberately "a generator, not a writer" so it can't reintroduce the
+ * web-writable-.auth/ primitive the strategy's threat model rejected (see
+ * strategy §1, "why not the rejected options"). `secret_rotate`
+ * re-authenticates the CALLER's password (not merely their live session)
+ * before touching any plaintext, requires a literal "ROTATE" type-to-confirm
+ * (mirrors the drop-legacy / destructive-migration type-to-confirm
+ * convention used elsewhere on this page), and refuses to run without a
+ * loaded master key. Every branch answers in JSON and `exit`s immediately,
+ * so none of this page's HTML ever renders for these two actions.
+ * Refs: manage/api-keys.php (the pattern mirrored); auth.php::validateCsrfRequest().
+ * ========================================================================= */
+/* function_exists() guard (#1466 review finding 11): only dispatch these two
+   actions when secret_crypto_admin.php actually loaded above (is_file()-gated
+   now, since a lagging-deploy docroot may not have the file yet). Without
+   this guard, a docroot missing the module would fatal on the very first
+   secretCryptoReady() call inside the branch instead of falling through to
+   this page's normal ?action= GET handling / 404-ish no-op. */
+if (function_exists('secretCryptoReady')
+    && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && in_array($_POST['action'] ?? '', ['secret_generate_key', 'secret_rotate'], true)) {
+    header('Content-Type: application/json; charset=UTF-8');
+
+    /* Same-origin-robust CSRF check (never the stale-prone baked session
+       token alone) — see auth.php::validateCsrfRequest() doc-block. */
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    /* Re-confirm Global Admin. The top-of-file gate (lines ~38-49) already
+       enforces this for the page LOAD, but a state-changing endpoint checks
+       again independently — defence in depth, and it also future-proofs the
+       (currently impossible) case of this dispatcher running during
+       $isInitialSetup, when $currentUser was never assigned at all. */
+    if ($isInitialSetup || !isset($currentUser) || !$currentUser
+        || ($currentUser['role'] ?? null) !== 'global_admin') {
+        http_response_code(403);
+        echo json_encode(['error' => 'Global Admin access required.']);
+        exit;
+    }
+
+    $secretPostAction = (string)$_POST['action'];
+
+    try {
+        if ($secretPostAction === 'secret_generate_key') {
+            /* CSPRNG 32 bytes = 64 hex chars — exactly what
+               secrets_master_key.php's 'keys' map expects (see
+               secret_crypto.php's _secretCryptoNormalise()
+               /^[0-9a-fA-F]{64}$/ check). Returned ONCE, never persisted
+               anywhere server-side — the operator copies it into the
+               SECRETS_MASTER_KEY GitHub Secret and/or SFTPs it in by hand. */
+            $newKey = bin2hex(random_bytes(32));
+            if (function_exists('logActivity')) {
+                try {
+                    logActivity('secret.generate_key', 'app_setting', '', [
+                        'note' => 'master key generated for display — not stored',
+                    ]);
+                } catch (\Throwable $_e) { /* audit is best-effort */ }
+            }
+            echo json_encode(['success' => true, 'key' => $newKey]);
+            exit;
+        }
+
+        if ($secretPostAction === 'secret_rotate') {
+            /* (a) RE-AUTH BRUTE-FORCE LOCKOUT (#1466 review findings 2/5) —
+               a PER-ADMIN lockout (5 wrong Rotate passwords in 15 minutes),
+               keyed on a namespaced 'secret_rotate:<username>' sentinel in the
+               Username column. CRITICAL: the failure rows written below use an
+               EMPTY IpAddress on purpose. tblLoginAttempts is shared with the
+               normal login-lockout counters (manage attemptLogin + several in
+               api.php), and EVERY one of those counts by the real client IP
+               (some without any Username filter) — so writing a REAL IP here
+               would let failed rotate re-auths inflate those IP-wide LOGIN
+               lockouts and lock a whole shared NAT out of /manage/login (the
+               #1466 review's confirmed self-DoS finding). An empty IpAddress
+               makes these rows invisible to every IP-keyed login counter (they
+               all bind a non-empty REMOTE_ADDR and guard `!== ''`), while the
+               ':'-bearing sentinel Username — usernames are [A-Za-z0-9_.-], so
+               they can never contain ':' — drives THIS per-admin lockout via a
+               Username-only count.
+               ELI5: "how many times has THIS admin fumbled the Rotate password
+               in 15 minutes?" — counted entirely on its own, never mixed into
+               the normal login lockout in either direction. Existence-tolerant:
+               a missing tblLoginAttempts (older install) degrades to no-lockout
+               (never a 500), like every other optional-table read on this page. */
+            $reauthUsername = (string)($currentUser['username'] ?? '');
+            $reauthSentinel = 'secret_rotate:' . $reauthUsername;
+            $reauthLocked   = false;
+            if ($reauthUsername !== '') {
+                try {
+                    $lockStmt = getDbMysqli()->prepare(
+                        'SELECT COUNT(*) FROM tblLoginAttempts
+                         WHERE Username = ? AND Success = 0
+                           AND AttemptedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)'
+                    );
+                    $lockStmt->bind_param('s', $reauthSentinel);
+                    $lockStmt->execute();
+                    $reauthFailures = (int)($lockStmt->get_result()->fetch_row()[0] ?? 0);
+                    $lockStmt->close();
+                    $reauthLocked = $reauthFailures >= 5;
+                } catch (\Throwable $_e) {
+                    $reauthLocked = false; // missing table / transient DB hiccup → no lockout
+                }
+            }
+            if ($reauthLocked) {
+                http_response_code(429);
+                echo json_encode(['error' => 'Too many failed attempts — wait 15 minutes.']);
+                exit;
+            }
+
+            /* (b) RE-AUTH — the admin's CURRENT password, not just a live
+               session, must be supplied. Mirrors api.php's username-change
+               re-auth (SELECT PasswordHash … ; password_verify()). */
+            $reauthPw     = (string)($_POST['reauth_password'] ?? '');
+            $reauthUserId = (int)($currentUser['id'] ?? 0);
+            $reauthOk     = false;
+            if ($reauthPw !== '' && $reauthUserId > 0) {
+                $pwStmt = getDbMysqli()->prepare('SELECT PasswordHash FROM tblUsers WHERE Id = ?');
+                $pwStmt->bind_param('i', $reauthUserId);
+                $pwStmt->execute();
+                $pwRow = $pwStmt->get_result()->fetch_assoc();
+                $pwStmt->close();
+                $reauthOk = (bool)$pwRow && password_verify($reauthPw, (string)$pwRow['PasswordHash']);
+            }
+            if (!$reauthOk) {
+                /* Record the failed attempt against the NAMESPACED sentinel
+                   (never the real username) so the lockout counter above can
+                   see it — mirrors attemptLogin()'s own failure-recording,
+                   existence-tolerant for the same reason as the read above. */
+                if ($reauthUsername !== '') {
+                    try {
+                        /* EMPTY IpAddress on purpose (see the lockout comment
+                           above): counts toward THIS per-admin rotate lockout via
+                           the sentinel Username, but stays invisible to every
+                           IP-keyed LOGIN counter, so a failed rotate re-auth can
+                           never inflate the shared login lockout. */
+                        $failStmt = getDbMysqli()->prepare(
+                            'INSERT INTO tblLoginAttempts (IpAddress, Username, Success) VALUES (?, ?, 0)'
+                        );
+                        $emptyIp = '';
+                        $failStmt->bind_param('ss', $emptyIp, $reauthSentinel);
+                        $failStmt->execute();
+                        $failStmt->close();
+                    } catch (\Throwable $_e) { /* existence-tolerant — see lockout read above */ }
+                }
+                if (function_exists('logActivity')) {
+                    try {
+                        logActivity('secret.rotate_reauth_fail', 'app_setting', '', [], 'failure');
+                    } catch (\Throwable $_e) { /* audit is best-effort */ }
+                }
+                http_response_code(403);
+                echo json_encode(['error' => 'Re-authentication failed — incorrect password.']);
+                exit;
+            }
+
+            /* (c) Type-to-confirm — same speed-bump convention as the
+               drop-legacy / destructive-migration cards elsewhere on this
+               page, enforced SERVER-side (the client-side JS check below is
+               a UX nicety only, never the real gate). */
+            if (($_POST['confirm_phrase'] ?? '') !== 'ROTATE') {
+                http_response_code(400);
+                echo json_encode(['error' => 'Type ROTATE to confirm.']);
+                exit;
+            }
+
+            /* (d) A master key must actually be loaded on THIS docroot —
+               secretRotateReencrypt() would throw on this anyway, but
+               checking first gives a clearer, non-500 message. */
+            if (!secretCryptoReady()) {
+                http_response_code(400);
+                echo json_encode(['error' => 'No master key is loaded on this docroot — cannot rotate.']);
+                exit;
+            }
+
+            /* (e) CROSS-DOCROOT PARITY GATE (#1466 review findings 1/4/7 —
+               the HIGH finding; strategy §10b) — the code enforcement of
+               "Rotate stays disabled until all 3 docroots show the new
+               keyid." Without this, this panel's own re-auth + type-to-
+               confirm gates only prove the OPERATOR meant to rotate; they
+               prove nothing about whether beta/production actually hold the
+               new key yet. secretRotationParity() reads the SAME
+               tblAppSettings beacon row every docroot's panel render writes
+               (secretKeyBeaconWrite(), called below on the render path) and
+               fails closed — `ok=false` — unless EVERY env reports a fresh
+               beacon that already lists the keyid rotation is about to move
+               everything TO. Skipping straight to secretRotateReencrypt()
+               without this check is exactly the "we THOUGHT all three were
+               caught up" gap that let the pre-DB-direct SongbookName code
+               run stale against the shared DB unnoticed
+               (`.claude/project_three_docroots_prod_stale_songbookname`). */
+            $rotateTargetKeyid = secretActiveKeyId();
+            $parity = secretRotationParity(getDbMysqli(), (string)$rotateTargetKeyid);
+            if (!$parity['ok']) {
+                http_response_code(409);
+                echo json_encode([
+                    'error' => 'Cross-docroot parity not met. These docroots have NOT confirmed they hold the '
+                        . 'target keyid "' . $rotateTargetKeyid . '": ' . implode(', ', $parity['missing'])
+                        . '. Add the new key on each, open its /manage/setup-database Secret-encryption panel '
+                        . '(that records its beacon), and retry — rotating now would strand them (they could not '
+                        . 'decrypt the re-wrapped secrets).',
+                    'parity' => $parity,
+                ]);
+                exit;
+            }
+
+            /* (f) The audit closure — key NAMES + keyids only, NEVER a
+               plaintext/ciphertext value (strategy §10's hard requirement).
+               @-suppressed exactly like the rest of this page's best-effort
+               audit calls; logActivity() itself never throws. */
+            $audit = static fn(string $a, string $k, array $d): mixed =>
+                (function_exists('logActivity') ? @logActivity($a, 'app_setting', $k, $d) : null);
+
+            $rotateResult = secretRotateReencrypt(getDbMysqli(), $audit);
+
+            if (function_exists('logActivity')) {
+                try {
+                    logActivity('secret.rotate', 'app_setting', '', [
+                        'rewrapped'     => count($rotateResult['rewrapped']),
+                        'skipped'       => count($rotateResult['skipped']),
+                        'undecryptable' => count($rotateResult['undecryptable']),
+                    ], 'success', $reauthUserId);
+                } catch (\Throwable $_e) { /* audit is best-effort */ }
+            }
+
+            echo json_encode(['success' => true, 'result' => $rotateResult]);
+            exit;
+        }
+    } catch (\Throwable $e) {
+        http_response_code(500);
+        echo json_encode(['error' => 'Server error: ' . $e->getMessage()]);
+        exit;
+    }
+}
 
 /* CSRF gate for every POST on this page — the credentials form AND
    the backup-upload form go through here. */
@@ -2561,6 +2858,501 @@ if ($hasCredentials && defined('DB_HOST')) {
                 </div>
             </div>
         </div>
+
+        <?php /* function_exists() guard (#1466 review finding 11): the whole
+                 panel — status render, Generate/Rotate cards, beacon table,
+                 inline JS — is skipped entirely when secret_crypto_admin.php
+                 didn't load (is_file()-gated near the top of this file), so a
+                 docroot with a lagging deploy shows a small note instead of a
+                 blank spot or a fatal. See that require's doc-block for the
+                 full why. */ ?>
+        <?php /* #1466 third-pass review finding 3: gate the ENTIRE secret-encryption
+                 section (status render + its secretSentinelEnsure/secretKeyBeaconWrite
+                 side effects, AND the lagging-deploy note) behind Global-Admin. The
+                 page-level gate (lines ~38-49) is bypassed during the fresh-install
+                 window (needsSetup() true), so without this an anonymous visitor could
+                 see the read-only status / beacon / DB-FILE-privilege metadata (harmless
+                 no-ops while dormant, but the correct posture is to hide the whole
+                 section — you cannot provision keys before an admin user even exists).
+                 Mirrors the POST dispatcher's own independent gate (lines ~177-178). */ ?>
+        <?php if (!$isInitialSetup && isset($currentUser) && $currentUser && ($currentUser['role'] ?? null) === 'global_admin'): ?>
+        <?php if (function_exists('secretCryptoReady')): ?>
+        <!-- ============================================================
+             SECRET ENCRYPTION-AT-REST (#1466) — Global-Admin panel
+             ============================================================
+             ELI5: this is the "control room" for the lock-and-key system
+             that scrambles secrets (email passwords, API keys, the
+             Sign-in-with-Apple .p8) before they sit in the shared
+             database. It shows whether THIS docroot can currently unlock
+             things (Status), lets the admin mint a brand-new key when
+             none exists yet (Generate — never writes anything itself),
+             and lets them swap every stored secret to a new key once
+             every docroot already holds it (Rotate — the destructive,
+             re-auth-gated capstone).
+
+             WHY: strategy §10b names this exact three-card layout as the
+             web-only operator's ENTIRE workflow for provisioning,
+             auditing, and rotating the master key — no shell access is
+             assumed (this DreamHost install has none; see
+             .claude/secret-encryption-strategy.md and the project's
+             "operator is web-only" memory). The two write actions
+             (`secret_generate_key`, `secret_rotate`) are handled by the
+             dedicated POST dispatcher near the TOP of this file (search
+             "SECRET ENCRYPTION-AT-REST — POST actions"), which mirrors
+             manage/api-keys.php's fetch()+JSON+CSRF+reveal-once pattern
+             rather than this page's `?action=` GET convention, because
+             §10 requires re-auth + a robust same-origin CSRF check on the
+             rotate endpoint (a GET link can't safely carry a password).
+             The status reads below call ONLY the read-only helpers in
+             includes/secret_crypto_admin.php, which are documented there
+             as NEVER throwing — so a DB hiccup degrades this card to
+             "can't tell" rather than white-screening the whole dashboard.
+             Refs: .claude/secret-encryption-strategy.md §8 (fingerprint
+             canary + sentinel), §10 (hardening the rotate card), §10b
+             (this panel's spec, verbatim).
+             ============================================================ -->
+        <?php
+            /* Best-effort: mint the shared cross-docroot sentinel if this
+               docroot already holds a usable key and nobody has minted it
+               yet (idempotent — secretSentinelEnsure() never overwrites an
+               existing sentinel). Every status read below is documented as
+               NEVER throwing, but $db itself can throw (e.g. credentials
+               not yet configured) — caught here so the rest of the
+               dashboard still renders even mid-provisioning. */
+            $secretPanelDb = null;
+            try {
+                $secretPanelDb = getDbMysqli();
+                secretSentinelEnsure($secretPanelDb);
+                /* SELF-REPORT BEACON (#1466 review findings 1/4/7, strategy
+                   §10b) — best-effort; no-ops (writes nothing) when this
+                   docroot has no key loaded, per secretKeyBeaconWrite()'s own
+                   fail-safe contract. Every time an admin opens THIS panel,
+                   this docroot records "here's what keyids I currently hold"
+                   into the shared tblAppSettings row the OTHER two docroots'
+                   panels (and the rotate handler's secretRotationParity()
+                   gate above) read back — the mechanism that turns "the
+                   operator promises they checked all 3 tabs" into a fact the
+                   code can verify. */
+                secretKeyBeaconWrite($secretPanelDb);
+            } catch (\Throwable $_e) { /* degrade to the read-only status below */ }
+
+            $secretEngineAlg   = secretCryptoAlgorithm();
+            $secretKeyReady    = secretCryptoReady();
+            $secretActiveKeyId = secretActiveKeyId();
+            $secretFingerprint = secretKeyFingerprint();
+            $secretAllKeyIds   = secretAllKeyIds();
+            $secretEncActive   = $secretPanelDb ? secretEncryptionActive($secretPanelDb) : false;
+            $secretInv         = $secretPanelDb
+                ? secretInventory($secretPanelDb)
+                : ['encrypted' => 0, 'legacy' => 0, 'empty' => 0, 'keys' => []];
+            /* 'red' (not 'absent') when we couldn't even open a connection —
+               matches secretSentinelStatus()'s own fail-closed contract, so
+               the panel never reads as falsely healthy on a DB outage. */
+            $secretSentinel = $secretPanelDb ? secretSentinelStatus($secretPanelDb) : 'red';
+            /* Per-docroot beacon table data (#1466 review findings 1/4/7,
+               strategy §10b visibility requirement) — read-only, NEVER
+               throws (secretKeyBeacons() degrades a per-env read failure to
+               present=false/fresh=false rather than propagating), so an
+               empty array on a DB hiccup just renders every row as absent. */
+            $secretKeyBeaconRows = $secretPanelDb ? secretKeyBeacons($secretPanelDb) : [];
+            /* DB file-read privilege self-check (#1466 §12-A): proves a
+               SQL-injection can't LOAD_FILE() the master key THROUGH the DB and
+               collapse the two-primitive protection. Read-only, never throws. */
+            $secretDbFilePriv = ($secretPanelDb && function_exists('secretDbFilePrivilegeStatus'))
+                ? secretDbFilePrivilegeStatus($secretPanelDb)
+                : ['verdict' => 'unknown', 'file_grant' => null, 'secure_file_priv' => null, 'can_read_keyfile' => null];
+        ?>
+        <h4 class="mb-3">Secret encryption <span class="text-secondary small">(#1466)</span></h4>
+        <div class="row g-3 mb-4">
+            <div class="col-12">
+                <div class="card bg-dark <?= $secretSentinel === 'red' ? 'border-danger' : 'border-secondary' ?> h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-shield-lock me-1" aria-hidden="true"></i>
+                            Status — this docroot
+                        </h5>
+                        <ul class="list-unstyled small mb-2">
+                            <li class="mb-1"><strong>Engine:</strong>
+                                <?= $secretEngineAlg === 'sb' ? 'libsodium secretbox' : 'AES-256-GCM (fallback)' ?>
+                            </li>
+                            <li class="mb-1"><strong>Master key:</strong>
+                                <?php if ($secretKeyReady): ?>
+                                    <span class="badge bg-success">present</span>
+                                    — active keyid <code><?= htmlspecialchars((string)$secretActiveKeyId, ENT_QUOTES, 'UTF-8') ?></code>,
+                                    non-secret fingerprint <code><?= htmlspecialchars((string)$secretFingerprint, ENT_QUOTES, 'UTF-8') ?></code>
+                                    <span class="text-secondary">— must match on all 3 docroots</span>
+                                    <?php if (count($secretAllKeyIds) > 1): ?>
+                                        <br><span class="text-secondary">All loaded keyids: <code><?= htmlspecialchars(implode(', ', $secretAllKeyIds), ENT_QUOTES, 'UTF-8') ?></code> (rotation overlap)</span>
+                                    <?php endif; ?>
+                                <?php else: ?>
+                                    <span class="badge bg-secondary">absent</span>
+                                    — no <code>appWeb/.auth/secrets_master_key.php</code> on this docroot yet.
+                                <?php endif; ?>
+                            </li>
+                            <li class="mb-1"><strong>Cutover:</strong>
+                                <?php if ($secretEncActive): ?>
+                                    <span class="badge bg-success">encrypted-at-rest ACTIVE</span>
+                                <?php else: ?>
+                                    <span class="badge bg-warning text-dark">dormant</span> — values still plaintext.
+                                <?php endif; ?>
+                            </li>
+                            <li class="mb-1"><strong>Inventory:</strong>
+                                <?= (int)$secretInv['encrypted'] ?> encrypted /
+                                <?= (int)$secretInv['legacy'] ?> legacy-plaintext /
+                                <?= (int)$secretInv['empty'] ?> empty
+                                <?php if (!empty($secretInv['keys'])): ?>
+                                    <ul class="small text-secondary mb-0 mt-1">
+                                        <?php foreach ($secretInv['keys'] as $_secretKeyName => $_secretKeyState):
+                                            $_secretKeyBadge = $_secretKeyState === 'enc'
+                                                ? 'bg-success'
+                                                : ($_secretKeyState === 'legacy' ? 'bg-warning text-dark' : 'bg-secondary');
+                                        ?>
+                                            <li>
+                                                <code><?= htmlspecialchars((string)$_secretKeyName, ENT_QUOTES, 'UTF-8') ?></code>
+                                                <span class="badge <?= $_secretKeyBadge ?>"><?= htmlspecialchars((string)$_secretKeyState, ENT_QUOTES, 'UTF-8') ?></span>
+                                            </li>
+                                        <?php endforeach; ?>
+                                    </ul>
+                                <?php endif; ?>
+                            </li>
+                            <li class="mb-0"><strong>Sentinel:</strong>
+                                <?php if ($secretSentinel === 'green'): ?>
+                                    <span class="badge bg-success">green</span> — this docroot can decrypt the shared sentinel.
+                                <?php elseif ($secretSentinel === 'red'): ?>
+                                    <span class="badge bg-danger">red — KEY MISMATCH / ABSENT</span> — do <strong>NOT</strong> run the migration.
+                                <?php else: ?>
+                                    <span class="badge bg-secondary">absent</span> — no sentinel provisioned yet.
+                                <?php endif; ?>
+                            </li>
+                            <li class="mb-0"><strong>DB file-read access:</strong>
+                                <?php if ($secretDbFilePriv['verdict'] === 'safe'): ?>
+                                    <span class="badge bg-success">safe</span> — the database user cannot read the master key file (no <code>FILE</code> privilege / <code>LOAD_FILE</code> blocked), so a SQL-injection can't reach the key through the DB.
+                                <?php elseif ($secretDbFilePriv['verdict'] === 'at_risk'): ?>
+                                    <span class="badge bg-danger">⚠ at risk</span> — the database user CAN read files (<code>FILE</code> privilege granted / <code>LOAD_FILE</code> works). A SQL-injection could read the master key <em>through</em> the DB, weakening the two-primitive protection. Ask your host to remove the <code>FILE</code> privilege from this DB user.
+                                <?php else: ?>
+                                    <span class="badge bg-secondary">unknown</span> — could not determine (no key file present yet, or the grant/probe check was unavailable).
+                                <?php endif; ?>
+                                <?php if ($secretDbFilePriv['file_grant'] !== null || $secretDbFilePriv['secure_file_priv'] !== null): ?>
+                                    <br><span class="text-secondary">FILE granted: <?= $secretDbFilePriv['file_grant'] === null ? 'unknown' : ($secretDbFilePriv['file_grant'] ? 'YES' : 'no') ?><?php if ($secretDbFilePriv['secure_file_priv'] !== null): ?> · secure_file_priv: <code><?= htmlspecialchars((string)$secretDbFilePriv['secure_file_priv'], ENT_QUOTES, 'UTF-8') ?></code><?php endif; ?></span>
+                                <?php endif; ?>
+                            </li>
+                        </ul>
+                        <p class="text-secondary small mb-0">
+                            <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                            All 3 docroots must show the SAME fingerprint + a green sentinel before running the encrypt-in-place migration card above.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============================================================
+                 CROSS-DOCROOT KEY STATUS (#1466 review findings 1/4/7)
+                 ============================================================
+                 ELI5: the Status card above only knows about ITSELF — it
+                 can't see whether beta or production have the same key. This
+                 table reads the shared "beacon" row each docroot's OWN panel
+                 render just wrote (secretKeyBeaconWrite(), a few lines up)
+                 and shows all three side by side, so an operator doesn't
+                 have to keep three browser tabs open and compare fingerprints
+                 by eye. It's the human-readable face of the SAME data
+                 secretRotationParity() checks programmatically before the
+                 Rotate button is allowed to actually run.
+                 WHY a table, not prose: strategy §10b specifically asks for
+                 a per-docroot table here, mirroring the Status card's own
+                 three-state (green/red/absent) reasoning per row instead of
+                 collapsing three envs into one combined yes/no. A stale or
+                 absent row is highlighted (`text-secondary` + a "stale"
+                 badge) so it reads as "needs attention" at a glance, without
+                 the page ever claiming to know something it can't verify.
+                 ============================================================ -->
+            <div class="col-12">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-diagram-3 me-1" aria-hidden="true"></i>
+                            Cross-docroot key status
+                        </h5>
+                        <p class="card-text text-secondary small mb-2">
+                            Rotate requires all three to show the NEW keyid + a fresh beacon
+                            (open each docroot's own Secret-encryption panel after adding the key —
+                            that visit is what records its beacon here).
+                        </p>
+                        <div class="table-responsive">
+                            <table class="table table-dark table-sm mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Docroot</th>
+                                        <th>Present</th>
+                                        <th>Fresh</th>
+                                        <th>Active keyid</th>
+                                        <th>All keyids</th>
+                                        <th>Fingerprint</th>
+                                        <th>Last seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                <?php foreach ($secretKeyBeaconRows as $_beaconEnv => $_beacon):
+                                    $_beaconPresent = (bool)($_beacon['present'] ?? false);
+                                    $_beaconFresh   = (bool)($_beacon['fresh'] ?? false);
+                                    $_beaconStale   = !$_beaconPresent || !$_beaconFresh;
+                                    /* Human-friendly age — the raw value is only ever used for
+                                       this display; secretRotationParity() itself compares the
+                                       raw seconds against SECRET_KEY_BEACON_FRESH_SECONDS. */
+                                    $_beaconAgeSecs  = (int)($_beacon['age'] ?? PHP_INT_MAX);
+                                    if (!$_beaconPresent) {
+                                        $_beaconAgeLabel = '—';
+                                    } elseif ($_beaconAgeSecs < 120) {
+                                        $_beaconAgeLabel = $_beaconAgeSecs . 's ago';
+                                    } elseif ($_beaconAgeSecs < 7200) {
+                                        $_beaconAgeLabel = (int)round($_beaconAgeSecs / 60) . 'm ago';
+                                    } else {
+                                        $_beaconAgeLabel = (int)round($_beaconAgeSecs / 3600) . 'h ago';
+                                    }
+                                ?>
+                                    <tr class="<?= $_beaconStale ? 'text-secondary' : '' ?>">
+                                        <td><code><?= htmlspecialchars((string)$_beaconEnv, ENT_QUOTES, 'UTF-8') ?></code></td>
+                                        <td>
+                                            <?php if ($_beaconPresent): ?>
+                                                <span class="badge bg-success">yes</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-secondary">no</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <?php if ($_beaconFresh): ?>
+                                                <span class="badge bg-success">fresh</span>
+                                            <?php else: ?>
+                                                <span class="badge bg-warning text-dark">stale</span>
+                                            <?php endif; ?>
+                                        </td>
+                                        <td><code><?= htmlspecialchars($_beacon['active'] !== null ? (string)$_beacon['active'] : '—', ENT_QUOTES, 'UTF-8') ?></code></td>
+                                        <td><code><?= htmlspecialchars(!empty($_beacon['keyids']) ? implode(', ', $_beacon['keyids']) : '—', ENT_QUOTES, 'UTF-8') ?></code></td>
+                                        <td><code><?= htmlspecialchars($_beacon['fp'] !== null ? (string)$_beacon['fp'] : '—', ENT_QUOTES, 'UTF-8') ?></code></td>
+                                        <td><?= htmlspecialchars($_beaconAgeLabel, ENT_QUOTES, 'UTF-8') ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card bg-dark border-secondary h-100">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-key me-1" aria-hidden="true"></i>Generate master key</h5>
+                        <p class="card-text text-secondary small">
+                            Produces a CSPRNG 32-byte key (64 hex chars) server-side — solves
+                            the web-only "can't run <code>openssl rand</code>" problem. Shown
+                            <strong>once</strong>; this tool is a generator, not a writer — it
+                            NEVER writes <code>appWeb/.auth/</code> itself. Copy it into the
+                            <code>SECRETS_MASTER_KEY</code> GitHub Secret and/or SFTP it into
+                            <code>appWeb/.auth/secrets_master_key.php</code> on each docroot.
+                        </p>
+                        <div id="secretGenResult" class="d-none mb-2">
+                            <div class="alert alert-warning py-2 small mb-2">
+                                <i class="bi bi-exclamation-triangle me-1" aria-hidden="true"></i>
+                                Copy this key now — shown once, not stored.
+                            </div>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control font-monospace" id="secretGenValue" readonly aria-label="Generated master key">
+                                <button type="button" class="btn btn-outline-secondary" id="secretGenCopy" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" id="secretGenBtn">
+                            Generate master key
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-md-6">
+                <div class="card bg-dark border-danger h-100">
+                    <div class="card-body">
+                        <h5 class="card-title">
+                            <i class="bi bi-arrow-repeat me-1" aria-hidden="true"></i>
+                            Rotate / re-encrypt <span class="badge bg-danger">destructive</span>
+                        </h5>
+                        <p class="card-text text-secondary small">
+                            Re-wraps every stored secret under a NEW active keyid.
+                            <strong>Operator gate:</strong> this panel cannot see the other 2
+                            docroots — first generate a new key above, add it as a NEW keyid
+                            on <strong>all 3</strong> docroots (deploy the Secret, or SFTP),
+                            and confirm each one's Status card shows the same new fingerprint.
+                            <strong>Only then</strong> rotate here. A value under a forgotten
+                            keyid is reported afterward, never aborts the rest of the rotation.
+                        </p>
+                        <?php if ($secretKeyReady): ?>
+                            <form id="secretRotateForm">
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1" for="secretRotatePw">Your password (re-auth)</label>
+                                    <input type="password" class="form-control form-control-sm" id="secretRotatePw" autocomplete="current-password" required>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label small mb-1" for="secretRotateConfirm">Type <code>ROTATE</code> to confirm</label>
+                                    <input type="text" class="form-control form-control-sm" id="secretRotateConfirm" autocomplete="off" required>
+                                </div>
+                                <button type="submit" class="btn btn-danger btn-sm" id="secretRotateBtn">Rotate now</button>
+                            </form>
+                        <?php else: ?>
+                            <p class="text-secondary small mb-0">No master key is loaded on this docroot — generate/provision one first.</p>
+                        <?php endif; ?>
+                        <div id="secretRotateResult" class="small mt-2"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <script>
+        /* Secret encryption panel (#1466) — Generate + Rotate. Vanilla JS,
+           no dependencies; mirrors manage/api-keys.php's fetch()+JSON+CSRF+
+           reveal-once idiom (same `X-Requested-With` header so the server's
+           validateCsrfRequest() same-origin check passes without relying on
+           a baked, go-stale-prone session token). Posts to THIS page — the
+           dedicated POST dispatcher near the top of setup-database.php
+           intercepts `secret_generate_key` / `secret_rotate` before any of
+           the page's normal HTML renders. */
+        (function () {
+            'use strict';
+            var CSRF = <?= json_encode(csrfToken()) ?>;
+            function secretPost(data) {
+                var body = new URLSearchParams(data);
+                body.append('csrf_token', CSRF);
+                return fetch('', {
+                    method: 'POST',
+                    body: body,
+                    credentials: 'same-origin',
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                }).then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); });
+            }
+            /* Escapes text before it is concatenated into innerHTML below.
+               ELI5: every value here (error strings, docroot names) is
+               server-generated, not free-typed user input, but this still
+               builds HTML by string-concatenation — escaping is cheap
+               insurance so a future server-side change can never turn this
+               into a stored-XSS sink. */
+            function escapeHtml(s) {
+                return String(s).replace(/[&<>"']/g, function (c) {
+                    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+                });
+            }
+
+            var genBtn = document.getElementById('secretGenBtn');
+            if (genBtn) {
+                genBtn.addEventListener('click', function () {
+                    genBtn.disabled = true;
+                    secretPost({ action: 'secret_generate_key' }).then(function (res) {
+                        genBtn.disabled = false;
+                        if (!res.ok || !res.j.success) {
+                            alert((res.j && res.j.error) || 'Failed to generate a key.');
+                            return;
+                        }
+                        document.getElementById('secretGenValue').value = res.j.key;
+                        document.getElementById('secretGenResult').classList.remove('d-none');
+                    }).catch(function () { genBtn.disabled = false; alert('Network error.'); });
+                });
+            }
+            var genCopy = document.getElementById('secretGenCopy');
+            if (genCopy) {
+                genCopy.addEventListener('click', function () {
+                    var v = document.getElementById('secretGenValue');
+                    v.select();
+                    if (navigator.clipboard) { navigator.clipboard.writeText(v.value); }
+                    else { document.execCommand('copy'); }
+                });
+            }
+
+            var rotateForm = document.getElementById('secretRotateForm');
+            if (rotateForm) {
+                rotateForm.addEventListener('submit', function (e) {
+                    e.preventDefault();
+                    var pw            = document.getElementById('secretRotatePw').value;
+                    var confirmPhrase = document.getElementById('secretRotateConfirm').value;
+                    var resultBox     = document.getElementById('secretRotateResult');
+                    if (confirmPhrase !== 'ROTATE') {
+                        resultBox.innerHTML = '<span class="text-danger">Type ROTATE (all caps) to confirm.</span>';
+                        return;
+                    }
+                    if (!window.confirm(
+                        'Rotate the master key now?\n\n' +
+                        'Only proceed if ALL 3 docroots already show the NEW keyid + matching fingerprint. ' +
+                        'This re-wraps every stored secret in the shared database.'
+                    )) {
+                        return;
+                    }
+                    var btn = document.getElementById('secretRotateBtn');
+                    btn.disabled = true;
+                    resultBox.textContent = 'Rotating…';
+                    secretPost({
+                        action: 'secret_rotate',
+                        reauth_password: pw,
+                        confirm_phrase: confirmPhrase
+                    }).then(function (res) {
+                        btn.disabled = false;
+                        document.getElementById('secretRotatePw').value = '';
+                        document.getElementById('secretRotateConfirm').value = '';
+                        if (!res.ok || !res.j.success) {
+                            /* #1466 review findings 1/4/7: on a 409 from the
+                               cross-docroot parity gate, res.j.parity.missing
+                               names exactly which docroots haven't confirmed
+                               the target keyid yet — surface it explicitly
+                               rather than making the operator re-read the
+                               (already fairly long) error sentence. */
+                            var errHtml = '<span class="text-danger">' +
+                                escapeHtml((res.j && res.j.error) || 'Rotation failed.') + '</span>';
+                            var missing = res.j && res.j.parity && Array.isArray(res.j.parity.missing)
+                                ? res.j.parity.missing
+                                : null;
+                            if (missing && missing.length) {
+                                errHtml += '<br><span class="text-warning">Missing beacons: ' +
+                                    escapeHtml(missing.join(', ')) + '</span>';
+                            }
+                            resultBox.innerHTML = errHtml;
+                            return;
+                        }
+                        var r = res.j.result || {};
+                        var rewrapped     = r.rewrapped     ? r.rewrapped.length     : 0;
+                        var skipped       = r.skipped       ? r.skipped.length       : 0;
+                        var undecryptable = r.undecryptable || [];
+                        var html = '<span class="text-success">Rotated.</span> ' +
+                            rewrapped + ' rewrapped, ' + skipped + ' skipped';
+                        if (undecryptable.length) {
+                            /* #1466 finding 2: escape the (server-generated) key
+                               names for consistency with the missing-beacon list
+                               above — cheap insurance so a future dynamic source
+                               can never turn this into a stored-XSS sink. */
+                            html += '. <span class="text-danger">' + undecryptable.length +
+                                ' UNDECRYPTABLE (under a forgotten keyid — needs manual attention): ' +
+                                escapeHtml(undecryptable.join(', ')) + '</span>';
+                        }
+                        /* No auto-reload — the operator needs to actually READ
+                           the rewrapped/skipped/undecryptable counts (esp. any
+                           undecryptable keys, which need manual follow-up)
+                           before the Status card above re-renders on next load. */
+                        resultBox.innerHTML = html;
+                    }).catch(function () {
+                        btn.disabled = false;
+                        resultBox.innerHTML = '<span class="text-danger">Network error.</span>';
+                    });
+                });
+            }
+        })();
+        </script>
+        <?php else: ?>
+        <!-- #1466 review finding 11: secret_crypto_admin.php isn't present
+             on this docroot yet (lagging deploy) — degrade gracefully
+             instead of skipping this section silently or fataling the whole
+             dashboard. -->
+        <div class="alert alert-secondary py-2 small mb-4">
+            <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+            Secret-encryption module not deployed on this docroot yet
+            (<code>includes/secret_crypto_admin.php</code> is missing) — the
+            rest of this dashboard is unaffected. Deploy the file and reload
+            this page to see the Secret encryption panel.
+        </div>
+        <?php endif; ?>
+        <?php endif; /* #1466 finding 3: end Global-Admin gate on the whole secret-encryption section */ ?>
 
         <!-- ============================================================
              DATABASE STATUS

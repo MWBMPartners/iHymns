@@ -597,6 +597,12 @@ jobs:
       # so we use --no-delete and exclude db_credentials.php from the
       # mirror. This ensures the directory exists and is writable by
       # the web user, without clobbering real credentials.
+      #
+      # Also excludes secrets_master_key.php (#1466) — the secret-
+      # encryption master key. It is seeded separately (see the two
+      # "Seed secret-encryption master key" steps below) and must never
+      # be overwritten by this mirror, so a manual key rotation via SFTP
+      # always survives the next deploy.
       # ================================================================
 
       # -- Deploy .auth/ via SFTP (SSH key) --
@@ -610,11 +616,11 @@ jobs:
           REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
         run: |
           AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
-          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php)"
+          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php, secrets_master_key.php)"
           cat > /tmp/lftp_auth.txt <<LFTP_EOF
           set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
           open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
-          mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs --exclude ^db_credentials\.php$ $LFTP_EXCLUDES appWeb/.auth/ ${AUTH_PATH}
+          mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs --exclude ^db_credentials\.php$ --exclude ^secrets_master_key\.php$ $LFTP_EXCLUDES appWeb/.auth/ ${AUTH_PATH}
           bye
           LFTP_EOF
           lftp -f /tmp/lftp_auth.txt
@@ -631,14 +637,138 @@ jobs:
           REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
         run: |
           AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
-          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php)"
+          echo "Deploying .auth to: $AUTH_PATH (excluding db_credentials.php, secrets_master_key.php)"
           lftp -u "${SFTP_USER},${SFTP_PASS}" \
             -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; \
             mirror --reverse --verbose ${{ steps.changes.outputs.mirror_newer_flag }} --no-empty-dirs \
-            --exclude ^db_credentials\.php$ $LFTP_EXCLUDES \
+            --exclude ^db_credentials\.php$ --exclude ^secrets_master_key\.php$ $LFTP_EXCLUDES \
             appWeb/.auth/ ${AUTH_PATH}; bye" \
             "sftp://${SFTP_HOST}:${SFTP_PORT}"
           echo ".auth deployed to ${AUTH_PATH}"
+
+      # ================================================================
+      # SEED SECRET-ENCRYPTION MASTER KEY IF ABSENT (#1466)
+      # Writes appWeb/.auth/secrets_master_key.php from the
+      # SECRETS_MASTER_KEY GitHub Secret — but ONLY when the file does
+      # not already exist on the remote host. This guarantees all 3
+      # docroots seed byte-identically on first provision (the shared
+      # DB requires the same key everywhere), while a manual SFTP
+      # rotation of the file is NEVER overwritten (idempotent
+      # seed-if-absent; see .claude/secret-encryption-strategy.md §8).
+      # Optional + fail-safe: no-ops (never fails the deploy) until the
+      # SECRETS_MASTER_KEY secret is set, and skips (rather than risks
+      # clobbering) if remote presence can't be confirmed.
+      # ================================================================
+
+      # -- Seed secret-encryption master key if absent (SSH key) --
+      - name: Seed secret-encryption master key if absent (SSH key)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'key'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          SFTP_KEY: ${{ secrets.SFTP_KEY }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+          MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+        run: |
+          if [[ -z "$MASTER_KEY" ]]; then
+            echo "::notice::SECRETS_MASTER_KEY not set — skipping master-key seed (values stay legacy-plaintext / feature dormant)."
+            exit 0
+          fi
+          if [[ ! "$MASTER_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::SECRETS_MASTER_KEY must be exactly 64 hex chars (openssl rand -hex 32) — got a different shape; refusing to seed."
+            exit 1
+          fi
+          AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
+          # Residual check-then-put TOCTOU window is benign: every branch seeds
+          # the SAME value from the one SECRETS_MASTER_KEY secret, so even a
+          # concurrent double-seed writes byte-identical content, and a manual
+          # rotation is protected by the .auth mirror-exclude above — the
+          # window cannot corrupt or diverge a key.
+          cat > /tmp/lftp_check_key.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          cls -1 ${AUTH_PATH}secrets_master_key.php
+          bye
+          LFTP_EOF
+          set +e
+          REMOTE_LISTING=$(lftp -f /tmp/lftp_check_key.txt 2>&1)
+          LFTP_STATUS=$?
+          set -e
+          if [[ "$REMOTE_LISTING" == *"No such file"* ]]; then
+            echo "No existing master key found on remote — will seed."
+          elif [[ $LFTP_STATUS -eq 0 && -n "$REMOTE_LISTING" ]]; then
+            echo "Master key already present — leaving manual/existing key untouched."
+            exit 0
+          elif [[ $LFTP_STATUS -eq 0 && -z "$REMOTE_LISTING" ]]; then
+            echo "No existing master key found (empty listing) — will seed."
+          else
+            echo "::warning::could not verify remote key presence — skipping seed to avoid clobbering an existing key"
+            exit 0
+          fi
+          cat > /tmp/secrets_master_key.php <<PHP_EOF
+          <?php return ['active' => 'k1', 'keys' => ['k1' => '${MASTER_KEY}']];
+          PHP_EOF
+          cat > /tmp/lftp_seed_key.txt <<LFTP_EOF
+          set sftp:connect-program "ssh -o StrictHostKeyChecking=no -i $HOME/.ssh/deploy_key -p ${SFTP_PORT}"
+          open sftp://${SFTP_USER}@${SFTP_HOST}:${SFTP_PORT}
+          put /tmp/secrets_master_key.php -o ${AUTH_PATH}secrets_master_key.php
+          bye
+          LFTP_EOF
+          lftp -f /tmp/lftp_seed_key.txt || { echo "::warning::master-key seed PUT failed — file still absent, will retry on next deploy"; rm -f /tmp/secrets_master_key.php; exit 0; }
+          rm -f /tmp/secrets_master_key.php
+          echo "Seeded secrets_master_key.php to ${AUTH_PATH} (was absent)"
+
+      # -- Seed secret-encryption master key if absent (password) --
+      - name: Seed secret-encryption master key if absent (password)
+        if: steps.changes.outputs.has_changes == 'true' && steps.auth.outputs.method == 'password'
+        env:
+          SFTP_USER: ${{ secrets.SFTP_USER }}
+          SFTP_PASS: ${{ secrets.SFTP_PASSWORD }}
+          SFTP_HOST: ${{ secrets.SFTP_HOST }}
+          SFTP_PORT: ${{ steps.port.outputs.port }}
+          REMOTE_PATH: ${{ steps.target.outputs.remote_path }}
+          MASTER_KEY: ${{ secrets.SECRETS_MASTER_KEY }}
+        run: |
+          if [[ -z "$MASTER_KEY" ]]; then
+            echo "::notice::SECRETS_MASTER_KEY not set — skipping master-key seed (values stay legacy-plaintext / feature dormant)."
+            exit 0
+          fi
+          if [[ ! "$MASTER_KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            echo "::error::SECRETS_MASTER_KEY must be exactly 64 hex chars (openssl rand -hex 32) — got a different shape; refusing to seed."
+            exit 1
+          fi
+          AUTH_PATH=$(dirname "$REMOTE_PATH")/.auth/
+          # Residual check-then-put TOCTOU window is benign: every branch seeds
+          # the SAME value from the one SECRETS_MASTER_KEY secret, so even a
+          # concurrent double-seed writes byte-identical content, and a manual
+          # rotation is protected by the .auth mirror-exclude above — the
+          # window cannot corrupt or diverge a key.
+          set +e
+          REMOTE_LISTING=$(lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; cls -1 ${AUTH_PATH}secrets_master_key.php; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}" 2>&1)
+          LFTP_STATUS=$?
+          set -e
+          if [[ "$REMOTE_LISTING" == *"No such file"* ]]; then
+            echo "No existing master key found on remote — will seed."
+          elif [[ $LFTP_STATUS -eq 0 && -n "$REMOTE_LISTING" ]]; then
+            echo "Master key already present — leaving manual/existing key untouched."
+            exit 0
+          elif [[ $LFTP_STATUS -eq 0 && -z "$REMOTE_LISTING" ]]; then
+            echo "No existing master key found (empty listing) — will seed."
+          else
+            echo "::warning::could not verify remote key presence — skipping seed to avoid clobbering an existing key"
+            exit 0
+          fi
+          cat > /tmp/secrets_master_key.php <<PHP_EOF
+          <?php return ['active' => 'k1', 'keys' => ['k1' => '${MASTER_KEY}']];
+          PHP_EOF
+          lftp -u "${SFTP_USER},${SFTP_PASS}" \
+            -e "set sftp:auto-confirm yes; set ssl:verify-certificate no; put /tmp/secrets_master_key.php -o ${AUTH_PATH}secrets_master_key.php; bye" \
+            "sftp://${SFTP_HOST}:${SFTP_PORT}" || { echo "::warning::master-key seed PUT failed — file still absent, will retry on next deploy"; rm -f /tmp/secrets_master_key.php; exit 0; }
+          rm -f /tmp/secrets_master_key.php
+          echo "Seeded secrets_master_key.php to ${AUTH_PATH} (was absent)"
 
       # ================================================================
       # DEPLOYMENT SUMMARY
