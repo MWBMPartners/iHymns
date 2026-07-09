@@ -20,6 +20,12 @@
  *   - Requires a shared secret, supplied via the `X-OPcache-Key` request header
  *     (preferred) or `?key=`, matched with hash_equals() against the expected
  *     key resolved from `IHYMNS_OPCACHE_KEY` (env) or `../.auth/opcache_bust_key.php`.
+ *   - #1466 P4 — this endpoint only ever VERIFIES the key, it never needs to hand
+ *     the plaintext back to anyone (the one sender, deploy.yml, keeps its own copy
+ *     from the GitHub secret). That makes it safe to store the expected value as a
+ *     one-way `sha256:<hex>` hash instead of plaintext-at-rest; see the resolution
+ *     comment below and `.claude/secret-encryption-strategy.md` §3 for the full
+ *     rationale (this is called out there as "the ONLY verify-by-comparison secret").
  *   - SAFE BY DEFAULT: if no key is configured server-side, it returns 503 and
  *     does nothing — the endpoint cannot be abused before it is set up.
  *   - RATE-LIMITED: at most one reset per 5 seconds (temp-dir sentinel), so even
@@ -36,7 +42,9 @@ header('X-Robots-Tag: noindex');
 
 /* ---- Resolve the EXPECTED key: env first, then a .auth/ sibling file. ----
    .auth/ is deployed as a sibling of public_html/, so from this file the path
-   is ../.auth/opcache_bust_key.php. That file must `return '<the-key>';`. */
+   is ../.auth/opcache_bust_key.php. That file must `return '<the-key>';` OR,
+   since #1466 P4, `return 'sha256:<hex>';` (a one-way hash of the plaintext
+   key — see the comparison block below for how the two forms are told apart). */
 $expected = (string) (getenv('IHYMNS_OPCACHE_KEY') ?: '');
 if ($expected === '') {
     $keyFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'opcache_bust_key.php';
@@ -53,9 +61,38 @@ if ($expected === '') {
     exit;
 }
 
-/* ---- Compare the PROVIDED key (header preferred, query fallback). ---- */
+/* ---- Compare the PROVIDED key (header preferred, query fallback). ----
+ * ELI5: this endpoint is a bouncer checking an ID card, not a bank vault
+ * handing out cash — it only ever needs to say "yes/no", never read the
+ * secret back out loud. So the stored copy is allowed to be a one-way hash:
+ * even someone who reads `.auth/opcache_bust_key.php` off disk can't recover
+ * the real key from a hash, whereas today's plaintext-at-rest can be copied
+ * and reused directly.
+ *
+ * WHY the `sha256:` prefix (not a length check): a raw key and a sha256 hex
+ * digest are both commonly 64 hex characters, so length alone can't tell
+ * them apart. A self-describing prefix removes the ambiguity and lets each
+ * docroot's `.auth/opcache_bust_key.php` be migrated to the hashed form
+ * independently and at any time — this branch accepts BOTH forms so a
+ * mixed-fleet rollout (some docroots migrated, some not yet) never breaks.
+ * The single sender, `.github/workflows/deploy.yml`'s OPcache-bust step, is
+ * unaffected either way: it always sends the raw plaintext key (sourced from
+ * the `OPCACHE_BUST_KEY` GitHub secret) in the `X-OPcache-Key` header — it
+ * never sees or needs to know which form the server has stored.
+ * Ref: #1466 P4, `.claude/secret-encryption-strategy.md` §3. */
 $provided = (string) ($_SERVER['HTTP_X_OPCACHE_KEY'] ?? ($_GET['key'] ?? ''));
-if ($provided === '' || !hash_equals($expected, $provided)) {
+$ok = false;
+if ($provided !== '' && $expected !== '') {
+    if (strncmp($expected, 'sha256:', 7) === 0) {
+        // Stored as a one-way hash: hash the provided key and compare hash-to-hash
+        // (constant-time via hash_equals) — the plaintext is never reconstructed.
+        $ok = hash_equals(substr($expected, 7), hash('sha256', $provided));
+    } else {
+        // Legacy plaintext-at-rest: compare directly (still constant-time).
+        $ok = hash_equals($expected, $provided);
+    }
+}
+if (!$ok) {
     http_response_code(403);
     echo json_encode(['ok' => false, 'error' => 'Forbidden.']);
     exit;

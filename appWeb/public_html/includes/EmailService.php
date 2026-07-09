@@ -1040,9 +1040,30 @@ final class EmailService
             error_log('[EmailService] settings load failed: ' . $e->getMessage());
             $rows = [];
         }
+        /* Transparently decrypt secret-flagged values (#1466). secretDecrypt()
+           returns a legacy PLAINTEXT value unchanged (a verified no-op until the
+           encrypt-in-place migration runs) and the decrypted plaintext for an
+           enc:v1 envelope. A decrypt failure (master key absent/wrong on this
+           docroot) is FAIL-SAFE: the value becomes '' (unset), so the driver
+           treats the credential as not-configured (dormant) rather than
+           attempting auth with ciphertext. secret_crypto.php is loaded
+           DEFENSIVELY (mirrors maintenance.php) so a docroot that hasn't yet
+           received it (a lagging mirror during the readers-first rollout)
+           degrades to raw passthrough — email still works — instead of a
+           fatal require error. */
+        $secretCryptoFile = __DIR__ . DIRECTORY_SEPARATOR . 'secret_crypto.php';
+        if (is_file($secretCryptoFile)) {
+            require_once $secretCryptoFile;
+        }
         $out = [];
         foreach ($rows as $r) {
-            $out[(string)$r['SettingKey']] = (string)$r['SettingValue'];
+            $rawVal = (string)$r['SettingValue'];
+            if (function_exists('secretIsEncrypted') && secretIsEncrypted($rawVal)) {
+                $decrypted = secretDecrypt($rawVal);
+                $out[(string)$r['SettingKey']] = $decrypted ?? '';
+            } else {
+                $out[(string)$r['SettingKey']] = $rawVal;
+            }
         }
         return self::$settings = $out;
     }

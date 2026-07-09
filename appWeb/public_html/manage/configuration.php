@@ -32,6 +32,16 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php'; // #1233 per-env maintenance
+/* #1466 — load the secret-encryption engine (secret_crypto.php) and getAppSetting()
+   (maintenance.php) BEFORE the POST handlers run. $saveSetting's encrypt-on-save and
+   its `secret_encryption_active` cutover-flag read both depend on these; without the
+   top-level load they were dead code (the gate short-circuited on function_exists and
+   silently stored secrets as plaintext once encryption is active — #1466 review). The
+   engine is required HARD here on purpose: this admin page's save path must fail CLOSED
+   (throw), never silently write a cleartext secret. maintenance.php loads it defensively
+   for the public read path; this page needs the stronger guarantee. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -158,12 +168,45 @@ $loadSettings = function (mysqli $db, array $keys): array {
     $stmt->close();
     $out = [];
     foreach ($rows as $r) {
-        $out[$r['SettingKey']] = (string)$r['SettingValue'];
+        $rawVal = (string)$r['SettingValue'];
+        /* Decrypt secret-flagged values (#1466) so the form's set/not-set state
+           and any non-secret prefill are correct whether the DB holds plaintext
+           (pre-cutover) or an enc:v1 envelope (post). Passthrough for plaintext;
+           an undecryptable envelope → '' (renders as "not set"). Secret VALUES
+           are still never echoed back into the form. */
+        if (secretIsEncrypted($rawVal)) {
+            $out[$r['SettingKey']] = secretDecrypt($rawVal) ?? '';
+        } else {
+            $out[$r['SettingKey']] = $rawVal;
+        }
     }
     return $out;
 };
 
 $saveSetting = function (mysqli $db, string $key, string $value): void {
+    /* Encrypt-at-rest for secret-flagged settings (#1466). Gated on the cutover
+       flag `secret_encryption_active` (set by the encrypt-in-place migration once
+       every docroot has the engine + key) so this is a verified NO-OP until then:
+       pre-cutover, secrets store as plaintext exactly as before; the migration
+       encrypts them in bulk and flips the flag; thereafter every new/updated
+       secret is encrypted here too. secret_crypto.php is required HARD at the top
+       of this page, so isSecretSettingKey()/secretEncrypt()/secretCryptoReady()
+       are GUARANTEED defined here — the gate deliberately carries NO
+       function_exists() guard: guarding on it would fail OPEN (silently store
+       plaintext) if the engine were ever missing. Instead we fail CLOSED — a
+       non-empty secret can NEVER be silently stored as plaintext once encryption
+       is active: if the master key is missing on this docroot we throw rather
+       than write a cleartext secret. */
+    if ($value !== '' && isSecretSettingKey($key)
+        && getAppSetting('secret_encryption_active', '0') === '1') {
+        if (!secretCryptoReady()) {
+            throw new \RuntimeException(
+                'Secret encryption is active but the master key is unavailable on this server '
+                . '(.auth/secrets_master_key.php) — refusing to store "' . $key . '" unencrypted.'
+            );
+        }
+        $value = secretEncrypt($value);
+    }
     $stmt = $db->prepare(
         'INSERT INTO tblAppSettings (SettingKey, SettingValue)
          VALUES (?, ?)
@@ -580,8 +623,8 @@ $maintenanceMsg      = (string)($maintenanceSettings['maintenance_message_' . $e
 $maintenanceAllowAdm = ($maintenanceSettings['maintenance_allow_admins_' . $envCurrent] ?? '0') === '1';
 /* Auto-refresh interval (#1276). Reuse maintenanceRefreshSeconds() so the
    form's displayed value is the SAME clamped value the 503 page would use —
-   no drift between what the admin sees and what visitors get. */
-require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+   no drift between what the admin sees and what visitors get.
+   (maintenance.php is already required at the top of this page — #1466.) */
 $maintenanceRefresh  = maintenanceRefreshSeconds();
 
 /* Apple native app Team ID (#1401) — read via the same shared, DB-safe
@@ -746,12 +789,24 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
         <div class="card-body">
             <p class="small text-secondary mb-3">
                 The Apple Developer <strong>Team ID</strong> for the <code>app.ihymns</code> bundle
-                (developer.apple.com &rarr; Membership, or the <code>APPLE_TEAM_ID</code> GitHub secret
-                used by the Apple deploy pipeline). It is embedded into
-                <code>/.well-known/apple-app-site-association</code> so Universal Links can open the
-                native app instead of Safari. Left blank, that file still serves valid JSON with an
-                obviously-fake <code>TEAMID</code> placeholder — safe, but Universal Links won't
-                actually resolve until a real value is saved here.
+                (developer.apple.com &rarr; Membership — a single fixed value for your Apple account,
+                <em>not</em> a secret). This field is the <strong>runtime</strong> source: it is
+                embedded into <code>/.well-known/apple-app-site-association</code> so Universal Links
+                can open the native app instead of Safari. Left blank, that file still serves valid
+                JSON with an obviously-fake <code>TEAMID</code> placeholder — safe, but Universal
+                Links won't resolve until a real value is saved here.
+            </p>
+            <p class="small text-warning-emphasis border-start border-warning border-3 ps-2 mb-3">
+                <i class="bi bi-exclamation-triangle me-1"></i><strong>This field and the
+                <code>APPLE_TEAM_ID</code> GitHub secret are two independent copies that must be
+                identical — neither overrides the other.</strong> They are read by <em>different</em>
+                systems: the GitHub secret signs the app <strong>at build time</strong> (baked into
+                the <code>.ipa</code> via the Apple deploy pipeline), while this field is what the
+                server publishes <strong>at runtime</strong> in the AASA file (PHP cannot read GitHub
+                secrets, and the web deploy never injects this value). If the two differ, the AASA
+                advertises a Team ID the installed app was <em>not</em> signed with, so Universal
+                Links silently fail (links open in Safari instead of the app). Paste the same value
+                in both places.
             </p>
             <form method="post" class="row g-3 align-items-end mb-4">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
@@ -847,11 +902,17 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 canonical value on save. Leave a field blank to clear it (falls back to the PWA install
                 prompt, or to the code-level default if one is set).
             </p>
-            <form method="post" class="row g-3 align-items-end">
+            <!-- Top-aligned grid: labels/inputs line up across all three columns
+                 regardless of differing help-text length (the previous
+                 `align-items-end` bottom-aligned the columns, producing a ragged
+                 staircase because the Apple help text is 3 lines vs 1 for the
+                 others). Full-width stacked below lg, 3-across from lg where the
+                 long store-URL placeholders have room to breathe. (#1462) -->
+            <form method="post" class="row g-3">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
                 <input type="hidden" name="action" value="save_native_apps">
 
-                <div class="col-md-4">
+                <div class="col-12 col-lg-4">
                     <label for="native_app_ios" class="form-label">
                         <i class="bi bi-apple me-1"></i>Apple App Store
                     </label>
@@ -864,7 +925,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     </div>
                 </div>
 
-                <div class="col-md-4">
+                <div class="col-12 col-lg-4">
                     <label for="native_app_android" class="form-label">
                         <i class="bi bi-google-play me-1"></i>Google Play
                     </label>
@@ -874,7 +935,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                     <div class="form-text">Android package name, or the full Play Store URL.</div>
                 </div>
 
-                <div class="col-md-4">
+                <div class="col-12 col-lg-4">
                     <label for="native_app_amazon" class="form-label">
                         <i class="bi bi-amazon me-1"></i>Amazon Appstore
                     </label>

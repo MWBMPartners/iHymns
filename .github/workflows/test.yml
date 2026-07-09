@@ -281,6 +281,16 @@ jobs:
           echo "Running content-gating no-op + signing-dormancy test..."
           php tests/php/test-gating-noop.php
 
+      - name: Secret encryption-at-rest engine (#1466)
+        run: |
+          echo "Running secret-crypto round-trip + fail-safe test..."
+          php tests/php/test-secret-crypto.php
+
+      - name: Secret encryption admin layer (#1466)
+        run: |
+          echo "Running secret-crypto-admin DB-free surface test..."
+          php tests/php/test-secret-crypto-admin.php
+
       - name: OpenLyrics importer enrichment (#1130)
         run: |
           echo "Running OpenLyrics importer enrichment test..."

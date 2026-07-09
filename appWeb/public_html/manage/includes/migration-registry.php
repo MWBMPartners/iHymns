@@ -2482,4 +2482,46 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblAppAnalyticsEvents'),
     ],
+
+    /* ---- #1466 P3 — the gated encrypt-in-place migration (DATA REWRITE, manual + gated) ----
+       Encrypts the 8 flagged tblAppSettings secret values (SMTP/API keys, SIWA .p8) in place
+       under the master key and flips secret_encryption_active=1. NOT destructive (readers
+       decrypt transparently; reversible while the key exists) but still one-shot + manual +
+       confirm=1-gated, mirroring the #1235 P4/C6 drop's Stage-0 model — running it before the
+       P1 decrypt-capable readers are live on ALL 3 docroots would strand a lagging docroot with
+       ciphertext it can't decrypt (the prod-stale hazard .claude/secret-encryption-strategy.md
+       §7 exists to prevent). The real safety is in the script: Stage 0 REFUSES unless confirm=1
+       + a master key is loaded + the cross-docroot sentinel round-trips green (§8). */
+    'secret-encrypt-inplace' => [
+        'script' => 'migrate-secret-encrypt-inplace.php',
+        /* #1466 P3 — GATED, not destructive: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and from the pending counter, and its single
+           run requires confirm=1 (like drop-legacy / the C6 JSON-column drop). Without this,
+           a routine Apply-all could re-wrap plaintext secrets before every docroot can
+           decrypt them. setup-database.php honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '🔐 Encrypt secrets at rest — ENCRYPT-IN-PLACE (#1466)',
+            'body'   => 'One-shot: encrypts the 8 secret <code>tblAppSettings</code> values'
+                      . ' (SMTP/API keys, SIWA <code>.p8</code>) under the master key and flips'
+                      . ' <code>secret_encryption_active=1</code>. REFUSES to run unless a master'
+                      . ' key is loaded AND the cross-docroot sentinel round-trips GREEN on this'
+                      . ' docroot. Run ONLY after the P1 readers + the key are live on ALL 3'
+                      . ' docroots with identical fingerprints (strategy §7/§8). Non-destructive'
+                      . ' (readers decrypt transparently); reversible only while the key exists.',
+            'button' => 'Encrypt secrets at rest (gated)',
+        ],
+        /* PENDING (true) until the cutover flag is set. A bound read of the
+           secret_encryption_active row — never a hardcoded static-true (CI's
+           test-migration-registry.php bans that pattern). */
+        'probe' => static function (\mysqli $db): bool {
+            try {
+                $stmt = $db->prepare("SELECT SettingValue FROM tblAppSettings WHERE SettingKey = 'secret_encryption_active' LIMIT 1");
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                return !($row && (string)$row[0] === '1');
+            } catch (\Throwable $_e) { return true; }
+        },
+    ],
 ];
