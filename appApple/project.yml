@@ -62,6 +62,17 @@ targets:
     # for the full audit backing its declarations.
     sources:
       - path: Apps/iHymns/Sources
+        # Never ship developer docs / stray READMEs inside the .app. Developer
+        # documentation lives in `appApple/dev-docs/` (a sibling of `Apps/`,
+        # OUTSIDE every target's sources path, so it is not bundled at all).
+        # This glob is belt-and-suspenders: XcodeGen auto-classifies any
+        # non-source file inside a `sources:` path by extension (that's how
+        # `.xcprivacy` becomes a bundle resource), so a Markdown file
+        # accidentally dropped into a Sources folder could otherwise be copied
+        # into the app. Applied to every target for the same reason.
+        # (#1466 follow-up — developer docs must not ship.)
+        excludes:
+          - "**/*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ihymns
@@ -163,6 +174,8 @@ targets:
     # (see that file's header for why).
     sources:
       - path: Apps/iHymnsTV/Sources
+        excludes:                 # dev docs / stray .md never ship (see iHymns target)
+          - "**/*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ihymns
@@ -203,6 +216,8 @@ targets:
     # (see that file's header for why).
     sources:
       - path: Apps/iHymnsWatch/Sources
+        excludes:                 # dev docs / stray .md never ship (see iHymns target)
+          - "**/*.md"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.ihymns.watchkitapp
@@ -251,6 +266,8 @@ targets:
     # the host app's. Currently EMPTY (see that file's header for why).
     sources:
       - path: Apps/iHymnsWidgets/Sources
+        excludes:                 # dev docs / stray .md never ship (see iHymns target)
+          - "**/*.md"
     info:
       path: Apps/iHymnsWidgets/Generated/Info.plist
       properties:
