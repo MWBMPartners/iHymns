@@ -236,10 +236,64 @@ $appUrl = $app["Application"]["Website"]["URL"];
         </div>
     </div>
 
+    <!-- Governing Law & Jurisdiction -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">11. Governing Law &amp; Jurisdiction</h2>
+            <p>
+                These Terms of Use, and any dispute or claim arising out of or in connection
+                with them or their subject matter (including non-contractual disputes or claims),
+                shall be governed by and construed in accordance with the laws of
+                <strong>England and Wales</strong>. Each party irrevocably agrees that the courts
+                of England and Wales shall have exclusive jurisdiction to settle any dispute or
+                claim arising out of or in connection with these Terms.
+            </p>
+        </div>
+    </div>
+
+    <!-- Account Suspension & Termination -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">12. Account Suspension &amp; Termination</h2>
+            <p>
+                We may suspend or terminate your access to <?= htmlspecialchars($appName) ?>,
+                in whole or in part, at any time and without prior notice, if we reasonably
+                believe you have breached these Terms of Use (including the Acceptable Use
+                provisions in Section 4), engaged in fraudulent, abusive, or unlawful conduct,
+                or where suspension or termination is necessary to protect the security or
+                integrity of the service or other users. Where practicable, we will give you
+                notice of suspension or termination and the reason for it.
+            </p>
+            <p>
+                You may stop using <?= htmlspecialchars($appName) ?>, and where you hold an
+                account, delete it at any time (see our
+                <a href="/privacy" data-navigate="privacy">Privacy Policy</a>). Sections of these
+                Terms that by their nature should survive termination — including Copyright &amp;
+                Intellectual Property, Availability &amp; Updates, Limitation of Liability,
+                Governing Law, and this Section — continue to apply after your access ends.
+            </p>
+        </div>
+    </div>
+
+    <!-- Age & Eligibility -->
+    <div class="card card-settings mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-3">13. Age &amp; Eligibility</h2>
+            <p>
+                <?= htmlspecialchars($appName) ?> is intended for use by individuals capable of
+                forming a binding contract under applicable law. If you are under the age of 13
+                (or the minimum age of digital consent in your jurisdiction, if higher), you may
+                only use <?= htmlspecialchars($appName) ?> with the involvement and consent of a
+                parent or guardian. By creating an account, you confirm that you meet this age
+                requirement and that the information you provide is accurate.
+            </p>
+        </div>
+    </div>
+
     <!-- Changes to Terms -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">11. Changes to These Terms</h2>
+            <h2 class="h6 mb-3">14. Changes to These Terms</h2>
             <p>
                 We may update these Terms of Use from time to time. Continued use of
                 <?= htmlspecialchars($appName) ?> after changes are posted constitutes
@@ -251,7 +305,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     <!-- Contact -->
     <div class="card card-settings mb-3">
         <div class="card-body">
-            <h2 class="h6 mb-3">12. Contact</h2>
+            <h2 class="h6 mb-3">15. Contact</h2>
             <p>
                 If you have questions about these Terms of Use, please visit
                 <a href="<?= htmlspecialchars($app["Application"]["Repo"]["Issues"]["URL"]) ?>"

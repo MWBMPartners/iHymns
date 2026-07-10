@@ -190,7 +190,11 @@ if (!empty(APP_CONFIG['analytics']['matomo_url'])) {
 
 $cspDirectives = [
     "default-src 'self'",
-    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com{$cspMatomoUrl}",
+    /* appleid.cdn-apple.com serves the "Sign in with Apple JS" SDK for web SIWA (#1470 W2,
+       #1484). The popup is a window.open to appleid.apple.com (not an iframe → no frame-src),
+       and the token exchange is server-side (no connect-src needed). Harmless while web SIWA
+       is dormant; required the moment an admin enables it. */
+    "script-src 'self' 'nonce-{$cspNonce}' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com https://www.googletagmanager.com https://plausible.io https://www.clarity.ms https://cdn.usefathom.com https://appleid.cdn-apple.com{$cspMatomoUrl}",
     "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",
     "img-src 'self' data: https:",
     "font-src 'self' https://cdn.jsdelivr.net https://cdnjs.cloudflare.com",

@@ -56,7 +56,28 @@ Every step below is doable by a **web-only operator** (no shell/SSH on the share
 7. **Later — key rotation.** Generate a new key (step 2). Add it as a **second** keyid (e.g. `k2`) alongside `k1` in `secrets_master_key.php` on **all 3** docroots, then set `'active' => 'k2'` on all 3. Confirm every docroot's panel shows the new keyid present with a matching fingerprint. **Only then** use **Rotate / re-encrypt** on the panel — re-enter your password (re-auth) and type `ROTATE` to confirm — which re-wraps every secret under the new active keyid (audit-logged by key name + actor + timestamp, never values). Finally, remove the retired `k1` entry from all 3 files.
 8. **(Independent, P4) Opcache-bust key hardening.** Optionally replace each docroot's `appWeb/.auth/opcache_bust_key.php` plaintext value with a one-way hash: `<?php return 'sha256:' . hash('sha256', '<the-plaintext-key>');`. `opcache-bust.php` now accepts both the `sha256:` hashed form and legacy plaintext. The CI deploy sender is unchanged — it still sends the raw key from the `OPCACHE_BUST_KEY` GitHub secret; only the stored comparison value on each docroot changes.
 
-> **Note:** `SECRETS_MASTER_KEY`, like every other deploy secret, is set via the GitHub **web UI** (Settings → Secrets and variables → Actions), never via `gh secret set` — the plaintext key should never pass through a local shell or clipboard longer than necessary.
+> **Note:** `SECRETS_MASTER_KEY`, like every other deploy secret, is set via the GitHub **web UI** (Settings → Secrets and variables → Actions), never via `gh secret set` — the plaintext key should never pass through a local shell or clipboard longer than necessary. Since it is already set, steps 1–3 are handled by the deploy seed on the next `appWeb/**` deploy — you are at **step 4 (verify parity) → step 5 (run the migration)**.
+
+#### 🍎 Operator runbook — turning on Sign in with Apple for the WEB (#1470 W0)
+
+Web SIWA is built + merged but **DORMANT**. Activating it is a **MIX** of Apple-portal clicks, ONE database migration, and TWO settings — **NOT all migrations**. Do them in order. (The *native* app's SIWA is separate — see `appApple/dev-docs/Provisioning-Runbook.md`.)
+
+1. **[Apple Developer portal — NOT a migration] Create a Services ID (this is decision D1).** developer.apple.com → Certificates, Identifiers & Profiles → **Identifiers → ➕ → Services IDs** → identifier e.g. `app.ihymns.web`; tick **Sign in with Apple** → **Configure** → **Primary App ID** = `app.ihymns`. ⚠️ **It MUST be under the SAME Apple Developer Team as `app.ihymns`** (that's what "D1" means) — a different team gives a different Apple `sub`, breaking account reconciliation across native/web (and later SIGNula). There is **no migration or DB step** that creates this; only Apple's portal can.
+2. **[Apple portal] Register the return URL(s).** Same Services ID → Configure → **Website URLs** → add each docroot's domain + the return URL `https://<host>/` (the origin root) for every docroot offering web SIWA (`ihymns.app`, `dev.ihymns.app`, `beta.ihymns.app`). The web flow is popup mode but the return URL must still be registered and equal `APPLE_SIWA_WEB_RETURN_PATH` (`'/'`).
+3. **[/manage/setup-database migration — ONCE, shared DB] Ensure the auth-provider tables exist.** Run the card **"Run Auth Providers Migration"** (`migrate-user-auth-providers.php` → `tblUserAuthProviders` + `tblAuthNonces`) **if it isn't already green** — it ships with the #1402 native backend, so it is likely already applied. This is the *only* migration web SIWA needs.
+4. **[/manage/configuration setting — NOT a migration] Save the Services ID + enable a channel.** `/manage/configuration` → **Apple native app** card → **Sign in with Apple — Web** section: paste the Services ID from step 1 into **`apple_siwa_services_id`** (must NOT equal `app.ihymns`), and set **`apple_web_login_enabled`** to the channel(s) you're rolling out — start `alpha`, widen `alpha,beta`, then `all`. These are `tblAppSettings` writes (shared DB), **not** schema migrations. Web SIWA stays dormant until BOTH are set for the current channel.
+5. **[Code — already done]** `appleid.cdn-apple.com` is in `index.php`'s CSP `script-src` (#1484) so Apple's JS SDK loads once enabled — no action.
+6. **[Verify]** On a docroot in the enabled channel, the auth modal shows a **Sign in with Apple** button; sign-in creates/links an account; Link/Unlink live in Settings → Account & Profile → **Connected accounts**.
+
+> **Why it's "not all migrations":** the Services ID (steps 1–2) is an Apple-portal identity artifact PHP cannot create; the enable/config (step 4) is a settings write, not a schema change. Only step 3 is an actual migration — and it's usually already done.
+
+#### 🎚 Operator runbook — turning on admin-configurable feature gating (#1481)
+
+Registry + enforcement are built + **DORMANT**. To use it:
+
+1. **[/manage/setup-database migration — ONCE, shared DB]** Run the card **"Admin-configurable feature gating (#1481 P1)"** (`migrate-add-gating-registry.php` → `tblGatingCapabilities` + `tblGatingRules`).
+2. **[/manage/feature-gating — Global Admin]** Define a capability (key `Can…`, label, default), then optionally add an enforcement **rule** mapping it to a behaviour kind (`strip_payload_keys` / `drop_media_kinds`). Assign per tier on `/manage/tiers` (the matrix auto-grows a column). Rules affect the `song_detail`/`song_data`/`random` JSON payloads (a coverage note is shown in-page).
+3. **[/manage/configuration settings]** In the **Feature gating** card, enable `content_gating_enabled` (the master content-gating switch) **and** `feature_gating_rules_enabled` (admin rules). Rules run only when BOTH are on — a byte-identical no-op until then.
 
 ### 🌐 Web/PWA — SFTP Deployment
 
