@@ -2786,7 +2786,26 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AuthResponse"
+                allOf:
+                  - $ref: "#/components/schemas/AuthResponse"
+                  - type: object
+                    properties:
+                      flow:
+                        type: string
+                        enum: [matched, linked, created]
+                        description: |
+                          How this sign-in resolved to an account
+                          (#1479 W2): `matched` — an already-linked
+                          Apple identity; `linked` — attached to the
+                          CURRENT bearer's account (`link: true`) or
+                          auto-linked to an existing account by verified
+                          email; `created` — a brand-new account.
+                          Appended to the OUTER response only —
+                          `AuthResponse`'s own `{token, user}` shape stays
+                          pinned (native's Swift `Codable` decode ignores
+                          unknown top-level keys). Never sensitive: the
+                          caller already holds the Apple identity token
+                          that produced this outcome.
         "400":
           description: Missing/malformed identityToken or nonce, or an invalid platform value
           content:
@@ -2821,6 +2840,169 @@ paths:
                 $ref: "#/components/schemas/Error"
         "503":
           description: Sign in with Apple not yet migrated on this environment, or Apple's key set is temporarily unreachable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_provider_unlink:
+    post:
+      operationId: authProviderUnlink
+      tags: [Authentication]
+      summary: Unlink an external-identity provider (#1479 W3)
+      description: |
+        Provider-generic unlink for the CALLER'S OWN account. Today's
+        allow-list is `['apple']` — `tblUserAuthProviders` is already
+        provider-generic (#1402), so a future provider grows the
+        allow-list, never the schema.
+
+        Requires a bearer/cookie session PLUS the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29): either the custom
+        `X-Requested-With: XMLHttpRequest` header (a cross-origin caller
+        cannot set it without a CORS preflight this server never grants),
+        or a still-valid session `csrf_token` in the body.
+
+        **Lockout guard** — refused with `409` unless a SURVIVING sign-in
+        method remains once this provider's row is removed: the
+        account's password hash is set; OR its email is verified AND
+        email-login is operational AND that email is NOT an Apple
+        private-relay alias (`@privaterelay.appleid.com` — unlinking
+        Apple deactivates that relay, so mail sent to it would bounce
+        forever); OR another, different provider is still linked.
+        Evaluated under `SELECT ... FOR UPDATE` on the account's own
+        provider rows so two concurrent unlinks (e.g. two open tabs) can
+        never each treat the OTHER as the surviving method.
+
+        On success, best-effort revokes the grant with Apple (never
+        blocks the already-committed unlink — see `apple_revoke` in the
+        audit log) and returns the SAME `providers` shape
+        `auth_providers_list` emits, so the Settings "Connected
+        accounts" card can redraw itself from this response alone. Does
+        NOT invalidate bearer tokens (unlink ≠ logout).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_provider_unlink]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider:
+                  type: string
+                  enum: [apple]
+                  description: The linked provider to remove.
+                csrf_token:
+                  type: string
+                  description: >-
+                    Optional same-origin CSRF token. Not required when
+                    the request already carries the same-origin
+                    `X-Requested-With` header (see description).
+      responses:
+        "200":
+          description: Unlinked — returns the caller's remaining linked providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LinkedProvider"
+        "400":
+          description: provider missing, or not one of the allow-listed values
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated, or the account row vanished mid-request (a concurrent account_delete won the race)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: That provider is not linked to the caller's account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: >-
+            Lockout guard — unlinking this provider would leave the
+            account with no way to sign in (no password, no operational
+            verified non-private-relay email, no other linked provider).
+            Set a password or add a verified email address first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error: Unlinking this provider would leave your account with no way to sign in. Set a password or add a verified email address first.
+        "503":
+          description: Linked accounts are not yet available on this environment (tblUserAuthProviders not migrated)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api.php?action=auth_providers_list:
+    get:
+      operationId: authProvidersList
+      tags: [Authentication]
+      summary: List the caller's linked external-identity providers (#1479 W3)
+      description: |
+        Feeds the Settings "Connected accounts" card. Returns ONLY
+        `provider` / a masked `email_masked` / `is_private_relay` /
+        `linked_at` for each linked row — NEVER the Apple `sub`
+        (Subject) or `RefreshToken` (see `_authProviderListForUser()`'s
+        docblock). On an environment where the #1402
+        `tblUserAuthProviders` migration hasn't run yet, returns an
+        empty list rather than an error — a read-only lookup shouldn't
+        surface an alarming failure state.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [auth_providers_list]
+      responses:
+        "200":
+          description: The caller's linked providers (empty array if none, or if not yet migrated)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/LinkedProvider"
+        "401":
+          description: Not authenticated
           content:
             application/json:
               schema:
@@ -3444,6 +3626,20 @@ paths:
                       always uses `auth_apple` with `platform: native`
                       (or the omitted default).
                     example: false
+                  appleSiwaServicesId:
+                    type: string
+                    nullable: true
+                    description: >-
+                      The Apple Services ID for the web
+                      `AppleID.auth.init({clientId: ...})` call (#1479
+                      W2). Only emitted (non-null) when
+                      `appleWebLoginEnabled` is true — null otherwise, so
+                      the front end never tries a dangling client id
+                      against a disabled/misconfigured deploy. Not a
+                      secret: a Services ID is public in the same way the
+                      native app's bundle id (used as the SIWA client id)
+                      is.
+                    example: app.ihymns.web
 
   /api.php?action=ccli_validate:
     post:
@@ -10887,6 +11083,35 @@ components:
           example: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
         user:
           $ref: "#/components/schemas/User"
+
+    LinkedProvider:
+      type: object
+      description: >-
+        One external-identity provider linked to the caller's account
+        (#1479 W3) — returned by `auth_providers_list` and
+        `auth_provider_unlink`. NEVER exposes the Apple `sub` (Subject)
+        or `RefreshToken` (see `_authProviderListForUser()`'s docblock).
+      properties:
+        provider:
+          type: string
+          example: apple
+        email_masked:
+          type: string
+          description: >-
+            Masked form of the email captured at link time (e.g.
+            `a****@e****.com`); empty string when no email was
+            captured.
+          example: a****@e****.com
+        is_private_relay:
+          type: boolean
+          description: >-
+            True when `email_masked` is derived from an Apple
+            private-relay alias (`@privaterelay.appleid.com`).
+        linked_at:
+          type: string
+          format: date-time
+          nullable: true
+          example: "2026-07-09T12:34:56+00:00"
 
     # -------------------------------------------------------------------------
     # Access & group models

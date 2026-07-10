@@ -380,6 +380,20 @@ jobs:
           php tests/php/test-auth-apple-platform.php
 
       # -----------------------------------------------------------------------
+      # Step 5j-4: Linked-account UNLINK — lockout-guard truth table +
+      # masked-list shape (#1479 W3)
+      # PURE-core tests: _authProviderUnlinkSurvives()'s full survivor truth
+      # table (incl. the private-relay-email stranding case), the email-mask
+      # shape, and structural guards on both new case bodies (POST-only,
+      # validateCsrfRequest(), FOR UPDATE row locking, allow-listed provider,
+      # never selecting Subject/RefreshToken). No DB, no network.
+      # -----------------------------------------------------------------------
+      - name: Linked-account unlink — lockout guard + list masking (#1479)
+        run: |
+          echo "Running auth_provider_unlink lockout-guard + list-shape test..."
+          php tests/php/test-auth-provider-unlink.php
+
+      # -----------------------------------------------------------------------
       # Step 5k: account_delete cascade completeness guard (#1403)
       # Asserts every FK referencing tblUsers(Id) is CASCADE or SET NULL
       # (never RESTRICT/NO ACTION, which would throw mid-delete), and that
@@ -591,6 +605,9 @@ jobs:
 
       - name: auth_apple platform + single-audience guard (#1470)
         run: php tests/php/test-auth-apple-platform.php
+
+      - name: Linked-account unlink — lockout guard + list masking (#1479)
+        run: php tests/php/test-auth-provider-unlink.php
 
       - name: account_delete FK cascade coverage (#1403)
         run: php tests/php/test-account-delete-fk-coverage.php

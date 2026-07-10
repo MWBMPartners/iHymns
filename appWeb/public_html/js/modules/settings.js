@@ -22,6 +22,7 @@ import {
     STORAGE_SEARCH_HISTORY,
     STORAGE_CVD_MODE,
 } from '../constants.js';
+import { escapeHtml } from '../utils/html.js';
 
 /**
  * Strict whitelist of localStorage keys that sync to the user's
@@ -272,6 +273,127 @@ export class Settings {
             const svc = (user?.avatar_service ?? '').toString();
             const radio = document.querySelector(`#avatar-form input[name="avatar_service"][value="${CSS.escape(svc)}"]`);
             if (radio) radio.checked = true;
+
+            /* Connected accounts (#1479 W3) — fire-and-forget; the card
+               self-manages its own visibility/content once app_status +
+               auth_providers_list land, so a slow network never blocks the
+               rest of this (synchronous) refresh. */
+            this._renderConnectedAccounts();
+        } else {
+            document.getElementById('auth-connected-accounts')?.classList.add('d-none');
+        }
+    }
+
+    /* =====================================================================
+     * CONNECTED ACCOUNTS (#1479 W3) — linked external identity providers
+     * ===================================================================== */
+
+    /**
+     * Populate (or hide) the "Connected accounts" card. DORMANT by default:
+     * hides the whole card unless app_status.appleWebLoginEnabled is true
+     * AND a Services ID is configured — the SAME gate the auth modal's
+     * Apple button uses (js/modules/user-auth.js showAuthModal()).
+     */
+    async _renderConnectedAccounts() {
+        const section = document.getElementById('auth-connected-accounts');
+        if (!section) return;
+
+        const auth = this.app.userAuth;
+        if (!auth?.isLoggedIn()) {
+            section.classList.add('d-none');
+            return;
+        }
+
+        const status = await auth._ensureAppStatus?.();
+        const appleEnabled = status?.appleWebLoginEnabled === true && !!status?.appleSiwaServicesId;
+        section.classList.toggle('d-none', !appleEnabled);
+        if (!appleEnabled) return;
+
+        const providers = await auth.listLinkedProviders();
+        this._paintConnectedAccountsList(providers);
+    }
+
+    /**
+     * Render the linked-provider list from `auth_providers_list`'s response.
+     * Every server-supplied string (masked email, linked date) is passed
+     * through escapeHtml() before reaching innerHTML — never trust the
+     * network response shape, even though this endpoint is same-origin and
+     * already masks the value server-side.
+     *
+     * @param {Array<{provider:string, email_masked:string, is_private_relay:boolean, linked_at:?string}>} providers
+     */
+    _paintConnectedAccountsList(providers) {
+        const list = document.getElementById('auth-connected-accounts-list');
+        const linkBtn = document.getElementById('btn-auth-apple-link');
+        if (!list) return;
+
+        const apple = (providers || []).find((p) => p?.provider === 'apple');
+
+        if (!apple) {
+            list.innerHTML = '<p class="text-muted small mb-0">No connected accounts yet.</p>';
+            linkBtn?.classList.remove('d-none');
+            return;
+        }
+
+        linkBtn?.classList.add('d-none');
+
+        let linkedDateText = '';
+        if (apple.linked_at) {
+            const d = new Date(apple.linked_at);
+            if (!Number.isNaN(d.getTime())) linkedDateText = d.toLocaleDateString();
+        }
+        const relayBadge = apple.is_private_relay
+            ? ' <span class="badge bg-secondary-subtle text-secondary-emphasis">Private Relay</span>'
+            : '';
+        const detailText = escapeHtml(apple.email_masked || '')
+            + (linkedDateText ? ' &middot; linked ' + escapeHtml(linkedDateText) : '');
+
+        list.innerHTML = `
+            <div class="d-flex align-items-center justify-content-between border rounded p-2 mb-2">
+                <div>
+                    <i class="fa-brands fa-apple me-1" aria-hidden="true"></i>
+                    <strong>Apple</strong>${relayBadge}
+                    <small class="text-muted d-block">${detailText}</small>
+                </div>
+                <button type="button" class="btn btn-outline-danger btn-sm" id="btn-auth-apple-unlink">
+                    Unlink
+                </button>
+            </div>`;
+
+        list.querySelector('#btn-auth-apple-unlink')?.addEventListener('click', () => this._handleUnlinkProvider('apple'));
+    }
+
+    /**
+     * Confirm-then-unlink a provider. The server holds the authoritative,
+     * race-safe lockout decision (`SELECT ... FOR UPDATE`,
+     * api.php `case 'auth_provider_unlink'`) — this method only surfaces
+     * whatever it returns (incl. a 409 "would leave you with no way to sign
+     * in" refusal).
+     *
+     * @param {string} provider
+     */
+    async _handleUnlinkProvider(provider) {
+        const label = provider === 'apple' ? 'Apple' : provider;
+        if (!window.confirm(
+            `Unlink ${label} from your account? If this is your only sign-in method, the server will refuse.`
+        )) {
+            return;
+        }
+
+        const msg = document.getElementById('auth-connected-accounts-msg');
+        const show = (text, kind) => {
+            if (!msg) return;
+            msg.className = 'alert py-2 small alert-' + kind;
+            msg.textContent = text;
+            msg.classList.remove('d-none');
+        };
+
+        const result = await this.app.userAuth.unlinkProvider(provider);
+        if (result.success) {
+            show(`${label} unlinked.`, 'success');
+            this._paintConnectedAccountsList(result.providers || []);
+        } else {
+            show(result.error || 'Could not unlink account.', 'danger');
         }
     }
 
@@ -1599,6 +1721,52 @@ export class Settings {
                     passwordForm.reset();
                 } else {
                     show(result.error || 'Could not change password.', 'danger');
+                }
+            });
+        }
+
+        /* Link Apple ID (#1479 W3) — attaches Apple to the CURRENTLY
+           signed-in account via the SAME popup flow the auth modal uses,
+           with link:true so auth_apple's server-side link mode fires
+           instead of a fresh sign-in. dataset.bound guard (like the forms
+           above, unlike the plain buttons above) because a double-bound
+           handler here would pop TWO Apple popups on one click. */
+        const appleLinkBtn = document.getElementById('btn-auth-apple-link');
+        if (appleLinkBtn && !appleLinkBtn.dataset.bound) {
+            appleLinkBtn.dataset.bound = '1';
+            appleLinkBtn.addEventListener('click', async () => {
+                const msg = document.getElementById('auth-connected-accounts-msg');
+                const show = (text, kind) => {
+                    if (!msg) return;
+                    msg.className = 'alert py-2 small alert-' + kind;
+                    msg.textContent = text;
+                    msg.classList.remove('d-none');
+                };
+                appleLinkBtn.disabled = true;
+                const result = await auth.signInWithApple({ link: true });
+                appleLinkBtn.disabled = false;
+                if (result.success) {
+                    /* `flow` distinguishes a genuine new link ('linked') from
+                       the case where this Apple ID was ALREADY linked to a
+                       DIFFERENT iHymns account ('matched') — Apple `sub` is
+                       always the authoritative identity (api.php
+                       _authAppleMapAccountTxn's (a) branch runs before the
+                       link=1 path even when a bearer is present), so that
+                       scenario silently switches the local session to the
+                       OTHER account rather than attaching Apple to this one.
+                       Tell the user what actually happened rather than
+                       claiming a link that didn't occur. */
+                    if (result.flow === 'matched') {
+                        show(
+                            'This Apple ID was already linked to a different iHymns account — you are now signed in as that account.',
+                            'info'
+                        );
+                    } else {
+                        show('Apple account linked.', 'success');
+                    }
+                    this._renderConnectedAccounts();
+                } else {
+                    show(result.error || 'Could not link Apple account.', 'danger');
                 }
             });
         }
