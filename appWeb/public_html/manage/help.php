@@ -246,7 +246,7 @@ $sections = [
     [
         'id'    => 'configuration',
         'icon'  => 'bi-phone',
-        'title' => 'Native app stores',
+        'title' => 'Native app stores & Apple Sign-In',
         'group' => 'Operations',
     ],
     [
@@ -1082,6 +1082,12 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Username is set on creation and is immutable. Display name can be changed any time.
                     </div>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> Users can also delete <em>their own</em> account
+                        self-service from the native Apple app (#1477, re-auth required), separately
+                        from the admin-initiated Delete above. A self-service delete also revokes
+                        any linked Sign in with Apple grant and clears their API tokens.
+                    </div>
                 </section>
 
                 <section id="groups" class="help-section card-admin mb-4">
@@ -1439,7 +1445,7 @@ foreach ($sections as $s) {
                          in-progress and unpublished, so this card is
                          commonly left blank. */ ?>
                 <section id="configuration" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-phone me-2"></i>Native app stores</h2>
+                    <h2><i class="bi bi-phone me-2"></i>Native app stores &amp; Apple Sign-In</h2>
                     <p class="role-badges">
                         <span class="badge bg-danger">global_admin</span>
                     </p>
@@ -1465,6 +1471,19 @@ foreach ($sections as $s) {
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> it's safe &mdash; and normal &mdash; to leave every field blank until an app is actually live on that store. Blank falls back to the ordinary PWA install prompt; nothing breaks and no banner claims an app exists before it does.
                     </div>
+                    <h3 class="h6">Apple native app &amp; Sign in with Apple credentials (#1401/#1402/#1470)</h3>
+                    <p>
+                        The same <a href="/manage/configuration">Configuration</a> page has an
+                        &ldquo;Apple native app&rdquo; card, below the Feature Gating card, holding the
+                        Apple Developer <strong>Team ID</strong> (for Universal Links), the
+                        <strong>Sign in with Apple</strong> key (Key ID + <code>.p8</code> private key
+                        &mdash; only needed for the refresh-token exchange and Apple-side revoke on
+                        account deletion; the native app's sign-in itself works before these are set),
+                        and the separate <strong>Services ID</strong> + channel allow-list that turns on
+                        Sign in with Apple for the <em>web</em> app. Every field on this card is optional
+                        and dormant until filled in &mdash; each has its own inline guidance and a
+                        set/not-set badge.
+                    </p>
                 </section>
 
                 <section id="native-api" class="help-section card-admin mb-4">
