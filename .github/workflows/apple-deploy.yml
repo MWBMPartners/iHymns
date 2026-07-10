@@ -15,11 +15,33 @@
 # separate certificates repo). ASC upload auth is an App Store Connect API
 # key built from `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_API_KEY`.
 #
+# VARIABLES:
+#   vars.APPLE_DEPLOY_ENABLED — kill-switch (load-bearing; mirrors
+#   deploy.yml's `vars.SFTP_ENABLED` idiom exactly). Must be the literal
+#   string 'true' to let the "Build + upload (Fastlane)" job run fastlane
+#   at all. Unset (the default — nothing in this repo sets it) means the
+#   job is SKIPPED entirely on every branch: no archive, no TestFlight
+#   upload, no App Store upload. This matters because an unguarded
+#   `alpha`/`beta`/`main` push would otherwise upload to TestFlight-internal,
+#   TestFlight-external, or the App Store respectively as a SIDE EFFECT of
+#   an unrelated backend promotion once the SDK-install step below makes
+#   the build actually succeed on the runner. The owner sets this via the
+#   GitHub web UI — Settings → Secrets and variables → Actions → Variables
+#   tab → New repository variable — only once ready for real
+#   TestFlight/App Store traffic; this file never sets it itself. The
+#   always-on `guard` job below posts a `::notice::` stating whether
+#   uploads are enabled/disabled on every single run, so a skipped upload
+#   is never mistaken for a completed one just because the workflow's
+#   overall run still shows green (the `guard` job succeeding is enough to
+#   make the run conclusion "success" even while `deploy` is skipped).
+#
 # NOTE (expected, not a bug): this workflow stays DORMANT — it has nothing
 # to build — until the `feat/apple-universal` branch's work actually reaches
 # `alpha` / `beta` / `main` (this native-app branch carries NO PRs yet, per
 # strategy §0/§3.4). It lands now, in Phase 0, alongside the Fastlane lanes
 # it calls, so the pipeline exists and is reviewable before it ever fires.
+# It is ALSO gated OFF by `APPLE_DEPLOY_ENABLED` above regardless of branch
+# reach, until the owner deliberately turns uploads on.
 name: Apple Deploy
 
 on:
@@ -27,6 +49,13 @@ on:
     branches: [alpha, beta, main]
     paths:
       - 'appApple/**'
+      # Doc-only commits must never fire a signed build (red-X noise on
+      # every doc push) — negations MUST come after the positive
+      # 'appApple/**' include in this list; GitHub Actions path filters
+      # apply patterns in order and a negation before its positive would
+      # have no effect.
+      - '!appApple/dev-docs/**'
+      - '!appApple/**/*.md'
       - '.github/workflows/apple-deploy.yml'
   workflow_dispatch:
     inputs:
@@ -50,10 +79,37 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ===========================================================================
+  # GUARD — always runs, never fails the workflow. Posts a loud ::notice::
+  # stating whether Apple Deploy uploads are enabled so a SKIPPED upload
+  # (because APPLE_DEPLOY_ENABLED isn't 'true') can never be mistaken for a
+  # completed one — the overall workflow run still shows green even when
+  # `deploy` below is skipped, because this job succeeding is enough on its
+  # own to make the run conclusion "success".
+  # ===========================================================================
+  guard:
+    name: Deploy status guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report Apple Deploy kill-switch status
+        run: |
+          if [ "${{ vars.APPLE_DEPLOY_ENABLED }}" = "true" ]; then
+            echo "::notice::Apple Deploy uploads are ENABLED (repo Variable APPLE_DEPLOY_ENABLED=true) — the Build + upload (Fastlane) job WILL run for this push/dispatch and may upload to TestFlight or the App Store."
+          else
+            echo "::notice::Apple Deploy uploads are DISABLED — set repo Variable APPLE_DEPLOY_ENABLED=true (Settings -> Secrets and variables -> Actions -> Variables) to enable TestFlight/App Store uploads. The Build + upload (Fastlane) job will be SKIPPED for this push/dispatch — no build, no upload."
+          fi
+
   deploy:
     name: Build + upload (Fastlane)
     runs-on: macos-26
     timeout-minutes: 60
+    # Kill-switch (load-bearing — see the header comment's VARIABLES
+    # section). Unset/anything other than the literal string 'true' means
+    # this job is SKIPPED — no fastlane invocation, no build, no upload —
+    # regardless of which of alpha/beta/main triggered the push. Mirrors
+    # deploy.yml's `if: vars.SFTP_ENABLED == 'true'` idiom exactly.
+    if: vars.APPLE_DEPLOY_ENABLED == 'true'
 
     steps:
       - name: Checkout code
@@ -65,6 +121,24 @@ jobs:
           # (#1395) — Liquid Glass APIs require the OS 26 SDKs.
           sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | head -1)"
           xcodebuild -version
+
+      # -- Install the platform runtimes this workflow actually archives --
+      # This job (unlike apple.yml's CI, which only builds a macOS
+      # destination) archives `generic/platform=iOS` (Fastfile's
+      # `archive_scheme`, embedding Watch/Widgets) and `iHymnsTV` (tvOS) —
+      # destinations whose SDKs are NOT preinstalled on the GitHub-hosted
+      # macos-26 runner ("iOS 26.0 is not installed"). watchOS/visionOS are
+      # included too: the Watch app embeds into the iOS archive and a
+      # visionOS destination is one of the `iHymns` target's
+      # `supportedDestinations` (project.yml), so all four keep this
+      # workflow resilient to the same missing-SDK failure across every
+      # destination it (or a near-future lane) might resolve.
+      - name: Install required platform SDKs
+        run: |
+          sudo xcodebuild -downloadPlatform iOS
+          sudo xcodebuild -downloadPlatform tvOS
+          sudo xcodebuild -downloadPlatform watchOS
+          sudo xcodebuild -downloadPlatform visionOS
 
       - name: Install tooling
         run: |

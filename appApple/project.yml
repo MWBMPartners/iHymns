@@ -96,6 +96,16 @@ targets:
         # macOS/visionOS destinations this same multiplatform target also
         # builds for — `UIBackgroundModes` is simply unused there.
         INFOPLIST_KEY_UIBackgroundModes: audio
+        # Export compliance (App Review §2.3.7 / ITSAppUsesNonExemptEncryption,
+        # #1400/#1474 §2.2.B.1) — the app only uses standard HTTPS/TLS
+        # (no proprietary or exempt-ineligible cryptography), so it's exempt
+        # from the annual U.S. export-compliance self-classification report.
+        # Without this key, App Store Connect asks the Export Compliance
+        # question on EVERY build and the build sits in "Missing Compliance"
+        # (undistributable to TestFlight testers or reviewers) until answered
+        # by hand each time — declaring it here answers the question at
+        # build time instead, for every upload from this target.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
     # #186 (Apple Phase 1, "Sharing & social") — claims Universal Links for
     # every host `DeepLinkRouter.allowedHosts` (`IHAppSupport`) resolves a
     # `DeepLink` from, so a tapped `https://ihymns.app/song/...`-shaped link
@@ -199,6 +209,13 @@ targets:
         # `SongMediaSection`/audio playback (still `PhaseZeroSkeletonView`
         # today — see `IHymnsTVApp.swift`).
         INFOPLIST_KEY_UIBackgroundModes: audio
+        # Export compliance — same declaration + rationale as the `iHymns`
+        # target above. `iHymnsTV` is archived AND uploaded independently
+        # (Fastfile's `tv_ipa` → its own `upload_to_testflight`/
+        # `upload_to_app_store(platform: "appletvos")` call), so it needs
+        # its own answer to the Export Compliance question, not just the
+        # iOS target's.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
     dependencies:
       - package: iHymnsKit
         products: [IHFeatures, IHDesign]

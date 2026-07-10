@@ -11,10 +11,18 @@ on:
     branches: [feat/apple-universal]
     paths:
       - 'appApple/**'
+      # Doc-only commits must not fire this CI build either — negations
+      # MUST come after the positive 'appApple/**' include (GitHub Actions
+      # path filters apply patterns in order; see apple-deploy.yml's own
+      # copy of this comment for the full rationale).
+      - '!appApple/dev-docs/**'
+      - '!appApple/**/*.md'
       - '.github/workflows/apple.yml'
   pull_request:
     paths:
       - 'appApple/**'
+      - '!appApple/dev-docs/**'
+      - '!appApple/**/*.md'
   workflow_dispatch:
 
 concurrency:
