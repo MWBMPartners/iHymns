@@ -82,15 +82,6 @@ extension AppRootViewModel {
     /// ELI5: "Log me out, and forget everything I favourited on this device
     /// — a different account might sign in next."
     ///
-    /// DETAILED: Clearing `favorites`/the on-disk favourite cache on
-    /// sign-out is a deliberate privacy choice (this file's header/
-    /// `OfflineStore.clearFavorites()`'s own doc comment): a shared device
-    /// where a second account signs in afterwards must never show the FIRST
-    /// account's favourites. `hasLoadedFavoritesFromCache` resets to
-    /// `false` too, so the NEXT `loadFavoritesIfNeeded()` call (the next
-    /// sign-in's `syncAfterSignIn()`) re-reads the now-empty cache rather
-    /// than silently no-op'ing on its stale "already loaded" guard.
-    ///
     /// - Throws: Whatever `SessionController.signOut()` throws — a genuine
     ///   revoke failure (`.offline`/`.maintenance`/`.server`/`.decoding`)
     ///   leaves the session (and therefore the local favourites cache)
@@ -98,13 +89,53 @@ extension AppRootViewModel {
     ///   server hasn't confirmed" contract.
     public func signOut() async throws {
         try await sessionController.signOut()
+        await resetLocalUserState()
+    }
+
+    /// Permanently deletes the signed-in account (#1477, App Review
+    /// §5.1.1(v)) — `AccountDeleteView`'s destructive, re-auth-gated flow.
+    /// On success, performs the EXACT SAME local teardown `signOut()` does
+    /// (`resetLocalUserState()` below) — a deleted account must leave no
+    /// more of a trace on this device than a signed-out one does.
+    ///
+    /// ELI5: "Prove it's you, then permanently delete your account — and
+    /// forget everything cached on this device, exactly like signing out."
+    ///
+    /// - Throws: Whatever `SessionController.deleteAccount(reauth:)` throws
+    ///   — `.unauthorized` (wrong/expired re-auth credential), `.rateLimited`
+    ///   (too many attempts), a `.server(status: 409, _)` (this account is
+    ///   the last Global Admin — transfer that role first), or a transient
+    ///   failure. `AccountDeleteView` maps each to specific copy via
+    ///   `APIError.accountDeleteUserFacingMessage`. Every one of these
+    ///   leaves local state UNTOUCHED (see that method's own doc comment),
+    ///   so `resetLocalUserState()` below only ever runs after a genuine
+    ///   200.
+    public func deleteAccount(reauth: AccountDeleteReauth) async throws {
+        try await sessionController.deleteAccount(reauth: reauth)
+        await resetLocalUserState()
+    }
+
+    /// Clears every piece of LOCAL, per-account state this device caches —
+    /// shared by `signOut()` and `deleteAccount(reauth:)` above, since both
+    /// need the IDENTICAL "a different (or no) account might use this
+    /// device next" teardown once the server has confirmed the account is
+    /// signed out / deleted.
+    ///
+    /// DETAILED: Clearing `favorites`/the on-disk favourite cache (and the
+    /// #181 setlists equivalent) is a deliberate privacy choice
+    /// (`OfflineStore.clearFavorites()`/`clearSetlists()`'s own doc
+    /// comments): a shared device where a second account signs in
+    /// afterwards must never show the FIRST account's data.
+    /// `hasLoadedFavoritesFromCache`/`hasLoadedSetlistsFromCache` reset to
+    /// `false` too, so the NEXT `loadFavoritesIfNeeded()`/
+    /// `loadSetlistsIfNeeded()` call (the next sign-in's `syncAfterSignIn()`)
+    /// re-reads the now-empty cache rather than silently no-op'ing on its
+    /// stale "already loaded" guard.
+    private func resetLocalUserState() async {
         currentUser = nil
         favorites = []
         hasLoadedFavoritesFromCache = false
         try? await offlineStore.clearFavorites()
-        // #181 setlists half — same "a shared device's next sign-in must
-        // never see the previous account's data" privacy reasoning as the
-        // favourites clear above.
         setlists = []
         hasLoadedSetlistsFromCache = false
         try? await offlineStore.clearSetlists()

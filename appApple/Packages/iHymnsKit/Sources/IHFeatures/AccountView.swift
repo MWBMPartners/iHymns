@@ -1,9 +1,10 @@
 // AccountView.swift
 // IHFeatures
 //
-// ELI5: The "who am I, and how do I sign out" screen. Signed in → shows
-// your name/username/role and a Sign Out button. Signed out → offers a
-// Sign In button that opens `LoginView`.
+// ELI5: The "who am I, and how do I sign out (or delete my account)" screen.
+// Signed in → shows your name/username/role, a Sign Out button, and — in
+// its own clearly-separated "Danger Zone" — a Delete Account button. Signed
+// out → offers a Sign In button that opens `LoginView`.
 //
 // DETAILED: Native login/account UI task's "An Account surface... show
 // signed-in identity + a Sign Out button... Signed-out state offers Sign
@@ -16,16 +17,25 @@
 // `AppRootViewModel+Auth.swift`'s `syncAfterSignIn()` (so it's already
 // populated the moment a sign-in completes, before the user has even
 // navigated here).
+//
+// #1477 UPDATE — in-app account deletion (App Review §5.1.1(v)) adds the
+// "Danger Zone" section below: a SEPARATE `Section` from "Sign Out" (a
+// destructive, IRREVERSIBLE action must never sit visually alongside a
+// harmless one) that presents `AccountDeleteView` — its own re-auth-gated
+// confirmation flow — as a sheet, exactly mirroring how `isPresentingLogin`
+// already presents `LoginView` below.
 import IHAPI
 import IHAuth
 import IHModels
 import SwiftUI
 
-/// The account surface: signed-in identity + sign out, or a sign-in prompt.
+/// The account surface: signed-in identity + sign out + delete account, or
+/// a sign-in prompt.
 public struct AccountView: View {
     private let rootViewModel: AppRootViewModel
 
     @State private var isPresentingLogin = false
+    @State private var isPresentingDeleteAccount = false
     @State private var isSigningOut = false
     @State private var errorMessage: String?
 
@@ -39,6 +49,9 @@ public struct AccountView: View {
             .task { await rootViewModel.refreshCurrentUser() }
             .sheet(isPresented: $isPresentingLogin) {
                 LoginView(rootViewModel: rootViewModel)
+            }
+            .sheet(isPresented: $isPresentingDeleteAccount) {
+                AccountDeleteView(rootViewModel: rootViewModel)
             }
     }
 
@@ -75,6 +88,22 @@ public struct AccountView: View {
                     }
                 }
                 .disabled(isSigningOut)
+            }
+
+            // Deliberately its OWN `Section`, below (never beside) "Sign
+            // Out" — an irreversible, whole-account deletion must read as
+            // categorically more serious than a harmless sign-out.
+            Section {
+                Text("Deleting your account permanently removes your profile, favourites, setlists, and all associated data. This cannot be undone.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Button(role: .destructive) {
+                    isPresentingDeleteAccount = true
+                } label: {
+                    Text("Delete Account")
+                }
+            } header: {
+                Text("Danger Zone")
             }
         }
     }

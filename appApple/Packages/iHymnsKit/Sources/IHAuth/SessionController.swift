@@ -256,6 +256,54 @@ public actor SessionController {
         setState(.signedOut)
     }
 
+    /// Permanently deletes the CURRENTLY signed-in account server-side
+    /// (#1477, App Review §5.1.1(v)) — `reauth` carries the SECOND,
+    /// independent proof-of-identity the server's `?action=account_delete`
+    /// handler requires (a current password OR a fresh email login code;
+    /// see `AccountDeleteReauth`'s own doc comment). Only on success does
+    /// this clear the local token and publish `.signedOut` — the EXACT SAME
+    /// local teardown `signOut()` performs, since a deleted account must
+    /// leave no more of a trace on this device than a signed-out one does.
+    ///
+    /// ELI5: "Prove it's really you, then permanently delete your account —
+    /// once the server confirms, forget everything we remembered locally."
+    ///
+    /// DETAILED: Unlike `signOut()`, a thrown error here is NEVER treated as
+    /// "already done." `signOut()`'s `.unauthorized` special-case means "the
+    /// TOKEN was already dead" — nothing left to revoke, so local cleanup
+    /// still proceeds. Here, `.unauthorized` means the RE-AUTH CREDENTIAL
+    /// (the password/email code in `reauth`) was wrong or expired — the
+    /// account still exists, the bearer token is still perfectly valid, and
+    /// clearing local state now would incorrectly sign the user out of an
+    /// account they never actually deleted. So EVERY failure — `.unauthorized`
+    /// (bad re-auth), `.rateLimited` (too many attempts), the 409 "transfer
+    /// Global Admin first" guard, or a transient `.offline`/`.maintenance`/
+    /// `.server`/`.decoding` — leaves the local token, and `state`, untouched,
+    /// so the caller can safely present the same re-auth step again.
+    ///
+    /// Also unlike `signOut()`, this has no "already signed out, no-op"
+    /// guard: calling this while `state` isn't `.signedIn` would otherwise
+    /// trip `APIClient.makeURLRequest`'s "an authenticated endpoint needs a
+    /// token" precondition (a programmer-error guard, same reasoning
+    /// `signOut()`'s own doc comment gives) — but a silent no-op here would
+    /// be actively misleading (unlike sign-out, "delete my account" has no
+    /// sensible idempotent-no-op reading when there's no account to
+    /// delete), so this throws `.unauthorized` instead, which the caller
+    /// already knows how to surface.
+    ///
+    /// - Throws: Whatever `APIClient.accountDelete(reauth:)` throws (see
+    ///   that method's own doc comment), or `.unauthorized` if called while
+    ///   not signed in.
+    public func deleteAccount(reauth: AccountDeleteReauth) async throws {
+        guard case .signedIn = state else { throw APIError.unauthorized }
+
+        try await apiClient.accountDelete(reauth: reauth)
+
+        try await tokenStore.delete()
+        await apiClient.updateBearerToken(nil)
+        setState(.signedOut)
+    }
+
     /// Updates `state` and publishes it to every `stateUpdates` subscriber.
     private func setState(_ newState: SessionState) {
         state = newState

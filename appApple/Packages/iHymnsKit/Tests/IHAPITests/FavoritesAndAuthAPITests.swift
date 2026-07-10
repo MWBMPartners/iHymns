@@ -20,6 +20,11 @@
 // bearer token), so these fixtures are modelled from the PHP source's
 // `sendJson([...])` calls rather than a real HTTP capture — flagged here
 // explicitly per this task's "note assumptions" instruction.
+//
+// #1477 NOTE — in-app account deletion (App Review §5.1.1(v))'s
+// `'account_delete'` request-building + networked coverage lives in the
+// SIBLING file `AccountDeleteAPITests.swift`, not here — moved out to keep
+// this file under the repo's LOC-budget tripwire (`Scripts/loc-budget.sh`).
 import Foundation
 import Testing
 import IHAPITestSupport
@@ -117,6 +122,12 @@ struct FavoritesAndAuthEndpointTests {
         #expect(json["email"] == nil)
         #expect(json["code"] == nil)
     }
+
+    // `Endpoint.accountDelete(reauth:)` request-building coverage (#1477)
+    // lives in `AccountDeleteAPITests.swift` — moved out purely to keep THIS
+    // file under the repo's LOC-budget tripwire (`Scripts/loc-budget.sh`);
+    // see that file's own header for the full "why a separate file"
+    // reasoning.
 }
 
 @Suite("Favorites + Auth decoding")
@@ -340,4 +351,8 @@ struct FavoritesAndAuthNetworkedTests {
             }
         }
     }
+
+    // `accountDelete(reauth:)` networked coverage (#1477) lives in
+    // `AccountDeleteAPITests.swift` — see this file's header + that file's
+    // own header for why.
 }
