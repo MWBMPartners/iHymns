@@ -60,7 +60,7 @@ Every step below is doable by a **web-only operator** (no shell/SSH on the share
 
 #### 🍎 Operator runbook — turning on Sign in with Apple for the WEB (#1470 W0)
 
-Web SIWA is built + merged but **DORMANT**. Activating it is a **MIX** of Apple-portal clicks, ONE database migration, and TWO settings — **NOT all migrations**. Do them in order. (The *native* app's SIWA is separate — see `appApple/dev-docs/Provisioning-Runbook.md`.)
+Web SIWA is built + merged but **DORMANT**. Activating it is a **MIX** of Apple-portal clicks, ONE database migration, and TWO settings — **NOT all migrations**. Do them in order. (The *native* app's SIWA is separate — see `appApple/dev-docs/Provisioning-Runbook.md` §1.2; this same web runbook is also mirrored there as §1.4.)
 
 1. **[Apple Developer portal — NOT a migration] Create a Services ID (this is decision D1).** developer.apple.com → Certificates, Identifiers & Profiles → **Identifiers → ➕ → Services IDs** → identifier e.g. `app.ihymns.web`; tick **Sign in with Apple** → **Configure** → **Primary App ID** = `app.ihymns`. ⚠️ **It MUST be under the SAME Apple Developer Team as `app.ihymns`** (that's what "D1" means) — a different team gives a different Apple `sub`, breaking account reconciliation across native/web (and later SIGNula). There is **no migration or DB step** that creates this; only Apple's portal can.
 2. **[Apple portal] Register the return URL(s).** Same Services ID → Configure → **Website URLs** → add each docroot's domain + the return URL `https://<host>/` (the origin root) for every docroot offering web SIWA (`ihymns.app`, `dev.ihymns.app`, `beta.ihymns.app`). The web flow is popup mode but the return URL must still be registered and equal `APPLE_SIWA_WEB_RETURN_PATH` (`'/'`).

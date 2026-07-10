@@ -137,6 +137,20 @@
 
 ---
 
+### §1.4 — Web Sign in with Apple — activation
+
+> **Web SIWA** (browser-based sign-in on `ihymns.app` / `dev.ihymns.app` / `beta.ihymns.app`) is **built + merged but DORMANT**. Activating it is a **MIX** of Apple-portal clicks, **ONE** database migration, and **TWO** settings — **NOT all migrations**. This is separate from the *native* app's SIWA key above (§1.2 Step 2) — the web flow authenticates via its own **Services ID**, not the App ID's key. (Full detail + copy-paste steps: `DEV_NOTES.md` → "🍎 Operator runbook — turning on Sign in with Apple for the WEB".)
+
+1. **[Apple Developer portal — NOT a migration] Create a Services ID (decision D1).** developer.apple.com → Certificates, Identifiers & Profiles → **Identifiers → ➕ → Services IDs** → identifier `app.ihymns.web`; tick **Sign in with Apple** → **Configure** → **Primary App ID** = `app.ihymns`. ⚠️ Must be registered under the **SAME Apple Developer Team** as `app.ihymns` (decision D1) — a different team issues a different Apple `sub`, breaking account reconciliation between native and web. Register the **return URL** `https://<host>/` (the origin root) for **every** docroot offering web SIWA (`ihymns.app`, `dev.ihymns.app`, `beta.ihymns.app`).
+2. **[/manage/setup-database migration — ONCE, shared DB]** Run **`migrate-user-auth-providers`** (→ `tblUserAuthProviders` + `tblAuthNonces`) if it isn't already green — usually already applied via §1.2 Step 5 above, since it ships with the native SIWA backend.
+3. **[/manage/configuration settings — NOT a migration]** `/manage/configuration` → **Apple native app** card → **Sign in with Apple — Web** section: paste the Services ID from Step 1 into **`apple_siwa_services_id`** (must **NOT** equal `app.ihymns`), and set **`apple_web_login_enabled`** to the channel(s) being rolled out — start `alpha`, widen to `alpha,beta`, then `all`. Web SIWA stays dormant until BOTH settings are set for the current channel.
+4. **[Code — already done]** `appleid.cdn-apple.com` is already listed in the CSP `script-src` (#1484) so Apple's JS SDK loads once enabled — no action needed.
+5. **[Verify]** On a docroot in the enabled channel, the auth modal shows a **Sign in with Apple** button; sign-in creates/links an account; Link/Unlink live in Settings → Account & Profile → **Connected accounts**.
+
+> **Why it's not all migrations:** the Services ID (Step 1) is an Apple-portal identity artifact PHP cannot create; the enable/config (Step 3) is a `tblAppSettings` write, not a schema change. Only Step 2 is an actual migration — and it's usually already done.
+
+---
+
 ## Verification walkthrough — where to look & what "good" looks like
 
 Three buckets: what you can verify **now** (Apple portals), what's **blocked on §1.1 deploy**, and what needs a **signed device build**.
