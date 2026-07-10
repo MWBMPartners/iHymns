@@ -42,7 +42,7 @@ info:
     ```
 
     The cookie is `Domain=.ihymns.app; HttpOnly; SameSite=Lax; Secure` so a
-    single sign-in persists across `ihymns.app`, `alpha.ihymns.app`, and
+    single sign-in persists across `ihymns.app`, `dev.ihymns.app`, and
     `beta.ihymns.app`. Tokens are issued by `auth_login`,
     `auth_email_login_verify`, or `auth_register`, and carry a **sliding
     30-day expiry** — every authenticated request bumps the expiry by one
@@ -94,6 +94,7 @@ info:
     | `song_detail` / `song_data` | 240 / minute |
     | `related_songs` | 240 / minute |
     | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
+    | `work` / `credit_person` | 120 / minute (or a per-key budget with a `catalogue:read` API key) |
 
     On exceed, the endpoint returns **429** with `Retry-After`,
     `X-RateLimit-Limit`, and `X-RateLimit-Window` headers (see the shared
@@ -181,7 +182,7 @@ info:
 servers:
   - url: https://ihymns.app
     description: Production
-  - url: https://alpha.ihymns.app
+  - url: https://dev.ihymns.app
     description: Alpha channel (gated by `access_alpha` entitlement)
   - url: https://beta.ihymns.app
     description: Beta channel (gated by `access_beta` entitlement)
@@ -290,6 +291,12 @@ tags:
       catalogue, IPI normaliser, flag-columns probe) live in
       `includes/credit_people_helpers.php` and are shared with
       `/manage/credit-people`.
+  - name: Analytics
+    description: |
+      First-party, anonymous, consent-gated client analytics event
+      ingestion (#1448, `analytics_ingest`). Distinct from **Admin —
+      Analytics** below (which is curator-facing reporting reads) — this
+      is the public write side the Apple app's analytics sink posts to.
   - name: Admin — Analytics
     description: |
       Read-only analytics endpoints. Two of the three
@@ -337,6 +344,24 @@ tags:
       `{ok: bool, …}` with the TRUE result. Unknown action → `400`. Any
       uncaught server error → `500 {ok:false,error:"Server error.",error_detail}`
       (`error_detail` only populated for admins).
+  - name: Live Follow
+    description: |
+      Host-led real-time multi-device follow (#1268) — the `live_follow_*`
+      action family on `api.php`. A signed-in host starts a session and
+      gets a short, human-typeable code; anonymous followers join with
+      that code and short-poll for the host's current song/section/state.
+      DB-relayed (`tblLiveFollowSessions`, `SessionKind='host'` implicitly
+      — no `Channel`/venue scoping, unlike Service Mode below), short-poll
+      over `StateRevision` rather than SSE/WebSockets (shared hosting
+      can't hold a worker per follower). Host endpoints
+      (`live_follow_create`, `_update`, `_heartbeat`, `_leave`) require
+      auth + ownership (`HostUserId` match); `live_follow_join` /
+      `live_follow_poll` are anonymous, gated only by the unguessable
+      session code. Sessions auto-expire 4 hours after the last host
+      heartbeat/update. Shares its `tblLiveFollowSessions` spine table
+      with Service Mode, but is a separate, non-venue, non-anonymous-host
+      feature — a native worship-leader "follow me" flow rather than a
+      congregation-wide venue broadcast.
   - name: Service Mode
     description: |
       Congregation Live-Follow (#1323 / #1335) — congregants join a live
@@ -918,6 +943,58 @@ paths:
                     name: Christian Praise
                     songCount: 650
 
+  /api.php?action=print_templates:
+    get:
+      operationId: getPrintTemplates
+      tags: [Songs]
+      summary: Curated print-layout templates (#1350 Phase 2)
+      description: |
+        Block-based print layouts for the song print picker
+        (`js/modules/print.js`), which merges these after its 3 built-in
+        layouts. Public read — anonymous callers may print. Gated on the
+        `tblPrintTemplates` table existing: an un-migrated install (or any
+        query failure) returns an empty list rather than an error, so the
+        client's built-in layouts still work.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [print_templates]
+        - name: scope
+          in: query
+          required: false
+          description: |
+            Template scope. Sanitised to lowercase a-z only; defaults to
+            `song` when absent/empty/invalid.
+          schema: { type: string, default: song, example: song }
+      responses:
+        "200":
+          description: |
+            Active templates for the scope, ordered by SortOrder. Always
+            200 — an un-migrated table or query error yields
+            `{templates: []}`, never a 4xx/5xx.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:   { type: integer, example: 3 }
+                        name: { type: string, example: "Two-column, no chords" }
+                        blocks:
+                          type: array
+                          description: Ordered block definitions for the layout.
+                          items: { type: object }
+                        pageOptions:
+                          type: object
+                          description: Page-level options (margins, font size, etc.); empty object when unset.
+
   /api.php?action=lyrics_ingest:
     post:
       operationId: lyricsIngest
@@ -1311,6 +1388,115 @@ paths:
         "500":
           description: Lookup failed
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=work:
+    get:
+      operationId: getWork
+      tags: [Songs]
+      summary: Get one Work (composition grouping) as JSON
+      description: |
+        JSON twin of the public `?page=work&slug=…` HTML page — both call
+        the SAME `SongData::getWork()`, not a forked read. Returns the Work
+        header, its parent/children Work headers (one level each), every
+        member song (ordered canonical-first then songbook/number), and any
+        Work-level external links. Exposed for the native app's Work detail
+        screen (#1443).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [work]
+        - name: slug
+          in: query
+          required: false
+          description: Work slug. Takes priority over `id` when both are sent.
+          schema: { type: string, example: amazing-grace }
+        - name: id
+          in: query
+          required: false
+          description: Numeric `tblWorks.Id`. Used when `slug` is absent/empty.
+          schema: { type: string, example: "17" }
+      responses:
+        "200":
+          description: The Work, with parent/children headers, members, and links
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  work:
+                    $ref: "#/components/schemas/Work"
+        "400":
+          description: Neither a `slug` nor an `id` was supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: No matching Work (or the Works schema isn't migrated on this install)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api.php?action=credit_person:
+    get:
+      operationId: getCreditPerson
+      tags: [Songs]
+      summary: Get one credit person's bio + discography as JSON
+      description: |
+        JSON twin of the public `/people/<slug>` HTML page's own query
+        logic (#1443/#1444) — both independently query `tblCreditPeople` +
+        the per-role credit tables (`tblSongWriters`, `tblSongComposers`,
+        `tblSongArrangers`, `tblSongAdaptors`, `tblSongTranslators`, and
+        `tblSongArtists` when migrated) because there is no direct FK from
+        those tables to `tblCreditPeople` today — a name-string match, same
+        as the HTML page.
+
+        Exactly ONE of `slug`, `id`, or `name` should be supplied. When a
+        `tblCreditPeople` registry row exists it drives the bio fields;
+        when it doesn't (a writer/composer string with no curated record
+        yet), `name` alone still returns a "songs by this name" discography
+        with `id`/`slug`/bio fields all `null`. `name` exists specifically
+        for the native app's "tap a composer name on a song" flow, which
+        only has the plain string to look up with, not a person ID.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [credit_person]
+        - name: slug
+          in: query
+          required: false
+          schema: { type: string, example: john-newton }
+        - name: id
+          in: query
+          required: false
+          description: Numeric `tblCreditPeople.Id`.
+          schema: { type: string, example: "42" }
+        - name: name
+          in: query
+          required: false
+          description: Exact writer/composer/etc. name (fallback lookup + the discography match key).
+          schema: { type: string, example: John Newton }
+      responses:
+        "200":
+          description: The credit person's bio (when registered) and discography grouped by role
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  person:
+                    $ref: "#/components/schemas/CreditPerson"
+        "400":
+          description: None of `slug`, `id`, or `name` was supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: No registry row AND no credited song found under that name
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   # ===========================================================================
   # LANGUAGES
@@ -2477,6 +2663,16 @@ paths:
         send them when available so the server can capture a refresh
         token (needed later for `account_delete`'s Apple-side revoke) and
         a display name.
+
+        `platform` (#1470 W1) selects which of the app's two configured
+        Apple client ids the identity token's `aud` claim is checked
+        against — `native` (the shipped iOS/iPadOS/tvOS app) or `web`.
+        Absent/empty defaults to `native` (every existing caller is
+        unaffected). `platform: web` is additionally gated on an admin
+        having configured a Services ID AND allow-listed this channel
+        (`manage/configuration.php`) — until then it returns the SAME
+        `503` as an un-migrated `tblUserAuthProviders` table, i.e. Sign
+        in with Apple for web is dormant by default.
       parameters:
         - name: action
           in: query
@@ -2498,6 +2694,15 @@ paths:
                 nonce:
                   type: string
                   description: RAW (unhashed) nonce the client used in the SIWA request (16-255 chars).
+                platform:
+                  type: string
+                  enum: [native, web]
+                  default: native
+                  description: |
+                    Which client id to check the identityToken's `aud`
+                    against (#1470 W1). Omit for the native app. `web` is
+                    dormant (503) until an admin configures + allow-lists
+                    it — see this endpoint's description.
                 authorizationCode:
                   type: string
                   description: Optional — enables a best-effort Apple refresh-token capture.
@@ -2525,7 +2730,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
         "400":
-          description: Missing/malformed identityToken or nonce
+          description: Missing/malformed identityToken or nonce, or an invalid platform value
           content:
             application/json:
               schema:
@@ -3169,6 +3374,18 @@ paths:
                       instead of full lyrics; clients use this to decide
                       whether to fetch lyrics.
                     example: false
+                  appleWebLoginEnabled:
+                    type: boolean
+                    description: >-
+                      Whether Sign in with Apple for WEB is enabled on THIS
+                      channel (#1470 W1) — true only when both a Services ID
+                      is configured AND this channel is allow-listed on
+                      `manage/configuration.php`. Dormant/false by default;
+                      a future web sign-in button gates its own visibility
+                      on this flag. Does not affect the native app, which
+                      always uses `auth_apple` with `platform: native`
+                      (or the omitted default).
+                    example: false
 
   /api.php?action=ccli_validate:
     post:
@@ -3255,6 +3472,14 @@ paths:
       operationId: getAccessTiers
       tags: [User Access]
       summary: List all available content access tiers
+      description: |
+        The 7 `canXxx`/`requiresCcli` keys below are the frozen native-app
+        contract (column-backed on `tblAccessTiers`, #1352). Any capability
+        registered in `TIER_CAPS` with `storage: 'json'` (none are today —
+        the registry ships with only the 7 originals) is appended to every
+        tier object under its own camelCase key with no other change to
+        this shape — see `access_tier_validation.php`'s `TIER_CAPS` map and
+        rule #28 in the project conventions.
       parameters:
         - name: action
           in: query
@@ -3274,6 +3499,9 @@ paths:
                     type: array
                     items:
                       type: object
+                      additionalProperties:
+                        type: boolean
+                        description: Any additional json-backed capability registered in TIER_CAPS.
                       properties:
                         name: { type: string }
                         displayName: { type: string }
@@ -6058,6 +6286,53 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
+  /api.php?action=songs_exist:
+    get:
+      operationId: songsExist
+      tags: [Songs]
+      summary: Batch existence check for a list of SongIds (#1329)
+      description: |
+        Public — only reveals whether already-public song ids still exist.
+        Clients use this to prune deleted songs out of localStorage-backed
+        lists (Recently Viewed, etc.) so a stale cached entry never renders
+        an unresolvable id. Does NOT resolve PublicIds — callers must send
+        canonical SongIds (the web app always does).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [songs_exist]
+        - name: ids
+          in: query
+          required: true
+          description: |
+            Comma-separated SongIds (each matching `^[A-Za-z0-9_-]{1,32}$`;
+            malformed entries are silently dropped). Capped at 200 —
+            extras beyond the first 200 valid ids are silently truncated.
+          schema: { type: string, example: "CP-0001,MP-0042" }
+      responses:
+        "200":
+          description: |
+            The subset of the requested ids that still exist.
+            `exists: null` (with `fallback: true`) on a lookup error, so
+            the client leaves its cache intact rather than pruning
+            everything.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exists:
+                    type: array
+                    nullable: true
+                    items: { type: string }
+                    example: ["CP-0001"]
+                  fallback:
+                    type: boolean
+                    description: "Present (true) only alongside `exists: null`."
+
   # ===========================================================================
   # SONG REQUESTS  (submission half — admin half is under Admin tag)
   # ===========================================================================
@@ -6097,6 +6372,79 @@ paths:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
         "429":
           description: Rate-limit exceeded for this IP
+
+  /api.php?action=song_correction_submit:
+    post:
+      operationId: songCorrectionSubmit
+      tags: [Song Requests]
+      summary: Submit a structured correction to an existing song (#1092)
+      description: |
+        Unlike a missing-song request, this captures a reviewable
+        `{songId, field, originalValue, proposedValue}` diff. `field` is
+        checked against a closed allow-list; for scalar fields the
+        `originalValue` is read SERVER-side from the live `tblSongs` row
+        (a client-supplied "before" value is never trusted). Stored in
+        `tblSongRequests` with `RequestType='correction'`, sharing
+        `song_request_submit`'s honeypot + length + email + per-IP
+        rate-limit guards (5 submissions / 24h).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [song_correction_submit] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId, field, proposed]
+              properties:
+                songId:
+                  type: string
+                  example: CP-0202
+                field:
+                  type: string
+                  enum: [title, copyright, tune, ccli, iswc, language, lyrics, author, composer, other]
+                  description: |
+                    `title`/`copyright`/`tune`/`ccli`/`iswc`/`language` are
+                    scalar `tblSongs` columns (the server fills
+                    `originalValue` from the live row); `lyrics`/`author`/
+                    `composer`/`other` are free-text fields with no single
+                    column to diff (`originalValue` is empty).
+                proposed:
+                  type: string
+                  description: The proposed replacement value (max 5000 chars).
+                email:
+                  type: string
+                  format: email
+                  description: Optional reply-to (max 255 chars).
+                website:
+                  type: string
+                  description: Honeypot — MUST be empty. A non-empty value returns a silent fake success.
+      responses:
+        "200":
+          description: |
+            Queued for admin triage (or a silent honeypot fake-success —
+            `trackingId: 0` — when the honeypot field was filled).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  trackingId: { type: integer, example: 512 }
+        "400":
+          description: Missing songId/field/proposed, an unknown field, or the proposed value/email is too long/invalid
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: songId does not exist
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "429":
+          description: 5+ submissions from this IP in the last 24h
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   # ===========================================================================
   # LEGACY SETLIST ENDPOINTS  (pre-#398; kept for API compatibility)
@@ -8050,6 +8398,264 @@ paths:
           description: VideoPsalm JSON
           content: { application/json: { schema: { type: object } } }
 
+  # ---------------------------------------------------------------------------
+  # NOTE: the 5 entries below are genuinely routed by `?page=<name>` (the code
+  # reads $_GET['page'], not $_GET['action']) — unlike every OTHER entry in
+  # this Pages section, which (pre-existing, not touched here) documents its
+  # page-fragment routes as `?action=<name>` with an `action` parameter. See
+  # this refresh's notes for the Opus reviewer.
+  # ---------------------------------------------------------------------------
+
+  /api.php?page=person:
+    get:
+      operationId: pagePerson
+      tags: [Pages]
+      summary: Credit-person public page HTML fragment (#588)
+      description: |
+        Renders the `/people/<slug>` page's bio + discography-by-role for
+        SPA hydration. `slug` is the canonical `tblCreditPeople.Slug`
+        lookup; the renderer falls back to a name-based search when the
+        slug migration hasn't been applied yet. Cacheable fragment (ETag).
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [person] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: john-newton }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing person slug
+
+  /api.php?page=work:
+    get:
+      operationId: pageWork
+      tags: [Pages]
+      summary: Work public page HTML fragment (#840)
+      description: |
+        Renders the `/work/<slug>` page — slug-keyed lookup via
+        `SongData::getWork()` (the same function backing `?action=work`'s
+        JSON twin). 404 body when the Works schema isn't migrated or the
+        slug is unknown. Cacheable fragment (ETag).
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [work] }
+        - name: slug
+          in: query
+          required: true
+          schema: { type: string, example: amazing-grace }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+        "400":
+          description: Missing work slug
+
+  /api.php?page=tune:
+    get:
+      operationId: pageTune
+      tags: [Pages]
+      summary: Tune public page HTML fragment (#940)
+      description: |
+        Renders `/tune/<slug>`, listing every song that uses the named
+        tune. An empty/missing slug renders a friendly empty state rather
+        than a 400. Cacheable fragment (ETag) — `tune` is NOT in the
+        cacheable-pages allow-list, so this always renders fresh per request.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [tune] }
+        - name: slug
+          in: query
+          required: false
+          schema: { type: string, example: new-britain }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when slug is absent/unknown)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=iswc:
+    get:
+      operationId: pageIswc
+      tags: [Pages]
+      summary: ISWC public page HTML fragment (#940)
+      description: |
+        Renders `/iswc/<code>`, listing every song sharing the given ISWC
+        (`T-NNN.NNN.NNN-N`). The renderer defensively normalises the code
+        (strips non-`T`/digit characters, uppercases the leading `T`). An
+        empty/missing/unmatched code renders a friendly empty state rather
+        than a 400. `iswc` is NOT in the cacheable-pages allow-list.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [iswc] }
+        - name: code
+          in: query
+          required: false
+          schema: { type: string, example: "T-345.246.800-1" }
+      responses:
+        "200":
+          description: HTML fragment (empty-state markup when code is absent/unmatched)
+          content: { text/html: { schema: { type: string } } }
+
+  /api.php?page=request:
+    get:
+      operationId: pageRequest
+      tags: [Pages]
+      summary: Request-a-song / suggest-a-correction form HTML fragment (#658)
+      description: |
+        Renders the public request form that POSTs to
+        `?action=song_request_submit`. `page=request` is canonical;
+        `page=request-a-song` is retained as an alias (older bookmarks /
+        shared links / offline-queue replays) rendering the identical
+        fragment. Cacheable fragment (ETag) EXCEPT when any of
+        `submitted`/`id`/`error` are present (the no-JS form-submit
+        redirect target — see `song_request_submit`), which carry a
+        one-time flash banner and should not be cached.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [request, request-a-song] }
+        - name: songbook
+          in: query
+          required: false
+          description: Prefills the songbook field (deep-link from a songbook page).
+          schema: { type: string, example: CP }
+        - name: number
+          in: query
+          required: false
+          description: Prefills the song-number field.
+          schema: { type: string, example: "42" }
+        - name: submitted
+          in: query
+          required: false
+          description: "`1` when arriving via the no-JS form's post-submit redirect."
+          schema: { type: string, enum: ["1"] }
+        - name: id
+          in: query
+          required: false
+          description: The tracking id from a successful no-JS submission (paired with `submitted=1`).
+          schema: { type: string, example: "512" }
+        - name: error
+          in: query
+          required: false
+          description: An error message from a failed no-JS submission (paired with a redirect, not `submitted`).
+          schema: { type: string }
+      responses:
+        "200":
+          description: HTML fragment
+          content: { text/html: { schema: { type: string } } }
+
+  # ===========================================================================
+  # ANALYTICS  (#1448 — anonymous, consent-gated client event ingestion)
+  # ===========================================================================
+
+  /api.php?action=analytics_ingest:
+    post:
+      operationId: analyticsIngest
+      tags: [Analytics]
+      summary: Ingest a batch of first-party, anonymous analytics events
+      description: |
+        Accepts a consent-gated batch of client analytics events from the
+        Apple app's `IHAnalyticsSink` (#189/#1448). Anonymous — no auth, no
+        CSRF token — protected by the mandatory `X-Requested-With`
+        same-origin header plus a per-IP rate limit (20 calls / 60s; a
+        batching client makes few CALLS even with many queued events, so
+        this budgets calls, not individual events).
+
+        **PII / retention stance (load-bearing):** `tblAppAnalyticsEvents`
+        stores NO user id, NO device/install id, and NO IP address — a row
+        can never be traced back to a person or device. The caller's IP is
+        read only to key the rate-limit counter, never written to the
+        analytics table.
+
+        Every event is validated INDEPENDENTLY against a CLOSED allow-list
+        of event names — a malformed/unknown event is dropped and counted
+        in `rejected`, never failing the whole batch. `parameters` must be
+        a flat `string => string` map (matching the client's Swift shape
+        exactly); nested values reject that one event. `clientTimestamp`
+        is clamped to a plausible window (1 day ahead .. 30 days behind)
+        and silently omitted (not rejected) when implausible.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [analytics_ingest]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                platform:
+                  type: string
+                  description: Reporting client. Unrecognised/absent is stored as `unknown` (informational only, not a security boundary).
+                  enum: [apple, android, web]
+                events:
+                  type: array
+                  maxItems: 50
+                  description: Batch of events (max 50 per call).
+                  items:
+                    type: object
+                    required: [name]
+                    properties:
+                      name:
+                        type: string
+                        description: Closed allow-list — an unrecognised name rejects that one event.
+                        enum: [screen_view, song_opened, search_performed, offline_save]
+                      parameters:
+                        type: object
+                        additionalProperties: { type: string }
+                        description: Flat string=>string map, max 10 keys (key <=40 chars, value <=200 chars). Any non-string value rejects the whole event.
+                      clientTimestamp:
+                        type: string
+                        format: date-time
+                        description: ISO 8601. Clamped to a plausible window; implausible/malformed values are silently dropped (event still stored, minus its timestamp).
+            example:
+              platform: apple
+              events:
+                - name: song_opened
+                  parameters: { song_id: "MP-1008" }
+                  clientTimestamp: "2026-07-06T12:34:56Z"
+      responses:
+        "200":
+          description: |
+            Always 200 for a well-formed request body — per-event
+            rejects are reported in `rejected`, never a batch failure.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  accepted: { type: integer, example: 1 }
+                  rejected: { type: integer, example: 0 }
+        "400":
+          description: Body is not valid JSON, `events` is missing/empty, or the batch exceeds 50 events
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "413":
+          description: Request body exceeds the 256 KiB inner cap
+        "429":
+          description: Rate limit exceeded (20 calls / 60s per IP)
+        "500":
+          description: Could not record events
+
   # ===========================================================================
   # LICENCES (#462) — multi-licence, inheritance-aware resolution
   # ===========================================================================
@@ -8585,6 +9191,754 @@ paths:
         "400": { description: Invalid surface, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
         "403": { description: Caller lacks `manage_default_card_layout` entitlement, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
+  # ===========================================================================
+  # LIVE FOLLOW  (#1268 — host-led real-time multi-device follow)
+  # See the "Live Follow" tag description above for the shared model.
+  # ===========================================================================
+
+  /api.php?action=live_follow_create:
+    post:
+      operationId: liveFollowCreate
+      tags: [Live Follow]
+      summary: Start a new Live Follow host session
+      description: |
+        Supersedes (deactivates) any prior active session for this host —
+        one active session per host. Mints a 6-character Crockford-ish
+        base32 code (no ambiguous glyphs). Sessions expire 4 hours after
+        the last heartbeat/update. Rate-limited to 20 new sessions / hour
+        / user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_create] }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                setlistId:
+                  type: string
+                  nullable: true
+                  description: Optional setlist context (org scoping deferred to a future version).
+                songId:
+                  type: string
+                  nullable: true
+                  example: CP-0202
+                componentIndex:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  maximum: 9999
+                state:
+                  $ref: "#/components/schemas/LiveSessionState"
+      responses:
+        "200":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string, example: "7K3PXM" }
+                  revision: { type: integer, example: 0 }
+        "400":
+          description: Unknown songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Could not allocate a session code after 6 attempts — retry
+
+  /api.php?action=live_follow_update:
+    post:
+      operationId: liveFollowUpdate
+      tags: [Live Follow]
+      summary: Broadcast the host's current song/section/state
+      description: |
+        The host broadcasts its FULL current context on every update
+        (not a delta). Bumps `StateRevision` so followers' polls see the
+        change. Also refreshes the session's 4-hour expiry. Rate-limited
+        to 600 / minute / user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, songId]
+              properties:
+                code:
+                  type: string
+                  description: The session code from `live_follow_create` (4-12 alphanumeric).
+                  example: "7K3PXM"
+                songId:
+                  type: string
+                  example: CP-0202
+                componentIndex:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  maximum: 9999
+                state:
+                  $ref: "#/components/schemas/LiveSessionState"
+      responses:
+        "200":
+          description: Broadcast applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revision: { type: integer, example: 4 }
+        "400":
+          description: Invalid session code, missing songId, or unknown songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "409":
+          description: Session not found, not owned by this user, or ended
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=live_follow_heartbeat:
+    post:
+      operationId: liveFollowHeartbeat
+      tags: [Live Follow]
+      summary: Keep a host session alive without changing its broadcast state
+      description: |
+        Keepalive only — refreshes `LastHeartbeatAt` + the 4-hour expiry
+        but does NOT bump `StateRevision` (nothing changed for followers).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_heartbeat] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, example: "7K3PXM" }
+      responses:
+        "200":
+          description: '`ok` reflects whether the session is still active and owned by this user.'
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        "400":
+          description: Invalid session code
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  /api.php?action=live_follow_leave:
+    post:
+      operationId: liveFollowLeave
+      tags: [Live Follow]
+      summary: End the host's own Live Follow session
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_leave] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string, example: "7K3PXM" }
+      responses:
+        "200":
+          description: '`ok: true` regardless of whether a matching session existed (idempotent).'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid session code
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  /api.php?action=live_follow_join:
+    get:
+      operationId: liveFollowJoin
+      tags: [Live Follow]
+      summary: Join a Live Follow session by its code (anonymous)
+      description: |
+        Anonymous — access control is the unguessable session code.
+        Mints a STATELESS per-follower token (nothing persisted
+        server-side) purely so `live_follow_poll` can bucket its rate
+        limiter per follower instead of per shared NAT IP; the session
+        CODE remains the real access control. Rate-limited to 120 / 60s
+        per IP (generous — a whole congregation joins over a minute or
+        two behind one church-wifi IP). Missing/expired/wrong code all
+        return the SAME 404 message (anti-probe).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_join] }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, example: "7K3PXM" }
+      responses:
+        "200":
+          description: Joined — includes the host's current broadcast state
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string }
+                  followToken:
+                    type: string
+                    description: Stateless per-follower token — pass as `token` to `live_follow_poll`.
+                  hostDisplayName: { type: string }
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+        "400":
+          description: Invalid session code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+        "404":
+          description: Session not found, expired, or the code is wrong (identical message for all three)
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+
+  /api.php?action=live_follow_poll:
+    get:
+      operationId: liveFollowPoll
+      tags: [Live Follow]
+      summary: Short-poll a Live Follow session for changes (anonymous)
+      description: |
+        Anonymous. Pass `since` (the last seen `revision`) to get a
+        near-free `{changed: false}` until the host advances it. A
+        session is only "active" while its host has heartbeated/updated
+        within the last 180 seconds. When `token` (from `live_follow_join`)
+        is supplied, rate limiting buckets PER TOKEN (40 / 60s, ~2.5s
+        polling); without it, falls back to a per-IP bucket (600 / 60s) —
+        the IP path exists only for old clients and is intentionally
+        loose so it isn't a code-existence oracle by itself.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [live_follow_poll] }
+        - name: code
+          in: query
+          required: true
+          schema: { type: string, example: "7K3PXM" }
+        - name: since
+          in: query
+          required: false
+          description: Last-seen `revision`; omit or send 0 on the first poll.
+          schema: { type: integer, default: 0 }
+        - name: token
+          in: query
+          required: false
+          description: The `followToken` from `live_follow_join` (up to 40 hex chars). Buckets the rate limiter per follower.
+          schema: { type: string }
+      responses:
+        "200":
+          description: |
+            `{active: false}` when the session is missing/inactive/stale;
+            otherwise `{changed: false, revision}` when nothing is new,
+            or `{changed: true, currentSongId, componentIndex, state,
+            revision}` when the host has advanced past `since`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: boolean }
+                  changed: { type: boolean }
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+        "400":
+          description: "Invalid session code (returned as `{active: false}`)"
+          content: { application/json: { schema: { type: object, properties: { active: { type: boolean, example: false } } } } }
+
+  # ===========================================================================
+  # SERVICE MODE  (#1323 / #1335 — congregation Live-Follow)
+  # See the "Service Mode" tag description above for the channel/presence-
+  # token model shared by every endpoint below.
+  # ===========================================================================
+
+  /api.php?action=service_session_start:
+    post:
+      operationId: serviceSessionStart
+      tags: [Service Mode]
+      summary: Start a venue service session (operator)
+      description: |
+        Operator = `global_admin` / `admin`, or an org-admin/owner of the
+        venue's organisation. Supersedes any prior active session for the
+        same venue + occurrence date + schedule + channel. Mints the
+        first rotating join code. Rate-limited to 30 new sessions / hour
+        / user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_session_start] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [venueId, occurrenceDate]
+              properties:
+                venueId:
+                  type: integer
+                  description: '`tblOrgVenues.Id`. Must be active.'
+                scheduleId:
+                  type: integer
+                  description: Optional `tblOrgServiceSchedules.Id` (must belong to the venue) — supplies start time/duration/timezone for computing the occurrence's expiry.
+                occurrenceDate:
+                  type: string
+                  pattern: '^\d{4}-\d{2}-\d{2}$'
+                  example: "2026-07-12"
+      responses:
+        "200":
+          description: Session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  sessionId: { type: integer }
+                  code:
+                    type: string
+                    description: The current rotating join code (`SVC` + 8 base32 chars).
+                    example: "SVC7K3PXM4H"
+                  occurrenceEnd:
+                    type: string
+                    format: date-time
+                    description: Resolved UTC end of this occurrence — the session's ExpiresAt / the presence tokens' expiry ceiling.
+        "400":
+          description: Missing venueId or a malformed occurrenceDate
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised for this organisation
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown venue, or unknown schedule for this venue
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Could not start the session (session-code collision after 6 attempts) — retry
+
+  /api.php?action=service_code_rotate:
+    post:
+      operationId: serviceCodeRotate
+      tags: [Service Mode]
+      summary: Rotate the current join code (operator)
+      description: |
+        Mints a fresh rotating code, superseding the previous one. Doubles
+        as a heartbeat (refreshes `LastHeartbeatAt`). Operator-gated
+        (`global_admin`/`admin`, the session's host, or an org-admin of
+        the session's org) and channel-scoped. Rate-limited to 600 / min
+        / user (shared `service_operator` bucket with the other operator
+        endpoints below).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_code_rotate] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: integer }
+      responses:
+        "200":
+          description: Rotated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string }
+        "400":
+          description: Missing sessionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Session is not active
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=service_code_current:
+    get:
+      operationId: serviceCodeCurrent
+      tags: [Service Mode]
+      summary: Resume the current join code after a reload (operator)
+      description: |
+        For the projection/leader UI to recover its code after a page
+        reload or a background-tab wake. Also heartbeats when the
+        session is active (#1386 — keeps a backgrounded broadcaster tab's
+        session alive on wake). Mints a fresh code if the current one has
+        expired (e.g. the tab slept through a rotation) and the session
+        is still active. Same operator gate + rate limit as
+        `service_code_rotate`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_code_current] }
+        - name: sessionId
+          in: query
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Current (or freshly re-minted) code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  code: { type: string }
+        "400":
+          description: Missing sessionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "409":
+          description: Session is not active (and no current code could be minted)
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+
+  /api.php?action=service_session_end:
+    post:
+      operationId: serviceSessionEnd
+      tags: [Service Mode]
+      summary: End a service session (operator)
+      description: |
+        Deactivates the session AND revokes every congregant presence row
+        for it (immediate gate revocation — any in-flight CCLI unlock
+        ends at once). Same operator gate + rate limit as
+        `service_code_rotate`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_session_end] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: integer }
+      responses:
+        "200":
+          description: Ended
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Missing sessionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  /api.php?action=service_broadcast:
+    post:
+      operationId: serviceBroadcast
+      tags: [Service Mode]
+      summary: Broadcast the current song/section/state to a service session (operator)
+      description: |
+        Serves BOTH broadcaster mechanisms — the projection laptop or a
+        separate leader device — either just needs the `sessionId` +
+        operator auth. Bumps `StateRevision` so congregant polls see the
+        change; also refreshes the heartbeat. Rate-limited to 600 / min /
+        user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_broadcast] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: integer }
+                songId:
+                  type: string
+                  nullable: true
+                  example: CP-0202
+                componentIndex:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  maximum: 9999
+                state:
+                  $ref: "#/components/schemas/LiveSessionState"
+      responses:
+        "200":
+          description: Broadcast applied
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revision: { type: integer }
+        "400":
+          description: Missing sessionId, or an unknown songId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Not authorised
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown or ended session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  /api.php?action=service_join:
+    post:
+      operationId: serviceJoin
+      tags: [Service Mode]
+      summary: Join a service session by its rotating code (anonymous congregant)
+      description: |
+        Anonymous — gated only by knowing the unguessable rotating code.
+        The client mints `presenceDeviceId` (any stable per-device string,
+        up to 64 chars); the server mints an opaque 43-char
+        `presenceToken` bound to the session, expiring at the venue-local
+        occurrence end. Re-joining the same (session, device) pair
+        reactivates + re-mints the token rather than duplicating. Missing
+        / expired / unknown codes all return the SAME 404 (anti-probe).
+        Rate-limited to 300 / min per IP (deliberately generous — a whole
+        congregation joins at once behind one church-wifi IP).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_join] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, presenceDeviceId]
+              properties:
+                code:
+                  type: string
+                  description: The rotating code shown on the venue screen.
+                venueId:
+                  type: integer
+                  description: Optional — 0/absent resolves by code + channel alone (the congregant typed the code off the screen with no venue context).
+                presenceDeviceId:
+                  type: string
+                  maxLength: 64
+                  description: Client-minted stable per-device id.
+      responses:
+        "200":
+          description: Joined — includes the session's current broadcast state for an immediate follow
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  presenceToken:
+                    type: string
+                    description: Opaque 43-char token — the gate key for `service_poll` / `service_leave` (and, when present as a cookie, the Phase-3 CCLI content unlock).
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+        "400":
+          description: Missing/invalid code or presenceDeviceId
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+        "404":
+          description: Code not active — expired, unknown, or wrong (identical message for all three)
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string } } } } }
+        "405":
+          description: POST method required
+
+  /api.php?action=service_poll:
+    get:
+      operationId: servicePoll
+      tags: [Service Mode]
+      summary: Short-poll a service session for changes (anonymous congregant)
+      description: |
+        Anonymous, gated by the opaque `presenceToken` from `service_join`.
+        Rate-limited PER TOKEN (40 / 60s, ~2.5s polling) rather than per
+        IP, so a whole congregation behind one NAT IP each gets its own
+        budget. A session is only "active" while its host/operator has
+        heartbeated within the shared live-session freshness window
+        (180s). A malformed token returns `{active: false}` rather than
+        an error (never an existence oracle).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_poll] }
+        - name: presenceToken
+          in: query
+          required: true
+          description: 43-char opaque token from `service_join`.
+          schema: { type: string }
+        - name: since
+          in: query
+          required: false
+          description: Last-seen `revision`; omit or send 0 on the first poll.
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: |
+            `{active: false}` when the token is malformed/expired/inactive
+            or the session has gone stale; otherwise `{active: true,
+            changed: false, revision}` when nothing is new, or
+            `{active: true, changed: true, currentSongId, componentIndex,
+            state, revision}` when the operator has advanced past `since`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active: { type: boolean }
+                  changed: { type: boolean }
+                  currentSongId: { type: string, nullable: true }
+                  componentIndex: { type: integer, nullable: true }
+                  state:
+                    $ref: "#/components/schemas/LiveSessionState"
+                  revision: { type: integer }
+
+  /api.php?action=service_leave:
+    post:
+      operationId: serviceLeave
+      tags: [Service Mode]
+      summary: Leave a service session (anonymous congregant)
+      description: |
+        Revokes the presence token (`IsActive = 0`) — immediate gate
+        revocation for any Phase-3 CCLI content unlock riding this
+        presence. Idempotent and deliberately silent: a malformed/unknown
+        token still returns `{ok: true}` rather than an error (never an
+        existence oracle).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_leave] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [presenceToken]
+              properties:
+                presenceToken: { type: string }
+      responses:
+        "200":
+          description: '`ok: true` regardless of whether the token matched anything.'
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "405":
+          description: POST method required
+
 # =============================================================================
 # COMPONENTS
 # =============================================================================
@@ -8764,6 +10118,31 @@ components:
             round-trip. Empty on pre-migration deployments.
           items:
             $ref: "#/components/schemas/Work"
+        contentRestricted:
+          type: boolean
+          description: |
+            Content gating (#1353). Present and `true` only when
+            `content_gating_enabled='1'` AND the caller's access tier may
+            not view this song's lyric body — `components` /
+            `translations` / `annotations` / `vocalParts` are then
+            stripped from the payload. Absent entirely when gating is off
+            (the default) or the caller is allowed to view the lyrics.
+        restrictionReason:
+          type: string
+          nullable: true
+          enum: [lyrics_not_available_on_tier, copyrighted_requires_higher_tier]
+          description: |
+            Present only alongside `contentRestricted: true`. Distinguishes
+            "this tier never sees lyrics" from "this song is copyrighted
+            and needs a higher tier" so the client can render a tailored
+            upgrade prompt.
+        offlineAllowed:
+          type: boolean
+          description: |
+            Content gating (#1353). Whether the caller's access tier may
+            save this song for offline use — mirrors the `offline_save`
+            capability. Only present when `content_gating_enabled='1'`;
+            absent when gating is off (the default no-op path).
 
     SongComponent:
       type: object
@@ -10365,4 +11744,110 @@ components:
         updatedAt:
           type: string
           format: date-time
+
+    CreditPerson:
+      type: object
+      description: |
+        A person/group credited on one or more songs (writer, composer,
+        arranger, adaptor, translator, or artist), returned by
+        `?action=credit_person` (#1443/#1444) — the JSON twin of the
+        public `/people/<slug>` page's own query logic. `id`/`slug` and
+        the bio fields are `null` when no curated `tblCreditPeople` row
+        exists yet for this name (a plain writer/composer string tapped
+        from a song still returns a usable discography).
+      properties:
+        id:
+          type: integer
+          nullable: true
+          example: 8
+        slug:
+          type: string
+          nullable: true
+          description: URL-safe identifier used by `/people/<slug>`.
+          example: john-newton
+        name:
+          type: string
+          example: John Newton
+        notes:
+          type: string
+          nullable: true
+        birthPlace:
+          type: string
+          nullable: true
+        birthDate:
+          type: string
+          nullable: true
+          description: Free-text (partial dates, e.g. a year only, are stored as given).
+        deathPlace:
+          type: string
+          nullable: true
+        deathDate:
+          type: string
+          nullable: true
+        isSpecialCase:
+          type: boolean
+          description: Curator flag for names needing special display handling (e.g. "Traditional", "Unknown").
+        isGroup:
+          type: boolean
+          description: True when this credit represents a group/ensemble rather than an individual.
+        discography:
+          type: array
+          description: One entry per role this person has ANY credited songs under (roles with zero matches are omitted).
+          items:
+            $ref: "#/components/schemas/CreditPersonDiscographyGroup"
+        links:
+          type: array
+          description: External links attached to this person (#833). Empty when no registry row exists, or on a pre-migration deployment.
+          items:
+            $ref: "#/components/schemas/ExternalLink"
+        totalSongs:
+          type: integer
+          description: Count of distinct songs across every role.
+          example: 6
+
+    CreditPersonDiscographyGroup:
+      type: object
+      description: One role's worth of songs in a CreditPerson's discography.
+      properties:
+        role:
+          type: string
+          enum: [writer, composer, arranger, adaptor, translator, artist]
+        label:
+          type: string
+          description: Display label for the role.
+          example: As Writer
+        songs:
+          type: array
+          items:
+            type: object
+            properties:
+              songId: { type: string, example: CP-0202 }
+              title: { type: string, example: Amazing Grace }
+              number: { type: integer, nullable: true, example: 202 }
+              songbook: { type: string, example: CP }
+              songbookName: { type: string, example: Christian Praise }
+
+    LiveSessionState:
+      type: object
+      nullable: true
+      description: |
+        The whitelisted broadcast state hint shared by `live_follow_create`
+        / `live_follow_update` / `service_broadcast` (and echoed back by
+        their poll/join counterparts). NEVER raw client JSON — only these
+        three keys survive server-side validation, each clamped to a safe
+        range; an empty/all-invalid input is stored as `null`.
+      properties:
+        blank:
+          type: boolean
+          description: Presenter screen is intentionally blanked.
+        scrollPct:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Scroll position within the current song, clamped to [0, 1].
+        transposeOffset:
+          type: integer
+          minimum: -12
+          maximum: 12
+          description: Semitone transpose offset, clamped to [-12, 12].
 
