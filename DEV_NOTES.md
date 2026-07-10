@@ -63,16 +63,18 @@ Every step below is doable by a **web-only operator** (no shell/SSH on the share
 Web SIWA is built + merged but **DORMANT**. Activating it is a **MIX** of Apple-portal clicks, ONE database migration, and TWO settings — **NOT all migrations**. Do them in order. (The *native* app's SIWA is separate — see `appApple/dev-docs/Provisioning-Runbook.md` §1.2; this same web runbook is also mirrored there as §1.4.)
 
 1. **[Apple Developer portal — NOT a migration] Create a Services ID (this is decision D1).** developer.apple.com → Certificates, Identifiers & Profiles → **Identifiers → ➕ → Services IDs** → identifier e.g. `app.ihymns.web`; tick **Sign in with Apple** → **Configure** → **Primary App ID** = `app.ihymns`. ⚠️ **It MUST be under the SAME Apple Developer Team as `app.ihymns`** (that's what "D1" means) — a different team gives a different Apple `sub`, breaking account reconciliation across native/web (and later SIGNula). There is **no migration or DB step** that creates this; only Apple's portal can.
-2. **[Apple portal] Register the Website URLs — this is the "Web Authentication Configuration" screen, and BOTH fields are mandatory.** Same Services ID → **Configure**. The two fields take **different formats** — this trips people up:
-   - **Domains and Subdomains** — **bare hostnames, NO scheme, comma-delimited.** Do **not** prefix `https://`:
-     ```
-     ihymns.app, dev.ihymns.app, beta.ihymns.app
-     ```
-   - **Return URLs** — **full `https://` URLs WITH a trailing slash, comma-delimited:**
-     ```
-     https://ihymns.app/, https://dev.ihymns.app/, https://beta.ihymns.app/
-     ```
-     ⚠️ **The trailing slash is load-bearing.** Apple does an *exact string match* of the registered Return URL against the `redirect_uri` our code sends, which is the **origin root** — `apple-signin.js` sends `window.location.origin + '/'` and `appleSiwaWebRedirectUri()` builds `'https://' . $host . '/'` (= `APPLE_SIWA_WEB_RETURN_PATH`, `'/'`). Registering `https://ihymns.app` **without** the slash → Apple returns **`invalid_grant`** and sign-in fails. The flow is popup mode, but the Return URL must still be registered and must equal the origin root — **not** a `/auth/apple/callback`-style path.
+2. **[Apple portal] Register the Website URLs — the "Web Authentication Configuration" screen. BOTH fields are mandatory and take DIFFERENT formats — copy each row's middle column into the matching field EXACTLY:**
+
+   | Apple field | Paste EXACTLY this | Format rule |
+   |---|---|---|
+   | **Domains and Subdomains** | `ihymns.app, www.ihymns.app, dev.ihymns.app, beta.ihymns.app` | bare hostnames — **NO** `https://`, **NO** slashes |
+   | **Return URLs** | `https://ihymns.app/, https://www.ihymns.app/, https://dev.ihymns.app/, https://beta.ihymns.app/` | full URLs — **WITH** `https://` **AND** a trailing `/` |
+
+   - ❌ **Do NOT** put a scheme in **Domains** — `https://ihymns.app` is wrong, and `https:///ihymns.app` (which an earlier draft of this doc accidentally implied) is doubly wrong. That field is **host-only**.
+   - ❌ **Do NOT** drop the trailing slash in **Return URLs** — `https://ihymns.app` (no `/`) → Apple **`invalid_grant`** and sign-in fails.
+   - ⚠️ **Register `www.ihymns.app` too, even though the app is usually reached at the apex.** `www.ihymns.app` serves the site directly (HTTP 200, *not* a redirect to the apex) and is an allow-listed canonical host (`appCanonicalHost()`), and `_appleSiwaWebHostAllowed()` accepts any `*.ihymns.app` — so a production visitor who lands on `www` makes the server send redirect_uri `https://www.ihymns.app/`; omit it and *their* sign-in fails `invalid_grant`. (Not exercised while only `alpha`→`dev.ihymns.app` is enabled, so it's harmless now — but register it up front so production is ready.)
+   - ✅ **Sanity check:** Domains = the **4 bare hosts**; Return URLs = the **same 4 hosts** written as full `https://…/` URLs (each ending in `/`).
+   - **Why the trailing slash matters:** Apple does an *exact string match* of the registered Return URL against the `redirect_uri` our code sends, which is the **origin root** — `apple-signin.js` sends `window.location.origin + '/'` and `appleSiwaWebRedirectUri()` builds `'https://' . $host . '/'` (= `APPLE_SIWA_WEB_RETURN_PATH`, `'/'`). It is the origin root, **not** a `/auth/apple/callback`-style path. (The flow is popup mode, but the Return URL must still be registered.)
    - Register **all three** docroots now even though you may only enable one channel at first (step 4) — pre-registering avoids a second portal trip when you widen the rollout.
    - *(If Apple prompts to **verify** a domain, host `apple-developer-domain-association.txt` at that host's `/.well-known/`. For the sign-in popup the URL registration above is sufficient; the domain-association file is chiefly for the separate **private email-relay / SPF sending-domain** step.)*
 3. **[/manage/setup-database migration — ONCE, shared DB] Ensure the auth-provider tables exist.** Run the card **"Run Auth Providers Migration"** (`migrate-user-auth-providers.php` → `tblUserAuthProviders` + `tblAuthNonces`) **if it isn't already green** — it ships with the #1402 native backend, so it is likely already applied. This is the *only* migration web SIWA needs.
@@ -81,6 +83,8 @@ Web SIWA is built + merged but **DORMANT**. Activating it is a **MIX** of Apple-
 6. **[Verify]** On a docroot in the enabled channel, the auth modal shows a **Sign in with Apple** button; sign-in creates/links an account; Link/Unlink live in Settings → Account & Profile → **Connected accounts**.
 
 > **Why it's "not all migrations":** the Services ID (steps 1–2) is an Apple-portal identity artifact PHP cannot create; the enable/config (step 4) is a settings write, not a schema change. Only step 3 is an actual migration — and it's usually already done.
+
+> **Web sign-in does NOT need the Apple `.p8` / Team ID / Key ID.** The web flow authenticates by verifying Apple's `id_token` against Apple's **public** JWKS (`appleSiwaVerifyIdentityToken()`), which needs no secret — so once steps 1–4 are done, sign-in works. The `authorizationCode`→token **exchange** (which *does* use the `.p8`) is best-effort and only captures a **refresh token**; without it, sign-in still succeeds and only the **account-deletion Apple-revoke** for web users degrades to `skipped_no_token`. Provision the `.p8`/Team ID/Key ID in `/manage/configuration` (same creds as native SIWA) before **production** if you want the revoke path complete — it is **not** a blocker for alpha testing.
 
 #### 🎚 Operator runbook — turning on admin-configurable feature gating (#1481)
 
