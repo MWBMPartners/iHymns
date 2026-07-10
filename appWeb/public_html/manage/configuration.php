@@ -42,6 +42,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    for the public read path; this page needs the stronger guarantee. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+/* #1470 W1 — needed for the IHYMNS_SIWA_CLIENT_ID constant (the save_apple
+   handler below rejects a pasted Services ID that matches the native App
+   ID) and for the two new appleWebLoginEnabledForChannel()-adjacent
+   settings this card now manages. No DB/network side effect at require
+   time — see that file's own top-of-file docblock. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -518,6 +524,48 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $privateKeyVal = $candidate;
                 }
 
+                /* #1470 W1 — Sign in with Apple for WEB. Two NON-secret
+                   companion settings: the Services ID is public-by-definition
+                   (same visibility class as the native bundle id above), and
+                   the channel allow-list is just a rollout dial — neither
+                   needs the secret=true / blank-means-keep convention the
+                   private key above uses; both are safe to echo back into
+                   the form and are saved every submit (never "leave blank to
+                   keep"), matching apple_team_id/apple_siwa_key_id's own
+                   always-overwrite behaviour just above. */
+                $servicesIdVal = trim((string)($_POST['apple_siwa_services_id'] ?? ''));
+                if ($servicesIdVal !== '') {
+                    if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9.\-]{0,254}$/', $servicesIdVal)) {
+                        throw new \RuntimeException('Apple Services ID doesn\'t look like a valid identifier (letters/digits/dot/hyphen, starting with a letter or digit, e.g. "app.ihymns.web").');
+                    }
+                    if ($servicesIdVal === IHYMNS_SIWA_CLIENT_ID) {
+                        throw new \RuntimeException('That is the NATIVE App ID ("' . IHYMNS_SIWA_CLIENT_ID . '") — Sign in with Apple for web needs a SEPARATE Services ID (e.g. "app.ihymns.web"), not the App ID reused here.');
+                    }
+                }
+
+                /* Channel allow-list — each comma-separated token must be one
+                   of the three canonical channels (ihymns_environment()'s
+                   return values) or the single literal "all". Anything else
+                   (a typo, a stray docroot hostname pasted here by mistake)
+                   is rejected outright rather than silently ignored, since a
+                   token that never matches would look "saved" but do nothing. */
+                $webLoginEnabledVal = trim((string)($_POST['apple_web_login_enabled'] ?? ''));
+                if ($webLoginEnabledVal !== '') {
+                    $validChannelTokens = ['alpha', 'beta', 'production', 'all'];
+                    $webChannelTokens = array_values(array_filter(array_map('trim', explode(',', $webLoginEnabledVal)), static fn(string $t): bool => $t !== ''));
+                    foreach ($webChannelTokens as $tok) {
+                        if (!in_array(strtolower($tok), $validChannelTokens, true)) {
+                            throw new \RuntimeException('Web login channel allow-list must be a comma-separated list of "alpha", "beta", "production", or "all" — "' . $tok . '" is none of those.');
+                        }
+                    }
+                    /* Normalise to lowercase for storage — appleWebLoginEnabledForChannel()'s
+                       PURE core already lowercases on read, but storing it
+                       normalised keeps the admin-echoed value and the raw
+                       tblAppSettings row identical (no surprise casing on
+                       the next page load). */
+                    $webLoginEnabledVal = implode(',', array_map('strtolower', $webChannelTokens));
+                }
+
                 $changedKeys = ['apple_team_id', 'apple_siwa_key_id'];
                 $saveSetting($db, 'apple_team_id', $teamIdVal);
                 $saveSetting($db, 'apple_siwa_key_id', $keyIdVal);
@@ -525,6 +573,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $changedKeys[] = 'apple_siwa_private_key';
                     $saveSetting($db, 'apple_siwa_private_key', $privateKeyVal);
                 }
+                $changedKeys[] = 'apple_siwa_services_id';
+                $saveSetting($db, 'apple_siwa_services_id', $servicesIdVal);
+                $changedKeys[] = 'apple_web_login_enabled';
+                $saveSetting($db, 'apple_web_login_enabled', $webLoginEnabledVal);
 
                 if (function_exists('logActivity')) {
                     logActivity(
@@ -639,6 +691,15 @@ $appleTeamId = (string)(getAppSetting('apple_team_id', '') ?? '');
    email_gmail_sa_json above). */
 $appleSiwaKeyId = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
 $appleSiwaPrivateKeySet = ((string)(getAppSetting('apple_siwa_private_key', '') ?? '')) !== '';
+
+/* Sign in with Apple for WEB (#1470 W1) — both NON-secret, echoed back as-is
+   (no "leave blank to keep" convention). appleWebLoginEnabledForChannel()
+   itself is not called here — this page shows the RAW saved setting values,
+   not a resolved per-channel boolean (an admin editing this form needs to
+   see exactly what is stored, on whichever docroot they happen to be
+   viewing it from). */
+$appleSiwaServicesId = (string)(getAppSetting('apple_siwa_services_id', '') ?? '');
+$appleWebLoginEnabledSetting = (string)(getAppSetting('apple_web_login_enabled', '') ?? '');
 
 /* Native app store IDs (#1403/#1462) — the values echoed back are the
    CANONICAL, parsed IDs saved by save_native_apps above (never a raw
@@ -868,6 +929,57 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         <strong>not</strong> the App Store Connect API deploy key
                         (<code>APPLE_ASC_KEY_P8</code>) — that is a different key, used only by the
                         release pipeline.
+                    </div>
+                </div>
+
+                <div class="col-12"><hr class="text-secondary my-2"></div>
+
+                <div class="col-12">
+                    <h3 class="h6 mb-1">
+                        <i class="bi bi-globe me-1"></i>Sign in with Apple — Web (#1470)
+                        <span class="badge <?= $appleSiwaServicesId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleSiwaServicesId === '' ? 'Services ID not set' : 'Services ID set' ?>
+                        </span>
+                        <span class="badge <?= $appleWebLoginEnabledSetting === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleWebLoginEnabledSetting === '' ? 'Disabled on every channel' : ('Enabled: ' . htmlspecialchars($appleWebLoginEnabledSetting, ENT_QUOTES, 'UTF-8')) ?>
+                        </span>
+                    </h3>
+                    <p class="small text-secondary mb-3">
+                        Web/PWA Sign in with Apple uses a SEPARATE <strong>Services ID</strong>
+                        (developer.apple.com &rarr; Identifiers &rarr; "+" &rarr; Services IDs — grouped
+                        under the <code>app.ihymns</code> App ID, same Apple Developer Team as the
+                        native app above), <strong>not</strong> the App ID itself. Register the return
+                        URL <code>https://&lt;each docroot host&gt;/</code> against that Services ID for
+                        EVERY docroot this app is deployed to (e.g. <code>https://ihymns.app/</code>,
+                        <code>https://beta.ihymns.app/</code>, <code>https://dev.ihymns.app/</code>) —
+                        it must match exactly what the web sign-in button sends, or Apple's code
+                        exchange fails. Both fields below are dormant: web sign-in stays entirely
+                        unavailable (a clean 503, identical to today) until BOTH a Services ID is
+                        saved here AND the current channel is included in the allow-list below.
+                    </p>
+                </div>
+                <div class="col-md-6">
+                    <label for="apple_siwa_services_id" class="form-label">Services ID</label>
+                    <input type="text" name="apple_siwa_services_id" id="apple_siwa_services_id" class="form-control"
+                           maxlength="255" placeholder="app.ihymns.web" autocomplete="off"
+                           value="<?= htmlspecialchars($appleSiwaServicesId, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">
+                        Not a secret (same visibility class as the native app's bundle id) — but must
+                        NOT be <code>app.ihymns</code> (that's the App ID, a different identifier).
+                        Leave blank to clear (disables web sign-in on every channel).
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <label for="apple_web_login_enabled" class="form-label">Enabled on channels</label>
+                    <input type="text" name="apple_web_login_enabled" id="apple_web_login_enabled" class="form-control"
+                           maxlength="60" placeholder="alpha   or   alpha,beta   or   all"
+                           value="<?= htmlspecialchars($appleWebLoginEnabledSetting, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">
+                        Comma-separated <code>alpha</code> / <code>beta</code> / <code>production</code>,
+                        or the single word <code>all</code>. All three docroots share ONE database, so
+                        this is a staged-rollout dial for the shared-DB deploy — e.g. start with
+                        <code>alpha</code>, widen to <code>alpha,beta</code> once verified, then
+                        <code>all</code>. Leave blank to disable on every channel (the safe default).
                     </div>
                 </div>
 

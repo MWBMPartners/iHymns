@@ -77,6 +77,30 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
  *  the ES256 client_secret's `sub` claim (§3.4). */
 const IHYMNS_SIWA_CLIENT_ID = 'app.ihymns';
 
+/**
+ * The single Apple-registered "return URL" path for the WEB (browser popup)
+ * Sign in with Apple flow (#1470 W1). MUST be byte-identical to:
+ *   (a) the Return URL registered against the `apple_siwa_services_id`
+ *       Services ID in Apple's Developer portal — for EVERY docroot
+ *       hostname (dev./beta./www./bare-apex `ihymns.app`); and
+ *   (b) the `redirectURI` the W2 front-end's `AppleID.auth.init({...})`
+ *       call supplies (`js/modules/apple-signin.js`, not built by this W1
+ *       backend slice) when it initiates the popup flow.
+ * Apple's `/auth/token` code-exchange REJECTS the request (400
+ * "invalid_grant") on ANY mismatch between the redirect_uri implied by the
+ * original `/auth/authorize` popup call and the one resent here — so a
+ * change to this constant is a breaking change that must be mirrored in
+ * BOTH Apple's portal and the front-end in the same deploy.
+ *
+ * '/' (the origin root) rather than a dedicated `/auth/apple/callback`-style
+ * path: POPUP mode (plan §4) means Apple's redirect happens INSIDE the
+ * popup/iframe, never the top-level page, so there is no server-rendered
+ * "callback page" to route to — the popup's own JS reads the result and
+ * closes itself. A future REDIRECT-mode fallback (plan §4/W4) would need a
+ * real routed path here instead of the bare root.
+ */
+const APPLE_SIWA_WEB_RETURN_PATH = '/';
+
 /** DER encoding of AlgorithmIdentifier { rsaEncryption, NULL } — the fixed prefix
  *  every RSA SubjectPublicKeyInfo carries. OID 1.2.840.113549.1.1.1. */
 const _APPLE_SIWA_RSA_ALGID_DER = "\x30\x0D\x06\x09\x2A\x86\x48\x86\xF7\x0D\x01\x01\x01\x05\x00";
@@ -522,6 +546,141 @@ function appleSiwaBuildClientSecret(string $teamId, string $keyId, string $clien
 }
 
 /* =============================================================================
+ * WEB SIWA — dormancy gate + redirect-URI helpers (#1470 W1)
+ *
+ * Everything below is settings/environment plumbing, NOT crypto — it decides
+ * (a) whether ?action=auth_apple should even ENTERTAIN `platform=web` on
+ * THIS deploy channel, and (b) what redirect_uri a web code exchange must
+ * present. Both are consumed by api.php's `auth_apple` AND `app_status`
+ * cases (the latter needs `appleWebLoginEnabledForChannel()` to decide
+ * whether to advertise a web sign-in button at all) — living here keeps
+ * every Apple-SIWA-specific decision in the ONE module (this file's
+ * top-of-file docblock), rather than forking a second copy into a generic
+ * settings/config include.
+ *
+ * DORMANCY: with `apple_siwa_services_id` unset (the shipped default), both
+ * helpers below are inert — appleWebLoginEnabledForChannel() short-circuits
+ * to false via its PURE core before ever inspecting the channel allow-list,
+ * so `platform=web` 503s exactly like today's un-migrated-table gate.
+ * ========================================================================== */
+
+/**
+ * Is Sign in with Apple for WEB enabled on the CURRENT deploy channel?
+ * Requires BOTH:
+ *   1. `apple_siwa_services_id` (manage/configuration.php) is a non-empty,
+ *      admin-configured Services ID — the web `aud` ?action=auth_apple will
+ *      check identity tokens against.
+ *   2. The current channel (ihymns_environment(): 'alpha' | 'beta' |
+ *      'production') is covered by the `apple_web_login_enabled`
+ *      comma-separated allow-list setting (or that setting is the literal
+ *      `all`).
+ * All three docroots SHARE ONE DATABASE (rule #1233/#1352 precedent), so a
+ * single global on/off flag would flip every channel at once the moment an
+ * admin saves a Services ID — the channel allow-list is what lets the
+ * owner soak web sign-in on `alpha` alone before widening it.
+ *
+ * Delegates entirely to the PURE _appleWebLoginEnabledCore() so
+ * tests/php/test-apple-siwa-web.php can exercise the full allow-list truth
+ * table without a database.
+ *
+ * @return bool
+ */
+function appleWebLoginEnabledForChannel(): bool
+{
+    $servicesId = function_exists('getAppSetting') ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '') : '';
+    $allowList  = function_exists('getAppSetting') ? (string)(getAppSetting('apple_web_login_enabled', '') ?? '') : '';
+    $channel    = function_exists('ihymns_environment') ? ihymns_environment() : 'production';
+    return _appleWebLoginEnabledCore($servicesId, $allowList, $channel);
+}
+
+/**
+ * PURE core of appleWebLoginEnabledForChannel() — no DB, no superglobals, no
+ * `ihymns_environment()` call; every input is an explicit parameter so the
+ * full truth table (no services id / empty allow-list / channel not listed /
+ * channel listed / `all` / mixed-case + whitespace tokens) is assertable
+ * without any environment setup.
+ *
+ * @param string $servicesId The raw `apple_siwa_services_id` setting value.
+ * @param string $allowList  The raw `apple_web_login_enabled` setting value —
+ *                              a comma-separated list of channel tokens, or
+ *                              the single literal `all`. Empty = disabled
+ *                              everywhere (the shipped default).
+ * @param string $channel    The CURRENT deploy channel (ihymns_environment()'s
+ *                              return value: 'alpha' | 'beta' | 'production').
+ * @return bool
+ */
+function _appleWebLoginEnabledCore(string $servicesId, string $allowList, string $channel): bool
+{
+    if (trim($servicesId) === '') {
+        return false;
+    }
+    $tokens = array_filter(array_map(
+        static fn(string $t): string => strtolower(trim($t)),
+        explode(',', $allowList)
+    ), static fn(string $t): bool => $t !== '');
+    if (!$tokens) {
+        return false;
+    }
+    $channel = strtolower(trim($channel));
+    foreach ($tokens as $token) {
+        if ($token === 'all' || $token === $channel) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * The web redirect_uri for THIS request's docroot — 'https://' . $host .
+ * APPLE_SIWA_WEB_RETURN_PATH, where $host is $_SERVER['HTTP_HOST'] validated
+ * against OUR OWN domain first. Returns null (never a guess, never a
+ * fallback host) when the Host fails validation, so the caller's code
+ * exchange degrades to "skip the exchange" (best-effort — see
+ * appleSiwaExchangeCode()'s docblock) rather than ever sending Apple a
+ * redirect_uri built from untrusted input.
+ *
+ * SECURITY (CWE-640, Host-header injection): $_SERVER['HTTP_HOST'] is
+ * attacker-controlled on the wire. The validation lives in the PURE
+ * _appleSiwaWebHostAllowed() below so it is unit-testable without faking a
+ * request; this wrapper is the only place that reads the superglobal.
+ *
+ * @return string|null
+ */
+function appleSiwaWebRedirectUri(): ?string
+{
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    if (!_appleSiwaWebHostAllowed($host)) {
+        return null;
+    }
+    return 'https://' . $host . APPLE_SIWA_WEB_RETURN_PATH;
+}
+
+/**
+ * PURE host validator for appleSiwaWebRedirectUri(). Accepts exactly
+ * `ihymns.app` or any subdomain of it (`*.ihymns.app`) — a SUFFIX check
+ * rather than includes/config.php's appCanonicalHost() closed 4-entry list,
+ * deliberately chosen here because iHymns owns the DNS for the whole
+ * `ihymns.app` zone, so nobody else can ever stand up a subdomain that
+ * matches this suffix; the closed list would otherwise need a code change
+ * for every new docroot subdomain the owner adds. The companion charset
+ * gate rejects anything that isn't a bare hostname (no scheme/port/path/
+ * userinfo/CR-LF) BEFORE the suffix check runs, so a crafted Host header
+ * like `evil.com` can never smuggle a `.ihymns.app`-ending suffix past a
+ * naive `str_ends_with()` call via characters the charset gate excludes.
+ *
+ * @param string $host Raw candidate host (already lower/trim-normalised inside).
+ * @return bool
+ */
+function _appleSiwaWebHostAllowed(string $host): bool
+{
+    $host = strtolower(trim($host));
+    if ($host === '' || !preg_match('/^[a-z0-9.-]+$/', $host)) {
+        return false;
+    }
+    return $host === 'ihymns.app' || str_ends_with($host, '.ihymns.app');
+}
+
+/* =============================================================================
  * I/O SHELL — curl + DB (kept thin; all crypto decisions live in the pure
  * functions above so these are easy to eyeball for "does this call the right
  * pure function with the right inputs")
@@ -746,6 +905,40 @@ function appleSiwaConsumeNonce(\mysqli $db, string $purpose, string $rawNonce): 
 }
 
 /**
+ * PURE builder for appleSiwaExchangeCode()'s `application/x-www-form-urlencoded`
+ * POST body — split out of that function (#1470 W1) so
+ * tests/php/test-apple-siwa-web.php can assert the EXACT presence/absence of
+ * `redirect_uri` WITHOUT a network call (appleSiwaExchangeCode() itself always
+ * hits `https://appleid.apple.com/auth/token`, which CI must never do).
+ *
+ * Apple's `/auth/token` endpoint REJECTS the whole request (400
+ * "invalid_request") if `redirect_uri` is PRESENT but empty — native's
+ * ASAuthorization flow never had a redirect_uri to begin with, so the key is
+ * OMITTED ENTIRELY (never sent as `redirect_uri=`) whenever $redirectUri is
+ * null or ''. That keeps every existing (native) caller's body
+ * BYTE-IDENTICAL to before this function existed.
+ *
+ * @param string      $code         The `authorizationCode` from the client's SIWA credential.
+ * @param string      $clientSecret ES256 JWT from appleSiwaBuildClientSecret().
+ * @param string      $clientId     IHYMNS_SIWA_CLIENT_ID (native) or the Services ID (web).
+ * @param string|null $redirectUri  Web only — appleSiwaWebRedirectUri()'s result. Null/'' → omitted.
+ * @return string application/x-www-form-urlencoded body.
+ */
+function _appleSiwaExchangeCodeBody(string $code, string $clientSecret, string $clientId, ?string $redirectUri): string
+{
+    $params = [
+        'grant_type'    => 'authorization_code',
+        'code'          => $code,
+        'client_id'     => $clientId,
+        'client_secret' => $clientSecret,
+    ];
+    if ($redirectUri !== null && $redirectUri !== '') {
+        $params['redirect_uri'] = $redirectUri;
+    }
+    return http_build_query($params);
+}
+
+/**
  * Exchange an authorization code for Apple tokens (incl. a `refresh_token`)
  * at `POST /auth/token`. Only useful within ~5 minutes of the original
  * authorization (Apple's window) — called right after auth_apple's mapping
@@ -753,23 +946,24 @@ function appleSiwaConsumeNonce(\mysqli $db, string $purpose, string $rawNonce): 
  * can later hand to appleSiwaRevokeToken(). Best-effort by design: every
  * failure here is non-fatal to sign-in (caller logs an outcome, never blocks).
  *
- * @param string $code         The `authorizationCode` from the client's SIWA credential.
- * @param string $clientSecret ES256 JWT from appleSiwaBuildClientSecret().
- * @param string $clientId     IHYMNS_SIWA_CLIENT_ID.
+ * @param string      $code         The `authorizationCode` from the client's SIWA credential.
+ * @param string      $clientSecret ES256 JWT from appleSiwaBuildClientSecret().
+ * @param string      $clientId     IHYMNS_SIWA_CLIENT_ID (native) or the Services ID (web).
+ * @param string|null $redirectUri  #1470 W1 — Apple REQUIRES `redirect_uri` on a web code
+ *                                    exchange (native's ASAuthorization sends none, so this
+ *                                    stays null for every native call). Only included in the
+ *                                    outbound body when non-null/non-empty — see
+ *                                    _appleSiwaExchangeCodeBody()'s docblock for why a
+ *                                    present-but-empty value is never sent either.
  * @return array|null Decoded JSON body (contains `refresh_token`) on HTTP 200 with a token present, else null.
  */
-function appleSiwaExchangeCode(string $code, string $clientSecret, string $clientId): ?array
+function appleSiwaExchangeCode(string $code, string $clientSecret, string $clientId, ?string $redirectUri = null): ?array
 {
     if ($code === '' || $clientSecret === '' || !function_exists('curl_init')) {
         return null;
     }
 
-    $body = http_build_query([
-        'grant_type'    => 'authorization_code',
-        'code'          => $code,
-        'client_id'     => $clientId,
-        'client_secret' => $clientSecret,
-    ]);
+    $body = _appleSiwaExchangeCodeBody($code, $clientSecret, $clientId, $redirectUri);
 
     $decoded = _appleSiwaPostForm('https://appleid.apple.com/auth/token', $body);
     if (!is_array($decoded) || empty($decoded['refresh_token']) || !is_string($decoded['refresh_token'])) {
