@@ -2483,6 +2483,32 @@ return [
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblAppAnalyticsEvents'),
     ],
 
+    'gating-registry' => [
+        'script' => 'migrate-add-gating-registry.php',
+        'card' => [
+            'title'  => 'Admin-configurable feature gating (#1481 P1)',
+            'body'   => 'Creates <code>tblGatingCapabilities</code> (admin-defined capability'
+                      . ' DEFINITIONS — each enabled row is unioned into the code'
+                      . ' <code>TIER_CAPS</code> registry by <code>tierCapsEffective()</code>, so a'
+                      . ' Global Admin can define a new gated feature from'
+                      . ' <code>/manage/feature-gating</code> with no code deploy) and'
+                      . ' <code>tblGatingRules</code> (P2 schema, created now per rule #20 — the'
+                      . ' enforcement loop that reads it is a separate, not-yet-built change; rows'
+                      . ' are born disabled). Both additive — with'
+                      . ' <code>tblGatingCapabilities</code> empty, every surface (the'
+                      . ' <code>/manage/tiers</code> matrix, the <code>access_tiers</code>/'
+                      . ' <code>tier_check</code> API, content-gating enforcement) behaves'
+                      . ' byte-identically to before this migration. Idempotent — safe to re-run.',
+            'button' => 'Run Admin-Configurable Feature Gating Migration',
+        ],
+        /* Multi-object OR-probe (rule #19/#20): pending until BOTH tables exist, so a
+           partial apply (e.g. the first CREATE TABLE lands, the second fails) never
+           shows the card green. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_tableExists($db, 'tblGatingCapabilities')
+            || !_migProbe_tableExists($db, 'tblGatingRules'),
+    ],
+
     /* ---- #1466 P3 — the gated encrypt-in-place migration (DATA REWRITE, manual + gated) ----
        Encrypts the 8 flagged tblAppSettings secret values (SMTP/API keys, SIWA .p8) in place
        under the master key and flips secret_encryption_active=1. NOT destructive (readers

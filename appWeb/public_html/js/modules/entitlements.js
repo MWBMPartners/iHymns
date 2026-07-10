@@ -47,6 +47,9 @@ export const ENTITLEMENTS = {
     manage_content_restrictions: ['admin', 'global_admin'],
     manage_access_tiers:         ['admin', 'global_admin'],
     assign_user_tier:            ['admin', 'global_admin'],
+    /* Admin-configurable feature gating (#1481 P1) — defining capabilities/
+       rules is Global-Admin-only; per-tier values stay manage_access_tiers. */
+    manage_feature_gating:       ['global_admin'],
 
     /* Card-layout personalisation (#448) */
     manage_default_card_layout: ['admin', 'global_admin'],

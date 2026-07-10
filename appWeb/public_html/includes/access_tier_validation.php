@@ -80,10 +80,271 @@ if (!defined('IHYMNS_TIER_CAPS_DEFINED')) {
         'CanDownloadPdf'     => ['PDF',          'Download sheet-music PDFs',                 'column', 0],
         'CanOfflineSave'     => ['Offline',      'Save songs for offline use',               'column', 0],
         'RequiresCcli'       => ['Needs CCLI',   'Tier requires a valid CCLI licence number', 'column', 0],
-        /* NEW gated caps go BELOW, storage 'json' — one line, no ALTER.
-           Example (commented until needed):
+        /* NEW code-registered caps go BELOW, storage 'json' — one line, no
+           ALTER. Example (commented until needed):
            'CanRequestSongs' => ['Requests', 'Submit song requests', 'json', 0], */
     ]);
+}
+
+/**
+ * Grammar every admin-defined capability CapKey must satisfy (#1481 P1).
+ *
+ * PascalCase, starts 'Can' + an uppercase letter, 3–33 chars total
+ * ('Can' + 1 + 1..29). Shared by the tblGatingCapabilities merge (below) and
+ * the /manage/feature-gating.php create/update validators, so the grammar
+ * lives in exactly one place.
+ */
+if (!defined('GATING_CAP_KEY_PATTERN')) {
+    define('GATING_CAP_KEY_PATTERN', '/^Can[A-Z][A-Za-z0-9]{1,29}$/');
+}
+
+/**
+ * Does $capKey collide, case-insensitively, with a code-registered TIER_CAPS
+ * key (#1481 P1)?
+ *
+ * A single case-INSENSITIVE compare already covers "incl. camelCase form":
+ * strcasecmp() ignores case at every position, so 'CanViewLyrics',
+ * 'canViewLyrics', and 'CANVIEWLYRICS' all compare equal to each other — a
+ * separate lcfirst()-based comparison would be redundant (verified: PHP's
+ * strcasecmp doesn't special-case the first character).
+ *
+ * Shared by tierCapsMergeUnion() (below — silently excludes a colliding DB
+ * row from the union, code wins) and /manage/feature-gating.php's create
+ * validator (rejects the submission with a themed error, never silently
+ * drops — the two callers want different FAILURE handling but the same
+ * collision TEST, so the test lives in exactly one place per the repo's
+ * modularity rule).
+ *
+ * @param string $capKey Candidate capability key.
+ * @return bool true if it collides with an existing code key.
+ */
+if (!function_exists('tierCapKeyCollidesWithCode')) {
+    function tierCapKeyCollidesWithCode(string $capKey): bool
+    {
+        foreach (array_keys(TIER_CAPS) as $codeKey) {
+            if (strcasecmp($codeKey, $capKey) === 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+}
+
+/**
+ * PURE merge of TIER_CAPS with a set of already-fetched, already-Enabled=1
+ * tblGatingCapabilities rows (#1481 P1). No I/O whatsoever — this is the
+ * DB-free test seam for tierCapsEffective()'s union/collision logic (mirrors
+ * the secretCryptoInjectKeyset() injection-hook pattern used by #1466's
+ * DB-free CI tests: the I/O shell is thin, the interesting logic is pure and
+ * directly testable without a live \mysqli).
+ *
+ * A DB row is IGNORED (never enters the union) when:
+ *   - its CapKey is empty or fails GATING_CAP_KEY_PATTERN (never trust a
+ *     malformed key out of the database into a registry other code indexes
+ *     by string key), or
+ *   - its CapKey collides, case-insensitively, with a code-registered
+ *     TIER_CAPS key OR that key's camelCase (lcfirst) emit form — e.g. a DB
+ *     row named "canViewLyrics" or "CANVIEWLYRICS" would otherwise shadow
+ *     the built-in CanViewLyrics. Code always wins; the collision is
+ *     reported back to the caller (who logs it) rather than silently eaten.
+ *     (In practice /manage/feature-gating.php's create validator already
+ *     REJECTS a colliding CapKey up front — reusing tierCapKeyCollidesWithCode()
+ *     — so this branch is defence-in-depth against a row that reached the
+ *     table some other way, e.g. a future bulk-import source.)
+ *
+ * @param array $dbRows Rows shaped like the tblGatingCapabilities SELECT
+ *                       (assoc keys: CapKey, Label, Description,
+ *                       DefaultValue, EmitInApi), pre-filtered to Enabled=1.
+ * @return array{union: array<string,array>, emit: array<string,bool>, collisions: string[]}
+ */
+if (!function_exists('tierCapsMergeUnion')) {
+    function tierCapsMergeUnion(array $dbRows): array
+    {
+        $union      = TIER_CAPS;
+        $emit       = [];
+        $collisions = [];
+
+        foreach ($dbRows as $row) {
+            $capKey = trim((string)($row['CapKey'] ?? ''));
+            if ($capKey === '' || !preg_match(GATING_CAP_KEY_PATTERN, $capKey)) {
+                continue;   /* malformed — never let it into the union */
+            }
+
+            if (tierCapKeyCollidesWithCode($capKey)) {
+                $collisions[] = $capKey;
+                continue;   /* code wins — caller logs this */
+            }
+
+            /* Same 4-tuple shape as every TIER_CAPS entry — storage is
+               ALWAYS 'json' for a DB-defined cap (rule #20/#28: a growable
+               vocabulary never gets its own tblAccessTiers column). */
+            $union[$capKey] = [
+                (string)($row['Label'] ?? $capKey),
+                (string)($row['Description'] ?? ''),
+                'json',
+                ((int)($row['DefaultValue'] ?? 0)) === 1 ? 1 : 0,
+            ];
+            $emit[$capKey] = ((int)($row['EmitInApi'] ?? 1)) === 1;
+        }
+
+        return ['union' => $union, 'emit' => $emit, 'collisions' => $collisions];
+    }
+}
+
+/**
+ * Has tblGatingCapabilities landed yet? Same existence-gate shape as
+ * tierCapsColumnExists() — request-cached, INFORMATION_SCHEMA with a bound
+ * param, any failure degrades to false (not-migrated).
+ *
+ * @param \mysqli $db Live connection.
+ * @return bool true once migrate-add-gating-registry.php has run.
+ */
+if (!function_exists('gatingCapabilitiesTableExists')) {
+    function gatingCapabilitiesTableExists(\mysqli $db): bool
+    {
+        static $cached = null;
+        if ($cached !== null) {
+            return $cached;
+        }
+        try {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'tblGatingCapabilities' LIMIT 1"
+            );
+            $stmt->execute();
+            $cached = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $cached = false;
+        }
+        return $cached;
+    }
+}
+
+/**
+ * Thin I/O shell around tierCapsMergeUnion(): fetches the enabled
+ * tblGatingCapabilities rows (existence-gated, request-static cached) and
+ * returns BOTH the merged union and the DB-cap EmitInApi map in one place, so
+ * tierCapsEffective() and tierCapEmitInApi() share a single cached fetch
+ * instead of hitting the DB twice.
+ *
+ * ANY failure (no DB credentials, un-migrated table, a transient DB error)
+ * degrades to `['union' => TIER_CAPS, 'emit' => []]` — byte-identical to
+ * pre-#1481 behaviour. This is what "keep the degrade path safe when $db is
+ * null" means in practice: passing null makes this call getDbMysqli()
+ * itself (wrapped in the same try/catch), so every existing call site that
+ * doesn't know about $db keeps working unchanged.
+ *
+ * Caching is keyed on "was $db explicitly supplied": production call sites
+ * omit it and get one cached fetch per request (mirrors
+ * tierCapsColumnExists()); tests that want to exercise multiple DB states in
+ * one process pass $db explicitly, which bypasses the cache — the deliberate
+ * test seam (mirrors #1466's secretCryptoInjectKeyset() pattern).
+ *
+ * @param ?\mysqli $db Optional connection (test seam); null = getDbMysqli().
+ * @return array{union: array<string,array>, emit: array<string,bool>}
+ */
+if (!function_exists('_tierCapsUnionAndEmit')) {
+    function _tierCapsUnionAndEmit(?\mysqli $db = null): array
+    {
+        static $cached = null;
+        $useCache = ($db === null);
+        if ($useCache && $cached !== null) {
+            return $cached;
+        }
+
+        $merged = null;
+        try {
+            $conn = $db;
+            if ($conn === null && function_exists('getDbMysqli')) {
+                $conn = getDbMysqli();
+            }
+            if ($conn instanceof \mysqli && gatingCapabilitiesTableExists($conn)) {
+                $stmt = $conn->prepare(
+                    'SELECT CapKey, Label, Description, DefaultValue, EmitInApi
+                       FROM tblGatingCapabilities
+                      WHERE Enabled = 1
+                      ORDER BY SortOrder ASC, CapKey ASC'
+                );
+                $stmt->execute();
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $merged = tierCapsMergeUnion($rows);
+                foreach ($merged['collisions'] as $capKey) {
+                    error_log(
+                        "[tierCapsEffective] DB gating-capability key '{$capKey}' collides with a"
+                        . ' code-registered TIER_CAPS key (case-insensitive, incl. camelCase) —'
+                        . ' ignored, the code-registered cap wins.'
+                    );
+                }
+            }
+        } catch (\Throwable $_e) {
+            /* ANY failure — no credentials, un-migrated table, transient DB
+               error — degrades to the code registry alone. */
+            $merged = null;
+        }
+
+        $out = [
+            'union' => $merged['union'] ?? TIER_CAPS,
+            'emit'  => $merged['emit']  ?? [],
+        ];
+        if ($useCache) {
+            $cached = $out;
+        }
+        return $out;
+    }
+}
+
+/**
+ * The effective capability registry: TIER_CAPS ∪ enabled tblGatingCapabilities
+ * rows (#1481 P1). This is the ONE registry every surface should consult
+ * going forward — the /manage/tiers matrix, the admin_tier_create/update +
+ * access_tiers/tier_check API surfaces, and checkTierAccess()'s cap-key
+ * resolution (capValueForTierAction()) all read this instead of the bare
+ * TIER_CAPS constant, so a Global-Admin-defined capability is picked up
+ * everywhere with zero further code changes (CANONICAL HOW-TO for rule #28,
+ * now UI-driven as well as one-line-of-code-driven).
+ *
+ * Dormant + additive: with tblGatingCapabilities empty or absent (an
+ * un-migrated docroot), this returns TIER_CAPS unchanged — every consumer
+ * behaves byte-identically to before #1481.
+ *
+ * @param ?\mysqli $db Optional connection (test seam) — see
+ *                      _tierCapsUnionAndEmit(). Production call sites omit
+ *                      this; it degrades to getDbMysqli() internally.
+ * @return array<string,array> Same 4-tuple shape as TIER_CAPS.
+ */
+if (!function_exists('tierCapsEffective')) {
+    function tierCapsEffective(?\mysqli $db = null): array
+    {
+        return _tierCapsUnionAndEmit($db)['union'];
+    }
+}
+
+/**
+ * Should this capability be surfaced on the public access_tiers API emit?
+ *
+ * Code-registered caps (TIER_CAPS) are ALWAYS emitted — that's today's
+ * contract, unchanged. A DB-defined cap is emitted only when its
+ * EmitInApi=1 (the default); an unknown key defaults to true (matches the
+ * column default, and never hides a cap the caller didn't know was
+ * DB-gated).
+ *
+ * @param string   $capKey Exact TIER_CAPS / tblGatingCapabilities key.
+ * @param ?\mysqli $db     Optional connection (test seam).
+ * @return bool
+ */
+if (!function_exists('tierCapEmitInApi')) {
+    function tierCapEmitInApi(string $capKey, ?\mysqli $db = null): bool
+    {
+        if (array_key_exists($capKey, TIER_CAPS)) {
+            return true;
+        }
+        $emit = _tierCapsUnionAndEmit($db)['emit'];
+        return $emit[$capKey] ?? true;
+    }
 }
 
 /**
@@ -97,10 +358,14 @@ if (!defined('IHYMNS_TIER_CAPS_DEFINED')) {
 if (!function_exists('tierCapStorage')) {
     function tierCapStorage(string $k): string
     {
-        /* ELI5: ask TIER_CAPS where this cap lives.
-           WHY: the 4-tuple's 3rd slot is the storage; default to 'json'
-           for unknown keys so we never build SQL around a bad column. */
-        return (string)(TIER_CAPS[$k][2] ?? 'json');
+        /* ELI5: ask the effective registry (code + admin-defined) where this
+           cap lives. WHY: re-pointed to tierCapsEffective() (#1481) so a
+           Global-Admin-defined capability resolves here too — when
+           tblGatingCapabilities is empty/absent, tierCapsEffective() ===
+           TIER_CAPS so this is byte-identical to the pre-#1481 lookup. The
+           4-tuple's 3rd slot is the storage; default to 'json' for unknown
+           keys so we never build SQL around a bad column. */
+        return (string)(tierCapsEffective()[$k][2] ?? 'json');
     }
 }
 
@@ -115,9 +380,11 @@ if (!function_exists('tierCapDefault')) {
     function tierCapDefault(string $k): int
     {
         /* ELI5: what value should we assume if this cap was never set?
-           WHY: the 4-tuple's 4th slot is the default; coerce to 0/1 so an
-           un-migrated install reads every json cap at a sane baseline. */
-        return ((int)(TIER_CAPS[$k][3] ?? 0)) === 1 ? 1 : 0;
+           WHY: re-pointed to tierCapsEffective() (#1481) so an admin-defined
+           cap's DefaultValue resolves here too. The 4-tuple's 4th slot is
+           the default; coerce to 0/1 so an un-migrated install reads every
+           json cap at a sane baseline. */
+        return ((int)(tierCapsEffective()[$k][3] ?? 0)) === 1 ? 1 : 0;
     }
 }
 
@@ -132,9 +399,14 @@ if (!function_exists('tierCapColumnKeys')) {
     {
         /* ELI5: list the caps that have their own DB column.
            WHY: the create/update SQL binds these as real columns; the
-           emit selects them as the contract's camelCase keys. */
+           emit selects them as the contract's camelCase keys. Iterates
+           tierCapsEffective() (#1481) for symmetry with tierCapJsonKeys() —
+           in practice every admin-defined cap is storage 'json' (rule #28),
+           so this set is always exactly the 7 built-in column caps, but
+           reading through the union keeps this function honest about where
+           the list actually comes from. */
         $out = [];
-        foreach (TIER_CAPS as $k => $_t) {
+        foreach (tierCapsEffective() as $k => $_t) {
             if (tierCapStorage($k) === 'column') { $out[] = $k; }
         }
         return $out;
@@ -153,9 +425,15 @@ if (!function_exists('tierCapJsonKeys')) {
     {
         /* ELI5: list the caps that live inside the JSON column.
            WHY: create/update assemble these into one json_encode() bind;
-           the emit decodes them and adds each as a camelCase key. */
+           the emit decodes them and adds each as a camelCase key. Iterates
+           tierCapsEffective() (#1481) so an admin-defined capability's key
+           is included automatically — no new value storage: it rides the
+           SAME tblAccessTiers.Capabilities JSON column every code-registered
+           json cap already used (#1352). Dormant: empty/absent
+           tblGatingCapabilities ⇒ tierCapsEffective() === TIER_CAPS ⇒ this
+           set is unchanged from before #1481. */
         $out = [];
-        foreach (TIER_CAPS as $k => $_t) {
+        foreach (tierCapsEffective() as $k => $_t) {
             if (tierCapStorage($k) === 'json') { $out[] = $k; }
         }
         return $out;
