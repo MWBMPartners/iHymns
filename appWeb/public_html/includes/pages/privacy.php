@@ -30,7 +30,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: <?= date('j F Y') ?>
+        Last updated: 10 July 2026
     </p>
 
     <!-- Overview -->
@@ -62,14 +62,25 @@ $appUrl = $app["Application"]["Website"]["URL"];
             <h3 class="small fw-bold mt-3">2.1 Account Data (only if you create an account)</h3>
             <p>
                 Accounts are <strong>optional</strong> — you can browse, search, and use offline
-                features without one. If you choose to sign in (via a magic email link, or a
-                password where one has been set), we store the following on our servers:
+                features without one. If you choose to sign in (via a magic email link, a
+                password where one has been set, or Sign in with Apple), we store the following
+                on our servers:
             </p>
             <ul>
                 <li><strong>Email address</strong> — used to sign you in (we email you a one-time code/link) and for essential service messages. It is never sold, and not used for marketing without your consent.</li>
                 <li><strong>Profile</strong> — an optional display name, your chosen avatar source, and your preferred-languages filter.</li>
                 <li><strong>Role &amp; access tier</strong> — your permission level and content-access tier; for organisation members, your organisation membership and any licence (e.g. CCLI) held by that organisation.</li>
                 <li><strong>Synced content</strong> — favourites and set lists you save are synchronised to your account so they follow you across devices. Set lists may be shared via a link or collaborated on if you choose to.</li>
+                <li>
+                    <strong>Sign in with Apple</strong> (if you use it) — a stable, app-specific
+                    Apple identifier for your account; the email Apple gives us, which may be
+                    your real address or a private, forwarding &ldquo;Hide My Email&rdquo; alias
+                    (ending <code>@privaterelay.appleid.com</code>); and the name Apple shares on
+                    your <em>first</em> sign-in only (Apple does not send it again after that). We
+                    also store a refresh token for your Apple sign-in, used solely to revoke the
+                    Apple grant on Apple's side if you later delete your account or unlink Apple —
+                    it is never used for anything else.
+                </li>
             </ul>
             <p>You can export or delete your account data — see <em>Your Rights</em> below.</p>
 
@@ -253,7 +264,14 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 each governed by their own privacy policies:
             </p>
             <ul>
-                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading libraries including Bootstrap, jQuery, Font Awesome, Animate.css, Fuse.js, Tone.js, and PDF.js. These providers may log access in their server logs.</li>
+                <li><strong>CDN providers</strong> (jsDelivr, cdnjs) — for loading libraries including Bootstrap, jQuery, Font Awesome, Animate.css, Tone.js, and PDF.js. These providers may log access in their server logs.</li>
+                <li>
+                    <strong>Apple — Sign in with Apple</strong> (if you use it) — authentication only.
+                    Signing in with Apple on the web loads Apple's own JavaScript SDK from
+                    <code>appleid.cdn-apple.com</code>; Apple issues the sign-in credential directly
+                    to your browser, which we then verify. See Apple's own privacy policy for how
+                    Apple itself handles this. <a href="https://www.apple.com/legal/privacy/" target="_blank" rel="noopener noreferrer">Privacy policy</a>
+                </li>
                 <li><strong>Google Analytics 4</strong> (if enabled and consented) — anonymous usage statistics. <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
                 <li><strong>Microsoft Clarity</strong> (if enabled and consented) — anonymous usage heatmaps. <a href="https://privacy.microsoft.com/privacystatement" target="_blank" rel="noopener noreferrer">Privacy policy</a></li>
                 <li><strong>Plausible Analytics</strong> (if enabled) — privacy-focused, cookieless analytics. <a href="https://plausible.io/data-policy" target="_blank" rel="noopener noreferrer">Data policy</a></li>
@@ -312,7 +330,12 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 <li><strong>Enable DNT:</strong> Activate Do Not Track in your browser to anonymise any analytics</li>
                 <li><strong>Block analytics:</strong> Use browser extensions (e.g., uBlock Origin) to block analytics entirely</li>
                 <li><strong>Access &amp; export your data:</strong> Export your locally stored data — and, if you have an account, your profile, favourites, and set lists — via Settings</li>
-                <li><strong>Delete your account:</strong> Delete your account and its synced data at any time from Settings; this removes your account record from our live database</li>
+                <li><strong>Delete your account:</strong> Permanently delete your account in the
+                    iHymns app for iPhone, iPad, or Apple TV (Account &gt; Danger Zone), after
+                    confirming it's you. This removes your account record and synced data from
+                    our live database and revokes any linked Sign in with Apple grant. A
+                    self-service option in the web app is planned; until then, web-only accounts
+                    can request deletion via the contact link below</li>
                 <li><strong>Uninstall:</strong> Remove the PWA from your device at any time</li>
             </ul>
         </div>

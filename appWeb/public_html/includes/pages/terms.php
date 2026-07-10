@@ -30,7 +30,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
     </h1>
 
     <p class="text-muted small mb-4">
-        Last updated: <?= date('j F Y') ?>
+        Last updated: 10 July 2026
     </p>
 
     <!-- Introduction -->
@@ -193,6 +193,12 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 Optional analytics are disabled by default and require your consent. For full details —
                 including what we collect, cookies, retention, API-access logging, and your rights — see our
                 <a href="/privacy" data-navigate="privacy">Privacy Policy</a>.
+            </p>
+            <p>
+                You may sign in with a magic email link, a password (where one has been set), or
+                Sign in with Apple. You may permanently delete your account at any time from within
+                the iHymns app for iPhone, iPad, or Apple TV; see the Privacy Policy for what
+                deleting your account removes.
             </p>
         </div>
     </div>

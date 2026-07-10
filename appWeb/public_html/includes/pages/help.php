@@ -5,14 +5,16 @@
  *
  * PURPOSE:
  * In-app help and user guide. Provides instructions for using the
- * application, including searching, reading a song (transpose/chords,
+ * application, including accounts &amp; signing in (email, password,
+ * Sign in with Apple), searching, reading a song (transpose/chords,
  * sheet music, audio, compare versions, Presentation mode), favourites,
  * setlists, collections/series, Song of the Day, personal stats, themes,
- * PWA install, offline songs, keyboard shortcuts, and accessibility.
+ * PWA install, offline songs, Service Mode (congregation live-follow),
+ * keyboard shortcuts, and accessibility.
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-06-21 (v0.990.0)
+ * Last updated: 2026-07-10 (v0.2501.0)
  */
 
 declare(strict_types=1);
@@ -55,6 +57,61 @@ declare(strict_types=1);
                         <li>Save songs to <strong>Favourites</strong> for quick access later</li>
                         <li>Use <strong>Shuffle</strong> to discover a random song</li>
                     </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Account & Signing In (#1402/#1470/#1477/#1479) -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-account"
+                        aria-expanded="false"
+                        aria-controls="help-account">
+                    <i class="fa-solid fa-right-to-bracket me-2" aria-hidden="true"></i>
+                    Account &amp; Signing In
+                </button>
+            </h2>
+            <div id="help-account" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        Creating an account is <strong>optional</strong> — you can browse, search, and use
+                        offline features anonymously. Signing in lets your favourites, tags, set lists,
+                        language and theme preferences, and personal stats follow you to every device.
+                    </p>
+
+                    <h3 class="h6">Ways to sign in</h3>
+                    <ul>
+                        <li><strong>Email sign-in (no password):</strong> enter your email address and we'll send a one-tap sign-in link and a 6-digit code to your inbox — use whichever arrives first, no password to remember.</li>
+                        <li><strong>Username &amp; password:</strong> if you've set a password, sign in with your username and password instead. Use <em>Forgot password?</em> on the sign-in screen to reset it.</li>
+                        <li><strong>Sign in with Apple:</strong> always available in the iHymns app for iPhone, iPad, and Apple TV, and on the web when the site operator has switched it on. Tap <strong>Sign in with Apple</strong> and authenticate with Face&nbsp;ID, Touch&nbsp;ID, or your device passcode — Apple lets you choose whether to share your real email address or a private, forwarding &ldquo;Hide My Email&rdquo; address.</li>
+                    </ul>
+
+                    <h3 class="h6 mt-3">Linking &amp; unlinking Apple</h3>
+                    <p>
+                        On the web, open <strong>Settings &rarr; Account &amp; Profile</strong>. If Sign in
+                        with Apple is available on this site, a <strong>Connected accounts</strong> card lets
+                        you <strong>link</strong> your Apple ID to your existing account or <strong>unlink</strong>
+                        it later. You can't unlink your only way of signing back in — set a password or add a
+                        verified email address first if Apple is currently your sole sign-in method.
+                    </p>
+
+                    <h3 class="h6 mt-3">Deleting your account</h3>
+                    <p>
+                        In the iHymns app for iPhone, iPad, or Apple TV, open <strong>Account &rarr; Danger
+                        Zone &rarr; Delete Account</strong>. You'll be asked to confirm it's really you (your
+                        password, or a one-time code emailed to you) before anything is removed. Deleting your
+                        account permanently removes your account, favourites, and set lists from our servers,
+                        revokes any linked Sign in with Apple grant, and cannot be undone.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        A self-service delete option in the web app is planned; until then, contact us via
+                        <a href="<?= htmlspecialchars($app["Application"]["Repo"]["Issues"]["URL"]) ?>"
+                           target="_blank" rel="noopener noreferrer">our GitHub repository</a>
+                        to request deletion of a web-only account.
+                    </p>
                 </div>
             </div>
         </div>
@@ -229,6 +286,36 @@ declare(strict_types=1);
                         Setlists you create are saved to your account if you're signed in, or to your device
                         otherwise. Signing in later associates any device-only setlists with your account.
                     </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Service Mode — congregation live-follow (#1323/#1335) -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-service-mode"
+                        aria-expanded="false"
+                        aria-controls="help-service-mode">
+                    <i class="fa-solid fa-tower-broadcast me-2" aria-hidden="true"></i>
+                    Following a Live Service
+                </button>
+            </h2>
+            <div id="help-service-mode" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        If your church has switched on <strong>Service Mode</strong>, a rotating code is
+                        shown on the venue's screen. Tap <strong>Join a live service</strong> on the home
+                        page, enter the code, and your device follows along — as the leader moves through
+                        the songs, your screen automatically switches to the same song they're on.
+                    </p>
+                    <ul class="mb-0">
+                        <li>No account is required to join — a green <strong>Following the service live</strong> bar appears at the bottom of the screen while you're connected.</li>
+                        <li>Tap <strong>Leave</strong> on that bar to stop following at any time.</li>
+                        <li>Following ends automatically once the service is over, or if the code's session expires.</li>
+                    </ul>
                 </div>
             </div>
         </div>
