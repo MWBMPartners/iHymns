@@ -15,9 +15,9 @@
 // `internal` visibility on the member it calls).
 //
 // Every POST below (`authLogin`/`authLogout`/`authEmailLoginRequest`/
-// `authEmailLoginVerify`) uses `performOnce` — NOT the retrying
-// `performIdempotentGET` — because strategy §1.5 is explicit: "never
-// auto-retry non-idempotent POSTs." Signing in twice because of a
+// `authEmailLoginVerify`/`accountDelete`) uses `performOnce` — NOT the
+// retrying `performIdempotentGET` — because strategy §1.5 is explicit:
+// "never auto-retry non-idempotent POSTs." Signing in twice because of a
 // client-side retry could double-log a failed-attempt counter server-side;
 // signing out twice is harmless but still not idempotent-safe to blindly
 // retry against an unknown failure mode. `authMe()` IS a bodyless,
@@ -102,5 +102,32 @@ extension APIClient {
         let endpoint = try Endpoint.authEmailLoginVerify(email: email, code: code)
         let data = try await performOnce(endpoint)
         return try Self.decodeAuthSession(from: data)
+    }
+
+    /// `?action=account_delete` — POSTs `reauth`, and, once the server
+    /// verifies it, permanently deletes the CURRENTLY-authenticated account
+    /// (#1477, App Review §5.1.1(v)).
+    ///
+    /// ELI5: "Here's proof it's really me — delete my account for good."
+    ///
+    /// DETAILED: Called by `IHAuth.SessionController.deleteAccount(reauth:)`,
+    /// which — mirroring `authLogout()`'s own doc comment's "server confirms
+    /// first" ordering — only clears the local token/session state AFTER
+    /// this call has already returned successfully. Unlike `authLogout()`,
+    /// a thrown `.unauthorized` here does NOT mean "already done": it means
+    /// the RE-AUTH credential itself (the password/email code, not the
+    /// bearer token) was wrong or expired, so the account still exists and
+    /// the caller must not treat the failure as anything but "let the user
+    /// retry."
+    ///
+    /// - Throws: `.unauthorized` for a wrong/expired re-auth credential,
+    ///   `.rateLimited` after too many attempts (`api.php`'s dedicated
+    ///   `account_delete` rate-limit, 10 attempts/15 minutes), a
+    ///   `.server(status: 409, _)` when this account is the last remaining
+    ///   Global Admin (must transfer that role first), or any of the usual
+    ///   transient cases (`.offline`/`.maintenance`/`.decoding`).
+    public func accountDelete(reauth: AccountDeleteReauth) async throws {
+        let endpoint = try Endpoint.accountDelete(reauth: reauth)
+        _ = try await performOnce(endpoint)
     }
 }

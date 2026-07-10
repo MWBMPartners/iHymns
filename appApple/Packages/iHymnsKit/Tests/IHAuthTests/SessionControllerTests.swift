@@ -30,6 +30,11 @@
 // base delay would have made this whole `.serialized` suite measurably
 // slower for zero additional coverage (the backoff-TIMING behaviour itself
 // is already covered by `IHAPITests/NetworkedAPIClientTests`).
+//
+// #1477 NOTE — `deleteAccount(reauth:)` (in-app account deletion, App Review
+// §5.1.1(v)) coverage lives in the SIBLING file
+// `SessionControllerDeleteAccountTests.swift`, not here — see this file's
+// closing `// MARK:` comment for why.
 import Foundation
 import Testing
 import IHAPITestSupport
@@ -345,6 +350,16 @@ struct SessionControllerTests {
         #expect(SessionState.signedOut.isSignedIn == false)
         #expect(SessionState.signedIn(token: "x").isSignedIn == true)
     }
+
+    // `deleteAccount(reauth:)` (#1477, App Review §5.1.1(v)) coverage lives
+    // in `SessionControllerDeleteAccountTests.swift` — moved out purely to
+    // keep THIS file under the repo's LOC-budget tripwire
+    // (`Scripts/loc-budget.sh`) now that it also carries the email-code
+    // sign-in tests above; that file re-declares its own `makeController()`/
+    // `response(status:)`/`LockedRequestBox` copies rather than sharing
+    // these (identical reasoning to why `FavoritesAndAuthAPITests.swift`'s
+    // `LockedBox` and this file's `LockedRequestBox` below are each their
+    // own private, file-scoped copy).
 }
 
 /// A small, manually-synchronized single-slot box — captures the most

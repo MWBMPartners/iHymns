@@ -39,4 +39,37 @@ extension APIError {
             "iHymns sent something we didn't understand. Please try again later."
         }
     }
+
+    /// The account-deletion-specific mapping (#1477, App Review §5.1.1(v))
+    /// — `AccountDeleteView`'s destructive, re-auth-gated flow uses THIS
+    /// instead of `userFacingMessage` above, because three cases need
+    /// wording specific to that one screen:
+    ///   - `.unauthorized` here means the RE-AUTH credential (the password
+    ///     or email code just entered) was wrong or expired — NOT that the
+    ///     session token itself is dead, which is what `userFacingMessage`'s
+    ///     "please sign in again" copy assumes elsewhere. Telling the user
+    ///     to re-authenticate right there on the same screen is the correct
+    ///     recovery action, not a sign-in prompt.
+    ///   - `.rateLimited` is `api.php`'s dedicated `account_delete` guard (10
+    ///     attempts per 15 minutes) — worded plainly here rather than
+    ///     `userFacingMessage`'s more general phrasing.
+    ///   - A `.server(status: 409, _)` is the "you are the last remaining
+    ///     Global Admin" guard `case 'account_delete'` enforces — `APIError`
+    ///     has no dedicated enum case for it (new cases are added sparingly,
+    ///     per that type's own header), so this is the one place that maps
+    ///     the raw 409 status to specific copy. Every OTHER `.server` status
+    ///     (400 malformed re-auth, 403 CSRF, 503 unavailable, ...) falls
+    ///     through to the generic `userFacingMessage` copy.
+    var accountDeleteUserFacingMessage: String {
+        switch self {
+        case .unauthorized:
+            "Re-authentication failed. Please try again."
+        case .rateLimited:
+            "Too many attempts. Please try again later."
+        case .server(let status, _) where status == 409:
+            "Transfer Global Admin to another account first."
+        default:
+            userFacingMessage
+        }
+    }
 }

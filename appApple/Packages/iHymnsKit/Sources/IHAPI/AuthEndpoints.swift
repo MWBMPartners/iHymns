@@ -26,6 +26,18 @@
 //     `Endpoint.authEmailLoginVerify(email:code:)`'s own doc comment for
 //     why the magic-link token form, while modelled here for completeness,
 //     has no UI entry point yet).
+//
+// #1477 UPDATE — in-app account deletion (App Review §5.1.1(v)) adds
+// `account_delete` (POST, `requiresAuth: true`) — `case 'account_delete'`,
+// verified against the LIVE handler on 2026-07-10. The re-auth barrier it
+// enforces accepts EITHER a `password` OR an `email_code` in the JSON body
+// (a SIWA `identityToken`+`nonce` form and a degenerate-account-only
+// `confirm: "DELETE"` form also exist server-side but are deliberately NOT
+// modelled here — this app has no Sign in with Apple entry point yet, and
+// `confirm` only ever applies to an account with no password, no email, and
+// no Apple link, which cannot exist through any signup path this client
+// drives). `AccountDeleteReauth` below models exactly the two forms the
+// client sends.
 import Foundation
 import IHModels
 
@@ -94,6 +106,57 @@ extension Endpoint {
     static func authEmailLoginVerify(token: String) throws -> Endpoint {
         let body = try JSONEncoder().encode(AuthEmailLoginVerifyRequestBody(email: nil, code: nil, token: token))
         return Endpoint(action: "auth_email_login_verify", httpMethod: "POST", httpBody: body)
+    }
+
+    /// `?action=account_delete` — POSTs one re-authentication credential
+    /// (`reauth`) and, once the server verifies it, permanently deletes the
+    /// CURRENTLY-authenticated account. `requiresAuth: true` (the bearer
+    /// token identifies WHICH account; `reauth` is the SECOND, independent
+    /// proof this file's header explains).
+    ///
+    /// - Throws: Only if `JSONEncoder` fails (see `authLogin` above).
+    static func accountDelete(reauth: AccountDeleteReauth) throws -> Endpoint {
+        let body = try JSONEncoder().encode(AccountDeleteRequestBody(reauth: reauth))
+        return Endpoint(action: "account_delete", requiresAuth: true, httpMethod: "POST", httpBody: body)
+    }
+}
+
+/// Which re-authentication credential a `?action=account_delete` call
+/// carries — the client sends EXACTLY ONE of these two forms (this file's
+/// header explains why the server's other two accepted forms, SIWA and the
+/// degenerate-account `confirm`, are out of scope for this app today).
+///
+/// ELI5: "Prove it's really you" — either with your password, or with a
+/// one-time code emailed to you.
+public enum AccountDeleteReauth: Sendable, Equatable {
+    case password(String)
+    case emailCode(String)
+}
+
+/// The exact wire shape `account_delete`'s JSON body expects — one of
+/// `{password}` or `{email_code}`, mirroring `AuthEmailLoginVerifyRequestBody`
+/// above's "absent key, never a literal `null`" convention (`api.php`'s
+/// `_accountDeleteReauth` reads each key with `?? null`, so an omitted key
+/// and an explicit `null` are handled identically server-side, but omitting
+/// it is the established convention in this file).
+private struct AccountDeleteRequestBody: Encodable {
+    let password: String?
+    let emailCode: String?
+
+    init(reauth: AccountDeleteReauth) {
+        switch reauth {
+        case .password(let value):
+            self.password = value
+            self.emailCode = nil
+        case .emailCode(let value):
+            self.password = nil
+            self.emailCode = value
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case password
+        case emailCode = "email_code"
     }
 }
 
