@@ -205,9 +205,12 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
            projection laptop + the leader device share ONE driver core). */
         import { ServiceBroadcaster } from '/js/modules/service-broadcast.js';
 
-        /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing
-           "</script>" (or < > & ' ") can't break out of this inline module
-           script — the established convention (tiers.php, credit-people.php). */
+        /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing a
+           script-closing sequence (or < > & ' ") can't break out of this inline
+           module — the established convention (tiers.php, credit-people.php).
+           NOTE: this comment must not write that closing sequence literally
+           either; the HTML parser terminates the <script> on the raw bytes
+           regardless of JS comment syntax. */
         const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;

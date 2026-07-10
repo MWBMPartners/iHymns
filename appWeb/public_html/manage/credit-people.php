@@ -2408,10 +2408,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForPerson, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         /* #1367 — the authority-control identifier registry slice the
            paste-a-URL auto-extract needs (every provider's label + raw extract
-           pattern bodies + pickable flag). JSON_HEX_TAG escapes < and > to
-           < / >, so the payload can NEVER contain a literal
-           "</script>" however the bodies are shaped; slashes are LEFT ESCAPED
-           (no JSON_UNESCAPED_SLASHES) as the belt-and-braces choice — "\/" is
+           pattern bodies + pickable flag). JSON_HEX_TAG escapes < and > in the
+           PAYLOAD so it can never contain a script-closing sequence. NOTE: this
+           comment must NOT write that sequence literally either — the HTML
+           parser closes the <script> on the raw bytes regardless of JS comment
+           syntax, which previously terminated this block early (dumping the
+           config as page text AND leaving an unterminated comment that broke
+           window._iHymnsLinkTypes and the paste-a-URL auto-detect). Slashes in
+           the payload are LEFT ESCAPED (no JSON_UNESCAPED_SLASHES) — "\/" is
            valid JSON and harmless to new RegExp(). */
         window._cpIdentifierConfig = <?= json_encode(creditIdentifierClientConfig(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
     </script>
