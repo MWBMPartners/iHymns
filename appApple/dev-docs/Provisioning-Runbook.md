@@ -196,3 +196,109 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 **Trade-off:** a combined key is marginally simpler (one secret to manage). For a security-conscious project the isolation wins — and since APNs isn't needed until #1410, there's no combined-key convenience to gain today.
 
 **Bottom line:** create the single-purpose **Sign in with Apple** key now (§1.2 Step 2); create a **separate APNs** key later at #1410 (§1.3 Step 5). Do **not** enable APNs on the SIWA key. *(The same "single-purpose" logic applies if you later add a MusicKit/DeviceCheck key — one key, one job.)*
+
+---
+
+# §2 — Distribution readiness: TestFlight + App Store (+ virtual/load testing)
+
+> **Added 2026-07-10. Tracking issue: #1474.** A grounded readiness assessment of the repo as it stands, so we know exactly what gates a TestFlight upload vs an App Store submission. **DONE** = in the repo/working. **OWNER** = your Apple-portal / App-Store-Connect / GitHub-secret action. **CODE** = a source change we must make first. Every claim is anchored to a file.
+
+## 2.0 What's already built (facts)
+
+| Area | State | Where |
+|------|-------|-------|
+| **CI (build+test, no signing)** | ✅ SwiftLint + `swift test` (**495** Swift-Testing `@Test`s) + LOC/no-secrets/**privacy-manifest** guards + macOS build | `.github/workflows/apple.yml` |
+| **Deploy pipeline** | ✅ `push alpha → TestFlight INTERNAL`, `push beta → TestFlight EXTERNAL`, `push main → App Store` | `.github/workflows/apple-deploy.yml` |
+| **Fastlane lanes** | ✅ `test` / `alpha` / `beta` / `release` — `build_app` (gym) → `upload_to_testflight` (pilot) / `upload_to_app_store` (deliver); **manual signing** (no `match`); ASC API-key auth | `appApple/fastlane/Fastfile` |
+| **Binaries uploaded** | ✅ **iOS** (with embedded **Watch** + **Widgets**) + **tvOS** `.ipa` | Fastfile `prepare_signed_archives` |
+| **App targets** | ✅ `iHymns` (iOS), `iHymnsTV`, `iHymnsWatch`, `iHymnsWidgets` — each a 1-file `@main` shell over the `iHymnsKit` package (correct thin-shell design). **No separate macOS/visionOS native targets** — those ship via **Universal-Purchase compatibility** ("Designed for iPad" running on Apple-Silicon Mac / visionOS). | `appApple/Apps/*` |
+| **Version** | Apple `MARKETING_VERSION = 0.1.0`, `CURRENT_PROJECT_VERSION = 202607070001` (UTC-timestamp build no.) — separate from the web app's `0.2501.0` | `appApple/Config/Versioning.xcconfig` |
+| **Deployment target** | ⚠️ **26.0** on every platform (iOS/macOS/tvOS/watchOS/visionOS) | `appApple/Config/Shared.xcconfig` |
+| **Privacy manifests** | ✅ per target (`iHymns`/`TV`/`Watch`/`Widgets`) | `appApple/Apps/*/Sources/PrivacyInfo.xcprivacy` |
+| **IAP / StoreKit** | ✅ none — **free app** (paid tiers are future #1434/#1411) | (no `import StoreKit`) |
+| **App API environment** | `defaultForBuild`: `#if DEBUG → dev`, else (**Release = TestFlight + App Store**) **→ `prod` (`ihymns.app`)** | `iHymnsKit/Sources/IHAPI/APIEnvironment.swift` |
+
+## 2.1 ⛔ The two cross-cutting blockers (read first)
+
+1. **The app's backend is only on `alpha` (→ `dev.ihymns.app`).** `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464/#1469/#1471) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.** → **Promote the Apple backend `alpha → beta → main` before device testing SIWA**, and it is a **hard prerequisite** for App Store. (Interim: a DEBUG build hits `dev` and works end-to-end on a Mac/simulator; a tester can also override the environment at runtime, but `beta`/`prod` must first *have* the backend.)
+2. **In-app account deletion (App Review §5.1.1(v)) is NOT implemented.** `AccountView.swift`'s only destructive control is **"Sign Out"** (`AccountView.swift:68`); the app never references the `account_delete` action (the backend endpoint exists from #1403, but nothing in `iHymnsKit` calls it). **Apple rejects any account-creating app that can't delete the account in-app.** → **CODE: add a "Delete Account" flow to `AccountView` that calls `account_delete` (re-auth + confirmation), before App Store submission.** (Tracked — see the readiness issue.)
+
+## 2.2 TestFlight readiness
+
+**Fastest first test = INTERNAL TestFlight** (up to 100 of your own team; **no beta review**).
+
+**OWNER (Apple portal / App Store Connect / GitHub secrets):**
+- Create the **App Store Connect app record** (§1.3 Step 2) — nothing uploads without it.
+- Create an **Apple Distribution certificate** + export it; the deploy lane signs **manually** (no `match`).
+- Set the **GitHub Actions secrets** the deploy reads (`apple-deploy.yml` L94-103): `APPLE_CERTIFICATE` (base64 `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY`. *(Set these via the GitHub web UI — Settings → Secrets and variables → Actions.)*
+- Register the **App ID capabilities** (Sign in with Apple + Associated Domains) — §1.3 Step 1.
+
+**CODE:**
+- **Declare export compliance** — add `ITSAppUsesNonExemptEncryption = NO` to the app Info.plist/`project.yml` (the app uses only standard HTTPS/TLS → exempt). Not declared today → App Store Connect prompts **per build** and stalls TestFlight processing.
+- **Make TestFlight actually usable** — resolve blocker #1 (§2.1): either promote the backend so `prod` has it, or point the Internal-TF build at a backend-having docroot (the `APIEnvironment` runtime override exists; `defaultForBuild` currently sends Release→`prod`).
+
+**For EXTERNAL testers (beta lane):** additionally requires **`beta.ihymns.app` to have the backend** and a one-time **TestFlight beta-app review** (beta description, contact email, "what to test").
+
+**Verdict:** the *pipeline* is ready; **TestFlight is gated on OWNER provisioning (secrets + ASC record + cert) and the backend-environment blocker.** No fundamental code rewrite needed.
+
+## 2.3 App Store readiness
+
+Everything in §2.2, **plus**:
+
+- ⛔ **Backend live on production `ihymns.app`** (blocker #1) — required or SIWA/sync/delete fail for real users.
+- ⛔ **In-app account deletion** (blocker #2, §5.1.1(v)) — required.
+- ⛔ **AASA returns HTTP 200 JSON** on production (the runbook §B flagged a **301** on all envs as of 2026-07-08 — Apple does **not** follow redirects, so Universal Links fail until it's a direct 200). Re-verify after promotion.
+- **App Store metadata — NONE committed** (`appApple/fastlane/metadata/` absent). Need: description, keywords, promotional text, **support URL**, **privacy-policy URL**, **age rating**, and the **App Privacy "nutrition label"** answers (must match the `PrivacyInfo.xcprivacy` manifests + `analytics_ingest`'s "no user-id / device-id / IP" claim). Enter in App Store Connect or commit under `fastlane/metadata` for `deliver`.
+- **Screenshots** per device class (iPhone + iPad + Apple TV, at the required display sizes) — needs a signed build in Simulator/on-device to capture.
+- ⚠️ **Deployment target 26.0** — only devices on **iOS/tvOS/etc. 26+** can install. App Review permits it, but the **addressable market is tiny**; confirm this is the intended Liquid-Glass/latest-API stance (raise it deliberately, don't discover it post-launch). Lowering it later widens reach but costs back-compat work.
+- **Platform coverage** — the initial submission is **iPhone/iPad + Apple TV** (Mac & visionOS via "Designed for iPad" **Universal-Purchase** availability toggles in App Store Connect — verify those toggles; there is no separate Mac/vision binary). watchOS + Widgets ride inside the iOS app.
+- **Sign in with Apple presentation (§4.8)** — satisfied as long as the app doesn't *also* offer Google/Facebook/etc. social login without offering SIWA (it doesn't — it offers iHymns accounts + SIWA).
+- **Content rights** — hymn/worship lyrics: the gating/CCLI system (#1352/#1353) governs copyrighted content; be ready to answer an App Review content-rights question.
+
+**Verdict:** **not submittable yet** — blocked on backend-to-production, in-app account deletion, AASA-200, and the full metadata/screenshots set (all listed above).
+
+## 2.4 Virtual / pre-submission testing (Xcode Simulator)
+
+| Test | Simulator | Needs real signed device / TestFlight |
+|------|-----------|----------------------------------------|
+| UI / navigation / layout, Dynamic Type, dark mode, each platform's shell | ✅ run each target's scheme in its Simulator | — |
+| Unit / package tests (the 495 `@Test`s) | ✅ `swift test` / Xcode test action (macOS host) | — |
+| Instruments profiling (memory, hangs, energy) | ✅ (approximate — Sim uses the Mac CPU/GPU, **not** representative of device perf) | ✅ real device for true perf/energy |
+| **Sign in with Apple** | ⚠️ works only if the Simulator is signed into an iCloud account; flaky — **treat a real device as the source of truth** | ✅ |
+| **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + live 200 AASA |
+| Push / Live Activities (future #1410) | ❌ | ✅ |
+
+**macOS** needs no simulator — the "Designed for iPad" build runs natively on an Apple-Silicon Mac.
+
+## 2.5 "Load testing" — the honest answer
+
+**You cannot meaningfully "load test" the client app**, and Xcode is the wrong tool for load: XCTest *performance* tests measure **client** code paths (scroll, parse, launch), not server capacity. The app is a **thin API client** — **the load risk lives on the shared PHP/MySQL backend** (the one DreamHost DB behind all three docroots).
+
+So a realistic pre-launch sequence is:
+1. **Client smoke/soak** — run each platform target in Simulator + **Instruments** (Allocations, Time Profiler, Hangs) on a device; catch leaks/hangs/energy regressions.
+2. **Backend load test (the real one)** — hit the read-heavy `?action=…` endpoints (`songs_index`, `song_detail`, `search`, `related_songs`, media HEAD/GET) with **k6 / Vegeta / `hey` / JMeter** against a **NON-production docroot** (`dev.` or `beta.`, **never** `ihymns.app`). Respect the backend's **per-IP + per-presence-token rate limits** — aggressive tests will (correctly) get **429**s; either test *at* the documented limits or temporarily raise them on the test docroot, and remember all three docroots share ONE MySQL so a load test on `dev.` still exercises the **production database** — coordinate timing.
+3. **Real end-to-end** — Internal TestFlight on physical devices (the only place SIWA + Universal Links + real performance are truthful).
+
+*(Emulation note: there is no Android-style device farm here; simulators + a small physical-device set + TestFlight is the Apple path. visionOS Simulator is heavy — allow time.)*
+
+## 2.6 Readiness checklist
+
+**TestFlight (internal) — minimum to first upload:**
+- [ ] App Store Connect app record created (§1.3 Step 2)
+- [ ] Apple **Distribution certificate** created + exported to `APPLE_CERTIFICATE`
+- [ ] All 9 deploy secrets set in GitHub (`apple-deploy.yml` L94-103)
+- [ ] App ID capabilities (SIWA + Associated Domains) registered (§1.3 Step 1)
+- [ ] **CODE:** `ITSAppUsesNonExemptEncryption = NO` declared
+- [ ] ⛔ Backend promoted so the build's target env has `auth_apple`/`account_delete`/`analytics_ingest` (or Internal-TF build pointed at `dev`)
+- [ ] `push alpha` → build appears in TestFlight → install on a device → SIWA sign-in works
+
+**App Store (adds):**
+- [ ] ⛔ **CODE:** in-app **Delete Account** flow (§5.1.1(v)) wired to `account_delete`
+- [ ] ⛔ Backend live on **production** `ihymns.app`
+- [ ] ⛔ AASA returns **200 JSON** (not 301) on production with the real Team ID
+- [ ] Metadata: description / keywords / support & privacy URLs / age rating
+- [ ] **App Privacy** answers match the manifests + analytics no-PII claim
+- [ ] Screenshots per device class (iPhone / iPad / Apple TV)
+- [ ] Deployment-target 26.0 confirmed as intended (addressable-market decision)
+- [ ] Universal-Purchase availability (Mac / visionOS "Designed for iPad") toggles set
+- [ ] `push beta` (external TF + beta review) → soak → `push main` (App Store)
