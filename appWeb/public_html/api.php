@@ -3323,14 +3323,240 @@ if ($action !== null) {
                 $userId
             );
 
-            sendJson(apiAuthSuccessPayload(
+            /* apiAuthSuccessPayload()'s OWN shape stays PINNED to {token,user}
+               (test-auth-response-shape.php asserts this exactly — it is the
+               native AuthSession DTO's decode contract, shared with
+               auth_login). `flow` is appended to the OUTER response here
+               instead — a Swift Codable struct silently ignores unknown
+               top-level keys, so native decodes exactly as before, while the
+               web client (#1479 W2) reads it to show the one-time "already
+               had an account? sign in and link from Settings" guidance on
+               flow==='created' without needing a second round-trip. Never
+               sensitive: 'matched'|'linked'|'created' reveals nothing the
+               caller doesn't already know (they hold the Apple identity
+               token that produced this outcome). */
+            $authResponsePayload = apiAuthSuccessPayload(
                 $token,
                 $userId,
                 $userRow['Username'],
                 $userRow['DisplayName'],
                 $userRow['Role'],
                 $userRow['AvatarService'] ?? null
-            ));
+            );
+            $authResponsePayload['flow'] = $flow;
+            sendJson($authResponsePayload);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Linked-account UNLINK (#1479 W3) — provider-generic (allow-list
+         * ['apple'] today; tblUserAuthProviders/tblAuthNonces are already
+         * provider-generic per #1402, so a future provider just grows the
+         * allow-list below, never the schema).
+         *
+         * POST body (JSON): { "provider": "apple", "csrf_token": "<optional>" }
+         * Returns (200): { "ok": true, "providers": [...] } — the SAME shape
+         * `auth_providers_list` emits, so the Settings "Connected accounts"
+         * card can redraw itself from this response alone.
+         *
+         * LOCKOUT GUARD — refuses (409) unless a SURVIVING sign-in method
+         * remains after $provider is removed: see
+         * _authProviderUnlinkSurvives()'s docblock for the exact rule
+         * (password, OR a verified non-private-relay email with email-login
+         * operational, OR another linked provider). Evaluated under
+         * `SELECT ... FOR UPDATE` on the account's own provider rows so two
+         * concurrent unlinks (e.g. two open tabs) can never each treat the
+         * OTHER as the surviving method and both proceed to zero.
+         * ----------------------------------------------------------------- */
+        case 'auth_provider_unlink':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'EmailService.php';
+
+            $rawBody = file_get_contents('php://input');
+            $body = json_decode($rawBody, true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — belt-and-braces same as account_delete: the
+               global X-Requested-With gate (api.php top-of-file) already
+               blocks a cross-site POST; this is a second, independent check
+               on THIS state-changing endpoint. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $authUserId = (int)$authUser['Id'];
+
+            /* Provider-generic table, APP-VALIDATED allow-list (rule #20 —
+               never an ENUM). Apple only today; a future provider grows this
+               array, never the schema. */
+            $providerAllowList = ['apple'];
+            $provider = is_string($body['provider'] ?? null) ? $body['provider'] : '';
+            if (!in_array($provider, $providerAllowList, true)) {
+                sendJson(['error' => 'provider must be one of: ' . implode(', ', $providerAllowList) . '.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+
+            /* Existence-probe first (rule #19/#1228 lesson) — this
+               docroot may not have run the #1402 migration. */
+            $probe = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserAuthProviders' LIMIT 1"
+            );
+            $ready = ($probe && $probe->fetch_row() !== null);
+            if ($probe) { $probe->close(); }
+            if (!$ready) {
+                sendJson(['error' => 'Linked accounts are not yet available.'], 503);
+                break;
+            }
+
+            /* $errorResponse stays null on success; set to [status, message,
+               reason] inside the transaction on any rejection. Using a flag
+               variable (rather than `break` from inside the try/catch) keeps
+               the transaction's commit/rollback decision the ONE place that
+               makes that call. */
+            $errorResponse = null;
+            $revokeCandidateRow = null;
+
+            $db->begin_transaction();
+            try {
+                $stmt = $db->prepare(
+                    'SELECT Id, Provider, Subject, RefreshToken FROM tblUserAuthProviders WHERE UserId = ? FOR UPDATE'
+                );
+                $stmt->bind_param('i', $authUserId);
+                $stmt->execute();
+                $providerRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $stmt->close();
+
+                $targetRow = null;
+                $otherProviders = [];
+                foreach ($providerRows as $row) {
+                    if ($row['Provider'] === $provider) {
+                        $targetRow = $row;
+                    } else {
+                        $otherProviders[] = (string)$row['Provider'];
+                    }
+                }
+
+                if ($targetRow === null) {
+                    $errorResponse = [404, 'That provider is not linked to your account.', 'not_linked'];
+                } else {
+                    $userStmt = $db->prepare('SELECT PasswordHash, Email, EmailVerified FROM tblUsers WHERE Id = ? FOR UPDATE');
+                    $userStmt->bind_param('i', $authUserId);
+                    $userStmt->execute();
+                    $userDetail = $userStmt->get_result()->fetch_assoc();
+                    $userStmt->close();
+
+                    if (!$userDetail) {
+                        /* Bearer was valid a moment ago but the row is already
+                           gone (a concurrent account_delete won the race). */
+                        $errorResponse = [401, 'Not authenticated.', 'user_vanished'];
+                    } elseif (!_authProviderUnlinkSurvives(
+                        (string)($userDetail['PasswordHash'] ?? ''),
+                        ((int)($userDetail['EmailVerified'] ?? 0)) === 1,
+                        (string)($userDetail['Email'] ?? ''),
+                        EmailService::isConfigured(),
+                        $otherProviders
+                    )) {
+                        $errorResponse = [409, 'Unlinking this provider would leave your account with no way to sign in. Set a password or add a verified email address first.', 'lockout_guard'];
+                    } else {
+                        $targetRowId = (int)$targetRow['Id'];
+                        $delStmt = $db->prepare('DELETE FROM tblUserAuthProviders WHERE Id = ?');
+                        $delStmt->bind_param('i', $targetRowId);
+                        $delStmt->execute();
+                        $delStmt->close();
+                        /* Captured in PHP memory BEFORE the row is gone — the
+                           best-effort Apple revoke below runs AFTER commit
+                           (so a slow/hanging third-party call never holds the
+                           FOR UPDATE lock open), reading from this snapshot
+                           rather than the now-deleted DB row. */
+                        $revokeCandidateRow = $targetRow;
+                    }
+                }
+
+                if ($errorResponse !== null) {
+                    $db->rollback();
+                } else {
+                    $db->commit();
+                }
+            } catch (\Throwable $e) {
+                try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+                throw $e;
+            }
+
+            if ($errorResponse !== null) {
+                [$status, $message, $reason] = $errorResponse;
+                logActivity('auth.provider_unlink', 'user', (string)$authUserId, ['provider' => $provider, 'reason' => $reason], 'failure', $authUserId);
+                sendJson(['error' => $message], $status);
+                break;
+            }
+
+            /* Best-effort Apple revoke — NEVER blocks the (already-committed)
+               unlink on failure; see _authProviderUnlinkRevokeApple()'s
+               docblock for why it tries more than one client id. */
+            $revokeOutcome = 'skipped_no_link';
+            if ($provider === 'apple' && $revokeCandidateRow !== null) {
+                $revokeOutcome = _authProviderUnlinkRevokeApple($revokeCandidateRow);
+            }
+
+            /* Audit — provider + outcome ONLY, never the Subject/RefreshToken
+               (§5(d) / rule #6 of the strategy doc). */
+            logActivity(
+                'auth.provider_unlink',
+                'user',
+                (string)$authUserId,
+                ['provider' => $provider, 'apple_revoke' => $revokeOutcome],
+                'success',
+                $authUserId
+            );
+
+            sendJson(['ok' => true, 'providers' => _authProviderListForUser($db, $authUserId)]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * List the caller's linked external-identity providers (#1479 W3) —
+         * feeds the Settings "Connected accounts" card. Returns ONLY
+         * provider / masked-email / relay-flag / linked-date — NEVER the
+         * Subject (Apple `sub`) or RefreshToken (see
+         * _authProviderListForUser()'s docblock).
+         * ----------------------------------------------------------------- */
+        case 'auth_providers_list':
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $probe = $db->query(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblUserAuthProviders' LIMIT 1"
+            );
+            $ready = ($probe && $probe->fetch_row() !== null);
+            if ($probe) { $probe->close(); }
+            if (!$ready) {
+                /* Graceful empty list rather than an error — the settings
+                   card should just show "nothing linked yet" on a docroot
+                   where the #1402 migration hasn't run, not an alarming
+                   failure state for a read-only lookup. */
+                sendJson(['providers' => []]);
+                break;
+            }
+
+            sendJson(['providers' => _authProviderListForUser($db, (int)$authUser['Id'])]);
             break;
 
         /* =================================================================
@@ -4371,6 +4597,11 @@ if ($action !== null) {
                Message only when actually in maintenance, so app_status stays empty-
                when-off as before (maintenanceMessage() otherwise returns a default). */
             $inMaintenance = function_exists('isMaintenanceMode') ? isMaintenanceMode() : false;
+            /* #1479 W2 — resolved once so the two related fields below never
+               disagree with each other (a mid-request settings change is not
+               a concern getAppSetting()'s per-request memoization already
+               closes off, but computing it twice would be needless work). */
+            $appleWebEnabledForStatus = appleWebLoginEnabledForChannel();
             sendJson([
                 'maintenance'         => $inMaintenance,
                 'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
@@ -4388,9 +4619,20 @@ if ($action !== null) {
                 /* #1470 W1 — whether Sign in with Apple for WEB is enabled on
                    THIS channel (Services ID configured AND channel allow-
                    listed). Dormant/false until manage/configuration.php's
-                   Apple card has both saved — the future web sign-in button
-                   gates its own visibility on this flag. */
-                'appleWebLoginEnabled' => appleWebLoginEnabledForChannel(),
+                   Apple card has both saved — the web sign-in button
+                   (#1479 W2) gates its own visibility on this flag. */
+                'appleWebLoginEnabled' => $appleWebEnabledForStatus,
+                /* #1479 W2 — the Apple Services ID the web popup flow passes
+                   as `AppleID.auth.init({clientId: ...})`. Only emitted when
+                   web login is actually enabled for this channel (never a
+                   dangling client id the front end could try to use against
+                   a disabled/misconfigured deploy) — null otherwise. Not a
+                   secret: a Services ID is public by the same logic as the
+                   native app's bundle id (IHYMNS_SIWA_CLIENT_ID), embedded in
+                   every browser's outbound request to Apple regardless. */
+                'appleSiwaServicesId' => $appleWebEnabledForStatus
+                    ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
+                    : null,
             ]);
             break;
 
@@ -14429,6 +14671,194 @@ function _accountDeleteRevokeApple(array $linkRow, string $reauthMethod, array $
         error_log('[api/account_delete revoke] ' . $e->getMessage());
         return 'failed';
     }
+}
+
+/* =============================================================================
+ * LINKED-ACCOUNT UNLINK — helpers for `case 'auth_provider_unlink'` (#1479 W3)
+ *
+ * Mirrors the account_delete helpers immediately above: the case block stays
+ * a readable top-to-bottom sequence, the LOCKOUT-GUARD decision is a PURE
+ * function (no DB, no superglobals) so its full truth table — including the
+ * private-relay-email stranding case round-2 review of the SIWA-web strategy
+ * caught — is unit-testable without a database (tests/php/
+ * test-auth-provider-unlink.php), and the Apple-revoke I/O shell is kept
+ * separate from that decision.
+ * ========================================================================= */
+
+/**
+ * PURE core of the auth_provider_unlink lockout guard (strategy doc §5(d)).
+ * Decides whether the account keeps at least one WORKING sign-in method
+ * after $provider's row is removed. Every input is an explicit parameter —
+ * no DB, no superglobals — so the full truth table is assertable directly.
+ *
+ * A survivor is ANY of:
+ *   (a) $passwordHash is non-empty (tblUsers.PasswordHash <> '') — the
+ *       account can always sign in with its password.
+ *   (b) $emailVerified AND $emailLoginOperational AND the account's OWN
+ *       email is NOT an Apple private-relay alias — magic-link email
+ *       sign-in still works. The private-relay exclusion is load-bearing:
+ *       unlinking Apple deactivates that relay alias server-side, so mail
+ *       sent to it bounces forever — "the account has a verified email"
+ *       would otherwise stay true right up to the moment it becomes
+ *       permanently unusable (the exact stranding hole round-2 review of
+ *       the SIWA-web strategy caught).
+ *   (c) $otherProviders is non-empty — another, DIFFERENT linked provider
+ *       (e.g. a future Google/SIGNula link) still works.
+ *
+ * @param string   $passwordHash          tblUsers.PasswordHash.
+ * @param bool     $emailVerified         tblUsers.EmailVerified === 1.
+ * @param string   $email                 tblUsers.Email (may be '').
+ * @param bool     $emailLoginOperational EmailService::isConfigured() — the
+ *                                          SAME config app_status's
+ *                                          emailLoginEnabled flag reads.
+ * @param string[] $otherProviders        Provider names of the account's
+ *                                          OTHER tblUserAuthProviders rows
+ *                                          (excludes the one being removed).
+ * @return bool True = a surviving method remains; the unlink may proceed.
+ */
+function _authProviderUnlinkSurvives(
+    string $passwordHash,
+    bool $emailVerified,
+    string $email,
+    bool $emailLoginOperational,
+    array $otherProviders
+): bool {
+    if ($passwordHash !== '') {
+        return true;
+    }
+
+    if ($emailVerified && $emailLoginOperational) {
+        $email = trim($email);
+        if ($email !== '') {
+            $atPos = strrpos($email, '@');
+            $isPrivateRelay = ($atPos !== false)
+                && (strtolower(substr($email, $atPos + 1)) === 'privaterelay.appleid.com');
+            if (!$isPrivateRelay) {
+                return true;
+            }
+        }
+    }
+
+    return count($otherProviders) > 0;
+}
+
+/**
+ * Best-effort Apple `/auth/revoke` for auth_provider_unlink (#1479 W3).
+ * Mirrors _accountDeleteRevokeApple() immediately above, but tries BOTH of
+ * our own client ids — native's IHYMNS_SIWA_CLIENT_ID and, if configured,
+ * the web Services ID — because tblUserAuthProviders.RefreshToken holds
+ * whichever platform most recently captured one (#1470 W1 lets EITHER
+ * platform write this single column via the SAME best-effort code-exchange
+ * step in `case 'auth_apple'`) and Apple's `/auth/revoke` requires the SAME
+ * client_id that originally requested the token. Trying native first
+ * (today's only populated case) then falling back to the web Services ID is
+ * a strict improvement over guessing a single hardcoded aud, while staying
+ * non-blocking/never-fatal like every other Apple I/O call in this file —
+ * every failure is caught and mapped to 'failed', never thrown.
+ *
+ * @param array $linkRow The (already-deleted-from-DB, still in PHP memory)
+ *                         tblUserAuthProviders row snapshot — needs RefreshToken.
+ * @return string 'ok'|'failed'|'skipped_no_key'|'skipped_no_token'
+ */
+function _authProviderUnlinkRevokeApple(array $linkRow): string
+{
+    $revokeToken = isset($linkRow['RefreshToken']) && $linkRow['RefreshToken'] !== null
+        ? (string)$linkRow['RefreshToken']
+        : null;
+    if ($revokeToken === null || $revokeToken === '') {
+        return 'skipped_no_token';
+    }
+
+    $teamId = (string)(getAppSetting('apple_team_id', '') ?? '');
+    $keyId  = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
+    $p8Pem  = (string)(getAppSetting('apple_siwa_private_key', '') ?? '');
+    if ($teamId === '' || $keyId === '' || $p8Pem === '') {
+        return 'skipped_no_key';
+    }
+
+    $servicesId = trim((string)(getAppSetting('apple_siwa_services_id', '') ?? ''));
+    $candidateClientIds = array_values(array_unique(array_filter(
+        [IHYMNS_SIWA_CLIENT_ID, $servicesId],
+        static fn(string $c): bool => $c !== ''
+    )));
+
+    foreach ($candidateClientIds as $clientId) {
+        try {
+            $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, $clientId, $p8Pem, time());
+            if ($clientSecret === null) {
+                continue; /* .p8 present but doesn't parse as an EC key for this sub — try the next candidate. */
+            }
+            if (appleSiwaRevokeToken($revokeToken, 'refresh_token', $clientSecret, $clientId)) {
+                return 'ok';
+            }
+        } catch (\Throwable $e) {
+            error_log('[api/auth_provider_unlink revoke] ' . $e->getMessage());
+        }
+    }
+    return 'failed';
+}
+
+/**
+ * Mask an email address for the linked-accounts UI (#1479 W3) —
+ * `auth_providers_list` must NEVER return the raw Subject/RefreshToken, and
+ * the informational Email column is masked too (defence in depth — it's
+ * link-time metadata, not a secret, but there's no reason to echo it back in
+ * full). `alice@example.com` -> `a****@e****.com`; '' or no '@' -> ''.
+ *
+ * @param string $email Raw tblUserAuthProviders.Email (may be '').
+ * @return string Masked form, or '' when $email is empty / has no '@'.
+ */
+function _authProviderMaskEmail(string $email): string
+{
+    $atPos = strrpos($email, '@');
+    if ($email === '' || $atPos === false) {
+        return '';
+    }
+    $local  = substr($email, 0, $atPos);
+    $domain = substr($email, $atPos + 1);
+
+    $maskPart = static function (string $s): string {
+        if ($s === '') {
+            return '';
+        }
+        return $s[0] . str_repeat('*', max(1, mb_strlen($s) - 1));
+    };
+
+    $domainParts = explode('.', $domain);
+    $domainParts[0] = $maskPart($domainParts[0]);
+
+    return $maskPart($local) . '@' . implode('.', $domainParts);
+}
+
+/**
+ * Shared row-builder for the caller's linked providers (#1479 W3) — used by
+ * BOTH `auth_providers_list` and `auth_provider_unlink`'s response (so the
+ * Settings "Connected accounts" card can redraw itself from either call
+ * without a second round-trip). NEVER selects Subject or RefreshToken.
+ *
+ * @param \mysqli $db
+ * @param int     $userId
+ * @return array<int,array{provider:string,email_masked:string,is_private_relay:bool,linked_at:?string}>
+ */
+function _authProviderListForUser(\mysqli $db, int $userId): array
+{
+    $stmt = $db->prepare(
+        'SELECT Provider, Email, EmailIsPrivateRelay, CreatedAt
+           FROM tblUserAuthProviders WHERE UserId = ? ORDER BY CreatedAt ASC'
+    );
+    $stmt->bind_param('i', $userId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    return array_map(static function (array $row): array {
+        return [
+            'provider'         => (string)$row['Provider'],
+            'email_masked'     => _authProviderMaskEmail((string)($row['Email'] ?? '')),
+            'is_private_relay' => ((int)($row['EmailIsPrivateRelay'] ?? 0)) === 1,
+            'linked_at'        => $row['CreatedAt'] !== null ? (string)$row['CreatedAt'] : null,
+        ];
+    }, $rows);
 }
 
 /**

@@ -262,6 +262,26 @@ declare(strict_types=1);
                     </button>
                 </form>
 
+                <!-- Connected accounts (#1479 W3) — linked external identity
+                     providers (Sign in with Apple today). DORMANT by default:
+                     hidden until settings.js confirms
+                     app_status.appleWebLoginEnabled === true, matching the
+                     auth modal's Apple button gating. The list itself is
+                     populated from ?action=auth_providers_list, which
+                     already returns a MASKED email — never render anything
+                     here except escaped, server-supplied strings. -->
+                <div id="auth-connected-accounts" class="mb-3 pt-3 border-top d-none">
+                    <h3 class="h6 mb-2">Connected accounts</h3>
+                    <div id="auth-connected-accounts-msg" class="alert d-none py-2 small" role="alert"></div>
+                    <div id="auth-connected-accounts-list" class="mb-2">
+                        <p class="text-muted small mb-0">No connected accounts yet.</p>
+                    </div>
+                    <button type="button" class="btn btn-dark btn-sm" id="btn-auth-apple-link">
+                        <i class="fa-brands fa-apple me-1" aria-hidden="true"></i>
+                        Link Apple ID
+                    </button>
+                </div>
+
                 <div class="d-flex gap-2">
                     <button type="button" class="btn btn-outline-primary btn-sm" id="btn-auth-sync">
                         <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>

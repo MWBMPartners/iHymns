@@ -17,6 +17,7 @@ import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER } from '../constants.js';
+import { performAppleSignIn } from './apple-signin.js';
 
 export class UserAuth {
     /**
@@ -55,9 +56,14 @@ export class UserAuth {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 this._appStatus = await r.json();
             } catch (_e) {
-                /* Permissive default — keep current behaviour. The
-                   server-side 503 is still the safety net. */
-                this._appStatus = { emailLoginEnabled: true };
+                /* Permissive default for email — keep current behaviour (the
+                   server-side 503 is still the safety net). Sign in with
+                   Apple (#1479) is the OPPOSITE default: appleWebLoginEnabled
+                   stays falsy on a failed fetch, so a transient app_status
+                   outage never shows a button that would just 503 anyway —
+                   dormancy-by-default matches the server's own fail-closed
+                   posture for this brand-new, admin-opt-in feature. */
+                this._appStatus = { emailLoginEnabled: true, appleWebLoginEnabled: false, appleSiwaServicesId: null };
             }
             return this._appStatus;
         })();
@@ -360,6 +366,117 @@ export class UserAuth {
             /* Offline / DNS / TLS failure — keep the token. */
             return false;
         }
+    }
+
+    /* =====================================================================
+     * SIGN IN WITH APPLE (Web) — #1470 W1 backend / #1479 W2-W3 front end
+     * ===================================================================== */
+
+    /**
+     * Run the web Sign in with Apple popup flow (js/modules/apple-signin.js)
+     * and, on success, persist the returned session via the SAME
+     * saveCredentials() path password/email login use — so header state,
+     * the setlist sync bar, and every downstream `ihymns:auth-changed`
+     * listener behave identically regardless of which method signed the
+     * user in.
+     *
+     * @param {object} [opts]
+     * @param {boolean} [opts.link=false] true = attach Apple to the CURRENT
+     *        bearer (Settings "Link" button) instead of signing in fresh.
+     * @returns {Promise<{ success: boolean, error?: string, flow?: string }>}
+     *          `flow` is 'matched' | 'linked' | 'created' — see
+     *          apple-signin.js's docblock. Callers show a one-time
+     *          "already had an account? sign in and link from Settings"
+     *          hint only on 'created'.
+     */
+    async signInWithApple({ link = false } = {}) {
+        const status = await this._ensureAppStatus();
+        if (status?.appleWebLoginEnabled !== true || !status?.appleSiwaServicesId) {
+            return { success: false, error: 'Sign in with Apple is not available.' };
+        }
+
+        const result = await performAppleSignIn({
+            apiUrl: this.app.config.apiUrl,
+            clientId: status.appleSiwaServicesId,
+            link,
+            /* link mode attaches Apple to the CALLER's account — auth_apple's
+               server-side link=1 path requires an already-authenticated
+               bearer (api.php ~3204) precisely so a stolen identityToken
+               can never hijack an arbitrary victim account. */
+            authHeaders: link ? this.authHeaders() : {},
+        });
+
+        if (!result.ok) {
+            return { success: false, error: result.error };
+        }
+
+        this.saveCredentials(result.token, result.user);
+        return { success: true, flow: result.flow };
+    }
+
+    /**
+     * Fetch the caller's linked external-identity providers (Settings
+     * "Connected accounts" card). Never includes the Apple `sub` or a
+     * refresh token — see `?action=auth_providers_list`'s server-side
+     * masking (api.php `_authProviderListForUser()`).
+     *
+     * @returns {Promise<Array<{provider:string, email_masked:string, is_private_relay:boolean, linked_at:?string}>>}
+     */
+    async listLinkedProviders() {
+        if (!this.isLoggedIn()) return [];
+        try {
+            const res = await fetch(`${this.app.config.apiUrl}?action=auth_providers_list`, {
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+            });
+            if (!res.ok) return [];
+            const data = await res.json();
+            return Array.isArray(data.providers) ? data.providers : [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Unlink a provider from the current account (Settings "Unlink"
+     * button). The server enforces a lockout guard (409) that this method
+     * simply surfaces — it never attempts to pre-validate that guard
+     * client-side (the server holds the authoritative, race-safe view via
+     * `SELECT ... FOR UPDATE`, see api.php `case 'auth_provider_unlink'`).
+     *
+     * @param {string} provider e.g. 'apple'
+     * @returns {Promise<{ success: boolean, error?: string, providers?: Array }>}
+     */
+    async unlinkProvider(provider) {
+        let res;
+        try {
+            res = await fetch(`${this.app.config.apiUrl}?action=auth_provider_unlink`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    ...this.authHeaders(),
+                },
+                body: JSON.stringify({ provider }),
+            });
+        } catch {
+            return { success: false, error: 'Network error. Please check your connection and try again.' };
+        }
+
+        let data = null;
+        try {
+            data = await res.json();
+        } catch {
+            return { success: false, error: `Server returned an unreadable response (HTTP ${res.status}).` };
+        }
+
+        if (!res.ok) {
+            return { success: false, error: data?.error || 'Could not unlink account.' };
+        }
+
+        return { success: true, providers: Array.isArray(data.providers) ? data.providers : [] };
     }
 
     /* =====================================================================
@@ -1182,6 +1299,22 @@ export class UserAuth {
                     <div class="modal-body">
                         <div id="auth-error" class="alert alert-danger d-none" role="alert"></div>
 
+                        <!-- Sign in with Apple (#1470 W1 backend / #1479 W2 front end).
+                             DORMANT by default: hidden until _ensureAppStatus()
+                             confirms app_status.appleWebLoginEnabled === true AND a
+                             Services ID is configured (see the .then() below). Uses
+                             the bundled FontAwesome Apple glyph in lieu of Apple's
+                             official logo asset (not vendored in this repo) — an
+                             HIG-adjacent, not pixel-exact, treatment. -->
+                        <div id="auth-apple-section" class="d-none mb-3">
+                            <button type="button" class="btn btn-dark w-100" id="auth-apple-signin-btn">
+                                <i class="fa-brands fa-apple me-2" aria-hidden="true"></i>
+                                <span id="auth-apple-signin-text">Sign in with Apple</span>
+                                <span id="auth-apple-signin-spinner" class="spinner-border spinner-border-sm ms-2 d-none" role="status"></span>
+                            </button>
+                            <div class="text-center text-muted small mt-2">or</div>
+                        </div>
+
                         <form id="auth-form" novalidate>
                             <div class="mb-3" id="auth-display-name-group" style="display:${mode === 'register' ? '' : 'none'}">
                                 <label for="auth-display-name" class="form-label">Display Name</label>
@@ -1359,6 +1492,55 @@ export class UserAuth {
                 }
             });
         }
+
+        /* Sign in with Apple (#1479 W2) — reveal the button in BOTH login
+           and register modes (auth_apple resolves to a sign-in OR a fresh
+           account with no separate "register with Apple" flow needed).
+           _ensureAppStatus() is memoized so this never triggers a second
+           network fetch alongside the email-login check above. */
+        this._ensureAppStatus().then((status) => {
+            const appleEnabled = status?.appleWebLoginEnabled === true && !!status?.appleSiwaServicesId;
+            modal.querySelector('#auth-apple-section')?.classList.toggle('d-none', !appleEnabled);
+        });
+
+        modal.querySelector('#auth-apple-signin-btn')?.addEventListener('click', async () => {
+            const btn = modal.querySelector('#auth-apple-signin-btn');
+            const spinner = modal.querySelector('#auth-apple-signin-spinner');
+            const errorEl = modal.querySelector('#auth-error');
+
+            errorEl?.classList.add('d-none');
+            btn.disabled = true;
+            spinner?.classList.remove('d-none');
+
+            const result = await this.signInWithApple({ link: false });
+
+            spinner?.classList.add('d-none');
+            btn.disabled = false;
+
+            if (result.success) {
+                bsModal.hide();
+                this._updateHeaderState();
+                this.app.setList?.renderSyncBar();
+                /* One-time guidance on a brand-new account (§5 of the SIWA-web
+                   strategy) — never an interactive "an account with this email
+                   already exists" prompt (that would be an enumeration
+                   oracle). The user can link a pre-existing password/email
+                   account to Apple afterwards from Settings. */
+                if (result.flow === 'created') {
+                    this.app.showToast(
+                        'Account created with Apple! Already had an iHymns account? Sign in and link Apple from Settings.',
+                        'info',
+                        6000
+                    );
+                } else {
+                    this.app.showToast('Signed in with Apple! Syncing your data...', 'success', 3000);
+                }
+                this.triggerUserDataSync();
+            } else {
+                errorEl.textContent = result.error || 'Sign in with Apple failed.';
+                errorEl.classList.remove('d-none');
+            }
+        });
 
         /* Toggle between login and register */
         modal.querySelector('#auth-toggle')?.addEventListener('click', () => {
