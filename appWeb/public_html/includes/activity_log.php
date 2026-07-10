@@ -704,6 +704,60 @@ function _activityLogExternalIpLookup(string $ip): ?array
  *                       'index', 'editor_api', 'manage', 'og_image',
  *                       'sitemap', 'song_media'.
  */
+/**
+ * Redact secret-bearing values from a raw URL query string before it is
+ * written to the Activity Log.
+ *
+ * ELI5: some API URLs carry a secret in the address bar — a live-follow session
+ * code, a follow token, a presence token. We log the query string so admins can
+ * see what was called, but the SECRET part must be blanked first, or the log
+ * itself becomes a place secrets leak from.
+ *
+ * DETAILED: `installRequestActivityLogger()` records `Details.query` for every
+ * request. GET endpoints (`live_follow_poll` / `live_follow_join` /
+ * `service_poll`) pass `code` / `token` / `presenceToken` as query parameters,
+ * so without scrubbing the raw secret lands in `tblActivityLog` — a standing
+ * violation of this file's own header rule ("NEVER log … bearer tokens,
+ * magic-link tokens…"). We keep the parameter NAME (so `action=service_poll&
+ * presenceToken=[redacted]&since=41` stays forensically useful) and replace the
+ * VALUE of any parameter whose name looks credential-like. Deliberately a
+ * denylist that errs toward over-redaction — losing a little forensic detail is
+ * safe; leaking a token is not (#1492).
+ *
+ * Pure (no I/O) so it is directly unit-testable
+ * (`tests/php/test-activity-log-scrub.php`).
+ *
+ * @param string $query Raw query string with no leading '?', e.g. `a=1&token=xyz`.
+ * @return string       Same string with credential-like values → `[redacted]`.
+ * @link https://cwe.mitre.org/data/definitions/532.html  CWE-532: Insertion of Sensitive Information into Log File
+ */
+function activityLogScrubQuery(string $query): string
+{
+    if ($query === '') {
+        return '';
+    }
+    // Case-insensitive: a parameter whose NAME contains any of these substrings
+    // is treated as secret-bearing. Covers the explicit poll/join params
+    // (presenceToken, token, code, state) plus the general credential vocabulary.
+    static $secretName = '/token|code|secret|key|password|passwd|auth|signature|otp|nonce|state/i';
+    $pairs = explode('&', $query);
+    foreach ($pairs as $i => $pair) {
+        if ($pair === '') {
+            continue;
+        }
+        $eq = strpos($pair, '=');
+        if ($eq === false) {
+            continue; // a bare flag like `debug` — no value to leak
+        }
+        $name  = substr($pair, 0, $eq);
+        $value = substr($pair, $eq + 1);
+        if ($value !== '' && preg_match($secretName, $name)) {
+            $pairs[$i] = $name . '=[redacted]';
+        }
+    }
+    return implode('&', $pairs);
+}
+
 function installRequestActivityLogger(string $source): void
 {
     static $installed = false;
@@ -741,7 +795,10 @@ function installRequestActivityLogger(string $source): void
                 [
                     'status'      => $statusInt,
                     'path'        => substr($path,  0, 255),
-                    'query'       => substr($query, 0, 255),
+                    /* #1492 — scrub credential-bearing query params (session
+                       codes, follow/presence tokens) BEFORE the 255-cap so a
+                       secret truncated mid-value can never survive. */
+                    'query'       => substr(activityLogScrubQuery($query), 0, 255),
                     'duration_ms' => $duration,
                 ],
                 $result,
