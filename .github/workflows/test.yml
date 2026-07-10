@@ -286,6 +286,11 @@ jobs:
           echo "Running gating-registry union/collision/dormancy test..."
           php tests/php/test-gating-registry.php
 
+      - name: Admin-configurable feature gating enforcement (#1481 P2)
+        run: |
+          echo "Running gating-rules validators/enforce/no-escalation/dormancy test..."
+          php tests/php/test-gating-rules.php
+
       - name: Secret encryption-at-rest engine (#1466)
         run: |
           echo "Running secret-crypto round-trip + fail-safe test..."
@@ -583,6 +588,9 @@ jobs:
 
       - name: Admin-configurable feature gating registry (#1481 P1)
         run: php tests/php/test-gating-registry.php
+
+      - name: Admin-configurable feature gating enforcement (#1481 P2)
+        run: php tests/php/test-gating-rules.php
 
       - name: OpenLyrics importer enrichment (#1130)
         run: php tests/php/test-openlyrics-parser.php

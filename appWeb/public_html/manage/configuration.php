@@ -654,6 +654,46 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_native_apps] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_feature_gating') {
+            /* #1481 — the two-flag nested topology for server-side content
+               gating. `content_gating_enabled` previously had NO admin-UI
+               control anywhere (it could only be flipped directly in
+               tblAppSettings or via a raw SQL statement — see the hint text
+               on /manage/restrictions); P2 gives it one here, alongside the
+               NEW `feature_gating_rules_enabled` flag that gates the
+               composable enforcement-rules loop (includes/gating_rules.php's
+               gatingRulesApply(), called from contentGatingApply()).
+               Rules only ever fire when BOTH flags are '1' — this form can
+               flip either independently, so an admin can turn content gating
+               on for the built-in seven caps while keeping the newer rules
+               engine off, or vice versa (though the rules engine is itself
+               a no-op without content_gating_enabled='1' too). */
+            try {
+                /* hidden 0 before each checkbox so an unchecked box still posts a value */
+                $cgVal = ((string)($_POST['content_gating_enabled'] ?? '0')) === '1' ? '1' : '0';
+                $frVal = ((string)($_POST['feature_gating_rules_enabled'] ?? '0')) === '1' ? '1' : '0';
+                $saveSetting($db, 'content_gating_enabled', $cgVal);
+                $saveSetting($db, 'feature_gating_rules_enabled', $frVal);
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        'content_gating_enabled',
+                        [
+                            'keys'                          => ['content_gating_enabled', 'feature_gating_rules_enabled'],
+                            'content_gating_enabled'        => $cgVal === '1',
+                            'feature_gating_rules_enabled'  => $frVal === '1',
+                        ],
+                        'success'
+                    );
+                }
+                $saveSuccess = 'Feature-gating flags saved — content gating is '
+                    . ($cgVal === '1' ? 'ON' : 'OFF') . ', enforcement rules are '
+                    . ($frVal === '1' ? 'ON' : 'OFF') . '.';
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_feature_gating] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -709,6 +749,12 @@ $appleWebLoginEnabledSetting = (string)(getAppSetting('apple_web_login_enabled',
 $nativeAppIos     = (string)(getAppSetting('native_app_ios', '') ?? '');
 $nativeAppAndroid = (string)(getAppSetting('native_app_android', '') ?? '');
 $nativeAppAmazon  = (string)(getAppSetting('native_app_amazon', '') ?? '');
+
+/* #1481 — feature-gating two-flag topology. Read via the SAME getAppSetting()
+   contentGatingApply()/gatingRulesApply() themselves call, so this admin page
+   can never disagree with what enforcement actually reads. */
+$contentGatingEnabledVal       = getAppSetting('content_gating_enabled', '0') === '1';
+$featureGatingRulesEnabledVal  = getAppSetting('feature_gating_rules_enabled', '0') === '1';
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -830,6 +876,68 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-save me-1"></i>Save maintenance settings
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         FEATURE GATING SECTION (#1481 — two-flag nested topology)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4" id="feature-gating">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-shield-lock me-2"></i>Feature gating
+            </h2>
+            <span class="badge <?= ($contentGatingEnabledVal && $featureGatingRulesEnabledVal) ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $contentGatingEnabledVal
+                    ? ($featureGatingRulesEnabledVal ? 'Content gating + rules ON' : 'Content gating ON — rules OFF')
+                    : 'OFF (verified no-op)' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                <strong>Two independent, nested switches.</strong> <code>content_gating_enabled</code>
+                turns on server-side enforcement of the built-in seven Access-Tier capabilities
+                (Lyrics / Copyrighted / Audio / MIDI / PDF / Offline / Needs&nbsp;CCLI) plus any
+                admin-defined capability. <code>feature_gating_rules_enabled</code> additionally
+                turns on the <a href="/manage/feature-gating" class="alert-link">Enforcement rules</a>
+                you've defined there — it has no effect unless content gating is ALSO on. Both default
+                OFF; with either OFF, the API emits full song data exactly as it does today (a verified
+                byte-identical no-op — see <code>tests/php/test-gating-noop.php</code> and the
+                <a href="/manage/gating-noop-verify" class="alert-link">No-Op Verifier</a>).
+            </p>
+            <p class="small text-secondary mb-3">
+                <i class="bi bi-info-circle me-1"></i>
+                Also see <a href="/manage/restrictions" class="alert-link">Content Restrictions</a>
+                (per-song/songbook/feature rules — inert while content gating is off) and
+                <a href="/manage/tiers" class="alert-link">Access Tiers</a> (per-tier capability values).
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_feature_gating">
+                <!-- hidden 0 before each checkbox so an unchecked box still posts a value -->
+                <input type="hidden" name="content_gating_enabled" value="0">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="content_gating_enabled" name="content_gating_enabled" value="1"
+                           <?= $contentGatingEnabledVal ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="content_gating_enabled">
+                        Enable content gating (master switch)
+                    </label>
+                </div>
+                <input type="hidden" name="feature_gating_rules_enabled" value="0">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="feature_gating_rules_enabled" name="feature_gating_rules_enabled" value="1"
+                           <?= $featureGatingRulesEnabledVal ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="feature_gating_rules_enabled">
+                        Enable admin-defined enforcement rules
+                        <span class="text-secondary">(needs content gating above ON too)</span>
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save feature-gating flags
                 </button>
             </form>
         </div>

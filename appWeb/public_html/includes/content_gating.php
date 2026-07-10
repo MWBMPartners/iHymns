@@ -61,6 +61,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'maintenance.php';      /* getAppSetting() */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'ccli_validator.php';   /* resolveEffectiveTier / checkTierAccess */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'gating_rules.php';     /* gatingRulesApply() — #1481 P2 */
 
 /**
  * Is server-side content gating switched ON for this environment?
@@ -281,6 +282,19 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA',
            Additive key — clients that don't read it are unaffected; clients
            that do can hide the "save offline" button. */
         $song['offlineAllowed'] = $canOfflineSave;
+
+        /* --- Admin-defined enforcement rules (#1481 P2) ---------------------
+           Runs LAST, after every built-in trim above, and is itself a no-op
+           unless the SECOND nested flag (feature_gating_rules_enabled) is on
+           — gatingRulesApply() checks that flag internally, so a 3-arg or
+           4-arg call with content_gating_enabled='1' but the rules flag
+           still '0' returns $song completely unchanged from this point.
+           Rules resolve their capability via capValueForTierAction()
+           (fail-open on null — never the fail-closed matrix), are restricted
+           to DB-defined caps only (never one of the 7 built-ins gated above),
+           and are re-verified against the no-escalation invariant before
+           their output is accepted. See includes/gating_rules.php. */
+        $song = gatingRulesApply($song, $tier);
 
         return $song;
     } catch (\Throwable $_e) {
