@@ -3,7 +3,7 @@
 > **Click-level, owner-only** Apple provisioning steps for the native Universal app.
 > Companion to `.claude/apple-native-owner-runbook.md` (long-lead overview) and epic **#895**.
 > Nothing here is executable by the build agent — these are your Apple-account + iHymns-admin actions.
-> Last updated **2026-07-08** (incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional).
+> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional).
 
 ---
 
@@ -133,7 +133,7 @@
 ### Step 6 — Verify
 - After §1.1 deploy, load **`https://ihymns.app/.well-known/apple-app-site-association`** → shows your real Team ID in `"appID": "<TeamID>.app.ihymns"` (not the `TEAMID` placeholder).
 - Config card = all three values "set"; migration cards = applied.
-- **End-to-end sign-in verifies only on a signed device/TestFlight build** (not possible in the build environment). Sign-in works once migrations run; the Key ID/`.p8` are only needed for the refresh-token exchange + account-deletion Apple-revoke, which degrade gracefully until provisioned.
+- **There is no native Sign in with Apple button to tap today.** `auth_apple` exists server-side (#1402), but nothing in `iHymnsKit` calls it yet — native sign-in is **Password or Email-Code** (`LoginView.swift`). Until a native SIWA button exists, these migrations + the Key ID/`.p8` serve two things end-to-end verifiable on a signed device/TestFlight build only (not possible in the build environment): the **refresh-token exchange + account-deletion Apple-revoke** paths (which degrade gracefully until provisioned), and the ***web*** SIWA flow (§1.4), which already has a client button and verifies in a browser.
 
 ---
 
@@ -166,18 +166,21 @@ Three buckets: what you can verify **now** (Apple portals), what's **blocked on 
 
 ### B. Blocked on §1.1 (deploy) — nothing to verify until the branch PHP is live
 - **AASA** — after deploy, `curl -s https://ihymns.app/.well-known/apple-app-site-association` must return **HTTP 200** + `Content-Type: application/json` with `"appID": "<TeamID>.app.ihymns"`.
-  - ⚠️ **Checked 2026-07-08: all three envs (`ihymns.app`, `dev.`, `beta.`) currently return a `301` redirect — the #1401 AASA responder isn't deployed yet.** Apple **does NOT follow redirects** for the AASA, so a 301 = Universal Links fail. The deploy's `.htaccess` rewrite (#1401) must make this a **direct 200 JSON**, taking precedence over any existing HTTPS/canonical redirect. **Re-run the curl after deploy and confirm 200, not 301.**
+  - ⚠️ **Re-verify per environment — do not assume all three are still `301`.** Checked 2026-07-08, all three envs (`ihymns.app`, `dev.`, `beta.`) returned a `301` redirect (the #1401 AASA responder wasn't deployed yet). Since then the Apple backend merge (#1464, which ships the #1401 responder) has landed on **alpha**, and `alpha` auto-deploys to **`dev.ihymns.app`** — so **`dev.` may now return a direct 200**; **`beta.` and production `ihymns.app` have not had that backend promoted yet and are still expected to 301.** Apple **does NOT follow redirects** for the AASA, so a 301 = Universal Links fail on that env. **Curl each env individually and confirm 200, not 301, before relying on it** — don't infer one env's status from another's.
 - **SIWA config card** — `/manage/configuration` → "Apple native app" shows Team ID / Key ID / private-key as **"set."**
 - **Migration cards** — `/manage/setup-database` shows **"Sign in with Apple — provider links + nonce ledger"** and the **analytics events** card **applied/green.**
 
 ### C. Needs a signed device / TestFlight build (not possible in the build env)
-- **End-to-end Sign in with Apple**: tap the button on a device → account created/linked, token issued.
+- **Native sign-in + account-deletion Apple-revoke**: the native client authenticates via Password/Email-Code — **there is no native Sign in with Apple button** (backend-only, #1402; `LoginView.swift`). Tap **Delete Account** (Danger Zone, #1478) on a device to confirm the re-auth flow + `account_delete`'s Apple-revoke path exercise the stored SIWA key end-to-end.
 - **Universal Link → app**: tap an `ihymns.app/song/<id>` link on a device with the app installed → opens in-app (Safari fallback if not installed).
 - **On-device VoiceOver / Dynamic Type** (#1458).
 
 ---
 
 ## Master verification checklist
+
+> **Status (2026-07-10):** all dev/code-side work is complete. The unticked items below are **owner Apple-portal actions** (App ID, SIWA key, Team ID, App Store Connect record, sending-domain DNS) or post-`§1.1`-deploy config/migration steps — tick each as you complete it. (CarPlay is submitted; APNs + Family Sharing are deferred/N-A per §1.3.)
+
 - [ ] App ID `app.ihymns` registered; **Sign in with Apple** + **Associated Domains** enabled
 - [ ] App Store Connect **iHymns** record created (all platforms, Universal Purchase)
 - [x] CarPlay entitlement **request submitted** (2026-07-08, confirmation email received) — ⏳ awaiting the separate entitlement-*grant* email before `com.apple.developer.carplay-audio` is usable
@@ -188,8 +191,8 @@ Three buckets: what you can verify **now** (Apple portals), what's **blocked on 
 - [ ] **`ihymns.app` sending domain** (owner preference, §1.2 Step 3): DNS access → SPF + DKIM + DMARC published → registered + verified (✅) in Apple's email-sources
 - [ ] **After §1.1 deploy:** Team ID + Key ID + `.p8` pasted into `/manage/configuration`
 - [ ] **After §1.1 deploy:** SIWA + analytics migration cards run
-- [ ] **AASA returns 200 JSON** with the real Team ID (⚠️ currently `301`-redirects pre-deploy on all envs — Apple won't follow it; must be a direct 200 after §1.1)
-- [ ] *(device build)* end-to-end Sign in with Apple verified on TestFlight
+- [ ] **AASA returns 200 JSON** with the real Team ID on **every env** (⚠️ all three `301`-redirected as of 2026-07-08; the #1464 backend merge — which ships the #1401 responder — has since deployed to alpha → `dev.ihymns.app`, so `dev.` may now be 200, but `beta.`/production are not yet promoted and are still expected to 301; re-check each env individually, don't infer)
+- [ ] *(device build)* end-to-end native sign-in (Password/Email-Code) verified on TestFlight *(there is no native Sign in with Apple button to verify — backend-only, #1402; see §1.2 Step 6)*
 
 ---
 
@@ -221,7 +224,7 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 
 | Area | State | Where |
 |------|-------|-------|
-| **CI (build+test, no signing)** | ✅ SwiftLint + `swift test` (**495** Swift-Testing `@Test`s) + LOC/no-secrets/**privacy-manifest** guards + macOS build | `.github/workflows/apple.yml` |
+| **CI (build+test, no signing)** | ✅ SwiftLint + `swift test` (**514** Swift-Testing `@Test`s, up from 495 — #1478 added 5 test files for account deletion) + LOC/no-secrets/**privacy-manifest** guards + macOS build | `.github/workflows/apple.yml` |
 | **Deploy pipeline** | ✅ `push alpha → TestFlight INTERNAL`, `push beta → TestFlight EXTERNAL`, `push main → App Store` | `.github/workflows/apple-deploy.yml` |
 | **Fastlane lanes** | ✅ `test` / `alpha` / `beta` / `release` — `build_app` (gym) → `upload_to_testflight` (pilot) / `upload_to_app_store` (deliver); **manual signing** (no `match`); ASC API-key auth | `appApple/fastlane/Fastfile` |
 | **Binaries uploaded** | ✅ **iOS** (with embedded **Watch** + **Widgets**) + **tvOS** `.ipa` | Fastfile `prepare_signed_archives` |
@@ -232,10 +235,11 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 | **IAP / StoreKit** | ✅ none — **free app** (paid tiers are future #1434/#1411) | (no `import StoreKit`) |
 | **App API environment** | `defaultForBuild`: `#if DEBUG → dev`, else (**Release = TestFlight + App Store**) **→ `prod` (`ihymns.app`)** | `iHymnsKit/Sources/IHAPI/APIEnvironment.swift` |
 
-## 2.1 ⛔ The two cross-cutting blockers (read first)
+## 2.1 ⛔ The remaining cross-cutting blocker (read first)
 
-1. **The app's backend is only on `alpha` (→ `dev.ihymns.app`).** `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464/#1469/#1471) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.** → **Promote the Apple backend `alpha → beta → main` before device testing SIWA**, and it is a **hard prerequisite** for App Store. (Interim: a DEBUG build hits `dev` and works end-to-end on a Mac/simulator; a tester can also override the environment at runtime, but `beta`/`prod` must first *have* the backend.)
-2. **In-app account deletion (App Review §5.1.1(v)) is NOT implemented.** `AccountView.swift`'s only destructive control is **"Sign Out"** (`AccountView.swift:68`); the app never references the `account_delete` action (the backend endpoint exists from #1403, but nothing in `iHymnsKit` calls it). **Apple rejects any account-creating app that can't delete the account in-app.** → **CODE: add a "Delete Account" flow to `AccountView` that calls `account_delete` (re-auth + confirmation), before App Store submission.** (Tracked — see the readiness issue.)
+1. **The app's backend is only on `alpha` (→ `dev.ihymns.app`).** `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.** → **Promote the Apple backend `alpha → beta → main` before device testing SIWA**, and it is a **hard prerequisite** for App Store. (Interim: a DEBUG build hits `dev` and works end-to-end on a Mac/simulator; a tester can also override the environment at runtime, but `beta`/`prod` must first *have* the backend.) *(This is the* native *SIWA path — the separate* web *SIWA feature, built dormant per #1471/#1480 + its CSP allowance #1484, is unaffected and is covered in §1.4.)*
+
+✅ **RESOLVED — DONE (#1478): in-app account deletion (App Review §5.1.1(v)).** This was the second cross-cutting blocker: `AccountView.swift` previously had no destructive control beyond "Sign Out". It now has a separate "Danger Zone" section (`AccountView.swift:96-107`) that presents a re-auth-gated `AccountDeleteView` sheet (Password or Email-Code, reusing the login UI) which calls `?action=account_delete`; a wrong/expired credential (401), rate-limit (429), or last-Global-Admin block (409) leaves the session untouched, and only a confirmed 200 clears the local token + favourites + setlists + offline caches, exactly like sign-out. Verified against `AccountView.swift`, `AccountDeleteView.swift`, `AppRootViewModel+Auth.swift:113`, `SessionController.swift:297`. No longer blocks TestFlight or App Store submission.
 
 ## 2.2 TestFlight readiness
 
@@ -259,26 +263,26 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 
 Everything in §2.2, **plus**:
 
-- ⛔ **Backend live on production `ihymns.app`** (blocker #1) — required or SIWA/sync/delete fail for real users.
-- ⛔ **In-app account deletion** (blocker #2, §5.1.1(v)) — required.
-- ⛔ **AASA returns HTTP 200 JSON** on production (the runbook §B flagged a **301** on all envs as of 2026-07-08 — Apple does **not** follow redirects, so Universal Links fail until it's a direct 200). Re-verify after promotion.
+- ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users.
+- ✅ **In-app account deletion** (§5.1.1(v)) — **DONE (#1478)**, see §2.1. No longer a blocker.
+- ⛔ **AASA returns HTTP 200 JSON** on production (the runbook §B flagged a **301** on all envs as of 2026-07-08; the #1464 backend merge has since deployed to alpha → `dev.ihymns.app`, so `dev.` may now be 200, but **production `ihymns.app` has not been promoted** and is still expected to 301 — Apple does **not** follow redirects, so Universal Links fail until it's a direct 200 on **production**). Re-verify per env after promotion.
 - **App Store metadata — NONE committed** (`appApple/fastlane/metadata/` absent). Need: description, keywords, promotional text, **support URL**, **privacy-policy URL**, **age rating**, and the **App Privacy "nutrition label"** answers (must match the `PrivacyInfo.xcprivacy` manifests + `analytics_ingest`'s "no user-id / device-id / IP" claim). Enter in App Store Connect or commit under `fastlane/metadata` for `deliver`.
 - **Screenshots** per device class (iPhone + iPad + Apple TV, at the required display sizes) — needs a signed build in Simulator/on-device to capture.
 - ⚠️ **Deployment target 26.0** — only devices on **iOS/tvOS/etc. 26+** can install. App Review permits it, but the **addressable market is tiny**; confirm this is the intended Liquid-Glass/latest-API stance (raise it deliberately, don't discover it post-launch). Lowering it later widens reach but costs back-compat work.
 - **Platform coverage** — the initial submission is **iPhone/iPad + Apple TV** (Mac & visionOS via "Designed for iPad" **Universal-Purchase** availability toggles in App Store Connect — verify those toggles; there is no separate Mac/vision binary). watchOS + Widgets ride inside the iOS app.
-- **Sign in with Apple presentation (§4.8)** — satisfied as long as the app doesn't *also* offer Google/Facebook/etc. social login without offering SIWA (it doesn't — it offers iHymns accounts + SIWA).
+- **Sign in with Apple presentation (§4.8)** — the native client offers only its own account system (Password / Email-Code, `LoginView.swift`) with **no third-party social login at all** (no Google/Facebook/etc. — and, today, no client-side Apple button either, despite the backend `auth_apple` endpoint existing for #1402). §4.8 only requires SIWA when a third-party/social login is offered without it as an equal option; since none is offered, the app is exempt regardless. Revisit only if a native SIWA (or Google/Facebook) button is later added — SIWA would then need to ship alongside it.
 - **Content rights** — hymn/worship lyrics: the gating/CCLI system (#1352/#1353) governs copyrighted content; be ready to answer an App Review content-rights question.
 
-**Verdict:** **not submittable yet** — blocked on backend-to-production, in-app account deletion, AASA-200, and the full metadata/screenshots set (all listed above).
+**Verdict:** **not submittable yet** — blocked on backend-to-production, AASA-200 on production, and the full metadata/screenshots set (all listed above). *(In-app account deletion is no longer a blocker — DONE, #1478.)*
 
 ## 2.4 Virtual / pre-submission testing (Xcode Simulator)
 
 | Test | Simulator | Needs real signed device / TestFlight |
 |------|-----------|----------------------------------------|
 | UI / navigation / layout, Dynamic Type, dark mode, each platform's shell | ✅ run each target's scheme in its Simulator | — |
-| Unit / package tests (the 495 `@Test`s) | ✅ `swift test` / Xcode test action (macOS host) | — |
+| Unit / package tests (the 514 `@Test`s) | ✅ `swift test` / Xcode test action (macOS host) | — |
 | Instruments profiling (memory, hangs, energy) | ✅ (approximate — Sim uses the Mac CPU/GPU, **not** representative of device perf) | ✅ real device for true perf/energy |
-| **Sign in with Apple** | ⚠️ works only if the Simulator is signed into an iCloud account; flaky — **treat a real device as the source of truth** | ✅ |
+| **Sign in with Apple (native)** | **N/A today** — no native SIWA button exists yet (backend-only, #1402); native sign-in is Password/Email-Code and *is* testable in Simulator | — |
 | **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + live 200 AASA |
 | Push / Live Activities (future #1410) | ❌ | ✅ |
 
@@ -297,6 +301,8 @@ So a realistic pre-launch sequence is:
 
 ## 2.6 Readiness checklist
 
+> **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items are **owner actions** (Apple-portal provisioning, App Store metadata/screenshots), the **backend-to-production promotion** (blocker #1), and one remaining **CODE** item (`ITSAppUsesNonExemptEncryption` — small, ask and I'll do it).
+
 **TestFlight (internal) — minimum to first upload:**
 - [ ] App Store Connect app record created (§1.3 Step 2)
 - [ ] Apple **Distribution certificate** created + exported to `APPLE_CERTIFICATE`
@@ -304,10 +310,10 @@ So a realistic pre-launch sequence is:
 - [ ] App ID capabilities (SIWA + Associated Domains) registered (§1.3 Step 1)
 - [ ] **CODE:** `ITSAppUsesNonExemptEncryption = NO` declared
 - [ ] ⛔ Backend promoted so the build's target env has `auth_apple`/`account_delete`/`analytics_ingest` (or Internal-TF build pointed at `dev`)
-- [ ] `push alpha` → build appears in TestFlight → install on a device → SIWA sign-in works
+- [ ] `push alpha` → build appears in TestFlight → install on a device → native sign-in (Password/Email-Code) works *(no native Sign in with Apple button exists to test — backend-only, #1402)*
 
 **App Store (adds):**
-- [ ] ⛔ **CODE:** in-app **Delete Account** flow (§5.1.1(v)) wired to `account_delete`
+- [x] **DONE (#1478):** in-app **Delete Account** flow (§5.1.1(v)) wired to `account_delete`
 - [ ] ⛔ Backend live on **production** `ihymns.app`
 - [ ] ⛔ AASA returns **200 JSON** (not 301) on production with the real Team ID
 - [ ] Metadata: description / keywords / support & privacy URLs / age rating
