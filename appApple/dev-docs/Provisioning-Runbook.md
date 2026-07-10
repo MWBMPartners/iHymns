@@ -3,7 +3,7 @@
 > **Click-level, owner-only** Apple provisioning steps for the native Universal app.
 > Companion to `.claude/apple-native-owner-runbook.md` (long-lead overview) and epic **#895**.
 > Nothing here is executable by the build agent — these are your Apple-account + iHymns-admin actions.
-> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**; **CI/CD pipeline hardening** — `project.yml` now declares `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` on `iHymns`+`iHymnsTV` (§2.2.B.1/§2.3.A.4 now DONE), and every "AASA returns 200" verification step below is **corrected**: a bare `200` is NOT proof the real responder is live — `beta.ihymns.app`/`ihymns.app`/`www.ihymns.app` all return `200` today but still serve a **stale legacy AASA with the WRONG appID**; only `dev.ihymns.app` serves the real one — see §1.2 Step 6, §2.1, §2.3.A.2, and the Verification-walkthrough Bucket B).
+> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**; **CI/CD pipeline hardening** — `project.yml` now declares `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` on `iHymns`+`iHymnsTV` (§2.2.B.1/§2.3.A.4 now DONE), and every "AASA returns 200" verification step below is **corrected**: a bare `200` is NOT proof the real responder is live — `beta.ihymns.app`/`ihymns.app`/`www.ihymns.app` all return `200` today but still serve a **stale legacy AASA with the WRONG appID**; only `dev.ihymns.app` serves the real one — see §1.2 Step 6, §2.1, §2.3.A.2, and the Verification-walkthrough Bucket B; **§2.4 expanded into a full click-by-click Simulator + real-device testing walkthrough** — project generation, per-platform Simulator runs (incl. the honest finding that `iHymnsTV`/`iHymnsWatch` still render only the Phase-0 `PhaseZeroSkeletonView` placeholder today, not real screens), the native macOS "Designed for iPad" run, the `APIEnvironment` runtime override (verified `DEBUG`-only, so it does NOT exist in a real TestFlight/App Store build), an honest multi-device Live-Follow/Service-Mode section (the LAN-direct remote is Phase-2 design-only per `IHLive/LiveFollowEngine.swift`'s own header — zero `NWBrowser`/Bonjour code exists yet — and the server-mediated engine is itself only a Phase-0 freshness-check skeleton with no UI wired to it), Accessibility Inspector + Environment Overrides for VoiceOver/Dynamic Type/contrast, real-device run steps, and a limitations table).
 
 ---
 
@@ -398,7 +398,9 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 
 **Verdict:** **not submittable yet** — blocked on backend-to-production (A.1), AASA-correct-appID on production (A.2 — production already returns `200`, but with the WRONG legacy appID; a bare 200 is not the gate), and the full metadata/screenshots/age-rating/privacy-label set (B–D above). *(In-app account deletion is no longer a blocker — DONE, #1478. Export compliance is no longer a blocker — DONE, A.4.)*
 
-## 2.4 Virtual / pre-submission testing (Xcode Simulator)
+## 2.4 Virtual / pre-submission testing (Xcode Simulator + real devices)
+
+> **Quick reference** (detailed click-by-click steps for every row are §2.4.1–§2.4.8 below):
 
 | Test | Simulator | Needs real signed device / TestFlight |
 |------|-----------|----------------------------------------|
@@ -408,14 +410,145 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 | **Sign in with Apple (native)** | **N/A today** — no native SIWA button exists yet (backend-only, #1402); native sign-in is Password/Email-Code and *is* testable in Simulator | — |
 | **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + AASA body showing the correct `appID` (not just a `200` — see §2.3.A.2) |
 | Push / Live Activities (future #1410) | ❌ | ✅ |
+| **Live Follow / Service Mode multi-device ("drive the TV from the phone")** | ⚠️ **not yet a clickable feature on any shell** — see §2.4.5 for the honest breakdown | ⚠️ same caveat applies on device — the UI doesn't exist yet either way |
 
-**macOS** needs no simulator — the "Designed for iPad" build runs natively on an Apple-Silicon Mac.
+**macOS** needs no simulator — the "Designed for iPad" build runs natively on an Apple-Silicon Mac (§2.4.3).
 
-**How to run each, step by step:**
-1. **UI/navigation/Dynamic Type/dark mode.** Open `iHymns.xcodeproj` (run `Scripts/bootstrap.sh`, or `xcodegen generate` directly, first if it doesn't exist yet — the project is gitignored/regenerated) → pick a scheme (`iHymns`, `iHymnsTV`, `iHymnsWatch`) → pick a Simulator device → **⌘R**. Toggle Dynamic Type via Simulator's **Settings → Accessibility → Larger Text**; toggle dark mode via Xcode's **Environment Overrides** (the sun/moon icon in the debug bar) or Simulator's own **Settings → Developer → Dark Appearance**.
-2. **Unit/package tests.** `cd appApple/Packages/iHymnsKit && swift test` (the same command CI's `fastlane test` lane runs). **Good** = all 514 `@Test`s pass, 0 failures.
-3. **Instruments profiling.** Xcode → **Product → Profile** (⌘I) on a running scheme → choose the **Allocations** / **Time Profiler** / **Hangs** template → record a session while exercising the app. **Good** = no unbounded memory growth, no >250ms main-thread hangs. Simulator numbers are approximate — repeat on a real device before submission for true perf/energy figures.
-4. **Universal Links + Handoff.** Needs a real device with the app installed **and** an AASA whose body shows the correct `appID` — `Y5XK559SV9.app.ihymns`, not just any `200` (§2.1/§2.3.A.2 — production currently returns `200` with the WRONG legacy appID) — Simulator does not reliably exercise `com.apple.developer.associated-domains`.
+### 2.4.1 Prerequisites & generating the project
+
+1. **Install Xcode 26** (App Store, or a signed-in download from developer.apple.com/download/applications). **Good** = `xcodebuild -version` in Terminal reports an Xcode 26.x version — the deployment target across every platform is **26.0** (`appApple/Config/Shared.xcconfig`), so an older Xcode cannot even build these targets.
+2. **Install every Simulator runtime the targets need — all at 26.0.** Xcode menu → **Settings…** (⌘,) → the **Platforms** tab (this tab has been called "Components" in some older Xcode releases — same location, same purpose) → for **iOS**, **tvOS**, **watchOS**, and **visionOS**, click the download (⬇) icon next to the **26.0** entry if it isn't already marked installed.
+   - **Good** = all four platforms show a green checkmark / "Installed" next to their 26.0 runtime, not a cloud/download icon.
+   - The visionOS runtime is the largest download and the slowest simulator to boot later — budget extra time for it specifically.
+   - If a runtime you need doesn't appear as an option at all, update Xcode itself first (Apple ships new Simulator runtimes as part of Xcode point releases, sometimes as separate downloadable "Simulator Runtime" packages tied to a specific Xcode version).
+3. **Install XcodeGen** if you don't already have it: `xcodegen --version` to check; if missing, `brew install xcodegen` (the repo's `project.yml` targets XcodeGen 2.45.x per its own header comment).
+4. **Generate the Xcode project** — it is gitignored and reproducible-by-design, never hand-edited or committed:
+   ```
+   cd appApple && xcodegen generate
+   ```
+   (equivalently, run `Scripts/bootstrap.sh`, which wraps the same command). **Good** = `appApple/iHymns.xcodeproj` now exists; `git status` shows it untracked/ignored — that's expected, not a mistake.
+5. **Open it**: `open iHymns.xcodeproj` (or double-click it in Finder). **Good** = Xcode's Project Navigator shows the `iHymns`, `iHymnsTV`, `iHymnsWatch`, and `iHymnsWidgets` targets, each mirroring its `Apps/*/Sources` folder on disk (`createIntermediateGroups: true` in `project.yml`).
+6. **Troubleshooting — CoreSimulator/Xcode version skew.** If Simulator destinations fail to boot, don't appear in the destination picker, or Xcode reports a CoreSimulator-framework error on first run, check that the Mac's installed macOS/CoreSimulator isn't one point-release behind the installed Xcode (a known snag hit once on a dev machine mid-project — a macOS Software Update resolved it; CI's fresh `macos-26` GitHub runner never hits this). This is a host-environment issue, not a project-configuration one.
+
+### 2.4.2 Running each platform in its own Simulator
+
+**a. iPhone (`iHymns` scheme):**
+1. Xcode toolbar's scheme selector (top-left, next to the Run/Stop buttons) → choose **`iHymns`**.
+2. Click the destination selector immediately to its right → under "iOS Simulators" pick any listed iPhone (e.g. **iPhone 17 Pro (iOS 26.0)**). If none are listed, add one: **Window → Devices and Simulators** (⇧⌘2) → **Simulators** tab → **➕** → pick a device type + the **iOS 26.0** runtime → **Create**.
+3. **⌘R** to build and run (⌘. stops it).
+4. **Good** = the Simulator boots, the app launches straight into the real, live-API-backed UI (`RootContainerView` → `CatalogueListView` → `SongDetailView`, per `IHymnsApp.swift`) — **real song/songbook data appears, not placeholder text** — because every Xcode ⌘R run is a `DEBUG`-configuration build, and `APIEnvironment.defaultForBuild` resolves `DEBUG` → `.dev` (`dev.ihymns.app`, the live alpha backend). Signing in with a real account via **Password** or **Email-Code** also works end-to-end here (§2.1's "interim workaround").
+
+**b. iPad (same `iHymns` scheme, iPad destination):**
+1. There is no separate iPad target — `iHymns` is one multiplatform target covering iOS **and** iPadOS (`project.yml`'s own header comment: "iPadOS is part of iOS"). Same scheme as above.
+2. Destination selector → any iPad simulator (e.g. **iPad Pro 13-inch (M5) (iOS 26.0)**).
+3. **⌘R**.
+4. **Good** = same successful launch + live-data load as iPhone; additionally check the regular-width layout (`RootContainerView` switches `NavigationStack` ↔ `NavigationSplitView` by size class per its own header comment) looks correct — a persistent sidebar/list-detail split, not a stretched phone layout.
+
+**c. Apple TV (`iHymnsTV` scheme):**
+1. Scheme selector → **`iHymnsTV`**.
+2. Destination selector → an Apple TV simulator (e.g. **Apple TV 4K (3rd generation) (tvOS 26.0)**); add one via Devices and Simulators (same flow as 2.4.2.a step 2) with the tvOS 26.0 runtime if none exists.
+3. **⌘R**.
+4. ⚠️ **Good — and be honest about what "good" is today:** the app launches into `IHymnsTVApp.swift`'s current shell, which (verified in `Apps/iHymnsTV/Sources/IHymnsTVApp.swift`) renders **only the shared `PhaseZeroSkeletonView` placeholder** — a glass card reading *"iHymns / Phase‑0 skeleton — tvOS shell / iHymnsKit compiles, links, and runs. Real screens land in Phase 1."* There is **no song browsing, no lyric display, no login, and nothing network-backed on tvOS today** — this is expected current state, not a bug in this walkthrough. "Good" for tvOS right now = the skeleton card renders without crashing and the accent colour / glass material look correct; it is not yet a functional worship-catalogue screen. Navigate the Simulator's on-screen remote with the Mac trackpad (swipe gestures emulate the Siri Remote's touch surface) or a paired physical remote/game controller once real tvOS screens exist.
+
+**d. Apple Watch (`iHymnsWatch` scheme):**
+1. Same situation as tvOS: `IHymnsWatchApp.swift` (verified) also renders only `PhaseZeroSkeletonView("watchOS")` today — no glance/remote UI yet (that's Phase 1 work per the file's own header comment). Two ways to run it anyway:
+   - **Via the paired iPhone Simulator:** run the `iHymns` scheme on an iPhone Simulator that has a Watch Simulator paired to it — check pairing in **Window → Devices and Simulators → Simulators** tab (a paired Watch is listed under/alongside the iPhone; if none is paired, create a Watch simulator via **➕** and use the pairing controls there — exact wording varies slightly by Xcode version). The watch companion installs automatically; its icon appears on the paired Watch Simulator's Home Screen — open the Watch Simulator window and tap it.
+   - **Directly:** scheme selector → **`iHymnsWatch`** → destination → a standalone Watch simulator (e.g. **Apple Watch Series 10 (46mm) (watchOS 26.0)**) → **⌘R** — launches without any iPhone companion process, useful for isolated watch-shell iteration.
+2. **Good** = the skeleton card renders on the watch face without crashing — same honesty caveat as tvOS: nothing functional/data-backed to click through yet.
+
+**e. visionOS (the `iHymns` scheme running as "Designed for iPad"):**
+1. There is no separate vision target — the same `iHymns` scheme's `supportedDestinations: [iOS, macOS, visionOS]` (`project.yml`) includes visionOS directly.
+2. Scheme selector → **`iHymns`** → destination selector → under "visionOS Simulators" pick **Apple Vision Pro (visionOS 26.0)** (install the platform first per §2.4.1 step 2 if it's missing).
+3. **⌘R**. Expect a noticeably slower boot than the other Simulators.
+4. **Good** = the app opens inside the visionOS Simulator's windowed-app shell (a floating window in a virtual room) running the SAME real `RootContainerView` flow as iPhone/iPad — this is the "Designed for iPad" compatibility mode referenced in §2.3.D, not a bespoke spatial-computing UI; there is no vision-specific interaction model beyond what SwiftUI + the shared `IHDesign` glass tokens already produce.
+
+### 2.4.3 Running natively on macOS
+
+1. Scheme selector → **`iHymns`**.
+2. Destination selector → the **"My Mac"** section → pick **My Mac (Designed for iPad)** specifically — **not** plain "My Mac" (which would attempt a genuine AppKit/Mac-Catalyst build that doesn't exist for this target). "Designed for iPad" is Apple's compatibility mode for running an iPad-idiom SwiftUI app natively on Apple Silicon without a separate target.
+   - If this destination doesn't appear at all, confirm the Mac is Apple Silicon (Designed-for-iPad requires it) and that `iHymns`'s `supportedDestinations` still lists `macOS` in `project.yml` (true today).
+3. **⌘R**.
+4. **Good** = the app opens as a real, resizable macOS window (not a full-screen "iPad in a box") with genuine window chrome — you can resize and move it like any Mac app. Content reflows using the iPad-idiom layout (there is no separate Mac-native visual redesign yet — expected). Differences from iOS worth checking: pointer + keyboard interaction replaces touch gestures; the `.commands` menu built in #185 (⌘1–⌘7 section jumps, ⌘F for Search, ⌘/ for the Keyboard Shortcuts sheet — see `IHymnsApp.swift`'s `#if os(macOS)` block) becomes a REAL menu-bar item here, invisible on iOS/iPadOS.
+
+### 2.4.4 Pointing a Simulator build at a specific backend (dev / beta / prod)
+
+1. **Default behaviour.** `APIEnvironment.defaultForBuild` (`IHAPI/APIEnvironment.swift`) resolves `.dev` when the app is compiled `DEBUG` — true for every scheme you run via ⌘R in Xcode, on Simulator or a Debug-configuration device build — and `.prod` otherwise (Release, i.e. every archive Fastlane's `alpha`/`beta`/`release` lanes produce, all of which build `configuration: "Release"`). So a plain Simulator run always talks to `dev.ihymns.app` unless you explicitly override it.
+2. **The runtime override — Settings → Developer (verified in `SettingsView.swift`).** With the app running, open its **Settings** tab → scroll to a **"Developer"** section → an **"Environment"** picker offers 4 choices: *"Automatic (Development)"* (the default — no override, uses `defaultForBuild`), *"Development"*, *"Beta"*, *"Production"*. Picking one writes it to `UserDefaults` (`IHSettingsStore.apiEnvironmentOverride`).
+   - ⚠️ **It does NOT take effect live** — the picker's own footer text says so ("Takes effect the next time you open the app"), because `APIClient` is an immutable-once-built `actor` (`environment` is a `let`). Fully quit the running app (⌘. in Xcode, or swipe it away on the Simulator's Home Screen / App Switcher) and relaunch (⌘R again) for the new environment to take effect.
+   - ⚠️ **Verified in code — this picker is `DEBUG`-only.** `SettingsView.swift` compiles this whole "Developer" section behind `#if DEBUG` (`// MARK: - Developer (DEBUG-only)`). Since every Fastlane-built archive is `configuration: "Release"`, **this picker does not exist in a real TestFlight or App Store build** — it is only present in a build you run yourself from Xcode (Simulator, or a Debug-configuration run on a physical device). Use it to point *your own* Simulator at `beta`/`prod` for manual side-by-side comparison; do not expect an external TestFlight tester to have this option available to them. (§2.1's "a tester can also override the API environment at runtime" refers to this same mechanism — read it as applying to *your own* Debug-configuration test runs, not to a Release-configuration TestFlight install.)
+3. **Good** = after switching to, say, "Beta" and fully relaunching, the app's data/behaviour matches whatever `beta.ihymns.app` currently serves — useful for comparing environments without needing three separate device builds. Remember all three docroots share **one** MySQL database (`.claude/CLAUDE.md` rule #26 / `MEMORY.md`'s "s.SongbookName flood" root-cause note) — the picker changes which *API code version* you hit, never a different dataset.
+
+### 2.4.5 Multi-device / remote-control testing — Live Follow / Service Mode (the priority scenario)
+
+**Be honest about what's actually built before testing it — verified directly in code, not assumed:**
+- The **server-mediated** Live Follow / Service Mode engine (`IHLive/LiveFollowEngine.swift`) exists only as a **Phase-0 skeleton**: the ENTIRE implementation today is one pure function, `LiveFollowEngine.isFresh(lastUpdatedAt:now:)`, matching the web/PWA's 180-second freshness window (rule #26). There is no polling loop, no presence-token lifecycle, and no broadcast call anywhere yet — `AppRootViewModel+Live.swift` constructs a `LiveFollowEngine` instance as part of the app's composition root, but a repo-wide grep confirms **no screen in `Apps/iHymns`, `Apps/iHymnsTV`, or `Apps/iHymnsWatch` imports `IHLive` or references the engine at all** — it is wired into the object graph but not surfaced in any UI.
+- The **separate LAN-direct remote** (peer-to-peer discovery/control with no server round-trip — Bonjour/`NWBrowser`/`NWListener`, a `_ihymns-remote._tcp` service type, an `NSLocalNetworkUsageDescription` permission string) is **not built at all** — a grep across the entire `appApple/` tree for `NWBrowser`, `NWListener`, `Bonjour`, `_ihymns-remote`, and `NSLocalNetworkUsageDescription` returns **zero matches**. `LiveFollowEngine.swift`'s own header comment says this sub-module ("`IHLive/LANRemote`") "lands in Phase 2" — designed, not implemented.
+- **Compounding factor:** `iHymnsTV` and `iHymnsWatch` today render only the static `PhaseZeroSkeletonView` placeholder (§2.4.2.c/d) — there is no tvOS screen to "broadcast to" and no phone screen with a "drive the TV" control even if the engine were fully wired.
+- **Net honest conclusion:** there is **no on-device Live-Follow/Service-Mode feature to click through end-to-end today, on Simulator or a real device, on either mechanism.** What you CAN validate today is that a native Simulator build and the existing web/PWA Live Follow feature are hitting the SAME shared backend session state on `dev.ihymns.app` (proving the shared-database/shared-API assumption the Phase-1 build will rely on) — not a native remote-control UI, because that UI doesn't exist yet.
+
+**How to run two Simulators at once (useful today for the backend-parity check above, and ready to reuse once the native remote-control screens ship):**
+1. **Sequential Xcode runs, both left running.** Run scheme A first (e.g. `iHymnsTV` → an Apple TV Simulator) via **⌘R**; once it launches, WITHOUT stopping it, switch the toolbar scheme selector to scheme B (`iHymns` → an iPhone Simulator) and **⌘R** again. Xcode builds and launches the second app in its own Simulator instance alongside the first — confirm both are running via two separate Simulator app windows, or Xcode's **Debug Navigator** (⌘7), which lists every currently-running process this Xcode session manages.
+2. **Or boot several Simulators directly with `xcrun simctl`** (more deterministic than juggling the destination picker):
+   ```
+   xcrun simctl list devices available
+   xcrun simctl boot "Apple TV 4K (3rd generation)"
+   xcrun simctl boot "iPhone 17 Pro"
+   open -a Simulator
+   ```
+   Then in Xcode, pick each scheme and select the matching *already-booted* destination before **⌘R** — Xcode attaches to the running instance instead of booting a fresh one.
+3. **Or one Simulator + one physical device** — run `iHymnsTV` on a real Apple TV (§2.4.7) while running `iHymns` in an iPhone Simulator. This is the topology closest to the real-world setup (a TV is rarely simulated in an actual living room) and is the combination to prefer once the remote-control UI exists.
+4. ⚠️ **Local Network permission caveat.** iOS's Local Network permission prompt (backed by `NSLocalNetworkUsageDescription`, gating Bonjour/mDNS discovery) does not behave the same way — or may not appear at all — inside the Simulator's virtualised network stack as it does on a real device's real Wi-Fi LAN. Once the LAN-direct remote sub-module lands, treat any Simulator-only "the phone found the TV" result as **provisional** — confirm on two real devices on the same real Wi-Fi network (§2.4.7) before trusting it.
+5. **Further reading:** `.claude/live-observability-strategy.md` sketches a fuller plan for instrumenting/observing live sessions across devices, useful once there's an actual feature to instrument — it is not a dependency for anything in this walkthrough today.
+
+### 2.4.6 Accessibility in the Simulator
+
+1. **VoiceOver via Accessibility Inspector** (the practical Simulator approach — VoiceOver's own gesture set assumes a touchscreen, which a Mac trackpad only approximates):
+   - With a Simulator running, **Xcode → Open Developer Tool → Accessibility Inspector**.
+   - In the Inspector window's target picker (top-left dropdown), select the running **Simulator** (not "Mac" or a physical device).
+   - Click the crosshair/target icon, then click any on-screen Simulator element — the Inspector shows its accessibility label, value, traits, and hint. Use the **Audit** tab (▶ **Run Audit**) for an automated pass/fail sweep (contrast, missing labels, hit-target size, and more) of the current screen.
+   - **Good** = every interactive control (buttons, list rows, the theme/CVD picker, etc.) reports a real, meaningful label — not a bare "Button" or a raw SF Symbol name — and the Audit tab returns zero unexpected findings.
+   - This is a strong proxy for label/contrast correctness but does **not** replace an actual gesture-driven VoiceOver pass (swipe-to-navigate, the rotor, listening to real speech) on a real device — that sweep is deferred and tracked as **#1458** ("on-device VoiceOver sweep").
+2. **Dynamic Type via Xcode's Environment Overrides:**
+   - With the app running (⌘R), look at Xcode's debug bar (appears at the bottom of the editor once a process is running) → the small rectangle-with-a-slider icon labelled **Environment Overrides** → its **Text** section has a slider from xSmall through the accessibility sizes (up to **AX5**), plus a **Bold Text** toggle.
+   - Drag to an AX size (e.g. AX3 or AX5) — the running app's UI updates live, no relaunch required.
+   - **Good** = text reflows/wraps instead of clipping or truncating destructively; pay particular attention to any fixed-height row at the largest sizes.
+   - Alternative without Xcode's panel: the Simulator's own **Settings → Accessibility → Display & Text Size → Larger Text**, driven from inside the guest OS instead of the host tool.
+3. **Increase Contrast / Reduce Motion / Reduce Transparency / colour-vision filters** — the same Environment Overrides popover has an **Accessibility** section with independent toggles for each. Toggle one at a time and re-check the current screen:
+   - **Increase Contrast good** = the `\.ihIncreaseContrast`-driven `IHColorTokens.accent(increaseContrast:)` palette (#1438, WCAG-AA-verified) visibly swaps to the higher-contrast variant — confirm visually, don't just trust the toggle flipped.
+   - **Reduce Motion good** = animations/transitions collapse to crossfades; nothing still slides or bounces.
+   - **Reduce Transparency good** = any glass/blur material from `IHDesign`'s glass wrappers becomes opaque.
+
+### 2.4.7 On real devices
+
+1. **Connect the device** to the Mac (USB-C/Lightning cable, or over Wi-Fi once paired once via cable).
+2. **Trust the Mac** on the device the first time it's connected (the device prompts "Trust This Computer?").
+3. **Register the device (usually automatic).** **Window → Devices and Simulators** (⇧⌘2) → select the connected device in the left sidebar → Xcode offers **"Use for Development"**, which registers its UDID against your account. (Manual alternative, rarely needed with automatic signing: developer.apple.com → Certificates, Identifiers & Profiles → **Devices** → **➕**, paste the UDID.)
+4. **Select it as the run destination** — the toolbar destination selector now lists the device by name (e.g. "Lance's iPhone") under a physical-devices section, separate from the Simulators.
+5. **⌘R.** On a device that has never run a build signed by this team before, iOS/tvOS/watchOS refuses to launch it until you go to the device's **Settings → General → VPN & Device Management** (or the tvOS/watchOS equivalent) → find the developer profile (named for your Apple Developer Team) → **Trust**. This is a once-per-device-per-certificate step.
+6. **Good** = the same launch behaviour as Simulator, but now on real hardware — and this is the only place several things genuinely work (see §2.4.8 below).
+7. **Apple Watch specifically:** pair the physical Watch to the physical iPhone first (the standard Watch-app pairing flow, entirely outside Xcode) — running `iHymns` on that already-paired iPhone then installs the watch companion automatically, mirroring the Simulator pairing in §2.4.2.d.
+8. **Apple Vision Pro specifically:** there's no direct USB-C-to-Mac data-cable install flow the way iPhone has — pair it to the Mac wirelessly instead (Devices and Simulators shows it once both are on the same Wi-Fi network and the device's own developer-mode/pairing prompt has been accepted once).
+9. **Why some things ONLY work on a real device:**
+   - **Universal Links** (`applinks:ihymns.app` etc.) — associated-domains verification is a real OS+network-level check the Simulator does not perform the same way; independently of Simulator-vs-device, it is ALSO currently blocked by the AASA-body problem (§2.1/§2.3.A.2 — production returns a `200` today but with the WRONG legacy `appID`, so this will fall back to Safari regardless of what you're testing on until that's fixed).
+   - **CarPlay** — the CarPlay Simulator gives a basic external-display window (Xcode/Simulator's own I/O menu) once #1431 builds the on-device template UI, but only a real car head-unit (or Apple's physical CarPlay developer kit) confirms genuine accessory-connection behaviour; also still gated on `com.apple.developer.carplay-audio` not yet being declared in `project.yml` (§1.3 Step 4).
+   - **Real push / Live Activities** (future #1410) — APNs sandbox/production round-trips do not work against the Simulator's network stack with real device tokens.
+   - **Handoff between two real devices** signed into the same iCloud account — the Simulator has no "hand off to a nearby real device" concept.
+   - **True performance/battery/thermal behaviour** — Simulator borrows the host Mac's own CPU/GPU (§2.4's quick-reference table), never representative of an iPhone/Watch/TV's actual silicon and thermal envelope.
+   - **The real Sign in with Apple system sheet** — `ASAuthorizationController`'s native presentation, Face-ID/Touch-ID-gated confirmation, and Keychain-backed autofill of previously-used Apple IDs behave differently (and more strictly) on a signed device than in Simulator — moot today anyway since no native SIWA button exists yet (§1.2 Step 6), but will matter once one does.
+
+### 2.4.8 Honest limitations — what the Simulator canNOT prove
+
+| Capability | Simulator | Real device | Why |
+|---|---|---|---|
+| Universal Links resolution (`applinks:ihymns.app`) | ❌ unreliable/not representative | ✅ required | Associated-domains verification is an OS+network check Simulator doesn't perform the same way — independently blocked today anyway (production's AASA `200`s with the WRONG legacy appID, §2.1/§2.3.A.2) |
+| CarPlay (once #1431 ships the on-device UI) | ⚠️ CarPlay Simulator gives a basic external-display window only, no real accessory pairing | ✅ required for genuine head-unit behaviour | Entitlement + template UI don't exist yet either (§1.3 Step 4) |
+| Local Network / Bonjour discovery reliability | ⚠️ present but not representative — Simulator's local-network privacy boundary differs from a real device's real Wi-Fi LAN | ✅ required | Two Simulators "finding each other" proves far less than two real devices on the same real network (§2.4.5) |
+| APNs / Live Activities (future #1410) | ❌ | ✅ required | No real push-token round-trip in Simulator |
+| Real performance / energy / thermal behaviour | ⚠️ approximate only — borrows the host Mac's CPU/GPU | ✅ required for true figures | Never representative of actual device silicon |
+| Sign in with Apple system-sheet nuances (once a native button exists) | ⚠️ works, but the Face-ID/Touch-ID-gated real presentation differs | ✅ required | N/A today anyway — no native SIWA button yet (§1.2 Step 6) |
+| Backend load/capacity | ❌ not a client-side concept at all | N/A — this is a server-side test, see §2.5 | The load risk lives on the shared PHP/MySQL backend, never the thin client (§2.5) |
+
+See §2.5 for the parallel "you cannot load-test the client, the risk is server-side" honesty statement — it stays true regardless of Simulator vs. real device.
 
 ## 2.5 "Load testing" — the honest answer
 
