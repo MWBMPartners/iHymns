@@ -140,7 +140,7 @@ $app["Application"]["Vendor"]["Name"] = "iHymns";
 $app["Application"]["Vendor"]["Website"]["URL"] = "https://ihymns.app";
 
 /* Parent company name */
-$app["Application"]["Vendor"]["Parent"]["Name"] = NULL;
+$app["Application"]["Vendor"]["Parent"]["Name"] = "MWBM Partners Ltd";
 
 /* Parent company website URL */
 $app["Application"]["Vendor"]["Parent"]["Website"]["URL"] = NULL;

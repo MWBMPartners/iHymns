@@ -15,9 +15,12 @@ declare(strict_types=1);
 
 $appName = $app["Application"]["Name"];
 $vendorName = $app["Application"]["Vendor"]["Name"];
+$legalEntity = $app["Application"]["Vendor"]["Parent"]["Name"] ?? $vendorName;
 $appUrl = $app["Application"]["Website"]["URL"];
 
 ?>
+
+<!-- Owner/legal review: confirm company number + registered address disclosures (UK e-commerce regs) -->
 
 <!-- ================================================================
      PRIVACY POLICY PAGE
@@ -42,6 +45,12 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 your privacy. This policy explains what information we collect, how we use it,
                 and your rights when using the <?= htmlspecialchars($appName) ?> web application,
                 progressive web app (PWA), and the <?= htmlspecialchars($appName) ?> API.
+            </p>
+            <p>
+                <?= htmlspecialchars($appName) ?> is operated by
+                <strong><?= htmlspecialchars($legalEntity) ?></strong>, which is the
+                <strong>data controller</strong> responsible for your personal data under
+                applicable data protection law.
             </p>
             <p>
                 <strong>In summary:</strong> you can browse and search <strong>anonymously</strong>,

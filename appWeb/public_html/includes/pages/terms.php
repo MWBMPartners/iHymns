@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 $appName = $app["Application"]["Name"];
 $vendorName = $app["Application"]["Vendor"]["Name"];
+$legalEntity = $app["Application"]["Vendor"]["Parent"]["Name"] ?? $vendorName;
 $appUrl = $app["Application"]["Website"]["URL"];
 
 ?>
@@ -38,8 +39,9 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">1. Introduction</h2>
             <p>
-                Welcome to <strong><?= htmlspecialchars($appName) ?></strong>, a service provided by
-                <strong><?= htmlspecialchars($vendorName) ?></strong>.
+                <strong><?= htmlspecialchars($appName) ?></strong> is a service operated by
+                <strong><?= htmlspecialchars($legalEntity) ?></strong> ("we", "us", "our"), a
+                company registered in England and Wales.
                 <?= htmlspecialchars($appName) ?> is a digital hymn and worship song lyrics
                 application designed to assist Christians and congregations with worship,
                 wherever they may be.
@@ -97,13 +99,13 @@ $appUrl = $app["Application"]["Website"]["URL"];
                 respective copyright holders, publishers, and licensing bodies.
             </p>
             <p>
-                <?= htmlspecialchars($vendorName) ?> does not claim ownership of any song
+                <?= htmlspecialchars($legalEntity) ?> does not claim ownership of any song
                 content. All rights remain with the original rights holders.
             </p>
             <p>
                 The <?= htmlspecialchars($appName) ?> application itself — including its
                 design, code, user interface, and branding — is the proprietary property
-                of <?= htmlspecialchars($vendorName) ?> and is protected by applicable
+                of <?= htmlspecialchars($legalEntity) ?> and is protected by applicable
                 copyright and intellectual property laws.
             </p>
         </div>
@@ -225,7 +227,7 @@ $appUrl = $app["Application"]["Website"]["URL"];
         <div class="card-body">
             <h2 class="h6 mb-3">10. Limitation of Liability</h2>
             <p>
-                To the fullest extent permitted by law, <?= htmlspecialchars($vendorName) ?>
+                To the fullest extent permitted by law, <?= htmlspecialchars($legalEntity) ?>
                 shall not be liable for any direct, indirect, incidental, consequential, or
                 punitive damages arising from your use of <?= htmlspecialchars($appName) ?>.
             </p>
