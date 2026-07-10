@@ -17,14 +17,32 @@ info:
       `/manage/` PHP session.
     - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
       purpose-built, per-edit atomic editor backend that replaces the
-      whole-song `save_song` race. AUTH + editor-role gated; POSTs use an
-      `X-Requested-With: XMLHttpRequest` same-origin CSRF guard (NOT a session
-      token field). See the **Editor API v2** tag.
+      whole-song `save_song` race (#1178). Requires `isAuthenticated()` AND
+      the `editor` role (`401`/`403` otherwise); every POST additionally
+      requires the `X-Requested-With: XMLHttpRequest` same-origin header
+      (NOT a session-token field — chosen to survive the cross-subdomain
+      adopted-token admin session, #1307). `action` travels via query string
+      on GET reads or JSON body on POST writes; two endpoints
+      (`media_upload`, `import_file`/`import_zip`) are `multipart/form-data`.
+      Every response is `{ok: bool, …}`; an unknown `action` is `400`; an
+      uncaught error is `500 {ok:false,error,error_detail}` (`error_detail`
+      admin-only). **Not yet broken out into individual paths below** (#1472
+      — the `Editor API v2` tag was removed from the tag list as
+      declared-but-unused; this paragraph is its only documentation until
+      the per-action paths are added).
     - **Service Mode** (congregation Live-Follow, #1323/#1335) — the
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
-    One non-action route exists: the gated media stream
-    `GET /song-media/<id>` (see the **Media** tag).
+    One non-action route exists: the gated media stream `GET /song-media/<id>`
+    (#853, `<id>` = `tblSongMedia.Id`). Access is evaluated via
+    `checkContentAccess('song', <parent SongId>, …)`; an anonymous request
+    degrades gracefully (gating applies as anonymous, never a hard `401`).
+    Supports HTTP `Range` / `206 Partial Content` for seekable audio. Kinds:
+    `audio` (streamed inline), `sheet-music` (PDF), `midi`, `musicxml` (the
+    last three served as downloads). **Not yet a documented path below**
+    (#1472 — the `Media` tag was removed from the tag list as
+    declared-but-unused; this paragraph is its only documentation until a
+    path is added).
 
     ## Authentication
 
@@ -186,6 +204,12 @@ servers:
     description: Alpha channel (gated by `access_alpha` entitlement)
   - url: https://beta.ihymns.app
     description: Beta channel (gated by `access_beta` entitlement)
+  # Kept (#1472 audit): still a real, live reference, not dead — the
+  # cross-domain storage bridge's origin allow-list actively accepts
+  # postMessage from any *.ihymns.net origin (appWeb/public_html/bridge.html
+  # ALLOWED_ORIGINS regex `ihymns\.(app|net)`), and storage-bridge.js /
+  # subdomain-sync.js both name ihymns.net alongside ihymns.app in their
+  # cross-domain-sync comments.
   - url: https://beta.ihymns.net
     description: Legacy beta / dev
 
@@ -216,14 +240,26 @@ tags:
     description: Tags, suggestions, related songs, popular songs
   - name: Push
     description: Push-notification subscription endpoints
+  - name: Notifications
+    description: In-app notification delivery (#289) — list, mark read, header-bell badge count
   - name: Organisations
     description: Multi-tenant organisation membership and administration
   - name: Content Access
     description: Content-licence + restriction evaluation for gated songs / audio / sheet music
+  - name: Licences
+    description: Multi-licence, inheritance-aware resolution (#462) — effective-licence lookups for admin audit and self-service capability checks
   - name: Song Metadata
     description: Per-song data surfaces — history, key, writers, revisions
+  - name: Lyrics
+    description: Timed-lyrics (TTML) ingestion into the normalized lyric-line schema, for external pushers such as MeedyaDL
   - name: Pages
-    description: HTML + alternate-format (CSV / XML / JSON / OpenSong / VideoPsalm) renderers
+    description: |
+      Rendered HTML fragments for SPA page-fragment hydration, routed via
+      the `?page=<name>` query parameter (a separate dispatch from the
+      `?action=<name>` JSON endpoints elsewhere in this file). The
+      alternate-format bulk exports (CSV / XML / JSON / OpenSong /
+      VideoPsalm) live under `?action=admin_export` (Admin — Maintenance
+      tag) — see that tag's #1472 note.
   - name: Admin
     description: Administrative endpoints for user, group, and content management
   - name: Admin — Restrictions
@@ -320,30 +356,6 @@ tags:
       Admin-only endpoints under `/manage/editor/api.php`, protected by the
       /manage/ PHP session rather than a Bearer token. Used by the song
       editor SPA for per-song save, bulk tag, and revision history.
-  - name: Editor API v2
-    description: |
-      Granular, atomic editor backend (#1200) at `/manage/editor/api2.php`,
-      reached as `?action=<name>`. Every edit is its own CSRF-guarded,
-      audited MySQL write — replacing the whole-song `save_song` auto/manual
-      save race (#1178) without re-implementing the primary save path.
-
-      **Auth + CSRF.** Requires `isAuthenticated()` AND the `editor` role —
-      otherwise `401 {ok:false,error}` (unauthenticated) or
-      `403 {ok:false,error}` (authenticated non-editor). Every **POST**
-      additionally requires the `X-Requested-With: XMLHttpRequest` header
-      (a forbidden header a cross-origin form/navigation cannot set without a
-      CORS preflight that is never honoured); a POST missing it gets
-      `403 {ok:false,error:"Cross-site POST blocked…"}`. This is the same
-      same-origin defence as the public `api.php` (#293) — chosen over an
-      embedded session token that went stale under the cross-subdomain
-      adopted-token admin session (#1307). GET reads carry no CSRF guard.
-
-      **Wire format.** `action` via query string (GET reads) or JSON body
-      (POST writes); two endpoints (`media_upload`, `import_file`/`import_zip`)
-      are `multipart/form-data` reading `$_POST` + `$_FILES`. Every response is
-      `{ok: bool, …}` with the TRUE result. Unknown action → `400`. Any
-      uncaught server error → `500 {ok:false,error:"Server error.",error_detail}`
-      (`error_detail` only populated for admins).
   - name: Live Follow
     description: |
       Host-led real-time multi-device follow (#1268) — the `live_follow_*`
@@ -392,15 +404,6 @@ tags:
       exist — so the family is effectively dormant by default. (The older
       host-led `live_follow_*` family shares the spine tables but is a
       separate, non-anonymous, non-venue feature — #1268.)
-  - name: Media
-    description: |
-      Gated streaming of per-song media files (#853) at
-      `GET /song-media/<id>`, where `<id>` is the `tblSongMedia.Id`. Access is
-      evaluated via `checkContentAccess('song', <parent SongId>, …)`; an
-      anonymous request degrades gracefully (no 401 — gating applies as
-      anonymous). Supports HTTP `Range` / `206 Partial Content` for seekable
-      audio. Kinds: `audio` (streamed inline), `sheet-music` (PDF), `midi`,
-      `musicxml` (the last three served as downloads).
 
 paths:
   # ===========================================================================
@@ -760,6 +763,61 @@ paths:
                       $ref: "#/components/schemas/SongSummary"
                   total:
                     type: integer
+
+  /api.php?action=songbook_export:
+    get:
+      operationId: songbookExport
+      tags: [Songs]
+      summary: Export one songbook's full song records (#1166)
+      description: |
+        Public, DB-direct export of every song in ONE songbook — full
+        importable records, the same response shape as the admin twin
+        `/manage/editor/api.php?action=songbook_export`. Backs the
+        end-user "export my songbook" UI (`js/modules/export-ui.js`).
+        Deliberately scoped to a single songbook, never the whole corpus
+        (rule #17). Shares the `bulk` read-rate-limit budget with
+        `bulk_songs` / `bulk_audio` (60 requests/minute combined,
+        fail-open — see the Rate Limiting section above).
+
+        **Export gating (#1120/#1141), dormant by default.** When
+        `content_gating_enabled` is on, songs the caller may not EXPORT
+        (a restriction whose `AppliesToAction` is `export` or `all`) are
+        silently dropped from the `songs` list rather than erroring. With
+        the flag off (the default) every song in the songbook is
+        returned unfiltered.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [songbook_export] }
+        - name: abbr
+          in: query
+          required: true
+          description: Songbook abbreviation. Uppercased server-side; must match `^[A-Z0-9]{1,20}$`.
+          schema: { type: string, example: CP }
+        - name: platform
+          in: query
+          required: false
+          description: Caller platform, consulted only by export-gating evaluation when content gating is enabled.
+          schema: { type: string, default: PWA, example: PWA }
+      responses:
+        "200":
+          description: Songbook bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songs:
+                    type: array
+                    items: { $ref: "#/components/schemas/Song" }
+                  songbook:
+                    type: object
+                    nullable: true
+        "400":
+          description: Missing or invalid abbr
+        "429":
+          $ref: "#/components/responses/RateLimited"
 
   /api.php?action=songbooks:
     get:
@@ -6343,9 +6401,31 @@ paths:
       tags: [Song Requests]
       summary: Submit a new song-request from the public form
       description: |
-        Rate-limited (IP-based, 5/day default) and honey-potted. Writes
+        **#1472 correction:** the body fields below (`title` / `songbook` /
+        `details` / `email` / `website`) replace a previous, factually
+        wrong schema (`writer` / `reason` / `hp_field`) that does not match
+        api.php:8515-8631.
+
+        Rate-limited (5 submissions per IP per 24h, checked against
+        `tblSongRequests.CreatedAt`) and honey-potted via `website`. Writes
         to `tblSongRequests` with status `pending`. Anonymous submissions
-        are allowed.
+        are allowed; a Bearer/session caller is additionally linked via
+        `UserId`.
+
+        Accepts **either** `application/json` (the JS path used by the
+        `/request` page's script) **or** `application/x-www-form-urlencoded`
+        / `multipart/form-data` (the no-JS `<form action>` fallback, #711,
+        for when the page's `<script type="module">` fails to load) — both
+        carry the same fields.
+
+        **No-JS fallback response.** When the request was form-encoded,
+        the server responds with a **302** redirect instead of a JSON
+        body: `Location: /request?submitted=1&id=<trackingId>` on
+        success, or `Location: /request?error=<urlencoded message>` on
+        failure. See `?page=request`'s `submitted` / `id` / `error`
+        params, which render the matching flash banner. The JSON (JS)
+        path always gets a JSON body, on every outcome including the
+        honeypot and rate-limit cases.
       parameters:
         - name: action
           in: query
@@ -6355,23 +6435,33 @@ paths:
         required: true
         content:
           application/json:
-            schema:
-              type: object
-              required: [title]
-              properties:
-                title:     { type: string, example: "Great Is Thy Faithfulness" }
-                writer:    { type: string, example: "Thomas Chisholm" }
-                reason:    { type: string, description: Why the user wants this song added }
-                email:     { type: string, format: email, description: Optional reply-to }
-                hp_field:  { type: string, description: Honeypot — MUST be empty }
+            schema: { $ref: "#/components/schemas/SongRequestSubmitInput" }
+          application/x-www-form-urlencoded:
+            schema: { $ref: "#/components/schemas/SongRequestSubmitInput" }
       responses:
         "200":
-          description: Queued for admin triage
+          description: |
+            JSON (JS) path only. `trackingId: 0` is the honeypot's silent
+            fake success — no row is written, so a bot filling `website`
+            isn't tipped off that it was caught.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SuccessResponse" }
+              schema:
+                type: object
+                properties:
+                  ok:         { type: boolean, example: true }
+                  trackingId: { type: integer, example: 512 }
+        "302":
+          description: |
+            Form-encoded (no-JS) path only — redirects to `/request` with
+            a `submitted`/`id` (success) or `error` (failure) query param
+            instead of returning a JSON body.
+        "400":
+          description: Missing `title`, a field over its length cap, or an invalid `email`
+        "405":
+          description: Non-POST method
         "429":
-          description: Rate-limit exceeded for this IP
+          description: Rate-limit exceeded — 5 submissions from this IP in the last 24h
 
   /api.php?action=song_correction_submit:
     post:
@@ -7347,7 +7437,32 @@ paths:
     get:
       operationId: adminExport
       tags: [Admin — Maintenance]
-      summary: Export a table as CSV (admin audit)
+      summary: Bulk-export every song in one of five formats (#314)
+      description: |
+        **#1472 correction:** this entry previously documented a `table`
+        parameter and a "table CSV audit" export that does not exist
+        anywhere in api.php. The real handler (api.php:7243-7401) exports
+        **every** song (`tblSongs` joined with writers/composers) in the
+        format named by `format`; there is no per-table selection.
+
+        Requires `editor`, `admin`, or `global_admin` role. Streams the
+        result as a download (`Content-Disposition: attachment`); the
+        response content type and file shape depend on `format`:
+        - `json` — `{songs: [...]}`, one object per song (id, number,
+          title, songbook, songbookName, writers[], composers[],
+          copyright, language, ccli, verified, hasAudio, hasSheetMusic).
+        - `csv` — columns id, number, title, songbook, writers, composers,
+          copyright, language (writers/composers `; `-joined).
+        - `xml` — `<songs><song id="…">…</song></songs>`.
+        - `opensong` — a `.zip` containing one OpenSong-format XML file
+          per song (`<SongId>.xml`: title/author/copyright/ccli/lyrics).
+        - `videopsalm` — `{Songs: [{Text, Author, Copyright, CCLI,
+          Verses: [{Text}]}]}`, one entry per song.
+
+        This is the single place these five formats are exposed — see
+        the **Pages** tag's #1472 note for the five now-removed
+        `?action=<format>` entries that used to fictionally document
+        them as separate single-song-by-id public routes.
       security:
         - bearerAuth: []
       parameters:
@@ -7355,17 +7470,30 @@ paths:
           in: query
           required: true
           schema: { type: string, enum: [admin_export] }
-        - name: table
+        - name: format
           in: query
-          required: true
-          description: Table key to export (e.g. `users`, `song_requests`, `activity_log`)
-          schema: { type: string }
+          required: false
+          description: Export format. Defaults to `json` when omitted.
+          schema:
+            type: string
+            enum: [json, csv, xml, opensong, videopsalm]
+            default: json
       responses:
         "200":
-          description: CSV file download
+          description: File download; shape/content-type depends on `format` (see above)
           content:
+            application/json:
+              schema: { type: object }
             text/csv:
               schema: { type: string }
+            application/xml:
+              schema: { type: string }
+            application/zip:
+              schema: { type: string, format: binary }
+        "400":
+          description: "Invalid format (not one of: json, csv, xml, opensong, videopsalm)"
+        "403":
+          description: Editor access required
 
   /api.php?action=admin_organisations:
     get:
@@ -8218,17 +8346,38 @@ paths:
           description: Health summary per songbook
 
   # ===========================================================================
-  # PAGES  (HTML renderers + alternate-format exports)
+  # PAGES  (HTML renderers for SPA page-fragment hydration)
+  #
+  # All ten pre-existing entries below were documented pre-#1472 as
+  # `?action=<name>` with an `action` parameter — factually wrong. The page
+  # router (`if ($page !== null)` at api.php:353, switching on `$_GET['page']`
+  # set at api.php:329) is a SEPARATE dispatch from the action switch
+  # (`if ($action !== null)` at api.php:534). Verified per name against
+  # `case '<name>':` inside the page-router switch (api.php:376-510):
+  #   home/help/terms/privacy/settings — genuine `case` blocks there, fixed
+  #   below to `?page=<name>`.
+  #   json/xml/csv/opensong/videopsalm — NOT page-router cases and NOT
+  #   top-level actions either; the only occurrence of these five case labels
+  #   in api.php is nested inside the single action `admin_export`
+  #   (api.php:7243-7401), switching on `$_GET['format']`, not `$_GET['page']`
+  #   or `$_GET['action']`. Flipping them to `?page=` would have been a second
+  #   wrong fix, so the five entries were removed; the real behaviour (bulk,
+  #   editor+-gated, all-songs export) is now documented once under
+  #   `?action=admin_export` (Admin — Maintenance tag) instead of five times
+  #   under a fictional single-song-by-id public route.
   # ===========================================================================
 
-  /api.php?action=home:
+  /api.php?page=home:
     get:
       operationId: pageHome
       tags: [Pages]
       summary: Rendered home-page HTML fragment
-      description: Used by the router when hydrating `/` during offline startup.
+      description: |
+        Used by the router when hydrating `/` during offline startup.
+        Cacheable fragment (ETag) — `home` is in the same-for-everyone
+        cacheable-pages allow-list.
       parameters:
-        - name: action
+        - name: page
           in: query
           required: true
           schema: { type: string, enum: [home] }
@@ -8238,13 +8387,14 @@ paths:
           content:
             text/html: { schema: { type: string } }
 
-  /api.php?action=help:
+  /api.php?page=help:
     get:
       operationId: pageHelp
       tags: [Pages]
       summary: Rendered in-app help page
+      description: Cacheable fragment (ETag) — same-for-everyone content.
       parameters:
-        - name: action
+        - name: page
           in: query
           required: true
           schema: { type: string, enum: [help] }
@@ -8253,13 +8403,14 @@ paths:
           description: HTML fragment
           content: { text/html: { schema: { type: string } } }
 
-  /api.php?action=terms:
+  /api.php?page=terms:
     get:
       operationId: pageTerms
       tags: [Pages]
       summary: Rendered Terms of Use page
+      description: Cacheable fragment (ETag) — same-for-everyone content.
       parameters:
-        - name: action
+        - name: page
           in: query
           required: true
           schema: { type: string, enum: [terms] }
@@ -8268,13 +8419,14 @@ paths:
           description: HTML fragment
           content: { text/html: { schema: { type: string } } }
 
-  /api.php?action=privacy:
+  /api.php?page=privacy:
     get:
       operationId: pagePrivacy
       tags: [Pages]
       summary: Rendered Privacy Policy page
+      description: Cacheable fragment (ETag) — same-for-everyone content.
       parameters:
-        - name: action
+        - name: page
           in: query
           required: true
           schema: { type: string, enum: [privacy] }
@@ -8283,13 +8435,16 @@ paths:
           description: HTML fragment
           content: { text/html: { schema: { type: string } } }
 
-  /api.php?action=settings:
+  /api.php?page=settings:
     get:
       operationId: pageSettings
       tags: [Pages]
       summary: Rendered Settings modal HTML
+      description: |
+        NOT in the cacheable-pages allow-list — renders fresh per request
+        since the settings panel reflects user-specific state.
       parameters:
-        - name: action
+        - name: page
           in: query
           required: true
           schema: { type: string, enum: [settings] }
@@ -8297,114 +8452,6 @@ paths:
         "200":
           description: HTML fragment
           content: { text/html: { schema: { type: string } } }
-
-  /api.php?action=json:
-    get:
-      operationId: exportJson
-      tags: [Pages]
-      summary: Export one song as JSON
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [json] }
-        - name: id
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Full song JSON
-          content:
-            application/json:
-              schema: { type: object }
-
-  /api.php?action=xml:
-    get:
-      operationId: exportXml
-      tags: [Pages]
-      summary: Export one song as generic XML
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [xml] }
-        - name: id
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Song as XML
-          content:
-            application/xml:
-              schema: { type: string }
-
-  /api.php?action=csv:
-    get:
-      operationId: exportCsv
-      tags: [Pages]
-      summary: Export a filtered song list as CSV
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [csv] }
-        - name: songbook
-          in: query
-          required: false
-          schema: { type: string }
-      responses:
-        "200":
-          description: CSV file
-          content: { text/csv: { schema: { type: string } } }
-
-  /api.php?action=opensong:
-    get:
-      operationId: exportOpenSong
-      tags: [Pages]
-      summary: Export one song in OpenSong XML format
-      description: See integration notes in `/manage/setup-database` on import compatibility.
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [opensong] }
-        - name: id
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: OpenSong XML
-          content: { application/xml: { schema: { type: string } } }
-
-  /api.php?action=videopsalm:
-    get:
-      operationId: exportVideoPsalm
-      tags: [Pages]
-      summary: Export one song in VideoPsalm JSON format
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [videopsalm] }
-        - name: id
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: VideoPsalm JSON
-          content: { application/json: { schema: { type: object } } }
-
-  # ---------------------------------------------------------------------------
-  # NOTE: the 5 entries below are genuinely routed by `?page=<name>` (the code
-  # reads $_GET['page'], not $_GET['action']) — unlike every OTHER entry in
-  # this Pages section, which (pre-existing, not touched here) documents its
-  # page-fragment routes as `?action=<name>` with an `action` parameter. See
-  # this refresh's notes for the Opus reviewer.
-  # ---------------------------------------------------------------------------
 
   /api.php?page=person:
     get:
@@ -10755,6 +10802,38 @@ components:
           type: string
           nullable: true
           description: Username of the submitter (null if anonymous)
+
+    SongRequestSubmitInput:
+      type: object
+      description: |
+        Shared body shape for `song_request_submit` (#1472), accepted as
+        either `application/json` or `application/x-www-form-urlencoded`.
+        `website` is a honeypot — hidden from real users via CSS; any
+        non-empty value silently short-circuits to a fake success without
+        writing a row.
+      required: [title]
+      properties:
+        title:
+          type: string
+          maxLength: 500
+          example: "Great Is Thy Faithfulness"
+        songbook:
+          type: string
+          maxLength: 100
+          description: Free-text songbook name/abbreviation the requester typed in
+          example: Christian Praise
+        details:
+          type: string
+          maxLength: 2000
+          description: Why the user wants this song added, or any identifying detail
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Optional reply-to address
+        website:
+          type: string
+          description: Honeypot — MUST be left empty by real clients
 
     # -------------------------------------------------------------------------
     # User & auth models
