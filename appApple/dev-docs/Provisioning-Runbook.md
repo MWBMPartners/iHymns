@@ -3,7 +3,7 @@
 > **Click-level, owner-only** Apple provisioning steps for the native Universal app.
 > Companion to `.claude/apple-native-owner-runbook.md` (long-lead overview) and epic **#895**.
 > Nothing here is executable by the build agent — these are your Apple-account + iHymns-admin actions.
-> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional).
+> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**).
 
 ---
 
@@ -42,11 +42,18 @@
 - It becomes a **per-IAP / per-subscription toggle** set when you create each in-app purchase (**Phase 4, #1434**). You *can* create IAPs ahead of selling, and tick Family Sharing on each at creation — but there's no reason to until the StoreKit code exists.
 - **Action now: none. Revisit at #1434.**
 
-### Step 4 — CarPlay entitlement  *(long lead — start early; Phase 3 #1431)*
-1. **developer.apple.com/contact/carplay/** (CarPlay entitlement request form).
-2. Choose the **Audio** app category, provide the app/bundle-ID, and **accept the CarPlay addendum/terms** (submit is usually gated on that checkbox).
-3. ⚠️ **The Audio path does NOT ask you to describe/justify the app** — that free-text step is only for the hand-reviewed categories (navigation, EV, parking, driving-task, communication). For Audio, category + terms **is** the whole request; a missing description prompt is normal, not a skipped step.
-4. Confirm you got an **on-screen "submitted" confirmation and/or an email**. Approval (for Audio, often quick) arrives **by email** and makes `com.apple.developer.carplay-audio` available to add to the app's entitlements — only relevant once #1431 is built. Nothing downstream is blocked on it.
+### Step 4 — CarPlay entitlement  ✅ **GRANTED (2026-07-10) — enable it now**  *(the on-device feature code is separately tracked as Phase 3 #1431)*
+
+> **Recap of how this got here:** you submitted the request via **developer.apple.com/contact/carplay/** (Audio category, 2026-07-08). Apple has since **granted** it by email. The steps below are what to do NOW that it's granted — this replaces the earlier "submitted, awaiting grant" guidance.
+
+1. **Confirm the grant email.** Re-open Apple's grant e-mail (subject along the lines of "your CarPlay entitlement request has been approved") — keep it on file; it's your record that the entitlement is live on the `MWBMPartners` account.
+2. **Enable the capability on the App ID.**
+   - developer.apple.com/account → **Certificates, Identifiers & Profiles** → **Identifiers** → click **`app.ihymns`** → click **Edit** (top-right of the App ID detail page).
+   - Scroll the **Capabilities** list to **CarPlay** — it's now selectable (pre-grant it was greyed out/unavailable) → tick it.
+   - If a **Configure** dialog appears, leave the defaults (CarPlay Audio needs no further per-app configuration on this screen) → **Save**.
+   - **What "good" looks like:** the App ID's Capabilities list shows **CarPlay** enabled/checked, the same way **Sign in with Apple** and **Associated Domains** already show enabled.
+3. **Declare the entitlement in code — NOT yet done, flag to the build agent.** `com.apple.developer.carplay-audio` is **NOT currently declared** in `appApple/project.yml`'s `iHymns` target `entitlements:` block — as of this writing that block only lists `com.apple.developer.associated-domains` entries (`project.yml` lines ~123–134). Adding it is a small, one-line `project.yml` change (a new `com.apple.developer.carplay-audio: true` property alongside the existing associated-domains list), after which `xcodegen generate` regenerates the `.entitlements` file (Fastlane's `regenerate_project` private lane already re-runs this on every CI build, so no separate manual step is needed once the YAML is edited). **Both** the portal tick (step 2) **and** this `project.yml` declaration are required before a signed build can actually use CarPlay — ticking the portal capability alone does not add it to the built app.
+4. **The feature itself is separate work — #1431.** Enabling the capability + declaring the entitlement only makes CarPlay *available* to the app; nothing in `iHymnsKit` today implements the on-device `CPTemplateApplicationSceneDelegate` / `CPListTemplate` / `CPNowPlayingTemplate` UI that would actually put a screen on a car's display. That build-out is tracked as **#1431** (Phase 3) — a separate, still-to-be-built task. Don't expect anything to appear on a CarPlay-connected device until #1431 ships.
 
 ### Step 5 — APNs key  ⚠️ **CORRECTED: defer to Phase 2 (#1410)**
 - Only needed for **Live Activities / Dynamic Island (#1410 / #1429)** — **unused today**. Recommendation: **don't create it now** (unused credential = extra thing to guard).
@@ -60,7 +67,7 @@
 - **App ID**: developer.apple.com → **Identifiers** → click **`app.ihymns`** → *Sign in with Apple* + *Associated Domains* show enabled.
 - **App Store Connect**: **Apps** → **iHymns** record exists with the platforms.
 - **SIWA key**: developer.apple.com → **Keys** → your `iHymns Sign in with Apple` key is listed.
-- **CarPlay**: no portal status — Apple replies **by email**.
+- **CarPlay**: developer.apple.com → **Identifiers** → click **`app.ihymns`** → **Capabilities** shows **CarPlay** ticked/enabled (✅ **granted** 2026-07-10 — see Step 4 above for the enable steps, the still-open `project.yml` declaration, and the separate #1431 feature code).
 - *(Family Sharing + APNs: skipped/deferred, so nothing to verify.)*
 
 ---
@@ -151,7 +158,7 @@
 
    - ❌ **Do NOT** put a scheme in **Domains** — `https://ihymns.app` is wrong, and `https:///ihymns.app` is doubly wrong. That field is **host-only**.
    - ❌ **Do NOT** drop the trailing slash in **Return URLs** — `https://ihymns.app` (no `/`) → Apple **`invalid_grant`** and sign-in fails.
-   - ⚠️ **Register `www.ihymns.app` too.** It serves the site directly (HTTP 200, *not* a redirect to the apex) and is an allow-listed canonical host (`appCanonicalHost()`); `_appleSiwaWebHostAllowed()` accepts any `*.ihymns.app`, so a production visitor on `www` sends redirect_uri `https://www.ihymns.app/` → omit it and *their* sign-in fails `invalid_grant`. (Not exercised while only `alpha`→`dev.ihymns.app` is enabled, but register it now so production is ready.)
+   - ⚠️ **Register `www.ihymns.app` too.** It serves the site directly (HTTP 200, *not* a redirect to the bare root domain `ihymns.app`) and is an allow-listed canonical host (`appCanonicalHost()`); `_appleSiwaWebHostAllowed()` accepts any `*.ihymns.app`, so a production visitor on `www` sends redirect_uri `https://www.ihymns.app/` → omit it and *their* sign-in fails `invalid_grant`. (Not exercised while only `alpha`→`dev.ihymns.app` is enabled, but register it now so production is ready.)
    - ✅ **Sanity check:** Domains = the **4 bare hosts**; Return URLs = the **same 4 hosts** as full `https://…/` URLs (each ending in `/`).
    - **Why the trailing slash matters:** Apple *exact-string-matches* the registered Return URL against the `redirect_uri` our code sends = the **origin root** (`apple-signin.js` → `window.location.origin + '/'`; `appleSiwaWebRedirectUri()` → `'https://' . $host . '/'`, i.e. `APPLE_SIWA_WEB_RETURN_PATH = '/'`). It is the origin root, **not** a `/auth/apple/callback`-style path. (Popup mode, but the Return URL must still be registered.)
    - Register **all three** docroots now even if you enable only one channel first (Step 4) — saves a second portal trip when you widen. *(If Apple prompts to verify a domain, host `apple-developer-domain-association.txt` at that host's `/.well-known/`; for the sign-in popup the URL registration is sufficient — the association file is mainly for the separate private email-relay / SPF step.)*
@@ -177,28 +184,36 @@ Three buckets: what you can verify **now** (Apple portals), what's **blocked on 
 | **SIWA key** | same portal → **Keys** | a key named `iHymns Sign in with Apple` is listed; you hold its `.p8` + 10-char Key ID |
 | **Team ID** | developer.apple.com → **Membership details** | 10-char Team ID captured |
 | **App Store Connect record** | appstoreconnect.apple.com → **Apps** | an `iHymns` record exists with your platforms |
-| **CarPlay** | your inbox | ✅ "request submitted" confirmation received (grant email later) |
+| **CarPlay** | developer.apple.com → Identifiers → `app.ihymns` → Capabilities | ✅ **GRANTED** (2026-07-10) — **CarPlay** capability now tickable/enabled on the App ID (§1.3 Step 4). Still owner/code work before it's usable: enable the tick on the portal, declare `com.apple.developer.carplay-audio` in `project.yml` (not there today), and build the on-device UI (#1431). |
 
 ### B. Blocked on §1.1 (deploy) — nothing to verify until the branch PHP is live
-- **AASA** — after deploy, `curl -s https://ihymns.app/.well-known/apple-app-site-association` must return **HTTP 200** + `Content-Type: application/json` with `"appID": "<TeamID>.app.ihymns"`.
-  - ⚠️ **Re-verify per environment — do not assume all three are still `301`.** Checked 2026-07-08, all three envs (`ihymns.app`, `dev.`, `beta.`) returned a `301` redirect (the #1401 AASA responder wasn't deployed yet). Since then the Apple backend merge (#1464, which ships the #1401 responder) has landed on **alpha**, and `alpha` auto-deploys to **`dev.ihymns.app`** — so **`dev.` may now return a direct 200**; **`beta.` and production `ihymns.app` have not had that backend promoted yet and are still expected to 301.** Apple **does NOT follow redirects** for the AASA, so a 301 = Universal Links fail on that env. **Curl each env individually and confirm 200, not 301, before relying on it** — don't infer one env's status from another's.
-- **SIWA config card** — `/manage/configuration` → "Apple native app" shows Team ID / Key ID / private-key as **"set."**
-- **Migration cards** — `/manage/setup-database` shows **"Sign in with Apple — provider links + nonce ledger"** and the **analytics events** card **applied/green.**
+
+1. **Curl the AASA on each of the three environments individually** — ⚠️ do NOT infer one env's status from another's:
+   ```
+   curl -sD - -o /dev/null https://dev.ihymns.app/.well-known/apple-app-site-association
+   curl -sD - -o /dev/null https://beta.ihymns.app/.well-known/apple-app-site-association
+   curl -sD - -o /dev/null https://ihymns.app/.well-known/apple-app-site-association
+   ```
+   **What "good" looks like:** each command prints a `HTTP/2 200` status line (NOT `301`), a `content-type: application/json` header, and — if you drop the `-o /dev/null` to see the body — `"appID": "<TeamID>.app.ihymns"` with your real 10-char Team ID (not the literal placeholder string `TEAMID`).
+   - ⚠️ **Status as of 2026-07-08:** all three envs returned a **301** redirect (the #1401 AASA responder wasn't deployed yet). Since then the Apple-backend merge (#1464, which ships the #1401 responder) has landed on **alpha**, and `alpha` auto-deploys to **`dev.ihymns.app`** — so `dev.` **may now** return a direct 200; **`beta.` and production `ihymns.app` have not had that backend promoted yet and are still expected to 301.** Apple **does NOT follow redirects** for the AASA, so a `301` = Universal Links silently fail on that environment. Run the three curls above yourself before relying on any one of them — the status genuinely differs per environment.
+2. **Check the SIWA config card.** `/manage/configuration` → **"Apple native app"** card. **Good** = Team ID / Key ID / private-key all show a **"set"** badge (values are never echoed back into the form — that's expected behaviour, not a bug).
+3. **Check the migration cards.** `/manage/setup-database`. **Good** = **"Sign in with Apple — provider links + nonce ledger"** and the **analytics events** card both show **applied/green**.
 
 ### C. Needs a signed device / TestFlight build (not possible in the build env)
-- **Native sign-in + account-deletion Apple-revoke**: the native client authenticates via Password/Email-Code — **there is no native Sign in with Apple button** (backend-only, #1402; `LoginView.swift`). Tap **Delete Account** (Danger Zone, #1478) on a device to confirm the re-auth flow + `account_delete`'s Apple-revoke path exercise the stored SIWA key end-to-end.
-- **Universal Link → app**: tap an `ihymns.app/song/<id>` link on a device with the app installed → opens in-app (Safari fallback if not installed).
-- **On-device VoiceOver / Dynamic Type** (#1458).
+
+1. **Native sign-in + account-deletion Apple-revoke** — the native client authenticates via Password/Email-Code — **there is no native Sign in with Apple button** (backend-only, #1402; `LoginView.swift`). On a device: sign in, then tap **Delete Account** (Danger Zone, #1478) → confirm re-auth → **good** = the re-auth flow succeeds and `account_delete`'s Apple-revoke path exercises the stored SIWA key end-to-end (check server logs / the activity log for the revoke call, not a client-visible signal).
+2. **Universal Link → app** — tap an `https://ihymns.app/song/<id>`-shaped link on a device with the app installed. **Good** = the app opens directly to that song (Safari opens instead, as a fallback, only if the app isn't installed or the AASA isn't a live 200 — see Bucket B step 1).
+3. **On-device VoiceOver / Dynamic Type** (#1458) — enable **Settings → Accessibility → VoiceOver** and/or **Larger Text** on a real device, then navigate the app's main flows (home → song → favourites/setlists) confirming every control has a spoken label and text reflows without clipping.
 
 ---
 
 ## Master verification checklist
 
-> **Status (2026-07-10):** all dev/code-side work is complete. The unticked items below are **owner Apple-portal actions** (App ID, SIWA key, Team ID, App Store Connect record, sending-domain DNS) or post-`§1.1`-deploy config/migration steps — tick each as you complete it. (CarPlay is submitted; APNs + Family Sharing are deferred/N-A per §1.3.)
+> **Status (2026-07-10):** all dev/code-side work is complete. The unticked items below are **owner Apple-portal actions** (App ID, SIWA key, Team ID, App Store Connect record, sending-domain DNS) or post-`§1.1`-deploy config/migration steps — tick each as you complete it. (CarPlay is **granted** — enable the App-ID capability per §1.3 Step 4; APNs + Family Sharing are deferred/N-A per §1.3.)
 
 - [ ] App ID `app.ihymns` registered; **Sign in with Apple** + **Associated Domains** enabled
 - [ ] App Store Connect **iHymns** record created (all platforms, Universal Purchase)
-- [x] CarPlay entitlement **request submitted** (2026-07-08, confirmation email received) — ⏳ awaiting the separate entitlement-*grant* email before `com.apple.developer.carplay-audio` is usable
+- [x] CarPlay entitlement **GRANTED** (request submitted 2026-07-08 → grant email received 2026-07-10) — `com.apple.developer.carplay-audio` is now available to enable. **Owner action remaining:** tick the CarPlay capability on the `app.ihymns` App ID (§1.3 Step 4 #2). **Code action remaining:** declare the entitlement in `project.yml` (§1.3 Step 4 #3) — not there today.
 - [ ] SIWA key created; `.p8` + **Key ID** stored securely
 - [ ] **Team ID** captured
 - [ ] *(deferred)* APNs key — only at #1410
@@ -252,7 +267,23 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 
 ## 2.1 ⛔ The remaining cross-cutting blocker (read first)
 
-1. **The app's backend is only on `alpha` (→ `dev.ihymns.app`).** `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.** → **Promote the Apple backend `alpha → beta → main` before device testing SIWA**, and it is a **hard prerequisite** for App Store. (Interim: a DEBUG build hits `dev` and works end-to-end on a Mac/simulator; a tester can also override the environment at runtime, but `beta`/`prod` must first *have* the backend.) *(This is the* native *SIWA path — the separate* web *SIWA feature, built dormant per #1471/#1480 + its CSP allowance #1484, is unaffected and is covered in §1.4.)*
+**The fact:** the app's backend is only on `alpha` (→ `dev.ihymns.app`). `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.**
+
+**Step by step — what to do about it:**
+1. **Confirm the current state per environment.** Run each of these individually (don't infer one from another):
+   ```
+   curl -s -o /dev/null -w '%{http_code}\n' https://dev.ihymns.app/.well-known/apple-app-site-association
+   curl -s -o /dev/null -w '%{http_code}\n' https://beta.ihymns.app/.well-known/apple-app-site-association
+   curl -s -o /dev/null -w '%{http_code}\n' https://ihymns.app/.well-known/apple-app-site-association
+   ```
+   **Good** = `200` on `dev.` (already promoted). **Expected today** = `301`/no responder on `beta.`/`ihymns.app` until each is promoted.
+2. **Promote the Apple-backend PHP `alpha → beta`.** This is a normal PR/merge through this repo's standard release process (same alpha→beta promotion flow used for every other web feature — see `.claude/project-rules.md`). After it deploys, re-run the `beta.ihymns.app` curl from step 1 — expect `200`.
+3. **Soak on `beta`, then promote `beta → main`** the same way. After it deploys, re-run the production `ihymns.app` curl from step 1 — expect `200`.
+4. **Only once production returns `200`:** treat Sign in with Apple, account sync and account deletion as safe for real TestFlight-external or App Store users. Until then, an archived/uploaded build that "looks fine" in TestFlight is **not** the same as the backend being reachable — the archive succeeding tells you nothing about step 1–3 above.
+
+**Interim workaround (Internal TestFlight only):** a DEBUG build already points at `dev` and works end-to-end on a Mac/simulator; a tester can also override the API environment at runtime (`APIEnvironment` supports this). This is a stand-in for **internal** testing only — it does not substitute for actually promoting the backend before **external** TestFlight or the App Store.
+
+*(This is the* native *SIWA path — the separate* web *SIWA feature, built dormant per #1471/#1480 + its CSP allowance #1484, is unaffected and is covered in §1.4.)*
 
 ✅ **RESOLVED — DONE (#1478): in-app account deletion (App Review §5.1.1(v)).** This was the second cross-cutting blocker: `AccountView.swift` previously had no destructive control beyond "Sign Out". It now has a separate "Danger Zone" section (`AccountView.swift:96-107`) that presents a re-auth-gated `AccountDeleteView` sheet (Password or Email-Code, reusing the login UI) which calls `?action=account_delete`; a wrong/expired credential (401), rate-limit (429), or last-Global-Admin block (409) leaves the session untouched, and only a confirmed 200 clears the local token + favourites + setlists + offline caches, exactly like sign-out. Verified against `AccountView.swift`, `AccountDeleteView.swift`, `AppRootViewModel+Auth.swift:113`, `SessionController.swift:297`. No longer blocks TestFlight or App Store submission.
 
@@ -260,35 +291,106 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 
 **Fastest first test = INTERNAL TestFlight** (up to 100 of your own team; **no beta review**).
 
-**OWNER (Apple portal / App Store Connect / GitHub secrets):**
-- Create the **App Store Connect app record** (§1.3 Step 2) — nothing uploads without it.
-- Create an **Apple Distribution certificate** + export it; the deploy lane signs **manually** (no `match`).
-- Set the **GitHub Actions secrets** the deploy reads (`apple-deploy.yml` L94-103): `APPLE_CERTIFICATE` (base64 `.p12`), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_TEAM_ID`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific password), `ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_API_KEY`. *(Set these via the GitHub web UI — Settings → Secrets and variables → Actions.)*
-- Register the **App ID capabilities** (Sign in with Apple + Associated Domains) — §1.3 Step 1.
+### A. OWNER — one-time Apple-portal + GitHub-secrets setup
 
-**CODE:**
-- **Declare export compliance** — add `ITSAppUsesNonExemptEncryption = NO` to the app Info.plist/`project.yml` (the app uses only standard HTTPS/TLS → exempt). Not declared today → App Store Connect prompts **per build** and stalls TestFlight processing.
-- **Make TestFlight actually usable** — resolve blocker #1 (§2.1): either promote the backend so `prod` has it, or point the Internal-TF build at a backend-having docroot (the `APIEnvironment` runtime override exists; `defaultForBuild` currently sends Release→`prod`).
+1. **Create the App Store Connect app record** (if not already done — §1.3 Step 2). appstoreconnect.apple.com → **Apps** → **➕ New App** → tick every target platform → **Name** `iHymns`, **Bundle ID** `app.ihymns` (from the dropdown), **SKU** e.g. `ihymns-universal` → **Create**. **Good** = an `iHymns` record appears under **Apps**. Nothing uploads without this.
+2. **Register the App ID capabilities** (§1.3 Step 1) — **Sign in with Apple** + **Associated Domains** ticked on `app.ihymns`. **Good** = both show enabled on **Identifiers → `app.ihymns`**.
+3. **Create an Apple Distribution certificate:**
+   - developer.apple.com → **Certificates, Identifiers & Profiles** → **Certificates** → **➕**.
+   - Choose **Apple Distribution** (covers TestFlight *and* the App Store — NOT "Apple Development").
+   - Follow Apple's CSR prompt — on a Mac: **Keychain Access → Certificate Assistant → Request a Certificate from a Certificate Authority…** → save the `.certSigningRequest` → upload it on Apple's page.
+   - **Download** the resulting `.cer` → double-click to install it into **Keychain Access** (login keychain) → right-click the new certificate in Keychain Access → **Export "iHymns Distribution"…** → save as a **`.p12`**, choosing an export password when prompted.
+   - **Good** = you're holding a `.p12` file and its password (needed for step 4, then store both in your password manager — the `.p12` itself only needs to live in the GitHub secret, not on disk afterward).
+4. **Set the GitHub Actions secrets** the deploy reads (`.github/workflows/apple-deploy.yml` lines 94-103). *(Set these via the GitHub web UI — **Settings → Secrets and variables → Actions → New repository secret** — not the CLI, so each save gives you visual confirmation.)*
 
-**For EXTERNAL testers (beta lane):** additionally requires **`beta.ihymns.app` to have the backend** and a one-time **TestFlight beta-app review** (beta description, contact email, "what to test").
+   | Secret name | Value / where it comes from |
+   |---|---|
+   | `APPLE_CERTIFICATE` | `base64 -i iHymns-Distribution.p12 \| pbcopy` on a Mac, then paste the base64 text (not the raw binary) |
+   | `APPLE_CERTIFICATE_PASSWORD` | the export password from step 3 |
+   | `APPLE_SIGNING_IDENTITY` | the certificate's common name, e.g. `Apple Distribution: MWBM Partners LTD (TEAMID)` — `security find-identity -v -p codesigning` on a Mac that has the cert installed shows the exact string |
+   | `APPLE_TEAM_ID` | your 10-char Team ID (§1.2 Step 1) |
+   | `APPLE_ID` | the Apple ID email that administers the developer account |
+   | `APPLE_PASSWORD` | an **app-specific password** for that Apple ID — generate at **appleid.apple.com → Sign-In and Security → App-Specific Passwords → ➕** (NOT the normal Apple ID password) |
+   | `ASC_KEY_ID` | from the App Store Connect API key created in step 5 below |
+   | `ASC_ISSUER_ID` | same screen as `ASC_KEY_ID` |
+   | `ASC_API_KEY` | the **entire** downloaded `.p8` file contents, BEGIN/END lines included — downloadable **once** |
 
-**Verdict:** the *pipeline* is ready; **TestFlight is gated on OWNER provisioning (secrets + ASC record + cert) and the backend-environment blocker.** No fundamental code rewrite needed.
+   **Good** = all 9 secret names show under **Settings → Secrets and variables → Actions** (values themselves stay hidden after saving — expected).
+5. **Create the App Store Connect API key** (source of `ASC_KEY_ID`/`ASC_ISSUER_ID`/`ASC_API_KEY`). appstoreconnect.apple.com → **Users and Access** → **Integrations** tab → **App Store Connect API** → **➕** → **Name** `iHymns CI`, **Access** = **App Manager** (or **Admin**) → **Generate** → **Download API Key** (once only). Note the **Key ID** and **Issuer ID** shown on the same page.
+6. **Create the Internal TestFlight tester group.** appstoreconnect.apple.com → **Apps → iHymns → TestFlight** tab → under **Internal Testing** click **➕** → name it (e.g. "iHymns Team") → **Add Testers** → tick names already on the account under **Users and Access** (add a user there first — **Users and Access → ➕** — if you're not already listed). **Good** = the group shows your own devices/emails as members.
+
+### B. CODE — two remaining items
+
+1. **Declare export compliance.** Add `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` to the `iHymns` target's `settings.base` block in `project.yml` (the same `INFOPLIST_KEY_*` mechanism already used for `UIBackgroundModes`) — the app uses only standard HTTPS/TLS, so it's exempt. **Without this**, App Store Connect asks the Export Compliance question **on every build** and the build sits in **"Missing Compliance"** (undistributable) until answered by hand each time.
+2. **Resolve the backend blocker** (§2.1) — either promote the backend so `prod` has it, or (Internal TestFlight only) rely on the existing `APIEnvironment` runtime override to point a tester build at `dev` — `defaultForBuild` currently sends Release → `prod`.
+
+### C. First upload + verify (internal)
+
+1. **Push to `alpha`** (touching `appApple/**`, per `apple-deploy.yml`'s `paths:` filter). The **"Build + upload (Fastlane)"** GitHub Actions job runs `fastlane alpha`, which archives iOS (+ embedded Watch/Widgets) and tvOS and calls `upload_to_testflight` with `distribute_external: false` — **Internal only**, no beta review.
+2. **Watch the build process.** appstoreconnect.apple.com → **Apps → iHymns → TestFlight** → the platform's Builds list shows the new build number as **Processing** (typically 15–90 minutes), then **Ready to Test** (or stuck on **Missing Compliance** if B.1 above isn't done).
+3. **Install on a device.** Internal testers get a TestFlight notification/email, or open the **TestFlight** app (from the App Store) on the device → sign in with the tester Apple ID → the build appears → **Install**.
+4. **Verify native sign-in.** Open the app → sign in with **Password** or **Email-Code** (there is no native Sign in with Apple button yet — backend-only, #1402; §1.2 Step 6). **Good** = login succeeds and real song data loads from whichever backend the build's `APIEnvironment` points at.
+
+### D. For EXTERNAL testers (the `beta` lane) — additional requirements
+
+1. **`beta.ihymns.app` must have the backend** (§2.1 steps 2–3) — External testers are real people outside the team; a broken SIWA/sync/delete on `beta` risks a Beta App Review rejection and a bad first impression.
+2. **Fill in Test Information (one-time).** appstoreconnect.apple.com → **Apps → iHymns → TestFlight** → **Test Information** (left sidebar) → **Beta App Description** (a short "what to test" paragraph), **Feedback Email**, **Privacy Policy URL** (can reuse the App Store one from §2.3.B) → **Save**.
+3. **Push to `beta`** → `apple-deploy.yml` runs `fastlane beta`, uploading with `distribute_external: true` and `groups: ["iOS Beta"]` / `["tvOS Beta"]` (Fastfile). If those groups don't exist yet, `pilot` creates them automatically on first upload — afterwards visit **TestFlight → External Testing** to **Add Testers** (by email, or a public link) to each group.
+4. **Beta App Review runs automatically** on the first build sent to an External group (Apple's own guidance: typically **~1–2 days**). **Good** = the group's status moves **Waiting for Review → Approved**, and testers receive the invite.
+
+**Verdict:** the *pipeline* is ready; **TestFlight is gated on the OWNER steps in A and the two CODE items in B** (export compliance is trivial; the backend-environment promotion is the substantive one). No fundamental code rewrite needed.
 
 ## 2.3 App Store readiness
 
 Everything in §2.2, **plus**:
 
-- ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users.
-- ✅ **In-app account deletion** (§5.1.1(v)) — **DONE (#1478)**, see §2.1. No longer a blocker.
-- ⛔ **AASA returns HTTP 200 JSON** on production (the runbook §B flagged a **301** on all envs as of 2026-07-08; the #1464 backend merge has since deployed to alpha → `dev.ihymns.app`, so `dev.` may now be 200, but **production `ihymns.app` has not been promoted** and is still expected to 301 — Apple does **not** follow redirects, so Universal Links fail until it's a direct 200 on **production**). Re-verify per env after promotion.
-- **App Store metadata — NONE committed** (`appApple/fastlane/metadata/` absent). Need: description, keywords, promotional text, **support URL**, **privacy-policy URL**, **age rating**, and the **App Privacy "nutrition label"** answers (must match the `PrivacyInfo.xcprivacy` manifests + `analytics_ingest`'s "no user-id / device-id / IP" claim). Enter in App Store Connect or commit under `fastlane/metadata` for `deliver`.
-- **Screenshots** per device class (iPhone + iPad + Apple TV, at the required display sizes) — needs a signed build in Simulator/on-device to capture.
-- ⚠️ **Deployment target 26.0** — only devices on **iOS/tvOS/etc. 26+** can install. App Review permits it, but the **addressable market is tiny**; confirm this is the intended Liquid-Glass/latest-API stance (raise it deliberately, don't discover it post-launch). Lowering it later widens reach but costs back-compat work.
-- **Platform coverage** — the initial submission is **iPhone/iPad + Apple TV** (Mac & visionOS via "Designed for iPad" **Universal-Purchase** availability toggles in App Store Connect — verify those toggles; there is no separate Mac/vision binary). watchOS + Widgets ride inside the iOS app.
-- **Sign in with Apple presentation (§4.8)** — the native client offers only its own account system (Password / Email-Code, `LoginView.swift`) with **no third-party social login at all** (no Google/Facebook/etc. — and, today, no client-side Apple button either, despite the backend `auth_apple` endpoint existing for #1402). §4.8 only requires SIWA when a third-party/social login is offered without it as an equal option; since none is offered, the app is exempt regardless. Revisit only if a native SIWA (or Google/Facebook) button is later added — SIWA would then need to ship alongside it.
-- **Content rights** — hymn/worship lyrics: the gating/CCLI system (#1352/#1353) governs copyrighted content; be ready to answer an App Review content-rights question.
+### A. Remaining blockers — still true, don't mark these done
 
-**Verdict:** **not submittable yet** — blocked on backend-to-production, AASA-200 on production, and the full metadata/screenshots set (all listed above). *(In-app account deletion is no longer a blocker — DONE, #1478.)*
+1. ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users. Verify with the same curl pattern as §2.1 step 1, against `https://ihymns.app`.
+2. ⛔ **AASA returns HTTP 200 JSON on production.** The runbook flagged a **301** on all envs as of 2026-07-08; the #1464 backend merge has since deployed to alpha → `dev.ihymns.app` (so `dev.` may now be 200), but **production `ihymns.app` has not been promoted** and is still expected to 301. Apple does **not** follow redirects for the AASA, so Universal Links fail until it's a direct 200 on **production**. Verify: `curl -sD - -o /dev/null https://ihymns.app/.well-known/apple-app-site-association` → **good** = `HTTP/2 200` + `content-type: application/json`, body contains `"appID": "<your real Team ID>.app.ihymns"` (not the placeholder string `TEAMID`).
+3. ⚠️ **Deployment target 26.0** (confirmed in `appApple/Config/Shared.xcconfig`: `IPHONEOS_DEPLOYMENT_TARGET` / `MACOSX_DEPLOYMENT_TARGET` / `TVOS_DEPLOYMENT_TARGET` / `WATCHOS_DEPLOYMENT_TARGET` / `XROS_DEPLOYMENT_TARGET` all `= 26.0`) — only devices already on the newest OS can install. App Review permits this, but it **narrows the addressable market**; this is a deliberate Liquid-Glass/latest-API stance, not an oversight — confirm it's still the intended decision before submitting (lowering it later widens reach but costs real back-compat engineering work).
+4. **CODE:** `ITSAppUsesNonExemptEncryption = NO` still needs adding (§2.2.B.1) — small, not yet done.
+
+### B. App Store metadata — step by step
+
+There is **no `appApple/fastlane/metadata/` committed** — every field below is entered by hand in App Store Connect for the first submission (a `deliver`-driven metadata pipeline can be added later once the copy is stable).
+
+1. **App Information.** appstoreconnect.apple.com → **Apps → iHymns → App Information** (left sidebar): set **Subtitle** (≤30 chars), **Category** (Primary e.g. **Music** or **Reference**; Secondary optional), and answer **Content Rights** (see section C below).
+2. **Pricing and Availability.** Same left sidebar: **Price** → **Free**. **Availability** → all territories, or a specific list → **Save**.
+3. **Version metadata ("Prepare for Submission").** The version page (left sidebar, under the version number, e.g. "1.0 Prepare for Submission"):
+   - **Promotional Text** (≤170 chars, editable later without a new review).
+   - **Description** (≤4000 chars — what the app does: worship-song/hymn catalogue, offline saves, favourites/setlists, multi-platform).
+   - **Keywords** (≤100 chars, comma-separated).
+   - **Support URL** (a real, reachable page).
+   - **Marketing URL** (optional).
+   - **What's New in This Version** (required on updates; optional but recommended for v1).
+4. **App Privacy (its own page, not part of "Prepare for Submission").** **App Privacy** (left sidebar) → **Get Started** → answer the data-collection questionnaire to match `PrivacyInfo.xcprivacy` + the `analytics_ingest` "no user-id / device-id / IP" claim: declare **Email** + **User Content** (favourites/setlists) as **Linked to the user, App Functionality**; declare **Usage Data** (analytics events) as **Not Linked to the user, Analytics**. → **Publish**. **Good** = the App Privacy section on the version page shows a completed state, not "Get Started" still showing.
+5. **Age Rating.** **Age Rating** (left sidebar) → answer Apple's content questionnaire (violence, mature themes, user-generated content, etc.) honestly per its actual categories — for a hymn/worship catalogue with no public UGC and no objectionable material, expect a low rating (e.g. **4+**), but don't assert a number without going through the questionnaire yourself.
+6. **Screenshots & App Previews.** On the version page:
+   - Required device classes: **iPhone** (largest supported display, e.g. 6.9" or 6.7" — Apple lets you generate the smaller required sizes from the largest if you don't have every physical device), **iPad** (largest supported display, e.g. 13" or 12.9"), **Apple TV** (1920×1080). Mac/visionOS ride on the compatibility toggle (section D) and don't need their own set unless you later ship a tailored Mac/vision UI.
+   - **How to capture:** run the matching scheme in **Simulator** at the required device size (or on a signed device) → **⌘S** in Simulator (or Xcode's screenshot action) saves a correctly-sized PNG → drag it into the matching slot in App Store Connect.
+   - **Good** = every required device-size slot shows at least one screenshot — a warning banner on the version page names any slot still missing.
+7. **Attach the build.** On the version page's **Build** section → **+ Build** (or the build picker) → select the TestFlight-processed build from §2.2.C → **Done**.
+
+### C. Content rights & privacy
+
+- **Content Rights** (App Information page): answer whether the app contains **third-party content you have the rights to distribute** — hymn/worship lyrics are largely public-domain or CCLI-licensed; the gating/CCLI system (#1352/#1353) governs copyrighted content in-app. Be ready to describe this licensing basis in the **App Review notes** (section E) if asked.
+- **Sign in with Apple presentation (§4.8 of the App Review Guidelines)** — the native client offers only its own account system (Password / Email-Code, `LoginView.swift`) with **no third-party social login at all** (no Google/Facebook/etc., and no client-side Apple button either, despite the backend `auth_apple` endpoint existing for #1402). §4.8 only requires SIWA when a third-party/social login is offered without it as an equal option; since none is offered today, the app is **exempt**. Revisit only if a native SIWA (or Google/Facebook) button is later added.
+
+### D. Platform coverage — Universal Purchase toggles
+
+1. appstoreconnect.apple.com → **Apps → iHymns → App Information** → confirm the platforms with an attached build are **iOS/iPadOS** and **tvOS** (from §2.2).
+2. **Mac & visionOS availability** ship via **"Designed for iPad" compatibility**, NOT a separate binary — locate the **Mac and visionOS Compatibility** toggle (on the build's General Information / App Availability area) and confirm it's **ON** for both. **Good** = the live listing shows "Also available on Mac" / "Also available on Apple Vision Pro".
+3. **watchOS + Widgets** ride inside the iOS app automatically (`project.yml`'s `embed: true` targets) — no separate listing or toggle needed.
+
+### E. App Review submission
+
+1. **App Review Information** (bottom of the version page): provide a **Demo Account** (username/password an Apple reviewer can sign in with, or notes explaining sign-up is open) + **Contact Information** (a real name/phone/email) + **Notes** (mention the CCLI/content-rights basis from C, and that Sign in with Apple isn't offered so §4.8 doesn't apply).
+2. **Version Release:** choose **Automatically release this version** or **Manually release this version after approval** (the safer choice for a first launch — you decide exactly when it goes live).
+3. **Submit for Review** (top-right of the version page). **Good** = status moves **Waiting for Review → In Review → Ready for Sale** (or **Pending Developer Release** on manual release) — Apple's SLA varies, historically **24–48 hours** for most apps, longer for first submissions or flagged content.
+4. **Note on the current pipeline:** `fastlane release` (triggered by `push main`) runs with `submit_for_review: false` (Fastfile) — it only **uploads the build**, it does not press Submit. Step 3's click is a deliberate, manual owner action by design, so a code push alone never triggers an App Review submission.
+
+**Verdict:** **not submittable yet** — blocked on backend-to-production (A.1), AASA-200 on production (A.2), and the full metadata/screenshots/age-rating/privacy-label set (B–D above). *(In-app account deletion is no longer a blocker — DONE, #1478.)*
 
 ## 2.4 Virtual / pre-submission testing (Xcode Simulator)
 
@@ -303,6 +405,12 @@ Everything in §2.2, **plus**:
 
 **macOS** needs no simulator — the "Designed for iPad" build runs natively on an Apple-Silicon Mac.
 
+**How to run each, step by step:**
+1. **UI/navigation/Dynamic Type/dark mode.** Open `iHymns.xcodeproj` (run `Scripts/bootstrap.sh`, or `xcodegen generate` directly, first if it doesn't exist yet — the project is gitignored/regenerated) → pick a scheme (`iHymns`, `iHymnsTV`, `iHymnsWatch`) → pick a Simulator device → **⌘R**. Toggle Dynamic Type via Simulator's **Settings → Accessibility → Larger Text**; toggle dark mode via Xcode's **Environment Overrides** (the sun/moon icon in the debug bar) or Simulator's own **Settings → Developer → Dark Appearance**.
+2. **Unit/package tests.** `cd appApple/Packages/iHymnsKit && swift test` (the same command CI's `fastlane test` lane runs). **Good** = all 514 `@Test`s pass, 0 failures.
+3. **Instruments profiling.** Xcode → **Product → Profile** (⌘I) on a running scheme → choose the **Allocations** / **Time Profiler** / **Hangs** template → record a session while exercising the app. **Good** = no unbounded memory growth, no >250ms main-thread hangs. Simulator numbers are approximate — repeat on a real device before submission for true perf/energy figures.
+4. **Universal Links + Handoff.** Needs a real device with the app installed **and** a live 200 AASA (§2.1/§2.3.A.2) — Simulator does not reliably exercise `com.apple.developer.associated-domains`.
+
 ## 2.5 "Load testing" — the honest answer
 
 **You cannot meaningfully "load test" the client app**, and Xcode is the wrong tool for load: XCTest *performance* tests measure **client** code paths (scroll, parse, launch), not server capacity. The app is a **thin API client** — **the load risk lives on the shared PHP/MySQL backend** (the one DreamHost DB behind all three docroots).
@@ -310,13 +418,14 @@ Everything in §2.2, **plus**:
 So a realistic pre-launch sequence is:
 1. **Client smoke/soak** — run each platform target in Simulator + **Instruments** (Allocations, Time Profiler, Hangs) on a device; catch leaks/hangs/energy regressions.
 2. **Backend load test (the real one)** — hit the read-heavy `?action=…` endpoints (`songs_index`, `song_detail`, `search`, `related_songs`, media HEAD/GET) with **k6 / Vegeta / `hey` / JMeter** against a **NON-production docroot** (`dev.` or `beta.`, **never** `ihymns.app`). Respect the backend's **per-IP + per-presence-token rate limits** — aggressive tests will (correctly) get **429**s; either test *at* the documented limits or temporarily raise them on the test docroot, and remember all three docroots share ONE MySQL so a load test on `dev.` still exercises the **production database** — coordinate timing.
+   - **Example** (using `hey`, a small Go load-testing CLI): `hey -z 30s -c 20 'https://dev.ihymns.app/api.php?action=songs_index'` runs a 30-second test at 20 concurrent connections against the **dev** docroot — **never point this at `ihymns.app`**. Read the summary output for p95/p99 latency and error rate; a wall of `429` responses means you've hit `includes/read_rate_limit.php`'s window — that's the limiter working correctly, not a failure, but it also means you're no longer measuring true backend capacity past that point.
 3. **Real end-to-end** — Internal TestFlight on physical devices (the only place SIWA + Universal Links + real performance are truthful).
 
 *(Emulation note: there is no Android-style device farm here; simulators + a small physical-device set + TestFlight is the Apple path. visionOS Simulator is heavy — allow time.)*
 
 ## 2.6 Readiness checklist
 
-> **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items are **owner actions** (Apple-portal provisioning, App Store metadata/screenshots), the **backend-to-production promotion** (blocker #1), and one remaining **CODE** item (`ITSAppUsesNonExemptEncryption` — small, ask and I'll do it).
+> **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items below are **owner actions** (Apple-portal provisioning + App Store metadata/screenshots — full click-by-click steps are §2.2/§2.3 above), the **backend-to-production promotion** (blocker #1, §2.1), and one remaining **CODE** item (`ITSAppUsesNonExemptEncryption` — small, ask and I'll do it).
 
 **TestFlight (internal) — minimum to first upload:**
 - [ ] App Store Connect app record created (§1.3 Step 2)
