@@ -69,6 +69,11 @@ $_adminLinks = [
     /* Access — gating + permission surfaces (#819) */
     ['restrictions',         '/manage/restrictions',           'bi-shield-lock',     'Content Restrictions',  'manage_content_restrictions', 'Access'     ],
     ['tiers',                '/manage/tiers',                  'bi-stars',           'Access Tiers',          'manage_access_tiers',         'Access'     ],
+    /* Feature Gating (#1481 P1) — defines ADDITIONAL admin-configurable
+       capabilities (tblGatingCapabilities), which then auto-grow a column
+       on the Access Tiers matrix above. Deliberately Global-Admin-only
+       (manage_feature_gating), narrower than manage_access_tiers. */
+    ['feature-gating',       '/manage/feature-gating',         'bi-toggles',         'Feature Gating',       'manage_feature_gating',       'Access'     ],
     ['entitlements',         '/manage/entitlements',           'bi-key',             'Entitlements',          'manage_entitlements',         'Access'     ],
 
     /* People */

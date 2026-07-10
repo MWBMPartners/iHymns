@@ -3853,3 +3853,75 @@ CREATE TABLE IF NOT EXISTS tblAuthNonces (
     UNIQUE KEY uq_purpose_nonce (Purpose, NonceHash),
     INDEX      idx_Expires      (ExpiresAt)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================================================
+-- ADMIN-CONFIGURABLE FEATURE GATING (#1481) — extends the #1352/#1353 TIER_CAPS
+-- registry so a Global Admin can define + gate new capabilities from the UI
+-- without dev code. Mirrors appWeb/.sql/migrate-add-gating-registry.php (rule
+-- #19 — DDL here must stay byte-identical, COMMENT text included). Both
+-- tables created in ONE pass (rule #20) even though only tblGatingCapabilities
+-- is enforced this release — tblGatingRules is P2 schema, DORMANT until its
+-- enforcement loop ships. Additive: with tblGatingCapabilities empty,
+-- tierCapsEffective() === TIER_CAPS byte-for-byte (see
+-- tests/php/test-gating-registry.php).
+-- ============================================================================
+
+-- ----------------------------------------------------------------------------
+-- tblGatingCapabilities (#1481 P1) — admin-defined capability DEFINITIONS.
+-- Each Enabled=1 row is unioned into TIER_CAPS by tierCapsEffective() in
+-- includes/access_tier_validation.php. Per-tier VALUES still ride the
+-- existing tblAccessTiers.Capabilities JSON column (#1352) — this table only
+-- holds the definition (key/label/description/default/emit/enabled).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblGatingCapabilities (
+    Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    CapKey        VARCHAR(40)  NOT NULL COMMENT 'PascalCase capability key, grammar ^Can[A-Z][A-Za-z0-9]{1,29}$ (app-validated) -- unioned into TIER_CAPS by tierCapsEffective(); a code-key collision (case-insensitive, incl. camelCase) is ignored, code wins',
+    Label         VARCHAR(30)  NOT NULL COMMENT 'Short column-header label shown on /manage/tiers and /manage/feature-gating',
+    Description   VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Checkbox tooltip / hint text',
+    DefaultValue  TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Assumed 0/1 value when a tier has not set this cap (mirrors the TIER_CAPS 4-tuple default slot)',
+    EmitInApi     TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1 = surfaced as a camelCase key on the public access_tiers API emit (rule #28 contract stays additive-only -- the 7 built-ins are unaffected)',
+    Enabled       TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '0 = soft-disabled -- excluded from the tierCapsEffective() union but kept for audit/history; hard-delete is separate and blocked while tblGatingRules references the CapKey',
+    SortOrder     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Display order on the /manage/tiers matrix and the /manage/feature-gating list',
+    Source        VARCHAR(20)  NOT NULL DEFAULT 'admin' COMMENT 'provenance vocabulary -- VARCHAR not ENUM (rule #20); "admin" today, room to grow (e.g. a future bulk-import source) with no ALTER',
+    CreatedBy     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who defined this capability',
+    UpdatedBy     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who last edited it',
+    CreatedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_GatingCap_CapKey (CapKey),
+    INDEX      idx_GatingCap_Enabled (Enabled, SortOrder),
+
+    CONSTRAINT fk_GatingCap_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_GatingCap_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Admin-defined gating capabilities (#1481 P1) -- unioned into TIER_CAPS by tierCapsEffective(); a code-key collision (case-insensitive, incl. camelCase) is ignored (code wins).';
+
+-- ----------------------------------------------------------------------------
+-- tblGatingRules (#1481 P2 schema — created now per rule #20; the enforcement
+-- loop that reads this table is a SEPARATE, not-yet-built change). Maps a
+-- DB-defined capability to a behaviour-kind + kind-specific JSON params. Rows
+-- are born Enabled=0; entirely DORMANT until P2 ships AND both
+-- content_gating_enabled + feature_gating_rules_enabled are '1'.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblGatingRules (
+    Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    CapKey        VARCHAR(40)  NOT NULL COMMENT 'FK tblGatingCapabilities.CapKey -- P2 v1 rules key on DB-defined caps ONLY, never the 7 built-ins (preserves the Service-Mode presence grant + the CCLI gate)',
+    BehaviorKind  VARCHAR(30)  NOT NULL COMMENT 'strip_payload_keys | drop_media_kinds -- VARCHAR not ENUM (rule #20); catalog lives in includes/gating_rules.php (P2, not yet built)',
+    ParamsJson    JSON         NULL DEFAULT NULL COMMENT 'Kind-specific parameters, e.g. {"keys":[...]} or {"kinds":[...]} -- NULL is treated as empty by the P2 enforcement loop',
+    Scope         VARCHAR(40)  NOT NULL DEFAULT '' COMMENT 'Reserved scoping discriminator (e.g. a future per-surface/per-songbook scope) -- NOT NULL so it can sit inside a UNIQUE key without NULL-permits-duplicates (rule #20 lesson from tblApiKeyUsage)',
+    Enabled       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT 'Rules are born DISABLED -- the P2 enforcement loop only applies Enabled=1 rows, and only when feature_gating_rules_enabled=1 AND content_gating_enabled=1 (two-flag nested topology)',
+    SortOrder     INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Apply order when multiple rules target the same capability',
+    Source        VARCHAR(20)  NOT NULL DEFAULT 'admin' COMMENT 'provenance vocabulary -- VARCHAR not ENUM (rule #20)',
+    CreatedBy     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who defined this rule',
+    UpdatedBy     INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers.Id -- who last edited it',
+    CreatedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt     DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_GatingRule (CapKey, BehaviorKind, Scope),
+    INDEX      idx_GatingRule_Enabled (Enabled, SortOrder),
+
+    CONSTRAINT fk_GatingRule_CapKey    FOREIGN KEY (CapKey)    REFERENCES tblGatingCapabilities(CapKey) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT fk_GatingRule_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id)              ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT fk_GatingRule_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id)              ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Admin-defined enforcement rules (#1481 P2, schema created in P1 one-pass per rule #20) -- cap-to-behaviour-kind mapping; DORMANT until P2 ships the enforcement loop and both feature flags are on.';

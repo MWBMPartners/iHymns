@@ -133,6 +133,15 @@ const ENTITLEMENTS = [
     'manage_access_tiers'         => ['admin', 'global_admin'],
     'assign_user_tier'            => ['admin', 'global_admin'],
 
+    /* Admin-configurable feature gating (#1481 P1) — DEFINING new gateable
+       capabilities (tblGatingCapabilities) + enforcement rules
+       (tblGatingRules, P2) is Global-Admin-only, deliberately narrower than
+       manage_access_tiers: a bad capability definition can affect every
+       tier at once, whereas per-tier VALUES (which caps a given tier grants)
+       stay under the existing manage_access_tiers entitlement — an
+       owner-locked split (the strategy doc's "Owner decisions" #2). */
+    'manage_feature_gating'       => ['global_admin'],
+
     /* Card-layout personalisation (#448). Default site layout is set by
        admins; every role is allowed to customise their own by default,
        but an admin can revoke `customise_own_card_layout` to lock a site

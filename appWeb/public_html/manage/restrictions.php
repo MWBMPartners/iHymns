@@ -290,8 +290,8 @@ $csrf = csrfToken();
                 <i class="bi bi-exclamation-triangle me-1"></i>
                 The master switch <code>content_gating_enabled</code> is <strong>OFF</strong>.
                 Rules here are saved but currently have no runtime effect.
-                Flip it in <a href="/manage/entitlements" class="alert-link">Entitlements &amp; Gating</a>
-                (or directly in <code>tblAppSettings</code>).
+                Flip it in <a href="/manage/configuration#feature-gating" class="alert-link">Configuration &rarr; Feature gating</a>
+                (#1481).
             </div>
         <?php endif; ?>
 

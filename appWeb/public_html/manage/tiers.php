@@ -255,8 +255,12 @@ $csrf = csrfToken();
 
 /* Total column count for the tier matrix table — used for colspans on
    the description row and empty-state row. Static columns:
-     Name, Display, Level, ...TIER_CAPS..., Users, Actions */
-$tierTableCols = 3 + count(TIER_CAPS) + 2;
+     Name, Display, Level, ...tierCapsEffective()..., Users, Actions
+   tierCapsEffective() (#1481) = TIER_CAPS ∪ enabled tblGatingCapabilities
+   rows, so the matrix auto-grows a column the moment a Global Admin defines
+   a new capability on /manage/feature-gating — dormant/empty table ⇒
+   identical to count(TIER_CAPS) as before #1481. */
+$tierTableCols = 3 + count(tierCapsEffective()) + 2;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -279,6 +283,10 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
             whether they see copyrighted lyrics, play audio, or download MIDI / sheet music / offline
             content. Higher <em>Level</em> values are treated as more privileged.
             Assign tiers per user from <a href="/manage/users" class="text-info">User Management</a>.
+            <?php if ($currentUser && userHasEntitlement('manage_feature_gating', $currentUser['role'] ?? null)): ?>
+                Add or gate <strong>additional</strong> capabilities (beyond the built-in seven) on
+                <a href="/manage/feature-gating" class="text-info">Feature Gating</a>.
+            <?php endif; ?>
         </p>
 
         <?php if ($success): ?>
@@ -298,7 +306,12 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                             <th data-sort-key="name"    data-sort-type="text">Name</th>
                             <th data-sort-key="display" data-sort-type="text">Display</th>
                             <th class="text-center" data-sort-key="level" data-sort-type="number">Level</th>
-                            <?php foreach (TIER_CAPS as $col => [$lbl, $hint]): ?>
+                            <?php /* tierCapsEffective() (#1481) = TIER_CAPS ∪ enabled
+                                     tblGatingCapabilities rows — the matrix auto-grows a
+                                     column for any Global-Admin-defined capability with
+                                     no structural change; dormant/empty table renders
+                                     identically to the pre-#1481 bare TIER_CAPS. */ ?>
+                            <?php foreach (tierCapsEffective() as $col => [$lbl, $hint]): ?>
                                 <th class="text-center" title="<?= htmlspecialchars($hint) ?>"><?= htmlspecialchars($lbl) ?></th>
                             <?php endforeach; ?>
                             <th class="text-center" data-sort-key="users" data-sort-type="number">Users</th>
@@ -311,9 +324,11 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                                 /* Resolve every cap (column + json) to a flat 0/1 map
                                    so the edit modal's JS reads one uniform object
                                    regardless of storage (#1352) — json caps live inside
-                                   t.Capabilities, which the JS can't index by cap key. */
+                                   t.Capabilities, which the JS can't index by cap key.
+                                   array_keys(tierCapsEffective()) (#1481) includes any
+                                   admin-defined capability alongside the 7 built-ins. */
                                 $t['_caps'] = [];
-                                foreach (array_keys(TIER_CAPS) as $capCol) {
+                                foreach (array_keys(tierCapsEffective()) as $capCol) {
                                     $t['_caps'][$capCol] = tierCapRead($t, $capCol);
                                 }
                             ?>
@@ -321,7 +336,7 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                                 <td><code><?= htmlspecialchars($t['Name']) ?></code></td>
                                 <td><?= htmlspecialchars($t['DisplayName']) ?></td>
                                 <td class="text-center"><?= (int)$t['Level'] ?></td>
-                                <?php foreach (array_keys(TIER_CAPS) as $col): ?>
+                                <?php foreach (array_keys(tierCapsEffective()) as $col): ?>
                                     <td class="text-center">
                                         <?php /* tierCapRead() reads the column for column-backed caps,
                                                  else decodes Capabilities — so json caps render too. */ ?>
@@ -403,10 +418,15 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                 </div>
             </div>
             <div class="d-flex flex-wrap gap-3 mt-2">
-                <?php foreach (TIER_CAPS as $col => [$lbl, $hint]): ?>
+                <?php /* tierCapsEffective() (#1481) — the create form auto-grows a
+                         checkbox for any Global-Admin-defined capability. $col is
+                         htmlspecialchars()'d below (belt-and-braces #1481 review
+                         finding — the CapKey grammar ^Can[A-Z][A-Za-z0-9]{1,29}$ is
+                         the primary defence, this is defence-in-depth). */ ?>
+                <?php foreach (tierCapsEffective() as $col => [$lbl, $hint]): ?>
                     <div class="form-check" title="<?= htmlspecialchars($hint) ?>">
-                        <input class="form-check-input" type="checkbox" name="cap_<?= $col ?>" id="new-cap-<?= $col ?>" value="1">
-                        <label class="form-check-label" for="new-cap-<?= $col ?>"><?= htmlspecialchars($lbl) ?></label>
+                        <input class="form-check-input" type="checkbox" name="cap_<?= htmlspecialchars($col) ?>" id="new-cap-<?= htmlspecialchars($col) ?>" value="1">
+                        <label class="form-check-label" for="new-cap-<?= htmlspecialchars($col) ?>"><?= htmlspecialchars($lbl) ?></label>
                     </div>
                 <?php endforeach; ?>
             </div>
@@ -447,12 +467,16 @@ $tierTableCols = 3 + count(TIER_CAPS) + 2;
                             <input type="text" name="description" id="edit-tier-description" class="form-control form-control-sm">
                         </div>
                         <div class="d-flex flex-wrap gap-3">
-                            <?php foreach (TIER_CAPS as $col => [$lbl, $hint]): ?>
+                            <?php /* tierCapsEffective() (#1481) — the edit modal auto-grows a
+                                     checkbox for any Global-Admin-defined capability. $col is
+                                     htmlspecialchars()'d below (belt-and-braces #1481 review
+                                     finding — the CapKey grammar is the primary defence). */ ?>
+                            <?php foreach (tierCapsEffective() as $col => [$lbl, $hint]): ?>
                                 <div class="form-check" title="<?= htmlspecialchars($hint) ?>">
                                     <input class="form-check-input edit-cap" type="checkbox"
-                                           name="cap_<?= $col ?>" id="edit-cap-<?= $col ?>"
+                                           name="cap_<?= htmlspecialchars($col) ?>" id="edit-cap-<?= htmlspecialchars($col) ?>"
                                            data-cap="<?= htmlspecialchars($col) ?>" value="1">
-                                    <label class="form-check-label" for="edit-cap-<?= $col ?>"><?= htmlspecialchars($lbl) ?></label>
+                                    <label class="form-check-label" for="edit-cap-<?= htmlspecialchars($col) ?>"><?= htmlspecialchars($lbl) ?></label>
                                 </div>
                             <?php endforeach; ?>
                         </div>

@@ -309,7 +309,13 @@ function capsForTierFromRegistry(string $userTier): ?array
  * (caller then leaves the matrix value untouched).
  *
  * This is what lets a #1352 one-line json cap be ENFORCED the moment any
- * caller passes its name, with zero edit to TIER_ACTION_CAP_MAP.
+ * caller passes its name, with zero edit to TIER_ACTION_CAP_MAP. Since
+ * #1481, "known cap key" means the EFFECTIVE registry — TIER_CAPS union
+ * enabled tblGatingCapabilities rows (tierCapsEffective()) — so a
+ * Global-Admin-defined capability is enforceable the moment any caller
+ * passes its name too, with zero further code changes. Dormant: with
+ * tblGatingCapabilities empty/absent, tierCapsEffective() === TIER_CAPS so
+ * this resolves exactly as before #1481.
  *
  * @param string $userTier Tier name.
  * @param string $action   A cap key (camelCase or PascalCase) OR a plain action.
@@ -319,13 +325,19 @@ function capValueForTierAction(string $userTier, string $action): ?bool
 {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
 
-    /* Resolve $action → a TIER_CAPS key. Accept the exact PascalCase key,
-       OR find the key whose lcfirst (the camelCase API shape) matches. */
-    $capKey = null;
-    if (defined('TIER_CAPS') && array_key_exists($action, TIER_CAPS)) {
+    /* Resolve $action → an effective-registry key (#1481: TIER_CAPS ∪
+       enabled DB caps, via tierCapsEffective() — never the bare TIER_CAPS
+       constant, so a DB-defined cap resolves here too). Accept the exact
+       PascalCase key, OR find the key whose lcfirst (the camelCase API
+       shape) matches. */
+    $capKey        = null;
+    $effectiveCaps = (defined('TIER_CAPS') && function_exists('tierCapsEffective'))
+        ? tierCapsEffective()
+        : [];
+    if (array_key_exists($action, $effectiveCaps)) {
         $capKey = $action;                      /* PascalCase column/json key */
-    } elseif (defined('TIER_CAPS')) {
-        foreach (array_keys(TIER_CAPS) as $k) {
+    } else {
+        foreach (array_keys($effectiveCaps) as $k) {
             if (lcfirst($k) === $action) { $capKey = $k; break; }
         }
     }

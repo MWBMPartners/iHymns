@@ -8140,13 +8140,19 @@ if ($action !== null) {
             }
             unset($t);
 
-            /* JSON-backed caps (#1352): append each registered json cap to
-               every tier under its camelCase key (lcfirst of the PascalCase
-               TIER_CAPS key) so a NEW gated cap appears in the API exactly
-               like the column ones — no edit to the SELECT or the contract.
-               Entirely skipped (zero extra query) when no json cap is
-               registered or the Capabilities column hasn't been migrated,
-               so today's response is unchanged. */
+            /* JSON-backed caps (#1352, #1481): append each registered json cap
+               to every tier under its camelCase key (lcfirst of the PascalCase
+               key) so a NEW gated cap appears in the API exactly like the
+               column ones — no edit to the SELECT or the 7-key contract.
+               tierCapJsonKeys() (#1481) is unioned from TIER_CAPS + enabled
+               tblGatingCapabilities rows, so a Global-Admin-defined capability
+               appears here too — additively FILTERED to EmitInApi=1
+               (tierCapEmitInApi(); code-registered caps are always emitted,
+               unchanged from #1352; a DB cap with EmitInApi=0 is enforceable
+               via tier_check but deliberately absent from this discovery
+               catalogue). Entirely skipped (zero extra query) when no json
+               cap is registered or the Capabilities column hasn't been
+               migrated, so today's response is unchanged. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'access_tier_validation.php';
             $jsonKeys = tierCapJsonKeys();
             if ($jsonKeys && tierCapsColumnExists($db)) {
@@ -8162,6 +8168,7 @@ if ($action !== null) {
                 foreach ($tiers as &$t) {
                     $rowForTier = $capByName[(string)($t['name'] ?? '')] ?? [];
                     foreach ($jsonKeys as $capKey) {
+                        if (!tierCapEmitInApi($capKey, $db)) { continue; }
                         /* lcfirst(PascalCase) → the same camelCase shape the
                            column caps use (CanViewLyrics → canViewLyrics). */
                         $t[lcfirst($capKey)] = (bool)tierCapRead($rowForTier, $capKey);
