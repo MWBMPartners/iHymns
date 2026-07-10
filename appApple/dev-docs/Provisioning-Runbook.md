@@ -3,7 +3,7 @@
 > **Click-level, owner-only** Apple provisioning steps for the native Universal app.
 > Companion to `.claude/apple-native-owner-runbook.md` (long-lead overview) and epic **#895**.
 > Nothing here is executable by the build agent — these are your Apple-account + iHymns-admin actions.
-> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**).
+> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2501.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**; **CI/CD pipeline hardening** — `project.yml` now declares `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` on `iHymns`+`iHymnsTV` (§2.2.B.1/§2.3.A.4 now DONE), and every "AASA returns 200" verification step below is **corrected**: a bare `200` is NOT proof the real responder is live — `beta.ihymns.app`/`ihymns.app`/`www.ihymns.app` all return `200` today but still serve a **stale legacy AASA with the WRONG appID**; only `dev.ihymns.app` serves the real one — see §1.2 Step 6, §2.1, §2.3.A.2, and the Verification-walkthrough Bucket B).
 
 ---
 
@@ -138,7 +138,7 @@
 3. Cards flip to **applied/green**.
 
 ### Step 6 — Verify
-- After §1.1 deploy, load **`https://ihymns.app/.well-known/apple-app-site-association`** → shows your real Team ID in `"appID": "<TeamID>.app.ihymns"` (not the `TEAMID` placeholder).
+- After §1.1 deploy, don't just load the AASA URL and eyeball the status code — **read the BODY**: `curl -s https://ihymns.app/.well-known/apple-app-site-association | head -c 400` and confirm it contains `"appID": "<TeamID>.app.ihymns"` with your real Team ID (not the `TEAMID` placeholder). ⚠️ **A `200` status alone is NOT proof** — as of 2026-07-10, `ihymns.app` (and `beta.`/`www.`) return `200` but still serve a **stale legacy AASA** with the wrong `appID` (`TEAMID.ltd.mwbmpartners.ihymns`); only `dev.ihymns.app` currently serves the real responder (`Y5XK559SV9.app.ihymns`). See §2.1/§2.3.A.2 for the full correction and verification commands.
 - Config card = all three values "set"; migration cards = applied.
 - **There is no native Sign in with Apple button to tap today.** `auth_apple` exists server-side (#1402), but nothing in `iHymnsKit` calls it yet — native sign-in is **Password or Email-Code** (`LoginView.swift`). Until a native SIWA button exists, these migrations + the Key ID/`.p8` serve two things end-to-end verifiable on a signed device/TestFlight build only (not possible in the build environment): the **refresh-token exchange + account-deletion Apple-revoke** paths (which degrade gracefully until provisioned), and the ***web*** SIWA flow (§1.4), which already has a client button and verifies in a browser.
 
@@ -188,21 +188,23 @@ Three buckets: what you can verify **now** (Apple portals), what's **blocked on 
 
 ### B. Blocked on §1.1 (deploy) — nothing to verify until the branch PHP is live
 
-1. **Curl the AASA on each of the three environments individually** — ⚠️ do NOT infer one env's status from another's:
+1. **Curl the AASA on each of the four environments individually — and read the BODY, not just the status.** ⚠️ Do NOT infer one env's status from another's, and ⚠️ **do NOT stop at the HTTP status code** — as of 2026-07-10, every host below returns `200 application/json`, but three of them serve a **stale legacy static AASA file with the WRONG `appID`**. A naive "is it 200?" check **false-greens production**.
    ```
-   curl -sD - -o /dev/null https://dev.ihymns.app/.well-known/apple-app-site-association
-   curl -sD - -o /dev/null https://beta.ihymns.app/.well-known/apple-app-site-association
-   curl -sD - -o /dev/null https://ihymns.app/.well-known/apple-app-site-association
+   curl -s https://dev.ihymns.app/.well-known/apple-app-site-association  | head -c 400
+   curl -s https://beta.ihymns.app/.well-known/apple-app-site-association | head -c 400
+   curl -s https://ihymns.app/.well-known/apple-app-site-association      | head -c 400
+   curl -s https://www.ihymns.app/.well-known/apple-app-site-association | head -c 400
    ```
-   **What "good" looks like:** each command prints a `HTTP/2 200` status line (NOT `301`), a `content-type: application/json` header, and — if you drop the `-o /dev/null` to see the body — `"appID": "<TeamID>.app.ihymns"` with your real 10-char Team ID (not the literal placeholder string `TEAMID`).
-   - ⚠️ **Status as of 2026-07-08:** all three envs returned a **301** redirect (the #1401 AASA responder wasn't deployed yet). Since then the Apple-backend merge (#1464, which ships the #1401 responder) has landed on **alpha**, and `alpha` auto-deploys to **`dev.ihymns.app`** — so `dev.` **may now** return a direct 200; **`beta.` and production `ihymns.app` have not had that backend promoted yet and are still expected to 301.** Apple **does NOT follow redirects** for the AASA, so a `301` = Universal Links silently fail on that environment. Run the three curls above yourself before relying on any one of them — the status genuinely differs per environment.
+   **What "good" looks like:** the printed body contains `"appID": "<TeamID>.app.ihymns"` with your real 10-char Team ID (e.g. `Y5XK559SV9.app.ihymns`) — **not** `"appID": "TEAMID.ltd.mwbmpartners.ihymns"` (the legacy placeholder-Team-ID + old bundle-id shape) and not the literal string `TEAMID`. A `200` + `content-type: application/json` is a *precondition* to check, not the check itself.
+   - ⚠️ **Status as of 2026-07-10 (verified live):** all four hosts now return **`200`** — the earlier "all three 301" finding from 2026-07-08 is stale, but the underlying problem is NOT fixed, only changed shape. **`dev.ihymns.app`** serves the real #1401 responder dynamically (`"appID": "Y5XK559SV9.app.ihymns"`) — matches the alpha backend deployed there. **`beta.ihymns.app`, `ihymns.app`, and `www.ihymns.app`** all still serve a **stale legacy STATIC file** (`"appID": "TEAMID.ltd.mwbmpartners.ihymns"`) — their `last-modified` header is **2026-06-26**, well before the #1464 backend merge, confirming it's a cached/committed static file rather than the live PHP responder. **Universal Links silently fail on beta/production/www today even though the AASA "loads fine" with a 200** — the status code alone hides the wrong-appID problem. Run the four curls above yourself and read the body before trusting any one environment.
+   - **Apple's own CDN cache is also stale.** Apple serves Universal-Link lookups from `https://app-site-association.cdn-apple.com/a/v1/<domain>`, not your server directly — `curl -s https://app-site-association.cdn-apple.com/a/v1/ihymns.app | head -c 400` (verified 2026-07-10) still returns the same stale `TEAMID.ltd.mwbmpartners.ihymns` payload. Even once `ihymns.app` itself serves the corrected file, Apple's CDN must independently pick it up (periodic re-fetch, no manual purge available) before real devices honour Universal Links — "server fixed" is not the same as "Apple's cache fixed."
 2. **Check the SIWA config card.** `/manage/configuration` → **"Apple native app"** card. **Good** = Team ID / Key ID / private-key all show a **"set"** badge (values are never echoed back into the form — that's expected behaviour, not a bug).
 3. **Check the migration cards.** `/manage/setup-database`. **Good** = **"Sign in with Apple — provider links + nonce ledger"** and the **analytics events** card both show **applied/green**.
 
 ### C. Needs a signed device / TestFlight build (not possible in the build env)
 
 1. **Native sign-in + account-deletion Apple-revoke** — the native client authenticates via Password/Email-Code — **there is no native Sign in with Apple button** (backend-only, #1402; `LoginView.swift`). On a device: sign in, then tap **Delete Account** (Danger Zone, #1478) → confirm re-auth → **good** = the re-auth flow succeeds and `account_delete`'s Apple-revoke path exercises the stored SIWA key end-to-end (check server logs / the activity log for the revoke call, not a client-visible signal).
-2. **Universal Link → app** — tap an `https://ihymns.app/song/<id>`-shaped link on a device with the app installed. **Good** = the app opens directly to that song (Safari opens instead, as a fallback, only if the app isn't installed or the AASA isn't a live 200 — see Bucket B step 1).
+2. **Universal Link → app** — tap an `https://ihymns.app/song/<id>`-shaped link on a device with the app installed. **Good** = the app opens directly to that song (Safari opens instead, as a fallback, if the app isn't installed OR the AASA doesn't show the correct `appID` — a `200` status alone is not enough, see Bucket B step 1; as of 2026-07-10 production's AASA is a `200` with the WRONG `appID`, so this WILL currently fall back to Safari on `ihymns.app`).
 3. **On-device VoiceOver / Dynamic Type** (#1458) — enable **Settings → Accessibility → VoiceOver** and/or **Larger Text** on a real device, then navigate the app's main flows (home → song → favourites/setlists) confirming every control has a spoken label and text reflows without clipping.
 
 ---
@@ -221,7 +223,7 @@ Three buckets: what you can verify **now** (Apple portals), what's **blocked on 
 - [ ] **`ihymns.app` sending domain** (owner preference, §1.2 Step 3): DNS access → SPF + DKIM + DMARC published → registered + verified (✅) in Apple's email-sources
 - [ ] **After §1.1 deploy:** Team ID + Key ID + `.p8` pasted into `/manage/configuration`
 - [ ] **After §1.1 deploy:** SIWA + analytics migration cards run
-- [ ] **AASA returns 200 JSON** with the real Team ID on **every env** (⚠️ all three `301`-redirected as of 2026-07-08; the #1464 backend merge — which ships the #1401 responder — has since deployed to alpha → `dev.ihymns.app`, so `dev.` may now be 200, but `beta.`/production are not yet promoted and are still expected to 301; re-check each env individually, don't infer)
+- [ ] **AASA body shows the real appID** (`Y5XK559SV9.app.ihymns`) on **every env** (⚠️ verified 2026-07-10: all four hosts now return `200` — the earlier "all three 301" note from 2026-07-08 is stale — but only `dev.ihymns.app` shows the correct appID; `beta.`/`ihymns.app`/`www.ihymns.app` return `200` with the WRONG legacy appID `TEAMID.ltd.mwbmpartners.ihymns` — a bare 200 is NOT the check, re-read the body on each env individually, don't infer)
 - [ ] *(device build)* end-to-end native sign-in (Password/Email-Code) verified on TestFlight *(there is no native Sign in with Apple button to verify — backend-only, #1402; see §1.2 Step 6)*
 
 ---
@@ -270,16 +272,16 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 **The fact:** the app's backend is only on `alpha` (→ `dev.ihymns.app`). `auth_apple`, `account_delete`, `analytics_ingest` and the AASA responder merged to **alpha** (#1464) but are **NOT on `beta` or `main`/production**. A **Release build points at `prod` (`ihymns.app`)** — which lacks those endpoints — so **Sign in with Apple, account-sync and account-deletion silently fail on any TestFlight/App-Store build today.**
 
 **Step by step — what to do about it:**
-1. **Confirm the current state per environment.** Run each of these individually (don't infer one from another):
+1. **Confirm the current state per environment — check the AASA BODY, not just the HTTP status.** ⚠️ A bare status code is NOT proof the real responder is live (see the correction below). Run each of these individually (don't infer one from another):
    ```
-   curl -s -o /dev/null -w '%{http_code}\n' https://dev.ihymns.app/.well-known/apple-app-site-association
-   curl -s -o /dev/null -w '%{http_code}\n' https://beta.ihymns.app/.well-known/apple-app-site-association
-   curl -s -o /dev/null -w '%{http_code}\n' https://ihymns.app/.well-known/apple-app-site-association
+   curl -s https://dev.ihymns.app/.well-known/apple-app-site-association  | head -c 400
+   curl -s https://beta.ihymns.app/.well-known/apple-app-site-association | head -c 400
+   curl -s https://ihymns.app/.well-known/apple-app-site-association      | head -c 400
    ```
-   **Good** = `200` on `dev.` (already promoted). **Expected today** = `301`/no responder on `beta.`/`ihymns.app` until each is promoted.
-2. **Promote the Apple-backend PHP `alpha → beta`.** This is a normal PR/merge through this repo's standard release process (same alpha→beta promotion flow used for every other web feature — see `.claude/project-rules.md`). After it deploys, re-run the `beta.ihymns.app` curl from step 1 — expect `200`.
-3. **Soak on `beta`, then promote `beta → main`** the same way. After it deploys, re-run the production `ihymns.app` curl from step 1 — expect `200`.
-4. **Only once production returns `200`:** treat Sign in with Apple, account sync and account deletion as safe for real TestFlight-external or App Store users. Until then, an archived/uploaded build that "looks fine" in TestFlight is **not** the same as the backend being reachable — the archive succeeding tells you nothing about step 1–3 above.
+   **Good** = the printed body's `appID` is `Y5XK559SV9.app.ihymns` (the real Team ID + `app.ihymns` bundle) — verified true on `dev.` today (already promoted). **⚠️ Correction (verified 2026-07-10):** `beta.`/`ihymns.app` now both return **`200`** (the earlier "`301`/no responder" expectation from 2026-07-08 is stale), **but** the body still shows `"appID": "TEAMID.ltd.mwbmpartners.ihymns"` — a **stale legacy static AASA** predating the #1401 responder (`last-modified: 2026-06-26`, well before #1464). **A `200` on `beta.`/`ihymns.app` today does NOT mean the backend is promoted — it means an old static file is still being served.** Don't treat status alone as "done" on any environment but `dev.` until you've read the body.
+2. **Promote the Apple-backend PHP `alpha → beta`.** This is a normal PR/merge through this repo's standard release process (same alpha→beta promotion flow used for every other web feature — see `.claude/project-rules.md`). After it deploys, re-run the `beta.ihymns.app` curl from step 1 — expect the body's `appID` to flip to `Y5XK559SV9.app.ihymns` (it will still be `200` before AND after — the status alone won't tell you the promotion happened).
+3. **Soak on `beta`, then promote `beta → main`** the same way. After it deploys, re-run the production `ihymns.app` curl from step 1 — expect the same `appID` flip.
+4. **Only once production's AASA body shows the real appID** (`Y5XK559SV9.app.ihymns`, not the legacy `TEAMID.ltd.mwbmpartners.ihymns`) **and** `auth_apple`/`account_delete`/`analytics_ingest` themselves respond correctly on production: treat Sign in with Apple, account sync and account deletion as safe for real TestFlight-external or App Store users. Until then, an archived/uploaded build that "looks fine" in TestFlight is **not** the same as the backend being reachable — the archive succeeding tells you nothing about step 1–3 above, and neither does a bare AASA `200` (see the body-check correction above). Also confirm Apple's own AASA CDN cache (`https://app-site-association.cdn-apple.com/a/v1/ihymns.app`) has picked up the corrected file — it caches independently of your server and currently still serves the stale payload too (verified 2026-07-10).
 
 **Interim workaround (Internal TestFlight only):** a DEBUG build already points at `dev` and works end-to-end on a Mac/simulator; a tester can also override the API environment at runtime (`APIEnvironment` supports this). This is a stand-in for **internal** testing only — it does not substitute for actually promoting the backend before **external** TestFlight or the App Store.
 
@@ -319,9 +321,9 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 5. **Create the App Store Connect API key** (source of `ASC_KEY_ID`/`ASC_ISSUER_ID`/`ASC_API_KEY`). appstoreconnect.apple.com → **Users and Access** → **Integrations** tab → **App Store Connect API** → **➕** → **Name** `iHymns CI`, **Access** = **App Manager** (or **Admin**) → **Generate** → **Download API Key** (once only). Note the **Key ID** and **Issuer ID** shown on the same page.
 6. **Create the Internal TestFlight tester group.** appstoreconnect.apple.com → **Apps → iHymns → TestFlight** tab → under **Internal Testing** click **➕** → name it (e.g. "iHymns Team") → **Add Testers** → tick names already on the account under **Users and Access** (add a user there first — **Users and Access → ➕** — if you're not already listed). **Good** = the group shows your own devices/emails as members.
 
-### B. CODE — two remaining items
+### B. CODE — one remaining item
 
-1. **Declare export compliance.** Add `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` to the `iHymns` target's `settings.base` block in `project.yml` (the same `INFOPLIST_KEY_*` mechanism already used for `UIBackgroundModes`) — the app uses only standard HTTPS/TLS, so it's exempt. **Without this**, App Store Connect asks the Export Compliance question **on every build** and the build sits in **"Missing Compliance"** (undistributable) until answered by hand each time.
+1. ✅ **DONE — export compliance declared.** `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` is now set in `project.yml`'s `settings.base` block on both the `iHymns` and `iHymnsTV` targets (the same `INFOPLIST_KEY_*` mechanism already used for `UIBackgroundModes`) — the app uses only standard HTTPS/TLS, so it's exempt. Without this, App Store Connect would ask the Export Compliance question **on every build** and the build would sit in **"Missing Compliance"** (undistributable) until answered by hand each time.
 2. **Resolve the backend blocker** (§2.1) — either promote the backend so `prod` has it, or (Internal TestFlight only) rely on the existing `APIEnvironment` runtime override to point a tester build at `dev` — `defaultForBuild` currently sends Release → `prod`.
 
 ### C. First upload + verify (internal)
@@ -338,7 +340,7 @@ Apple's key-creation screen lets you tick **multiple services on one key** (Sign
 3. **Push to `beta`** → `apple-deploy.yml` runs `fastlane beta`, uploading with `distribute_external: true` and `groups: ["iOS Beta"]` / `["tvOS Beta"]` (Fastfile). If those groups don't exist yet, `pilot` creates them automatically on first upload — afterwards visit **TestFlight → External Testing** to **Add Testers** (by email, or a public link) to each group.
 4. **Beta App Review runs automatically** on the first build sent to an External group (Apple's own guidance: typically **~1–2 days**). **Good** = the group's status moves **Waiting for Review → Approved**, and testers receive the invite.
 
-**Verdict:** the *pipeline* is ready; **TestFlight is gated on the OWNER steps in A and the two CODE items in B** (export compliance is trivial; the backend-environment promotion is the substantive one). No fundamental code rewrite needed.
+**Verdict:** the *pipeline* is ready; **TestFlight is gated on the OWNER steps in A and the one remaining CODE item in B** (export compliance is DONE; the backend-environment promotion is the substantive one left). No fundamental code rewrite needed.
 
 ## 2.3 App Store readiness
 
@@ -346,10 +348,14 @@ Everything in §2.2, **plus**:
 
 ### A. Remaining blockers — still true, don't mark these done
 
-1. ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users. Verify with the same curl pattern as §2.1 step 1, against `https://ihymns.app`.
-2. ⛔ **AASA returns HTTP 200 JSON on production.** The runbook flagged a **301** on all envs as of 2026-07-08; the #1464 backend merge has since deployed to alpha → `dev.ihymns.app` (so `dev.` may now be 200), but **production `ihymns.app` has not been promoted** and is still expected to 301. Apple does **not** follow redirects for the AASA, so Universal Links fail until it's a direct 200 on **production**. Verify: `curl -sD - -o /dev/null https://ihymns.app/.well-known/apple-app-site-association` → **good** = `HTTP/2 200` + `content-type: application/json`, body contains `"appID": "<your real Team ID>.app.ihymns"` (not the placeholder string `TEAMID`).
+1. ⛔ **Backend live on production `ihymns.app`** (blocker #1, §2.1) — required or SIWA/sync/delete fail for real users. Verify with the same curl-the-body pattern as §2.1 step 1, against `https://ihymns.app`.
+2. ⛔ **AASA on production must show the REAL appID in the BODY — a `200` status alone is not enough.** ⚠️ **Correction (verified 2026-07-10):** the earlier "301 on all envs" finding (2026-07-08) is stale — `ihymns.app`, `www.ihymns.app`, and `beta.ihymns.app` all now return `200 application/json`. But their **body** still shows `"appID": "TEAMID.ltd.mwbmpartners.ihymns"` — a **stale legacy static AASA file** (placeholder Team ID + old bundle id) that predates the #1401 responder; `last-modified` on those three is **2026-06-26**, well before the #1464 merge. Only **`dev.ihymns.app`** serves the real responder today (`"appID": "Y5XK559SV9.app.ihymns"`). **Verify with the body, not the status:**
+   ```
+   curl -s https://ihymns.app/.well-known/apple-app-site-association | head -c 400
+   ```
+   **Good** = the printed JSON's `appID` is `Y5XK559SV9.app.ihymns` (your real Team ID + `app.ihymns`). **Bad-but-200** = `TEAMID.ltd.mwbmpartners.ihymns` — this is what production shows **right now**; Universal Links fail on it despite the `200`. Apple's own CDN cache (`https://app-site-association.cdn-apple.com/a/v1/ihymns.app`) is also stale with the same wrong body (verified 2026-07-10) — it must independently pick up the corrected file (no manual purge; Apple re-fetches periodically) before real devices honour Universal Links, even after the server-side file is fixed.
 3. ⚠️ **Deployment target 26.0** (confirmed in `appApple/Config/Shared.xcconfig`: `IPHONEOS_DEPLOYMENT_TARGET` / `MACOSX_DEPLOYMENT_TARGET` / `TVOS_DEPLOYMENT_TARGET` / `WATCHOS_DEPLOYMENT_TARGET` / `XROS_DEPLOYMENT_TARGET` all `= 26.0`) — only devices already on the newest OS can install. App Review permits this, but it **narrows the addressable market**; this is a deliberate Liquid-Glass/latest-API stance, not an oversight — confirm it's still the intended decision before submitting (lowering it later widens reach but costs real back-compat engineering work).
-4. **CODE:** `ITSAppUsesNonExemptEncryption = NO` still needs adding (§2.2.B.1) — small, not yet done.
+4. ✅ **DONE:** `ITSAppUsesNonExemptEncryption = NO` is now declared on `iHymns` + `iHymnsTV` (§2.2.B.1) — no longer a blocker.
 
 ### B. App Store metadata — step by step
 
@@ -390,7 +396,7 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 3. **Submit for Review** (top-right of the version page). **Good** = status moves **Waiting for Review → In Review → Ready for Sale** (or **Pending Developer Release** on manual release) — Apple's SLA varies, historically **24–48 hours** for most apps, longer for first submissions or flagged content.
 4. **Note on the current pipeline:** `fastlane release` (triggered by `push main`) runs with `submit_for_review: false` (Fastfile) — it only **uploads the build**, it does not press Submit. Step 3's click is a deliberate, manual owner action by design, so a code push alone never triggers an App Review submission.
 
-**Verdict:** **not submittable yet** — blocked on backend-to-production (A.1), AASA-200 on production (A.2), and the full metadata/screenshots/age-rating/privacy-label set (B–D above). *(In-app account deletion is no longer a blocker — DONE, #1478.)*
+**Verdict:** **not submittable yet** — blocked on backend-to-production (A.1), AASA-correct-appID on production (A.2 — production already returns `200`, but with the WRONG legacy appID; a bare 200 is not the gate), and the full metadata/screenshots/age-rating/privacy-label set (B–D above). *(In-app account deletion is no longer a blocker — DONE, #1478. Export compliance is no longer a blocker — DONE, A.4.)*
 
 ## 2.4 Virtual / pre-submission testing (Xcode Simulator)
 
@@ -400,7 +406,7 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 | Unit / package tests (the 514 `@Test`s) | ✅ `swift test` / Xcode test action (macOS host) | — |
 | Instruments profiling (memory, hangs, energy) | ✅ (approximate — Sim uses the Mac CPU/GPU, **not** representative of device perf) | ✅ real device for true perf/energy |
 | **Sign in with Apple (native)** | **N/A today** — no native SIWA button exists yet (backend-only, #1402); native sign-in is Password/Email-Code and *is* testable in Simulator | — |
-| **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + live 200 AASA |
+| **Universal Links** (`applinks:ihymns.app`) + Handoff | ❌ associated-domains behave differently in Sim | ✅ real device + AASA body showing the correct `appID` (not just a `200` — see §2.3.A.2) |
 | Push / Live Activities (future #1410) | ❌ | ✅ |
 
 **macOS** needs no simulator — the "Designed for iPad" build runs natively on an Apple-Silicon Mac.
@@ -409,7 +415,7 @@ There is **no `appApple/fastlane/metadata/` committed** — every field below is
 1. **UI/navigation/Dynamic Type/dark mode.** Open `iHymns.xcodeproj` (run `Scripts/bootstrap.sh`, or `xcodegen generate` directly, first if it doesn't exist yet — the project is gitignored/regenerated) → pick a scheme (`iHymns`, `iHymnsTV`, `iHymnsWatch`) → pick a Simulator device → **⌘R**. Toggle Dynamic Type via Simulator's **Settings → Accessibility → Larger Text**; toggle dark mode via Xcode's **Environment Overrides** (the sun/moon icon in the debug bar) or Simulator's own **Settings → Developer → Dark Appearance**.
 2. **Unit/package tests.** `cd appApple/Packages/iHymnsKit && swift test` (the same command CI's `fastlane test` lane runs). **Good** = all 514 `@Test`s pass, 0 failures.
 3. **Instruments profiling.** Xcode → **Product → Profile** (⌘I) on a running scheme → choose the **Allocations** / **Time Profiler** / **Hangs** template → record a session while exercising the app. **Good** = no unbounded memory growth, no >250ms main-thread hangs. Simulator numbers are approximate — repeat on a real device before submission for true perf/energy figures.
-4. **Universal Links + Handoff.** Needs a real device with the app installed **and** a live 200 AASA (§2.1/§2.3.A.2) — Simulator does not reliably exercise `com.apple.developer.associated-domains`.
+4. **Universal Links + Handoff.** Needs a real device with the app installed **and** an AASA whose body shows the correct `appID` — `Y5XK559SV9.app.ihymns`, not just any `200` (§2.1/§2.3.A.2 — production currently returns `200` with the WRONG legacy appID) — Simulator does not reliably exercise `com.apple.developer.associated-domains`.
 
 ## 2.5 "Load testing" — the honest answer
 
@@ -425,21 +431,21 @@ So a realistic pre-launch sequence is:
 
 ## 2.6 Readiness checklist
 
-> **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items below are **owner actions** (Apple-portal provisioning + App Store metadata/screenshots — full click-by-click steps are §2.2/§2.3 above), the **backend-to-production promotion** (blocker #1, §2.1), and one remaining **CODE** item (`ITSAppUsesNonExemptEncryption` — small, ask and I'll do it).
+> **Status (2026-07-10):** dev-side is done — in-app **account deletion ✅ (#1478)**, **export compliance ✅ declared** (`ITSAppUsesNonExemptEncryption`, `iHymns`+`iHymnsTV`), the native app builds with 514 tests green, and web SIWA + the CSP entry shipped. The unticked items below are **owner actions** (Apple-portal provisioning + App Store metadata/screenshots — full click-by-click steps are §2.2/§2.3 above) and the **backend-to-production promotion** (blocker #1, §2.1) — which also gates the AASA showing the correct `appID` on `beta.`/production (§2.3.A.2; both currently return `200` but with the WRONG legacy appID, so a bare-200 check would false-green them).
 
 **TestFlight (internal) — minimum to first upload:**
 - [ ] App Store Connect app record created (§1.3 Step 2)
 - [ ] Apple **Distribution certificate** created + exported to `APPLE_CERTIFICATE`
 - [ ] All 9 deploy secrets set in GitHub (`apple-deploy.yml` L94-103)
 - [ ] App ID capabilities (SIWA + Associated Domains) registered (§1.3 Step 1)
-- [ ] **CODE:** `ITSAppUsesNonExemptEncryption = NO` declared
+- [x] **DONE:** `ITSAppUsesNonExemptEncryption = NO` declared (`iHymns` + `iHymnsTV` targets in `project.yml`)
 - [ ] ⛔ Backend promoted so the build's target env has `auth_apple`/`account_delete`/`analytics_ingest` (or Internal-TF build pointed at `dev`)
 - [ ] `push alpha` → build appears in TestFlight → install on a device → native sign-in (Password/Email-Code) works *(no native Sign in with Apple button exists to test — backend-only, #1402)*
 
 **App Store (adds):**
 - [x] **DONE (#1478):** in-app **Delete Account** flow (§5.1.1(v)) wired to `account_delete`
 - [ ] ⛔ Backend live on **production** `ihymns.app`
-- [ ] ⛔ AASA returns **200 JSON** (not 301) on production with the real Team ID
+- [ ] ⛔ AASA on production returns the real appID **in the body** (`Y5XK559SV9.app.ihymns`) — ⚠️ production already returns `200 JSON` today, but with the WRONG legacy appID (`TEAMID.ltd.mwbmpartners.ihymns`); a bare 200 check is NOT sufficient (§2.3.A.2)
 - [ ] Metadata: description / keywords / support & privacy URLs / age rating
 - [ ] **App Privacy** answers match the manifests + analytics no-PII claim
 - [ ] Screenshots per device class (iPhone / iPad / Apple TV)
