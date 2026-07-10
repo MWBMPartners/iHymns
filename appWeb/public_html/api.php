@@ -3091,6 +3091,40 @@ if ($action !== null) {
                 break;
             }
 
+            /* Platform discriminator (#1470 W1) — selects which of OUR OWN
+               two client ids to check as the identity token's `aud`. PURE
+               resolver (tests/php/test-auth-apple-platform.php) so the
+               allow-list is unit-testable without a request. Absent/empty
+               defaults to 'native' — every existing caller (the shipped
+               native app) never sends this field, so its request is
+               byte-identical to before this change. */
+            $platformResolved = _authApplePlatformResolve($body['platform'] ?? null);
+            if (!$platformResolved['ok']) {
+                sendJson(['error' => "platform must be 'native' or 'web'."], 400);
+                break;
+            }
+            $platform = $platformResolved['platform'];
+
+            /* Resolve EXACTLY ONE expected audience — this app NEVER tries
+               both client ids against the same token (that would let a
+               native-app identity token be accepted as a web login, or vice
+               versa — an aud-confusion hole). 'web' is additionally gated on
+               BOTH a configured Services ID AND this channel's rollout
+               allow-list (appleWebLoginEnabledForChannel(), includes/
+               apple_siwa.php) — both settings default unset/empty, so
+               platform=web stays a byte-identical 503 dormant no-op (the
+               SAME shape as the tblUserAuthProviders gate above) until an
+               admin opts in via manage/configuration.php. */
+            if ($platform === 'web') {
+                if (!appleWebLoginEnabledForChannel()) {
+                    sendJson(['error' => 'Sign in with Apple is not yet available.'], 503);
+                    break;
+                }
+                $expectedAud = trim((string)(getAppSetting('apple_siwa_services_id', '') ?? ''));
+            } else {
+                $expectedAud = IHYMNS_SIWA_CLIENT_ID;
+            }
+
             /* authorizationCode is optional and only ever used for a
                best-effort refresh-token capture (§2.6) — malformed/absent
                both just mean "skip the exchange", never an error response. */
@@ -3144,7 +3178,7 @@ if ($action !== null) {
             }
 
             $verifyNow = time();
-            $verify = appleSiwaVerifyIdentityToken($identityToken, $jwks, IHYMNS_SIWA_CLIENT_ID, $rawNonce, $verifyNow);
+            $verify = appleSiwaVerifyIdentityToken($identityToken, $jwks, $expectedAud, $rawNonce, $verifyNow);
             if ($verify['ok'] !== true) {
                 /* ONE generic message for every verify failure — no replay/
                    enumeration oracle (§2.7). The precise reason is a fixed
@@ -3195,18 +3229,30 @@ if ($action !== null) {
 
             /* §2.6 — best-effort refresh-token capture, AFTER the mapping
                transaction commits. NEVER fatal: sign-in must succeed even if
-               Apple's token endpoint hiccups or the owner hasn't provisioned
+               Apple's token endpoint hiccups, the owner hasn't provisioned
                the .p8 key yet (account_delete's revoke then just degrades to
-               `skipped_no_token`). */
+               `skipped_no_token`), or — web only — this docroot's Host
+               header doesn't resolve to a registered redirect_uri.
+               $expectedAud IS the right client id to present to Apple here
+               too: native's is IHYMNS_SIWA_CLIENT_ID (unchanged from before
+               #1470), web's is the Services ID resolved above. */
             if ($authorizationCode !== null) {
                 try {
                     $teamId = (string)(getAppSetting('apple_team_id', '') ?? '');
                     $keyId  = (string)(getAppSetting('apple_siwa_key_id', '') ?? '');
                     $p8Pem  = (string)(getAppSetting('apple_siwa_private_key', '') ?? '');
-                    if ($teamId !== '' && $keyId !== '' && $p8Pem !== '') {
-                        $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, IHYMNS_SIWA_CLIENT_ID, $p8Pem, time());
+                    /* #1470 W1 — web needs a validated redirect_uri; a null
+                       (untrusted/foreign Host header) means "skip the
+                       exchange" rather than ever sending Apple a request
+                       built from unvalidated input. Native never had a
+                       redirect_uri concept, so this stays null for it
+                       (byte-identical to the pre-#1470 3-arg call). */
+                    $webRedirectUri = ($platform === 'web') ? appleSiwaWebRedirectUri() : null;
+                    $skipExchange   = ($platform === 'web' && $webRedirectUri === null);
+                    if (!$skipExchange && $teamId !== '' && $keyId !== '' && $p8Pem !== '') {
+                        $clientSecret = appleSiwaBuildClientSecret($teamId, $keyId, $expectedAud, $p8Pem, time());
                         if ($clientSecret !== null) {
-                            $tokenResp = appleSiwaExchangeCode($authorizationCode, $clientSecret, IHYMNS_SIWA_CLIENT_ID);
+                            $tokenResp = appleSiwaExchangeCode($authorizationCode, $clientSecret, $expectedAud, $webRedirectUri);
                             if ($tokenResp !== null && !empty($tokenResp['refresh_token']) && is_string($tokenResp['refresh_token'])) {
                                 $refreshToken = $tokenResp['refresh_token'];
                                 $updStmt = $db->prepare(
@@ -3260,7 +3306,8 @@ if ($action !== null) {
             }
 
             /* Audit (#535) — NEVER the sub, email claim, nonce, identityToken,
-               or refresh token (§2.2 step 12). */
+               or refresh token (§2.2 step 12). `platform` (#1470 W1) is a
+               fixed 'native'|'web' code, never PII, safe to log. */
             logActivity(
                 'auth.login_apple',
                 'user',
@@ -3268,6 +3315,7 @@ if ($action !== null) {
                 [
                     'username'      => $userRow['Username'],
                     'flow'          => $flow,
+                    'platform'      => $platform,
                     'private_relay' => $isPrivateRelayFlag,
                     'token_prefix'  => substr(hash('sha256', $token), 0, 12),
                 ],
@@ -4288,6 +4336,13 @@ if ($action !== null) {
          * No authentication required — used by PWA on startup
          * ----------------------------------------------------------------- */
         case 'app_status':
+            /* #1470 W1 — appleWebLoginEnabledForChannel() lives in the shared
+               Apple-SIWA module (already require_once'd by the auth_apple
+               case above); app_status needs it too so the future web
+               sign-in button can gate on ONE flag instead of re-deriving
+               the services-id + channel-allow-list logic client-side. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
                Dynamic IN-list with str_repeat for the bind type string. */
@@ -4330,6 +4385,12 @@ if ($action !== null) {
                    decide between a "lyrics protected" surface and a full
                    fetch (#1010 forward-looking content_gating_enabled flag). */
                 'contentGatingEnabled' => ($settings['content_gating_enabled'] ?? '0') === '1',
+                /* #1470 W1 — whether Sign in with Apple for WEB is enabled on
+                   THIS channel (Services ID configured AND channel allow-
+                   listed). Dormant/false until manage/configuration.php's
+                   Apple card has both saved — the future web sign-in button
+                   gates its own visibility on this flag. */
+                'appleWebLoginEnabled' => appleWebLoginEnabledForChannel(),
             ]);
             break;
 
@@ -13741,6 +13802,30 @@ function apiAuthSuccessPayload(
  * _authAppleMapAccountTxn(); its wrapper _authAppleMapAccount() owns the
  * transaction boundary + the one-shot race retry §2.5(d) calls for.
  * ========================================================================= */
+
+/**
+ * Resolve+validate the `platform` discriminator for ?action=auth_apple
+ * (#1470 W1) — PURE (no DB, no superglobals) so
+ * tests/php/test-auth-apple-platform.php can assert the allow-list without
+ * a request. Absent/empty → 'native' (every existing caller — the shipped
+ * native app — never sends this field, so its request resolves EXACTLY as
+ * it did before this discriminator existed). Any OTHER value is invalid; the
+ * caller (the `auth_apple` case body) responds with its standard 400 shape
+ * rather than silently guessing a platform.
+ *
+ * @param mixed $platformRaw The raw `platform` value from the decoded JSON body (or null/absent).
+ * @return array{ok:bool,platform:?string} ok=false ⇒ platform is always null.
+ */
+function _authApplePlatformResolve($platformRaw): array
+{
+    if ($platformRaw === null || $platformRaw === '') {
+        return ['ok' => true, 'platform' => 'native'];
+    }
+    if ($platformRaw === 'native' || $platformRaw === 'web') {
+        return ['ok' => true, 'platform' => $platformRaw];
+    }
+    return ['ok' => false, 'platform' => null];
+}
 
 /**
  * Record a failed auth_apple attempt: a Success=0 tblLoginAttempts row (feeds

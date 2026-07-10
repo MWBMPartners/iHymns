@@ -355,6 +355,31 @@ jobs:
           php tests/php/test-apple-siwa-sources.php
 
       # -----------------------------------------------------------------------
+      # Step 5j-2: Sign in with Apple for WEB — dormancy gate + redirect-URI
+      # + code-exchange body (#1470 W1)
+      # PURE-core tests: _appleSiwaExchangeCodeBody() redirect_uri inclusion/
+      # omission, _appleWebLoginEnabledCore()'s full channel allow-list truth
+      # table, and _appleSiwaWebHostAllowed()'s Host-header validation. No DB,
+      # no network.
+      # -----------------------------------------------------------------------
+      - name: Sign in with Apple for web — dormancy gate + redirect URI (#1470)
+        run: |
+          echo "Running Apple SIWA web dormancy/redirect-URI test..."
+          php tests/php/test-apple-siwa-web.php
+
+      # -----------------------------------------------------------------------
+      # Step 5j-3: `auth_apple` platform discriminator + single-audience
+      # resolution (#1470 W1)
+      # Asserts the platform allow-list (native/web/absent accepted, anything
+      # else rejected) and structurally guards the "never try both auds"
+      # invariant + the web dormancy-gate-before-DB-write ordering.
+      # -----------------------------------------------------------------------
+      - name: auth_apple platform + single-audience guard (#1470)
+        run: |
+          echo "Running auth_apple platform/audience guard test..."
+          php tests/php/test-auth-apple-platform.php
+
+      # -----------------------------------------------------------------------
       # Step 5k: account_delete cascade completeness guard (#1403)
       # Asserts every FK referencing tblUsers(Id) is CASCADE or SET NULL
       # (never RESTRICT/NO ACTION, which would throw mid-delete), and that
@@ -560,6 +585,12 @@ jobs:
 
       - name: Sign in with Apple — static source guards (#1402/#1403)
         run: php tests/php/test-apple-siwa-sources.php
+
+      - name: Sign in with Apple for web — dormancy gate + redirect URI (#1470)
+        run: php tests/php/test-apple-siwa-web.php
+
+      - name: auth_apple platform + single-audience guard (#1470)
+        run: php tests/php/test-auth-apple-platform.php
 
       - name: account_delete FK cascade coverage (#1403)
         run: php tests/php/test-account-delete-fk-coverage.php
