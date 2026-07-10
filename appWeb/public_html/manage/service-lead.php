@@ -197,9 +197,12 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
            projection laptop; this page just connects to an existing session. */
         import { ServiceBroadcaster } from '/js/modules/service-broadcast.js';
 
-        /* JSON_HEX_* so an org-admin-controlled venue/schedule name containing
-           "</script>" (or < > & ' ") in a session label can't break out of this
-           inline module script — the established convention (tiers.php). */
+        /* JSON_HEX_* so an org-admin-controlled venue/schedule name containing a
+           script-closing sequence (or < > & ' ") in a session label can't break
+           out of this inline module — the established convention (tiers.php).
+           NOTE: this comment must not write that closing sequence literally
+           either; the HTML parser terminates the <script> on the raw bytes
+           regardless of JS comment syntax. */
         const SESSIONS = <?= json_encode($sessionList, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const KEEPALIVE_MS = 45000;   // idle heartbeat — comfortably inside the 90s freshness window
         let session = null, keepaliveTimer = null, broadcaster = null;
