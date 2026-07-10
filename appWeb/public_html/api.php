@@ -13495,7 +13495,10 @@ if ($action !== null) {
                un-throttled code-existence oracle for those legacy callers. */
             $liveTok = preg_replace('/[^a-f0-9]/', '', substr((string)($_GET['token'] ?? ''), 0, 40));
             if ($liveTok !== '') {
-                $liveBucket = 'tok:' . $liveTok;
+                /* #1492 — bucket on a HASH of the follow token, never the raw
+                   token (which would persist into tblLoginAttempts.IpAddress).
+                   Mirrors service_poll's presence-token bucket. */
+                $liveBucket = 'tok:' . substr(hash('sha256', $liveTok), 0, 24);
                 checkRateLimit('live_follow_poll', $liveBucket, 40, 60, true);
                 recordRateLimitHit('live_follow_poll', $liveBucket);
             } else {

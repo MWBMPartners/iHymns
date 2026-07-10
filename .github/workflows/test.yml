@@ -301,6 +301,11 @@ jobs:
           echo "Running secret-crypto-admin DB-free surface test..."
           php tests/php/test-secret-crypto-admin.php
 
+      - name: Activity Log query-string secret redaction (#1492)
+        run: |
+          echo "Running activity-log-scrub redaction guard test..."
+          php tests/php/test-activity-log-scrub.php
+
       - name: OpenLyrics importer enrichment (#1130)
         run: |
           echo "Running OpenLyrics importer enrichment test..."
