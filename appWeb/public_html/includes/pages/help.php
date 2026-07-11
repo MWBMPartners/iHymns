@@ -14,7 +14,7 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-10 (v0.2750.0)
+ * Last updated: 2026-07-10 (v0.4000.0)
  */
 
 declare(strict_types=1);
