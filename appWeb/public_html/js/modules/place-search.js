@@ -36,6 +36,23 @@
  *   - Pre-filled value at attach time leaves both the visible
  *     input and the hidden Id alone — server's load handler is
  *     authoritative.
+ *
+ * #1507 — UX polish (loading state + confirmed selection):
+ *   - ELI5: while the lookup is running you now see a small spinner
+ *     next to the box, so "slow to list" reads as "still working",
+ *     not "broken". Once a place is picked (or the field re-opens
+ *     already holding one), a green checkmark + border confirm the
+ *     hidden Id is actually set.
+ *   - DETAILED: a status icon (spinner while `runSearch()` has an
+ *     in-flight fetch; a checkmark whenever `hiddenIdInput.value` is
+ *     non-empty) is positioned next to the input the same way the
+ *     dropdown panel already is (absolute, recomputed on focus/
+ *     input/scroll/resize — @link https://developer.mozilla.org/en-US/docs/Web/API/Element/getBoundingClientRect).
+ *     The confirmed state piggybacks on the EXISTING `setHiddenId()`
+ *     → dispatchEvent('change') wiring, so any caller that sets the
+ *     hidden Id directly (e.g. an Edit-drawer pre-fill) and then
+ *     dispatches its own 'change' event gets the same visual for free
+ *     — no per-page duplication.
  */
 
 (function () {
@@ -48,12 +65,40 @@
         maxResults: 8,
     };
 
+    /* #1507 — one shared <style> block for every attach()'d input on the
+       page (spinner keyframes + the two status-icon shapes). Injected at
+       most once (id-guarded) so N place fields on one page (birth +
+       death, or a venue's address fields) don't each add their own copy. */
+    const STATUS_STYLE_ID = 'ihymns-place-search-status-styles';
+    function ensureStatusStyles() {
+        if (document.getElementById(STATUS_STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = STATUS_STYLE_ID;
+        style.textContent =
+            '@keyframes ihymnsPlaceSearchSpin { to { transform: rotate(360deg); } }' +
+            '.ihymns-place-search-spinner {' +
+                'display:inline-block;width:0.85rem;height:0.85rem;' +
+                'border:2px solid rgba(127,127,127,0.35);' +
+                'border-top-color:var(--bs-primary,#0d6efd);' +
+                'border-radius:50%;' +
+                'animation:ihymnsPlaceSearchSpin 0.6s linear infinite;' +
+            '}' +
+            '.ihymns-place-search-check {' +
+                'display:inline-flex;align-items:center;justify-content:center;' +
+                'width:0.95rem;height:0.95rem;border-radius:50%;' +
+                'background:var(--bs-success,#198754);color:#fff;' +
+                'font-size:0.65rem;line-height:1;' +
+            '}';
+        document.head.appendChild(style);
+    }
+
     /* Each attach() instance gets its own state object — the
        module supports any number of place inputs on one page. */
     function attach(inputEl, opts) {
         if (!inputEl || inputEl.dataset.placeSearchAttached === '1') {
             return function () {};
         }
+        ensureStatusStyles();
         const settings = Object.assign({}, DEFAULTS, opts || {});
         inputEl.dataset.placeSearchAttached = '1';
         inputEl.setAttribute('autocomplete', 'off');
@@ -82,6 +127,85 @@
         panel.style.display = 'none';
         panel.style.fontSize = '0.875rem';
         document.body.appendChild(panel);
+
+        /* #1507 — status icon (spinner while a lookup is in flight, a
+           checkmark once the hidden Id carries a confirmed pick). Same
+           "append to body, position via getBoundingClientRect()" trick as
+           the dropdown panel so it isn't clipped by an overflow:hidden
+           parent (Bootstrap offcanvas / card). Non-interactive — sits
+           visually next to the input, never blocks clicks/typing. */
+        const statusIcon = document.createElement('div');
+        statusIcon.className = 'ihymns-place-search-status';
+        statusIcon.style.position = 'absolute';
+        statusIcon.style.zIndex = '20000';
+        statusIcon.style.pointerEvents = 'none';
+        statusIcon.style.display = 'none';
+        document.body.appendChild(statusIcon);
+
+        function positionStatusIcon() {
+            const rect = inputEl.getBoundingClientRect();
+            const size = 15; /* matches the icon's rendered box, px */
+            statusIcon.style.left = (window.scrollX + rect.right - size - 8) + 'px';
+            statusIcon.style.top  = (window.scrollY + rect.top + (rect.height - size) / 2) + 'px';
+        }
+
+        /* state: 'idle' (hidden) | 'loading' (spinner) | 'confirmed' (check).
+           ELI5: one function that decides what little icon (if any) sits
+           next to the box right now. */
+        function setStatus(state) {
+            if (state === 'loading') {
+                statusIcon.innerHTML = '<span class="ihymns-place-search-spinner" aria-hidden="true"></span>';
+                statusIcon.setAttribute('aria-label', 'Searching for places…');
+                statusIcon.style.display = 'block';
+                positionStatusIcon();
+            } else if (state === 'confirmed') {
+                statusIcon.innerHTML = '<span class="ihymns-place-search-check" aria-hidden="true">&#10003;</span>';
+                statusIcon.setAttribute('aria-label', 'Place confirmed');
+                statusIcon.style.display = 'block';
+                positionStatusIcon();
+            } else {
+                statusIcon.style.display = 'none';
+                statusIcon.removeAttribute('aria-label');
+            }
+        }
+
+        /* Distinct "confirmed" affordance on the INPUT itself (not just the
+           small icon) — a subtle success-coloured border + focus-ring glow,
+           inline-styled to match this module's existing self-contained
+           approach (no external stylesheet dependency). */
+        function setConfirmedBorder(isConfirmed) {
+            if (isConfirmed) {
+                inputEl.style.borderColor = 'var(--bs-success, #198754)';
+                inputEl.style.boxShadow   = '0 0 0 0.15rem rgba(25,135,84,0.25)';
+            } else {
+                inputEl.style.borderColor = '';
+                inputEl.style.boxShadow   = '';
+            }
+        }
+
+        /* The hidden Id is the SINGLE source of truth for "is this place
+           confirmed?" — driven by the sibling hidden input's 'change'
+           event, which setHiddenId() already dispatches on every write.
+           Reacting to the event (rather than only calling this inline at
+           pick-time) means an external caller that sets the hidden input's
+           value directly (e.g. an Edit-drawer's pre-fill script) gets the
+           same checkmark + border for free, just by dispatching its own
+           'change' event after the assignment — no per-page duplication. */
+        function updateConfirmedFromHidden() {
+            const has = !!(settings.hiddenIdInput && settings.hiddenIdInput.value !== '');
+            setConfirmedBorder(has);
+            /* Don't stomp an in-flight 'loading' state — a confirmed pick
+               and a fresh search never overlap in practice (onInput()
+               already clears the hidden Id before debouncing a new
+               search), but stay defensive rather than assume that. */
+            if (statusIcon.getAttribute('aria-label') !== 'Searching for places…') {
+                setStatus(has ? 'confirmed' : 'idle');
+            }
+        }
+        if (settings.hiddenIdInput) {
+            settings.hiddenIdInput.addEventListener('change', updateConfirmedFromHidden);
+            updateConfirmedFromHidden(); /* reflect any value already present at attach time */
+        }
 
         let currentRequest = 0;
         let candidates = [];
@@ -180,6 +304,13 @@
 
         async function runSearch(query) {
             const requestId = ++currentRequest;
+            /* #1507 — the query is now genuinely in flight (past the
+               debounce delay): show the spinner so "nothing's happening"
+               reads as "still searching", not "broken". Always safe to set
+               for the newest request even if it supersedes an older one —
+               the older call's own `requestId !== currentRequest` guards
+               below stop it from clobbering this state afterwards. */
+            setStatus('loading');
             const url = settings.endpoint + '?action=search&q=' + encodeURIComponent(query) + '&limit=' + settings.maxResults;
             let resp;
             try {
@@ -188,10 +319,13 @@
                     headers: { 'Accept': 'application/json' },
                 });
             } catch (_e) {
-                if (requestId === currentRequest) renderHint('Place lookup unavailable (offline?). Your text is saved as typed.');
+                if (requestId === currentRequest) {
+                    setStatus('idle');
+                    renderHint('Place lookup unavailable (offline?). Your text is saved as typed.');
+                }
                 return;
             }
-            if (requestId !== currentRequest) return; /* superseded */
+            if (requestId !== currentRequest) return; /* superseded — the newer request owns the status icon */
             if (!resp.ok) {
                 /* Pull the server's `detail` (admins get the real error message)
                    so the curator/dev sees WHY, not just the status (#1180). */
@@ -200,20 +334,24 @@
                     const errBody = await resp.json();
                     if (errBody && errBody.detail) { detail = ' — ' + errBody.detail; }
                 } catch (_e) { /* no JSON body */ }
+                setStatus('idle');
                 renderHint('Place lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
                 return;
             }
             const data = await resp.json().catch(() => null);
             if (!data || !Array.isArray(data.results)) {
+                setStatus('idle');
                 renderHint('Place lookup returned no data. Your text is saved as typed.');
                 return;
             }
             candidates = data.results;
             highlight = candidates.length ? 0 : -1;
             if (!candidates.length) {
+                setStatus('idle');
                 renderHint('No matching places — your text is saved as typed.');
                 return;
             }
+            setStatus('idle');
             renderPanel();
         }
 
@@ -307,6 +445,10 @@
 
         function onWindow() {
             if (panel.style.display !== 'none') positionPanel();
+            /* #1507 — the status icon is also absolutely positioned
+               against the input, so it needs the same reflow on
+               scroll/resize as the dropdown panel. */
+            if (statusIcon.style.display !== 'none') positionStatusIcon();
         }
 
         inputEl.addEventListener('input', onInput);
@@ -321,7 +463,13 @@
             inputEl.removeEventListener('blur', onBlur);
             window.removeEventListener('scroll', onWindow, true);
             window.removeEventListener('resize', onWindow);
+            if (settings.hiddenIdInput) {
+                settings.hiddenIdInput.removeEventListener('change', updateConfirmedFromHidden);
+            }
             if (panel.parentNode) panel.parentNode.removeChild(panel);
+            if (statusIcon.parentNode) statusIcon.parentNode.removeChild(statusIcon);
+            inputEl.style.borderColor = '';
+            inputEl.style.boxShadow   = '';
             delete inputEl.dataset.placeSearchAttached;
         };
     }
