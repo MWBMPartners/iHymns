@@ -66,7 +66,13 @@ struct IHRPFrameOrderingTests {
         return (TVListenerActor(identity: identity, configuration: config), identity)
     }
 
-    @Test("The TV accepts a strictly-later frame and rejects a stale one, from two different senders")
+    @Test(
+        "The TV accepts a strictly-later frame and rejects a stale one, from two different senders",
+        .enabled(
+            if: lanRemoteKeychainIdentityAvailable(),
+            "Builds a real TVListenerActor, which needs a keychain-bridged identity an unsigned headless `swift test` binary can't create (see lanRemoteKeychainIdentityAvailable()). The pure IHRPFrame.isMoreRecent(than:) tests above cover the same last-writer-wins logic always-on, so CI still verifies it."
+        )
+    )
     func actorAppliesLastWriterWins() async throws {
         let (listener, identity) = try makeListener()
         defer { identity.removeFromKeychain() }

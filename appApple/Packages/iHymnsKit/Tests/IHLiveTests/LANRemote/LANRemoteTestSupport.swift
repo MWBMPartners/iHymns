@@ -95,3 +95,33 @@ func waitForCondition(
     }
     throw LANRemoteTestTimeoutError()
 }
+
+/// Whether THIS process can actually bridge a self-signed identity through
+/// the keychain — the precondition every test that builds a real
+/// `LANRemoteIdentity` / `TVListenerActor` implicitly needs.
+///
+/// ELI5: "Can this machine actually make a TV identity right now?" — yes on
+/// a normal dev Mac, no on the CI runner.
+///
+/// DETAILED: #1420. `LANRemoteIdentityFactory.generateSelfSigned()` adds a
+/// loose `SecKey` + `SecCertificate` under a shared label and then queries
+/// `kSecClassIdentity` to get them linked into a `SecIdentity`
+/// (`LANRemoteIdentity.swift`'s header comment explains why that Keychain
+/// round-trip is the only public route to a `SecIdentity`). On a headless,
+/// **unsigned** `swift test` binary (GitHub `macos-26` CI) the two `SecItemAdd`
+/// calls succeed but that final identity query returns
+/// `errSecItemNotFound` (-25300) — there is no login keychain to reconstruct
+/// the pair into an identity, and forcing the file-based keychain isn't an
+/// option because the same factory must run on iOS/tvOS (data-protection
+/// keychain only). This is an environment limitation of the entitlement-less
+/// test binary, **not** a code defect: the real signed tvOS app builds its
+/// identity fine, and a dev Mac with an unlocked login keychain runs these
+/// tests for real. Suites/tests that need a genuine identity gate on this so
+/// CI cleanly **skips** them instead of red-failing — the exact posture
+/// `LANRemoteLoopbackTests` takes for the Local Network permission it can't
+/// obtain. Cleans up the throwaway identity it probes with when it succeeds.
+func lanRemoteKeychainIdentityAvailable() -> Bool {
+    guard let identity = try? LANRemoteIdentityFactory.generateSelfSigned() else { return false }
+    identity.removeFromKeychain()
+    return true
+}
