@@ -14,7 +14,13 @@ import Foundation
 import Testing
 @testable import IHLive
 
-@Suite("LANRemoteIdentity generation")
+@Suite(
+    "LANRemoteIdentity generation",
+    .enabled(
+        if: lanRemoteKeychainIdentityAvailable(),
+        "Needs login-keychain SecIdentity bridging an unsigned headless `swift test` binary can't do — SecItemAdd succeeds but the kSecClassIdentity query returns errSecItemNotFound (-25300) on the CI runner. See lanRemoteKeychainIdentityAvailable(). The pure fingerprint math is covered always-on by LANRemoteFingerprintTests."
+    )
+)
 struct LANRemoteIdentityTests {
 
     @Test("Generates a well-formed 64-character lowercase-hex fingerprint")
