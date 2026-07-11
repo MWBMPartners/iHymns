@@ -2550,4 +2550,18 @@ return [
             } catch (\Throwable $_e) { return true; }
         },
     ],
+
+    'creditperson-maiden-surname' => [
+        'script' => 'migrate-add-creditperson-maiden-surname.php',
+        'card' => [
+            'title'  => 'Credit-person maiden surname (#1501)',
+            'body'   => 'Adds <code>tblCreditPeople.MaidenSurname</code> (VARCHAR(100), optional) '
+                      . 'so a curator can record a writer/composer&rsquo;s birth surname when it '
+                      . 'differs from the current <code>Surname</code> (#934), without touching the '
+                      . 'canonical <code>Name</code> the song-credit tables cite. Additive, '
+                      . 'idempotent — safe to re-run.',
+            'button' => 'Run Credit-Person Maiden Surname Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'MaidenSurname'),
+    ],
 ];

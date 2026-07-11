@@ -616,6 +616,57 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
     return $cached;
 }
 
+/**
+ * Cached check for the MaidenSurname column (#1501,
+ * migrate-add-creditperson-maiden-surname.php). Mirrors
+ * creditPeopleNamePartsColumnsExist()'s pattern exactly — the add /
+ * update_person save paths gate the write on this so a partly-migrated
+ * install still saves the rest of the record rather than throwing
+ * "Unknown column", and the list-load query gates the SELECT the same
+ * way (falls back to `NULL AS MaidenSurname`).
+ */
+function creditPeopleMaidenSurnameColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'MaidenSurname' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Persist MaidenSurname for a credit-person row, in a SEPARATE statement
+ * from the main multi-branch INSERT/UPDATE — mirrors the per-place
+ * BirthPlaceId/DeathPlaceId UPDATE pattern and creditPeopleSaveDatePrecision()
+ * below: the giant column-existence-branched INSERT/UPDATE shapes in
+ * credit-people.php don't need to learn a new branch for one more
+ * optional column. No-op (gated on creditPeopleMaidenSurnameColumnExists())
+ * on an un-migrated install — dormant-safe (#1501).
+ *
+ * @param int         $personId      tblCreditPeople.Id (insert_id on create).
+ * @param string|null $maidenSurname Trimmed value, or null to clear.
+ */
+function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSurname): void
+{
+    if ($personId <= 0) return;
+    if (!creditPeopleMaidenSurnameColumnExists($db)) return;
+    $stmt = $db->prepare('UPDATE tblCreditPeople SET MaidenSurname = ? WHERE Id = ?');
+    $stmt->bind_param('si', $maidenSurname, $personId);
+    $stmt->execute();
+    $stmt->close();
+}
+
 /* =========================================================================
  * PARTIAL BIRTH / DEATH DATES (precision flags)
  *

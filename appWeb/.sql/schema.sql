@@ -399,6 +399,7 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
        rows leave these NULL — only real individuals get split. */
     FirstNames      VARCHAR(255)    NULL,
     Surname         VARCHAR(255)    NULL,
+    MaidenSurname   VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional birth surname, when different from the current Surname (#1501)',
     Suffix          VARCHAR(64)     NULL,
     Notes           TEXT            NULL,
     BirthPlace      VARCHAR(255)    NULL,

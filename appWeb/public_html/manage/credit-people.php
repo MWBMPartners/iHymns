@@ -329,6 +329,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
                 $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
                 $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+                /* #1501 — optional Maiden Surname. Individuals only, same
+                   rule as the other structured-name parts above. */
+                $maidenSurnameRaw = cpTrimmed($_POST['maiden_surname'] ?? ''); // #trim
+                $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
@@ -456,6 +460,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        the per-place FKs above). No-op on an un-migrated
                        install; the date itself already landed in the INSERT. */
                     creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
+
+                    /* #1501 — optional Maiden Surname, same separate-
+                       statement / column-existence-gated pattern as the
+                       two writes above. No-op on an un-migrated install. */
+                    creditPeopleSaveMaidenSurname($db, $newId, $maidenSurname);
 
                     if ($links) {
                         $linkStmt = $db->prepare(
@@ -586,6 +595,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
                 $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
                 $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+                /* #1501 — optional Maiden Surname. Individuals only, same
+                   rule as the other structured-name parts above. */
+                $maidenSurnameRaw = cpTrimmed($_POST['maiden_surname'] ?? ''); // #trim
+                $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
@@ -676,6 +689,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        on the columns) so clearing a date also clears its
                        precision back to NULL. No-op on an un-migrated install. */
                     creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
+
+                    /* #1501 — optional Maiden Surname, written unconditionally
+                       (gated on the column) so clearing the field also clears
+                       the stored value back to NULL. No-op on an un-migrated
+                       install. */
+                    creditPeopleSaveMaidenSurname($db, $id, $maidenSurname);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
@@ -1212,6 +1231,15 @@ try {
         ? ', p.FirstNames, p.Surname, p.Suffix'
         : ', NULL AS FirstNames, NULL AS Surname, NULL AS Suffix';
 
+    /* #1501 — optional Maiden Surname. Same column-existence-gated
+       fallback as the name-parts trio above: a partly-migrated install
+       (migrate-add-creditperson-maiden-surname.php not yet run) surfaces
+       NULL and the field simply stays empty — dormant-safe. */
+    $hasMaidenSurname = creditPeopleMaidenSurnameColumnExists($db);
+    $maidenSurnameCol = $hasMaidenSurname
+        ? ', p.MaidenSurname'
+        : ', NULL AS MaidenSurname';
+
     /* Places registry FKs — present after migrate-places.php has
        landed. Surfaced to JS so the Edit drawer can pre-fill the
        hidden place-id inputs alongside the visible display string
@@ -1263,6 +1291,7 @@ try {
                (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'isni') AS ISNICount
                {$flagCols}
                {$namePartCols}
+               {$maidenSurnameCol}
                {$placeIdCols}
                {$datePrecisionCols}
                {$countryCols}
@@ -1439,6 +1468,9 @@ try {
         $byName[$name]['first_names'] = $r['FirstNames'] ?? null;
         $byName[$name]['surname']     = $r['Surname']    ?? null;
         $byName[$name]['suffix']      = $r['Suffix']     ?? null;
+        /* #1501 — optional Maiden Surname, same NULL-on-partly-migrated
+           fallback as the trio above. */
+        $byName[$name]['maiden_surname'] = $r['MaidenSurname'] ?? null;
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
@@ -1696,6 +1728,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 (string)$p['birth_place'],
                                 (string)$p['death_place'],
                                 (string)$p['notes'],
+                                /* #1501 — fold the maiden surname into the
+                                   search-match set (gated: naturally empty/
+                                   dropped by array_filter on an un-migrated
+                                   install or a row with none set) so "I
+                                   remember her under her birth surname"
+                                   finds the row, same spirit as the AKA/
+                                   alias haystack below. */
+                                (string)($p['maiden_surname'] ?? ''),
                             ])));
                             /* Embed the full person payload in a data
                                attribute so the Edit button can pre-fill
@@ -1730,6 +1770,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'adaptors'    => $adaptors,
                                 'translators' => $translators,
                                 'total'       => $p['total'],
+                                /* #1501 — optional Maiden Surname, so the Edit
+                                   drawer can pre-fill it. NULL on registry-only-
+                                   absent rows / partly-migrated installs (see
+                                   $hasMaidenSurname above). */
+                                'maiden_surname' => $p['maiden_surname'] ?? null,
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
                                 'isni'        => $p['isni'] ?? [],
@@ -2155,6 +2200,22 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="col-12">
                     <label class="form-label small mb-1" for="cp-drawer-surname">Surname</label>
                     <input type="text" class="form-control form-control-sm" id="cp-drawer-surname" name="surname" maxlength="255" placeholder="e.g. Alexander">
+                </div>
+                <!-- #1501 — optional Maiden Surname. A structured biographical
+                     fact (birth surname, when different from the current
+                     Surname above), distinct from the free-text AKA/Aliases
+                     'Maiden name' type further down — the two are
+                     complementary, not duplicates. Column-existence-gated
+                     server-side (dormant-safe pre-migration): the input
+                     always renders, matching the existing First name(s) /
+                     Surname / Suffix fields above, which follow the same
+                     "always show, no-op save until the migration runs"
+                     convention (#934). -->
+                <div class="col-12">
+                    <label class="form-label small mb-1" for="cp-drawer-maiden-surname">
+                        Maiden surname <span class="text-muted">(optional)</span>
+                    </label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-maiden-surname" name="maiden_surname" maxlength="100" placeholder="e.g. Humphreys">
                 </div>
             </div>
 
@@ -3134,6 +3195,10 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     surnameIn.value    = '';
                     suffixIn.value     = '';
                 }
+                /* #1501 — optional Maiden Surname pre-fill. No decompose
+                   fallback (unlike the trio above) — there's nothing to
+                   derive a birth surname FROM, it's either stored or not. */
+                document.getElementById('cp-drawer-maiden-surname').value = person.maiden_surname || '';
                 applyFlagLabels();
                 (person.links   || []).forEach(l => addLinkRow(l));
                 (person.ipi     || []).forEach(r => addIpiRow(r));
