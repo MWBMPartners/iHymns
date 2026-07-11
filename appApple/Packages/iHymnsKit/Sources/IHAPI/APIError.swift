@@ -74,3 +74,54 @@ public enum APIError: Error, Sendable, Equatable {
     /// drift, and worth logging loudly per strategy §1.5.
     case decoding
 }
+
+// MARK: - #1505 logging-safe descriptors
+//
+// `APIClient+Networking.swift`'s `IHLog.api.error(...)` retrofit (strategy
+// §2.2/§4) needs to name WHICH case failed and WHAT HTTP status it maps to,
+// without ever interpolating the raw `Error` value itself — `Equatable`'s
+// synthesized `String(describing:)` output for `.server`/`.maintenance`/
+// etc. would print their associated values too, and `.server`'s `message`
+// in particular can carry an arbitrary underlying transport error's
+// description (`performOnce`'s generic `catch` branch), which is exactly
+// the kind of "we didn't anticipate what's in there" payload strategy §4
+// says must never reach a log line, at any privacy level.
+extension APIError {
+    /// Just the case name (`"offline"`, `"maintenance"`, ...) — safe to log
+    /// at `.public` privacy. Associated values are deliberately excluded;
+    /// see this section's header comment.
+    var caseName: String {
+        switch self {
+        case .offline: return "offline"
+        case .maintenance: return "maintenance"
+        case .unauthorized: return "unauthorized"
+        case .accountLocked: return "accountLocked"
+        case .rateLimited: return "rateLimited"
+        case .server: return "server"
+        case .decoding: return "decoding"
+        }
+    }
+
+    /// The HTTP status this case corresponds to, mirroring
+    /// `APIClient.classify(httpStatus:retryAfterSeconds:)`'s mapping in
+    /// reverse — `nil` for `.offline` (the request never reached/returned
+    /// from the server at all) and `.decoding` (the HTTP layer succeeded;
+    /// only the body's shape was wrong). Safe to log at `.public` privacy:
+    /// a bare integer, never the response body it came with.
+    var httpStatusForLogging: Int? {
+        switch self {
+        case .offline, .decoding:
+            return nil
+        case .maintenance:
+            return 503
+        case .unauthorized:
+            return 401
+        case .accountLocked:
+            return 423
+        case .rateLimited:
+            return 429
+        case .server(let status, _):
+            return status
+        }
+    }
+}
