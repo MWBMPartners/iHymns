@@ -13276,6 +13276,7 @@ if ($action !== null) {
             $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
             $deact->bind_param('i', $userId);
             $deact->execute();
+            $superseded = $deact->affected_rows > 0;
             $deact->close();
 
             /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
@@ -13305,6 +13306,14 @@ if ($action !== null) {
                 }
             }
             if (!$inserted) { sendJson(['error' => 'Could not allocate a session code, please retry.'], 503); break; }
+
+            /* §3.2 breadcrumb — numeric Id only, never the SessionCode. */
+            $newSessionId = (int)$db->insert_id;
+            logActivity('live.session.create', 'live_session', (string)$newSessionId, [
+                'superseded'  => $superseded,
+                'has_setlist' => $setlistId !== null,
+                'has_song'    => $songId !== null,
+            ]);
 
             sendJson(['ok' => true, 'code' => $code, 'revision' => 0]);
             break;
@@ -13345,6 +13354,15 @@ if ($action !== null) {
             $chkSong->close();
             if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
 
+            /* §3.2 breadcrumb prep — resolve the numeric Id + the PRE-update
+               CurrentSongId so a genuine song change (vs a component-index-only
+               nudge) can be detected after the write; IDs only, never the code. */
+            $preSel = $db->prepare('SELECT Id, CurrentSongId FROM tblLiveFollowSessions WHERE SessionCode = ? AND HostUserId = ? AND IsActive = 1');
+            $preSel->bind_param('si', $code, $userId);
+            $preSel->execute();
+            $preRow = $preSel->get_result()->fetch_assoc();
+            $preSel->close();
+
             $upd = $db->prepare(
                 'UPDATE tblLiveFollowSessions
                     SET CurrentSongId = ?, CurrentComponentIndex = ?, StateJson = ?,
@@ -13358,6 +13376,10 @@ if ($action !== null) {
             $changed = $upd->affected_rows;
             $upd->close();
             if ($changed === 0) { sendJson(['ok' => false, 'error' => 'Session not found, not yours, or ended.'], 409); break; }
+
+            if ($preRow && (string)($preRow['CurrentSongId'] ?? '') !== (string)$songId) {
+                logActivity('live.broadcast.song', 'live_session', (string)$preRow['Id'], ['song_id' => $songId]);
+            }
 
             $sel = $db->prepare('SELECT StateRevision FROM tblLiveFollowSessions WHERE SessionCode = ? AND HostUserId = ?');
             $sel->bind_param('si', $code, $userId);
@@ -13421,10 +13443,23 @@ if ($action !== null) {
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['error' => 'Invalid session code.'], 400); break; }
 
             $db = getDbMysqli();
+
+            /* §3.2 breadcrumb prep — resolve the numeric Id before ending so the
+               log carries an id, never the SessionCode. */
+            $endSel = $db->prepare('SELECT Id FROM tblLiveFollowSessions WHERE SessionCode = ? AND HostUserId = ?');
+            $endSel->bind_param('si', $code, $userId);
+            $endSel->execute();
+            $endRow = $endSel->get_result()->fetch_assoc();
+            $endSel->close();
+
             $end = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE SessionCode = ? AND HostUserId = ?');
             $end->bind_param('si', $code, $userId);
             $end->execute();
             $end->close();
+
+            if ($endRow) {
+                logActivity('live.session.end', 'live_session', (string)$endRow['Id'], []);
+            }
 
             sendJson(['ok' => true]);
             break;
@@ -13455,7 +13490,7 @@ if ($action !== null) {
                with Service Mode; keep this literal in sync. #1386 */
             $channel = serviceMode_channel();
             $stmt = $db->prepare(
-                'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
+                'SELECT s.Id, s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
                         u.DisplayName AS HostName
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
@@ -13469,13 +13504,21 @@ if ($action !== null) {
 
             /* Identical message for missing / expired / wrong code so liveness
                can't be probed cheaply (combined with the rate limit). */
-            if (!$row) { sendJson(['ok' => false, 'error' => 'Session not found or ended.'], 404); break; }
+            if (!$row) {
+                /* §3.2 breadcrumb — no numeric id to log (nothing matched); the
+                   reason is generic on purpose (never the code, never "wrong
+                   code" vs "expired" — that would re-open the anti-probe leak). */
+                logActivity('live.session.join', 'live_session', '', ['reason' => 'not_found_or_stale'], 'failure');
+                sendJson(['ok' => false, 'error' => 'Session not found or ended.'], 404); break;
+            }
 
             /* Mint a per-follower token (16 random bytes → 32 hex chars). It is
                STATELESS — nothing is persisted server-side; it exists purely so
                the poll endpoint can bucket the rate limiter per follower instead
                of per shared NAT IP. The session CODE stays the access control. */
             $followToken = bin2hex(random_bytes(16));
+
+            logActivity('live.session.join', 'live_session', (string)$row['Id'], []);
 
             sendJson([
                 'ok'              => true,
@@ -13590,7 +13633,10 @@ if ($action !== null) {
 
             $canOperate = ($role === 'global_admin' || $role === 'admin')
                 || in_array($orgId, userIsOrgAdminOf($userId), true);
-            if (!$canOperate) { sendJson(['error' => 'Not authorised for this organisation.'], 403); break; }
+            if (!$canOperate) {
+                logActivity('service.session.start', 'organisation', (string)$orgId, ['reason' => 'not_authorised', 'venue_id' => $venueId], 'failure');
+                sendJson(['error' => 'Not authorised for this organisation.'], 403); break;
+            }
 
             /* Schedule (if given) must belong to the venue → start/duration/tz. */
             $startTime = '10:00:00'; $duration = 90; $schedTz = $venueTz; $scheduleIdN = null;
@@ -13616,6 +13662,7 @@ if ($action !== null) {
             );
             $deact->bind_param('sisi', $channel, $venueId, $occDate, $scheduleIdN);
             $deact->execute();
+            $superseded = $deact->affected_rows > 0;
             $deact->close();
 
             /* Insert the session (SessionKind=service; SessionCode is the spine's
@@ -13643,7 +13690,14 @@ if ($action !== null) {
             if ($newSessionId === 0) { sendJson(['error' => 'Could not start the session, please retry.'], 503); break; }
 
             $code = serviceMode_mintCode($db, $newSessionId);
-            logActivity('service.session.start', 'organisation', (string)$orgId, ['session_id' => $newSessionId, 'venue_id' => $venueId, 'channel' => $channel]);
+            logActivity('service.session.start', 'organisation', (string)$orgId, [
+                'session_id'       => $newSessionId,
+                'venue_id'         => $venueId,
+                'channel'          => $channel,
+                'schedule_id'      => $scheduleIdN,
+                'occurrence_date'  => $occDate,
+                'superseded'       => $superseded,
+            ]);
             sendJson(['ok' => true, 'sessionId' => $newSessionId, 'code' => $code, 'occurrenceEnd' => $endUtc]);
             break;
         }
@@ -13651,8 +13705,9 @@ if ($action !== null) {
         case 'service_code_rotate':
         case 'service_code_current':
         case 'service_session_end': {
-            $isRotate = ($action === 'service_code_rotate');
-            $isEnd    = ($action === 'service_session_end');
+            $isRotate  = ($action === 'service_code_rotate');
+            $isEnd     = ($action === 'service_session_end');
+            $isCurrent = ($action === 'service_code_current');
             if (($isRotate || $isEnd) && $_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
@@ -13676,12 +13731,32 @@ if ($action !== null) {
             $sstmt->execute();
             $sess = $sstmt->get_result()->fetch_assoc();
             $sstmt->close();
-            if (!$sess) { sendJson(['error' => 'Unknown session.'], 404); break; }
+            if (!$sess) {
+                /* §3.2 breadcrumb — failures only for rotate/current (the
+                   service_session_end 404 is unchanged, no entry requested).
+                   OrgId is unresolved (no matching session), so entityId is
+                   empty — the reason + session_id are the useful signal. */
+                if ($isRotate || $isCurrent) {
+                    logActivity(
+                        $isRotate ? 'service.code.rotate' : 'service.code.current',
+                        'organisation', '', ['session_id' => $sessionId, 'reason' => 'unknown_session'], 'failure'
+                    );
+                }
+                sendJson(['error' => 'Unknown session.'], 404); break;
+            }
             $orgId = (int)$sess['OrgId'];
             $canOperate = ($role === 'global_admin' || $role === 'admin')
                 || (int)$sess['HostUserId'] === $userId
                 || in_array($orgId, userIsOrgAdminOf($userId), true);
-            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+            if (!$canOperate) {
+                if ($isRotate || $isCurrent) {
+                    logActivity(
+                        $isRotate ? 'service.code.rotate' : 'service.code.current',
+                        'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure'
+                    );
+                }
+                sendJson(['error' => 'Not authorised.'], 403); break;
+            }
 
             if ($isEnd) {
                 $db->begin_transaction();
@@ -13699,7 +13774,10 @@ if ($action !== null) {
             }
 
             if ($isRotate) {
-                if ((int)$sess['IsActive'] !== 1) { sendJson(['error' => 'Session is not active.'], 409); break; }
+                if ((int)$sess['IsActive'] !== 1) {
+                    logActivity('service.code.rotate', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'session_not_active'], 'failure');
+                    sendJson(['error' => 'Session is not active.'], 409); break;
+                }
                 /* The rotate doubles as a heartbeat keeping the session fresh. */
                 $hb = $db->prepare('UPDATE tblLiveFollowSessions SET LastHeartbeatAt = UTC_TIMESTAMP() WHERE Id = ?');
                 $hb->bind_param('i', $sessionId); $hb->execute(); $hb->close();
@@ -13732,6 +13810,7 @@ if ($action !== null) {
                     $code = serviceMode_mintCode($db, $sessionId);
                     sendJson(['ok' => true, 'code' => $code]);
                 } else {
+                    logActivity('service.code.current', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'session_not_active'], 'failure');
                     sendJson(['ok' => false, 'error' => 'Session not active.'], 409);
                 }
                 break;
@@ -13770,17 +13849,26 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $channel = serviceMode_channel();
-            $sstmt = $db->prepare("SELECT OrgId, HostUserId FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1");
+            /* CurrentSongId added to the SELECT (§3.2) so a genuine song change
+               can be detected below without a second round-trip. */
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId, CurrentSongId FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1");
             $sstmt->bind_param('is', $sessionId, $channel);
             $sstmt->execute();
             $sess = $sstmt->get_result()->fetch_assoc();
             $sstmt->close();
-            if (!$sess) { sendJson(['error' => 'Unknown or ended session.'], 404); break; }
+            if (!$sess) {
+                /* OrgId is unresolved (no matching session) — entityId empty. */
+                logActivity('service.broadcast.song', 'organisation', '', ['session_id' => $sessionId, 'reason' => 'unknown_or_ended'], 'failure');
+                sendJson(['error' => 'Unknown or ended session.'], 404); break;
+            }
             $orgId = (int)$sess['OrgId'];
             $canOperate = ($role === 'global_admin' || $role === 'admin')
                 || (int)$sess['HostUserId'] === $userId
                 || in_array($orgId, userIsOrgAdminOf($userId), true);
-            if (!$canOperate) { sendJson(['error' => 'Not authorised.'], 403); break; }
+            if (!$canOperate) {
+                logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure');
+                sendJson(['error' => 'Not authorised.'], 403); break;
+            }
 
             if ($songId !== null) {
                 $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -13788,7 +13876,10 @@ if ($action !== null) {
                 $chk->execute();
                 $ok = $chk->get_result()->fetch_row() !== null;
                 $chk->close();
-                if (!$ok) { sendJson(['error' => 'Unknown song.'], 400); break; }
+                if (!$ok) {
+                    logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'unknown_song'], 'failure');
+                    sendJson(['error' => 'Unknown song.'], 400); break;
+                }
             }
 
             $upd = $db->prepare(
@@ -13805,6 +13896,12 @@ if ($action !== null) {
             $rev->execute();
             $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
             $rev->close();
+
+            /* §3.2 — song-change only, never on a component-index-only nudge. */
+            if ($songId !== null && (string)($sess['CurrentSongId'] ?? '') !== (string)$songId) {
+                logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'song_id' => $songId, 'channel' => $channel]);
+            }
+
             sendJson(['ok' => true, 'revision' => $revision]);
             break;
         }
@@ -13833,7 +13930,9 @@ if ($action !== null) {
             $channel = serviceMode_channel();
             $sess = serviceMode_resolveJoin($db, $code, $venueId, $channel);
             if (!$sess) {
-                /* Opaque — don't distinguish wrong/expired/unknown (anti-probe). */
+                /* Opaque — don't distinguish wrong/expired/unknown (anti-probe).
+                   §3.2 breadcrumb: OrgId is unresolved, never the code. */
+                logActivity('service.presence.join', 'organisation', '', ['reason' => 'code_not_active', 'channel' => $channel], 'failure');
                 sendJson(['ok' => false, 'error' => 'That code isn’t active. Check the screen and try again.'], 404);
                 break;
             }
@@ -13886,6 +13985,9 @@ if ($action !== null) {
             }
             $ins->execute();
             $ins->close();
+
+            /* §3.2 breadcrumb — never the presence device id, only ids/channel. */
+            logActivity('service.presence.join', 'organisation', $orgId !== null ? (string)$orgId : '', ['session_id' => $sessionId, 'channel' => $channel]);
 
             sendJson([
                 'ok' => true,
@@ -13962,11 +14064,29 @@ if ($action !== null) {
             $token = (string)(($body = json_decode(file_get_contents('php://input'), true)) && is_array($body) ? ($body['presenceToken'] ?? '') : '');
             if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['ok' => true]); break; }
             $db = getDbMysqli();
+
+            /* §3.2 breadcrumb prep — resolve session/org/channel from the
+               presence row BEFORE revoking; IDs only, never the token. */
+            $leaveSel = $db->prepare('SELECT SessionId, OrgId, Channel FROM tblServicePresence WHERE PresenceToken = ?');
+            $leaveSel->bind_param('s', $token);
+            $leaveSel->execute();
+            $leaveRow = $leaveSel->get_result()->fetch_assoc();
+            $leaveSel->close();
+
             /* Immediate gate revocation. */
             $upd = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE PresenceToken = ?');
             $upd->bind_param('s', $token);
             $upd->execute();
             $upd->close();
+
+            if ($leaveRow) {
+                $leaveOrgId = $leaveRow['OrgId'] !== null ? (string)(int)$leaveRow['OrgId'] : '';
+                logActivity('service.presence.leave', 'organisation', $leaveOrgId, [
+                    'session_id' => $leaveRow['SessionId'] !== null ? (int)$leaveRow['SessionId'] : null,
+                    'channel'    => (string)($leaveRow['Channel'] ?? ''),
+                ]);
+            }
+
             sendJson(['ok' => true]);
             break;
         }
