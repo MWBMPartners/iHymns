@@ -91,6 +91,28 @@ public struct SetlistsView: View {
             emptyView
         } else {
             List(rootViewModel.setlists) { setlist in
+                // `.swipeActions` is UNAVAILABLE on tvOS (D-1, #1504's
+                // tvOS-build gate) — no touch/swipe gesture there, so
+                // explicit, always-visible Rename/Delete buttons replace the
+                // two swipe actions instead of forking a second row view.
+                #if os(tvOS)
+                HStack {
+                    NavigationLink(value: setlist) {
+                        setlistRow(setlist)
+                    }
+                    Button {
+                        renameText = setlist.name
+                        renamingSetlist = setlist
+                    } label: {
+                        Label("Rename", systemImage: "pencil")
+                    }
+                    Button(role: .destructive) {
+                        Task { await rootViewModel.deleteSetlist(setlist.id) }
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                #else
                 NavigationLink(value: setlist) {
                     setlistRow(setlist)
                 }
@@ -110,6 +132,7 @@ public struct SetlistsView: View {
                     }
                     .tint(.orange)
                 }
+                #endif
             }
             .listStyle(.plain)
             // #185 — pull-to-refresh re-syncs setlists with the server (no

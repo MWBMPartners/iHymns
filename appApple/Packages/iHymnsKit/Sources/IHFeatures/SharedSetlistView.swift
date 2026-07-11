@@ -165,6 +165,10 @@ public struct SharedSetlistView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // `ShareLink`/`SharePreview` are UNAVAILABLE on tvOS (D-1, #1504's
+        // tvOS-build gate) — no share-sheet destination there, so the whole
+        // toolbar item is omitted rather than forking a second toolbar.
+        #if !os(tvOS)
         ToolbarItem(placement: .primaryAction) {
             if let shareURL = CanonicalURL.setlistShare(id: shareId) {
                 ShareLink(item: shareURL, preview: SharePreview(navigationTitleText)) {
@@ -172,6 +176,7 @@ public struct SharedSetlistView: View {
                 }
             }
         }
+        #endif
         ToolbarItem(placement: .primaryAction) {
             importButton
         }

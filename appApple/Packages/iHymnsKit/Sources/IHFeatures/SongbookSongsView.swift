@@ -51,6 +51,12 @@ struct SongbookSongsView: View {
                     }
                     .disabled(songsInBook.isEmpty)
                 }
+                // `ShareLink`/`SharePreview` are UNAVAILABLE on tvOS (D-1,
+                // #1504's tvOS-build gate) — there's no share-sheet
+                // destination on that platform, so the whole toolbar item
+                // is simply omitted there rather than forking a second
+                // toolbar.
+                #if !os(tvOS)
                 ToolbarItem(placement: .primaryAction) {
                     if let shareURL = CanonicalURL.songbook(abbreviation: songbook.id) {
                         ShareLink(item: shareURL, preview: SharePreview(songbook.name)) {
@@ -58,6 +64,7 @@ struct SongbookSongsView: View {
                         }
                     }
                 }
+                #endif
             }
             .sheet(isPresented: $isPresentingBulkSaveSheet) {
                 SongbookBulkSaveView(songbookName: songbook.name, songs: songsInBook, rootViewModel: rootViewModel)

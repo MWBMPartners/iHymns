@@ -84,6 +84,22 @@ public struct OfflineStorageView: View {
     private var savedSongsSection: some View {
         Section("Saved Songs") {
             ForEach(viewModel.savedSongs) { song in
+                // `.swipeActions` is UNAVAILABLE on tvOS (D-1, #1504's
+                // tvOS-build gate) — there's no touch/swipe gesture on that
+                // platform, so an explicit, always-visible destructive
+                // button replaces the swipe-revealed one there instead of
+                // forking a second row view.
+                #if os(tvOS)
+                HStack {
+                    savedSongRow(song)
+                    Spacer()
+                    Button(role: .destructive) {
+                        Task { await viewModel.remove(song.songId) }
+                    } label: {
+                        Label("Remove", systemImage: "trash")
+                    }
+                }
+                #else
                 savedSongRow(song)
                     .swipeActions(edge: .trailing) {
                         Button(role: .destructive) {
@@ -92,6 +108,7 @@ public struct OfflineStorageView: View {
                             Label("Remove", systemImage: "trash")
                         }
                     }
+                #endif
             }
         }
     }

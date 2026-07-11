@@ -156,6 +156,11 @@ struct SongDetailToolbarContent: ToolbarContent {
             .disabled(!isSignedIn)
             .help(isSignedIn ? "Add to Setlist" : "Sign in to use setlists.")
 
+            // `ShareLink`/`SharePreview` are UNAVAILABLE on tvOS (D-1,
+            // #1504's tvOS-build gate) — no share-sheet destination there,
+            // so the whole share affordance is omitted rather than forking
+            // a second toolbar.
+            #if !os(tvOS)
             if let shareURL {
                 if let shareTitle {
                     ShareLink(item: shareURL, preview: SharePreview(shareTitle)) {
@@ -167,6 +172,7 @@ struct SongDetailToolbarContent: ToolbarContent {
                     }
                 }
             }
+            #endif
         }
     }
 }

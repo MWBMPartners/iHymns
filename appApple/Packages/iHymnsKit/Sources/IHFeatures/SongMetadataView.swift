@@ -131,21 +131,37 @@ struct SongMetadataView: View {
     private var authorityIdsDisclosure: some View {
         let royaltyIds = detail.royaltyIds ?? []
         if !detail.ccli.isEmpty || !detail.iswc.isEmpty || !royaltyIds.isEmpty {
+            // `DisclosureGroup` is UNAVAILABLE on tvOS (D-1, #1504's
+            // tvOS-build gate) — shown always-expanded there instead of
+            // collapsible (a metadata footnote, not worth a bespoke
+            // expand/collapse affordance on a remote-driven focus UI).
+            #if os(tvOS)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Song Identifiers").font(.headline)
+                authorityIdsContent(royaltyIds: royaltyIds)
+            }
+            #else
             DisclosureGroup("Song Identifiers") {
-                VStack(alignment: .leading, spacing: 4) {
-                    if !detail.ccli.isEmpty {
-                        Text("CCLI SongSelect #: \(detail.ccli)")
-                    }
-                    if !detail.iswc.isEmpty {
-                        Text("ISWC: \(detail.iswc)")
-                    }
-                    ForEach(Array(royaltyIds.enumerated()), id: \.offset) { _, royaltyId in
-                        Text("\(royaltyId.authority): \(royaltyId.authorityId)")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                authorityIdsContent(royaltyIds: royaltyIds)
+            }
+            #endif
+        }
+    }
+
+    @ViewBuilder
+    private func authorityIdsContent(royaltyIds: [SongRoyaltyId]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !detail.ccli.isEmpty {
+                Text("CCLI SongSelect #: \(detail.ccli)")
+            }
+            if !detail.iswc.isEmpty {
+                Text("ISWC: \(detail.iswc)")
+            }
+            ForEach(Array(royaltyIds.enumerated()), id: \.offset) { _, royaltyId in
+                Text("\(royaltyId.authority): \(royaltyId.authorityId)")
             }
         }
+        .font(.caption)
+        .foregroundStyle(.secondary)
     }
 }
