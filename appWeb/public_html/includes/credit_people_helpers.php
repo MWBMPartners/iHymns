@@ -667,6 +667,99 @@ function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maid
     $stmt->close();
 }
 
+/**
+ * #1500 — merge-target candidate search. Replaces the old client-side
+ * "every registry + in-use-only name in one giant <select>" Merge-modal
+ * Target picker (unusable once the registry passed a few hundred rows)
+ * with a server-filtered, capped result set for a live-search typeahead.
+ *
+ * ELI5: the curator types a few letters of the name they want to merge
+ * INTO; this returns a short, relevant list instead of every person in
+ * the whole catalogue.
+ *
+ * DETAILED: returns the SAME two-source shape the legacy client-side
+ * `registry` array offered — registry rows (tblCreditPeople) first
+ * (alphabetical), then in-use-only names (cited on a song but with no
+ * registry row yet — the same 5-table UNION the page's own list-load
+ * query uses) filling any remaining slots up to $limit, ordered by
+ * usage. Each candidate carries the SAME "id:N" / "name:X" `key` shape
+ * the old <select> option values carried, so the client's submit-time
+ * routing (which hidden field gets the pick) is UNCHANGED. $excludeId /
+ * $excludeName keep the source out of its own target list (a source not
+ * yet in the registry has $excludeId = 0, so the NOT EXISTS + `<> ?`
+ * name filters below are what actually excludes it). Empty $q surfaces
+ * the most-used names first — same "useful before typing" convention as
+ * /manage/songbooks's compiler_search / parent_search.
+ *
+ * @return list<array{key:string,id:?int,name:string,total:int}>
+ */
+function searchCreditPersonMergeTargets(
+    \mysqli $db,
+    string  $q,
+    int     $excludeId,
+    string  $excludeName,
+    int     $limit
+): array {
+    $out  = [];
+    $like = '%' . $q . '%';
+
+    /* Registry rows first — alphabetical, matching the legacy dropdown's
+       ordering for the "definitely a real person" bucket. */
+    if ($q === '') {
+        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? ORDER BY Name ASC LIMIT ?');
+        $stmt->bind_param('ii', $excludeId, $limit);
+    } else {
+        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
+        $stmt->bind_param('isi', $excludeId, $like, $limit);
+    }
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $name = (string)$r['Name'];
+        if ($excludeName !== '' && $name === $excludeName) continue; // defensive; different id in practice
+        $out[] = ['key' => 'id:' . (int)$r['Id'], 'id' => (int)$r['Id'], 'name' => $name, 'total' => 0];
+    }
+
+    $remaining = $limit - count($out);
+    if ($remaining <= 0) return $out;
+
+    /* In-use-only names — cited on a song, no registry row yet. Same
+       5-table union the page's own list-load query (Q1) already runs on
+       every page load; NOT EXISTS keeps registry rows (already returned
+       above) out of this bucket so nothing is duplicated. */
+    $usageSql = "
+        SELECT u.Name, SUM(u.cnt) AS TotalUsage
+          FROM (
+              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+          ) u
+         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+           AND u.Name <> ?"
+        . ($q !== '' ? ' AND u.Name LIKE ?' : '') . "
+         GROUP BY u.Name
+         ORDER BY TotalUsage DESC, u.Name ASC
+         LIMIT ?
+    ";
+    $stmt = $db->prepare($usageSql);
+    if ($q !== '') {
+        $stmt->bind_param('ssi', $excludeName, $like, $remaining);
+    } else {
+        $stmt->bind_param('si', $excludeName, $remaining);
+    }
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $name = (string)$r['Name'];
+        $out[] = ['key' => 'name:' . $name, 'id' => null, 'name' => $name, 'total' => (int)$r['TotalUsage']];
+    }
+    return $out;
+}
+
 /* =========================================================================
  * PARTIAL BIRTH / DEATH DATES (precision flags)
  *

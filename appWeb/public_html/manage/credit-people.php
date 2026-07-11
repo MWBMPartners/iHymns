@@ -244,6 +244,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 }
 
 /* ----------------------------------------------------------------------
+ * GET endpoint — merge_target_search JSON typeahead (#1500)
+ *
+ * Replaces the old "every person in one giant <select>" Merge-modal
+ * Target picker, which stopped being usable once the registry grew past
+ * a few hundred rows (a long native <select> is slow to scroll and
+ * offers no real type-to-filter). Mirrors the <input> + <datalist> +
+ * debounced-GET pattern already proven on /manage/songbooks
+ * (parent_search / compiler_search): the client debounces keystrokes
+ * into this endpoint, rebuilds a <datalist>, and the curator either
+ * picks a suggestion or keeps typing something with no match — rejected
+ * at submit time (the Merge button stays disabled until a real pick
+ * resolves a key).
+ *
+ * GET ?action=merge_target_search&q=<text>&exclude_id=<id>&exclude_name=<name>&limit=<n>
+ *
+ * The query logic (registry rows + in-use-only names) lives in the
+ * shared searchCreditPersonMergeTargets() helper — see
+ * includes/credit_people_helpers.php — so it's testable independent of
+ * this dispatch block and reusable if another surface ever needs the
+ * same "pick a credit person" search.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'merge_target_search') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    $q           = trim((string)($_GET['q'] ?? ''));
+    $excludeId   = (int)($_GET['exclude_id'] ?? 0);
+    $excludeName = trim((string)($_GET['exclude_name'] ?? ''));
+    $limit       = max(1, min(30, (int)($_GET['limit'] ?? 20)));
+
+    try {
+        $db = getDbMysqli();
+        $candidates = searchCreditPersonMergeTargets($db, $q, $excludeId, $excludeName, $limit);
+        echo json_encode(['candidates' => $candidates], JSON_UNESCAPED_UNICODE);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] merge_target_search failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST dispatch
  *
  * All actions are CSRF-checked + entitlement-gated (the entitlement
@@ -2089,13 +2134,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             </div>
                             <div class="col-6">
                                 <label class="form-label small" for="cp-merge-target">Target (survives) <span class="text-danger">*</span></label>
-                                <!-- name omitted — the picked option's
-                                     value is an "id:N" / "name:X" key
-                                     that submit JS routes to either
-                                     target_id or target_name (#626). -->
-                                <select class="form-select form-select-sm" id="cp-merge-target" required>
-                                    <option value="">— pick the surviving person —</option>
-                                </select>
+                                <!-- #1500 — live-search typeahead (the same
+                                     <input> + <datalist> + debounced-GET
+                                     pattern /manage/songbooks already uses
+                                     for its parent-songbook / compiler
+                                     pickers) replacing the old <select>
+                                     that rendered every registry + in-use-
+                                     only name as an <option> — unusable
+                                     once the registry passed a few hundred
+                                     rows. #cp-merge-target-key resolves to
+                                     the SAME "id:N" / "name:X" key the old
+                                     <select> option values carried, so the
+                                     submit-time routing further down is
+                                     UNCHANGED (#626). Native <datalist> is
+                                     keyboard-accessible (arrow keys + Enter)
+                                     and inherits the admin theme via the
+                                     plain .form-control styling — no custom
+                                     widget needed. -->
+                                <input type="text" class="form-control form-control-sm" id="cp-merge-target"
+                                       list="cp-merge-target-datalist" autocomplete="off"
+                                       placeholder="Start typing a name…" required>
+                                <datalist id="cp-merge-target-datalist"></datalist>
+                                <input type="hidden" id="cp-merge-target-key" value="">
                             </div>
                         </div>
 
@@ -3442,9 +3502,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         })();
 
         /* =========================================================================
-           Merge modal — opens with the source row pre-set, populates
-           the target dropdown from every OTHER registry row, and
-           shows the source's links / IPI for migrate-or-drop selection.
+           Merge modal — opens with the source row pre-set, wires the
+           Target field to a server-driven live-search typeahead
+           (#1500 — ?action=merge_target_search, replacing the old
+           "every person in one <select>" picker), and shows the
+           source's links / IPI for migrate-or-drop selection.
            ========================================================================= */
         (function () {
             const modalEl = document.getElementById('cpMergeModal');
@@ -3452,7 +3514,15 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const modal      = bootstrap.Modal.getOrCreateInstance(modalEl);
             const sourceIdIn = document.getElementById('cp-merge-source-id');
             const sourceNameIn = document.getElementById('cp-merge-source-name');
-            const targetSel  = document.getElementById('cp-merge-target');
+            /* #1500 — live-search typeahead replacing the old
+               "every person in one <select>" Target picker. targetTxt is
+               the visible text box; targetKeyIn is the hidden field that
+               carries the resolved "id:N" / "name:X" key (same shape the
+               old <select> option values carried) once a suggestion is
+               picked or matched. */
+            const targetTxt      = document.getElementById('cp-merge-target');
+            const targetKeyIn    = document.getElementById('cp-merge-target-key');
+            const targetDatalist = document.getElementById('cp-merge-target-datalist');
             const childrenWrap = document.getElementById('cp-merge-children');
             const childrenEmpty = document.getElementById('cp-merge-children-empty');
             const linksBox   = document.getElementById('cp-merge-children-links');
@@ -3460,24 +3530,69 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const isniBoxMerge = document.getElementById('cp-merge-children-isni');
             const submitBtn  = document.getElementById('cp-merge-submit');
 
-            /* Build the all-people index once on page load (#626). Used
-               to populate the target dropdown excluding the source. The
-               index now includes in-use-only rows, not just registry
-               rows — the server auto-registers either side on submit
-               so the dropdown can offer any name. */
-            const registry = [];
-            document.querySelectorAll('#cp-tbody tr[data-person]').forEach(r => {
-                let p; try { p = JSON.parse(r.getAttribute('data-person')); } catch (_) { return; }
-                if (p.registry_id) {
-                    registry.push({ id: p.registry_id, name: p.name, key: 'id:' + p.registry_id });
-                } else if (p.total > 0) {
-                    /* In-use-only — the merge handler will INSERT IGNORE
-                       on submit. Encode the name as the option value so
-                       the form posts target_name when picked. */
-                    registry.push({ id: 0, name: p.name, key: 'name:' + p.name });
+            /* #1500 — server-driven target search. `currentExclude` holds
+               the OPEN merge's source id/name so every lookup() call
+               (debounced keystrokes + the on-open empty-query call) keeps
+               excluding the right source without re-threading it through
+               every call site. `labelToKey` maps each rendered <option>
+               label back to its "id:N" / "name:X" key — mirrors the
+               parent-songbook / compiler-picker typeahead pattern already
+               used on /manage/songbooks (same <input> + <datalist> +
+               debounced-GET shape), just against
+               ?action=merge_target_search instead of loading every
+               person into the DOM up front. */
+            let labelToKey = new Map();
+            let targetInflight = null;
+            let targetDebounce  = null;
+            const currentExclude = { id: 0, name: '' };
+
+            function targetLookup(query) {
+                if (targetInflight) targetInflight.abort();
+                const ac = new AbortController();
+                targetInflight = ac;
+                const url = '/manage/credit-people?action=merge_target_search'
+                          + '&q=' + encodeURIComponent(query)
+                          + '&exclude_id=' + encodeURIComponent(currentExclude.id)
+                          + '&exclude_name=' + encodeURIComponent(currentExclude.name)
+                          + '&limit=20';
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then(r => r.ok ? r.json() : { candidates: [] })
+                    .then(data => {
+                        const list = Array.isArray(data.candidates) ? data.candidates : [];
+                        labelToKey = new Map();
+                        targetDatalist.innerHTML = list.map(c => {
+                            const label = c.name + (c.id ? '' : ' (not yet in registry)');
+                            labelToKey.set(label, c.key);
+                            return '<option value="' + label.replace(/"/g, '&quot;') + '"></option>';
+                        }).join('');
+                    })
+                    .catch(err => { if (err.name !== 'AbortError') { /* silent — search is a nicety, not critical path */ } });
+            }
+
+            targetTxt?.addEventListener('input', () => {
+                const v = targetTxt.value;
+                /* Picked-from-datalist sync: an exact label match means
+                   the curator selected (or typed exactly) one of the
+                   suggestions, so commit its key to the hidden field —
+                   mirrors the parent-songbook typeahead's "picked" sync.
+                   Anything else clears the key so the Merge button can't
+                   enable on a half-typed, unresolved name (#583's
+                   irreversible-merge guard depends on a REAL target). */
+                targetKeyIn.value = labelToKey.get(v) || '';
+                refreshSubmitState();
+                if (v.trim() === '') {
+                    targetDatalist.innerHTML = '';
+                    return;
                 }
+                clearTimeout(targetDebounce);
+                targetDebounce = setTimeout(() => targetLookup(v.trim()), 200);
             });
-            registry.sort((a, b) => a.name.localeCompare(b.name));
+            targetTxt?.addEventListener('focus', () => {
+                /* Empty-query lookup on focus — surfaces the most-used
+                   candidates immediately, same convention as the
+                   songbooks parent-search typeahead. */
+                targetLookup(targetTxt.value.trim());
+            });
 
             document.addEventListener('click', (ev) => {
                 const btn = ev.target.closest('.cp-merge-btn');
@@ -3515,21 +3630,18 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     previewWrap.classList.remove('d-none');
                 }
 
-                /* Populate target dropdown — every name except the
-                   source itself. The option `value` is the same `key`
-                   that distinguishes id-vs-name (e.g. "id:42" or
-                   "name:Stuart Townend") so the submit handler can
-                   route the right field to the server. Sorted
-                   alphabetically. */
-                targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
-                registry.forEach(p => {
-                    if (p.id && p.id === person.registry_id) return;
-                    if (!p.id && p.name === person.name)     return;
-                    const opt = document.createElement('option');
-                    opt.value = p.key;
-                    opt.textContent = p.name + (p.id ? '' : ' (not yet in registry)');
-                    targetSel.appendChild(opt);
-                });
+                /* #1500 — reset the target typeahead for this merge and
+                   remember who to exclude from its own suggestion list.
+                   currentExclude.id = 0 for an in-use-only source (there's
+                   no registry row to exclude by id yet) — the server-side
+                   `u.Name <> ?` / registry-row Name comparison is what
+                   actually keeps a not-yet-registered source out of its
+                   own target list in that case. */
+                currentExclude.id   = person.registry_id || 0;
+                currentExclude.name = person.name || '';
+                targetTxt.value      = '';
+                targetKeyIn.value    = '';
+                targetDatalist.innerHTML = '';
 
                 /* Source children — render each link + IPI + ISNI as a
                    checkbox row (default checked = keep on target). IPI
@@ -3608,25 +3720,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 modal.show();
             });
 
-            /* Submit button enables only when BOTH a target is picked
-               AND the irreversibility ack is ticked (#583). */
+            /* Submit button enables only when BOTH a target is RESOLVED
+               (targetKeyIn carries a real "id:N"/"name:X" key — i.e. the
+               curator picked or exactly matched a suggestion, not just
+               typed something) AND the irreversibility ack is ticked
+               (#583). #1500 — targetKeyIn.value is set inline by the
+               `input` listener above (setting .value programmatically
+               doesn't fire 'input'/'change', so this is called directly
+               there rather than via a listener on the hidden field). */
             const confirmCb = document.getElementById('cp-merge-confirm');
             function refreshSubmitState() {
-                const targetPicked = targetSel?.value !== '';
+                const targetPicked = targetKeyIn?.value !== '';
                 const acknowledged = !!confirmCb?.checked;
                 submitBtn.disabled = !(targetPicked && acknowledged);
             }
-            targetSel?.addEventListener('change', () => {
-                refreshSubmitState();
-            });
             confirmCb?.addEventListener('change', refreshSubmitState);
 
-            /* On submit, translate the picked option's key into the
-               correct hidden field (#626). The select carries
-               "id:N" for registry rows and "name:X" for in-use-only
-               rows; the server handler accepts either. */
+            /* On submit, translate the resolved key into the correct
+               hidden field (#626 contract, unchanged by #1500). The key
+               carries "id:N" for registry rows and "name:X" for in-use-
+               only rows; the server handler accepts either. */
             modalEl.querySelector('form')?.addEventListener('submit', () => {
-                const picked = targetSel?.value || '';
+                const picked = targetKeyIn?.value || '';
                 const idHidden   = document.getElementById('cp-merge-target-id-hidden');
                 const nameHidden = document.getElementById('cp-merge-target-name-hidden');
                 if (idHidden)   idHidden.value   = '';
