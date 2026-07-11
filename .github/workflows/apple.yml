@@ -75,3 +75,13 @@ jobs:
             -destination 'platform=macOS,arch=arm64' \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: Build (tvOS Simulator destination — proves the projection shell, #1504)
+        working-directory: appApple
+        run: |
+          xcodebuild \
+            -project iHymns.xcodeproj \
+            -scheme iHymnsTV \
+            -destination 'generic/platform=tvOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build

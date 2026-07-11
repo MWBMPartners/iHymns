@@ -97,7 +97,13 @@ public struct SetlistCatalogueBrowserView: View {
             }
         }
         .buttonStyle(.plain)
+        // `.draggable` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
+        // gate) — no drag-and-drop concept there; the Button's own tap
+        // action (`onAdd`) is already the tvOS-reachable "add to setlist"
+        // affordance regardless.
+        #if !os(tvOS)
         .draggable(song.songId.rawValue)
+        #endif
     }
 
     /// Case-insensitive substring match against title/songbook/number — see

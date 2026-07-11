@@ -55,6 +55,23 @@ public struct FavoritesView: View {
             emptyView
         } else {
             List(rootViewModel.favorites) { favorite in
+                // `.swipeActions` is UNAVAILABLE on tvOS (D-1, #1504's
+                // tvOS-build gate) — there's no touch/swipe gesture on that
+                // platform, so an explicit, always-visible destructive
+                // button replaces the swipe-revealed one there instead of
+                // forking a second row view.
+                #if os(tvOS)
+                HStack {
+                    NavigationLink(value: favorite.songId) {
+                        SongSummaryRow(displaySummary(for: favorite))
+                    }
+                    Button(role: .destructive) {
+                        Task { await remove(favorite) }
+                    } label: {
+                        Label("Remove", systemImage: "heart.slash")
+                    }
+                }
+                #else
                 NavigationLink(value: favorite.songId) {
                     SongSummaryRow(displaySummary(for: favorite))
                 }
@@ -65,6 +82,7 @@ public struct FavoritesView: View {
                         Label("Remove", systemImage: "heart.slash")
                     }
                 }
+                #endif
             }
             .listStyle(.plain)
             // #185 — pull-to-refresh re-syncs favourites with the server

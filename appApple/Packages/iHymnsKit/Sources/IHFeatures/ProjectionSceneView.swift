@@ -142,7 +142,13 @@ public struct ProjectionSceneView: View {
                 }
                 .buttonStyle(.plain)
             }
+            // `.scrollContentBackground` is unavailable on tvOS (D-1,
+            // #1504) — its `List` already renders on a transparent/focus-
+            // engine-driven background there, so hiding the default
+            // background is only meaningful (and only compiles) elsewhere.
+            #if !os(tvOS)
             .scrollContentBackground(.hidden)
+            #endif
         }
         .padding()
         .background(.black.opacity(0.85))

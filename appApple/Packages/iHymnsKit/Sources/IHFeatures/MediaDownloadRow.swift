@@ -74,11 +74,25 @@ struct MediaDownloadControl: View {
             // LOCAL file (never the original remote `url`) — see
             // `MediaDownloadRow`'s header for why a local file, not a remote
             // URL, is what makes "Save to Files"/"open in…" actually work.
+            //
+            // `ShareLink` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
+            // gate — the `iHymnsTV` shell reaches this same shared
+            // `IHFeatures` code even though its browse tabs never render a
+            // media list today) — there's no Files app/share-sheet
+            // destination on that platform, so a plain "downloaded"
+            // confirmation replaces the share affordance there instead of
+            // forking a second row view.
+            #if os(tvOS)
+            Label("Downloaded \(asset.fileName)", systemImage: "checkmark.circle")
+                .labelStyle(.iconOnly)
+                .foregroundStyle(IHColorTokens.accent)
+            #else
             ShareLink(item: localURL) {
                 Label("Share \(asset.fileName)", systemImage: "square.and.arrow.up")
                     .labelStyle(.iconOnly)
             }
             .foregroundStyle(IHColorTokens.accent)
+            #endif
 
         case .error(let message):
             downloadButton(

@@ -67,12 +67,26 @@ public struct SongPagerView: View {
     }
 
     public var body: some View {
+        // `DragGesture` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
+        // gate) — the Siri Remote reports swipes as `.onMoveCommand`, an
+        // entirely different mechanism this view isn't wired to, so the
+        // swipe gesture is dropped there; the toolbar Previous/Next buttons
+        // below (focusable via the remote) remain the tvOS-reachable
+        // paging affordance.
+        #if os(tvOS)
+        SongDetailView(songId: currentSongId, rootViewModel: rootViewModel)
+            .id(currentSongId)
+            .transition(pageTransition)
+            .animation(.snappy(duration: 0.3), value: currentSongId)
+            .toolbar { pagerToolbar }
+        #else
         SongDetailView(songId: currentSongId, rootViewModel: rootViewModel)
             .id(currentSongId)
             .transition(pageTransition)
             .animation(.snappy(duration: 0.3), value: currentSongId)
             .simultaneousGesture(swipeGesture)
             .toolbar { pagerToolbar }
+        #endif
     }
 
     // MARK: - Paging
@@ -113,6 +127,11 @@ public struct SongPagerView: View {
 
     // MARK: - Swipe gesture
 
+    // `DragGesture` itself (the whole TYPE, not just this usage) is
+    // UNAVAILABLE on tvOS (D-1, #1504) — this property is entirely absent
+    // from a tvOS compile, matching `body`'s own `#if os(tvOS)` branch above
+    // (which never references it there).
+    #if !os(tvOS)
     /// `.onEnded`-only (never tracks `.onChanged`) — this view never
     /// repositions anything mid-drag, so there's nothing for it to fight
     /// the descendant `ScrollView` over; it just reads the FINAL
@@ -135,6 +154,7 @@ public struct SongPagerView: View {
                 }
             }
     }
+    #endif
 
     // MARK: - Toolbar
 
@@ -155,7 +175,12 @@ public struct SongPagerView: View {
                 Label("Previous Song", systemImage: "chevron.left")
             }
             .disabled(!hasPrevious)
+            // `.keyboardShortcut` is UNAVAILABLE on tvOS (D-1, #1504) — no
+            // physical keyboard concept there; the button itself stays
+            // focusable/selectable via the Siri Remote regardless.
+            #if !os(tvOS)
             .keyboardShortcut(.leftArrow, modifiers: [])
+            #endif
             .help("Previous Song")
 
             Button {
@@ -164,7 +189,9 @@ public struct SongPagerView: View {
                 Label("Next Song", systemImage: "chevron.right")
             }
             .disabled(!hasNext)
+            #if !os(tvOS)
             .keyboardShortcut(.rightArrow, modifiers: [])
+            #endif
             .help("Next Song")
         }
     }

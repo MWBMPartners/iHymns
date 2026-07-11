@@ -152,6 +152,22 @@ public struct SetlistDetailView: View {
                 // this SAME array-index space, so it's consistent
                 // end-to-end even with a duplicate present.
                 ForEach(Array(setlist.songs.enumerated()), id: \.offset) { _, entry in
+                    // `.swipeActions` is UNAVAILABLE on tvOS (D-1, #1504's
+                    // tvOS-build gate) — no touch/swipe gesture there, so an
+                    // explicit, always-visible destructive button replaces
+                    // the swipe-revealed one instead of forking a second row.
+                    #if os(tvOS)
+                    HStack {
+                        NavigationLink(value: SongPagerRequest(songId: entry.songId, context: context)) {
+                            SongSummaryRow(entry.summary)
+                        }
+                        Button(role: .destructive) {
+                            Task { await rootViewModel.removeSong(songId: entry.songId, from: setlistId) }
+                        } label: {
+                            Label("Remove", systemImage: "minus.circle")
+                        }
+                    }
+                    #else
                     NavigationLink(value: SongPagerRequest(songId: entry.songId, context: context)) {
                         SongSummaryRow(entry.summary)
                     }
@@ -162,15 +178,22 @@ public struct SetlistDetailView: View {
                             Label("Remove", systemImage: "minus.circle")
                         }
                     }
+                    #endif
                 }
                 .onMove { offsets, destination in
                     Task { await rootViewModel.moveSongs(in: setlistId, fromOffsets: offsets, toOffset: destination) }
                 }
             }
             .listStyle(.plain)
+            // `.dropDestination` is UNAVAILABLE on tvOS (D-1, #1504) — its
+            // counterpart `.draggable` on `SetlistCatalogueBrowserView`'s row
+            // is ALSO tvOS-omitted, so nothing would ever drag INTO this
+            // drop target there anyway.
+            #if !os(tvOS)
             .dropDestination(for: String.self) { droppedIds, _ in
                 return handleDrop(droppedIds, into: setlist)
             }
+            #endif
         }
     }
 
@@ -263,9 +286,20 @@ public struct SetlistDetailView: View {
         if isPreparingShare {
             ProgressView()
         } else if let shareResult, let url = shareResult.canonicalURL {
+            // `ShareLink` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
+            // gate) — no share-sheet destination on that platform; the link
+            // has already been minted server-side, so the URL itself is
+            // shown as plain text there instead of forking a second toolbar.
+            #if os(tvOS)
+            Text(url.absoluteString)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            #else
             ShareLink(item: url) {
                 Label("Share", systemImage: "square.and.arrow.up")
             }
+            #endif
         } else {
             Button {
                 Task { await prepareShare() }

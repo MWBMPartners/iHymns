@@ -49,6 +49,10 @@ public struct CreditPersonDetailView: View {
         }
         .navigationTitle(navigationTitleText)
         .task { await viewModel.loadIfNeeded() }
+        // `ShareLink` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
+        // gate) — no share-sheet destination on that platform, so the
+        // whole toolbar is omitted there rather than forking a second one.
+        #if !os(tvOS)
         .toolbar {
             if let shareURL {
                 ToolbarItem(placement: .primaryAction) {
@@ -56,6 +60,7 @@ public struct CreditPersonDetailView: View {
                 }
             }
         }
+        #endif
     }
 
     private var navigationTitleText: String {
