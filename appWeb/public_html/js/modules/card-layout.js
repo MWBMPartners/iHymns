@@ -68,7 +68,7 @@ async function postLayout(action, surface, payload) {
     const body = JSON.stringify({ surface, ...payload });
     const res = await fetch(`/api?action=${action}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body,
         credentials: 'same-origin',
     });

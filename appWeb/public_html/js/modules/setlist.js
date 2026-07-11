@@ -1885,7 +1885,7 @@ export class SetList {
             }
             fetch('/api?action=setlist_schedule_set', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
                 body: JSON.stringify({
                     setlistId: listId,
@@ -1914,7 +1914,7 @@ export class SetList {
             clearBtn.addEventListener('click', () => {
                 fetch('/api?action=setlist_schedule_clear', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                     credentials: 'same-origin',
                     body: JSON.stringify({ setlistId: listId }),
                 })
@@ -1988,7 +1988,7 @@ export class SetList {
                         btn.addEventListener('click', () => {
                             fetch('/api?action=setlist_collab_remove', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                                 credentials: 'same-origin',
                                 body: JSON.stringify({
                                     setlistId: listId,
@@ -2015,7 +2015,7 @@ export class SetList {
             const permission = (prompt('Permission: "view" or "edit"?', 'edit') || 'edit').trim().toLowerCase();
             fetch('/api?action=setlist_collab_invite', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
                 body: JSON.stringify({
                     setlistId: listId,
