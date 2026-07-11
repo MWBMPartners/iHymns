@@ -16,12 +16,23 @@
 // rule and stay consistent with the other shells — see `IHymnsApp.swift`'s
 // header comment for the full rationale.
 //
-// #1412 UPDATE — this shell still renders only `PhaseZeroSkeletonView` (no
-// lyric text yet), but it already depends on `IHDesign` here, so
-// `IHFonts.registerBundledFonts()` is wired in now (a trivial `init()`
-// call) rather than left as a follow-up someone has to remember when the
-// real tvOS lyric-projection screen (strategy §2.2) eventually lands — see
+// #1412 UPDATE — `IHFonts.registerBundledFonts()` is wired in from `init()`
+// (a trivial call) rather than left as a follow-up someone has to remember
+// when the real tvOS lyric-projection screen eventually lands — see
 // `IHymnsApp.swift`'s matching `init()` for the full rationale.
+//
+// #1504 UPDATE (Apple Phase-2 PR-5, `.claude/apple-phase2-pr5-spec.md`
+// §4.4) — that "eventually" is now: the `PhaseZeroSkeletonView` placeholder
+// is replaced with `TVRootView`, the real projection shell (strategy §2.2's
+// Project/Songbooks/Search tab set). Builds the ONE `AppRootViewModel` this
+// app run uses via `AppRootViewModel.makeLive(environment:)`, copying
+// `IHymnsApp.swift`'s EXACT environment expression
+// (`IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild`) rather
+// than re-deriving it, so a Debug tvOS build and a Debug iOS/Mac build
+// resolve to the identical default (`.defaultForBuild`) and both honour
+// the SAME Settings → Developer override the moment tvOS grows a Settings
+// screen (PR-6+).
+import IHAPI
 import IHDesign
 import IHFeatures
 import SwiftUI
@@ -32,11 +43,16 @@ struct IHymnsTVApp: App {
         IHFonts.registerBundledFonts()
     }
 
+    /// Built once via `@State`'s default-value expression, exactly like
+    /// `IHymnsApp.swift`'s own `rootViewModel` — see that file's header for
+    /// why the environment is read once at launch, not re-checked live.
+    @State private var rootViewModel = AppRootViewModel.makeLive(
+        environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
+    )
+
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                PhaseZeroSkeletonView(shellName: "tvOS")
-            }
+            TVRootView(viewModel: rootViewModel)
         }
     }
 }
