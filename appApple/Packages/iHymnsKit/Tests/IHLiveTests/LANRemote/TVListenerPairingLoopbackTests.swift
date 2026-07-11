@@ -76,11 +76,12 @@ struct TVListenerPairingLoopbackTests {
     private func makeListener(
         maxUnpaired: Int = 4,
         pairingAuthority: any LANRemotePairingAuthority = InMemoryLANRemotePairingAuthority(),
-        clock: any LANRemoteClock = ManualLANRemoteClock()
+        clock: any LANRemoteClock = ManualLANRemoteClock(),
+        pairingConfiguration: LANRemotePairingCeremonyState.Configuration = .init()
     ) async throws -> (TVListenerActor, LANRemoteIdentity) {
         // `KeychainTestSerialization` (`LANRemoteTestSupport.swift`) — every
         // test in this suite calls `generateSelfSigned()`, and this suite's
-        // 6 tests run CONCURRENTLY by default; wrapping just the identity
+        // tests run CONCURRENTLY by default; wrapping just the identity
         // generation (not the whole test body, which is mostly network
         // I/O that doesn't touch the Keychain) is enough to eliminate the
         // SAME transient contention documented there.
@@ -92,7 +93,8 @@ struct TVListenerPairingLoopbackTests {
             advertiseViaBonjour: false,
             maxUnpairedConnections: maxUnpaired,
             pairingAuthority: pairingAuthority,
-            clock: clock
+            clock: clock,
+            pairingConfiguration: pairingConfiguration
         )
         let listener = TVListenerActor(identity: identity, configuration: config)
         try await listener.start()
@@ -305,6 +307,50 @@ struct TVListenerPairingLoopbackTests {
         #expect(await remote.remote.phase.isConnected)
 
         await remote.remote.disconnect()
+        await listener.stop()
+    }
+
+    // MARK: - Cumulative brute-force ceiling: the WHOLE ceremony disarms
+
+    // Post-#1421 adversarial-review brute-force fix (spec §8): a low ceiling
+    // (3), reachable inside ONE connection's own 3-attempt cap, proves the
+    // exhaustion path without staging 15 real guesses across many connections.
+    @Test("Reaching the cumulative per-ceremony failure ceiling disarms the ceremony (.ceremonyExhausted); even the correct code then fails")
+    func cumulativeCeilingDisarmsCeremony() async throws {
+        let (listener, identity) = try await makeListener(pairingConfiguration: .init(maxCeremonyFailures: 3))
+        defer { identity.removeFromKeychain() }
+        guard let port = await listener.boundPort else {
+            Issue.record("listener never bound a port")
+            return
+        }
+
+        let code = await listener.beginPairing()
+        let remote = PairingTestRemote()
+        let nonce = try await remote.connectAndAwaitChallenge(to: hostPortEndpoint(port: port), expectedFingerprint: identity.fingerprint)
+
+        // 3 wrong proofs on one connection — the 3rd reaches the cumulative
+        // ceiling and disarms the ENTIRE ceremony (all within the 3/connection cap).
+        for _ in 0..<3 {
+            try await remote.sendPairConfirm(code: code, fingerprintHex: identity.fingerprint, nonce: nonce, invalidProof: true)
+            let reply = try await waitFor(remote.remote.incomingMessages) { if case .error = $0.message { true } else { false } }
+            guard case .error(let errorCode, _) = reply.message else { Issue.record("expected .error"); return }
+            #expect(errorCode == .pairingRejected)
+        }
+
+        _ = try await waitFor(listener.pairingEvents) { if case .ceremonyExhausted = $0 { true } else { false } }
+        #expect(await listener.activePairingCode == nil)   // disarmed, not merely rotated
+
+        // A FRESH connection presenting the ORIGINAL code is now rejected too —
+        // the ceremony is DEAD until the operator re-opens pairing.
+        let remote2 = PairingTestRemote()
+        let nonce2 = try await remote2.connectAndAwaitChallenge(to: hostPortEndpoint(port: port), expectedFingerprint: identity.fingerprint)
+        try await remote2.sendPairConfirm(code: code, fingerprintHex: identity.fingerprint, nonce: nonce2)
+        let reply2 = try await waitFor(remote2.remote.incomingMessages) { if case .error = $0.message { true } else { false } }
+        guard case .error(let exhaustedCode, _) = reply2.message else { Issue.record("expected .error after exhaustion"); return }
+        #expect(exhaustedCode == .pairingRejected)
+
+        await remote.remote.disconnect()
+        await remote2.remote.disconnect()
         await listener.stop()
     }
 

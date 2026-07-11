@@ -151,21 +151,28 @@ public struct LANRemotePairingCeremonyState: Sendable, Equatable {
         public var codeTTL: TimeInterval = 120          // strategy §2.4.3 "Code TTL 2min"
         public var rotateAfterFailures: Int = 5         // "5 fails→rotate" — per CODE, global
         public var maxAttemptsPerConnection: Int = 3    // per-CONNECTION cap before teardown
+        public var maxCeremonyFailures: Int = 15        // ★ POST-REVIEW FIX (see §8): CUMULATIVE
+                                                        //   ceiling across ALL rotations → disarm
         public init()
     }
     public private(set) var activeCode: String?     // nil = ceremony not running / code consumed
     public private(set) var mintedAt: Date?
-    public private(set) var wrongAttempts: Int      // per-code, reset on begin/rotate
+    public private(set) var wrongAttempts: Int      // per-code, reset on begin AND rotate
+    public private(set) var ceremonyFailures: Int   // ★ cumulative; reset ONLY on begin, NOT rotate
     public let configuration: Configuration
 
     public init(configuration: Configuration = .init())
     public func isActive(now: Date) -> Bool         // activeCode != nil && now < mintedAt+codeTTL
-    public mutating func begin(code: String, now: Date)       // (re)arm; resets wrongAttempts
+    public mutating func begin(code: String, now: Date)       // NEW ceremony; resets BOTH counters
+    public mutating func rotate(code: String, now: Date)      // ★ mid-ceremony; resets only wrongAttempts
     public mutating func end()                                 // disarm entirely
     public mutating func consume()                             // single-use: success clears activeCode
-    /// Records one wrong proof. Returns true when wrongAttempts has reached
-    /// rotateAfterFailures — the OWNER must mint+begin a fresh code (rotation).
-    public mutating func recordFailure() -> Bool
+    /// Records one wrong proof (advances BOTH counters). Returns a FailureOutcome:
+    /// .exhausted (cumulative ceiling hit → OWNER end()s the ceremony) takes
+    /// precedence over .rotate (per-code threshold → OWNER mints+rotate()s a
+    /// fresh code) over .recorded (keep going). ★ POST-REVIEW: was `-> Bool`.
+    public enum FailureOutcome: Sendable, Equatable { case recorded, rotate, exhausted }
+    public mutating func recordFailure() -> FailureOutcome
 }
 ```
 Pure (no clock reads, no RNG, no I/O) — `now` and `code` always injected, exactly the `LiveFollowEngine.isFresh(lastUpdatedAt:now:)` seam precedent. An EXPIRED code (`!isActive(now:)`) is treated by the verify path identically to "no ceremony running" — reject without counting toward rotation (an attacker must not be able to farm rotations against a dead code).
@@ -448,7 +455,7 @@ Local pre-PR verification (builder runs all): `swift test` in `appApple/Packages
 | Threat | Mitigation (mechanism, in THIS PR) | Residual |
 |---|---|---|
 | **MITM / relay during pairing** (attacker terminates TLS between remote and TV) | QR path: fingerprint pinned out-of-band → PR-4's `verify_block` rejects at handshake. Manual-code path: the proof HMACs the fingerprint the remote actually observed (§3.2) — the attacker cannot present the TV's cert, so a relayed proof binds to the WRONG fingerprint and the TV's constant-time verify rejects it. | An attacker who physically swaps the venue's displayed QR pairs the remote with the ATTACKER's device (never grants access to the real TV). Physical-space attack, out of scope; the operator sees no "Paired" banner — noted in Settings copy. |
-| **Brute-force of the 6-digit code** | Online-only (the proof exists solely inside TLS; never logged, never persisted): 3 proof attempts per connection → teardown; 4 concurrent unpaired connections (PR-4 cap); 5 wrong proofs per code → rotation; 120 s TTL; single-use; ceremony exists ONLY while the operator has the overlay open. Worst case ≤5 guesses against 10⁶ ⇒ ≤0.0005% per ceremony. | The code is knowledge-limited, not entropy-limited, by design (10-foot readability). An operator who leaves the overlay open indefinitely re-arms rotation windows — TTL auto-rotation bounds each code to 2 min regardless. |
+| **Brute-force of the 6-digit code** | Online-only (the proof exists solely inside TLS; never logged, never persisted): 3 proof attempts per connection → teardown; 4 concurrent unpaired connections (PR-4 cap); 5 wrong proofs per code → rotation; **★ POST-REVIEW FIX — a CUMULATIVE `maxCeremonyFailures` (15) ceiling across ALL rotations → the whole ceremony is disarmed (`.ceremonyExhausted`), and only a fresh operator-initiated `beginPairing()` re-opens it**; 120 s TTL; single-use; ceremony exists ONLY while the operator has the overlay open. Worst case ≤15 guesses against 10⁶ ⇒ ≤0.0015% per ceremony. | The code is knowledge-limited, not entropy-limited, by design (10-foot readability). **★ The ORIGINAL spec text here wrongly claimed "≤5 guesses / TTL auto-rotation bounds each code" — the adversarial review (2026-07-11) found rotation to a fresh RANDOM code gives a uniform-guessing attacker ZERO benefit and never STOPS the ceremony, so without the cumulative ceiling total guesses = rate × overlay-open-time (unbounded). The `maxCeremonyFailures` ceiling is the actual bound; the sticky `ceremonyFailures` counter survives TTL re-arms and intervening successful pairs, so even a "left the overlay open" operator caps an attacker at 15 total guesses per opened ceremony.** |
 | **Replay of a captured proof** | TLS 1.3 confidentiality (nothing on-path sees it) + per-connection nonce in the MAC (§3.2) + single-use code consumption. A proof is valid for exactly one (code, nonce, fingerprint) triple on one connection. | None meaningful. |
 | **Photographed / leaked ceremony QR** (contains the code) | 120 s TTL + single-use + operator-visible outcome: every success fires the `.paired(name:)` banner and lands in the trusted-remotes list; revoke is one click and also drops live connections (`disconnectPaired(tokenHash:)`). The STANDING Settings QR carries NO code. | A photo used within the TTL, on the venue LAN, while the operator isn't watching, yields a trusted pairing until noticed and revoked. Mitigated by visibility, not prevented — documented honestly (this equals the risk of the operator reading the code aloud). |
 | **Malicious remote flooding `.pairing`** | PR-4's `maxUnpairedConnections` (4) bounds slots; per-connection attempt cap (3) bounds proof traffic; nonce minting is 16 cheap random bytes; 4 KB frame cap + protocol confinement unchanged; a `.pairConfirm` before `hello` is an instant teardown. | An attacker can hold the 4 unpaired slots (pairing-availability DoS on the LAN). Accepted: LAN-local, no memory growth, visible in logs (`unpaired-cap`); PR-4 already accepted this envelope. |

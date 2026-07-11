@@ -58,11 +58,58 @@ public struct LANRemotePairingCeremonyState: Sendable, Equatable {
         /// `handlePairConfirm` enforces this one).
         public var maxAttemptsPerConnection: Int
 
-        public init(codeTTL: TimeInterval = 120, rotateAfterFailures: Int = 5, maxAttemptsPerConnection: Int = 3) {
+        /// The CUMULATIVE wrong-proof ceiling for one whole ceremony (across
+        /// EVERY rotation, from `beginPairing()` until the ceremony is
+        /// exhausted or the operator closes it) — the load-bearing
+        /// brute-force bound.
+        ///
+        /// **Why this exists (post-#1421 adversarial-review fix, spec §8
+        /// brute-force row):** `rotateAfterFailures` only swaps one RANDOM
+        /// 6-digit code for another RANDOM one — rotation gives an attacker
+        /// (who is guessing uniformly regardless) ZERO benefit and, on its
+        /// own, never STOPS the ceremony. Without a cumulative ceiling a LAN
+        /// attacker could cycle connections (4 concurrent × 3 attempts each)
+        /// indefinitely while the overlay is open and, over minutes, brute a
+        /// ~20-bit code to percent-level odds — NOT the "≤5 guesses,
+        /// 0.0005%" the §8 threat model claimed. This counter is STICKY
+        /// across rotations (only `begin(...)`, an operator-initiated fresh
+        /// ceremony, resets it — `rotate(...)` does NOT), so the TOTAL
+        /// guesses per ceremony are hard-bounded here regardless of TTL
+        /// re-arms or intervening successful pairs. Default 15 = 3 codes'
+        /// worth of rotation (`rotateAfterFailures` × 3) ⇒ ≤0.0015% per
+        /// ceremony, with generous headroom for a legitimate operator's own
+        /// mistypes.
+        public var maxCeremonyFailures: Int
+
+        public init(
+            codeTTL: TimeInterval = 120,
+            rotateAfterFailures: Int = 5,
+            maxAttemptsPerConnection: Int = 3,
+            maxCeremonyFailures: Int = 15
+        ) {
             self.codeTTL = codeTTL
             self.rotateAfterFailures = rotateAfterFailures
             self.maxAttemptsPerConnection = maxAttemptsPerConnection
+            self.maxCeremonyFailures = maxCeremonyFailures
         }
+    }
+
+    /// What one wrong proof means for the ceremony as a whole — returned by
+    /// `recordFailure()` so `TVListenerActor+Pairing.swift` can react without
+    /// re-reading the raw counters.
+    ///
+    /// ELI5: "just note it," "swap the code for a fresh one," or "that's
+    /// enough — shut the whole pairing session down."
+    public enum FailureOutcome: Sendable, Equatable {
+        /// Recorded; the current code stays live (below every threshold).
+        case recorded
+        /// `rotateAfterFailures` reached for the CURRENT code — the caller
+        /// mints a fresh code and calls `rotate(code:now:)`.
+        case rotate
+        /// `maxCeremonyFailures` reached for the WHOLE ceremony — the caller
+        /// `end()`s it; only a fresh operator-initiated `begin(code:now:)`
+        /// re-opens pairing.
+        case exhausted
     }
 
     /// The code currently displayed on the TV, or `nil` if no ceremony is
@@ -75,10 +122,16 @@ public struct LANRemotePairingCeremonyState: Sendable, Equatable {
     public private(set) var mintedAt: Date?
 
     /// Wrong `.pairConfirm` proofs recorded against the CURRENT code —
-    /// reset to `0` by `begin(code:now:)` (a fresh code starts a fresh
-    /// count; `recordFailure()`'s own rotation, when it fires, immediately
-    /// calls `begin(code:now:)` again for the new code).
+    /// reset to `0` by BOTH `begin(code:now:)` and `rotate(code:now:)` (a
+    /// fresh code, however it arrived, starts a fresh per-code count). This
+    /// is the counter that drives `rotateAfterFailures`.
     public private(set) var wrongAttempts: Int = 0
+
+    /// CUMULATIVE wrong proofs across the whole ceremony (every rotation
+    /// included) — reset ONLY by `begin(code:now:)`, deliberately NOT by
+    /// `rotate(code:now:)`, so it survives rotations and bounds the TOTAL
+    /// guesses per ceremony (see `Configuration.maxCeremonyFailures`).
+    public private(set) var ceremonyFailures: Int = 0
 
     public let configuration: Configuration
 
@@ -99,14 +152,31 @@ public struct LANRemotePairingCeremonyState: Sendable, Equatable {
         return now < mintedAt.addingTimeInterval(configuration.codeTTL)
     }
 
-    /// (Re-)arms the ceremony with a freshly-minted `code` — resets
-    /// `wrongAttempts` to `0` regardless of whatever it was before (a fresh
-    /// code deserves a fresh attempt budget, whether this is the FIRST code
-    /// of a ceremony or a rotation mid-ceremony).
+    /// Starts a BRAND-NEW ceremony (the operator opened the pairing overlay)
+    /// with a freshly-minted `code` — resets BOTH `wrongAttempts` AND the
+    /// cumulative `ceremonyFailures` to `0`. This is the ONLY thing that
+    /// clears `ceremonyFailures`; an auto-rotation mid-ceremony uses
+    /// `rotate(code:now:)` instead, which preserves it.
     ///
-    /// ELI5: "Here's the new code showing on screen now — start the clock
-    /// over."
+    /// ELI5: "Someone just opened the pairing screen — brand-new code, brand-
+    /// new attempt budget, forget everything that happened before."
     public mutating func begin(code: String, now: Date) {
+        activeCode = code
+        mintedAt = now
+        wrongAttempts = 0
+        ceremonyFailures = 0
+    }
+
+    /// Rotates to a freshly-minted `code` WITHIN the current ceremony —
+    /// resets the per-code `wrongAttempts` but deliberately PRESERVES the
+    /// cumulative `ceremonyFailures` (that's the whole point: rotation must
+    /// not hand a brute-forcer a fresh total-guess budget). Called both by
+    /// the failure-triggered rotation (`recordFailure()` → `.rotate`) and by
+    /// the overlay's cosmetic TTL refresh.
+    ///
+    /// ELI5: "Swap the on-screen code for a fresh one, but DON'T forget how
+    /// many wrong guesses this whole session has already racked up."
+    public mutating func rotate(code: String, now: Date) {
         activeCode = code
         mintedAt = now
         wrongAttempts = 0
@@ -132,16 +202,24 @@ public struct LANRemotePairingCeremonyState: Sendable, Equatable {
         activeCode = nil
     }
 
-    /// Records one wrong `.pairConfirm` proof against the CURRENT code.
+    /// Records one wrong `.pairConfirm` proof against the CURRENT code and
+    /// advances BOTH counters (per-code `wrongAttempts` and cumulative
+    /// `ceremonyFailures`).
     ///
-    /// - Returns: `true` exactly when `wrongAttempts` has just reached
-    ///   `configuration.rotateAfterFailures` — the caller (`TVListenerActor
-    ///   +Pairing.swift`) MUST respond by minting a fresh code and calling
-    ///   `begin(code:now:)` again (spec §3.4 step 4's "if
-    ///   pairingCeremony.recordFailure() { rotateActiveCode() }").
+    /// - Returns: the `FailureOutcome` the caller (`TVListenerActor
+    ///   +Pairing.swift`) must act on — `.exhausted` (the cumulative ceiling
+    ///   is reached: `end()` the ceremony) takes precedence over `.rotate`
+    ///   (the per-code threshold is reached: mint a fresh code and
+    ///   `rotate(code:now:)`), which takes precedence over `.recorded`
+    ///   (keep going). Checking `.exhausted` FIRST means the final guess
+    ///   shuts the ceremony down rather than pointlessly rotating a code
+    ///   that's about to be abandoned.
     @discardableResult
-    public mutating func recordFailure() -> Bool {
+    public mutating func recordFailure() -> FailureOutcome {
         wrongAttempts += 1
-        return wrongAttempts >= configuration.rotateAfterFailures
+        ceremonyFailures += 1
+        if ceremonyFailures >= configuration.maxCeremonyFailures { return .exhausted }
+        if wrongAttempts >= configuration.rotateAfterFailures { return .rotate }
+        return .recorded
     }
 }

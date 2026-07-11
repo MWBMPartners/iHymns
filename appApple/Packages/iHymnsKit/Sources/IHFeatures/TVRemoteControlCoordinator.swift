@@ -65,6 +65,11 @@ public final class TVRemoteControlCoordinator {
     /// The most recently paired remote's name — the overlay's transient
     /// success banner.
     public private(set) var lastPairedName: String?
+    /// A transient operator-facing notice — set when the listener auto-
+    /// disarms the ceremony after too many wrong codes (the brute-force
+    /// ceiling, post-#1421 adversarial-review fix), shown in Settings' Pair
+    /// section; cleared the next time `beginPairing()` runs.
+    public private(set) var pairingNotice: String?
 
     private let projectionViewModel: ProjectionViewModel
     private var listener: TVListenerActor?
@@ -160,6 +165,7 @@ public final class TVRemoteControlCoordinator {
 
     public func beginPairing() async {
         guard let listener else { return }
+        pairingNotice = nil
         pairingCode = await listener.beginPairing()
         isPairingActive = true
     }
@@ -265,6 +271,14 @@ public final class TVRemoteControlCoordinator {
             }
         case .proofRejected:
             break
+        case .ceremonyExhausted:
+            // The listener disarmed the ceremony after too many wrong proofs
+            // (the cumulative brute-force ceiling) — close the overlay and
+            // tell the operator why. A fresh `beginPairing()` clears the
+            // notice and re-opens pairing.
+            isPairingActive = false
+            pairingCode = nil
+            pairingNotice = "Pairing was stopped after too many incorrect codes. Tap “Pair a remote” to try again."
         }
     }
 }

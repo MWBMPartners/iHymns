@@ -65,8 +65,18 @@ extension TVListenerActor {
                 // comment).
                 IHLog.remote.notice("lanremote.pairing unpaired -> paired (reconnect)")
                 send(id: id, message: .capabilities(IHRPCapabilities(currentState: canonicalState)))
+            } else if state.pairingPhase == .pairing, let existingNonce = state.pairingNonce {
+                // A REPEAT `hello` on a connection ALREADY parked in
+                // `.pairing` (#1421 adversarial-review fix) — re-send the
+                // SAME challenge idempotently. **Never re-mint the nonce**
+                // (that would invalidate a proof the remote may already be
+                // computing over the first one) and **never re-yield
+                // `.remoteEnteredPairing`** (that would inflate the overlay's
+                // "N remotes trying to pair" count with no matching leave —
+                // one connection could otherwise drive it arbitrarily high).
+                send(id: id, message: .pairChallenge(nonce: existingNonce))
             } else {
-                // #1421 (PR-6 spec §3.4/§4) — parks the connection in
+                // #1421 (PR-6 spec §3.4/§4) — parks a FRESH connection in
                 // `.pairing`, mints the per-connection nonce the proof
                 // will bind to, and sends `.pairChallenge` — the signal
                 // that doubles as "show the code-entry UI now" for the

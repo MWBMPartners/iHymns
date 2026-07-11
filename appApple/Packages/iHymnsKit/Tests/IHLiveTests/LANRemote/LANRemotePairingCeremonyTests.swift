@@ -25,12 +25,15 @@ struct LANRemotePairingCeremonyTests {
 
     private let epoch = Date(timeIntervalSince1970: 1_700_000_000)
 
-    @Test("Configuration defaults are strategy's exact numbers — 120s TTL / 5 fails / 3 attempts")
+    @Test("Configuration defaults are strategy's exact numbers — 120s TTL / 5 fails / 3 attempts / 15 ceiling")
     func configurationDefaults() {
         let configuration = LANRemotePairingCeremonyState.Configuration()
         #expect(configuration.codeTTL == 120)
         #expect(configuration.rotateAfterFailures == 5)
         #expect(configuration.maxAttemptsPerConnection == 3)
+        // Post-#1421 adversarial-review brute-force ceiling — 3 codes' worth
+        // of rotation before the whole ceremony is disarmed.
+        #expect(configuration.maxCeremonyFailures == 15)
     }
 
     @Test("begin() arms the ceremony and isActive(now:) holds until exactly the TTL boundary")
@@ -67,20 +70,60 @@ struct LANRemotePairingCeremonyTests {
         state.begin(code: "042317", now: epoch)
 
         for expectedCount in 1...4 {
-            let rotated = state.recordFailure()
-            #expect(!rotated)
+            let outcome = state.recordFailure()
+            #expect(outcome == .recorded)
             #expect(state.wrongAttempts == expectedCount)
         }
         // The 5th failure hits `rotateAfterFailures` (default 5) — the
-        // rotation signal fires.
-        let fifthRotated = state.recordFailure()
-        #expect(fifthRotated)
+        // rotation signal fires (still well under the 15 cumulative ceiling).
+        let fifthOutcome = state.recordFailure()
+        #expect(fifthOutcome == .rotate)
         #expect(state.wrongAttempts == 5)
+        #expect(state.ceremonyFailures == 5)
 
-        // A fresh `begin(...)` (the caller's rotation response) resets the
-        // failure count for the NEW code.
+        // A fresh `begin(...)` (a brand-new operator-opened ceremony) resets
+        // BOTH the per-code count AND the cumulative ceremony count.
         state.begin(code: "998877", now: epoch)
         #expect(state.wrongAttempts == 0)
+        #expect(state.ceremonyFailures == 0)
+    }
+
+    @Test("rotate() resets the per-code count but PRESERVES the cumulative ceremonyFailures")
+    func rotatePreservesCumulativeCount() {
+        var state = LANRemotePairingCeremonyState()
+        state.begin(code: "042317", now: epoch)
+        state.recordFailure()
+        state.recordFailure()
+        #expect(state.wrongAttempts == 2)
+        #expect(state.ceremonyFailures == 2)
+
+        // A mid-ceremony rotation (the caller's response to `.rotate`) clears
+        // the per-code count for the fresh code but must NOT hand a brute-
+        // forcer a fresh cumulative budget.
+        state.rotate(code: "998877", now: epoch)
+        #expect(state.activeCode == "998877")
+        #expect(state.wrongAttempts == 0)
+        #expect(state.ceremonyFailures == 2)
+    }
+
+    @Test("recordFailure() returns .exhausted once the cumulative ceiling is reached, across rotations")
+    func cumulativeCeilingExhaustsCeremony() {
+        // A small ceiling so the whole path is exercised without staging 15
+        // real failures: rotate every 2, disarm the ceremony after 4 total.
+        let configuration = LANRemotePairingCeremonyState.Configuration(
+            rotateAfterFailures: 2, maxCeremonyFailures: 4
+        )
+        var state = LANRemotePairingCeremonyState(configuration: configuration)
+        state.begin(code: "111111", now: epoch)
+
+        #expect(state.recordFailure() == .recorded)          // 1 (cumulative 1)
+        #expect(state.recordFailure() == .rotate)            // 2 (cumulative 2) → rotate
+        state.rotate(code: "222222", now: epoch)             // preserves cumulative 2
+        #expect(state.recordFailure() == .recorded)          // 1 (cumulative 3)
+        // Cumulative 4 reaches maxCeremonyFailures — `.exhausted` wins over
+        // the per-code `.rotate` it would otherwise have signalled.
+        #expect(state.recordFailure() == .exhausted)         // 2 (cumulative 4)
+        #expect(state.ceremonyFailures == 4)
     }
 
     @Test("end() fully disarms — begin() afterward re-arms from a clean slate")
@@ -108,10 +151,10 @@ struct LANRemotePairingCeremonyTests {
 
         #expect(state.isActive(now: epoch.addingTimeInterval(9.9)))
         #expect(!state.isActive(now: epoch.addingTimeInterval(10.1)))
-        let firstRotated = state.recordFailure()
-        #expect(!firstRotated)
-        let secondRotated = state.recordFailure()
-        #expect(secondRotated)
+        let firstOutcome = state.recordFailure()
+        #expect(firstOutcome == .recorded)
+        let secondOutcome = state.recordFailure()
+        #expect(secondOutcome == .rotate)
     }
 }
 

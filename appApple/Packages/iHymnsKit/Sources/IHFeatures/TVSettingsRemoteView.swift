@@ -125,6 +125,15 @@ public struct TVSettingsRemoteView: View {
             } label: {
                 Label("Pair a remote…", systemImage: "qrcode.viewfinder")
             }
+            // The brute-force ceiling's operator-facing notice (post-#1421
+            // adversarial-review fix): shown after the listener auto-disarms
+            // a ceremony that got too many wrong codes; cleared the next time
+            // "Pair a remote…" runs.
+            if let notice = coordinator.pairingNotice {
+                Label(notice, systemImage: "exclamationmark.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 

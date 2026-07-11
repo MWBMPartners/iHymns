@@ -49,6 +49,12 @@ public enum TVPairingEvent: Sendable, Equatable {
     /// rejection, for a "getting close to a rotation" UI hint if ever
     /// wanted; never required to be shown.
     case proofRejected(attemptsTowardRotation: Int)
+    /// The whole ceremony hit its cumulative wrong-proof ceiling
+    /// (`LANRemotePairingCeremonyState.Configuration.maxCeremonyFailures`)
+    /// and was disarmed (post-#1421 adversarial-review brute-force fix). The
+    /// UI (`TVRemoteControlCoordinator`) closes the overlay and surfaces a
+    /// "too many attempts" notice; the operator must re-open pairing.
+    case ceremonyExhausted
 }
 
 extension TVListenerActor {
@@ -158,11 +164,27 @@ extension TVListenerActor {
         }
 
         guard LANRemotePairingProof.verify(proofHex: proof, code: code, fingerprintHex: identity.fingerprint, nonceHex: nonce) else {
-            let shouldRotate = pairingCeremony.recordFailure()
+            let outcome = pairingCeremony.recordFailure()
             let attemptsTowardRotation = pairingCeremony.wrongAttempts
-            if shouldRotate {
+            switch outcome {
+            case .exhausted:
+                // The CUMULATIVE per-ceremony ceiling is reached — shut the
+                // whole ceremony down (post-#1421 adversarial-review fix,
+                // spec §8 brute-force row): rotating yet another RANDOM code
+                // would hand a LAN brute-forcer an unbounded stream of
+                // guesses, which is exactly the envelope the threat model
+                // wrongly assumed rotation prevented. Disarm entirely; only
+                // a fresh operator-initiated `beginPairing()` re-opens
+                // pairing. NEVER logs the code/attempt values, only the
+                // transition.
+                pairingCeremony.end()
+                pairingContinuation.yield(.ceremonyExhausted)
+                IHLog.remote.notice("lanremote.pairing ceremony-exhausted")
+            case .rotate:
                 _ = rotateActiveCode()
                 IHLog.remote.notice("lanremote.pairing code-rotated")
+            case .recorded:
+                break
             }
             send(id: id, message: .error(.pairingRejected, message: nil))
             pairingContinuation.yield(.proofRejected(attemptsTowardRotation: attemptsTowardRotation))
@@ -191,10 +213,21 @@ extension TVListenerActor {
     /// already had).
     func promoteToPaired(id: UUID, token: String, metadata: LANRemotePairingMetadata) async {
         guard let state = connections[id] else { return }
+        let wasPairing = state.pairingPhase == .pairing
         await configuration.pairingAuthority.registerPairedToken(token, metadata: metadata)
         state.pairingPhase = .paired(token: token)
         state.pairingNonce = nil
         state.pairingAttempts = 0
+        // #1421 adversarial-review fix — a `.pairing` connection that just
+        // promoted is no longer "trying to pair"; balance the
+        // `.remoteEnteredPairing` yielded when it entered so the overlay's
+        // live count doesn't leak upward by one on every successful pair.
+        // (`teardownConnection` only yields `.remoteLeftPairing` for a still-
+        // `.pairing` connection, so a promoted one would otherwise never emit
+        // its matching leave.)
+        if wasPairing {
+            pairingContinuation.yield(.remoteLeftPairing(connectionId: id))
+        }
         send(id: id, message: .pairSuccess(token: token))
         send(id: id, message: .capabilities(IHRPCapabilities(currentState: canonicalState)))
     }
@@ -202,11 +235,14 @@ extension TVListenerActor {
     /// Mints a fresh code and re-arms the ceremony, yielding `.codeRotated`
     /// — the ONE place both `rotatePairingCode()` (manual) and
     /// `handlePairConfirm`'s failure branch (automatic) rotate from, so the
-    /// two can never drift in what "rotate" actually does.
+    /// two can never drift in what "rotate" actually does. Uses the
+    /// ceremony's `rotate(code:now:)` (NOT `begin(code:now:)`) so the
+    /// cumulative `ceremonyFailures` ceiling survives every rotation — only
+    /// `beginPairing()` (a fresh operator-opened ceremony) resets it.
     @discardableResult
     private func rotateActiveCode() -> String {
         let code = LANRemotePairingSecrets.mintCode()
-        pairingCeremony.begin(code: code, now: configuration.clock.now())
+        pairingCeremony.rotate(code: code, now: configuration.clock.now())
         pairingContinuation.yield(.codeRotated(newCode: code))
         return code
     }
