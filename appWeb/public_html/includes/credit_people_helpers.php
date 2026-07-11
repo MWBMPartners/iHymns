@@ -1557,3 +1557,56 @@ function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId)
     $stmt->close();
     return ['ok' => true, 'removed' => $removed];
 }
+
+/* =========================================================================
+ * BULK-PROMOTE — "remaining" one-click path (#1503)
+ *
+ * Companion to the existing fuzzy-match review flow on
+ * /manage/credit-people-bulk-promote (#846): that page's job is to
+ * catch NEAR-DUPLICATES ("J. Newton" vs "John Newton") before creating
+ * a new registry row. This helper answers a narrower question —
+ * "which cited names have NO registry row at all yet" — for the
+ * one-click "Promote all remaining (N)" action on the parent
+ * /manage/credit-people page, which skips the fuzzy-match review
+ * entirely (the curator who wants that review still has the dedicated
+ * bulk-promote page). Same 5-table UNION + NOT EXISTS shape as
+ * searchCreditPersonMergeTargets()'s in-use-only bucket and
+ * credit-people-bulk-promote.php's own candidate query — kept as its
+ * own narrow (name-only, no per-role breakdown) helper rather than
+ * forking either of those, since a plain name list is all the
+ * "register everything remaining" action needs.
+ * ========================================================================= */
+
+/**
+ * Every name cited on >= 1 song-credit row that has no matching
+ * tblCreditPeople registry row yet, highest-usage first.
+ *
+ * @return list<string>
+ */
+function creditPeopleCitedUnregisteredNames(\mysqli $db): array
+{
+    $sql = "
+        SELECT u.Name, SUM(u.cnt) AS TotalUsage
+          FROM (
+              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+          ) u
+         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+         GROUP BY u.Name
+         ORDER BY TotalUsage DESC, u.Name ASC
+    ";
+    /* mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
+       (includes/db_mysql.php) — a failing query throws rather than
+       returning false, so this is a direct chain, not a false-check
+       guard (project convention; see credit-people-bulk-promote.php's
+       identical $usageSql chain). */
+    $rows = $db->query($sql)->fetch_all(MYSQLI_ASSOC);
+    return array_map(static fn(array $r): string => (string)$r['Name'], $rows);
+}

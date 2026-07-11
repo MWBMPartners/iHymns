@@ -390,6 +390,88 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
 }
 
 /* ----------------------------------------------------------------------
+ * POST endpoint — bulk_register_unregistered (#1503)
+ *
+ * ELI5: the "Bulk promote with fuzzy-match" flow on
+ * /manage/credit-people-bulk-promote (#846) is built to catch NEAR
+ * DUPLICATES before creating a registry row — a curator has to open
+ * that page, review every candidate's suggested match (or lack of
+ * one), and submit. That review is exactly right when a fuzzy match
+ * exists, but it's unnecessary friction for the names that have NO
+ * match at all — this one-click action registers every one of those
+ * directly from the parent page's "N names cited ... aren't in the
+ * registry yet" banner, no navigation required.
+ *
+ * DETAILED: reuses the SAME idempotent insertion point every other
+ * registration path in this codebase uses — registerCreditPersonByName()
+ * (includes/credit_people_helpers.php) — never a duplicated `INSERT INTO
+ * tblCreditPeople` here. Idempotency is layered two ways: (1) the
+ * candidate list itself only contains names with NOT EXISTS a matching
+ * registry row at query time (creditPeopleCitedUnregisteredNames()), and
+ * (2) each iteration re-checks Name existence immediately before calling
+ * registerCreditPersonByName() (mirroring credit-people-bulk-promote.php's
+ * own 'register' branch) so a name registered by a concurrent editor
+ * between the query and this loop is skipped, not double-inserted or
+ * erroring on the UNIQUE constraint. CSRF via validateCsrfRequest() (rule
+ * #29) even though this is a classic (non-AJAX) form POST — the client
+ * still submits the page's session-baked csrf_token, so this simply
+ * accepts that same token via the more robust check rather than
+ * validateCsrf() directly. Reports via the same $success banner +
+ * bulk_run_id + affected-count shape the fuzzy-promote page's own
+ * 'bulk_promote' action uses, so the two flows read consistently in the
+ * activity log.
+ *
+ * POST action=bulk_register_unregistered
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'bulk_register_unregistered') {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+
+    try {
+        $db    = getDbMysqli();
+        $names = creditPeopleCitedUnregisteredNames($db);
+
+        $bulkRunId  = bin2hex(random_bytes(6));
+        $registered = 0;
+        $skipped    = 0;
+
+        $db->begin_transaction();
+        try {
+            foreach ($names as $name) {
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? LIMIT 1');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $existing = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ($existing) { $skipped++; continue; }
+
+                $newId = registerCreditPersonByName($db, $name);
+                if ($newId > 0) { $registered++; } else { $skipped++; }
+            }
+            $db->commit();
+
+            $logCreditPerson('bulk_register_remaining', '', [
+                'bulk_run_id' => $bulkRunId,
+                'registered'  => $registered,
+                'skipped'     => $skipped,
+                'candidates'  => count($names),
+            ]);
+            $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
+                     . ' registered' . ($skipped > 0 ? ", {$skipped} already registered (skipped)" : '') . '.';
+        } catch (\Throwable $tx) {
+            $db->rollback();
+            throw $tx;
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] bulk_register_unregistered failed: ' . $e->getMessage());
+        $error = 'Bulk register failed: ' . $e->getMessage();
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST dispatch
  *
  * All actions are CSRF-checked + entitlement-gated (the entitlement
@@ -397,8 +479,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
  * gate covers every action below). Each action runs inside a single
  * $db->begin_transaction() so a partial failure (e.g. a child-row
  * INSERT failing after the parent UPDATE landed) rolls back cleanly.
+ *
+ * `bulk_register_unregistered` (#1503) is excluded here — it's already
+ * fully handled by its own dispatch block above (which falls through to
+ * the page render rather than `exit`ing, so $success/$error show in the
+ * normal banner). Without this exclusion the action would additionally
+ * hit this block's validateCsrf() a second time for no purpose (it
+ * wouldn't match any `case` below either way, but a stale-token edge
+ * case there would blow up a request this file's own dispatch already
+ * accepted via the more robust validateCsrfRequest()).
  * ---------------------------------------------------------------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !== 'bulk_register_unregistered') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
@@ -1768,7 +1859,16 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
 
         <?php if ($totalInUseUnregistered > 0): ?>
             <!-- #846 — bulk-promote CTA. Shows only when there's
-                 actual unregistered-but-cited work waiting. -->
+                 actual unregistered-but-cited work waiting.
+                 #1503 adds a second, one-click button next to the
+                 fuzzy-match review page: "Promote all remaining" skips
+                 the near-duplicate review entirely and registers every
+                 cited-but-unregistered name directly — the confirm()
+                 dialog states the exact count as the "preview" before
+                 committing. Curators who want the fuzzy-match safety
+                 net still have the original button/page; this is for
+                 the common case where none of the remaining names are
+                 actually near-duplicates and the review is pure friction. -->
             <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 py-2">
                 <i class="bi bi-people" aria-hidden="true"></i>
                 <span>
@@ -1779,6 +1879,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
                     <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
                 </a>
+                <form method="POST" class="d-inline"
+                      onsubmit="return confirm('Register all <?= (int)$totalInUseUnregistered ?> remaining cited-but-unregistered name(s) as new registry entries?\n\nThis skips the fuzzy-match duplicate review — use &quot;Bulk promote with fuzzy-match&quot; instead if you want to check for near-duplicates first.');">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="bulk_register_unregistered">
+                    <button type="submit" class="btn btn-sm btn-outline-info">
+                        <i class="bi bi-person-plus me-1"></i>Promote all remaining (<?= number_format($totalInUseUnregistered) ?>)
+                    </button>
+                </form>
             </div>
         <?php endif; ?>
 
