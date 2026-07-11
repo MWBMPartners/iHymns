@@ -27,8 +27,17 @@
 // could still authenticate with the very token this call meant to kill —
 // revoking server-side FIRST closes that window regardless of what happens
 // to the local copy afterwards.
+//
+// #1505 UPDATE (`.claude/live-observability-strategy.md` §2.2) — every
+// signed-out↔signed-in TRANSITION (never a same-state re-publish — "log
+// transitions, not states") writes one `IHLog.auth` `.notice`, via the
+// single `setState(_:userId:)` chokepoint every public entry point below
+// funnels through. `userId` is `.private`; the token/username are NEVER
+// logged, at any level (strategy §4). `restoreFromStorage()`'s 401
+// self-heal (an INVOLUNTARY sign-out) additionally logs an `.error`.
 import Foundation
 import IHAPI
+import IHLog
 
 /// The current authentication state of the app.
 ///
@@ -145,11 +154,20 @@ public actor SessionController {
 
         await apiClient.updateBearerToken(token)
         do {
-            _ = try await apiClient.authMe()
-            setState(.signedIn(token: token))
+            // Captured (rather than the original `_ = try await ...`
+            // discard) so the `.notice` transition log below can carry the
+            // signed-in user's numeric id — #1505, strategy §2.2.
+            let user = try await apiClient.authMe()
+            setState(.signedIn(token: token), userId: user.id)
         } catch APIError.unauthorized {
             try? await tokenStore.delete()
             await apiClient.updateBearerToken(nil)
+            // Unlike `signOut()`'s benign `.unauthorized` handling (a
+            // deliberate sign-out that finds nothing left to revoke), THIS
+            // is involuntary — the app is about to silently drop a user who
+            // believed they were still signed in: "a 401 forces sign-out"
+            // (strategy §2.2), logged `.error` not `.notice`.
+            IHLog.auth.error("session: stored token rejected (401) on restore — forcing sign-out")
             setState(.signedOut)
         } catch {
             setState(.signedIn(token: token))
@@ -172,7 +190,9 @@ public actor SessionController {
     ///   catalogue-read failures (#1399).
     public func signIn(username: String, password: String) async throws {
         let session = try await apiClient.authLogin(username: username, password: password)
-        try await signIn(token: session.token)
+        // Private `userId:` overload (#1505) — this call site already
+        // knows who just signed in, for the `.notice` transition log.
+        try await signIn(token: session.token, userId: session.user.id)
     }
 
     /// Signs in with an email + 6-digit code pair (the code emailed by a
@@ -192,7 +212,8 @@ public actor SessionController {
     ///   or reinterpret" contract as `signIn(username:password:)`.
     public func signIn(email: String, code: String) async throws {
         let session = try await apiClient.authEmailLoginVerify(email: email, code: code)
-        try await signIn(token: session.token)
+        // See `signIn(username:password:)`'s matching comment above.
+        try await signIn(token: session.token, userId: session.user.id)
     }
 
     /// Persists `token` and transitions to `.signedIn`.
@@ -208,9 +229,22 @@ public actor SessionController {
     /// call straight into this once it already holds a token, without
     /// re-deriving one from a username/password round trip it never had.
     public func signIn(token: String) async throws {
+        // No caller-known userId here (a bare token, no `AuthUser` — e.g. a
+        // future SIWA flow, or today's tests). The `.notice` transition log
+        // (#1505) still fires; it just omits the userId field.
+        try await signIn(token: token, userId: nil)
+    }
+
+    /// The actual sign-in implementation `signIn(token:)` above, and the
+    /// username/password + email/code flows earlier in this file, all
+    /// funnel through — the ONE place a bearer token is persisted and
+    /// `state` transitions to `.signedIn`. `userId`: passed through to
+    /// `setState(_:userId:)`'s `.notice` log (`.private`, #1505); `nil`
+    /// when unknown, never a reason to skip the log entirely.
+    private func signIn(token: String, userId: Int?) async throws {
         try await tokenStore.save(token)
         await apiClient.updateBearerToken(token)
-        setState(.signedIn(token: token))
+        setState(.signedIn(token: token), userId: userId)
     }
 
     /// Clears the stored token and transitions to `.signedOut` — but ONLY
@@ -304,9 +338,38 @@ public actor SessionController {
         setState(.signedOut)
     }
 
-    /// Updates `state` and publishes it to every `stateUpdates` subscriber.
-    private func setState(_ newState: SessionState) {
+    /// Updates `state`, publishes it to every `stateUpdates` subscriber, and
+    /// — ONLY when signed-in-ness actually flips — writes one `IHLog.auth`
+    /// `.notice` (#1505, "log transitions, not states").
+    ///
+    /// ELI5: "We're now in this new state — tell everyone watching, and (if
+    /// this is actually a change) write it down."
+    ///
+    /// DETAILED: Every public entry point in this actor funnels through
+    /// here, so this is the ONE place the transition log lives. Comparing
+    /// `state.isSignedIn` (the OLD value, captured before it's overwritten)
+    /// against `newState.isSignedIn` suppresses a same-state republish
+    /// (e.g. `restoreFromStorage()`'s "no stored token" path, already
+    /// `.signedOut`) from producing a `.notice` — that would log a STATE,
+    /// not a transition. `userId`: `.private`, logged only on a
+    /// signed-out→signed-in transition, when known (`nil` otherwise, per
+    /// `signIn(token:userId:)`'s doc comment); ignored on the way out
+    /// (`.signedIn` never stored one to look back up here).
+    private func setState(_ newState: SessionState, userId: Int? = nil) {
+        let wasSignedIn = state.isSignedIn
         state = newState
         continuation.yield(newState)
+
+        guard wasSignedIn != newState.isSignedIn else { return }
+
+        if newState.isSignedIn {
+            if let userId {
+                IHLog.auth.notice("session: signed out -> signed in (userId: \(userId, privacy: .private))")
+            } else {
+                IHLog.auth.notice("session: signed out -> signed in")
+            }
+        } else {
+            IHLog.auth.notice("session: signed in -> signed out")
+        }
     }
 }

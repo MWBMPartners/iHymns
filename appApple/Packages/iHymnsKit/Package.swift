@@ -19,14 +19,16 @@
 // and spot-checked by the LOC/quality gates in Scripts/):
 //
 //   IHFeatures  (screens + view models)
-//      ├── IHModels, IHAPI, IHAuth, IHPersistence, IHLive, IHDesign, IHAppSupport
-//   IHAuth        → IHAPI, IHModels
-//   IHAPI         → IHModels
+//      ├── IHModels, IHAPI, IHAuth, IHPersistence, IHLive, IHDesign, IHAppSupport, IHLog
+//   IHAuth        → IHAPI, IHModels, IHLog
+//   IHAPI         → IHModels, IHLog
 //   IHPersistence → IHModels                (+ GRDB.swift, external dep)
-//   IHLive        → IHAPI                   (which pulls in IHModels transitively)
+//   IHLive        → IHAPI, IHLog            (which pulls in IHModels transitively)
 //   IHAppSupport  → IHModels
 //   IHDesign      → (SwiftUI only, no iHymnsKit deps)
 //   IHModels      → (no deps — the foundation: Sendable Codable DTOs)
+//   IHLog         → (no deps — the foundation: os.Logger/OSSignposter facade;
+//                     see #1505 / .claude/live-observability-strategy.md §2.1)
 //
 // Reference: .claude/apple-native-strategy.md §1.2 (module responsibilities),
 // §1.3 (Swift 6 strict concurrency posture), §1.8 (versioning/build).
@@ -52,6 +54,7 @@ let package = Package(
         // working from both the app shells (via XcodeGen's package
         // reference) and from other targets inside this same package.
         .library(name: "IHModels", targets: ["IHModels"]),
+        .library(name: "IHLog", targets: ["IHLog"]),
         .library(name: "IHAPI", targets: ["IHAPI"]),
         .library(name: "IHAuth", targets: ["IHAuth"]),
         .library(name: "IHPersistence", targets: ["IHPersistence"]),
@@ -134,10 +137,33 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
-        // MARK: - IHAPI (→ IHModels)
+        // MARK: - IHLog (foundation layer, beside IHModels — zero
+        // iHymnsKit-internal deps; only system frameworks: `os` (Logger +
+        // OSSignposter) and CryptoKit (SHA-256 for `IHLogSanitize`), never
+        // an external SwiftPM package)
+        //
+        // #1505 (`.claude/live-observability-strategy.md` §2.1). Its own
+        // leaf target rather than folded into `IHModels` (wrong layer —
+        // `IHModels` is pure Sendable DTOs with no side effects) or
+        // `IHAppSupport` (the strategy doc is explicit: that would drag the
+        // analytics-adjacent module into every target that just wants to
+        // log). `IHAPI`/`IHAuth`/`IHLive` import it directly below;
+        // `IHFeatures` gets it both transitively through those and directly
+        // (its own view models log too).
+        .target(
+            name: "IHLog",
+            swiftSettings: sharedSwiftSettings
+        ),
+        .testTarget(
+            name: "IHLogTests",
+            dependencies: ["IHLog"],
+            swiftSettings: sharedSwiftSettings
+        ),
+
+        // MARK: - IHAPI (→ IHModels, IHLog)
         .target(
             name: "IHAPI",
-            dependencies: ["IHModels"],
+            dependencies: ["IHModels", "IHLog"],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(
@@ -146,10 +172,10 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
-        // MARK: - IHAuth (→ IHAPI, IHModels)
+        // MARK: - IHAuth (→ IHAPI, IHModels, IHLog)
         .target(
             name: "IHAuth",
-            dependencies: ["IHAPI", "IHModels"],
+            dependencies: ["IHAPI", "IHModels", "IHLog"],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(
@@ -176,10 +202,10 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
-        // MARK: - IHLive (→ IHAPI)
+        // MARK: - IHLive (→ IHAPI, IHLog)
         .target(
             name: "IHLive",
-            dependencies: ["IHAPI"],
+            dependencies: ["IHAPI", "IHLog"],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(
@@ -231,7 +257,8 @@ let package = Package(
                 "IHPersistence",
                 "IHLive",
                 "IHDesign",
-                "IHAppSupport"
+                "IHAppSupport",
+                "IHLog"
             ],
             swiftSettings: sharedSwiftSettings
         ),

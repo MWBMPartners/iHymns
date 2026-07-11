@@ -1,0 +1,389 @@
+# Apple macOS DMG — signed + notarized direct distribution (#1510)
+#
+# ELI5: The App Store is the PRIMARY way people get iHymns on a Mac (via
+# "Designed for iPad" compatibility, no separate Mac target — see
+# `appApple/project.yml`'s `iHymns` target header). This workflow builds a
+# SECOND, independent artifact from the SAME source: a signed + notarized
+# `.dmg` (containing the `.app` + an `/Applications` shortcut) that the owner
+# can hand out directly — download, drag to Applications, done — without
+# going through the App Store at all. It is published as a **GitHub Release
+# asset**, never uploaded anywhere else.
+#
+# DETAILED: Mirrors `.github/workflows/apple-deploy.yml`'s (#1400) structure
+# and kill-switch idiom closely, but is a DIFFERENT distribution channel with
+# a DIFFERENT signing identity, so it is intentionally its own workflow file
+# rather than a fourth Fastlane lane bolted onto `appApple/fastlane/Fastfile`:
+#   - `apple-deploy.yml` signs with the org's **Apple Distribution**
+#     certificate (`APPLE_CERTIFICATE`) for TestFlight/App Store upload.
+#   - THIS workflow signs with a **Developer ID Application** certificate —
+#     Apple's SEPARATE identity type for software distributed OUTSIDE the
+#     Mac App Store (Developer ID apps need no App-Store-style provisioning
+#     profile at all; they're authorized for Gatekeeper via notarization
+#     instead). Reusing the distribution cert would not work here even if it
+#     were technically importable — Xcode's `developer-id` export method
+#     specifically re-signs with a Developer ID Application identity.
+# This file NEVER touches `apple-deploy.yml`'s own signing/upload logic.
+#
+# VARIABLES:
+#   vars.APPLE_DMG_ENABLED — kill-switch, the SAME idiom as
+#   `apple-deploy.yml`'s `vars.APPLE_DEPLOY_ENABLED` (which itself mirrors
+#   `deploy.yml`'s `vars.SFTP_ENABLED`). Must be the literal string 'true' to
+#   let the "Build + notarize + release (.dmg)" job run at all. Unset (the
+#   default — nothing in this repo sets it) means the job is SKIPPED
+#   entirely on every manual dispatch or tag push: no archive, no
+#   notarization, no Release asset. The owner sets this via the GitHub web
+#   UI — Settings → Secrets and variables → Actions → Variables tab → New
+#   repository variable — only once the two new secrets below are
+#   provisioned and this pipeline has been reviewed; this file never sets it
+#   itself. The always-on `guard` job below posts a `::notice::` stating
+#   whether DMG packaging is enabled/disabled on every single run, so a
+#   skipped build is never mistaken for a completed one just because the
+#   workflow's overall run still shows green (the `guard` job succeeding is
+#   enough to make the run conclusion "success" even while `build` is
+#   skipped) — same reasoning as `apple-deploy.yml`'s own header comment.
+#
+# NEW SECRETS (this workflow only — distinct from `apple-deploy.yml`'s nine):
+#   APPLE_DEVELOPER_ID_CERT          — base64-encoded `.p12` export of a
+#                                      **Developer ID Application** certificate
+#                                      (NOT the Apple Distribution certificate
+#                                      apple-deploy.yml uses — a different
+#                                      Apple identity type entirely).
+#   APPLE_DEVELOPER_ID_CERT_PASSWORD — the `.p12` export password.
+#   See `appApple/dev-docs/Provisioning-Runbook.md` §1.5 for the exact owner
+#   steps (create the cert, export it, base64 it, paste it in).
+#
+# REUSED SECRETS (already exist for `apple-deploy.yml` — read-only reuse,
+# never redefined here):
+#   APPLE_TEAM_ID  — signs `DEVELOPMENT_TEAM` at archive/export time.
+#   ASC_KEY_ID / ASC_ISSUER_ID / ASC_API_KEY — the SAME App Store Connect API
+#   key already used for TestFlight/App Store uploads. `notarytool` accepts
+#   an API key for authentication too (Apple's own documented notarization
+#   auth method — no separate Apple ID/app-specific-password flow needed).
+#   `ASC_API_KEY` is RAW `.p8` file contents (Fastfile's own documented
+#   convention) and is written to a temp key file for `notarytool`, which
+#   only accepts a file path, not inline content.
+#
+# STATUS: DORMANT until the owner (a) provisions the two new secrets above,
+# (b) reviews this pipeline, and (c) flips `APPLE_DMG_ENABLED` to `true`.
+# Nothing in this file runs on a normal push to any branch — only manual
+# `workflow_dispatch` or a `v*` tag push, and only once the kill-switch is on.
+#
+# ⚠️ FLAGGED UNCERTAINTY — read before enabling (untested on a real Mac with
+# real signing assets; this pipeline cannot be exercised end-to-end in this
+# session):
+#   1. **Archive destination string.** `iHymns`'s `supportedDestinations:
+#      [iOS, macOS, visionOS]` (`project.yml`) has NO Mac Catalyst entry, so
+#      the `macOS` destination is Apple's "Designed for iPad" mode (running
+#      the multiplatform target natively on Apple Silicon — see
+#      `Provisioning-Runbook.md` §2.4.3, which confirms Xcode shows this as
+#      **"My Mac (Designed for iPad)"**, a genuinely resizable native window,
+#      not a fixed-aspect-ratio iPad-in-a-box). This workflow archives with
+#      `-destination 'generic/platform=macOS'` (no `variant=` qualifier) —
+#      chosen because `.github/workflows/apple.yml`'s ALREADY-GREEN, already
+#      -running CI build step for this exact scheme uses the concrete form
+#      `platform=macOS,arch=arm64` with no variant and builds successfully,
+#      which is real evidence (not a guess) that plain `platform=macOS` is
+#      unambiguous for this target (there is no Catalyst destination to
+#      disambiguate from). The archive step here uses the *generic* form
+#      (`generic/platform=macOS`, Apple's documented archiving idiom — an
+#      archive isn't bound to one running instance) rather than the
+#      concrete `arch=arm64` form apple.yml's plain build uses, on the
+#      reasoning that they resolve to the same, only, macOS destination this
+#      target supports. **This has not been proven with a real archive run.**
+#   2. **Signing style.** This workflow uses MANUAL code signing
+#      (`CODE_SIGN_STYLE=Manual` + `CODE_SIGN_IDENTITY="Developer ID
+#      Application"`, no provisioning profile, no `-allowProvisioningUpdates`,
+#      no ASC key involvement) rather than automatic signing — deliberately,
+#      because Developer ID / notarized distribution is documented to need
+#      NO App-Store-style provisioning profile at all, and manual signing
+#      with an explicit identity is the well-established pattern for Mac
+#      Developer-ID CI pipelines. Whether the `iHymns` target's
+#      Associated-Domains entitlement (`project.yml`) causes any complication
+#      signing manually outside the App Store has NOT been verified on a
+#      real Mac — if `xcodebuild archive`/`-exportArchive` complains about
+#      the entitlement needing a matching provisioning profile, this may
+#      need to switch to automatic signing (mirroring
+#      `prepare_signed_archives` in the Fastfile) instead.
+#   3. **DMG tool.** Uses plain `hdiutil create` (no extra Homebrew
+#      dependency, deterministic) rather than the `create-dmg` formula the
+#      task brief also allowed — a reviewer wanting the cosmetic
+#      icon-layout/background-image polish `create-dmg` provides can swap
+#      this step later without touching anything else in the pipeline.
+#   Owner/reviewer: please validate 1–2 with a real signed archive attempt
+#   before relying on this pipeline for actual distribution.
+name: Apple macOS DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach the DMG to (e.g. v0.2500.0-macos). Ignored for tag-triggered runs (uses the pushed tag); if left blank on a manual run, a timestamped tag is generated.'
+        required: false
+        type: string
+  push:
+    tags:
+      - 'v*'
+    # Deliberately NO path filter on the tag trigger (unlike apple-deploy.yml's
+    # push-to-branch filter) — a tag is a deliberate "cut a release" act
+    # regardless of which files the tagged commit touches, and the
+    # `APPLE_DMG_ENABLED` kill-switch below is the real safety gate.
+
+permissions:
+  contents: write   # required to create/update the GitHub Release + upload the asset
+
+# Only one DMG build per ref at a time.
+concurrency:
+  group: apple-dmg-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ===========================================================================
+  # GUARD — always runs, never fails the workflow. Posts a loud ::notice::
+  # stating whether DMG packaging is enabled so a SKIPPED build (because
+  # APPLE_DMG_ENABLED isn't 'true') can never be mistaken for a completed one
+  # — same reasoning as apple-deploy.yml's own guard job.
+  # ===========================================================================
+  guard:
+    name: DMG status guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Report Apple DMG kill-switch status
+        run: |
+          if [ "${{ vars.APPLE_DMG_ENABLED }}" = "true" ]; then
+            echo "::notice::Apple macOS DMG packaging is ENABLED (repo Variable APPLE_DMG_ENABLED=true) — the Build + notarize + release job WILL run for this dispatch/tag push and may publish a GitHub Release asset."
+          else
+            echo "::notice::Apple macOS DMG packaging is DISABLED — set repo Variable APPLE_DMG_ENABLED=true (Settings -> Secrets and variables -> Actions -> Variables) once APPLE_DEVELOPER_ID_CERT + APPLE_DEVELOPER_ID_CERT_PASSWORD are provisioned. The Build + notarize + release job will be SKIPPED for this run — no archive, no notarization, no Release asset."
+          fi
+
+  build:
+    name: Build + notarize + release (.dmg)
+    runs-on: macos-26
+    timeout-minutes: 60
+    # Kill-switch (load-bearing — see the header comment's VARIABLES
+    # section). Unset/anything other than the literal string 'true' means
+    # this job is SKIPPED entirely.
+    if: vars.APPLE_DMG_ENABLED == 'true'
+    env:
+      DMG_KEYCHAIN_NAME: ihymns-dmg-ci.keychain-db
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          # Same pinned OS-26 toolchain as apple.yml/apple-deploy.yml.
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | head -1)"
+          xcodebuild -version
+
+      # -- Install the platform runtimes this archive needs --
+      # A macOS "Designed for iPad" archive of a multiplatform target still
+      # needs the iOS/tvOS/watchOS/visionOS SDKs installed on the runner —
+      # the same "iOS 26.0 is not installed"-class failure apple-deploy.yml's
+      # own comment documents applies here too, even though this job only
+      # ever archives the macOS destination. The macOS SDK itself ships
+      # inside Xcode already, so it needs no separate download step.
+      - name: Install required platform SDKs
+        run: |
+          sudo xcodebuild -downloadPlatform iOS
+          sudo xcodebuild -downloadPlatform tvOS
+          sudo xcodebuild -downloadPlatform watchOS
+          sudo xcodebuild -downloadPlatform visionOS
+
+      - name: Install tooling
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: appApple
+        run: xcodegen generate
+
+      # ---------------------------------------------------------------------
+      # Import the Developer ID Application certificate into a throwaway
+      # keychain scoped to this job — the SAME "ephemeral keychain, never the
+      # runner's login keychain" pattern as Fastfile's
+      # `import_distribution_certificate` private lane, translated to plain
+      # shell since this workflow does not invoke fastlane at all (a
+      # DIFFERENT identity type than every existing Fastlane lane uses).
+      # ---------------------------------------------------------------------
+      - name: Import Developer ID Application certificate
+        env:
+          APPLE_DEVELOPER_ID_CERT: ${{ secrets.APPLE_DEVELOPER_ID_CERT }}
+          APPLE_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          echo "DMG_KEYCHAIN_PASSWORD=$KEYCHAIN_PASSWORD" >> "$GITHUB_ENV"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$DMG_KEYCHAIN_NAME"
+          security set-keychain-settings -lut 3600 "$DMG_KEYCHAIN_NAME"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$DMG_KEYCHAIN_NAME"
+
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | sed 's/[[:space:]]*"\(.*\)"/\1/')"
+          # shellcheck disable=SC2086
+          security list-keychains -d user -s "$DMG_KEYCHAIN_NAME" $EXISTING_KEYCHAINS
+
+          CERT_PATH="$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_DEVELOPER_ID_CERT" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -k "$DMG_KEYCHAIN_NAME" \
+            -P "$APPLE_DEVELOPER_ID_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$DMG_KEYCHAIN_NAME"
+          rm -f "$CERT_PATH"
+
+      # ---------------------------------------------------------------------
+      # Archive — manual signing with the imported Developer ID Application
+      # identity. See the header comment's "FLAGGED UNCERTAINTY" §1/§2 for
+      # the destination-string and signing-style reasoning.
+      # `ENABLE_HARDENED_RUNTIME=YES` + `OTHER_CODE_SIGN_FLAGS="--timestamp"`
+      # are both REQUIRED for notarization to succeed later (Apple rejects
+      # notarization submissions that lack Hardened Runtime or a secure
+      # signing timestamp) — set here as command-line overrides since
+      # `project.yml` doesn't declare Hardened Runtime today (it's a
+      # Developer-ID/notarization-only concern, not part of the app's own
+      # shape).
+      # ---------------------------------------------------------------------
+      - name: Archive (macOS — Designed for iPad destination)
+        working-directory: appApple
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcodebuild archive \
+            -project iHymns.xcodeproj \
+            -scheme iHymns \
+            -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -archivePath "$RUNNER_TEMP/iHymns-macos.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CODE_SIGNING_REQUIRED=YES \
+            CODE_SIGNING_ALLOWED=YES \
+            ENABLE_HARDENED_RUNTIME=YES \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
+
+      - name: Write Developer-ID exportOptions.plist
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>developer-id</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Developer ID Application</string>
+            <key>destination</key>
+            <string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Export the .app
+        working-directory: appApple
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/iHymns-macos.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+
+      # ---------------------------------------------------------------------
+      # Package: .app + /Applications symlink -> a compressed, read-only DMG.
+      # Plain `hdiutil` (no extra Homebrew formula) — see header §3.
+      # ---------------------------------------------------------------------
+      - name: Create the DMG
+        run: |
+          STAGING_DIR="$RUNNER_TEMP/dmg-staging"
+          mkdir -p "$STAGING_DIR"
+          cp -R "$RUNNER_TEMP/export/iHymns.app" "$STAGING_DIR/"
+          ln -s /Applications "$STAGING_DIR/Applications"
+
+          hdiutil create \
+            -volname "iHymns" \
+            -srcfolder "$STAGING_DIR" \
+            -ov -format UDZO \
+            "$RUNNER_TEMP/iHymns.dmg"
+
+      - name: Sign the DMG
+        run: |
+          IDENTITY="$(security find-identity -v -p codesigning "$DMG_KEYCHAIN_NAME" \
+            | grep "Developer ID Application" | head -1 \
+            | sed -E 's/^[[:space:]]*[0-9]+\)[[:space:]]+[A-F0-9]+[[:space:]]+"(.*)"$/\1/')"
+          codesign --sign "$IDENTITY" --timestamp "$RUNNER_TEMP/iHymns.dmg"
+          codesign --verify --verbose "$RUNNER_TEMP/iHymns.dmg"
+
+      # ---------------------------------------------------------------------
+      # Notarize with the SAME App Store Connect API key apple-deploy.yml
+      # already uses for TestFlight/App Store uploads — notarytool only
+      # accepts a KEY FILE path (not inline content), so ASC_API_KEY's raw
+      # .p8 contents are written to a temp file first and removed
+      # immediately after (mirrors Fastfile's own "sensitive file removed as
+      # soon as its one use is done" pattern for the distribution .p12).
+      # ---------------------------------------------------------------------
+      - name: Notarize the DMG
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_API_KEY: ${{ secrets.ASC_API_KEY }}
+        run: |
+          KEY_DIR="$RUNNER_TEMP/asc-key"
+          mkdir -p "$KEY_DIR"
+          KEY_PATH="$KEY_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          printf '%s' "$ASC_API_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          xcrun notarytool submit "$RUNNER_TEMP/iHymns.dmg" \
+            --key "$KEY_PATH" \
+            --key-id "$ASC_KEY_ID" \
+            --issuer "$ASC_ISSUER_ID" \
+            --wait \
+            --output-format json
+
+          rm -f "$KEY_PATH"
+
+      - name: Staple + verify the notarization ticket
+        run: |
+          xcrun stapler staple "$RUNNER_TEMP/iHymns.dmg"
+          xcrun stapler validate "$RUNNER_TEMP/iHymns.dmg"
+          spctl --assess --type open --context context:primary-signature -v "$RUNNER_TEMP/iHymns.dmg"
+
+      - name: Clean up ephemeral keychain
+        if: always()
+        run: |
+          security delete-keychain "$DMG_KEYCHAIN_NAME" 2>/dev/null || true
+
+      - name: Upload DMG as a workflow artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iHymns-macos-dmg-${{ github.sha }}
+          path: ${{ runner.temp }}/iHymns.dmg
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=macos-dmg-$(date -u +%Y%m%d%H%M)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release asset
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: iHymns macOS ${{ steps.tag.outputs.tag }}
+          files: ${{ runner.temp }}/iHymns.dmg
+          fail_on_unmatched_files: true

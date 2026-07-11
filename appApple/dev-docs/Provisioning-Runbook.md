@@ -3,7 +3,7 @@
 > **Click-level, owner-only** Apple provisioning steps for the native Universal app.
 > Companion to `.claude/apple-native-owner-runbook.md` (long-lead overview) and epic **#895**.
 > Nothing here is executable by the build agent — these are your Apple-account + iHymns-admin actions.
-> Last updated **2026-07-10** (in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2750.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**; **CI/CD pipeline hardening** — `project.yml` now declares `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` on `iHymns`+`iHymnsTV` (§2.2.B.1/§2.3.A.4 now DONE), and every "AASA returns 200" verification step below is **corrected**: a bare `200` is NOT proof the real responder is live — `beta.ihymns.app`/`ihymns.app`/`www.ihymns.app` all return `200` today but still serve a **stale legacy AASA with the WRONG appID**; only `dev.ihymns.app` serves the real one — see §1.2 Step 6, §2.1, §2.3.A.2, and the Verification-walkthrough Bucket B; **§2.4 expanded into a full click-by-click Simulator + real-device testing walkthrough** — project generation, per-platform Simulator runs (incl. the honest finding that `iHymnsTV`/`iHymnsWatch` still render only the Phase-0 `PhaseZeroSkeletonView` placeholder today, not real screens), the native macOS "Designed for iPad" run, the `APIEnvironment` runtime override (verified `DEBUG`-only, so it does NOT exist in a real TestFlight/App Store build), an honest multi-device Live-Follow/Service-Mode section (the LAN-direct remote is Phase-2 design-only per `IHLive/LiveFollowEngine.swift`'s own header — zero `NWBrowser`/Bonjour code exists yet — and the server-mediated engine is itself only a Phase-0 freshness-check skeleton with no UI wired to it), Accessibility Inspector + Environment Overrides for VoiceOver/Dynamic Type/contrast, real-device run steps, and a limitations table).
+> Last updated **2026-07-11** (added **§1.5 — Direct macOS DMG distribution**, #1510: a new signed + notarized `.dmg` GitHub Release pipeline, `.github/workflows/apple-dmg.yml`, gated behind its own `APPLE_DMG_ENABLED` kill-switch and two new secrets — entirely DORMANT/additive, does not change anything below). Previously (2026-07-10): in-app account deletion shipped — #1478; web Sign in with Apple W1–W3 + the §1.4 activation steps + its CSP allowance — #1471/#1480/#1484; version now **0.2750.0**; incorporates the owner Q&A corrections: Family Sharing N/A, APNs deferred, private-relay email optional; **CarPlay entitlement GRANTED** — §1.3 Step 4 rewritten for the enable steps; **§2 distribution-readiness walkthrough expanded to full click-by-click steps**; **CI/CD pipeline hardening** — `project.yml` now declares `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO` on `iHymns`+`iHymnsTV` (§2.2.B.1/§2.3.A.4 now DONE), and every "AASA returns 200" verification step below is **corrected**: a bare `200` is NOT proof the real responder is live — `beta.ihymns.app`/`ihymns.app`/`www.ihymns.app` all return `200` today but still serve a **stale legacy AASA with the WRONG appID**; only `dev.ihymns.app` serves the real one — see §1.2 Step 6, §2.1, §2.3.A.2, and the Verification-walkthrough Bucket B; **§2.4 expanded into a full click-by-click Simulator + real-device testing walkthrough** — project generation, per-platform Simulator runs (incl. the honest finding that `iHymnsTV`/`iHymnsWatch` still render only the Phase-0 `PhaseZeroSkeletonView` placeholder today, not real screens), the native macOS "Designed for iPad" run, the `APIEnvironment` runtime override (verified `DEBUG`-only, so it does NOT exist in a real TestFlight/App Store build), an honest multi-device Live-Follow/Service-Mode section (the LAN-direct remote is Phase-2 design-only per `IHLive/LiveFollowEngine.swift`'s own header — zero `NWBrowser`/Bonjour code exists yet — and the server-mediated engine is itself only a Phase-0 freshness-check skeleton with no UI wired to it), Accessibility Inspector + Environment Overrides for VoiceOver/Dynamic Type/contrast, real-device run steps, and a limitations table).
 
 ---
 
@@ -170,6 +170,50 @@
 > **Why it's not all migrations:** the Services ID + Website URLs (Steps 1–2) are Apple-portal identity artifacts PHP cannot create; the enable/config (Step 4) is a `tblAppSettings` write, not a schema change. Only Step 3 is an actual migration — and it's usually already done.
 
 > **Web sign-in does NOT need the `.p8` / Team ID / Key ID** (unlike the *native* revoke path in §1.2). The web flow authenticates by verifying Apple's `id_token` against Apple's **public** JWKS (`appleSiwaVerifyIdentityToken()`) — no secret required — so Steps 1–4 are sufficient for sign-in. The `authorizationCode`→token exchange that *does* use the `.p8` is best-effort and only captures a **refresh token**; without it, sign-in still succeeds and only the **account-deletion Apple-revoke** for web users degrades to `skipped_no_token`. Provision the `.p8`/Team ID/Key ID (same creds as native) before **production** for a complete revoke path — not a blocker for alpha.
+
+---
+
+## §1.5 — Direct macOS DMG distribution (#1510)
+
+> **Owner-only, DORMANT until you complete these steps.** The App Store ("Designed for iPad" compatibility, §2.3.D) is the **primary** way people get iHymns on a Mac. This section adds a **second, independent** channel: a signed + notarized `.dmg` published as a **GitHub Release asset**, for anyone you want to hand the app to directly (no App Store account, no review wait). Pipeline: `.github/workflows/apple-dmg.yml`. It runs **nothing** until you complete every step below — it is gated behind its own kill-switch variable, separate from `apple-deploy.yml`'s.
+
+### Step 1 — Create a Developer ID Application certificate *(a DIFFERENT identity from the one §2.2.A.3 already created)*
+
+> ⚠️ **Do not reuse the "Apple Distribution" certificate from §2.2.A.3.** TestFlight/App Store uploads and direct (outside-the-App-Store) distribution use two genuinely different Apple certificate *types* — Xcode's Developer-ID export step specifically looks for a **Developer ID Application** identity.
+
+1. **developer.apple.com/account** → **Certificates, Identifiers & Profiles** → **Certificates** → **➕**.
+2. Choose **Developer ID Application** (listed under "Software" — NOT "Apple Distribution" or "Apple Development").
+3. Follow Apple's CSR prompt — on a Mac: **Keychain Access → Certificate Assistant → Request a Certificate from a Certificate Authority…** → save the `.certSigningRequest` → upload it on Apple's page.
+4. **Download** the resulting `.cer` → double-click to install it into **Keychain Access** (login keychain) → right-click the new certificate → **Export "Developer ID Application: …"…** → save as a **`.p12`**, choosing an export password when prompted.
+5. **Good** = you're holding a `.p12` file and its password. Store both in your password manager — the `.p12` itself only needs to live in the GitHub secret afterward, not on disk.
+
+### Step 2 — Base64-encode the `.p12` and paste it into GitHub
+
+1. On the Mac holding the `.p12`: `base64 -i "Developer ID Application.p12" | pbcopy`.
+2. **GitHub web UI** (this project's standing preference — visual confirmation per secret, nothing passes through a CLI): repo → **Settings → Secrets and variables → Actions → Secrets tab → New repository secret**.
+
+   | Secret name | Value / where it comes from |
+   |---|---|
+   | `APPLE_DEVELOPER_ID_CERT` | the base64 text just copied (the WHOLE output, not the raw `.p12` binary) |
+   | `APPLE_DEVELOPER_ID_CERT_PASSWORD` | the export password from Step 1.5 |
+
+3. **Good** = both secret names show under **Settings → Secrets and variables → Actions** (values stay hidden after saving — expected). These are **new** secrets, distinct from the nine `apple-deploy.yml` already reads (§2.2.A.4) — the workflow never touches those.
+
+### Step 3 — Flip the kill-switch variable
+
+1. Same screen, **Variables** tab instead of **Secrets** → **New repository variable**.
+2. **Name**: `APPLE_DMG_ENABLED`. **Value**: `true`.
+3. **Good** = the very next manual run (or `v*` tag push) of "Apple macOS DMG" actually archives/notarizes/publishes instead of the `build` job showing **Skipped**. Leave this **unset** (or anything other than `true`) until Steps 1–2 are both done — the workflow's own `guard` job posts a `::notice::` on every run stating whether it's enabled or disabled, so you always know which state you're in without opening the skipped job.
+
+### Step 4 — Run it
+
+- **Manual**: repo → **Actions** tab → **Apple macOS DMG** (left sidebar) → **Run workflow** → optionally fill in a **tag** (e.g. `v0.2500.0-macos`) to name the Release; leave blank and it generates a timestamped tag automatically.
+- **Automatic**: push a `v*`-shaped git tag (e.g. `git tag v0.2500.0 && git push origin v0.2500.0`) — no path filter, so any tag push triggers it once the kill-switch is on.
+- **Good** = a new entry appears under repo → **Releases**, with `iHymns.dmg` attached as a downloadable asset. Anyone downloading it, double-clicking, and dragging the app to `/Applications` should see Gatekeeper open it without a warning (notarization + stapling verified) — try this yourself once on a **different** Mac (or one that's never trusted your Developer ID before) before handing it out widely.
+
+### Not yet verified — read before relying on this for a real release
+
+The build agent could not exercise this pipeline end-to-end (no real Mac / real Apple Developer assets available in that session) — `.github/workflows/apple-dmg.yml`'s own header comment flags the specific open questions (exact archive destination string, whether manual signing needs a Developer-ID provisioning profile because of the Associated-Domains entitlement, DMG tool choice). **Run it once yourself and watch the log carefully** before treating a future tag push as a routine, unattended release step.
 
 ---
 
