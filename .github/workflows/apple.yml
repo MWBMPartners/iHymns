@@ -76,6 +76,15 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      # The generic tvOS-Simulator destination below needs the tvOS 26.0
+      # platform, which is NOT preinstalled on the GitHub-hosted macos-26
+      # runner ("tvOS 26.0 is not installed. Please download and install the
+      # platform from Xcode > Settings > Components") — the macOS build above
+      # works because the macOS SDK is always present. Same fix apple-deploy.yml
+      # applies for the platforms IT archives; here only tvOS is needed (#1504).
+      - name: Install tvOS platform (runner ships without it, #1504)
+        run: sudo xcodebuild -downloadPlatform tvOS
+
       - name: Build (tvOS Simulator destination — proves the projection shell, #1504)
         working-directory: appApple
         run: |
