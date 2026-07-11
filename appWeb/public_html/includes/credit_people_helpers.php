@@ -41,6 +41,39 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
+/**
+ * iHymns — shared "read a form/JSON field as a trimmed string" helper (#trim).
+ *
+ * ELI5: whenever we pull a value a curator typed or pasted (a name, a
+ * URL, an ISNI/IPI/VIAF number, a note) out of `$_POST` or a JSON-decoded
+ * sub-form row, run it through here FIRST. It strips leading/trailing
+ * whitespace — spaces, tabs, newlines (PHP's trim() default charlist,
+ * @link https://www.php.net/manual/en/function.trim.php) — so a value
+ * pasted with an accidental trailing newline (a common paste artefact
+ * from a browser address bar or a spreadsheet cell) never lands in a
+ * UNIQUE-keyed identifier column or a stored URL with stray whitespace.
+ *
+ * DETAILED / WHY a helper instead of inline `trim((string)($x ?? ''))`
+ * everywhere: every credit-person add/update/rename/merge handler in
+ * credit-people.php, plus every repeating sub-form normaliser below
+ * (links / IPI / ISNI / other-identifiers / aliases), needs the exact
+ * same idiom on the exact same shape of input. Before this helper the
+ * idiom was duplicated by hand at each call site; one typo'd copy (e.g.
+ * forgetting the `(string)` cast, or forgetting the call entirely on a
+ * newly-added field) would silently reintroduce an un-trimmed gap in
+ * exactly one field with no test to catch it. ONE function = one place
+ * to audit/fix — never re-duplicate this per field (project modularity
+ * rule, see `.claude/CLAUDE.md`).
+ *
+ * Accepts `mixed` because both `$_POST` values (string|array|null) and
+ * JSON-decoded sub-form rows can hand back a non-string scalar (int,
+ * bool) for a field a curator left as a bare numeric literal.
+ */
+function cpTrimmed(mixed $v): string
+{
+    return trim((string)($v ?? ''));
+}
+
 /* =========================================================================
  * AUTHORITY-CONTROL IDENTIFIER REGISTRY (#1367)
  *
@@ -157,7 +190,7 @@ function creditIdentifierValidate(string $type, string $value): bool
  */
 function creditIdentifierNormalise(string $type, string $value): string
 {
-    $value = trim($value);
+    $value = cpTrimmed($value); // #trim
     if ($value === '') return $value;
     $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
     if ($reg === null) return $value;
@@ -188,7 +221,7 @@ function creditIdentifierNormalise(string $type, string $value): string
  */
 function creditIdentifierExtractFromUrl(string $url): ?array
 {
-    $url = trim($url);
+    $url = cpTrimmed($url); // #trim
     if ($url === '') return null;
     foreach (CREDIT_IDENTIFIER_TYPES as $slug => $def) {
         foreach ($def['extract'] as $body) {
@@ -349,7 +382,7 @@ function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $raw
     if ($typeId > 0 && isset($registryIds[$typeId])) return $typeId;
 
     /* Legacy shape — coerce the slug via the alias map, then look up. */
-    $slugIn = trim((string)($rawSlug ?? ''));
+    $slugIn = cpTrimmed($rawSlug ?? ''); // #trim
     if ($slugIn === '') return null;
     $resolved = CREDIT_PERSON_LEGACY_SLUG_MAP[mb_strtolower($slugIn)] ?? 'other';
     return $slugToId[$resolved] ?? null;
@@ -380,14 +413,14 @@ function normaliseCreditPersonLinks(\mysqli $db, mixed $raw): array
     $out = [];
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $url = trim((string)($row['url'] ?? ''));
+        $url = cpTrimmed($row['url'] ?? ''); // #trim
         if ($url === '') continue;
         $typeId = resolveCreditPersonLinkTypeId($db, $row['type_id'] ?? null, $row['type'] ?? null);
         if ($typeId === null) continue;
         $out[] = [
             'type_id'    => $typeId,
             'url'        => $url,
-            'label'      => trim((string)($row['label'] ?? '')) ?: null,
+            'label'      => cpTrimmed($row['label'] ?? '') ?: null, // #trim
             'sort_order' => (int)($row['sort_order'] ?? $i),
         ];
     }
@@ -407,12 +440,12 @@ function normaliseCreditPersonIpi(mixed $raw): array
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $num = trim((string)($row['number'] ?? ''));
+        $num = cpTrimmed($row['number'] ?? ''); // #trim
         if ($num === '') continue;
         $out[] = [
             'number'    => $num,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -447,12 +480,12 @@ function normaliseCreditPersonIsni(mixed $raw): array
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $raw_id = trim((string)($row['number'] ?? ''));
+        $raw_id = cpTrimmed($row['number'] ?? ''); // #trim
         if ($raw_id === '') continue;
         $out[] = [
             'number'    => canonicaliseIsni($raw_id),
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -798,7 +831,7 @@ function registerCreditPersonByName(
     string  $name,
     ?array  $parts = null
 ): int {
-    $name = trim($name);
+    $name = cpTrimmed($name); // #trim
     if ($name === '') return 0;
 
     /* Fast path: row already exists. */
@@ -941,19 +974,19 @@ function normaliseCreditPersonAliases(mixed $raw): array
     $seen = []; /* dedupe by (lower-cased) name within the request */
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $name = trim((string)($row['name'] ?? ''));
+        $name = cpTrimmed($row['name'] ?? ''); // #trim
         if ($name === '') continue;
         if (mb_strlen($name) > 255) $name = mb_substr($name, 0, 255);
         $key = mb_strtolower($name);
         if (isset($seen[$key])) continue;
         $seen[$key] = true;
 
-        $type = trim((string)($row['type'] ?? 'other'));
+        $type = cpTrimmed($row['type'] ?? 'other'); // #trim
         if (!in_array($type, CREDIT_PERSON_ALIAS_TYPE_KEYS, true)) $type = 'other';
 
-        $sortName = trim((string)($row['sort_name'] ?? ''));
-        $locale   = trim((string)($row['locale']    ?? ''));
-        $note     = trim((string)($row['note']      ?? ''));
+        $sortName = cpTrimmed($row['sort_name'] ?? ''); // #trim
+        $locale   = cpTrimmed($row['locale']    ?? ''); // #trim
+        $note     = cpTrimmed($row['note']      ?? ''); // #trim
 
         $out[] = [
             'name'        => $name,

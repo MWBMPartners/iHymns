@@ -121,14 +121,16 @@ $normaliseOtherId = static function (mixed $raw): array {
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        /* Lowercase + trim the type, then gate on the allow-list so a
-           hand-crafted POST can't smuggle an unrecognised IdentifierType. */
-        $type = strtolower(trim((string)($row['type'] ?? '')));
+        /* Lowercase + trim (#trim, cpTrimmed() — shared helper, see
+           includes/credit_people_helpers.php) the type, then gate on the
+           allow-list so a hand-crafted POST can't smuggle an unrecognised
+           IdentifierType. */
+        $type = strtolower(cpTrimmed($row['type'] ?? ''));
         if (!in_array($type, $allowed, true)) continue;
         /* Skip rows with no identifier value — an empty row is just an
            unfilled template the curator left behind (rejected silently,
            never validated). */
-        $value = trim((string)($row['value'] ?? ''));
+        $value = cpTrimmed($row['value'] ?? ''); // #trim
         if ($value === '') continue;
         /* #1367 — the curator may have pasted the full authority URL into the
            value box; fold it back to the bare id BEFORE validation so both
@@ -141,8 +143,8 @@ $normaliseOtherId = static function (mixed $raw): array {
         $out[] = [
             'type'      => $type,
             'value'     => $value,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -266,10 +268,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * add — create a new registry row (+ optional child rows)
              * -------------------------------------------------------- */
             case 'add': {
-                $name        = trim((string)($_POST['name']         ?? ''));
-                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
-                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                /* #trim — every free-text/identifier field is read via the
+                   shared cpTrimmed() helper (includes/credit_people_helpers.php)
+                   so leading/trailing whitespace (spaces, tabs, newlines —
+                   a common paste artefact) never reaches validation/storage. */
+                $name        = cpTrimmed($_POST['name']         ?? '');
+                $notesRaw    = cpTrimmed($_POST['notes']        ?? '');
+                $birthPlace  = cpTrimmed($_POST['birth_place']  ?? '') ?: null;
+                $deathPlace  = cpTrimmed($_POST['death_place']  ?? '') ?: null;
                 /* Partial birth/death dates — parse the flexible curator
                    input (YYYY / MM/YYYY / DD/MM/YYYY) into a normalised
                    DATE + a precision flag via the shared partial_date
@@ -313,9 +319,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    is recomputed from the three parts so the canonical
                    spelling stays consistent regardless of what the
                    client posted. */
-                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
-                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
-                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $firstNamesRaw = cpTrimmed($_POST['first_names'] ?? ''); // #trim
+                $surnameRaw    = cpTrimmed($_POST['surname']     ?? ''); // #trim
+                $suffixRaw     = cpTrimmed($_POST['suffix']      ?? ''); // #trim
                 $isIndividual  = (!$isSpecialCase && !$isGroup);
                 if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
                     $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
@@ -533,10 +539,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * -------------------------------------------------------- */
             case 'update_person': {
                 $id          = (int)($_POST['id']          ?? 0);
-                $name        = trim((string)($_POST['name']         ?? ''));
-                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
-                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                /* #trim — see the shared cpTrimmed() helper's docblock in
+                   includes/credit_people_helpers.php. */
+                $name        = cpTrimmed($_POST['name']         ?? '');
+                $notesRaw    = cpTrimmed($_POST['notes']        ?? '');
+                $birthPlace  = cpTrimmed($_POST['birth_place']  ?? '') ?: null;
+                $deathPlace  = cpTrimmed($_POST['death_place']  ?? '') ?: null;
                 /* Partial birth/death dates — same flexible-input parse as
                    the add handler (YYYY / MM/YYYY / DD/MM/YYYY → DATE +
                    precision). The UPDATE keeps writing $birthDate/$deathDate;
@@ -568,9 +576,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    / Surname / Suffix without triggering it as long as
                    the composed Name matches the stored Name. For Group
                    / Special-case rows the three columns get NULL'd. */
-                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
-                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
-                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $firstNamesRaw = cpTrimmed($_POST['first_names'] ?? ''); // #trim
+                $surnameRaw    = cpTrimmed($_POST['surname']     ?? ''); // #trim
+                $suffixRaw     = cpTrimmed($_POST['suffix']      ?? ''); // #trim
                 $isIndividual  = (!$isSpecialCase && !$isGroup);
                 if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
                     $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
@@ -777,8 +785,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * -------------------------------------------------------- */
             case 'rename': {
                 $id          = (int)($_POST['id'] ?? 0);
-                $sourceName  = trim((string)($_POST['source_name'] ?? ''));
-                $newName     = trim((string)($_POST['new_name'] ?? ''));
+                $sourceName  = cpTrimmed($_POST['source_name'] ?? ''); // #trim
+                $newName     = cpTrimmed($_POST['new_name'] ?? '');    // #trim
 
                 if ($id <= 0 && $sourceName === '') { $error = 'Person id or source name missing.'; break; }
                 if ($newName === '')           { $error = 'New name is required.'; break; }
@@ -896,8 +904,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'merge': {
                 $sourceId   = (int)($_POST['source_id'] ?? 0);
                 $targetId   = (int)($_POST['target_id'] ?? 0);
-                $sourceName = trim((string)($_POST['source_name'] ?? ''));
-                $targetName = trim((string)($_POST['target_name'] ?? ''));
+                $sourceName = cpTrimmed($_POST['source_name'] ?? ''); // #trim
+                $targetName = cpTrimmed($_POST['target_name'] ?? ''); // #trim
                 $keepLinks  = array_map('intval', (array)($_POST['keep_link_ids'] ?? []));
                 $keepIpi    = array_map('intval', (array)($_POST['keep_ipi_ids']  ?? []));
 
@@ -2747,6 +2755,34 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let isniIndex  = 0;
             let otherIdIndex = 0; // #1348
             let aliasIndex = 0;
+
+            /* #trim — client-side UX half of the whitespace-trim fix (the
+               server side is the shared cpTrimmed() PHP helper). ELI5: as
+               soon as a curator pastes or tabs away from a text field, any
+               accidental leading/trailing whitespace is stripped so what
+               they SEE matches what actually gets saved — no surprise
+               later ("why doesn't this ISNI match?" turned out to be a
+               trailing space only the server silently cleaned up).
+               ONE delegated listener (capture phase — 'blur'/'focusout'
+               don't bubble the same way `input` does) on the whole drawer
+               form covers every current AND future text field/sub-form row
+               (name, notes, first/sur/suffix names, birth/death place free
+               text, every links[]/ipi[]/isni[]/otherid[]/aliases[] text
+               input) — never re-attach a per-field listener as new rows
+               are dynamically added. */
+            function cpTrimFieldNow(el) {
+                if (!el || typeof el.matches !== 'function') return;
+                if (!el.matches('input[type="text"], input[type="url"], textarea')) return;
+                const trimmed = el.value.replace(/^\s+|\s+$/g, '');
+                if (trimmed !== el.value) el.value = trimmed;
+            }
+            form.addEventListener('blur', (ev) => cpTrimFieldNow(ev.target), true);
+            form.addEventListener('paste', (ev) => {
+                /* The pasted text hasn't landed in .value yet while the
+                   'paste' event itself is handling — defer one tick. */
+                const el = ev.target;
+                window.setTimeout(() => cpTrimFieldNow(el), 0);
+            }, true);
 
             /* Wire each credit-people link row to the shared
                iHymnsLinkDetect module. The dropdown's option values
