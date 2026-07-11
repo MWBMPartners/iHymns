@@ -56,11 +56,38 @@ public protocol LANRemotePairingAuthority: Sendable {
     /// ELI5: "Remember this new remote from now on."
     func registerPairedToken(_ token: String) async
 
+    /// Records `token` as belonging to a newly-paired remote, ALONGSIDE
+    /// its `metadata` (device name/kind/paired-at, for the trusted-remotes
+    /// Settings list) — #1421 (PR-6 spec §2's protocol-extension pattern):
+    /// a NEW requirement added to this ALREADY-SHIPPED (PR-4/#1420)
+    /// protocol, with a forwarding default below so `InMemoryLANRemotePairingAuthority`
+    /// (this file) and any PR-4-era test double compile UNCHANGED.
+    ///
+    /// ELI5: "Remember this new remote from now on, plus its name and what
+    /// kind of device it is."
+    func registerPairedToken(_ token: String, metadata: LANRemotePairingMetadata) async
+
     /// Forgets `token` — the "revoke per-remote in TV Settings" action
     /// strategy §2.4.3 names (PR-6/PR-7's UI, this is its data-layer hook).
     ///
     /// ELI5: "Forget this remote — it can't control the TV anymore."
     func revokePairedToken(_ token: String) async
+}
+
+/// Default witness for the metadata-carrying registration overload above —
+/// #1421 (PR-6 spec §2): forwards to the pre-existing single-argument
+/// `registerPairedToken(_:)`, discarding the metadata, so a conformer that
+/// predates #1421 (this file's own `InMemoryLANRemotePairingAuthority`)
+/// keeps compiling with ZERO source changes. `KeychainLANRemotePairingAuthority`
+/// (`KeychainLANRemotePairingAuthority.swift`, #1421) implements the
+/// metadata-carrying overload directly instead — Swift's protocol-witness
+/// dispatch prefers a conformer's OWN matching method over this default
+/// even when called through the `any LANRemotePairingAuthority` existential
+/// `TVListenerActor.Configuration.pairingAuthority` holds.
+extension LANRemotePairingAuthority {
+    public func registerPairedToken(_ token: String, metadata: LANRemotePairingMetadata) async {
+        await registerPairedToken(token)
+    }
 }
 
 /// A simple, non-persistent `LANRemotePairingAuthority` — what
