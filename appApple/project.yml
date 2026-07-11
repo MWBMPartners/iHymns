@@ -216,6 +216,16 @@ targets:
         # its own answer to the Export Compliance question, not just the
         # iOS target's.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # #1421 (PR-6 spec §6.4, Decision D-8) — belt-and-braces, NOT
+        # load-bearing: per Apple TN3179 (Local Network Privacy), LISTENING
+        # for incoming connections and ADVERTISING a Bonjour service (both
+        # of which `TVListenerActor`/`TVRemoteControlCoordinator` do) are
+        # NOT restricted operations that trigger the Local Network
+        # permission prompt — only BROWSING/outgoing local-network traffic
+        # does, which is PR-7's `NWBrowser`-side concern on the `iHymns`
+        # target, not this one. This key is added defensively in case
+        # on-device testing shows tvOS prompting anyway.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "iHymns uses your local network so iPhones and iPads you pair can act as remote controls for this TV."
     dependencies:
       - package: iHymnsKit
         products: [IHFeatures, IHDesign]
