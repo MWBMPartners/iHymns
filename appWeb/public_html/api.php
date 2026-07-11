@@ -13824,6 +13824,9 @@ if ($action !== null) {
             $venueId = (int)($body['venueId'] ?? 0);  /* OPTIONAL — 0 = resolve by code+channel alone (congregant typed it off the screen). */
             $deviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($body['presenceDeviceId'] ?? ''));
             $deviceId = mb_substr($deviceId, 0, 64);
+            /* #1406 — optional client-declared role (congregant | projector),
+               fail-open to 'congregant' on anything unrecognised or absent. */
+            $joinRole = serviceMode_cleanPresenceRole($body['role'] ?? null);
             if ($code === '' || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
 
             $db = getDbMysqli();
@@ -13853,22 +13856,41 @@ if ($action !== null) {
             $occDate = $sess['OccurrenceDate'] !== null ? (string)$sess['OccurrenceDate'] : null;
 
             /* Upsert presence: one row per (session, device); a re-join reactivates
-               + re-tokens rather than duplicating (uq_DeviceSession). */
-            $ins = $db->prepare(
-                "INSERT INTO tblServicePresence
-                    (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
-                     PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
-                 ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
-                     LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
-            );
-            $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+               + re-tokens rather than duplicating (uq_DeviceSession). Role (#1406)
+               is columnExists-gated so this stays dormant-safe pre-migration.
+               NOTE — this also fixes a pre-existing bind_param type-string/
+               variable-count mismatch in the no-Role branch ('iiiissssss' was
+               10 chars for only 9 bound variables, which throws ArgumentCountError
+               on PHP 8.1+ on every call; confirmed against a live mysqli
+               connection during this change). */
+            if (serviceMode_presenceRoleColumnExists($db)) {
+                $ins = $db->prepare(
+                    "INSERT INTO tblServicePresence
+                        (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                         PresenceDeviceId, PresenceToken, Role, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                     ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken), Role = VALUES(Role),
+                         LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                );
+                $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $joinRole, $expiresAt);
+            } else {
+                $ins = $db->prepare(
+                    "INSERT INTO tblServicePresence
+                        (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                         PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                     ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
+                         LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                );
+                $ins->bind_param('iiiisssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+            }
             $ins->execute();
             $ins->close();
 
             sendJson([
                 'ok' => true,
                 'presenceToken' => $token,
+                'pollIntervalMs' => serviceMode_pollIntervalMs($joinRole),
                 'currentSongId' => $m['CurrentSongId'] ?? null,
                 'componentIndex' => isset($m['CurrentComponentIndex']) ? (int)$m['CurrentComponentIndex'] : null,
                 'state' => isset($m['StateJson']) && $m['StateJson'] !== null ? json_decode((string)$m['StateJson'], true) : null,
@@ -13882,12 +13904,21 @@ if ($action !== null) {
             $token = (string)($_GET['presenceToken'] ?? '');
             if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['active' => false]); break; }
             $since = max(0, (int)($_GET['since'] ?? 0));
-            /* NAT-safe: rate-limit PER TOKEN (not per IP) so many congregants
-               behind one IP each get their own budget, and one bad token can't
-               DoS the rest. 40/min comfortably covers ~2.5s polling. */
-            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), 40, 60, false, null);
 
             $db = getDbMysqli();
+
+            /* #1406 — per-role poll budget: a projector polls near-1s cadence so
+               the existing flat 40/min (sized for a ~2.5s congregant phone) would
+               throttle it. Resolve the presence row's declared Role FIRST (cheap
+               indexed lookup on the same uq_Token unique key the main query below
+               also hits) so the rate-limit decision uses the right bucket size —
+               columnExists-gated, fail-open 'congregant' pre-migration. Still
+               PER PRESENCE TOKEN, never per-IP (rule #26 — a NAT-shared
+               congregation is one IP). */
+            $pollRole = serviceMode_presenceRole($db, $token);
+            $pollMax  = ($pollRole === 'projector') ? 90 : 40;
+            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), $pollMax, 60, false, null);
+
             $channel = serviceMode_channel();
             /* Unified freshness window (was 120s — aligned to Live Follow's 180s,
                #1386). Trusted int constant, interpolated (not a bound value). */

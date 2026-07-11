@@ -63,6 +63,22 @@ const SERVICE_MODE_CODE_ALPHABET      = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 const SERVICE_DISPLAY_STATES = ['live', 'blackout', 'logo'];
 
 /**
+ * Server-declared per-role poll cadence (#1406). Keys are tblAppSettings
+ * overrides (a freeform key/value store - no migration needed to add a key);
+ * the literal ints are the dormant-safe fallback while the setting is unset.
+ * A projector polls faster (near-1s) than a congregant's phone (2.5s is
+ * plenty for song-follow) because a stale TV/projector image is the most
+ * visible failure in the room.
+ */
+const SERVICE_MODE_POLL_MS_CONGREGANT_KEY     = 'service_poll_interval_congregant_ms';
+const SERVICE_MODE_POLL_MS_PROJECTOR_KEY      = 'service_poll_interval_projector_ms';
+const SERVICE_MODE_POLL_MS_CONGREGANT_DEFAULT = 2500;
+const SERVICE_MODE_POLL_MS_PROJECTOR_DEFAULT  = 1000;
+
+/** Presence roles (#1406) - VARCHAR app-validated, never an ENUM (rule #20). */
+const SERVICE_MODE_PRESENCE_ROLES = ['congregant', 'projector'];
+
+/**
  * The environment channel a Service-Mode row belongs to ('alpha'|'beta'|
  * 'production'). The 3-docroot discriminator — stamped at create, filtered
  * everywhere so cross-env sessions never leak (the prod-stale class of bug).
@@ -299,6 +315,96 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     return $row ?: null;
+}
+
+/**
+ * #1406 — cached probe: does `tblServicePresence.Role` exist yet? Gates every
+ * Role read/write so `service_join`/`service_poll` stay dormant-safe on an
+ * un-migrated install (the column ships via the Phase-2 schema batch,
+ * `migrate-apple-phase2-live-schema.php`). Mirrors the established
+ * `tierCapsColumnExists()` (access_tier_validation.php) /
+ * `creditPersonMembersTableExists()` (credit_people_helpers.php) pattern —
+ * one INFORMATION_SCHEMA round-trip, memoised for the rest of the request.
+ */
+function serviceMode_presenceRoleColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblServicePresence'
+                AND COLUMN_NAME  = 'Role' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* Probe failure — degrade as "not migrated yet" (fail closed on the
+           column, fail OPEN on the caller's behaviour: everyone is treated as
+           'congregant', never blocked). */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1406 — resolve a presence token's declared Role for the per-role poll
+ * budget. Fail-open to 'congregant' pre-migration, on any lookup error, or
+ * for an unknown token (the caller's own gate — `service_poll`'s main SELECT
+ * — is what actually rejects an unknown/expired token; this never widens
+ * that check, it only picks which rate-limit bucket applies).
+ */
+function serviceMode_presenceRole(\mysqli $db, string $presenceToken): string
+{
+    if (!serviceMode_presenceRoleColumnExists($db)) {
+        return 'congregant';
+    }
+    try {
+        $stmt = $db->prepare('SELECT Role FROM tblServicePresence WHERE PresenceToken = ? LIMIT 1');
+        $stmt->bind_param('s', $presenceToken);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $role = (string)($row['Role'] ?? '');
+        return $role === 'projector' ? 'projector' : 'congregant';
+    } catch (\Throwable $_e) {
+        return 'congregant';
+    }
+}
+
+/**
+ * #1406 — validate a client-declared join role against the closed vocabulary.
+ * Anything unrecognised (including absent) fails OPEN to 'congregant' —
+ * never blocks a join over a role the client mis-typed.
+ */
+function serviceMode_cleanPresenceRole(mixed $role): string
+{
+    $normalised = is_string($role) ? strtolower(trim($role)) : '';
+    return in_array($normalised, SERVICE_MODE_PRESENCE_ROLES, true) ? $normalised : 'congregant';
+}
+
+/**
+ * #1406 — server-declared poll cadence in milliseconds for the given role.
+ * Admin-tunable via tblAppSettings (SERVICE_MODE_POLL_MS_*_KEY); falls back to
+ * the hardcoded default when the setting is absent, non-numeric, or
+ * `getAppSetting()` itself isn't loaded (defensive — this file has no hard
+ * dependency on includes/maintenance.php).
+ */
+function serviceMode_pollIntervalMs(string $role): int
+{
+    $projector = ($role === 'projector');
+    $key       = $projector ? SERVICE_MODE_POLL_MS_PROJECTOR_KEY : SERVICE_MODE_POLL_MS_CONGREGANT_KEY;
+    $default   = $projector ? SERVICE_MODE_POLL_MS_PROJECTOR_DEFAULT : SERVICE_MODE_POLL_MS_CONGREGANT_DEFAULT;
+    if (!function_exists('getAppSetting')) {
+        return $default;
+    }
+    $raw = getAppSetting($key, (string)$default);
+    $ms  = (int)($raw ?? $default);
+    return $ms > 0 ? $ms : $default;
 }
 
 /**
