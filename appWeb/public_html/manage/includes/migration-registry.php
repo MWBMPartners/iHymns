@@ -2597,9 +2597,13 @@ return [
                       . 'and creates <code>tblAuthDeviceCodes</code> (RFC 8628 device-code pairing, #1407), '
                       . '<code>tblSessionControlTokens</code> (scoped remote-control delegation, #1408), and '
                       . '<code>tblApnsTokens</code> (device + Live Activity push tokens, #1410). '
-                      . 'Entirely dormant — no endpoint reads/writes the three new tables yet, and the two '
-                      . 'ALTERed columns are additive/nullable-or-defaulted so every existing row and read/'
-                      . 'write keeps working unchanged. Additive, idempotent — safe to re-run.',
+                      . '<code>tblAuthDeviceCodes</code> now has real consumers — the '
+                      . '<code>auth_device_code_request</code>/<code>_poll</code>/<code>_link_lookup</code>/'
+                      . '<code>_approve</code>/<code>_deny</code> API actions + the <code>/link</code> page '
+                      . '(#1407, table-existence-gated so this card must be applied first) — while '
+                      . '<code>tblSessionControlTokens</code>/<code>tblApnsTokens</code> and the two ALTERed '
+                      . 'columns stay dormant (additive/nullable-or-defaulted, no existing read/write changes) '
+                      . 'until their own PRs (#1408/#1409/#1410) ship. Additive, idempotent — safe to re-run.',
             'button' => 'Run Apple Phase-2 Live Schema Migration',
         ],
         /* Multi-object OR-probe (rule #19): pending until EVERY one of the five

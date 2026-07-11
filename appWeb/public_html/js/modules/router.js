@@ -275,6 +275,15 @@ export class Router {
                 return { page: 'setlist', params: {} };
             case 'settings':
                 return { page: 'settings', params: {} };
+            case 'link': {
+                /* RFC 8628 device-code pairing "Link a device" page (#1407).
+                   Forwards an optional ?user_code= from the verification_uri_
+                   complete deep link (RFC 8628 §3.3, e.g. a QR code/on-screen
+                   URL a TV shows) through to the server-rendered prefill. */
+                const sp = new URLSearchParams(window.location.search || '');
+                const userCode = (sp.get('user_code') || '').trim();
+                return { page: 'link', params: userCode ? { user_code: userCode.slice(0, 20) } : {} };
+            }
             case 'stats':
             case 'statistics':
                 return { page: 'stats', params: {} };
@@ -393,6 +402,12 @@ export class Router {
         }
         if (params.number) {
             url.searchParams.set('number', params.number);
+        }
+        /* Device-code pairing deep-link prefill (#1407) — forwarded straight
+           through so link.php can echo it (normalised) into the code input's
+           value attribute server-side, same pattern as songbook/number above. */
+        if (params.user_code) {
+            url.searchParams.set('user_code', params.user_code);
         }
 
         return url.toString();
@@ -538,6 +553,7 @@ export class Router {
             'setlist': 'Set Lists — ' + appName,
             'setlist-shared': 'Shared Set List — ' + appName,
             'settings': 'Settings — ' + appName,
+            'link': 'Link a Device — ' + appName,
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
             'help': 'Help — ' + appName,
@@ -749,6 +765,13 @@ export class Router {
         /* Initialise settings controls on settings page */
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
+        }
+
+        /* Device-code pairing "Link a device" page (#1407). */
+        if (page === 'link') {
+            import('./device-link.js')
+                .then(m => m.bootDeviceLinkPage())
+                .catch(err => console.error('[Router] device-link init failed:', err));
         }
 
         /* After the new page HTML is in the DOM, broadcast the current auth

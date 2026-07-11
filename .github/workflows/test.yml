@@ -438,6 +438,22 @@ jobs:
           php tests/php/test-analytics-ingest.php
 
       # -----------------------------------------------------------------------
+      # Step 5m: RFC 8628 device-code pairing (#1407)
+      # Exercises the pure user_code minter/normaliser (Crockford alphabet
+      # round-trip, invalid-length/-glyph/-type rejection), then structurally
+      # guards api.php's five auth_device_code_* case bodies: every one is
+      # authDeviceCodesTableExists()-gated (dormancy), approve/deny call
+      # validateCsrfRequest() + require an authenticated user, and — the
+      # load-bearing privacy contract — NO logActivity() breadcrumb anywhere
+      # in the family ever references the device_code/user_code or a
+      # hash/substr of either.
+      # -----------------------------------------------------------------------
+      - name: RFC 8628 device-code pairing (#1407)
+        run: |
+          echo "Running device-code pairing helper + breadcrumb-hygiene test..."
+          php tests/php/test-device-code.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -640,3 +656,6 @@ jobs:
 
       - name: Analytics-ingestion validation (#1448)
         run: php tests/php/test-analytics-ingest.php
+
+      - name: RFC 8628 device-code pairing (#1407)
+        run: php tests/php/test-device-code.php

@@ -424,6 +424,16 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'settings.php';
             break;
 
+        case 'link':
+            /* RFC 8628 device-code pairing (#1407) — the page a human visits
+               (from a TV screen's on-screen URL, or a QR/`verification_uri_
+               complete` deep link) to approve a limited-input client's
+               sign-in request. Auth-required + user-specific (like
+               settings/favorites/setlist), so deliberately NOT added to
+               $_cacheablePages below. */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'link.php';
+            break;
+
         case 'stats':
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'stats.php';
             break;
@@ -5245,6 +5255,312 @@ if ($action !== null) {
 
             sendJson(['ok' => true, 'deleted' => true]);
             break;
+
+        /* =================================================================
+         * RFC 8628 DEVICE-CODE PAIRING (#1407)
+         *
+         * A limited-input client (tvOS today) can't type a username/
+         * password. It POSTs `auth_device_code_request` to get a
+         * device_code (kept secret, polled with) + a short user_code
+         * (shown on-screen); a human enters that user_code at /link on a
+         * device they're already signed into and approves/denies; the
+         * limited-input client keeps POSTing `auth_device_code_poll` until
+         * it gets back a normal iHymns bearer token. Full RFC + threat
+         * model: includes/device_code.php's header doc-block.
+         *
+         * `tblAuthDeviceCodes` shipped live-dormant in #1511 — every case
+         * below is authDeviceCodesTableExists()-gated so an un-migrated
+         * docroot degrades to a clean 503 (rule #19/#28 dormancy) instead
+         * of a STRICT-mode mysqli exception on a missing table.
+         * ================================================================= */
+
+        case 'auth_device_code_request': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'invalid_request'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_code.php';
+            $db = getDbMysqli();
+            if (!authDeviceCodesTableExists($db)) {
+                sendJson(['error' => 'Device pairing is not available yet.'], 503); break;
+            }
+
+            /* Mint-abuse guard. No identity exists yet (that's the whole
+               point of the flow) so this is necessarily per-IP — a
+               legitimate limited-input client mints exactly once per
+               pairing attempt, so a generous cap never trips real usage. */
+            checkRateLimit('auth_device_code_request', $_SERVER['REMOTE_ADDR'] ?? '', 20, 3600, true, null);
+
+            $channel = serviceMode_channel();
+            [$deviceCode, $userCode] = deviceCode_mint($db, $channel);
+            if ($deviceCode === null) {
+                sendJson(['error' => 'Could not start pairing, please retry.'], 503); break;
+            }
+
+            /* §3.2 breadcrumb — no entity resolved yet (anonymous mint);
+               channel only, NEVER the device_code/user_code (see
+               includes/device_code.php's header doc-block). */
+            logActivity('auth.device_code.request', '', '', ['channel' => $channel]);
+
+            $verificationUri = getCanonicalUrl('/link');
+            sendJson([
+                'device_code'               => $deviceCode,
+                'user_code'                 => $userCode,
+                'verification_uri'          => $verificationUri,
+                'verification_uri_complete' => $verificationUri . '?user_code=' . rawurlencode($userCode),
+                'expires_in'                => AUTH_DEVICE_CODE_TTL_SECONDS,
+                'interval'                  => AUTH_DEVICE_CODE_POLL_INTERVAL_SECONDS,
+            ]);
+            break;
+        }
+
+        case 'auth_device_code_poll': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'invalid_request'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_code.php';
+            $db = getDbMysqli();
+            if (!authDeviceCodesTableExists($db)) {
+                sendJson(['error' => 'temporarily_unavailable'], 503); break;
+            }
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+            $deviceCode = (string)($body['device_code'] ?? '');
+            if (!preg_match('/^[a-f0-9]{64}$/', $deviceCode)) {
+                sendJson(['error' => 'invalid_request'], 400); break;
+            }
+            $hash = hash('sha256', $deviceCode);
+
+            /* Rate-limit PER DEVICE-CODE (hashed), NEVER per-IP (rule #26)
+               — several limited-input devices can legitimately share one
+               IP (e.g. a church media room), and this must not throttle
+               device B because device A is polling. */
+            checkRateLimit('auth_device_code_poll', 'devcode:' . substr($hash, 0, 24), 120, 60, true, null);
+
+            $channel  = serviceMode_channel();
+            $interval = AUTH_DEVICE_CODE_POLL_INTERVAL_SECONDS;
+            /* Expiry + slow_down are both computed SQL-side (UTC_TIMESTAMP()/
+               TIMESTAMPDIFF) rather than pulled into PHP and compared with
+               strtotime() — avoids any PHP-vs-SQL clock-drift class of bug
+               (the same discipline read_rate_limit.php's header documents). */
+            $stmt = $db->prepare(
+                'SELECT Id, Status, UserId,
+                        (ExpiresAt <= UTC_TIMESTAMP()) AS IsExpired,
+                        (LastPolledAt IS NOT NULL AND TIMESTAMPDIFF(SECOND, LastPolledAt, UTC_TIMESTAMP()) < ?) AS TooFast
+                   FROM tblAuthDeviceCodes WHERE DeviceCodeHash = ? AND Channel = ? LIMIT 1'
+            );
+            $stmt->bind_param('iss', $interval, $hash, $channel);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$row) {
+                /* Opaque — unknown device_code (never seen / already pruned)
+                   reads identically to "expired" (anti-probe, RFC 8628 §3.5). */
+                sendJson(['error' => 'expired_token'], 400); break;
+            }
+
+            $id      = (int)$row['Id'];
+            $status  = (string)$row['Status'];
+            $expired = (bool)$row['IsExpired'];
+            $tooFast = (bool)$row['TooFast'];
+
+            /* Every poll (incl. a slow_down/expired one) bumps the
+               counters — PollCount is an observability signal, and
+               LastPolledAt is what the NEXT poll's TooFast calc reads. */
+            $bump = $db->prepare('UPDATE tblAuthDeviceCodes SET PollCount = PollCount + 1, LastPolledAt = UTC_TIMESTAMP() WHERE Id = ?');
+            $bump->bind_param('i', $id);
+            $bump->execute();
+            $bump->close();
+
+            if ($tooFast) {
+                sendJson(['error' => 'slow_down'], 400); break;
+            }
+
+            /* Expiry is authoritative over Status (RFC 8628 §3.4/§3.5) — an
+               approved-but-now-expired grant must never still be
+               exchangeable. Lazily flip a still-pending row to 'expired'
+               for observability; best-effort, not required for correctness
+               (the IsExpired check above is what actually gates the reply). */
+            if ($expired) {
+                if ($status === 'pending') {
+                    $exp = $db->prepare("UPDATE tblAuthDeviceCodes SET Status = 'expired' WHERE Id = ? AND Status = 'pending'");
+                    $exp->bind_param('i', $id); $exp->execute(); $exp->close();
+                }
+                sendJson(['error' => 'expired_token'], 400); break;
+            }
+
+            if ($status === 'pending')  { sendJson(['error' => 'authorization_pending'], 400); break; }
+            if ($status === 'denied')   { sendJson(['error' => 'access_denied'], 400); break; }
+            if ($status !== 'approved') { sendJson(['error' => 'expired_token'], 400); break; } /* consumed | unknown */
+
+            /* Atomic single-use consume. The UPDATE's WHERE clause — not the
+               SELECT above — is the actual race guard: InnoDB serialises
+               concurrent UPDATEs against the same row, so of two
+               near-simultaneous polls at most one ever sees affected_rows
+               > 0. The loser falls through to the SAME expired_token reply
+               a genuine replay gets (opaque — never distinguishes "already
+               consumed" from "never was approved"). */
+            $consume = $db->prepare("UPDATE tblAuthDeviceCodes SET Status = 'consumed' WHERE Id = ? AND Status = 'approved'");
+            $consume->bind_param('i', $id);
+            $consume->execute();
+            $won = $consume->affected_rows > 0;
+            $consume->close();
+            if (!$won) {
+                sendJson(['error' => 'expired_token'], 400); break;
+            }
+
+            $userId  = (int)($row['UserId'] ?? 0);
+            $userRow = $userId > 0 ? _authAppleFetchActiveUser($db, $userId) : null;
+            if ($userRow === null) {
+                /* Integrity guard — an approved row must always carry a
+                   UserId, and that user must still be active. Extremely
+                   unlikely (the account would have to be disabled/deleted
+                   in the seconds between /link approval and this poll) but
+                   never silently mints a token for a stale/absent account. */
+                logActivity('auth.device_code.consume', 'user', (string)$userId, ['channel' => $channel, 'reason' => 'account_unavailable'], 'failure');
+                sendJson(['error' => 'access_denied'], 400); break;
+            }
+
+            /* Mint the standard bearer token — byte-identical machinery to
+               auth_login (api.php ~2216) / auth_apple (api.php ~3286). */
+            $token       = bin2hex(random_bytes(32));
+            $expiresAtTs = time() + 30 * 86400;
+            $expiresAt   = gmdate('c', $expiresAtTs);
+            $tokenHash   = hash('sha256', $token);
+            $tstmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
+            $tstmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
+            $tstmt->execute();
+            $tstmt->close();
+            setAuthTokenCookie($token, $expiresAtTs);
+            $updLogin = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
+            $updLogin->bind_param('i', $userId);
+            $updLogin->execute();
+            $updLogin->close();
+
+            /* §3.2 breadcrumb — IDs only. NEVER the device_code/user_code
+               or a digest of either (includes/device_code.php header). */
+            logActivity('auth.device_code.consume', 'user', (string)$userId, ['channel' => $channel]);
+
+            sendJson(apiAuthSuccessPayload(
+                $token,
+                $userId,
+                $userRow['Username'],
+                $userRow['DisplayName'],
+                $userRow['Role'],
+                $userRow['AvatarService'] ?? null
+            ));
+            break;
+        }
+
+        case 'auth_device_code_link_lookup': {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_code.php';
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+
+            $db = getDbMysqli();
+            if (!authDeviceCodesTableExists($db)) {
+                sendJson(['error' => 'Device pairing is not available yet.'], 503); break;
+            }
+
+            $userId = (int)$authUser['Id'];
+            /* Brute-force guard (shared budget with approve/deny below) —
+               keyed per authenticated user, never per-IP (rule #26). */
+            checkRateLimit('auth_device_code_link', $_SERVER['REMOTE_ADDR'] ?? '', AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+
+            $userCode = deviceCode_normaliseUserCode($_GET['user_code'] ?? '');
+            if ($userCode === '') { sendJson(['ok' => false, 'error' => 'invalid_code'], 400); break; }
+
+            $channel = serviceMode_channel();
+            /* No device "kind"/client-label column exists on the shipped
+               tblAuthDeviceCodes shape (#1511) — the RFC 8628 request never
+               requires a client to identify itself, and adding one now
+               would re-open a shipped one-pass schema batch for a single
+               cosmetic field (CLAUDE.md rule #20). What IS shown: the code
+               is genuinely pending + how long it has left. */
+            $stmt = $db->prepare(
+                "SELECT TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(), ExpiresAt) AS ExpiresIn
+                   FROM tblAuthDeviceCodes
+                  WHERE UserCode = ? AND Channel = ? AND Status = 'pending' AND ExpiresAt > UTC_TIMESTAMP()
+                  LIMIT 1"
+            );
+            $stmt->bind_param('ss', $userCode, $channel);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$row) {
+                /* Opaque — no such code / already resolved / expired all
+                   read the same (anti-probe). */
+                sendJson(['ok' => false, 'error' => 'not_found']); break;
+            }
+
+            sendJson(['ok' => true, 'userCode' => $userCode, 'expiresIn' => max(0, (int)$row['ExpiresIn'])]);
+            break;
+        }
+
+        case 'auth_device_code_approve':
+        case 'auth_device_code_deny': {
+            $isApprove = ($action === 'auth_device_code_approve');
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'device_code.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — belt-and-braces same as account_delete /
+               auth_provider_unlink: the global X-Requested-With gate
+               (api.php top-of-file) already blocks a cross-site POST; this
+               is a second, independent check on THIS state-changing
+               endpoint. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403); break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!authDeviceCodesTableExists($db)) {
+                sendJson(['error' => 'Device pairing is not available yet.'], 503); break;
+            }
+
+            /* Brute-force guard on the user_code — a wrong guess still
+               consumes budget, keyed per authenticated user (rule #26). */
+            checkRateLimit('auth_device_code_link', $_SERVER['REMOTE_ADDR'] ?? '', AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+
+            $userCode = deviceCode_normaliseUserCode($body['user_code'] ?? '');
+            if ($userCode === '') { sendJson(['ok' => false, 'error' => 'invalid_code'], 400); break; }
+
+            $channel = serviceMode_channel();
+            if ($isApprove) {
+                $upd = $db->prepare(
+                    "UPDATE tblAuthDeviceCodes SET Status = 'approved', UserId = ?
+                      WHERE UserCode = ? AND Channel = ? AND Status = 'pending' AND ExpiresAt > UTC_TIMESTAMP()"
+                );
+                $upd->bind_param('iss', $userId, $userCode, $channel);
+            } else {
+                $upd = $db->prepare(
+                    "UPDATE tblAuthDeviceCodes SET Status = 'denied'
+                      WHERE UserCode = ? AND Channel = ? AND Status = 'pending' AND ExpiresAt > UTC_TIMESTAMP()"
+                );
+                $upd->bind_param('ss', $userCode, $channel);
+            }
+            $upd->execute();
+            $ok = $upd->affected_rows > 0;
+            $upd->close();
+
+            $breadcrumb = $isApprove ? 'auth.device_code.approve' : 'auth.device_code.deny';
+            if (!$ok) {
+                /* §3.2 breadcrumb — IDs only, NEVER the user_code. */
+                logActivity($breadcrumb, 'user', (string)$userId, ['channel' => $channel, 'reason' => 'not_found_or_resolved'], 'failure');
+                sendJson(['ok' => false, 'error' => 'That code isn’t active. Check the device and try again.'], 404); break;
+            }
+
+            logActivity($breadcrumb, 'user', (string)$userId, ['channel' => $channel]);
+            sendJson(['ok' => true]);
+            break;
+        }
 
         /* =================================================================
          * ADMIN USER MANAGEMENT — API endpoints for /manage/ panel
