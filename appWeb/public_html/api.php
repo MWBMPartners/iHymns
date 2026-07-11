@@ -187,6 +187,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    runs. Every read inside is gated on tblSongs.PublicId existing, so this is
    a no-op on an un-migrated install. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+/* #1409 — API token device-metadata helpers (apiTokensDeviceMetaColumnsExist()
+   etc). Loaded top-level (not per-case) because slideAuthTokenExpiry() below
+   — called on EVERY authenticated request via getAuthenticatedUser() — needs
+   apiTokensDeviceMetaColumnsExist() to decide whether to also piggyback a
+   LastSeenAt bump onto its already-throttled UPDATE. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
@@ -2232,6 +2238,15 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
+            /* #1409 — OPTIONAL device metadata (deviceName/platform/
+               appVersion). Every field is genuinely optional: a client that
+               omits them (every existing caller today) signs in
+               byte-identically to before this change. Best-effort, never
+               blocks sign-in on a write failure (see
+               apiTokenDeviceMetaStore()'s docblock). */
+            $deviceMeta = apiTokenDeviceMetaFromBody($body);
+            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+
             /* Cross-subdomain cookie (#390) */
             setAuthTokenCookie($token, $expiresAtTs);
 
@@ -2967,8 +2982,12 @@ if ($action !== null) {
                 break;
             }
 
-            /* Complete the login: find/create user, generate bearer token */
-            $loginResult = completeEmailLogin($verified['email'], $verified['userId']);
+            /* Complete the login: find/create user, generate bearer token.
+               #1409 — OPTIONAL device metadata threaded through the same
+               way as auth_login/auth_apple above (never required, best-
+               effort, never blocks sign-in). */
+            $deviceMeta = apiTokenDeviceMetaFromBody($body);
+            $loginResult = completeEmailLogin($verified['email'], $verified['userId'], $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
 
             /* Cross-subdomain auth cookie (#390) — completeEmailLogin()
                issues a 30-day token in tblApiTokens; mirror that lifetime
@@ -3291,6 +3310,12 @@ if ($action !== null) {
             $stmt->execute();
             $stmt->close();
 
+            /* #1409 — OPTIONAL device metadata, same discipline as
+               auth_login above (never required, best-effort, never blocks
+               sign-in). */
+            $deviceMeta = apiTokenDeviceMetaFromBody($body);
+            apiTokenDeviceMetaStore($db, $tokenHash, $deviceMeta['deviceName'], $deviceMeta['platform'], $deviceMeta['appVersion']);
+
             setAuthTokenCookie($token, $expiresAtTs);
 
             $stmt = $db->prepare('UPDATE tblUsers SET LastLoginAt = NOW(), LoginCount = LoginCount + 1 WHERE Id = ?');
@@ -3568,6 +3593,295 @@ if ($action !== null) {
 
             sendJson(['providers' => _authProviderListForUser($db, (int)$authUser['Id'])]);
             break;
+
+        /* =================================================================
+         * MANAGE-DEVICES (#1409, Apple Phase-2 PR-12) — list + remote sign-
+         * out of a user's OWN signed-in devices. `tblApiTokens.DeviceName/
+         * Platform/AppVersion/LastSeenAt` shipped live-dormant in #1511;
+         * every read/write below is apiTokensDeviceMetaColumnsExist()-gated
+         * (includes/api_tokens.php) so an un-migrated docroot degrades to a
+         * graceful empty list rather than an error. The device "id" handed
+         * to the client is a truncated hash prefix — NEVER the raw token,
+         * NEVER the full stored hash (see api_tokens.php's file header).
+         * ================================================================= */
+        case 'devices_list': {
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!apiTokensDeviceMetaColumnsExist($db)) {
+                /* Graceful empty list (mirrors auth_providers_list's own
+                   degrade-to-empty convention above) rather than an error
+                   for a read-only lookup. */
+                sendJson(['devices' => []]);
+                break;
+            }
+
+            $currentToken = getAuthBearerToken();
+            $currentHash  = $currentToken !== null ? hash('sha256', $currentToken) : '';
+
+            $now = gmdate('c');
+            $stmt = $db->prepare(
+                'SELECT Token, DeviceName, Platform, AppVersion, LastSeenAt, CreatedAt, ExpiresAt
+                   FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?
+                  ORDER BY COALESCE(LastSeenAt, CreatedAt) DESC'
+            );
+            $stmt->bind_param('is', $userId, $now);
+            $stmt->execute();
+            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+
+            $devices = array_map(static function (array $row) use ($currentHash) {
+                $tokenHash = (string)$row['Token'];
+                return [
+                    'id'         => apiTokenDeviceId($tokenHash),
+                    'deviceName' => $row['DeviceName'],
+                    'platform'   => $row['Platform'],
+                    'appVersion' => $row['AppVersion'],
+                    'lastSeenAt' => $row['LastSeenAt'],
+                    'createdAt'  => $row['CreatedAt'],
+                    'expiresAt'  => $row['ExpiresAt'],
+                    'isCurrent'  => ($currentHash !== '' && hash_equals($tokenHash, $currentHash)),
+                ];
+            }, $rows);
+
+            sendJson(['devices' => $devices]);
+            break;
+        }
+
+        case 'device_signout': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — belt-and-braces same as auth_device_code_
+               approve / auth_provider_unlink: the global X-Requested-With
+               gate (api.php top-of-file) already blocks a cross-site POST;
+               this is a second, independent check on THIS state-changing
+               endpoint. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            checkRateLimit('device_signout', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+
+            $deviceId = is_string($body['id'] ?? null) ? strtolower(trim($body['id'])) : '';
+            if (!preg_match('/^[a-f0-9]{' . API_TOKEN_DEVICE_ID_LENGTH . '}$/', $deviceId)) {
+                sendJson(['error' => 'Invalid device id.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            /* Own-only guard — UserId = ? is IN the DELETE's WHERE, never
+               checked afterwards, so this can only ever touch the CALLER's
+               own tokens. The LIKE prefix match against Token (the stored
+               sha256 hash) is safe: $deviceId is already regex-pinned above
+               to exactly API_TOKEN_DEVICE_ID_LENGTH lowercase hex chars, so
+               no LIKE wildcard metacharacter can reach the query from user
+               input, and a same-user prefix collision (astronomically
+               unlikely at 64 bits) would only ever let someone sign out one
+               of their OWN other devices — never cross a user boundary. */
+            $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ? AND Token LIKE CONCAT(?, "%")');
+            $stmt->bind_param('is', $userId, $deviceId);
+            $stmt->execute();
+            $revoked = $stmt->affected_rows > 0;
+            $stmt->close();
+
+            logActivity('auth.device_signout', 'user', (string)$userId, ['found' => $revoked], $revoked ? 'success' : 'failure', $userId);
+
+            if (!$revoked) {
+                sendJson(['error' => 'Unknown device.'], 404);
+                break;
+            }
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* =================================================================
+         * APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-token registration
+         * ONLY. Entirely DORMANT: nothing in this codebase calls
+         * includes/apns.php's apnsSend() yet, and even a future caller that
+         * does gets a guaranteed `not_configured` no-op until an owner
+         * provisions a real Apple APNs Auth Key (see apns.php's file-header
+         * "NOT IN SCOPE" note — no admin-UI card ships in this change).
+         * `tblApnsTokens` shipped live-dormant in #1511; every read/write
+         * below is apnsTokensTableExists()-gated.
+         * ================================================================= */
+        case 'apns_register': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!apnsTokensTableExists($db)) {
+                sendJson(['error' => 'Push notifications are not available yet.'], 503);
+                break;
+            }
+
+            checkRateLimit('apns_register', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+
+            $pushTokenHex = is_string($body['pushToken'] ?? null) ? strtolower(trim($body['pushToken'])) : '';
+            if (!preg_match('/^[a-f0-9]{32,200}$/', $pushTokenHex) || strlen($pushTokenHex) % 2 !== 0) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+            $binToken = hex2bin($pushTokenHex);
+            if ($binToken === false) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $apnsEnv = is_string($body['apnsEnv'] ?? null) ? strtolower(trim($body['apnsEnv'])) : 'production';
+            if (!in_array($apnsEnv, APNS_ENVIRONMENTS, true)) { $apnsEnv = 'production'; }
+
+            $kind = is_string($body['kind'] ?? null) ? trim($body['kind']) : 'device';
+            if (!in_array($kind, APNS_KINDS, true)) { $kind = 'device'; }
+
+            /* Kind='liveActivity' tokens carry NO Channel column of their
+               own (the shipped #1511 DDL) — session-scoping is CARRIED
+               TRANSITIVELY through the SessionId FK, so resolve (and
+               channel-filter, rule #26) the referenced session HERE. */
+            $sessionId = null;
+            $sessionExpiresAt = null;
+            if ($kind === 'liveActivity') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+                $rawSessionId = (int)($body['sessionId'] ?? 0);
+                if ($rawSessionId <= 0) {
+                    sendJson(['error' => 'sessionId is required for kind=liveActivity.'], 400);
+                    break;
+                }
+                $channel = serviceMode_channel();
+                $sstmt = $db->prepare('SELECT Id, ExpiresAt FROM tblLiveFollowSessions WHERE Id = ? AND Channel = ? AND IsActive = 1');
+                $sstmt->bind_param('is', $rawSessionId, $channel);
+                $sstmt->execute();
+                $srow = $sstmt->get_result()->fetch_assoc();
+                $sstmt->close();
+                if (!$srow) {
+                    sendJson(['error' => 'Unknown or ended session.'], 404);
+                    break;
+                }
+                $sessionId = (int)$srow['Id'];
+                $sessionExpiresAt = (string)$srow['ExpiresAt'];
+            }
+
+            try {
+                $ins = $db->prepare(
+                    'INSERT INTO tblApnsTokens (Kind, UserId, SessionId, PushToken, ApnsEnv, ExpiresAt)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE Kind = VALUES(Kind), UserId = VALUES(UserId),
+                         SessionId = VALUES(SessionId), ApnsEnv = VALUES(ApnsEnv), ExpiresAt = VALUES(ExpiresAt)'
+                );
+                $ins->bind_param('siisss', $kind, $userId, $sessionId, $binToken, $apnsEnv, $sessionExpiresAt);
+                $ins->execute();
+                $ins->close();
+            } catch (\Throwable $e) {
+                error_log('[api/apns_register] ' . $e->getMessage());
+                sendJson(['error' => 'Could not register for push notifications, please retry.'], 503);
+                break;
+            }
+
+            /* §3.2 breadcrumb — IDs + fixed vocabulary only, NEVER the push
+               token in any form (apns.php's file-header discipline). */
+            logActivity('apns.token.register', 'user', (string)$userId, ['kind' => $kind, 'apns_env' => $apnsEnv, 'session_id' => $sessionId]);
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        case 'apns_unregister': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — the #1410 task brief's own spec line for
+               this endpoint doesn't explicitly tag "CSRF" the way
+               device_signout/apns_register do, but this is still a
+               state-changing authenticated DELETE; the project-wide
+               standing rule applies uniformly regardless. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            $userId = (int)$authUser['Id'];
+
+            $db = getDbMysqli();
+            if (!apnsTokensTableExists($db)) {
+                sendJson(['ok' => true]); /* nothing to unregister on an un-migrated docroot */
+                break;
+            }
+
+            checkRateLimit('apns_unregister', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+
+            $pushTokenHex = is_string($body['pushToken'] ?? null) ? strtolower(trim($body['pushToken'])) : '';
+            if (!preg_match('/^[a-f0-9]{32,200}$/', $pushTokenHex) || strlen($pushTokenHex) % 2 !== 0) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+            $binToken = hex2bin($pushTokenHex);
+            if ($binToken === false) {
+                sendJson(['error' => 'Invalid push token.'], 400);
+                break;
+            }
+
+            $del = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ? AND PushToken = ?');
+            $del->bind_param('is', $userId, $binToken);
+            $del->execute();
+            $removed = $del->affected_rows > 0;
+            $del->close();
+
+            logActivity('apns.token.unregister', 'user', (string)$userId, ['removed' => $removed]);
+            sendJson(['ok' => true]);
+            break;
+        }
 
         /* =================================================================
          * USER FAVORITES — Server-side sync (#284)
@@ -14145,13 +14459,23 @@ if ($action !== null) {
          * ----------------------------------------------------------------- */
         case 'service_broadcast': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
-            $userId = (int)$authUser['Id'];
-            $role   = (string)($authUser['Role'] ?? '');
-            checkRateLimit('service_broadcast', $_SERVER['REMOTE_ADDR'] ?? '', 600, 60, true, $userId);
+            /* #1408 — session_control_token.php supplies BOTH the shared
+               serviceMode_userCanOperate() check AND the control-token
+               validator the new delegated-auth path below consults. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
+
+            /* #1408 — EARLY per-IP throttle, DISTINCT bucket from the
+               per-user one below. Before this change, an unauthenticated
+               caller 401'd immediately (no DB query at all); now the
+               control-token path means auth can't be resolved until AFTER
+               the session row is read, so an anonymous/probing caller could
+               otherwise trigger unlimited session-lookup queries with zero
+               credentials at all. Generously sized (mirrors service_join's
+               own anonymous-safe per-IP cap) so it never bites a real
+               operator or delegated device. */
+            checkRateLimit('service_broadcast_probe', $_SERVER['REMOTE_ADDR'] ?? '', 300, 60, true, null);
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -14178,9 +14502,34 @@ if ($action !== null) {
                 sendJson(['error' => 'Unknown or ended session.'], 404); break;
             }
             $orgId = (int)$sess['OrgId'];
-            $canOperate = ($role === 'global_admin' || $role === 'admin')
-                || (int)$sess['HostUserId'] === $userId
-                || in_array($orgId, userIsOrgAdminOf($userId), true);
+
+            /* #1408 — TWO ways to authorise a broadcast: the operator's own
+               bearer (unchanged, existing behaviour, tried FIRST and
+               authoritative when it resolves) OR a scoped, revocable
+               control token presented in the body (a delegated co-leader's
+               device that never signed in at all). The token path is only
+               even consulted when there is no authorised bearer, so an
+               operator's own request is never weakened by this addition. */
+            $authUser = getAuthenticatedUser();
+            $userId = null;
+            $canOperate = false;
+            if ($authUser) {
+                $userId = (int)$authUser['Id'];
+                $role   = (string)($authUser['Role'] ?? '');
+                $canOperate = serviceMode_userCanOperate($userId, $role, $orgId, (int)$sess['HostUserId']);
+            }
+            $viaControlToken = false;
+            if (!$canOperate) {
+                $controlToken = is_string($body['controlToken'] ?? null) ? $body['controlToken'] : '';
+                if ($controlToken !== '' && sessionControlTokensTableExists($db)
+                    && sessionControlToken_validate($db, $controlToken, $sessionId, $channel)) {
+                    $canOperate = true;
+                    $viaControlToken = true;
+                }
+            }
+
+            checkRateLimit('service_broadcast', $_SERVER['REMOTE_ADDR'] ?? '', 600, 60, true, $userId);
+
             if (!$canOperate) {
                 logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure');
                 sendJson(['error' => 'Not authorised.'], 403); break;
@@ -14213,9 +14562,17 @@ if ($action !== null) {
             $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
             $rev->close();
 
-            /* §3.2 — song-change only, never on a component-index-only nudge. */
+            /* §3.2 — song-change only, never on a component-index-only nudge.
+               'via' (#1408) is a fixed 'bearer'|'control_token' string —
+               never sensitive, useful adoption signal for the new
+               delegated-auth path. */
             if ($songId !== null && (string)($sess['CurrentSongId'] ?? '') !== (string)$songId) {
-                logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'song_id' => $songId, 'channel' => $channel]);
+                logActivity('service.broadcast.song', 'organisation', (string)$orgId, [
+                    'session_id' => $sessionId,
+                    'song_id'    => $songId,
+                    'channel'    => $channel,
+                    'via'        => $viaControlToken ? 'control_token' : 'bearer',
+                ]);
             }
 
             sendJson(['ok' => true, 'revision' => $revision]);
@@ -14404,6 +14761,134 @@ if ($action !== null) {
             }
 
             sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * SESSION CONTROL TOKENS (#1408, Apple Phase-2 PR-9) — delegated
+         * remote-control of ONE live/service session without sharing the
+         * operator's login. `tblSessionControlTokens` shipped live-dormant
+         * in #1511; every read/write below is
+         * sessionControlTokensTableExists()-gated. `service_broadcast`
+         * (above) is the ONE consumer of a minted token today.
+         * ----------------------------------------------------------------- */
+        case 'service_control_token_mint': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            /* CSRF (rule #29) — belt-and-braces same as auth_device_code_
+               approve / auth_provider_unlink: the global X-Requested-With
+               gate (api.php top-of-file) already blocks a cross-site POST;
+               this is a second, independent check on THIS state-changing,
+               credential-minting endpoint. */
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403); break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+
+            $db = getDbMysqli();
+            if (!sessionControlTokensTableExists($db)) {
+                sendJson(['error' => 'Session control tokens are not available yet.'], 503); break;
+            }
+
+            checkRateLimit('service_control_token_mint', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+
+            $sessionId = (int)($body['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+
+            $channel = serviceMode_channel();
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId, ExpiresAt FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ? AND IsActive = 1");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) {
+                logActivity('service.control_token.mint', 'organisation', '', ['session_id' => $sessionId, 'reason' => 'unknown_or_ended'], 'failure');
+                sendJson(['error' => 'Unknown or ended session.'], 404); break;
+            }
+            $orgId = (int)$sess['OrgId'];
+            if (!serviceMode_userCanOperate($userId, $role, $orgId, (int)$sess['HostUserId'])) {
+                logActivity('service.control_token.mint', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure');
+                sendJson(['error' => 'Not authorised.'], 403); break;
+            }
+
+            $token = sessionControlToken_mint($db, $sessionId, $channel, (string)$sess['ExpiresAt']);
+            if ($token === null) {
+                sendJson(['error' => 'Could not mint a control token, please retry.'], 503); break;
+            }
+
+            /* §3.2 breadcrumb — IDs only, NEVER the raw token (this file's
+               header discipline). */
+            logActivity('service.control_token.mint', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'channel' => $channel]);
+
+            sendJson([
+                'ok'        => true,
+                'token'     => $token,
+                'scope'     => 'broadcast',
+                'sessionId' => $sessionId,
+            ]);
+            break;
+        }
+
+        case 'service_control_token_revoke': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
+
+            $body = json_decode(file_get_contents('php://input'), true);
+            if (!is_array($body)) { $body = []; }
+
+            $csrfToken = is_string($body['csrf_token'] ?? null) ? $body['csrf_token'] : null;
+            if (!validateCsrfRequest($csrfToken)) {
+                sendJson(['error' => 'Cross-origin request rejected.'], 403); break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            $userId = (int)$authUser['Id'];
+            $role   = (string)($authUser['Role'] ?? '');
+
+            $db = getDbMysqli();
+            if (!sessionControlTokensTableExists($db)) {
+                sendJson(['error' => 'Session control tokens are not available yet.'], 503); break;
+            }
+
+            checkRateLimit('service_control_token_revoke', $_SERVER['REMOTE_ADDR'] ?? '', 60, 3600, true, $userId);
+
+            $sessionId = (int)($body['sessionId'] ?? 0);
+            if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
+
+            $channel = serviceMode_channel();
+            $sstmt = $db->prepare("SELECT OrgId, HostUserId FROM tblLiveFollowSessions WHERE Id = ? AND SessionKind = 'service' AND Channel = ?");
+            $sstmt->bind_param('is', $sessionId, $channel);
+            $sstmt->execute();
+            $sess = $sstmt->get_result()->fetch_assoc();
+            $sstmt->close();
+            if (!$sess) {
+                logActivity('service.control_token.revoke', 'organisation', '', ['session_id' => $sessionId, 'reason' => 'unknown_session'], 'failure');
+                sendJson(['error' => 'Unknown session.'], 404); break;
+            }
+            $orgId = (int)$sess['OrgId'];
+            if (!serviceMode_userCanOperate($userId, $role, $orgId, (int)$sess['HostUserId'])) {
+                logActivity('service.control_token.revoke', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure');
+                sendJson(['error' => 'Not authorised.'], 403); break;
+            }
+
+            $revoked = sessionControlToken_revokeAllForSession($db, $sessionId, $channel);
+            logActivity('service.control_token.revoke', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'channel' => $channel, 'revoked' => $revoked]);
+
+            sendJson(['ok' => true, 'revoked' => $revoked]);
             break;
         }
 
@@ -15411,9 +15896,26 @@ function slideAuthTokenExpiry(string $rawToken): void
         $threshold    = gmdate('c', time() + 29 * 86400);
 
         $db = getDbMysqli();
-        $stmt = $db->prepare(
-            'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
-        );
+        /* #1409 — LastSeenAt piggybacks on this SAME already-throttled
+           UPDATE (fires at most once per ~24h of active use PER TOKEN)
+           rather than a new per-request write. A "last active" column read
+           at ~1-day granularity is still genuinely useful for a
+           manage-devices list ("today" / "3 days ago" / …), and a
+           finer-grained version would mean adding a NEW round-trip to
+           LITERALLY EVERY authenticated request across the whole app — the
+           "don't add per-request overhead carelessly" trade-off the #1409
+           plan explicitly calls out. columnExists-gated (via
+           apiTokensDeviceMetaColumnsExist(), includes/api_tokens.php) so an
+           un-migrated docroot's UPDATE stays byte-identical to before this
+           change. A future finer-grained version, if ever wanted, is a
+           one-line follow-up: a SEPARATE throttled write inside
+           getAuthenticatedUser() itself once the extra per-request query is
+           judged worth it — deliberately NOT done here. */
+        $hasDeviceMetaCols = function_exists('apiTokensDeviceMetaColumnsExist') && apiTokensDeviceMetaColumnsExist($db);
+        $sql = $hasDeviceMetaCols
+            ? 'UPDATE tblApiTokens SET ExpiresAt = ?, LastSeenAt = UTC_TIMESTAMP() WHERE Token = ? AND ExpiresAt < ?'
+            : 'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?';
+        $stmt = $db->prepare($sql);
         $stmt->bind_param('sss', $newExpiresAt, $hashedToken, $threshold);
         $stmt->execute();
         $bumped = $stmt->affected_rows > 0;

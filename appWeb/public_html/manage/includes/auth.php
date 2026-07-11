@@ -1587,11 +1587,17 @@ function verifyEmailLoginCode(string $email, string $code): ?array
  * Complete the email login flow: find or create the user, mark email as
  * verified, update login stats, and generate a bearer token.
  *
- * @param string   $email  Verified email address
- * @param int|null $userId Existing user ID (null if new user)
+ * @param string      $email       Verified email address
+ * @param int|null    $userId      Existing user ID (null if new user)
+ * @param string|null $deviceName  #1409 OPTIONAL client-declared device name
+ *                                 — never required, byte-identical login
+ *                                 for any caller that omits it (the default
+ *                                 null).
+ * @param string|null $platform    #1409 OPTIONAL 'apple'|'android'|'web'.
+ * @param string|null $appVersion  #1409 OPTIONAL client app version string.
  * @return array{token: string, user: array} Bearer token and user info
  */
-function completeEmailLogin(string $email, ?int $userId): array
+function completeEmailLogin(string $email, ?int $userId, ?string $deviceName = null, ?string $platform = null, ?string $appVersion = null): array
 {
     $db = getDbMysqli();
 
@@ -1607,11 +1613,24 @@ function completeEmailLogin(string $email, ?int $userId): array
     try {
         $result = _completeEmailLoginTxn($db, $email, $userId);
         $db->commit();
-        return $result;
     } catch (\Throwable $e) {
         try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
         throw $e;
     }
+
+    /* #1409 — OPTIONAL device metadata, written OUTSIDE the login
+       transaction (mirrors auth_login/auth_apple's own post-insert write in
+       api.php): a metadata-store hiccup must never turn a successful login
+       into a failed one. require_once here (not assumed pre-loaded) so this
+       function stays self-sufficient regardless of which caller context
+       reaches it. */
+    if (!empty($result['token'])) {
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+                  . DIRECTORY_SEPARATOR . 'api_tokens.php';
+        apiTokenDeviceMetaStore($db, hash('sha256', (string)$result['token']), $deviceName, $platform, $appVersion);
+    }
+
+    return $result;
 }
 
 /**

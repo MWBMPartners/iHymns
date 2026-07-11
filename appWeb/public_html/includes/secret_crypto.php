@@ -438,6 +438,21 @@ function secretSettingKeys(): array
         'email_graph_client_secret',
         'email_gmail_sa_json',
         'apple_siwa_private_key',
+        /* #1410 — APNs Auth Key `.p8`. NOT yet writable via any admin-UI
+           field (manage/configuration.php has no APNs card in this change —
+           see includes/apns.php's file-header "NOT IN SCOPE" note), so this
+           key currently has NO row in tblAppSettings on any docroot. Adding
+           it here now is a zero-risk, purely-additive registration: every
+           consumer of secretSettingKeys() (secretInventory(),
+           secretEncryptInPlace(), secretRotateReencrypt()) explicitly skips
+           a key with no row / an empty value (see those functions'
+           docblocks), so this has NO effect until a future PR adds the
+           admin-UI card AND an owner pastes a real key — at which point it
+           is encrypted at rest from the very first save, mirroring
+           apple_siwa_private_key's custody exactly (rule: "mirror the SIWA
+           .p8 custody pattern").
+         */
+        'apple_apns_private_key',
     ];
 }
 

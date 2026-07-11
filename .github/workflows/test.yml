@@ -454,6 +454,23 @@ jobs:
           php tests/php/test-device-code.php
 
       # -----------------------------------------------------------------------
+      # Step 5n: APNs bridge — ES256 provider-token JWT (#1410)
+      # Locally-generated test EC P-256 keypair — never a real Apple-issued
+      # key, never a network call. Proves the DER<->JOSE raw signature
+      # conversion (shared with the SIWA client_secret builder, not
+      # re-forked) and the iss/iat-only claim shape APNs provider tokens
+      # actually use (deliberately NOT the SIWA client_secret's exp/aud/sub
+      # shape). Also asserts apnsConfigured()/apnsCredentials() stay
+      # all-empty with no settings source reachable — the "no key
+      # provisioned = guaranteed no-op" dormancy invariant, without a
+      # database.
+      # -----------------------------------------------------------------------
+      - name: APNs bridge — ES256 provider-token JWT (#1410)
+        run: |
+          echo "Running APNs provider-token JWT test..."
+          php tests/php/test-apns-jwt.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -659,3 +676,6 @@ jobs:
 
       - name: RFC 8628 device-code pairing (#1407)
         run: php tests/php/test-device-code.php
+
+      - name: APNs bridge — ES256 provider-token JWT (#1410)
+        run: php tests/php/test-apns-jwt.php
