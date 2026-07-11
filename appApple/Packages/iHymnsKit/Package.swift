@@ -23,7 +23,7 @@
 //   IHAuth        → IHAPI, IHModels, IHLog
 //   IHAPI         → IHModels, IHLog
 //   IHPersistence → IHModels                (+ GRDB.swift, external dep)
-//   IHLive        → IHAPI, IHLog            (which pulls in IHModels transitively)
+//   IHLive        → IHAPI, IHModels, IHLog
 //   IHAppSupport  → IHModels
 //   IHDesign      → (SwiftUI only, no iHymnsKit deps)
 //   IHModels      → (no deps — the foundation: Sendable Codable DTOs)
@@ -202,15 +202,29 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
-        // MARK: - IHLive (→ IHAPI, IHLog)
+        // MARK: - IHLive (→ IHAPI, IHModels, IHLog)
+        //
+        // #1420 UPDATE — `IHLive/LANRemote` (the peer-to-peer TV-remote
+        // sub-module added alongside the pre-existing server-mediated
+        // `LiveFollowEngine`, strategy §1.2/§2.4) reuses `IHModels.SongID`
+        // for its `selectSong`/`prepare`/`state` message fields rather than
+        // re-validating the `<letters>-<digits>` shape itself (CLAUDE.md
+        // rule #27's "if a shared module already exists, reuse it" applied
+        // to Swift, not just PHP) — so this target now depends on
+        // `IHModels` directly, not merely "transitively through IHAPI"
+        // (Swift import visibility requires every target that writes
+        // `import IHModels` to list it explicitly; SwiftPM does not grant
+        // transitive import access the way it links transitive binaries).
         .target(
             name: "IHLive",
-            dependencies: ["IHAPI", "IHLog"],
+            dependencies: ["IHAPI", "IHModels", "IHLog"],
             swiftSettings: sharedSwiftSettings
         ),
         .testTarget(
             name: "IHLiveTests",
-            dependencies: ["IHLive"],
+            // #1420: the new `LANRemoteTests` suite constructs `SongID`
+            // fixtures directly for IHRP message round-trip tests.
+            dependencies: ["IHLive", "IHModels"],
             swiftSettings: sharedSwiftSettings
         ),
 
