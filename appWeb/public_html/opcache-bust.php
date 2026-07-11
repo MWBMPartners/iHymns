@@ -113,8 +113,48 @@ $available = function_exists('opcache_reset');
 $reset     = $available ? @opcache_reset() : false;
 clearstatcache(true);
 
+/* ---- Best-effort Activity-Log entry (#1290). ----------------------------
+   The bust above has ALREADY run — logging here is observability only. We pull
+   in the long-lived DB + logging includes (present in every live docroot) via
+   the same __DIR__-relative convention as api.php / index.php. The ENTIRE
+   require + log is wrapped so a DB outage, a missing tblActivityLog, or ANY
+   throwable can never break or delay the reset response. We deliberately log
+   NOTHING derived from the secret key or any raw request input — only the reset
+   outcome + environment. Sits AFTER the 503-unconfigured / 403-token / rate-
+   limit guards above, so an unauthenticated caller can never cause a DB write.
+   (Rebuilt for current alpha in the 2026-07-11 branch audit from the never-
+   merged fb450d32; see #1537.) */
+$logged = false;
+try {
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+    /* Also load environment.php so the log's `environment` field is populated
+       even in this minimal standalone endpoint (an improvement over fb450d32,
+       whose auto-deploy log left it null); require_once is idempotent. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'environment.php';
+    logActivity(
+        'ops.opcache_reset',
+        'runtime',
+        'opcache',
+        [
+            'trigger'           => 'auto-deploy',
+            'reset'             => (bool) $reset,
+            'opcache_available' => $available,
+            'environment'       => function_exists('ihymns_environment') ? ihymns_environment() : null,
+        ],
+        $reset ? 'success' : 'error'
+    );
+    $logged = true;
+} catch (\Throwable $e) {
+    /* Swallow — logging must NEVER break or delay the bust, especially if the
+       DB is down (getDbMysqli() runs under MYSQLI_REPORT_STRICT and throws).
+       One error_log line lets an operator spot a sustained logging outage. */
+    error_log('[opcache-bust] activity log failed: ' . $e->getMessage());
+}
+
 echo json_encode([
     'ok'                => true,
     'reset'             => (bool) $reset,
     'opcache_available' => $available,
+    'logged'            => $logged,
 ]);

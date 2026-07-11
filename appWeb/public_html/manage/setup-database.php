@@ -1586,6 +1586,30 @@ if ($action !== '') {
             echo "Log. If the 'Unknown column s.SongbookName' errors STOP, stale OPcache was the cause\n";
             echo "(the deployed code is already correct). If they persist, the deploy didn't upload the\n";
             echo "current SongData.php — tell me and we'll fix the deploy itself.\n";
+            /* #1290 — mirror opcache-bust.php's Activity-Log entry so a MANUAL
+               reset from this dashboard is auditable alongside the automated
+               cron busts: same action key + EntityType (trigger='manual').
+               This handler already runs authenticated as a global_admin with
+               the DB + app bootstrap loaded, so a direct call is safe — no
+               require/try-catch gymnastics needed, and logActivity() is itself
+               best-effort and never throws. Logs nothing derived from the
+               secret key or raw request input — only the reset outcome +
+               environment. (Rebuilt for current alpha in the 2026-07-11 branch
+               audit from the never-merged fb450d32; see #1537.) */
+            if (function_exists('logActivity')) {
+                logActivity(
+                    'ops.opcache_reset',
+                    'runtime',
+                    'opcache',
+                    [
+                        'trigger'           => 'manual',
+                        'reset'             => (bool) $reset,
+                        'opcache_available' => function_exists('opcache_reset'),
+                        'environment'       => function_exists('ihymns_environment') ? ihymns_environment() : null,
+                    ],
+                    $actionSuccess ? 'success' : 'error'
+                );
+            }
         }
     } elseif ($action === 'deploy-forensics') {
         /* #1295 — READ-ONLY deploy forensics. The live site INTERMITTENTLY throws
