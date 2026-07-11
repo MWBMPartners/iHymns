@@ -169,12 +169,32 @@ public actor TVListenerActor {
     /// stream/continuation pair is fixed at `init` and never reassigned.
     public nonisolated let controlEvents: AsyncStream<ControlEvent>
 
+    /// The pairing-ceremony state machine (#1421, PR-6 spec §3.3/§3.4) —
+    /// pure `struct` state OWNED by this actor and mutated exclusively
+    /// under its isolation, the same "`IHRPFrameDecoder` is a struct the
+    /// actor mutates" precedent `IHRPFramer.swift`'s header documents.
+    /// `internal` (not `private`) so `TVListenerActor+Pairing.swift` (a
+    /// same-target extension file) and `+Messages.swift`'s `handlePairConfirm`
+    /// dispatch can both read/mutate it.
+    var pairingCeremony = LANRemotePairingCeremonyState()
+
+    let pairingContinuation: AsyncStream<TVPairingEvent>.Continuation
+
+    /// A live feed of pairing-ceremony transitions — `TVRemoteControlCoordinator`
+    /// (`IHFeatures`, PR-6) drives the pairing overlay's UI state off this,
+    /// the same `controlEvents` idiom above. `nonisolated` for the
+    /// identical reason.
+    public nonisolated let pairingEvents: AsyncStream<TVPairingEvent>
+
     public init(identity: LANRemoteIdentity, configuration: Configuration) {
         self.identity = identity
         self.configuration = configuration
         let (stream, continuation) = AsyncStream.makeStream(of: ControlEvent.self)
         self.controlEvents = stream
         self.continuation = continuation
+        let (pairingStream, pairingContinuation) = AsyncStream.makeStream(of: TVPairingEvent.self)
+        self.pairingEvents = pairingStream
+        self.pairingContinuation = pairingContinuation
     }
 
     /// The actual bound port once `start()` has succeeded — `nil` before

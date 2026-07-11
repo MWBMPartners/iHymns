@@ -222,6 +222,15 @@ extension RemoteSessionActor {
             setPhase(.controlling(capabilities.currentState))
         case .state(let state):
             setPhase(.controlling(state))
+        case .pairSuccess(let token):
+            // #1421 — the ceremony's freshly-minted raw token; PR-7
+            // persists `currentPairingToken` (Keychain, `synchronizable:
+            // false`) the moment it observes this. `.capabilities` always
+            // follows on the SAME connection (`promoteToPaired`'s send
+            // order, `TVListenerActor+Pairing.swift`), so `.controlling`
+            // still gets set by that frame arriving next — this case never
+            // needs to touch `phase` itself.
+            pairingToken = token
         case .error(let code, _):
             if code == .unauthorized {
                 disconnect()
