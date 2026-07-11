@@ -20,6 +20,11 @@ declare(strict_types=1);
  *  - The service-occurrence END is a LOCAL time in the venue's IANA tz; it is
  *    resolved to a UTC instant (DST-aware) and capped at a hard ceiling so a
  *    relayed code can never unlock for an all-day window.
+ *  - Broadcast payload v2 (#1405): serviceMode_cleanState() is the ONE state
+ *    allow-list for all THREE broadcast writers (live_follow_create/_update,
+ *    service_broadcast) — a 4th writer reuses this, never re-forks it. The
+ *    client-facing "stateVersion" concept IS the existing `revision` /
+ *    `StateRevision` counter each endpoint already returns — no new field.
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';
@@ -42,6 +47,38 @@ const LIVE_SESSION_FRESHNESS_SECONDS  = 180;
 const SERVICE_MODE_CODE_ALPHABET      = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 
 /**
+ * Broadcast payload v2 (#1405) — the closed `displayState` vocabulary. VARCHAR
+ * app-validated against this array, never an ENUM (rule #20 — a value-add
+ * would otherwise be a schema ALTER; this lives entirely inside the existing
+ * StateJson blob, so growing it is a one-line PHP change, not a migration).
+ *   'live'     - showing the current song/line normally.
+ *   'blackout' - hide all content (blank screen); the direct successor to the
+ *                legacy boolean `blank: true`.
+ *   'logo'     - show the ministry/church logo instead of lyrics. Has NO
+ *                legacy equivalent - a pre-#1405 client that only understands
+ *                `blank` still needs to hide stale lyrics, so the bridge below
+ *                degrades this to `blank: true` too (fail toward "hidden", not
+ *                "stuck showing the wrong thing").
+ */
+const SERVICE_DISPLAY_STATES = ['live', 'blackout', 'logo'];
+
+/**
+ * Server-declared per-role poll cadence (#1406). Keys are tblAppSettings
+ * overrides (a freeform key/value store - no migration needed to add a key);
+ * the literal ints are the dormant-safe fallback while the setting is unset.
+ * A projector polls faster (near-1s) than a congregant's phone (2.5s is
+ * plenty for song-follow) because a stale TV/projector image is the most
+ * visible failure in the room.
+ */
+const SERVICE_MODE_POLL_MS_CONGREGANT_KEY     = 'service_poll_interval_congregant_ms';
+const SERVICE_MODE_POLL_MS_PROJECTOR_KEY      = 'service_poll_interval_projector_ms';
+const SERVICE_MODE_POLL_MS_CONGREGANT_DEFAULT = 2500;
+const SERVICE_MODE_POLL_MS_PROJECTOR_DEFAULT  = 1000;
+
+/** Presence roles (#1406) - VARCHAR app-validated, never an ENUM (rule #20). */
+const SERVICE_MODE_PRESENCE_ROLES = ['congregant', 'projector'];
+
+/**
  * The environment channel a Service-Mode row belongs to ('alpha'|'beta'|
  * 'production'). The 3-docroot discriminator — stamped at create, filtered
  * everywhere so cross-env sessions never leak (the prod-stale class of bug).
@@ -61,6 +98,83 @@ function serviceMode_generateCode(int $len = 6): string
         $code .= $alphabet[random_int(0, $max)];
     }
     return $code;
+}
+
+/**
+ * Broadcast payload v2 (#1405) — the ONE state allow-list shared by every
+ * broadcast writer (#1268 `live_follow_create`/`live_follow_update`, #1335
+ * `service_broadcast`). Extracted from the former per-file
+ * `_liveFollowCleanState()` so a future 4th writer reuses this instead of
+ * re-forking the allow-list (rule #26 / CLAUDE.md modularity rule). NEVER
+ * stores raw client JSON — only the known broadcast hints survive, each
+ * validated/clamped to a safe range. Returns a compact JSON string, or null
+ * when nothing valid was sent.
+ *
+ * ELI5: the operator's browser/app sends "what should the screen show right
+ * now" (song blanked? which line? a logo instead?) — this function is the
+ * bouncer that only lets known-safe, known-shaped facts through before they
+ * get saved and broadcast to every following device.
+ *
+ * DETAILED — the `blank`↔`displayState` bridge is LOAD-BEARING (#1405): pre-
+ * #1405 clients only ever send/understand the boolean `blank`; the v2 payload
+ * adds a richer three-state `displayState` (`live`/`blackout`/`logo`, see
+ * SERVICE_DISPLAY_STATES). Writing only ONE of the two fields would silently
+ * desync the two client generations — a v2 broadcaster setting `logo` would
+ * leave a legacy follower's `blank` untouched (stale/wrong), and a legacy
+ * broadcaster setting `blank: true` would leave a v2 follower's `displayState`
+ * untouched (stuck on whatever it last was). So BOTH fields are always
+ * (re)written together here, whichever direction the caller sent:
+ *   - `displayState` present + valid → authoritative; `blank` is DERIVED as
+ *     `displayState !== 'live'` (both `blackout` and the legacy-unaware
+ *     `logo` degrade a legacy client to "hidden", never "stuck showing the
+ *     wrong thing").
+ *   - only `blank` present (legacy caller) → `displayState` is DERIVED as
+ *     `blank ? 'blackout' : 'live'`.
+ * `stateVersion` is intentionally NOT a new field here — see this file's
+ * header doc-block; the existing `revision`/`StateRevision` counter already
+ * IS that value for every reader.
+ *
+ * @param mixed $state Decoded JSON body's `state` value (or absent/non-array).
+ * @return string|null Compact JSON, or null when there is nothing valid to store.
+ */
+function serviceMode_cleanState(mixed $state): ?string
+{
+    if (!is_array($state)) {
+        return null;
+    }
+    $clean = [];
+
+    $displayState = null;
+    if (isset($state['displayState']) && is_string($state['displayState'])
+        && in_array($state['displayState'], SERVICE_DISPLAY_STATES, true)) {
+        $displayState = $state['displayState'];
+    }
+    $blank = array_key_exists('blank', $state) ? (bool)$state['blank'] : null;
+
+    if ($displayState !== null) {
+        $clean['displayState'] = $displayState;
+        $clean['blank'] = ($displayState !== 'live');
+    } elseif ($blank !== null) {
+        $clean['blank'] = $blank;
+        $clean['displayState'] = $blank ? 'blackout' : 'live';
+    }
+
+    /* #1405 — nullable, clamped 0-9999 (mirrors componentIndex's existing clamp). */
+    if (array_key_exists('lineIndex', $state) && $state['lineIndex'] !== null && is_numeric($state['lineIndex'])) {
+        $clean['lineIndex'] = max(0, min(9999, (int)$state['lineIndex']));
+    }
+
+    if (array_key_exists('scrollPct', $state) && is_numeric($state['scrollPct'])) {
+        $clean['scrollPct'] = max(0.0, min(1.0, (float)$state['scrollPct']));
+    }
+    if (array_key_exists('transposeOffset', $state) && is_numeric($state['transposeOffset'])) {
+        $clean['transposeOffset'] = max(-12, min(12, (int)$state['transposeOffset']));
+    }
+
+    if (!$clean) {
+        return null;
+    }
+    return json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 /**
@@ -201,6 +315,96 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     return $row ?: null;
+}
+
+/**
+ * #1406 — cached probe: does `tblServicePresence.Role` exist yet? Gates every
+ * Role read/write so `service_join`/`service_poll` stay dormant-safe on an
+ * un-migrated install (the column ships via the Phase-2 schema batch,
+ * `migrate-apple-phase2-live-schema.php`). Mirrors the established
+ * `tierCapsColumnExists()` (access_tier_validation.php) /
+ * `creditPersonMembersTableExists()` (credit_people_helpers.php) pattern —
+ * one INFORMATION_SCHEMA round-trip, memoised for the rest of the request.
+ */
+function serviceMode_presenceRoleColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblServicePresence'
+                AND COLUMN_NAME  = 'Role' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* Probe failure — degrade as "not migrated yet" (fail closed on the
+           column, fail OPEN on the caller's behaviour: everyone is treated as
+           'congregant', never blocked). */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * #1406 — resolve a presence token's declared Role for the per-role poll
+ * budget. Fail-open to 'congregant' pre-migration, on any lookup error, or
+ * for an unknown token (the caller's own gate — `service_poll`'s main SELECT
+ * — is what actually rejects an unknown/expired token; this never widens
+ * that check, it only picks which rate-limit bucket applies).
+ */
+function serviceMode_presenceRole(\mysqli $db, string $presenceToken): string
+{
+    if (!serviceMode_presenceRoleColumnExists($db)) {
+        return 'congregant';
+    }
+    try {
+        $stmt = $db->prepare('SELECT Role FROM tblServicePresence WHERE PresenceToken = ? LIMIT 1');
+        $stmt->bind_param('s', $presenceToken);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $role = (string)($row['Role'] ?? '');
+        return $role === 'projector' ? 'projector' : 'congregant';
+    } catch (\Throwable $_e) {
+        return 'congregant';
+    }
+}
+
+/**
+ * #1406 — validate a client-declared join role against the closed vocabulary.
+ * Anything unrecognised (including absent) fails OPEN to 'congregant' —
+ * never blocks a join over a role the client mis-typed.
+ */
+function serviceMode_cleanPresenceRole(mixed $role): string
+{
+    $normalised = is_string($role) ? strtolower(trim($role)) : '';
+    return in_array($normalised, SERVICE_MODE_PRESENCE_ROLES, true) ? $normalised : 'congregant';
+}
+
+/**
+ * #1406 — server-declared poll cadence in milliseconds for the given role.
+ * Admin-tunable via tblAppSettings (SERVICE_MODE_POLL_MS_*_KEY); falls back to
+ * the hardcoded default when the setting is absent, non-numeric, or
+ * `getAppSetting()` itself isn't loaded (defensive — this file has no hard
+ * dependency on includes/maintenance.php).
+ */
+function serviceMode_pollIntervalMs(string $role): int
+{
+    $projector = ($role === 'projector');
+    $key       = $projector ? SERVICE_MODE_POLL_MS_PROJECTOR_KEY : SERVICE_MODE_POLL_MS_CONGREGANT_KEY;
+    $default   = $projector ? SERVICE_MODE_POLL_MS_PROJECTOR_DEFAULT : SERVICE_MODE_POLL_MS_CONGREGANT_DEFAULT;
+    if (!function_exists('getAppSetting')) {
+        return $default;
+    }
+    $raw = getAppSetting($key, (string)$default);
+    $ms  = (int)($raw ?? $default);
+    return $ms > 0 ? $ms : $default;
 }
 
 /**

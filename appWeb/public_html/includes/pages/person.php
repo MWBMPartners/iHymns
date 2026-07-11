@@ -99,6 +99,23 @@ if ($person && isset($person['Id'])) {
     }
 }
 
+/* Group members (#1502) — the individual people that make up this
+   Group/band/collective credit-person row (IsGroup=1, #585). Public,
+   read-only list; admin add/remove lives in the /manage/credit-people
+   Edit drawer. Schema-tolerant: returns an empty array on installs
+   that haven't run migrate-add-creditperson-members.php yet. */
+$personMembers = [];
+if ($person && (int)($person['IsGroup'] ?? 0) === 1 && isset($person['Id'])) {
+    if (!function_exists('loadCreditPersonGroupMembers')) {
+        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+    }
+    try {
+        $personMembers = loadCreditPersonGroupMembers($db, (int)$person['Id']);
+    } catch (\Throwable $_e) {
+        $personMembers = [];
+    }
+}
+
 /* External authority identifiers (#1348) — the key-value rows from
    tblCreditPersonIdentifiers (ipi / isni / viaf / wikidata / orcid / …, the table
    widened from ENUM in #1090 P6 so new types need no ALTER). Rendered as bare-code
@@ -437,6 +454,32 @@ foreach ($discography as $rk => $entry) {
             <?php endif; ?>
         </div>
     </div>
+
+    <?php if (!empty($personMembers)): ?>
+        <!-- Members (#1502) — the individual people that make up this
+             Group/band/collective. Read-only here; admin add/remove
+             lives in the /manage/credit-people Edit drawer. Each member
+             links to their own /people/<slug> page when one exists,
+             mirroring the "Compiled by" byline's slug-or-plain-text
+             fallback on /manage/includes/pages/songbook.php. -->
+        <div class="card card-song-header mb-4">
+            <div class="card-body">
+                <h2 class="h6 mb-2"><i class="fa-solid fa-people-group me-1" aria-hidden="true"></i>Members</h2>
+                <p class="mb-0">
+                    <?php foreach ($personMembers as $i => $m): ?>
+                        <?php if ($i > 0): ?> &middot; <?php endif; ?>
+                        <?php if (!empty($m['slug'])): ?>
+                            <a href="/people/<?= rawurlencode($m['slug']) ?>"
+                               data-navigate="person"
+                               class="text-reset text-decoration-underline"><?= htmlspecialchars($m['name']) ?></a>
+                        <?php else: ?>
+                            <span><?= htmlspecialchars($m['name']) ?></span>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            </div>
+        </div>
+    <?php endif; ?>
 
     <!-- External authority identifiers (#1348) — bare-code chips, mirroring the
          song page's ISWC/CCLI row (.song-meta-link styling). Sourced from

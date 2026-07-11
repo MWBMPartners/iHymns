@@ -2550,4 +2550,70 @@ return [
             } catch (\Throwable $_e) { return true; }
         },
     ],
+
+    'creditperson-maiden-surname' => [
+        'script' => 'migrate-add-creditperson-maiden-surname.php',
+        'card' => [
+            'title'  => 'Credit-person maiden surname (#1501)',
+            'body'   => 'Adds <code>tblCreditPeople.MaidenSurname</code> (VARCHAR(100), optional) '
+                      . 'so a curator can record a writer/composer&rsquo;s birth surname when it '
+                      . 'differs from the current <code>Surname</code> (#934), without touching the '
+                      . 'canonical <code>Name</code> the song-credit tables cite. Additive, '
+                      . 'idempotent — safe to re-run.',
+            'button' => 'Run Credit-Person Maiden Surname Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'MaidenSurname'),
+    ],
+    'creditperson-members' => [
+        'script' => 'migrate-add-creditperson-members.php',
+        'card' => [
+            'title'  => 'Credit-person Group membership (#1502)',
+            'body'   => 'Adds <code>tblCreditPersonMembers</code> so a &ldquo;Group / band / '
+                      . 'collective&rdquo; credit person (<code>IsGroup</code>, #585) can list its '
+                      . 'individual member people &mdash; each an ordinary registry row of their own. '
+                      . 'Both FKs cascade-delete; a UNIQUE key prevents duplicate membership. '
+                      . 'Additive, idempotent — safe to re-run.',
+            'button' => 'Run Credit-Person Group Membership Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCreditPersonMembers'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Apple Phase-2 live schema batch (#1407/#1408/#1409/#1410) — one-pass
+     * forward-looking schema for the whole "drive the TV / remote-control /
+     * device pairing" native-app family (rule #20). Additive + dormant until
+     * each consuming PR ships and starts reading/writing these columns/
+     * tables. See migrate-apple-phase2-live-schema.php's header for the
+     * five-object breakdown.
+     * -------------------------------------------------------------------- */
+    'apple-phase2-live-schema' => [
+        'script' => 'migrate-apple-phase2-live-schema.php',
+        'card' => [
+            'title'  => 'Apple Phase-2 live schema batch (#1407/#1408/#1409/#1410)',
+            'body'   => 'One-pass forward-looking schema (rule #20) for the upcoming native '
+                      . '"drive the TV / remote-control / device pairing" feature family: adds '
+                      . '<code>tblServicePresence.Role</code> (congregant/projector poll budget, #1406) '
+                      . 'and <code>tblApiTokens.DeviceName/Platform/AppVersion/LastSeenAt</code> (#1409), '
+                      . 'and creates <code>tblAuthDeviceCodes</code> (RFC 8628 device-code pairing, #1407), '
+                      . '<code>tblSessionControlTokens</code> (scoped remote-control delegation, #1408), and '
+                      . '<code>tblApnsTokens</code> (device + Live Activity push tokens, #1410). '
+                      . 'Entirely dormant — no endpoint reads/writes the three new tables yet, and the two '
+                      . 'ALTERed columns are additive/nullable-or-defaulted so every existing row and read/'
+                      . 'write keeps working unchanged. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Apple Phase-2 Live Schema Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until EVERY one of the five
+           objects exists, so a partial apply (e.g. the connection dropped after
+           the first two ALTERs but before the three CREATE TABLEs) never shows
+           the card green — "Apply all pending" would otherwise skip the rest. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblServicePresence', 'Role')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'DeviceName')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'Platform')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'AppVersion')
+            || !_migProbe_columnExists($db, 'tblApiTokens', 'LastSeenAt')
+            || !_migProbe_tableExists($db, 'tblAuthDeviceCodes')
+            || !_migProbe_tableExists($db, 'tblSessionControlTokens')
+            || !_migProbe_tableExists($db, 'tblApnsTokens'),
+    ],
 ];

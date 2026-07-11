@@ -306,6 +306,11 @@ jobs:
           echo "Running activity-log-scrub redaction guard test..."
           php tests/php/test-activity-log-scrub.php
 
+      - name: Service/Live broadcast state cleaner (#1405)
+        run: |
+          echo "Running service-state-clean blank<->displayState bridge test..."
+          php tests/php/test-service-state-clean.php
+
       - name: OpenLyrics importer enrichment (#1130)
         run: |
           echo "Running OpenLyrics importer enrichment test..."

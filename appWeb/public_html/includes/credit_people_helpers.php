@@ -41,6 +41,39 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
+/**
+ * iHymns — shared "read a form/JSON field as a trimmed string" helper (#trim).
+ *
+ * ELI5: whenever we pull a value a curator typed or pasted (a name, a
+ * URL, an ISNI/IPI/VIAF number, a note) out of `$_POST` or a JSON-decoded
+ * sub-form row, run it through here FIRST. It strips leading/trailing
+ * whitespace — spaces, tabs, newlines (PHP's trim() default charlist,
+ * @link https://www.php.net/manual/en/function.trim.php) — so a value
+ * pasted with an accidental trailing newline (a common paste artefact
+ * from a browser address bar or a spreadsheet cell) never lands in a
+ * UNIQUE-keyed identifier column or a stored URL with stray whitespace.
+ *
+ * DETAILED / WHY a helper instead of inline `trim((string)($x ?? ''))`
+ * everywhere: every credit-person add/update/rename/merge handler in
+ * credit-people.php, plus every repeating sub-form normaliser below
+ * (links / IPI / ISNI / other-identifiers / aliases), needs the exact
+ * same idiom on the exact same shape of input. Before this helper the
+ * idiom was duplicated by hand at each call site; one typo'd copy (e.g.
+ * forgetting the `(string)` cast, or forgetting the call entirely on a
+ * newly-added field) would silently reintroduce an un-trimmed gap in
+ * exactly one field with no test to catch it. ONE function = one place
+ * to audit/fix — never re-duplicate this per field (project modularity
+ * rule, see `.claude/CLAUDE.md`).
+ *
+ * Accepts `mixed` because both `$_POST` values (string|array|null) and
+ * JSON-decoded sub-form rows can hand back a non-string scalar (int,
+ * bool) for a field a curator left as a bare numeric literal.
+ */
+function cpTrimmed(mixed $v): string
+{
+    return trim((string)($v ?? ''));
+}
+
 /* =========================================================================
  * AUTHORITY-CONTROL IDENTIFIER REGISTRY (#1367)
  *
@@ -157,7 +190,7 @@ function creditIdentifierValidate(string $type, string $value): bool
  */
 function creditIdentifierNormalise(string $type, string $value): string
 {
-    $value = trim($value);
+    $value = cpTrimmed($value); // #trim
     if ($value === '') return $value;
     $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
     if ($reg === null) return $value;
@@ -188,7 +221,7 @@ function creditIdentifierNormalise(string $type, string $value): string
  */
 function creditIdentifierExtractFromUrl(string $url): ?array
 {
-    $url = trim($url);
+    $url = cpTrimmed($url); // #trim
     if ($url === '') return null;
     foreach (CREDIT_IDENTIFIER_TYPES as $slug => $def) {
         foreach ($def['extract'] as $body) {
@@ -349,7 +382,7 @@ function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $raw
     if ($typeId > 0 && isset($registryIds[$typeId])) return $typeId;
 
     /* Legacy shape — coerce the slug via the alias map, then look up. */
-    $slugIn = trim((string)($rawSlug ?? ''));
+    $slugIn = cpTrimmed($rawSlug ?? ''); // #trim
     if ($slugIn === '') return null;
     $resolved = CREDIT_PERSON_LEGACY_SLUG_MAP[mb_strtolower($slugIn)] ?? 'other';
     return $slugToId[$resolved] ?? null;
@@ -380,14 +413,14 @@ function normaliseCreditPersonLinks(\mysqli $db, mixed $raw): array
     $out = [];
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $url = trim((string)($row['url'] ?? ''));
+        $url = cpTrimmed($row['url'] ?? ''); // #trim
         if ($url === '') continue;
         $typeId = resolveCreditPersonLinkTypeId($db, $row['type_id'] ?? null, $row['type'] ?? null);
         if ($typeId === null) continue;
         $out[] = [
             'type_id'    => $typeId,
             'url'        => $url,
-            'label'      => trim((string)($row['label'] ?? '')) ?: null,
+            'label'      => cpTrimmed($row['label'] ?? '') ?: null, // #trim
             'sort_order' => (int)($row['sort_order'] ?? $i),
         ];
     }
@@ -407,12 +440,12 @@ function normaliseCreditPersonIpi(mixed $raw): array
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $num = trim((string)($row['number'] ?? ''));
+        $num = cpTrimmed($row['number'] ?? ''); // #trim
         if ($num === '') continue;
         $out[] = [
             'number'    => $num,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -447,12 +480,12 @@ function normaliseCreditPersonIsni(mixed $raw): array
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $raw_id = trim((string)($row['number'] ?? ''));
+        $raw_id = cpTrimmed($row['number'] ?? ''); // #trim
         if ($raw_id === '') continue;
         $out[] = [
             'number'    => canonicaliseIsni($raw_id),
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -581,6 +614,150 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
         $cached = false;
     }
     return $cached;
+}
+
+/**
+ * Cached check for the MaidenSurname column (#1501,
+ * migrate-add-creditperson-maiden-surname.php). Mirrors
+ * creditPeopleNamePartsColumnsExist()'s pattern exactly — the add /
+ * update_person save paths gate the write on this so a partly-migrated
+ * install still saves the rest of the record rather than throwing
+ * "Unknown column", and the list-load query gates the SELECT the same
+ * way (falls back to `NULL AS MaidenSurname`).
+ */
+function creditPeopleMaidenSurnameColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'MaidenSurname' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Persist MaidenSurname for a credit-person row, in a SEPARATE statement
+ * from the main multi-branch INSERT/UPDATE — mirrors the per-place
+ * BirthPlaceId/DeathPlaceId UPDATE pattern and creditPeopleSaveDatePrecision()
+ * below: the giant column-existence-branched INSERT/UPDATE shapes in
+ * credit-people.php don't need to learn a new branch for one more
+ * optional column. No-op (gated on creditPeopleMaidenSurnameColumnExists())
+ * on an un-migrated install — dormant-safe (#1501).
+ *
+ * @param int         $personId      tblCreditPeople.Id (insert_id on create).
+ * @param string|null $maidenSurname Trimmed value, or null to clear.
+ */
+function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSurname): void
+{
+    if ($personId <= 0) return;
+    if (!creditPeopleMaidenSurnameColumnExists($db)) return;
+    $stmt = $db->prepare('UPDATE tblCreditPeople SET MaidenSurname = ? WHERE Id = ?');
+    $stmt->bind_param('si', $maidenSurname, $personId);
+    $stmt->execute();
+    $stmt->close();
+}
+
+/**
+ * #1500 — merge-target candidate search. Replaces the old client-side
+ * "every registry + in-use-only name in one giant <select>" Merge-modal
+ * Target picker (unusable once the registry passed a few hundred rows)
+ * with a server-filtered, capped result set for a live-search typeahead.
+ *
+ * ELI5: the curator types a few letters of the name they want to merge
+ * INTO; this returns a short, relevant list instead of every person in
+ * the whole catalogue.
+ *
+ * DETAILED: returns the SAME two-source shape the legacy client-side
+ * `registry` array offered — registry rows (tblCreditPeople) first
+ * (alphabetical), then in-use-only names (cited on a song but with no
+ * registry row yet — the same 5-table UNION the page's own list-load
+ * query uses) filling any remaining slots up to $limit, ordered by
+ * usage. Each candidate carries the SAME "id:N" / "name:X" `key` shape
+ * the old <select> option values carried, so the client's submit-time
+ * routing (which hidden field gets the pick) is UNCHANGED. $excludeId /
+ * $excludeName keep the source out of its own target list (a source not
+ * yet in the registry has $excludeId = 0, so the NOT EXISTS + `<> ?`
+ * name filters below are what actually excludes it). Empty $q surfaces
+ * the most-used names first — same "useful before typing" convention as
+ * /manage/songbooks's compiler_search / parent_search.
+ *
+ * @return list<array{key:string,id:?int,name:string,total:int}>
+ */
+function searchCreditPersonMergeTargets(
+    \mysqli $db,
+    string  $q,
+    int     $excludeId,
+    string  $excludeName,
+    int     $limit
+): array {
+    $out  = [];
+    $like = '%' . $q . '%';
+
+    /* Registry rows first — alphabetical, matching the legacy dropdown's
+       ordering for the "definitely a real person" bucket. */
+    if ($q === '') {
+        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? ORDER BY Name ASC LIMIT ?');
+        $stmt->bind_param('ii', $excludeId, $limit);
+    } else {
+        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
+        $stmt->bind_param('isi', $excludeId, $like, $limit);
+    }
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $name = (string)$r['Name'];
+        if ($excludeName !== '' && $name === $excludeName) continue; // defensive; different id in practice
+        $out[] = ['key' => 'id:' . (int)$r['Id'], 'id' => (int)$r['Id'], 'name' => $name, 'total' => 0];
+    }
+
+    $remaining = $limit - count($out);
+    if ($remaining <= 0) return $out;
+
+    /* In-use-only names — cited on a song, no registry row yet. Same
+       5-table union the page's own list-load query (Q1) already runs on
+       every page load; NOT EXISTS keeps registry rows (already returned
+       above) out of this bucket so nothing is duplicated. */
+    $usageSql = "
+        SELECT u.Name, SUM(u.cnt) AS TotalUsage
+          FROM (
+              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+          ) u
+         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+           AND u.Name <> ?"
+        . ($q !== '' ? ' AND u.Name LIKE ?' : '') . "
+         GROUP BY u.Name
+         ORDER BY TotalUsage DESC, u.Name ASC
+         LIMIT ?
+    ";
+    $stmt = $db->prepare($usageSql);
+    if ($q !== '') {
+        $stmt->bind_param('ssi', $excludeName, $like, $remaining);
+    } else {
+        $stmt->bind_param('si', $excludeName, $remaining);
+    }
+    $stmt->execute();
+    foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
+        $name = (string)$r['Name'];
+        $out[] = ['key' => 'name:' . $name, 'id' => null, 'name' => $name, 'total' => (int)$r['TotalUsage']];
+    }
+    return $out;
 }
 
 /* =========================================================================
@@ -798,7 +975,7 @@ function registerCreditPersonByName(
     string  $name,
     ?array  $parts = null
 ): int {
-    $name = trim($name);
+    $name = cpTrimmed($name); // #trim
     if ($name === '') return 0;
 
     /* Fast path: row already exists. */
@@ -941,19 +1118,19 @@ function normaliseCreditPersonAliases(mixed $raw): array
     $seen = []; /* dedupe by (lower-cased) name within the request */
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $name = trim((string)($row['name'] ?? ''));
+        $name = cpTrimmed($row['name'] ?? ''); // #trim
         if ($name === '') continue;
         if (mb_strlen($name) > 255) $name = mb_substr($name, 0, 255);
         $key = mb_strtolower($name);
         if (isset($seen[$key])) continue;
         $seen[$key] = true;
 
-        $type = trim((string)($row['type'] ?? 'other'));
+        $type = cpTrimmed($row['type'] ?? 'other'); // #trim
         if (!in_array($type, CREDIT_PERSON_ALIAS_TYPE_KEYS, true)) $type = 'other';
 
-        $sortName = trim((string)($row['sort_name'] ?? ''));
-        $locale   = trim((string)($row['locale']    ?? ''));
-        $note     = trim((string)($row['note']      ?? ''));
+        $sortName = cpTrimmed($row['sort_name'] ?? ''); // #trim
+        $locale   = cpTrimmed($row['locale']    ?? ''); // #trim
+        $note     = cpTrimmed($row['note']      ?? ''); // #trim
 
         $out[] = [
             'name'        => $name,
@@ -1144,4 +1321,292 @@ function parseCreditPersonAliasHints(string $raw): array
     }
 
     return ['name' => $raw, 'aliases' => []];
+}
+
+/* =========================================================================
+ * GROUP MEMBERSHIP (#1502)
+ *
+ * Links individual MEMBER people (ordinary tblCreditPeople rows) to a
+ * 'Group / band / collective' person (IsGroup=1, #585) via the thin
+ * join table tblCreditPersonMembers — see
+ * appWeb/.sql/migrate-add-creditperson-members.php for the schema
+ * rationale. Every helper below is table-existence-gated (dormant-safe
+ * on an install that hasn't run the migration yet, matching the
+ * aliases / date-precision / places helpers above in this file).
+ * ========================================================================= */
+
+/**
+ * Cached probe for tblCreditPersonMembers. Static-cached for the request
+ * lifetime so the INFORMATION_SCHEMA round-trip happens at most once,
+ * mirroring creditPeopleAliasesTableExists() above.
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-tables-table.html
+ */
+function creditPersonMembersTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPersonMembers' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Cached probe for the Slug column on tblCreditPeople (#588). Extracted
+ * here (rather than re-probed inline) because both the admin Members
+ * card-list and the public /people/<slug> Members panel need to know
+ * whether a member row can be linked. Mirrors the inline probe already
+ * embedded in generateUniqueCreditPersonSlug() below, just exposed as
+ * its own reusable, cached check.
+ */
+function creditPeopleSlugColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'Slug' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Fetch every member of one Group person, in SortOrder/Id order
+ * (append-order — v1 has no drag-reorder UI). Slug is included (NULL on
+ * a pre-#588 install) so callers that need to link to a member's public
+ * page can do so without a second query.
+ *
+ * @return list<array{id:int,name:string,slug:?string}>
+ */
+function loadCreditPersonGroupMembers(\mysqli $db, int $groupId): array
+{
+    if ($groupId <= 0 || !creditPersonMembersTableExists($db)) return [];
+    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $stmt = $db->prepare(
+        "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+           FROM tblCreditPersonMembers m
+           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
+          WHERE m.GroupPersonId = ?
+       ORDER BY m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $out = [];
+    foreach ($rows as $r) {
+        $out[] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
+    }
+    return $out;
+}
+
+/**
+ * Bulk-load group members for many group-person ids in one round-trip.
+ * Used by /manage/credit-people's list-view render so the Edit drawer's
+ * Members pre-fill doesn't cost an extra query per row (mirrors
+ * loadCreditPersonAliasesBulk() above).
+ *
+ * @param list<int> $groupIds
+ * @return array<int, list<array{id:int,name:string,slug:?string}>> GroupPersonId → member rows
+ */
+function loadCreditPersonGroupMembersBulk(\mysqli $db, array $groupIds): array
+{
+    $groupIds = array_values(array_filter(array_map('intval', $groupIds), fn($v) => $v > 0));
+    if (!$groupIds || !creditPersonMembersTableExists($db)) return [];
+    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+    $types        = str_repeat('i', count($groupIds));
+    $stmt = $db->prepare(
+        "SELECT m.GroupPersonId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+           FROM tblCreditPersonMembers m
+           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
+          WHERE m.GroupPersonId IN ($placeholders)
+       ORDER BY m.GroupPersonId ASC, m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param($types, ...$groupIds);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $grouped = [];
+    foreach ($rows as $r) {
+        $gid = (int)$r['GroupId'];
+        $grouped[$gid][] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
+    }
+    return $grouped;
+}
+
+/**
+ * Add one member to a group. Idempotent — re-adding an existing member
+ * is a no-op success (matches the UNIQUE (GroupPersonId, MemberPersonId)
+ * key's intent: "membership either holds or it doesn't", not an error a
+ * curator has to dismiss on a double-click). Guards:
+ *   - table must exist (dormant-safe pre-migration)
+ *   - both ids must be > 0
+ *   - $groupId must reference a row with IsGroup = 1 (a plain individual
+ *     is not a valid membership parent)
+ *   - $memberId must reference an existing row
+ *   - $groupId !== $memberId (no self-membership)
+ *
+ * Appends at the end of the group's current member list (SortOrder =
+ * current max + 1) — v1 has no drag-reorder UI, so every add lands last.
+ *
+ * @return array{ok:bool, error?:string, member?:array{id:int,name:string}}
+ */
+function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+{
+    if (!creditPersonMembersTableExists($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
+    }
+    if ($groupId <= 0 || $memberId <= 0) {
+        return ['ok' => false, 'error' => 'Both a group and a member are required.'];
+    }
+    if ($groupId === $memberId) {
+        return ['ok' => false, 'error' => 'A group cannot list itself as a member.'];
+    }
+    /* IsGroup itself is a gated column (#585, migrate-credit-people-flags.php)
+       — an install new enough to have run THIS migration will almost
+       certainly have that one too, but check anyway rather than assume,
+       since a raw `SELECT IsGroup` would throw under mysqli's STRICT
+       reporting on a column that doesn't exist (matches the same gate
+       creditPeopleFlagsColumnsExist() enforces elsewhere in this file). */
+    if (!creditPeopleFlagsColumnsExist($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs the Credit People classification-flags migration to be run first.'];
+    }
+
+    $stmt = $db->prepare('SELECT IsGroup FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $groupRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$groupRow) return ['ok' => false, 'error' => 'Group person not found.'];
+    if ((int)($groupRow['IsGroup'] ?? 0) !== 1) {
+        return ['ok' => false, 'error' => 'That person is not flagged as a Group.'];
+    }
+
+    $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $memberId);
+    $stmt->execute();
+    $memberRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$memberRow) return ['ok' => false, 'error' => 'Member person not found.'];
+
+    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ? LIMIT 1');
+    $stmt->bind_param('ii', $groupId, $memberId);
+    $stmt->execute();
+    $already = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    if ($already) {
+        return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+    }
+
+    $stmt = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) + 1 FROM tblCreditPersonMembers WHERE GroupPersonId = ?');
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $nextRow  = $stmt->get_result()->fetch_row();
+    $nextSort = (int)($nextRow[0] ?? 0);
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblCreditPersonMembers (GroupPersonId, MemberPersonId, SortOrder) VALUES (?, ?, ?)'
+    );
+    $stmt->bind_param('iii', $groupId, $memberId, $nextSort);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+}
+
+/**
+ * Remove one member from a group. Idempotent — removing a non-member
+ * (already removed, or never a member) is a 0-rows-affected success,
+ * not an error.
+ *
+ * @return array{ok:bool, error?:string, removed?:int}
+ */
+function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+{
+    if (!creditPersonMembersTableExists($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
+    }
+    if ($groupId <= 0 || $memberId <= 0) {
+        return ['ok' => false, 'error' => 'Both a group and a member are required.'];
+    }
+    $stmt = $db->prepare('DELETE FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ?');
+    $stmt->bind_param('ii', $groupId, $memberId);
+    $stmt->execute();
+    $removed = $stmt->affected_rows;
+    $stmt->close();
+    return ['ok' => true, 'removed' => $removed];
+}
+
+/* =========================================================================
+ * BULK-PROMOTE — "remaining" one-click path (#1503)
+ *
+ * Companion to the existing fuzzy-match review flow on
+ * /manage/credit-people-bulk-promote (#846): that page's job is to
+ * catch NEAR-DUPLICATES ("J. Newton" vs "John Newton") before creating
+ * a new registry row. This helper answers a narrower question —
+ * "which cited names have NO registry row at all yet" — for the
+ * one-click "Promote all remaining (N)" action on the parent
+ * /manage/credit-people page, which skips the fuzzy-match review
+ * entirely (the curator who wants that review still has the dedicated
+ * bulk-promote page). Same 5-table UNION + NOT EXISTS shape as
+ * searchCreditPersonMergeTargets()'s in-use-only bucket and
+ * credit-people-bulk-promote.php's own candidate query — kept as its
+ * own narrow (name-only, no per-role breakdown) helper rather than
+ * forking either of those, since a plain name list is all the
+ * "register everything remaining" action needs.
+ * ========================================================================= */
+
+/**
+ * Every name cited on >= 1 song-credit row that has no matching
+ * tblCreditPeople registry row yet, highest-usage first.
+ *
+ * @return list<string>
+ */
+function creditPeopleCitedUnregisteredNames(\mysqli $db): array
+{
+    $sql = "
+        SELECT u.Name, SUM(u.cnt) AS TotalUsage
+          FROM (
+              SELECT Name, COUNT(*) AS cnt FROM tblSongWriters     GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongComposers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongArrangers   GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongAdaptors    GROUP BY Name
+              UNION ALL
+              SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
+          ) u
+         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+         GROUP BY u.Name
+         ORDER BY TotalUsage DESC, u.Name ASC
+    ";
+    /* mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
+       (includes/db_mysql.php) — a failing query throws rather than
+       returning false, so this is a direct chain, not a false-check
+       guard (project convention; see credit-people-bulk-promote.php's
+       identical $usageSql chain). */
+    $rows = $db->query($sql)->fetch_all(MYSQLI_ASSOC);
+    return array_map(static fn(array $r): string => (string)$r['Name'], $rows);
 }

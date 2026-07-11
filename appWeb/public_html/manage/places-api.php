@@ -8,7 +8,9 @@ declare(strict_types=1);
  * Routes the admin's location-autocomplete UX through a single
  * backend so we control:
  *   - The User-Agent (Nominatim ToS requires a contact-bearing UA)
- *   - Response caching (file cache under data_share/place_cache)
+ *   - Response caching: an APCu in-memory tier (short TTL, #1507 —
+ *     see placesSearch()) IN FRONT OF the existing file cache under
+ *     data_share/place_cache (long TTL, unchanged)
  *   - Rate limiting (per-IP + global)
  *   - Provider fallback (Photon → Nominatim) without leaking the
  *     fallback logic to every browser
@@ -97,6 +99,19 @@ const PLACES_SEARCH_TTL    = 86400 * 7;   // 7 days — search results are stabl
 const PLACES_HTTP_TIMEOUT  = 6;            // seconds per upstream call
 const PLACES_MAX_LIMIT     = 12;
 const PLACES_DEFAULT_LIMIT = 8;
+/* #1507 — short in-memory tier ahead of the disk cache. ELI5: a sticky
+   note vs. the filing cabinet — much faster than a file read for a query
+   someone (maybe a different curator) already ran in the last few
+   minutes. WHY a separate, SHORTER TTL than the 7-day disk cache: this
+   tier only exists to skip disk I/O for near-term repeats within one
+   PHP-FPM worker's APCu segment; it isn't meant to persist like the disk
+   cache, which stays the durable long-term store. Per-keystroke queries
+   while a single admin is actively typing ("Be" → "Bel" → "Belf" → …)
+   are each a DISTINCT cache key by design (a growing prefix is a
+   different query) — no cache layer removes that first live upstream
+   round-trip; the loading spinner (js/modules/place-search.js #1507)
+   is what fixes the PERCEIVED slowness during that unavoidable wait. */
+const PLACES_MEMORY_TTL    = 300;          // 5 minutes
 
 /* The cache lives under data_share/ — that directory already exists
    and is writable (alongside SQLite, song_data and setlist_json). */
@@ -239,9 +254,23 @@ function placesSearch(string $query, int $limit, string $cacheDir, string $userA
     /* Cache key is provider-agnostic — we don't want one provider's
        miss to flush another's hit. */
     $cacheKey  = hash('sha256', strtolower($query) . '|' . $limit);
+
+    /* #1507 — APCu tier FIRST (in-memory, no disk I/O). Feature-detected:
+       DreamHost shared hosting doesn't guarantee APCu is enabled, so this
+       degrades to a clean no-op (straight through to the disk cache
+       below) when the extension is absent or disabled. */
+    $apcuKey = 'ihymns_place_search_' . $cacheKey;
+    if (_placesApcuAvailable()) {
+        $hit = apcu_fetch($apcuKey, $ok);
+        if ($ok && is_array($hit)) return $hit;
+    }
+
     $cacheFile = $cacheDir . DIRECTORY_SEPARATOR . substr($cacheKey, 0, 2) . DIRECTORY_SEPARATOR . $cacheKey . '.json';
     $cached    = _placesCacheRead($cacheFile);
-    if ($cached !== null) return $cached;
+    if ($cached !== null) {
+        if (_placesApcuAvailable()) { apcu_store($apcuKey, $cached, PLACES_MEMORY_TTL); }
+        return $cached;
+    }
 
     /* Photon first. */
     $results = _placesFetchPhoton($query, $limit, $userAgent);
@@ -250,7 +279,27 @@ function placesSearch(string $query, int $limit, string $cacheDir, string $userA
     }
 
     _placesCacheWrite($cacheFile, $results);
+    if (_placesApcuAvailable()) { apcu_store($apcuKey, $results, PLACES_MEMORY_TTL); }
     return $results;
+}
+
+/**
+ * Cached feature-detection for APCu (#1507). ELI5: "is the fast in-memory
+ * cache actually turned on here?" — checked once per request, not once
+ * per keystroke. Kept as its own function (rather than inlining the
+ * function_exists() check at each call site) so the three call sites in
+ * placesSearch() above can't drift if the detection logic ever needs a
+ * second condition (e.g. an ini_get('apc.enabled') check).
+ *
+ * @link https://www.php.net/manual/en/book.apcu.php
+ */
+function _placesApcuAvailable(): bool
+{
+    static $available = null;
+    if ($available === null) {
+        $available = extension_loaded('apcu') && function_exists('apcu_fetch') && function_exists('apcu_store');
+    }
+    return $available;
 }
 
 function _placesFetchPhoton(string $query, int $limit, string $userAgent): array
@@ -304,13 +353,39 @@ function _placesFetchPhoton(string $query, int $limit, string $userAgent): array
     return $out;
 }
 
+/**
+ * #1507 — the FULL resolved hierarchy for a Photon candidate, e.g.
+ * "Belfast, Belfast City, Northern Ireland, United Kingdom".
+ *
+ * ELI5: turn the scattered admin-area fields Photon returns into ONE
+ * readable "place, district, region, country" string — so picking a
+ * result and seeing it echoed back into the input actually confirms
+ * WHICH place was picked (not just a same-named city on the wrong
+ * continent).
+ *
+ * DETAILED: the prior 4-part list (name/city/state/country) silently
+ * DROPPED the district/county level. Northern Ireland's local-government
+ * districts (Photon's `district` property, e.g. "Belfast City") sit
+ * between the locality and the region/state — omitting them collapsed
+ * "Belfast, Belfast City, Northern Ireland, United Kingdom" down to
+ * "Belfast, Northern Ireland, United Kingdom", silently losing a level
+ * a curator picking between similarly-named places elsewhere needs to
+ * disambiguate. `city`/`town`/`village`/`locality` are mutually
+ * exclusive alternates for the same "locality" slot (Photon only ever
+ * populates one), so the first non-empty one is used.
+ *
+ * @link https://photon.komoot.io/  Photon API response shape
+ */
 function _placesPhotonDisplayName(array $props): string
 {
+    $locality = $props['city'] ?? $props['town'] ?? $props['village'] ?? $props['locality'] ?? null;
     $parts = array_filter([
-        $props['name']    ?? null,
-        $props['city']    ?? null,
-        $props['state']   ?? null,
-        $props['country'] ?? null,
+        $props['name']     ?? null,
+        $locality,
+        $props['district'] ?? null,
+        $props['county']   ?? null,
+        $props['state']    ?? null,
+        $props['country']  ?? null,
     ], static fn($s) => is_string($s) && $s !== '');
     /* Deduplicate consecutive equal parts (e.g. when "name" already
        equals "city" for a town-level pick). */

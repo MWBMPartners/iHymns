@@ -13233,6 +13233,7 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -13250,8 +13251,13 @@ if ($action !== null) {
             if ($songId === '') { $songId = null; }
             $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
                 ? min(9999, max(0, (int)$body['componentIndex'])) : null;
-            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+            $stateJson = serviceMode_cleanState($body['state'] ?? null);
             $orgId = null; /* v1: org scoping deferred; the FK stays NULL (SET NULL-safe). */
+            /* #1405 side-finding fix (rule #26) — host-mode Live Follow never
+               stamped Channel, so an alpha-created session was joinable from
+               production against the shared DB. Stamped here + filtered in
+               live_follow_join/_poll below. */
+            $channel = serviceMode_channel();
 
             $db = getDbMysqli();
 
@@ -13284,12 +13290,12 @@ if ($action !== null) {
                     $ins = $db->prepare(
                         'INSERT INTO tblLiveFollowSessions
                             (SessionCode, HostUserId, OrgId, SetlistId, CurrentSongId,
-                             CurrentComponentIndex, StateJson, IsActive, StartedAt,
+                             CurrentComponentIndex, StateJson, Channel, IsActive, StartedAt,
                              LastHeartbeatAt, ExpiresAt, StateRevision)
-                         VALUES (?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, UTC_TIMESTAMP(), UTC_TIMESTAMP(),
                                  DATE_ADD(UTC_TIMESTAMP(), INTERVAL 4 HOUR), 0)'
                     );
-                    $ins->bind_param('siissis', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson);
+                    $ins->bind_param('siississ', $code, $userId, $orgId, $setlistId, $songId, $componentIndex, $stateJson, $channel);
                     $ins->execute();
                     $ins->close();
                     $inserted = true;
@@ -13308,6 +13314,7 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -13326,7 +13333,7 @@ if ($action !== null) {
             if ($songId === '') { sendJson(['error' => 'songId is required.'], 400); break; }
             $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
                 ? min(9999, max(0, (int)$body['componentIndex'])) : null;
-            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+            $stateJson = serviceMode_cleanState($body['state'] ?? null);
 
             $db = getDbMysqli();
 
@@ -13426,6 +13433,7 @@ if ($action !== null) {
         case 'live_follow_join': {
             $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['ok' => false, 'error' => 'Invalid session code.'], 400); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
             /* Join is infrequent (once per follower) but a whole congregation
@@ -13439,18 +13447,22 @@ if ($action !== null) {
             recordRateLimitHit('live_follow_join', $liveIp);
 
             $db = getDbMysqli();
-            /* 180s = LIVE_SESSION_FRESHNESS_SECONDS (service_mode.php) — the ONE
-               unified live-session window shared with Service Mode; keep this
-               literal in sync (this #1268 handler doesn't load that helper). #1386 */
+            /* #1405 side-finding fix (rule #26) — Channel filter added so an
+               alpha/beta-created session is never joinable on production
+               against the shared DB (a host session now stamps Channel at
+               live_follow_create). 180s = LIVE_SESSION_FRESHNESS_SECONDS
+               (service_mode.php) — the ONE unified live-session window shared
+               with Service Mode; keep this literal in sync. #1386 */
+            $channel = serviceMode_channel();
             $stmt = $db->prepare(
                 'SELECT s.CurrentSongId, s.CurrentComponentIndex, s.StateJson, s.StateRevision,
                         u.DisplayName AS HostName
                    FROM tblLiveFollowSessions s
                    JOIN tblUsers u ON u.Id = s.HostUserId
-                  WHERE s.SessionCode = ? AND s.IsActive = 1
+                  WHERE s.SessionCode = ? AND s.Channel = ? AND s.IsActive = 1
                     AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)'
             );
-            $stmt->bind_param('s', $code);
+            $stmt->bind_param('ss', $code, $channel);
             $stmt->execute();
             $row = $stmt->get_result()->fetch_assoc();
             $stmt->close();
@@ -13481,6 +13493,7 @@ if ($action !== null) {
         case 'live_follow_poll': {
             $code = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['code'] ?? '')));
             if (!preg_match('/^[A-Z0-9]{4,12}$/', $code)) { sendJson(['active' => false], 400); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             $since = (int)($_GET['since'] ?? 0);
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -13506,13 +13519,15 @@ if ($action !== null) {
                 recordRateLimitHit('live_follow_poll', $liveIp);
             }
             $db = getDbMysqli();
+            /* #1405 side-finding fix (rule #26) — Channel filter, mirrors join. */
+            $channel = serviceMode_channel();
             $stmt = $db->prepare(
                 'SELECT CurrentSongId, CurrentComponentIndex, StateJson, StateRevision,
                         (IsActive = 1 AND LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL 180 SECOND)) AS Fresh
                    FROM tblLiveFollowSessions
-                  WHERE SessionCode = ?'
+                  WHERE SessionCode = ? AND Channel = ?'
             );
-            $stmt->bind_param('s', $code);
+            $stmt->bind_param('ss', $code, $channel);
             $stmt->execute();
             $row = $stmt->get_result()->fetch_assoc();
             $stmt->close();
@@ -13751,7 +13766,7 @@ if ($action !== null) {
             if ($songId === '') { $songId = null; }
             $componentIndex = (isset($body['componentIndex']) && $body['componentIndex'] !== null)
                 ? min(9999, max(0, (int)$body['componentIndex'])) : null;
-            $stateJson = _liveFollowCleanState($body['state'] ?? null);
+            $stateJson = serviceMode_cleanState($body['state'] ?? null);
 
             $db = getDbMysqli();
             $channel = serviceMode_channel();
@@ -13809,6 +13824,9 @@ if ($action !== null) {
             $venueId = (int)($body['venueId'] ?? 0);  /* OPTIONAL — 0 = resolve by code+channel alone (congregant typed it off the screen). */
             $deviceId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($body['presenceDeviceId'] ?? ''));
             $deviceId = mb_substr($deviceId, 0, 64);
+            /* #1406 — optional client-declared role (congregant | projector),
+               fail-open to 'congregant' on anything unrecognised or absent. */
+            $joinRole = serviceMode_cleanPresenceRole($body['role'] ?? null);
             if ($code === '' || $deviceId === '') { sendJson(['ok' => false, 'error' => 'Invalid join request.'], 400); break; }
 
             $db = getDbMysqli();
@@ -13838,22 +13856,41 @@ if ($action !== null) {
             $occDate = $sess['OccurrenceDate'] !== null ? (string)$sess['OccurrenceDate'] : null;
 
             /* Upsert presence: one row per (session, device); a re-join reactivates
-               + re-tokens rather than duplicating (uq_DeviceSession). */
-            $ins = $db->prepare(
-                "INSERT INTO tblServicePresence
-                    (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
-                     PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
-                 ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
-                     LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
-            );
-            $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+               + re-tokens rather than duplicating (uq_DeviceSession). Role (#1406)
+               is columnExists-gated so this stays dormant-safe pre-migration.
+               NOTE — this also fixes a pre-existing bind_param type-string/
+               variable-count mismatch in the no-Role branch ('iiiissssss' was
+               10 chars for only 9 bound variables, which throws ArgumentCountError
+               on PHP 8.1+ on every call; confirmed against a live mysqli
+               connection during this change). */
+            if (serviceMode_presenceRoleColumnExists($db)) {
+                $ins = $db->prepare(
+                    "INSERT INTO tblServicePresence
+                        (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                         PresenceDeviceId, PresenceToken, Role, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                     ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken), Role = VALUES(Role),
+                         LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                );
+                $ins->bind_param('iiiissssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $joinRole, $expiresAt);
+            } else {
+                $ins = $db->prepare(
+                    "INSERT INTO tblServicePresence
+                        (SessionId, OrgId, VenueId, ScheduleId, OccurrenceDate, Channel,
+                         PresenceDeviceId, PresenceToken, JoinedAt, LastSeenAt, ExpiresAt, IsActive)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?, 1)
+                     ON DUPLICATE KEY UPDATE PresenceToken = VALUES(PresenceToken),
+                         LastSeenAt = UTC_TIMESTAMP(), ExpiresAt = VALUES(ExpiresAt), IsActive = 1"
+                );
+                $ins->bind_param('iiiisssss', $sessionId, $orgId, $sVenueId, $schedId, $occDate, $channel, $deviceId, $token, $expiresAt);
+            }
             $ins->execute();
             $ins->close();
 
             sendJson([
                 'ok' => true,
                 'presenceToken' => $token,
+                'pollIntervalMs' => serviceMode_pollIntervalMs($joinRole),
                 'currentSongId' => $m['CurrentSongId'] ?? null,
                 'componentIndex' => isset($m['CurrentComponentIndex']) ? (int)$m['CurrentComponentIndex'] : null,
                 'state' => isset($m['StateJson']) && $m['StateJson'] !== null ? json_decode((string)$m['StateJson'], true) : null,
@@ -13867,12 +13904,21 @@ if ($action !== null) {
             $token = (string)($_GET['presenceToken'] ?? '');
             if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $token)) { sendJson(['active' => false]); break; }
             $since = max(0, (int)($_GET['since'] ?? 0));
-            /* NAT-safe: rate-limit PER TOKEN (not per IP) so many congregants
-               behind one IP each get their own budget, and one bad token can't
-               DoS the rest. 40/min comfortably covers ~2.5s polling. */
-            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), 40, 60, false, null);
 
             $db = getDbMysqli();
+
+            /* #1406 — per-role poll budget: a projector polls near-1s cadence so
+               the existing flat 40/min (sized for a ~2.5s congregant phone) would
+               throttle it. Resolve the presence row's declared Role FIRST (cheap
+               indexed lookup on the same uq_Token unique key the main query below
+               also hits) so the rate-limit decision uses the right bucket size —
+               columnExists-gated, fail-open 'congregant' pre-migration. Still
+               PER PRESENCE TOKEN, never per-IP (rule #26 — a NAT-shared
+               congregation is one IP). */
+            $pollRole = serviceMode_presenceRole($db, $token);
+            $pollMax  = ($pollRole === 'projector') ? 90 : 40;
+            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), $pollMax, 60, false, null);
+
             $channel = serviceMode_channel();
             /* Unified freshness window (was 120s — aligned to Live Follow's 180s,
                #1386). Trusted int constant, interpolated (not a bound value). */
@@ -14879,28 +14925,6 @@ function _authProviderListForUser(\mysqli $db, int $userId): array
 function _liveFollowCleanSongId(string $raw): string
 {
     return mb_substr(preg_replace('/[^a-zA-Z0-9_\-]/', '', $raw), 0, 20);
-}
-
-/**
- * Live Follow (#1268) — whitelist the broadcast StateJson. NEVER stores raw
- * client JSON: only the known broadcast hints survive, each clamped to a safe
- * range. Returns a compact JSON string, or null when nothing valid was sent.
- */
-function _liveFollowCleanState($state): ?string
-{
-    if (!is_array($state)) { return null; }
-    $clean = [];
-    if (array_key_exists('blank', $state)) {
-        $clean['blank'] = (bool)$state['blank'];
-    }
-    if (array_key_exists('scrollPct', $state) && is_numeric($state['scrollPct'])) {
-        $clean['scrollPct'] = max(0.0, min(1.0, (float)$state['scrollPct']));
-    }
-    if (array_key_exists('transposeOffset', $state) && is_numeric($state['transposeOffset'])) {
-        $clean['transposeOffset'] = max(-12, min(12, (int)$state['transposeOffset']));
-    }
-    if (!$clean) { return null; }
-    return json_encode($clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 /**

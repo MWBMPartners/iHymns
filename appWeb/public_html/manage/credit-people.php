@@ -121,14 +121,16 @@ $normaliseOtherId = static function (mixed $raw): array {
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        /* Lowercase + trim the type, then gate on the allow-list so a
-           hand-crafted POST can't smuggle an unrecognised IdentifierType. */
-        $type = strtolower(trim((string)($row['type'] ?? '')));
+        /* Lowercase + trim (#trim, cpTrimmed() — shared helper, see
+           includes/credit_people_helpers.php) the type, then gate on the
+           allow-list so a hand-crafted POST can't smuggle an unrecognised
+           IdentifierType. */
+        $type = strtolower(cpTrimmed($row['type'] ?? ''));
         if (!in_array($type, $allowed, true)) continue;
         /* Skip rows with no identifier value — an empty row is just an
            unfilled template the curator left behind (rejected silently,
            never validated). */
-        $value = trim((string)($row['value'] ?? ''));
+        $value = cpTrimmed($row['value'] ?? ''); // #trim
         if ($value === '') continue;
         /* #1367 — the curator may have pasted the full authority URL into the
            value box; fold it back to the bare id BEFORE validation so both
@@ -141,8 +143,8 @@ $normaliseOtherId = static function (mixed $raw): array {
         $out[] = [
             'type'      => $type,
             'value'     => $value,
-            'name_used' => trim((string)($row['name_used'] ?? '')) ?: null,
-            'notes'     => trim((string)($row['notes']     ?? '')) ?: null,
+            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -242,6 +244,234 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 }
 
 /* ----------------------------------------------------------------------
+ * GET endpoint — merge_target_search JSON typeahead (#1500)
+ *
+ * Replaces the old "every person in one giant <select>" Merge-modal
+ * Target picker, which stopped being usable once the registry grew past
+ * a few hundred rows (a long native <select> is slow to scroll and
+ * offers no real type-to-filter). Mirrors the <input> + <datalist> +
+ * debounced-GET pattern already proven on /manage/songbooks
+ * (parent_search / compiler_search): the client debounces keystrokes
+ * into this endpoint, rebuilds a <datalist>, and the curator either
+ * picks a suggestion or keeps typing something with no match — rejected
+ * at submit time (the Merge button stays disabled until a real pick
+ * resolves a key).
+ *
+ * GET ?action=merge_target_search&q=<text>&exclude_id=<id>&exclude_name=<name>&limit=<n>
+ *
+ * The query logic (registry rows + in-use-only names) lives in the
+ * shared searchCreditPersonMergeTargets() helper — see
+ * includes/credit_people_helpers.php — so it's testable independent of
+ * this dispatch block and reusable if another surface ever needs the
+ * same "pick a credit person" search.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 'merge_target_search') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    $q           = trim((string)($_GET['q'] ?? ''));
+    $excludeId   = (int)($_GET['exclude_id'] ?? 0);
+    $excludeName = trim((string)($_GET['exclude_name'] ?? ''));
+    $limit       = max(1, min(30, (int)($_GET['limit'] ?? 20)));
+
+    try {
+        $db = getDbMysqli();
+        $candidates = searchCreditPersonMergeTargets($db, $q, $excludeId, $excludeName, $limit);
+        echo json_encode(['candidates' => $candidates], JSON_UNESCAPED_UNICODE);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] merge_target_search failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['error' => 'Search failed.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * POST endpoints — add_member / remove_member (#1502)
+ *
+ * ELI5: these are the "save" buttons for the Members card-list inside
+ * the Edit-person drawer, for a person flagged as a Group. Each add /
+ * remove persists immediately (not tied to the drawer's main Save
+ * button) so a curator building up a member list sees each pick land
+ * right away and can correct a mistake with one click, the same way
+ * the merge_target_search typeahead above resolves picks live.
+ *
+ * DETAILED: dispatched here — BEFORE the classic "POST dispatch" switch
+ * below — so they can use validateCsrfRequest() (#1352 rule #29) rather
+ * than the classic validateCsrf() the rest of this page's single big
+ * switch still uses. validateCsrfRequest() accepts EITHER a still-valid
+ * session token OR a same-origin AJAX request (X-Requested-With header +
+ * matching Origin/Referer host, if present) — the client below sends
+ * both, so it never goes stale even if the drawer stays open a long
+ * time. Both actions return JSON and `exit` immediately; on any
+ * non-match they fall through to the rest of the file unchanged.
+ *
+ * POST action=add_member    group_id=<int> member_id=<int>
+ * POST action=remove_member group_id=<int> member_id=<int>
+ *
+ * The actual validation (self-membership guard, existence checks,
+ * idempotent dupe handling, table-existence gate) lives in the shared
+ * addCreditPersonGroupMember() / removeCreditPersonGroupMember()
+ * helpers — see includes/credit_people_helpers.php — so it's testable
+ * independent of this dispatch block.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'add_member') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $groupId  = (int)($_POST['group_id']  ?? 0);
+    $memberId = (int)($_POST['member_id'] ?? 0);
+
+    try {
+        $db     = getDbMysqli();
+        $result = addCreditPersonGroupMember($db, $groupId, $memberId);
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logCreditPerson('member_add', (string)$groupId, [
+            'group_id'  => $groupId,
+            'member_id' => $memberId,
+        ]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] add_member failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not add member.']);
+        exit;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'remove_member') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $groupId  = (int)($_POST['group_id']  ?? 0);
+    $memberId = (int)($_POST['member_id'] ?? 0);
+
+    try {
+        $db     = getDbMysqli();
+        $result = removeCreditPersonGroupMember($db, $groupId, $memberId);
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logCreditPerson('member_remove', (string)$groupId, [
+            'group_id'  => $groupId,
+            'member_id' => $memberId,
+        ]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] remove_member failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not remove member.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * POST endpoint — bulk_register_unregistered (#1503)
+ *
+ * ELI5: the "Bulk promote with fuzzy-match" flow on
+ * /manage/credit-people-bulk-promote (#846) is built to catch NEAR
+ * DUPLICATES before creating a registry row — a curator has to open
+ * that page, review every candidate's suggested match (or lack of
+ * one), and submit. That review is exactly right when a fuzzy match
+ * exists, but it's unnecessary friction for the names that have NO
+ * match at all — this one-click action registers every one of those
+ * directly from the parent page's "N names cited ... aren't in the
+ * registry yet" banner, no navigation required.
+ *
+ * DETAILED: reuses the SAME idempotent insertion point every other
+ * registration path in this codebase uses — registerCreditPersonByName()
+ * (includes/credit_people_helpers.php) — never a duplicated `INSERT INTO
+ * tblCreditPeople` here. Idempotency is layered two ways: (1) the
+ * candidate list itself only contains names with NOT EXISTS a matching
+ * registry row at query time (creditPeopleCitedUnregisteredNames()), and
+ * (2) each iteration re-checks Name existence immediately before calling
+ * registerCreditPersonByName() (mirroring credit-people-bulk-promote.php's
+ * own 'register' branch) so a name registered by a concurrent editor
+ * between the query and this loop is skipped, not double-inserted or
+ * erroring on the UNIQUE constraint. CSRF via validateCsrfRequest() (rule
+ * #29) even though this is a classic (non-AJAX) form POST — the client
+ * still submits the page's session-baked csrf_token, so this simply
+ * accepts that same token via the more robust check rather than
+ * validateCsrf() directly. Reports via the same $success banner +
+ * bulk_run_id + affected-count shape the fuzzy-promote page's own
+ * 'bulk_promote' action uses, so the two flows read consistently in the
+ * activity log.
+ *
+ * POST action=bulk_register_unregistered
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'bulk_register_unregistered') {
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+
+    try {
+        $db    = getDbMysqli();
+        $names = creditPeopleCitedUnregisteredNames($db);
+
+        $bulkRunId  = bin2hex(random_bytes(6));
+        $registered = 0;
+        $skipped    = 0;
+
+        $db->begin_transaction();
+        try {
+            foreach ($names as $name) {
+                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? LIMIT 1');
+                $stmt->bind_param('s', $name);
+                $stmt->execute();
+                $existing = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                if ($existing) { $skipped++; continue; }
+
+                $newId = registerCreditPersonByName($db, $name);
+                if ($newId > 0) { $registered++; } else { $skipped++; }
+            }
+            $db->commit();
+
+            $logCreditPerson('bulk_register_remaining', '', [
+                'bulk_run_id' => $bulkRunId,
+                'registered'  => $registered,
+                'skipped'     => $skipped,
+                'candidates'  => count($names),
+            ]);
+            $success = "Bulk run {$bulkRunId} done: {$registered} name" . ($registered === 1 ? '' : 's')
+                     . ' registered' . ($skipped > 0 ? ", {$skipped} already registered (skipped)" : '') . '.';
+        } catch (\Throwable $tx) {
+            $db->rollback();
+            throw $tx;
+        }
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] bulk_register_unregistered failed: ' . $e->getMessage());
+        $error = 'Bulk register failed: ' . $e->getMessage();
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST dispatch
  *
  * All actions are CSRF-checked + entitlement-gated (the entitlement
@@ -249,8 +479,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
  * gate covers every action below). Each action runs inside a single
  * $db->begin_transaction() so a partial failure (e.g. a child-row
  * INSERT failing after the parent UPDATE landed) rolls back cleanly.
+ *
+ * `bulk_register_unregistered` (#1503) is excluded here — it's already
+ * fully handled by its own dispatch block above (which falls through to
+ * the page render rather than `exit`ing, so $success/$error show in the
+ * normal banner). Without this exclusion the action would additionally
+ * hit this block's validateCsrf() a second time for no purpose (it
+ * wouldn't match any `case` below either way, but a stale-token edge
+ * case there would blow up a request this file's own dispatch already
+ * accepted via the more robust validateCsrfRequest()).
  * ---------------------------------------------------------------------- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !== 'bulk_register_unregistered') {
     if (!validateCsrf((string)($_POST['csrf_token'] ?? ''))) {
         http_response_code(403);
         echo 'Invalid CSRF token';
@@ -266,10 +505,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * add — create a new registry row (+ optional child rows)
              * -------------------------------------------------------- */
             case 'add': {
-                $name        = trim((string)($_POST['name']         ?? ''));
-                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
-                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                /* #trim — every free-text/identifier field is read via the
+                   shared cpTrimmed() helper (includes/credit_people_helpers.php)
+                   so leading/trailing whitespace (spaces, tabs, newlines —
+                   a common paste artefact) never reaches validation/storage. */
+                $name        = cpTrimmed($_POST['name']         ?? '');
+                $notesRaw    = cpTrimmed($_POST['notes']        ?? '');
+                $birthPlace  = cpTrimmed($_POST['birth_place']  ?? '') ?: null;
+                $deathPlace  = cpTrimmed($_POST['death_place']  ?? '') ?: null;
                 /* Partial birth/death dates — parse the flexible curator
                    input (YYYY / MM/YYYY / DD/MM/YYYY) into a normalised
                    DATE + a precision flag via the shared partial_date
@@ -313,9 +556,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    is recomputed from the three parts so the canonical
                    spelling stays consistent regardless of what the
                    client posted. */
-                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
-                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
-                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $firstNamesRaw = cpTrimmed($_POST['first_names'] ?? ''); // #trim
+                $surnameRaw    = cpTrimmed($_POST['surname']     ?? ''); // #trim
+                $suffixRaw     = cpTrimmed($_POST['suffix']      ?? ''); // #trim
                 $isIndividual  = (!$isSpecialCase && !$isGroup);
                 if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
                     $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
@@ -323,6 +566,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
                 $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
                 $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+                /* #1501 — optional Maiden Surname. Individuals only, same
+                   rule as the other structured-name parts above. */
+                $maidenSurnameRaw = cpTrimmed($_POST['maiden_surname'] ?? ''); // #trim
+                $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
@@ -451,6 +698,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        install; the date itself already landed in the INSERT. */
                     creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
 
+                    /* #1501 — optional Maiden Surname, same separate-
+                       statement / column-existence-gated pattern as the
+                       two writes above. No-op on an un-migrated install. */
+                    creditPeopleSaveMaidenSurname($db, $newId, $maidenSurname);
+
                     if ($links) {
                         $linkStmt = $db->prepare(
                             'INSERT INTO tblCreditPersonExternalLinks
@@ -533,10 +785,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * -------------------------------------------------------- */
             case 'update_person': {
                 $id          = (int)($_POST['id']          ?? 0);
-                $name        = trim((string)($_POST['name']         ?? ''));
-                $notesRaw    = trim((string)($_POST['notes']        ?? ''));
-                $birthPlace  = trim((string)($_POST['birth_place']  ?? '')) ?: null;
-                $deathPlace  = trim((string)($_POST['death_place']  ?? '')) ?: null;
+                /* #trim — see the shared cpTrimmed() helper's docblock in
+                   includes/credit_people_helpers.php. */
+                $name        = cpTrimmed($_POST['name']         ?? '');
+                $notesRaw    = cpTrimmed($_POST['notes']        ?? '');
+                $birthPlace  = cpTrimmed($_POST['birth_place']  ?? '') ?: null;
+                $deathPlace  = cpTrimmed($_POST['death_place']  ?? '') ?: null;
                 /* Partial birth/death dates — same flexible-input parse as
                    the add handler (YYYY / MM/YYYY / DD/MM/YYYY → DATE +
                    precision). The UPDATE keeps writing $birthDate/$deathDate;
@@ -568,9 +822,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                    / Surname / Suffix without triggering it as long as
                    the composed Name matches the stored Name. For Group
                    / Special-case rows the three columns get NULL'd. */
-                $firstNamesRaw = trim((string)($_POST['first_names'] ?? ''));
-                $surnameRaw    = trim((string)($_POST['surname']     ?? ''));
-                $suffixRaw     = trim((string)($_POST['suffix']      ?? ''));
+                $firstNamesRaw = cpTrimmed($_POST['first_names'] ?? ''); // #trim
+                $surnameRaw    = cpTrimmed($_POST['surname']     ?? ''); // #trim
+                $suffixRaw     = cpTrimmed($_POST['suffix']      ?? ''); // #trim
                 $isIndividual  = (!$isSpecialCase && !$isGroup);
                 if ($isIndividual && ($firstNamesRaw !== '' || $surnameRaw !== '')) {
                     $name = composePersonName($firstNamesRaw, $surnameRaw, $suffixRaw);
@@ -578,6 +832,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $firstNames = $isIndividual && $firstNamesRaw !== '' ? $firstNamesRaw : null;
                 $surname    = $isIndividual && $surnameRaw    !== '' ? $surnameRaw    : null;
                 $suffix     = $isIndividual && $suffixRaw     !== '' ? $suffixRaw     : null;
+                /* #1501 — optional Maiden Surname. Individuals only, same
+                   rule as the other structured-name parts above. */
+                $maidenSurnameRaw = cpTrimmed($_POST['maiden_surname'] ?? ''); // #trim
+                $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
@@ -668,6 +926,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                        on the columns) so clearing a date also clears its
                        precision back to NULL. No-op on an un-migrated install. */
                     creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
+
+                    /* #1501 — optional Maiden Surname, written unconditionally
+                       (gated on the column) so clearing the field also clears
+                       the stored value back to NULL. No-op on an un-migrated
+                       install. */
+                    creditPeopleSaveMaidenSurname($db, $id, $maidenSurname);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
@@ -777,8 +1041,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              * -------------------------------------------------------- */
             case 'rename': {
                 $id          = (int)($_POST['id'] ?? 0);
-                $sourceName  = trim((string)($_POST['source_name'] ?? ''));
-                $newName     = trim((string)($_POST['new_name'] ?? ''));
+                $sourceName  = cpTrimmed($_POST['source_name'] ?? ''); // #trim
+                $newName     = cpTrimmed($_POST['new_name'] ?? '');    // #trim
 
                 if ($id <= 0 && $sourceName === '') { $error = 'Person id or source name missing.'; break; }
                 if ($newName === '')           { $error = 'New name is required.'; break; }
@@ -896,8 +1160,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'merge': {
                 $sourceId   = (int)($_POST['source_id'] ?? 0);
                 $targetId   = (int)($_POST['target_id'] ?? 0);
-                $sourceName = trim((string)($_POST['source_name'] ?? ''));
-                $targetName = trim((string)($_POST['target_name'] ?? ''));
+                $sourceName = cpTrimmed($_POST['source_name'] ?? ''); // #trim
+                $targetName = cpTrimmed($_POST['target_name'] ?? ''); // #trim
                 $keepLinks  = array_map('intval', (array)($_POST['keep_link_ids'] ?? []));
                 $keepIpi    = array_map('intval', (array)($_POST['keep_ipi_ids']  ?? []));
 
@@ -1204,6 +1468,15 @@ try {
         ? ', p.FirstNames, p.Surname, p.Suffix'
         : ', NULL AS FirstNames, NULL AS Surname, NULL AS Suffix';
 
+    /* #1501 — optional Maiden Surname. Same column-existence-gated
+       fallback as the name-parts trio above: a partly-migrated install
+       (migrate-add-creditperson-maiden-surname.php not yet run) surfaces
+       NULL and the field simply stays empty — dormant-safe. */
+    $hasMaidenSurname = creditPeopleMaidenSurnameColumnExists($db);
+    $maidenSurnameCol = $hasMaidenSurname
+        ? ', p.MaidenSurname'
+        : ', NULL AS MaidenSurname';
+
     /* Places registry FKs — present after migrate-places.php has
        landed. Surfaced to JS so the Edit drawer can pre-fill the
        hidden place-id inputs alongside the visible display string
@@ -1255,6 +1528,7 @@ try {
                (SELECT COUNT(*) FROM tblCreditPersonIdentifiers i WHERE i.CreditPersonId = p.Id AND i.IdentifierType = 'isni') AS ISNICount
                {$flagCols}
                {$namePartCols}
+               {$maidenSurnameCol}
                {$placeIdCols}
                {$datePrecisionCols}
                {$countryCols}
@@ -1337,6 +1611,16 @@ try {
     foreach ($registryRows as $r) { $personIds[] = (int)$r['Id']; }
     $aliasesByPerson = loadCreditPersonAliasesBulk($db, $personIds);
 
+    /* Group membership (#1502) — bulk load alongside aliases so the
+       Edit drawer's Members card-list can pre-fill without an extra
+       round-trip. Schema-tolerant: pre-migration installs return an
+       empty array (loadCreditPersonGroupMembersBulk() checks
+       INFORMATION_SCHEMA first, same convention as aliases above). Only
+       Group-flagged rows will ever have entries here in practice, but
+       the bulk-load itself doesn't need to filter by IsGroup — a plain
+       individual simply never appears as a key. */
+    $membersByPerson = loadCreditPersonGroupMembersBulk($db, $personIds);
+
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
     $byName = [];
@@ -1369,6 +1653,7 @@ try {
             'ipi'         => [],
             'otherid'     => [],   // #1348
             'aliases'     => [],
+            'members'     => [],   // #1502
         ];
     }
     foreach ($registryRows as $r) {
@@ -1431,6 +1716,9 @@ try {
         $byName[$name]['first_names'] = $r['FirstNames'] ?? null;
         $byName[$name]['surname']     = $r['Surname']    ?? null;
         $byName[$name]['suffix']      = $r['Suffix']     ?? null;
+        /* #1501 — optional Maiden Surname, same NULL-on-partly-migrated
+           fallback as the trio above. */
+        $byName[$name]['maiden_surname'] = $r['MaidenSurname'] ?? null;
         /* Full child rows for the Edit drawer's pre-fill. Empty arrays
            default for registry rows with no children — the drawer's JS
            handles the empty case as "no rows yet". */
@@ -1439,6 +1727,11 @@ try {
         $byName[$name]['isni']    = $isniByPerson[(int)$r['Id']]    ?? [];
         $byName[$name]['otherid'] = $otherIdByPerson[(int)$r['Id']] ?? []; // #1348
         $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
+        /* #1502 — Group members. Only ever populated for IsGroup=1 rows
+           in practice (the admin UI only lets you add members to a
+           Group), but no filter is needed here — a plain individual
+           simply never has a key in $membersByPerson. */
+        $byName[$name]['members'] = $membersByPerson[(int)$r['Id']] ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -1566,7 +1859,16 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
 
         <?php if ($totalInUseUnregistered > 0): ?>
             <!-- #846 — bulk-promote CTA. Shows only when there's
-                 actual unregistered-but-cited work waiting. -->
+                 actual unregistered-but-cited work waiting.
+                 #1503 adds a second, one-click button next to the
+                 fuzzy-match review page: "Promote all remaining" skips
+                 the near-duplicate review entirely and registers every
+                 cited-but-unregistered name directly — the confirm()
+                 dialog states the exact count as the "preview" before
+                 committing. Curators who want the fuzzy-match safety
+                 net still have the original button/page; this is for
+                 the common case where none of the remaining names are
+                 actually near-duplicates and the review is pure friction. -->
             <div class="alert alert-info d-flex flex-wrap align-items-center gap-2 py-2">
                 <i class="bi bi-people" aria-hidden="true"></i>
                 <span>
@@ -1577,6 +1879,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
                     <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
                 </a>
+                <form method="POST" class="d-inline"
+                      onsubmit="return confirm('Register all <?= (int)$totalInUseUnregistered ?> remaining cited-but-unregistered name(s) as new registry entries?\n\nThis skips the fuzzy-match duplicate review — use &quot;Bulk promote with fuzzy-match&quot; instead if you want to check for near-duplicates first.');">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="bulk_register_unregistered">
+                    <button type="submit" class="btn btn-sm btn-outline-info">
+                        <i class="bi bi-person-plus me-1"></i>Promote all remaining (<?= number_format($totalInUseUnregistered) ?>)
+                    </button>
+                </form>
             </div>
         <?php endif; ?>
 
@@ -1688,6 +1998,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 (string)$p['birth_place'],
                                 (string)$p['death_place'],
                                 (string)$p['notes'],
+                                /* #1501 — fold the maiden surname into the
+                                   search-match set (gated: naturally empty/
+                                   dropped by array_filter on an un-migrated
+                                   install or a row with none set) so "I
+                                   remember her under her birth surname"
+                                   finds the row, same spirit as the AKA/
+                                   alias haystack below. */
+                                (string)($p['maiden_surname'] ?? ''),
                             ])));
                             /* Embed the full person payload in a data
                                attribute so the Edit button can pre-fill
@@ -1722,10 +2040,21 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'adaptors'    => $adaptors,
                                 'translators' => $translators,
                                 'total'       => $p['total'],
+                                /* #1501 — optional Maiden Surname, so the Edit
+                                   drawer can pre-fill it. NULL on registry-only-
+                                   absent rows / partly-migrated installs (see
+                                   $hasMaidenSurname above). */
+                                'maiden_surname' => $p['maiden_surname'] ?? null,
                                 'links'       => $p['links'],
                                 'ipi'         => $p['ipi'],
                                 'isni'        => $p['isni'] ?? [],
                                 'aliases'     => $p['aliases'] ?? [],
+                                /* #1502 — this Group person's current members
+                                   (id/name/slug), so the Edit drawer's Members
+                                   card-list can pre-fill without a round-trip.
+                                   Empty for individuals and for pre-migration
+                                   installs alike. */
+                                'members'     => $p['members'] ?? [],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
                             $isSpecial = !empty($p['is_special_case']);
                             $isGroup   = !empty($p['is_group']);
@@ -2036,13 +2365,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             </div>
                             <div class="col-6">
                                 <label class="form-label small" for="cp-merge-target">Target (survives) <span class="text-danger">*</span></label>
-                                <!-- name omitted — the picked option's
-                                     value is an "id:N" / "name:X" key
-                                     that submit JS routes to either
-                                     target_id or target_name (#626). -->
-                                <select class="form-select form-select-sm" id="cp-merge-target" required>
-                                    <option value="">— pick the surviving person —</option>
-                                </select>
+                                <!-- #1500 — live-search typeahead (the same
+                                     <input> + <datalist> + debounced-GET
+                                     pattern /manage/songbooks already uses
+                                     for its parent-songbook / compiler
+                                     pickers) replacing the old <select>
+                                     that rendered every registry + in-use-
+                                     only name as an <option> — unusable
+                                     once the registry passed a few hundred
+                                     rows. #cp-merge-target-key resolves to
+                                     the SAME "id:N" / "name:X" key the old
+                                     <select> option values carried, so the
+                                     submit-time routing further down is
+                                     UNCHANGED (#626). Native <datalist> is
+                                     keyboard-accessible (arrow keys + Enter)
+                                     and inherits the admin theme via the
+                                     plain .form-control styling — no custom
+                                     widget needed. -->
+                                <input type="text" class="form-control form-control-sm" id="cp-merge-target"
+                                       list="cp-merge-target-datalist" autocomplete="off"
+                                       placeholder="Start typing a name…" required>
+                                <datalist id="cp-merge-target-datalist"></datalist>
+                                <input type="hidden" id="cp-merge-target-key" value="">
                             </div>
                         </div>
 
@@ -2147,6 +2491,22 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="col-12">
                     <label class="form-label small mb-1" for="cp-drawer-surname">Surname</label>
                     <input type="text" class="form-control form-control-sm" id="cp-drawer-surname" name="surname" maxlength="255" placeholder="e.g. Alexander">
+                </div>
+                <!-- #1501 — optional Maiden Surname. A structured biographical
+                     fact (birth surname, when different from the current
+                     Surname above), distinct from the free-text AKA/Aliases
+                     'Maiden name' type further down — the two are
+                     complementary, not duplicates. Column-existence-gated
+                     server-side (dormant-safe pre-migration): the input
+                     always renders, matching the existing First name(s) /
+                     Surname / Suffix fields above, which follow the same
+                     "always show, no-op save until the migration runs"
+                     convention (#934). -->
+                <div class="col-12">
+                    <label class="form-label small mb-1" for="cp-drawer-maiden-surname">
+                        Maiden surname <span class="text-muted">(optional)</span>
+                    </label>
+                    <input type="text" class="form-control form-control-sm" id="cp-drawer-maiden-surname" name="maiden_surname" maxlength="100" placeholder="e.g. Humphreys">
                 </div>
             </div>
 
@@ -2299,6 +2659,39 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 </div>
                 <div id="cp-aliases-container" class="d-flex flex-column gap-2"></div>
                 <div class="form-text small">Alternative names that should match this person in search — legal name, stage name, common misspellings, transliterations. Each alias carries a type and optional locale tag.</div>
+            </div>
+
+            <!-- Members (#1502) — visible only when "Group / band /
+                 collective" is ticked. A Group's constituent people,
+                 each an EXISTING tblCreditPeople registry row (never a
+                 free-text name — a member must already be registered,
+                 unlike the AKA/Aliases section above). Add/remove
+                 persist immediately via their own add_member /
+                 remove_member AJAX endpoints (dispatched near the top
+                 of this file, ahead of the classic POST switch) rather
+                 than waiting for the drawer's main Save button — that
+                 mirrors the Merge modal's live "resolve as you type"
+                 feel and means a mis-add can be undone with one click
+                 without a full form re-submit. Requires the person to
+                 already have a real Id (i.e. Edit mode, not Add) since
+                 GroupPersonId is a NOT NULL FK — the "unsaved" note
+                 below covers that case. -->
+            <div data-flag-section="group-members" class="d-none">
+                <label class="form-label small mb-1">Members</label>
+                <div id="cp-members-unsaved" class="alert alert-secondary py-2 small mb-2 d-none">
+                    <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                    Save this person first — members can only be added once the group itself has been registered.
+                </div>
+                <div id="cp-members-container" class="d-flex flex-column gap-1 mb-2"></div>
+                <div class="input-group input-group-sm" id="cp-members-add-row">
+                    <input type="text" class="form-control" id="cp-member-search" list="cp-member-datalist"
+                           autocomplete="off" placeholder="Type a registered person's name…">
+                    <datalist id="cp-member-datalist"></datalist>
+                    <button type="button" class="btn btn-outline-secondary" id="cp-add-member-btn">
+                        <i class="bi bi-plus me-1"></i>Add
+                    </button>
+                </div>
+                <div class="form-text small">Only people already in the registry can be added — search picks from existing records, matching the Merge modal's target picker.</div>
             </div>
 
             <!-- Notes -->
@@ -2739,6 +3132,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const addIpiBtn = document.getElementById('cp-add-ipi-btn');
             const addIsniBtn= document.getElementById('cp-add-isni-btn');
             const addAliasBtn = document.getElementById('cp-add-alias-btn');
+            /* #1502 — Group members card-list refs. */
+            const membersSection   = document.querySelector('[data-flag-section="group-members"]');
+            const membersUnsavedEl = document.getElementById('cp-members-unsaved');
+            const membersAddRow    = document.getElementById('cp-members-add-row');
+            const membersContainer = document.getElementById('cp-members-container');
+            const memberSearchIn   = document.getElementById('cp-member-search');
+            const memberDatalist   = document.getElementById('cp-member-datalist');
+            const addMemberBtn     = document.getElementById('cp-add-member-btn');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
@@ -2747,6 +3148,34 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             let isniIndex  = 0;
             let otherIdIndex = 0; // #1348
             let aliasIndex = 0;
+
+            /* #trim — client-side UX half of the whitespace-trim fix (the
+               server side is the shared cpTrimmed() PHP helper). ELI5: as
+               soon as a curator pastes or tabs away from a text field, any
+               accidental leading/trailing whitespace is stripped so what
+               they SEE matches what actually gets saved — no surprise
+               later ("why doesn't this ISNI match?" turned out to be a
+               trailing space only the server silently cleaned up).
+               ONE delegated listener (capture phase — 'blur'/'focusout'
+               don't bubble the same way `input` does) on the whole drawer
+               form covers every current AND future text field/sub-form row
+               (name, notes, first/sur/suffix names, birth/death place free
+               text, every links[]/ipi[]/isni[]/otherid[]/aliases[] text
+               input) — never re-attach a per-field listener as new rows
+               are dynamically added. */
+            function cpTrimFieldNow(el) {
+                if (!el || typeof el.matches !== 'function') return;
+                if (!el.matches('input[type="text"], input[type="url"], textarea')) return;
+                const trimmed = el.value.replace(/^\s+|\s+$/g, '');
+                if (trimmed !== el.value) el.value = trimmed;
+            }
+            form.addEventListener('blur', (ev) => cpTrimFieldNow(ev.target), true);
+            form.addEventListener('paste', (ev) => {
+                /* The pasted text hasn't landed in .value yet while the
+                   'paste' event itself is handling — defer one tick. */
+                const el = ev.target;
+                window.setTimeout(() => cpTrimFieldNow(el), 0);
+            }, true);
 
             /* Wire each credit-people link row to the shared
                iHymnsLinkDetect module. The dropdown's option values
@@ -3010,6 +3439,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    doesn't leak into the next session. */
                 document.getElementById('cp-drawer-birth-place-id').value = '';
                 document.getElementById('cp-drawer-death-place-id').value = '';
+                /* #1502 — clear the Members card-list + search state so a
+                   previously-opened group's member list doesn't leak into
+                   the next drawer open. */
+                if (membersContainer) membersContainer.innerHTML = '';
+                if (memberSearchIn)   memberSearchIn.value = '';
+                if (memberDatalist)   memberDatalist.innerHTML = '';
+                memberLabelToKey = new Map();
             }
 
             /* Open empty drawer for Add. */
@@ -3098,12 +3534,20 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     surnameIn.value    = '';
                     suffixIn.value     = '';
                 }
+                /* #1501 — optional Maiden Surname pre-fill. No decompose
+                   fallback (unlike the trio above) — there's nothing to
+                   derive a birth surname FROM, it's either stored or not. */
+                document.getElementById('cp-drawer-maiden-surname').value = person.maiden_surname || '';
                 applyFlagLabels();
                 (person.links   || []).forEach(l => addLinkRow(l));
                 (person.ipi     || []).forEach(r => addIpiRow(r));
                 (person.isni    || []).forEach(r => addIsniRow(r));
                 (person.otherid || []).forEach(r => addOtherIdRow(r)); // #1348
                 (person.aliases || []).forEach(a => addAliasRow(a));
+                /* #1502 — pre-fill this Group's current members. Empty for
+                   individuals / special-cases (server never populates the
+                   array for them) and for pre-migration installs alike. */
+                (person.members || []).forEach(m => addMemberRow(m));
                 drawer.show();
             });
 
@@ -3254,6 +3698,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         syncNameFromParts();
                     }
                 }
+
+                /* #1502 — Members card-list only applies to a Group; hide
+                   it entirely for individuals / special-case rows. When
+                   shown, refreshMembersAvailability() further decides
+                   between the "save first" note (no real Id yet) and the
+                   live search + list (Id known — Edit mode). */
+                if (membersSection) membersSection.classList.toggle('d-none', !isGroup);
+                refreshMembersAvailability();
             }
             specialCaseCb?.addEventListener('change', () => {
                 if (specialCaseCb.checked && groupCb) groupCb.checked = false;
@@ -3277,6 +3729,190 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (!remove) return;
                 const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-otherid-row, .cp-alias-row'); // #1348
                 if (row) row.remove();
+            });
+
+            /* =====================================================================
+               Group members (#1502). Unlike the AKA/Aliases + other repeating
+               sub-forms above (free-text, saved together with the rest of the
+               drawer on Save), Members reference an EXISTING tblCreditPeople
+               row and persist immediately via their own add_member /
+               remove_member endpoints — a member link can only be created
+               once the group itself has a real Id, so there is no sane
+               "queue it up, send with the next Save" behaviour to fall back
+               to. This mirrors the Merge modal's live target-picker (reusing
+               the SAME ?action=merge_target_search endpoint, #1500) and its
+               own small, single-purpose fetch calls.
+               ===================================================================== */
+            let memberLabelToKey = new Map();
+            let memberInflight   = null;
+            let memberDebounce   = null;
+
+            /** Escape a string for safe insertion as HTML text content. */
+            function escapeMemberHtml(s) {
+                return String(s || '').replace(/[&<>"']/g, (c) => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+                }[c]));
+            }
+
+            /** Every member id currently rendered, so search + add can
+                exclude people already in the list (no point suggesting a
+                duplicate the server would just no-op anyway). */
+            function currentMemberIds() {
+                if (!membersContainer) return [];
+                return Array.from(membersContainer.querySelectorAll('[data-member-id]'))
+                    .map((el) => parseInt(el.getAttribute('data-member-id'), 10))
+                    .filter((n) => n > 0);
+            }
+
+            function addMemberRow(m) {
+                if (!membersContainer || !m) return;
+                const id   = m.id ?? m.Id ?? 0;
+                const name = m.name ?? m.Name ?? '';
+                if (!id) return;
+                const html = '<div class="d-flex align-items-center justify-content-between border rounded px-2 py-1" '
+                    + 'style="border-color: var(--bs-border-color) !important;" data-member-id="' + parseInt(id, 10) + '">'
+                    + '<span class="small">' + escapeMemberHtml(name) + '</span>'
+                    + '<button type="button" class="btn btn-sm btn-outline-danger cp-member-remove" '
+                    + 'aria-label="Remove ' + escapeMemberHtml(name) + ' from members"><i class="bi bi-x-lg" aria-hidden="true"></i></button>'
+                    + '</div>';
+                membersContainer.insertAdjacentHTML('beforeend', html);
+            }
+
+            /* Toggle the "save this person first" note vs the live search +
+               Add button, based on whether the drawer currently has a real
+               Id (Edit mode) — a brand-new, unsaved Group has no
+               GroupPersonId yet for a member link to reference. */
+            function refreshMembersAvailability() {
+                const hasId = !!(idIn && idIn.value);
+                if (membersUnsavedEl) membersUnsavedEl.classList.toggle('d-none', hasId);
+                if (membersAddRow)    membersAddRow.classList.toggle('d-none', !hasId);
+            }
+
+            /* Live-search typeahead — reuses ?action=merge_target_search
+               (#1500) exactly like the Merge modal's target picker (same
+               debounced-GET + <datalist> shape), filtered CLIENT-SIDE to
+               candidates that already have a registry id: MemberPersonId is
+               a NOT NULL FK, so an in-use-only ("not yet in registry")
+               candidate — which the Merge picker happily offers — can't be
+               picked here. Also excludes people already in the visible
+               member list. */
+            function memberLookup(query) {
+                if (!memberDatalist) return;
+                if (memberInflight) memberInflight.abort();
+                const ac = new AbortController();
+                memberInflight = ac;
+                const groupId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                const url = '/manage/credit-people?action=merge_target_search'
+                          + '&q=' + encodeURIComponent(query)
+                          + '&exclude_id=' + encodeURIComponent(groupId)
+                          + '&limit=20';
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then((r) => (r.ok ? r.json() : { candidates: [] }))
+                    .then((data) => {
+                        const already = new Set(currentMemberIds());
+                        const list = (Array.isArray(data.candidates) ? data.candidates : [])
+                            .filter((c) => c.id && !already.has(c.id));
+                        memberLabelToKey = new Map();
+                        memberDatalist.innerHTML = list.map((c) => {
+                            memberLabelToKey.set(c.name, c.id);
+                            return '<option value="' + escapeMemberHtml(c.name) + '"></option>';
+                        }).join('');
+                    })
+                    .catch((err) => { if (err.name !== 'AbortError') { /* search is a nicety, not critical path */ } });
+            }
+            memberSearchIn?.addEventListener('input', () => {
+                const v = memberSearchIn.value;
+                clearTimeout(memberDebounce);
+                if (v.trim() === '') {
+                    if (memberDatalist) memberDatalist.innerHTML = '';
+                    return;
+                }
+                memberDebounce = setTimeout(() => memberLookup(v.trim()), 200);
+            });
+            memberSearchIn?.addEventListener('focus', () => memberLookup(memberSearchIn.value.trim()));
+
+            /* Add — resolves the typed/picked name back to its id via
+               memberLabelToKey (mirroring the Merge modal's labelToKey),
+               then POSTs add_member. validateCsrfRequest() on the server
+               accepts this via the still-valid session csrf_token field
+               (read straight off the drawer form) — the X-Requested-With
+               header is sent too so the check stays robust even if that
+               token happens to have gone stale on a long-open drawer. */
+            addMemberBtn?.addEventListener('click', () => {
+                const groupId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                if (!groupId) return;
+                const picked = memberLabelToKey.get(memberSearchIn ? memberSearchIn.value : '');
+                if (!picked) {
+                    window.alert('Pick a suggested person from the list first.');
+                    return;
+                }
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                addMemberBtn.disabled = true;
+                fetch('/manage/credit-people', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'add_member',
+                        group_id: String(groupId),
+                        member_id: String(picked),
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        addMemberBtn.disabled = false;
+                        if (!ok || !body.ok) {
+                            window.alert((body && body.error) || 'Could not add member.');
+                            return;
+                        }
+                        addMemberRow(body.member);
+                        if (memberSearchIn) memberSearchIn.value = '';
+                        if (memberDatalist) memberDatalist.innerHTML = '';
+                    })
+                    .catch(() => { addMemberBtn.disabled = false; window.alert('Could not add member.'); });
+            });
+
+            /* Remove — delegated so it works for rows added either via the
+               Edit pre-fill or a just-added member, same convention as the
+               other repeating sub-forms' remove buttons above. */
+            membersContainer?.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-member-remove');
+                if (!btn) return;
+                const row = btn.closest('[data-member-id]');
+                if (!row) return;
+                const memberId = parseInt(row.getAttribute('data-member-id'), 10);
+                const groupId  = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                if (!groupId || !memberId) return;
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                btn.disabled = true;
+                fetch('/manage/credit-people', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'remove_member',
+                        group_id: String(groupId),
+                        member_id: String(memberId),
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        if (!ok || !body.ok) {
+                            btn.disabled = false;
+                            window.alert((body && body.error) || 'Could not remove member.');
+                            return;
+                        }
+                        row.remove();
+                    })
+                    .catch(() => { btn.disabled = false; window.alert('Could not remove member.'); });
             });
         })();
 
@@ -3341,9 +3977,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
         })();
 
         /* =========================================================================
-           Merge modal — opens with the source row pre-set, populates
-           the target dropdown from every OTHER registry row, and
-           shows the source's links / IPI for migrate-or-drop selection.
+           Merge modal — opens with the source row pre-set, wires the
+           Target field to a server-driven live-search typeahead
+           (#1500 — ?action=merge_target_search, replacing the old
+           "every person in one <select>" picker), and shows the
+           source's links / IPI for migrate-or-drop selection.
            ========================================================================= */
         (function () {
             const modalEl = document.getElementById('cpMergeModal');
@@ -3351,7 +3989,15 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const modal      = bootstrap.Modal.getOrCreateInstance(modalEl);
             const sourceIdIn = document.getElementById('cp-merge-source-id');
             const sourceNameIn = document.getElementById('cp-merge-source-name');
-            const targetSel  = document.getElementById('cp-merge-target');
+            /* #1500 — live-search typeahead replacing the old
+               "every person in one <select>" Target picker. targetTxt is
+               the visible text box; targetKeyIn is the hidden field that
+               carries the resolved "id:N" / "name:X" key (same shape the
+               old <select> option values carried) once a suggestion is
+               picked or matched. */
+            const targetTxt      = document.getElementById('cp-merge-target');
+            const targetKeyIn    = document.getElementById('cp-merge-target-key');
+            const targetDatalist = document.getElementById('cp-merge-target-datalist');
             const childrenWrap = document.getElementById('cp-merge-children');
             const childrenEmpty = document.getElementById('cp-merge-children-empty');
             const linksBox   = document.getElementById('cp-merge-children-links');
@@ -3359,24 +4005,69 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const isniBoxMerge = document.getElementById('cp-merge-children-isni');
             const submitBtn  = document.getElementById('cp-merge-submit');
 
-            /* Build the all-people index once on page load (#626). Used
-               to populate the target dropdown excluding the source. The
-               index now includes in-use-only rows, not just registry
-               rows — the server auto-registers either side on submit
-               so the dropdown can offer any name. */
-            const registry = [];
-            document.querySelectorAll('#cp-tbody tr[data-person]').forEach(r => {
-                let p; try { p = JSON.parse(r.getAttribute('data-person')); } catch (_) { return; }
-                if (p.registry_id) {
-                    registry.push({ id: p.registry_id, name: p.name, key: 'id:' + p.registry_id });
-                } else if (p.total > 0) {
-                    /* In-use-only — the merge handler will INSERT IGNORE
-                       on submit. Encode the name as the option value so
-                       the form posts target_name when picked. */
-                    registry.push({ id: 0, name: p.name, key: 'name:' + p.name });
+            /* #1500 — server-driven target search. `currentExclude` holds
+               the OPEN merge's source id/name so every lookup() call
+               (debounced keystrokes + the on-open empty-query call) keeps
+               excluding the right source without re-threading it through
+               every call site. `labelToKey` maps each rendered <option>
+               label back to its "id:N" / "name:X" key — mirrors the
+               parent-songbook / compiler-picker typeahead pattern already
+               used on /manage/songbooks (same <input> + <datalist> +
+               debounced-GET shape), just against
+               ?action=merge_target_search instead of loading every
+               person into the DOM up front. */
+            let labelToKey = new Map();
+            let targetInflight = null;
+            let targetDebounce  = null;
+            const currentExclude = { id: 0, name: '' };
+
+            function targetLookup(query) {
+                if (targetInflight) targetInflight.abort();
+                const ac = new AbortController();
+                targetInflight = ac;
+                const url = '/manage/credit-people?action=merge_target_search'
+                          + '&q=' + encodeURIComponent(query)
+                          + '&exclude_id=' + encodeURIComponent(currentExclude.id)
+                          + '&exclude_name=' + encodeURIComponent(currentExclude.name)
+                          + '&limit=20';
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then(r => r.ok ? r.json() : { candidates: [] })
+                    .then(data => {
+                        const list = Array.isArray(data.candidates) ? data.candidates : [];
+                        labelToKey = new Map();
+                        targetDatalist.innerHTML = list.map(c => {
+                            const label = c.name + (c.id ? '' : ' (not yet in registry)');
+                            labelToKey.set(label, c.key);
+                            return '<option value="' + label.replace(/"/g, '&quot;') + '"></option>';
+                        }).join('');
+                    })
+                    .catch(err => { if (err.name !== 'AbortError') { /* silent — search is a nicety, not critical path */ } });
+            }
+
+            targetTxt?.addEventListener('input', () => {
+                const v = targetTxt.value;
+                /* Picked-from-datalist sync: an exact label match means
+                   the curator selected (or typed exactly) one of the
+                   suggestions, so commit its key to the hidden field —
+                   mirrors the parent-songbook typeahead's "picked" sync.
+                   Anything else clears the key so the Merge button can't
+                   enable on a half-typed, unresolved name (#583's
+                   irreversible-merge guard depends on a REAL target). */
+                targetKeyIn.value = labelToKey.get(v) || '';
+                refreshSubmitState();
+                if (v.trim() === '') {
+                    targetDatalist.innerHTML = '';
+                    return;
                 }
+                clearTimeout(targetDebounce);
+                targetDebounce = setTimeout(() => targetLookup(v.trim()), 200);
             });
-            registry.sort((a, b) => a.name.localeCompare(b.name));
+            targetTxt?.addEventListener('focus', () => {
+                /* Empty-query lookup on focus — surfaces the most-used
+                   candidates immediately, same convention as the
+                   songbooks parent-search typeahead. */
+                targetLookup(targetTxt.value.trim());
+            });
 
             document.addEventListener('click', (ev) => {
                 const btn = ev.target.closest('.cp-merge-btn');
@@ -3414,21 +4105,18 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                     previewWrap.classList.remove('d-none');
                 }
 
-                /* Populate target dropdown — every name except the
-                   source itself. The option `value` is the same `key`
-                   that distinguishes id-vs-name (e.g. "id:42" or
-                   "name:Stuart Townend") so the submit handler can
-                   route the right field to the server. Sorted
-                   alphabetically. */
-                targetSel.innerHTML = '<option value="">— pick the surviving person —</option>';
-                registry.forEach(p => {
-                    if (p.id && p.id === person.registry_id) return;
-                    if (!p.id && p.name === person.name)     return;
-                    const opt = document.createElement('option');
-                    opt.value = p.key;
-                    opt.textContent = p.name + (p.id ? '' : ' (not yet in registry)');
-                    targetSel.appendChild(opt);
-                });
+                /* #1500 — reset the target typeahead for this merge and
+                   remember who to exclude from its own suggestion list.
+                   currentExclude.id = 0 for an in-use-only source (there's
+                   no registry row to exclude by id yet) — the server-side
+                   `u.Name <> ?` / registry-row Name comparison is what
+                   actually keeps a not-yet-registered source out of its
+                   own target list in that case. */
+                currentExclude.id   = person.registry_id || 0;
+                currentExclude.name = person.name || '';
+                targetTxt.value      = '';
+                targetKeyIn.value    = '';
+                targetDatalist.innerHTML = '';
 
                 /* Source children — render each link + IPI + ISNI as a
                    checkbox row (default checked = keep on target). IPI
@@ -3507,25 +4195,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 modal.show();
             });
 
-            /* Submit button enables only when BOTH a target is picked
-               AND the irreversibility ack is ticked (#583). */
+            /* Submit button enables only when BOTH a target is RESOLVED
+               (targetKeyIn carries a real "id:N"/"name:X" key — i.e. the
+               curator picked or exactly matched a suggestion, not just
+               typed something) AND the irreversibility ack is ticked
+               (#583). #1500 — targetKeyIn.value is set inline by the
+               `input` listener above (setting .value programmatically
+               doesn't fire 'input'/'change', so this is called directly
+               there rather than via a listener on the hidden field). */
             const confirmCb = document.getElementById('cp-merge-confirm');
             function refreshSubmitState() {
-                const targetPicked = targetSel?.value !== '';
+                const targetPicked = targetKeyIn?.value !== '';
                 const acknowledged = !!confirmCb?.checked;
                 submitBtn.disabled = !(targetPicked && acknowledged);
             }
-            targetSel?.addEventListener('change', () => {
-                refreshSubmitState();
-            });
             confirmCb?.addEventListener('change', refreshSubmitState);
 
-            /* On submit, translate the picked option's key into the
-               correct hidden field (#626). The select carries
-               "id:N" for registry rows and "name:X" for in-use-only
-               rows; the server handler accepts either. */
+            /* On submit, translate the resolved key into the correct
+               hidden field (#626 contract, unchanged by #1500). The key
+               carries "id:N" for registry rows and "name:X" for in-use-
+               only rows; the server handler accepts either. */
             modalEl.querySelector('form')?.addEventListener('submit', () => {
-                const picked = targetSel?.value || '';
+                const picked = targetKeyIn?.value || '';
                 const idHidden   = document.getElementById('cp-merge-target-id-hidden');
                 const nameHidden = document.getElementById('cp-merge-target-name-hidden');
                 if (idHidden)   idHidden.value   = '';

@@ -399,6 +399,7 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
        rows leave these NULL — only real individuals get split. */
     FirstNames      VARCHAR(255)    NULL,
     Surname         VARCHAR(255)    NULL,
+    MaidenSurname   VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional birth surname, when different from the current Surname (#1501)',
     Suffix          VARCHAR(64)     NULL,
     Notes           TEXT            NULL,
     BirthPlace      VARCHAR(255)    NULL,
@@ -771,6 +772,10 @@ CREATE TABLE IF NOT EXISTS tblSessions (
 CREATE TABLE IF NOT EXISTS tblApiTokens (
     Token           VARCHAR(64)     NOT NULL PRIMARY KEY,
     UserId          INT UNSIGNED    NOT NULL,
+    DeviceName      VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Client-reported device display name (#1409), e.g. an iPhone name — optional, never required for auth',
+    Platform        VARCHAR(20)     NULL DEFAULT NULL COMMENT 'apple | android | web (#1409) — mirrors ANALYTICS_INGEST_ALLOWED_PLATFORMS vocabulary, VARCHAR not ENUM (rule #20)',
+    AppVersion      VARCHAR(20)     NULL DEFAULT NULL COMMENT 'Client app version string at issue/last-seen time (#1409), e.g. 1.4.2',
+    LastSeenAt      DATETIME        NULL DEFAULT NULL COMMENT 'Updated on each authenticated request bearing this token (#1409) — powers a future manage-devices last-active column',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ExpiresAt       TIMESTAMP       NOT NULL,
 
@@ -781,6 +786,38 @@ CREATE TABLE IF NOT EXISTS tblApiTokens (
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblAuthDeviceCodes (#1407) — RFC 8628 OAuth Device Authorization Grant codes
+-- for tvOS/limited-input pairing. A tvOS client requests a device_code +
+-- shows a short UserCode; the account owner enters that UserCode on a
+-- full-input device's browser at /link to approve. Channel-scoped (rule #26)
+-- so an alpha-issued code can't be approved against production. Dormant until
+-- the tvOS device-code client + /link page ship.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblAuthDeviceCodes (
+    Id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    DeviceCodeHash CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the device_code the tvOS/limited-input client polls with (RFC 8628 section 3.2) — raw value never stored',
+    UserCode       VARCHAR(12)  NOT NULL COMMENT 'Short human code shown on-screen for the user to enter at /link (RFC 8628 section 3.1)',
+    Status         VARCHAR(20)  NOT NULL DEFAULT 'pending' COMMENT 'pending | approved | denied | expired — app-validated, VARCHAR not ENUM (rule #20)',
+    UserId         INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblUsers — set once the user approves at /link; NULL while pending',
+    Channel        VARCHAR(16)  NULL DEFAULT NULL COMMENT '3-docroot env discriminator (rule #26) — filter in every poll/approve/prune query',
+    PollCount      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Poll attempts so far — enforces RFC 8628 section 3.5 slow_down backoff',
+    LastPolledAt   DATETIME     NULL DEFAULT NULL,
+    ExpiresAt      DATETIME     NOT NULL COMMENT 'Device/user code TTL (short-lived, RFC 8628 section 3.2)',
+    CreatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_DeviceCodeHash (DeviceCodeHash),
+    UNIQUE KEY uq_UserCode (UserCode),
+    INDEX      idx_Status_Expiry (Status, ExpiresAt),
+    INDEX      idx_User (UserId),
+
+    CONSTRAINT fk_AuthDeviceCodes_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='RFC 8628 OAuth Device Authorization Grant codes for tvOS/limited-input pairing (#1407). Dormant until the tvOS device-code client + /link page ship.';
 
 
 -- ----------------------------------------------------------------------------
@@ -2235,6 +2272,36 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPersonMembers (#1502) — links individual MEMBER people to a
+-- 'Group / band / collective' person (tblCreditPeople.IsGroup, #585).
+-- Thin join table, one row per (GroupPersonId, MemberPersonId) pair —
+-- both FKs point at tblCreditPeople(Id) ON DELETE CASCADE so deleting
+-- either side cleans up the link automatically. UNIQUE guards duplicate
+-- membership; "a group can't list itself as a member" is an application-
+-- layer check (addCreditPersonGroupMember() in credit_people_helpers.php),
+-- not a schema CHECK constraint. SortOrder is append-order only for v1
+-- (no drag-reorder UI yet).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    GroupPersonId  INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — the Group/band/collective person',
+    MemberPersonId INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — an individual member of the group',
+    SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Admin-controlled display order within the group; append-order by default',
+    CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_group_member (GroupPersonId, MemberPersonId),
+    INDEX      idx_group  (GroupPersonId),
+    INDEX      idx_member (MemberPersonId),
+
+    CONSTRAINT fk_creditpersonmembers_group
+        FOREIGN KEY (GroupPersonId)  REFERENCES tblCreditPeople(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_creditpersonmembers_member
+        FOREIGN KEY (MemberPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Group/band/collective -> individual member people (#1502).';
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongAlternativeTitles (
@@ -3136,6 +3203,7 @@ CREATE TABLE IF NOT EXISTS tblServicePresence (
     Channel          VARCHAR(16)   NULL DEFAULT NULL COMMENT '3-docroot env discriminator (copied from the session); filter in every query',
     PresenceDeviceId VARCHAR(64)   NOT NULL COMMENT 'Client-minted anonymous device id (localStorage UUID) — advisory cooldown key, NOT a security control',
     PresenceToken    CHAR(43)      NOT NULL COMMENT 'Opaque base64url 32-byte nonce — the gate key; hard-revocable (not a signed token)',
+    Role             VARCHAR(20)   NOT NULL DEFAULT 'congregant' COMMENT 'congregant | projector — app-validated poll-budget role (#1406), VARCHAR not ENUM (rule #20)',
     JoinedAt         DATETIME      NOT NULL,
     LastSeenAt       DATETIME      NOT NULL,
     ExpiresAt        DATETIME      NOT NULL COMMENT 'Resolved UTC = min(service-occurrence end via venue IANA tz, hard ceiling); gate + prune compare against this',
@@ -3161,6 +3229,63 @@ CREATE TABLE IF NOT EXISTS tblServicePollCounters (
     CONSTRAINT fk_PollCtr_Session FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-session poll budget for Service Mode (#1335) — the NAT-safe replacement for the #1268 per-IP poll cap.';
+
+-- ----------------------------------------------------------------------------
+-- tblSessionControlTokens (#1408) — scoped, revocable tokens that grant
+-- "control THIS ONE live/service session" without handing out the operator's
+-- own login (e.g. a leader hands their phone to a co-leader for the second
+-- half of a service). Dormant until session-control-token issuance/
+-- validation ships.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSessionControlTokens (
+    Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    TokenHash  CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the scoped control token (raw value never stored)',
+    SessionId  BIGINT UNSIGNED NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; the live/service session this token may control',
+    Channel    VARCHAR(16)     NULL DEFAULT NULL COMMENT '3-docroot env discriminator (rule #26) — filter in every issue/validate/revoke query',
+    Scope      VARCHAR(40)      NOT NULL DEFAULT 'broadcast' COMMENT 'granted capability, e.g. broadcast | view — app-validated, VARCHAR not ENUM (rule #20)',
+    IssuedAt   DATETIME     NOT NULL,
+    ExpiresAt  DATETIME     NOT NULL COMMENT 'Revocable, short-lived control-token TTL',
+    RevokedAt  DATETIME     NULL DEFAULT NULL COMMENT 'Explicit revoke timestamp; NULL = still live (subject to ExpiresAt)',
+    CreatedAt  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_TokenHash (TokenHash),
+    INDEX      idx_Session (SessionId),
+    INDEX      idx_Expiry (ExpiresAt),
+
+    CONSTRAINT fk_SessionControlTokens_Session
+        FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Scoped, revocable session control tokens for remote-control delegation (#1408). Dormant until session-control-token issuance/validation ships.';
+
+-- ----------------------------------------------------------------------------
+-- tblApnsTokens (#1410) — APNs push tokens for ordinary device notifications
+-- AND (separately) Live Activities / Dynamic Island updates. `Kind` +
+-- nullable `SessionId` distinguish the two: an ordinary device token has no
+-- SessionId; a Live Activity token is scoped to the one live/service session
+-- it mirrors and churns independently of the device token. Dormant until the
+-- APNs bridge ships.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblApnsTokens (
+    Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    Kind       VARCHAR(20)    NOT NULL DEFAULT 'device' COMMENT 'device | liveActivity — app-validated, VARCHAR not ENUM (rule #20); Live Activity tokens churn per-activity so Kind + nullable SessionId hedge without a 2nd migration',
+    UserId     INT UNSIGNED   NULL DEFAULT NULL COMMENT 'FK tblUsers — owning user; NULL for an anonymous/presence-scoped token',
+    SessionId  BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; set only for Kind=liveActivity tokens tied to one live/service session',
+    PushToken  VARBINARY(255) NOT NULL COMMENT 'Raw APNs device/activity push token bytes',
+    ApnsEnv    VARCHAR(20)    NOT NULL DEFAULT 'production' COMMENT 'sandbox | production — which APNs gateway this token is valid against',
+    ExpiresAt  DATETIME       NULL DEFAULT NULL COMMENT 'Optional TTL — NULL = no expiry (ordinary device tokens); Live Activity tokens set this to the activity end',
+    CreatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt  TIMESTAMP      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_PushToken (PushToken),
+    INDEX      idx_User (UserId),
+    INDEX      idx_Session (SessionId),
+
+    CONSTRAINT fk_ApnsTokens_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id) ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_ApnsTokens_Session
+        FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='APNs push tokens for device notifications and Live Activities (#1410). Dormant until the APNs bridge ships.';
 
 
 -- ============================================================================

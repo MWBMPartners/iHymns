@@ -374,6 +374,151 @@ if (function_exists('secretCryptoReady')
     }
 }
 
+/* -------------------------------------------------------------------------
+ * DELETE A BACKUP (#1509) — permanently remove ONE selected
+ * ihymns-backup-*.sql(.gz) file from data_share/backups/.
+ *
+ * ELI5: the "Restore from Backup" card (further down) lists every backup
+ * file in a dropdown. This lets a Global Admin pick ONE of those files
+ * and throw it away for good — e.g. to reclaim disk space between the
+ * automatic 7-day prune (backup.php), or to clear out a backup that's
+ * known-bad. There's no "undo" once unlink() runs — short of a copy the
+ * admin already made off-site with the "Download a backup" button above.
+ *
+ * DETAILED / WHY:
+ * Positioned here — BEFORE the page's blanket `validateCsrf()` gate a
+ * few lines down (search "CSRF gate for every POST on this page") — for
+ * the SAME reason the two secret_* actions above are: this is a NEW
+ * (#1509) state-changing endpoint, so per rule #29 (.claude/CLAUDE.md
+ * #29 / project-rules.md) it authenticates the request with
+ * `validateCsrfRequest()` — which accepts EITHER a still-valid session
+ * token OR a genuine same-origin request signal — rather than depending
+ * solely on the page's older baked-token-only `validateCsrf()` blanket
+ * check. That blanket check is exactly the "long-lived admin dashboard
+ * tab, session token rotates/GCs underneath it" staleness trap rule #29
+ * documents. If this block ran AFTER the blanket gate instead, a stale
+ * token would already have 403'd the whole request before ever reaching
+ * the more-robust check here — defeating the point of using
+ * validateCsrfRequest() at all. (In practice the form below still POSTs
+ * a session csrf_token field too, so path (a) of validateCsrfRequest()
+ * — "a valid session token was supplied" — is what actually authorises
+ * a normal same-tab click; the same-origin-header path (b) only matters
+ * if this is ever driven from a fetch()-based UI later.)
+ * Docs: manage/includes/auth.php::validateCsrfRequest() doc-block;
+ * OWASP CSRF cheat sheet linked there.
+ *
+ * PATH CONFINEMENT (#1509 brief: "REUSE that exact guard"): identical to
+ * the download-backup handler directly below — basename() the requested
+ * name, match the SAME strict `ihymns-backup-<timestamp>.sql(.gz)`
+ * pattern, then require realpath() to resolve INSIDE realpath($backupDir)
+ * via the strncmp() prefix check. Belt-and-braces against any traversal
+ * that survives basename() (e.g. a crafted absolute path or symlink).
+ *
+ * SAFETY GUARD (#1509 brief: "check whether the existing code treats any
+ * backup specially and preserve that"): it does NOT. restore.php's
+ * pre-restore auto-snapshot (see its "Pre-restore auto-snapshot"
+ * section) is created by calling this SAME backup.php script and lands
+ * in the SAME directory with the SAME `ihymns-backup-<timestamp>.sql.gz`
+ * name as every other backup — there is no sentinel/flag anywhere in the
+ * schema or filename that marks one file as "the" recovery snapshot, so
+ * it can never be singled out and exempted individually. Rather than
+ * silently accept that gap, this refuses to delete the LAST remaining
+ * backup file: the directory can be thinned but never emptied via this
+ * control, so there is always at least one recovery point on disk —
+ * preserving the restore-safety model's intent even without per-file
+ * metadata to target more precisely.
+ * ------------------------------------------------------------------------- */
+$deleteBackupError = '';
+if (!$isInitialSetup
+    && $_SERVER['REQUEST_METHOD'] === 'POST'
+    && ($_POST['action'] ?? '') === 'delete-backup') {
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo 'Invalid CSRF token';
+        exit;
+    }
+
+    /* Re-confirm Global Admin — defence in depth, mirrors the secret_*
+       actions above. The top-of-file gate (lines ~38-49) already enforces
+       this for the page LOAD, but a destructive endpoint checks again
+       independently. */
+    if (!isset($currentUser) || !$currentUser || ($currentUser['role'] ?? null) !== 'global_admin') {
+        http_response_code(403);
+        echo 'Global Admin access required.';
+        exit;
+    }
+
+    /* Server-side confirm flag — same convention as restore's `confirm=1`
+       / drop-legacy's `confirm=1`. The form's typed "DELETE" JS prompt
+       (see the Restore-from-Backup card markup) is a client-side speed
+       bump only; this is the real gate. */
+    if (($_POST['confirm'] ?? '') !== '1') {
+        $deleteBackupError = 'Delete was not confirmed.';
+    } else {
+        $backupDir = dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'backups';
+        $reqName   = basename((string)($_POST['file'] ?? ''));
+
+        if (!preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $reqName)) {
+            $deleteBackupError = 'Invalid backup filename.';
+        } else {
+            /* Same belt-and-braces confinement check as download-backup
+               below: the resolved path MUST live inside the backups dir. */
+            $real    = realpath($backupDir . DIRECTORY_SEPARATOR . $reqName);
+            $realDir = realpath($backupDir);
+            if ($real === false || $realDir === false || !is_file($real)
+                || strncmp($real, $realDir . DIRECTORY_SEPARATOR, strlen($realDir) + 1) !== 0) {
+                $deleteBackupError = 'Backup not found.';
+            } else {
+                /* Never delete down to zero backups — see the safety-guard
+                   doc-block above. */
+                $siblingCount = 0;
+                foreach (scandir($backupDir) ?: [] as $_sf) {
+                    if (preg_match('/^ihymns-backup-[0-9-]+\.sql(?:\.gz)?$/', $_sf)) {
+                        $siblingCount++;
+                    }
+                }
+                unset($_sf);
+
+                if ($siblingCount <= 1) {
+                    $deleteBackupError = 'Refusing to delete the only remaining backup — '
+                        . 'at least one must stay on disk as a recovery point.';
+                } elseif (!@unlink($real)) {
+                    $deleteBackupError = 'Could not delete the backup file (check filesystem permissions).';
+                } else {
+                    /* Audit log — filename only, not a secret, safe to log
+                       (#1509 brief). logActivity() is already loaded via the
+                       auth.php → activity_log.php require chain at the top
+                       of this file. Best-effort: a logging hiccup must never
+                       block the (already-completed) delete from being
+                       reported back to the admin. */
+                    if (function_exists('logActivity')) {
+                        try {
+                            logActivity(
+                                'backup.delete',
+                                'backup',
+                                $reqName,
+                                ['filename' => $reqName, 'by' => $currentUser['username'] ?? 'unknown'],
+                                'success',
+                                isset($currentUser['id']) ? (int)$currentUser['id'] : null
+                            );
+                        } catch (\Throwable $_e) { /* audit is best-effort */ }
+                    }
+
+                    /* PRG — redirect so a page refresh doesn't re-submit the
+                       delete. Mirrors the save-credentials `?saved=1`
+                       pattern further below; the filename round-trips
+                       through the query string only to drive the success
+                       flash message and has already been validated against
+                       the strict backup-filename pattern above. */
+                    header('Location: ?backup_deleted=' . rawurlencode($reqName));
+                    exit;
+                }
+            }
+        }
+    }
+}
+
 /* CSRF gate for every POST on this page — the credentials form AND
    the backup-upload form go through here. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -2685,6 +2830,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                     rsort($backupFiles);
                 }
 
+                /* Success flash for the manual delete-a-backup control (#1509).
+                   The delete handler near the top of this file (search
+                   "DELETE A BACKUP (#1509)") does its work + unlink() BEFORE
+                   any HTML renders, then PRG-redirects to `?backup_deleted=
+                   <name>` so a page refresh can't re-submit the delete. The
+                   filename was already validated against the strict backup
+                   pattern before the redirect was issued; basename() here is
+                   defence-in-depth only, and the value is htmlspecialchars()'d
+                   at render time same as $uploadMsg below. */
+                $deleteBackupMsg = '';
+                if (!empty($_GET['backup_deleted'])) {
+                    $deleteBackupMsg = 'Deleted backup: ' . basename((string)$_GET['backup_deleted']);
+                }
+
                 /* Handle an admin-supplied upload (#405). Accepts .sql + .sql.gz
                    files matching the backup naming pattern, drops them into
                    the server's backups directory, and logs the upload. */
@@ -2766,6 +2925,15 @@ if ($hasCredentials && defined('DB_HOST')) {
                         <?php if ($uploadMsg): ?>
                             <div class="alert alert-info py-2 small"><?= htmlspecialchars($uploadMsg) ?></div>
                         <?php endif; ?>
+                        <?php /* Delete-a-backup flash + error (#1509) — success comes back
+                                 via the PRG `?backup_deleted=` redirect; error is set inline
+                                 (no redirect) by the delete handler near the top of this file. */ ?>
+                        <?php if ($deleteBackupMsg): ?>
+                            <div class="alert alert-success py-2 small"><?= htmlspecialchars($deleteBackupMsg) ?></div>
+                        <?php endif; ?>
+                        <?php if ($deleteBackupError): ?>
+                            <div class="alert alert-danger py-2 small"><?= htmlspecialchars($deleteBackupError) ?></div>
+                        <?php endif; ?>
 
                         <?php if ($backupFiles): ?>
                             <!-- Download a backup to keep off-site (#1255). Streams the
@@ -2811,10 +2979,42 @@ if ($hasCredentials && defined('DB_HOST')) {
                                     Restore
                                 </button>
                             </form>
-                            <p class="text-muted small mb-0">
+                            <p class="text-muted small mb-2">
                                 <i class="bi bi-info-circle me-1"></i>
                                 Restore always takes a pre-restore snapshot first. Data INSERTs
                                 are transactional — a failure rolls data back automatically.
+                            </p>
+
+                            <!-- Manually delete ONE selected backup (#1509). Global-Admin
+                                 gated (page-wide gate at the top of this file) + CSRF via
+                                 validateCsrfRequest() (see the "DELETE A BACKUP (#1509)"
+                                 handler near the top of this file) + a server-side
+                                 confirm=1 flag. No DB connection needed (filesystem-only),
+                                 so — like Download above — it stays enabled even when
+                                 credentials are unset. The typed "DELETE" prompt below is a
+                                 client-side speed bump only, matching the Restore form's own
+                                 onclick convention just above; the real gates are server-side. -->
+                            <label class="form-label small text-secondary mb-1">
+                                <i class="bi bi-trash me-1"></i>Delete a backup (permanent — cannot be undone):
+                            </label>
+                            <form action="" method="post" class="d-flex gap-2 flex-wrap mb-2">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars(csrfToken()) ?>">
+                                <input type="hidden" name="action" value="delete-backup">
+                                <input type="hidden" name="confirm" value="1">
+                                <select name="file" class="form-select form-select-sm" style="flex:1 1 200px">
+                                    <?php foreach ($backupFiles as $f): ?>
+                                        <option value="<?= htmlspecialchars($f) ?>"><?= htmlspecialchars($f) ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <button type="submit" class="btn btn-sm btn-outline-danger"
+                                        onclick="return prompt('Type DELETE (all caps) to permanently remove the selected backup file. This CANNOT be undone.') === 'DELETE'">
+                                    <i class="bi bi-trash me-1"></i>Delete
+                                </button>
+                            </form>
+                            <p class="text-muted small mb-0">
+                                <i class="bi bi-shield-check me-1"></i>
+                                At least one backup always stays on disk — the last remaining
+                                file can't be deleted here.
                             </p>
                         <?php else: ?>
                             <p class="text-muted small mb-2">No backups found in <code>data_share/backups/</code>.</p>
