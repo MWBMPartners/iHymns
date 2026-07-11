@@ -2564,4 +2564,17 @@ return [
         ],
         'probe' => static fn(\mysqli $db) => !_migProbe_columnExists($db, 'tblCreditPeople', 'MaidenSurname'),
     ],
+    'creditperson-members' => [
+        'script' => 'migrate-add-creditperson-members.php',
+        'card' => [
+            'title'  => 'Credit-person Group membership (#1502)',
+            'body'   => 'Adds <code>tblCreditPersonMembers</code> so a &ldquo;Group / band / '
+                      . 'collective&rdquo; credit person (<code>IsGroup</code>, #585) can list its '
+                      . 'individual member people &mdash; each an ordinary registry row of their own. '
+                      . 'Both FKs cascade-delete; a UNIQUE key prevents duplicate membership. '
+                      . 'Additive, idempotent — safe to re-run.',
+            'button' => 'Run Credit-Person Group Membership Migration',
+        ],
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblCreditPersonMembers'),
+    ],
 ];

@@ -1322,3 +1322,238 @@ function parseCreditPersonAliasHints(string $raw): array
 
     return ['name' => $raw, 'aliases' => []];
 }
+
+/* =========================================================================
+ * GROUP MEMBERSHIP (#1502)
+ *
+ * Links individual MEMBER people (ordinary tblCreditPeople rows) to a
+ * 'Group / band / collective' person (IsGroup=1, #585) via the thin
+ * join table tblCreditPersonMembers — see
+ * appWeb/.sql/migrate-add-creditperson-members.php for the schema
+ * rationale. Every helper below is table-existence-gated (dormant-safe
+ * on an install that hasn't run the migration yet, matching the
+ * aliases / date-precision / places helpers above in this file).
+ * ========================================================================= */
+
+/**
+ * Cached probe for tblCreditPersonMembers. Static-cached for the request
+ * lifetime so the INFORMATION_SCHEMA round-trip happens at most once,
+ * mirroring creditPeopleAliasesTableExists() above.
+ *
+ * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-tables-table.html
+ */
+function creditPersonMembersTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPersonMembers' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Cached probe for the Slug column on tblCreditPeople (#588). Extracted
+ * here (rather than re-probed inline) because both the admin Members
+ * card-list and the public /people/<slug> Members panel need to know
+ * whether a member row can be linked. Mirrors the inline probe already
+ * embedded in generateUniqueCreditPersonSlug() below, just exposed as
+ * its own reusable, cached check.
+ */
+function creditPeopleSlugColumnExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblCreditPeople'
+                AND COLUMN_NAME  = 'Slug' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
+ * Fetch every member of one Group person, in SortOrder/Id order
+ * (append-order — v1 has no drag-reorder UI). Slug is included (NULL on
+ * a pre-#588 install) so callers that need to link to a member's public
+ * page can do so without a second query.
+ *
+ * @return list<array{id:int,name:string,slug:?string}>
+ */
+function loadCreditPersonGroupMembers(\mysqli $db, int $groupId): array
+{
+    if ($groupId <= 0 || !creditPersonMembersTableExists($db)) return [];
+    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $stmt = $db->prepare(
+        "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+           FROM tblCreditPersonMembers m
+           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
+          WHERE m.GroupPersonId = ?
+       ORDER BY m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $out = [];
+    foreach ($rows as $r) {
+        $out[] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
+    }
+    return $out;
+}
+
+/**
+ * Bulk-load group members for many group-person ids in one round-trip.
+ * Used by /manage/credit-people's list-view render so the Edit drawer's
+ * Members pre-fill doesn't cost an extra query per row (mirrors
+ * loadCreditPersonAliasesBulk() above).
+ *
+ * @param list<int> $groupIds
+ * @return array<int, list<array{id:int,name:string,slug:?string}>> GroupPersonId → member rows
+ */
+function loadCreditPersonGroupMembersBulk(\mysqli $db, array $groupIds): array
+{
+    $groupIds = array_values(array_filter(array_map('intval', $groupIds), fn($v) => $v > 0));
+    if (!$groupIds || !creditPersonMembersTableExists($db)) return [];
+    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
+    $types        = str_repeat('i', count($groupIds));
+    $stmt = $db->prepare(
+        "SELECT m.GroupPersonId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+           FROM tblCreditPersonMembers m
+           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
+          WHERE m.GroupPersonId IN ($placeholders)
+       ORDER BY m.GroupPersonId ASC, m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param($types, ...$groupIds);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $grouped = [];
+    foreach ($rows as $r) {
+        $gid = (int)$r['GroupId'];
+        $grouped[$gid][] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
+    }
+    return $grouped;
+}
+
+/**
+ * Add one member to a group. Idempotent — re-adding an existing member
+ * is a no-op success (matches the UNIQUE (GroupPersonId, MemberPersonId)
+ * key's intent: "membership either holds or it doesn't", not an error a
+ * curator has to dismiss on a double-click). Guards:
+ *   - table must exist (dormant-safe pre-migration)
+ *   - both ids must be > 0
+ *   - $groupId must reference a row with IsGroup = 1 (a plain individual
+ *     is not a valid membership parent)
+ *   - $memberId must reference an existing row
+ *   - $groupId !== $memberId (no self-membership)
+ *
+ * Appends at the end of the group's current member list (SortOrder =
+ * current max + 1) — v1 has no drag-reorder UI, so every add lands last.
+ *
+ * @return array{ok:bool, error?:string, member?:array{id:int,name:string}}
+ */
+function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+{
+    if (!creditPersonMembersTableExists($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
+    }
+    if ($groupId <= 0 || $memberId <= 0) {
+        return ['ok' => false, 'error' => 'Both a group and a member are required.'];
+    }
+    if ($groupId === $memberId) {
+        return ['ok' => false, 'error' => 'A group cannot list itself as a member.'];
+    }
+    /* IsGroup itself is a gated column (#585, migrate-credit-people-flags.php)
+       — an install new enough to have run THIS migration will almost
+       certainly have that one too, but check anyway rather than assume,
+       since a raw `SELECT IsGroup` would throw under mysqli's STRICT
+       reporting on a column that doesn't exist (matches the same gate
+       creditPeopleFlagsColumnsExist() enforces elsewhere in this file). */
+    if (!creditPeopleFlagsColumnsExist($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs the Credit People classification-flags migration to be run first.'];
+    }
+
+    $stmt = $db->prepare('SELECT IsGroup FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $groupRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$groupRow) return ['ok' => false, 'error' => 'Group person not found.'];
+    if ((int)($groupRow['IsGroup'] ?? 0) !== 1) {
+        return ['ok' => false, 'error' => 'That person is not flagged as a Group.'];
+    }
+
+    $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $memberId);
+    $stmt->execute();
+    $memberRow = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$memberRow) return ['ok' => false, 'error' => 'Member person not found.'];
+
+    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ? LIMIT 1');
+    $stmt->bind_param('ii', $groupId, $memberId);
+    $stmt->execute();
+    $already = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    if ($already) {
+        return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+    }
+
+    $stmt = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) + 1 FROM tblCreditPersonMembers WHERE GroupPersonId = ?');
+    $stmt->bind_param('i', $groupId);
+    $stmt->execute();
+    $nextRow  = $stmt->get_result()->fetch_row();
+    $nextSort = (int)($nextRow[0] ?? 0);
+    $stmt->close();
+
+    $stmt = $db->prepare(
+        'INSERT INTO tblCreditPersonMembers (GroupPersonId, MemberPersonId, SortOrder) VALUES (?, ?, ?)'
+    );
+    $stmt->bind_param('iii', $groupId, $memberId, $nextSort);
+    $stmt->execute();
+    $stmt->close();
+
+    return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+}
+
+/**
+ * Remove one member from a group. Idempotent — removing a non-member
+ * (already removed, or never a member) is a 0-rows-affected success,
+ * not an error.
+ *
+ * @return array{ok:bool, error?:string, removed?:int}
+ */
+function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+{
+    if (!creditPersonMembersTableExists($db)) {
+        return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
+    }
+    if ($groupId <= 0 || $memberId <= 0) {
+        return ['ok' => false, 'error' => 'Both a group and a member are required.'];
+    }
+    $stmt = $db->prepare('DELETE FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ?');
+    $stmt->bind_param('ii', $groupId, $memberId);
+    $stmt->execute();
+    $removed = $stmt->affected_rows;
+    $stmt->close();
+    return ['ok' => true, 'removed' => $removed];
+}

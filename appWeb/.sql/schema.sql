@@ -2236,6 +2236,36 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
 
 
 -- ----------------------------------------------------------------------------
+-- tblCreditPersonMembers (#1502) — links individual MEMBER people to a
+-- 'Group / band / collective' person (tblCreditPeople.IsGroup, #585).
+-- Thin join table, one row per (GroupPersonId, MemberPersonId) pair —
+-- both FKs point at tblCreditPeople(Id) ON DELETE CASCADE so deleting
+-- either side cleans up the link automatically. UNIQUE guards duplicate
+-- membership; "a group can't list itself as a member" is an application-
+-- layer check (addCreditPersonGroupMember() in credit_people_helpers.php),
+-- not a schema CHECK constraint. SortOrder is append-order only for v1
+-- (no drag-reorder UI yet).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
+    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    GroupPersonId  INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — the Group/band/collective person',
+    MemberPersonId INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — an individual member of the group',
+    SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Admin-controlled display order within the group; append-order by default',
+    CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_group_member (GroupPersonId, MemberPersonId),
+    INDEX      idx_group  (GroupPersonId),
+    INDEX      idx_member (MemberPersonId),
+
+    CONSTRAINT fk_creditpersonmembers_group
+        FOREIGN KEY (GroupPersonId)  REFERENCES tblCreditPeople(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_creditpersonmembers_member
+        FOREIGN KEY (MemberPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Group/band/collective -> individual member people (#1502).';
+
+
+-- ----------------------------------------------------------------------------
 -- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongAlternativeTitles (

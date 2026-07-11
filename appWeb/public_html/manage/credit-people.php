@@ -289,6 +289,107 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
 }
 
 /* ----------------------------------------------------------------------
+ * POST endpoints — add_member / remove_member (#1502)
+ *
+ * ELI5: these are the "save" buttons for the Members card-list inside
+ * the Edit-person drawer, for a person flagged as a Group. Each add /
+ * remove persists immediately (not tied to the drawer's main Save
+ * button) so a curator building up a member list sees each pick land
+ * right away and can correct a mistake with one click, the same way
+ * the merge_target_search typeahead above resolves picks live.
+ *
+ * DETAILED: dispatched here — BEFORE the classic "POST dispatch" switch
+ * below — so they can use validateCsrfRequest() (#1352 rule #29) rather
+ * than the classic validateCsrf() the rest of this page's single big
+ * switch still uses. validateCsrfRequest() accepts EITHER a still-valid
+ * session token OR a same-origin AJAX request (X-Requested-With header +
+ * matching Origin/Referer host, if present) — the client below sends
+ * both, so it never goes stale even if the drawer stays open a long
+ * time. Both actions return JSON and `exit` immediately; on any
+ * non-match they fall through to the rest of the file unchanged.
+ *
+ * POST action=add_member    group_id=<int> member_id=<int>
+ * POST action=remove_member group_id=<int> member_id=<int>
+ *
+ * The actual validation (self-membership guard, existence checks,
+ * idempotent dupe handling, table-existence gate) lives in the shared
+ * addCreditPersonGroupMember() / removeCreditPersonGroupMember()
+ * helpers — see includes/credit_people_helpers.php — so it's testable
+ * independent of this dispatch block.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'add_member') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $groupId  = (int)($_POST['group_id']  ?? 0);
+    $memberId = (int)($_POST['member_id'] ?? 0);
+
+    try {
+        $db     = getDbMysqli();
+        $result = addCreditPersonGroupMember($db, $groupId, $memberId);
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logCreditPerson('member_add', (string)$groupId, [
+            'group_id'  => $groupId,
+            'member_id' => $memberId,
+        ]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] add_member failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not add member.']);
+        exit;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'remove_member') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $groupId  = (int)($_POST['group_id']  ?? 0);
+    $memberId = (int)($_POST['member_id'] ?? 0);
+
+    try {
+        $db     = getDbMysqli();
+        $result = removeCreditPersonGroupMember($db, $groupId, $memberId);
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logCreditPerson('member_remove', (string)$groupId, [
+            'group_id'  => $groupId,
+            'member_id' => $memberId,
+        ]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/credit-people.php] remove_member failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not remove member.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
  * POST dispatch
  *
  * All actions are CSRF-checked + entitlement-gated (the entitlement
@@ -1419,6 +1520,16 @@ try {
     foreach ($registryRows as $r) { $personIds[] = (int)$r['Id']; }
     $aliasesByPerson = loadCreditPersonAliasesBulk($db, $personIds);
 
+    /* Group membership (#1502) — bulk load alongside aliases so the
+       Edit drawer's Members card-list can pre-fill without an extra
+       round-trip. Schema-tolerant: pre-migration installs return an
+       empty array (loadCreditPersonGroupMembersBulk() checks
+       INFORMATION_SCHEMA first, same convention as aliases above). Only
+       Group-flagged rows will ever have entries here in practice, but
+       the bulk-load itself doesn't need to filter by IsGroup — a plain
+       individual simply never appears as a key. */
+    $membersByPerson = loadCreditPersonGroupMembersBulk($db, $personIds);
+
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
     $byName = [];
@@ -1451,6 +1562,7 @@ try {
             'ipi'         => [],
             'otherid'     => [],   // #1348
             'aliases'     => [],
+            'members'     => [],   // #1502
         ];
     }
     foreach ($registryRows as $r) {
@@ -1524,6 +1636,11 @@ try {
         $byName[$name]['isni']    = $isniByPerson[(int)$r['Id']]    ?? [];
         $byName[$name]['otherid'] = $otherIdByPerson[(int)$r['Id']] ?? []; // #1348
         $byName[$name]['aliases'] = $aliasesByPerson[(int)$r['Id']] ?? [];
+        /* #1502 — Group members. Only ever populated for IsGroup=1 rows
+           in practice (the admin UI only lets you add members to a
+           Group), but no filter is needed here — a plain individual
+           simply never has a key in $membersByPerson. */
+        $byName[$name]['members'] = $membersByPerson[(int)$r['Id']] ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -1824,6 +1941,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                                 'ipi'         => $p['ipi'],
                                 'isni'        => $p['isni'] ?? [],
                                 'aliases'     => $p['aliases'] ?? [],
+                                /* #1502 — this Group person's current members
+                                   (id/name/slug), so the Edit drawer's Members
+                                   card-list can pre-fill without a round-trip.
+                                   Empty for individuals and for pre-migration
+                                   installs alike. */
+                                'members'     => $p['members'] ?? [],
                             ], JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);
                             $isSpecial = !empty($p['is_special_case']);
                             $isGroup   = !empty($p['is_group']);
@@ -2430,6 +2553,39 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <div class="form-text small">Alternative names that should match this person in search — legal name, stage name, common misspellings, transliterations. Each alias carries a type and optional locale tag.</div>
             </div>
 
+            <!-- Members (#1502) — visible only when "Group / band /
+                 collective" is ticked. A Group's constituent people,
+                 each an EXISTING tblCreditPeople registry row (never a
+                 free-text name — a member must already be registered,
+                 unlike the AKA/Aliases section above). Add/remove
+                 persist immediately via their own add_member /
+                 remove_member AJAX endpoints (dispatched near the top
+                 of this file, ahead of the classic POST switch) rather
+                 than waiting for the drawer's main Save button — that
+                 mirrors the Merge modal's live "resolve as you type"
+                 feel and means a mis-add can be undone with one click
+                 without a full form re-submit. Requires the person to
+                 already have a real Id (i.e. Edit mode, not Add) since
+                 GroupPersonId is a NOT NULL FK — the "unsaved" note
+                 below covers that case. -->
+            <div data-flag-section="group-members" class="d-none">
+                <label class="form-label small mb-1">Members</label>
+                <div id="cp-members-unsaved" class="alert alert-secondary py-2 small mb-2 d-none">
+                    <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                    Save this person first — members can only be added once the group itself has been registered.
+                </div>
+                <div id="cp-members-container" class="d-flex flex-column gap-1 mb-2"></div>
+                <div class="input-group input-group-sm" id="cp-members-add-row">
+                    <input type="text" class="form-control" id="cp-member-search" list="cp-member-datalist"
+                           autocomplete="off" placeholder="Type a registered person's name…">
+                    <datalist id="cp-member-datalist"></datalist>
+                    <button type="button" class="btn btn-outline-secondary" id="cp-add-member-btn">
+                        <i class="bi bi-plus me-1"></i>Add
+                    </button>
+                </div>
+                <div class="form-text small">Only people already in the registry can be added — search picks from existing records, matching the Merge modal's target picker.</div>
+            </div>
+
             <!-- Notes -->
             <div>
                 <label class="form-label small mb-1" for="cp-drawer-notes">Notes</label>
@@ -2868,6 +3024,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const addIpiBtn = document.getElementById('cp-add-ipi-btn');
             const addIsniBtn= document.getElementById('cp-add-isni-btn');
             const addAliasBtn = document.getElementById('cp-add-alias-btn');
+            /* #1502 — Group members card-list refs. */
+            const membersSection   = document.querySelector('[data-flag-section="group-members"]');
+            const membersUnsavedEl = document.getElementById('cp-members-unsaved');
+            const membersAddRow    = document.getElementById('cp-members-add-row');
+            const membersContainer = document.getElementById('cp-members-container');
+            const memberSearchIn   = document.getElementById('cp-member-search');
+            const memberDatalist   = document.getElementById('cp-member-datalist');
+            const addMemberBtn     = document.getElementById('cp-add-member-btn');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
@@ -3167,6 +3331,13 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    doesn't leak into the next session. */
                 document.getElementById('cp-drawer-birth-place-id').value = '';
                 document.getElementById('cp-drawer-death-place-id').value = '';
+                /* #1502 — clear the Members card-list + search state so a
+                   previously-opened group's member list doesn't leak into
+                   the next drawer open. */
+                if (membersContainer) membersContainer.innerHTML = '';
+                if (memberSearchIn)   memberSearchIn.value = '';
+                if (memberDatalist)   memberDatalist.innerHTML = '';
+                memberLabelToKey = new Map();
             }
 
             /* Open empty drawer for Add. */
@@ -3265,6 +3436,10 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 (person.isni    || []).forEach(r => addIsniRow(r));
                 (person.otherid || []).forEach(r => addOtherIdRow(r)); // #1348
                 (person.aliases || []).forEach(a => addAliasRow(a));
+                /* #1502 — pre-fill this Group's current members. Empty for
+                   individuals / special-cases (server never populates the
+                   array for them) and for pre-migration installs alike. */
+                (person.members || []).forEach(m => addMemberRow(m));
                 drawer.show();
             });
 
@@ -3415,6 +3590,14 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         syncNameFromParts();
                     }
                 }
+
+                /* #1502 — Members card-list only applies to a Group; hide
+                   it entirely for individuals / special-case rows. When
+                   shown, refreshMembersAvailability() further decides
+                   between the "save first" note (no real Id yet) and the
+                   live search + list (Id known — Edit mode). */
+                if (membersSection) membersSection.classList.toggle('d-none', !isGroup);
+                refreshMembersAvailability();
             }
             specialCaseCb?.addEventListener('change', () => {
                 if (specialCaseCb.checked && groupCb) groupCb.checked = false;
@@ -3438,6 +3621,190 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (!remove) return;
                 const row = remove.closest('.cp-link-row, .cp-ipi-row, .cp-isni-row, .cp-otherid-row, .cp-alias-row'); // #1348
                 if (row) row.remove();
+            });
+
+            /* =====================================================================
+               Group members (#1502). Unlike the AKA/Aliases + other repeating
+               sub-forms above (free-text, saved together with the rest of the
+               drawer on Save), Members reference an EXISTING tblCreditPeople
+               row and persist immediately via their own add_member /
+               remove_member endpoints — a member link can only be created
+               once the group itself has a real Id, so there is no sane
+               "queue it up, send with the next Save" behaviour to fall back
+               to. This mirrors the Merge modal's live target-picker (reusing
+               the SAME ?action=merge_target_search endpoint, #1500) and its
+               own small, single-purpose fetch calls.
+               ===================================================================== */
+            let memberLabelToKey = new Map();
+            let memberInflight   = null;
+            let memberDebounce   = null;
+
+            /** Escape a string for safe insertion as HTML text content. */
+            function escapeMemberHtml(s) {
+                return String(s || '').replace(/[&<>"']/g, (c) => ({
+                    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+                }[c]));
+            }
+
+            /** Every member id currently rendered, so search + add can
+                exclude people already in the list (no point suggesting a
+                duplicate the server would just no-op anyway). */
+            function currentMemberIds() {
+                if (!membersContainer) return [];
+                return Array.from(membersContainer.querySelectorAll('[data-member-id]'))
+                    .map((el) => parseInt(el.getAttribute('data-member-id'), 10))
+                    .filter((n) => n > 0);
+            }
+
+            function addMemberRow(m) {
+                if (!membersContainer || !m) return;
+                const id   = m.id ?? m.Id ?? 0;
+                const name = m.name ?? m.Name ?? '';
+                if (!id) return;
+                const html = '<div class="d-flex align-items-center justify-content-between border rounded px-2 py-1" '
+                    + 'style="border-color: var(--bs-border-color) !important;" data-member-id="' + parseInt(id, 10) + '">'
+                    + '<span class="small">' + escapeMemberHtml(name) + '</span>'
+                    + '<button type="button" class="btn btn-sm btn-outline-danger cp-member-remove" '
+                    + 'aria-label="Remove ' + escapeMemberHtml(name) + ' from members"><i class="bi bi-x-lg" aria-hidden="true"></i></button>'
+                    + '</div>';
+                membersContainer.insertAdjacentHTML('beforeend', html);
+            }
+
+            /* Toggle the "save this person first" note vs the live search +
+               Add button, based on whether the drawer currently has a real
+               Id (Edit mode) — a brand-new, unsaved Group has no
+               GroupPersonId yet for a member link to reference. */
+            function refreshMembersAvailability() {
+                const hasId = !!(idIn && idIn.value);
+                if (membersUnsavedEl) membersUnsavedEl.classList.toggle('d-none', hasId);
+                if (membersAddRow)    membersAddRow.classList.toggle('d-none', !hasId);
+            }
+
+            /* Live-search typeahead — reuses ?action=merge_target_search
+               (#1500) exactly like the Merge modal's target picker (same
+               debounced-GET + <datalist> shape), filtered CLIENT-SIDE to
+               candidates that already have a registry id: MemberPersonId is
+               a NOT NULL FK, so an in-use-only ("not yet in registry")
+               candidate — which the Merge picker happily offers — can't be
+               picked here. Also excludes people already in the visible
+               member list. */
+            function memberLookup(query) {
+                if (!memberDatalist) return;
+                if (memberInflight) memberInflight.abort();
+                const ac = new AbortController();
+                memberInflight = ac;
+                const groupId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                const url = '/manage/credit-people?action=merge_target_search'
+                          + '&q=' + encodeURIComponent(query)
+                          + '&exclude_id=' + encodeURIComponent(groupId)
+                          + '&limit=20';
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then((r) => (r.ok ? r.json() : { candidates: [] }))
+                    .then((data) => {
+                        const already = new Set(currentMemberIds());
+                        const list = (Array.isArray(data.candidates) ? data.candidates : [])
+                            .filter((c) => c.id && !already.has(c.id));
+                        memberLabelToKey = new Map();
+                        memberDatalist.innerHTML = list.map((c) => {
+                            memberLabelToKey.set(c.name, c.id);
+                            return '<option value="' + escapeMemberHtml(c.name) + '"></option>';
+                        }).join('');
+                    })
+                    .catch((err) => { if (err.name !== 'AbortError') { /* search is a nicety, not critical path */ } });
+            }
+            memberSearchIn?.addEventListener('input', () => {
+                const v = memberSearchIn.value;
+                clearTimeout(memberDebounce);
+                if (v.trim() === '') {
+                    if (memberDatalist) memberDatalist.innerHTML = '';
+                    return;
+                }
+                memberDebounce = setTimeout(() => memberLookup(v.trim()), 200);
+            });
+            memberSearchIn?.addEventListener('focus', () => memberLookup(memberSearchIn.value.trim()));
+
+            /* Add — resolves the typed/picked name back to its id via
+               memberLabelToKey (mirroring the Merge modal's labelToKey),
+               then POSTs add_member. validateCsrfRequest() on the server
+               accepts this via the still-valid session csrf_token field
+               (read straight off the drawer form) — the X-Requested-With
+               header is sent too so the check stays robust even if that
+               token happens to have gone stale on a long-open drawer. */
+            addMemberBtn?.addEventListener('click', () => {
+                const groupId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                if (!groupId) return;
+                const picked = memberLabelToKey.get(memberSearchIn ? memberSearchIn.value : '');
+                if (!picked) {
+                    window.alert('Pick a suggested person from the list first.');
+                    return;
+                }
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                addMemberBtn.disabled = true;
+                fetch('/manage/credit-people', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'add_member',
+                        group_id: String(groupId),
+                        member_id: String(picked),
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        addMemberBtn.disabled = false;
+                        if (!ok || !body.ok) {
+                            window.alert((body && body.error) || 'Could not add member.');
+                            return;
+                        }
+                        addMemberRow(body.member);
+                        if (memberSearchIn) memberSearchIn.value = '';
+                        if (memberDatalist) memberDatalist.innerHTML = '';
+                    })
+                    .catch(() => { addMemberBtn.disabled = false; window.alert('Could not add member.'); });
+            });
+
+            /* Remove — delegated so it works for rows added either via the
+               Edit pre-fill or a just-added member, same convention as the
+               other repeating sub-forms' remove buttons above. */
+            membersContainer?.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.cp-member-remove');
+                if (!btn) return;
+                const row = btn.closest('[data-member-id]');
+                if (!row) return;
+                const memberId = parseInt(row.getAttribute('data-member-id'), 10);
+                const groupId  = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                if (!groupId || !memberId) return;
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                btn.disabled = true;
+                fetch('/manage/credit-people', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'remove_member',
+                        group_id: String(groupId),
+                        member_id: String(memberId),
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        if (!ok || !body.ok) {
+                            btn.disabled = false;
+                            window.alert((body && body.error) || 'Could not remove member.');
+                            return;
+                        }
+                        row.remove();
+                    })
+                    .catch(() => { btn.disabled = false; window.alert('Could not remove member.'); });
             });
         })();
 
