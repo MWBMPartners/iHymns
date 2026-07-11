@@ -125,3 +125,77 @@ func lanRemoteKeychainIdentityAvailable() -> Bool {
     identity.removeFromKeychain()
     return true
 }
+
+/// A process-wide mutex every REAL-Keychain-touching LANRemote test wraps
+/// its body in — `await KeychainTestSerialization.shared.run { ... }`.
+///
+/// ELI5: "Only one Keychain test gets to actually talk to the Keychain at a
+/// time — everyone else politely waits their turn," so a burst of tests
+/// from DIFFERENT files never all hammer `Security.framework` at once.
+///
+/// DETAILED: #1421. Empirically REQUIRED (not just a nice-to-have): Swift
+/// Testing runs different `@Suite` types concurrently with each other by
+/// default — a PER-SUITE `.serialized` trait (which `LANRemoteIdentityTests`/
+/// `LANRemoteIdentityStoreTests`/`KeychainPairingAuthorityTests` all also
+/// carry) only stops a suite's OWN tests from overlapping EACH OTHER, not
+/// from overlapping ANOTHER suite's tests. Once this file grew a SECOND
+/// (`LANRemoteIdentityStoreTests`) and THIRD (`KeychainPairingAuthorityTests`)
+/// suite that call the SAME `LANRemoteIdentityFactory`/real Keychain APIs
+/// PR-4's original `LANRemoteIdentityTests` already used, running a plain
+/// `swift test` reproducibly hit TRANSIENT `errSecItemNotFound`/"failed to
+/// generate CDSA key" failures under concurrent `SecKeyCreateRandomKey`/
+/// `SecItemAdd`/`SecItemCopyMatching` load — a genuine macOS Keychain-daemon
+/// contention artifact under heavy simultaneous access from multiple
+/// threads, not a logic bug (a bounded retry was ALSO added in
+/// `LANRemoteIdentityFactory.generatePermanentKey(attributes:)` for the
+/// identical reason production code faces the same theoretical, if far
+/// rarer, contention window — this lock additionally eliminates it for the
+/// test suite specifically, since a real tvOS app never runs 13 Keychain
+/// tests concurrently the way this local package's test binary does).
+///
+/// A true mutex (not merely `.serialized`): `run(_:)` suspends a caller
+/// until any IN-PROGRESS call — INCLUDING one currently suspended at an
+/// `await` inside its own body — has fully finished, unlike a naive
+/// `actor`-isolated method (which Swift's actor-reentrancy rules would
+/// allow a SECOND caller to enter the moment the first one hits its own
+/// first `await`, defeating the whole point here).
+actor KeychainTestSerialization {
+    static let shared = KeychainTestSerialization()
+    private init() {}
+
+    private var isBusy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    /// Runs `body` with exclusive access — every other concurrent caller
+    /// (from ANY suite) waits until this call fully completes (success OR
+    /// throw) before its own `body` begins.
+    func run<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+        await acquire()
+        do {
+            let result = try await body()
+            release()
+            return result
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func acquire() async {
+        if !isBusy {
+            isBusy = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isBusy = false
+        } else {
+            waiters.removeFirst().resume()
+        }
+    }
+}

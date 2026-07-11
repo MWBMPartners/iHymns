@@ -47,8 +47,17 @@ struct IHRPMessageCodecTests {
         .ack(ackSeq: 99),
         .error(.contentUnavailable, message: "song is gated"),
         .error(.protocolVersionMismatch, message: nil),
+        .error(.pairingRejected, message: nil),
         .pong,
-        .capabilities(IHRPCapabilities(currentState: .initial))
+        .capabilities(IHRPCapabilities(currentState: .initial)),
+        // #1421 (PR-6 spec §4) — the pairing sub-protocol's own cases,
+        // including BOTH the present/absent shape of `pairConfirm`'s
+        // optional `deviceName` (the same "every optional field, both
+        // ways" discipline this array's own doc comment establishes).
+        .pairChallenge(nonce: "0123456789abcdef0123456789abcdef"),
+        .pairConfirm(proof: String(repeating: "ab", count: 32), deviceName: "Lance's iPhone"),
+        .pairConfirm(proof: String(repeating: "ab", count: 32), deviceName: nil),
+        .pairSuccess(token: String(repeating: "cd", count: 32))
     ]
 
     @Test("Every message case round-trips through JSON unchanged", arguments: sampleMessages)
@@ -76,6 +85,12 @@ struct IHRPMessageCodecTests {
         #expect(!IHRPMessage.state(.initial).isControlIntent)
         #expect(!IHRPMessage.error(.internalError, message: nil).isControlIntent)
         #expect(!IHRPMessage.capabilities(IHRPCapabilities(currentState: .initial)).isControlIntent)
+        // #1421 — `.pairConfirm` is the ONE remote→TV case in the pairing
+        // trio (a control intent); `.pairChallenge`/`.pairSuccess` are
+        // TV→remote responses, mirroring `.capabilities`'s classification.
+        #expect(IHRPMessage.pairConfirm(proof: "ab", deviceName: nil).isControlIntent)
+        #expect(!IHRPMessage.pairChallenge(nonce: "ab").isControlIntent)
+        #expect(!IHRPMessage.pairSuccess(token: "ab").isControlIntent)
     }
 
     @Test("A frame with a mismatched protocol version is rejected")

@@ -16,6 +16,19 @@ import Testing
 
 @Suite(
     "LANRemoteIdentity generation",
+    // `.serialized` (#1421 addition) — `LANRemoteIdentityFactory
+    // .generateSelfSigned()`'s `kSecAttrIsPermanent: true` key generation
+    // was empirically observed (while building #1421's
+    // `LANRemoteIdentityStoreTests`/`KeychainPairingAuthorityTests`, which
+    // exercise the SAME factory and now run alongside this suite in the
+    // same `swift test` invocation) to occasionally fail transiently
+    // (`errSecItemNotFound`/"failed to generate CDSA key") under
+    // concurrent `SecKeyCreateRandomKey` calls from multiple suites at
+    // once — a shared macOS Keychain-daemon contention artifact, not a
+    // logic bug in any of the three suites. Serializing every suite that
+    // calls this factory reduces the window; see the sibling suites' own
+    // identical comment.
+    .serialized,
     .enabled(
         if: lanRemoteKeychainIdentityAvailable(),
         "Needs login-keychain SecIdentity bridging an unsigned headless `swift test` binary can't do — SecItemAdd succeeds but the kSecClassIdentity query returns errSecItemNotFound (-25300) on the CI runner. See lanRemoteKeychainIdentityAvailable(). The pure fingerprint math is covered always-on by LANRemoteFingerprintTests."
@@ -24,42 +37,55 @@ import Testing
 struct LANRemoteIdentityTests {
 
     @Test("Generates a well-formed 64-character lowercase-hex fingerprint")
-    func fingerprintShape() throws {
-        let identity = try LANRemoteIdentityFactory.generateSelfSigned()
-        defer { identity.removeFromKeychain() }
+    func fingerprintShape() async throws {
+        // `KeychainTestSerialization` (`LANRemoteTestSupport.swift`) — see
+        // its doc comment: a per-suite `.serialized` trait alone doesn't
+        // stop THIS suite's Keychain calls from overlapping a DIFFERENT
+        // suite's, which is what actually caused #1421's observed
+        // flakiness.
+        try await KeychainTestSerialization.shared.run {
+            let identity = try LANRemoteIdentityFactory.generateSelfSigned()
+            defer { identity.removeFromKeychain() }
 
-        #expect(identity.fingerprint.count == 64)
-        #expect(identity.fingerprint.allSatisfy { $0.isHexDigit && !$0.isUppercase })
-        #expect(!identity.certificateDER.isEmpty)
+            #expect(identity.fingerprint.count == 64)
+            #expect(identity.fingerprint.allSatisfy { $0.isHexDigit && !$0.isUppercase })
+            #expect(!identity.certificateDER.isEmpty)
+        }
     }
 
     @Test("The fingerprint is the SHA-256 of the certificate DER")
-    func fingerprintMatchesDER() throws {
-        let identity = try LANRemoteIdentityFactory.generateSelfSigned()
-        defer { identity.removeFromKeychain() }
+    func fingerprintMatchesDER() async throws {
+        try await KeychainTestSerialization.shared.run {
+            let identity = try LANRemoteIdentityFactory.generateSelfSigned()
+            defer { identity.removeFromKeychain() }
 
-        #expect(identity.fingerprint == LANRemoteFingerprint.sha256Hex(identity.certificateDER))
+            #expect(identity.fingerprint == LANRemoteFingerprint.sha256Hex(identity.certificateDER))
+        }
     }
 
     @Test("Two generated identities never collide")
-    func distinctEachCall() throws {
-        let first = try LANRemoteIdentityFactory.generateSelfSigned()
-        defer { first.removeFromKeychain() }
-        let second = try LANRemoteIdentityFactory.generateSelfSigned()
-        defer { second.removeFromKeychain() }
+    func distinctEachCall() async throws {
+        try await KeychainTestSerialization.shared.run {
+            let first = try LANRemoteIdentityFactory.generateSelfSigned()
+            defer { first.removeFromKeychain() }
+            let second = try LANRemoteIdentityFactory.generateSelfSigned()
+            defer { second.removeFromKeychain() }
 
-        #expect(first.fingerprint != second.fingerprint)
-        #expect(first.certificateDER != second.certificateDER)
+            #expect(first.fingerprint != second.fingerprint)
+            #expect(first.certificateDER != second.certificateDER)
+        }
     }
 
     @Test("makeServerTLSOptions() succeeds for a freshly generated identity")
-    func serverTLSOptionsBuildable() throws {
-        let identity = try LANRemoteIdentityFactory.generateSelfSigned()
-        defer { identity.removeFromKeychain() }
+    func serverTLSOptionsBuildable() async throws {
+        try await KeychainTestSerialization.shared.run {
+            let identity = try LANRemoteIdentityFactory.generateSelfSigned()
+            defer { identity.removeFromKeychain() }
 
-        // Smoke test only — the identity is actually EXERCISED end-to-end
-        // by `LANRemoteLoopbackTests`; this just confirms the TLS options
-        // object itself can be constructed without throwing.
-        _ = try identity.makeServerTLSOptions()
+            // Smoke test only — the identity is actually EXERCISED end-to-
+            // end by `LANRemoteLoopbackTests`; this just confirms the TLS
+            // options object itself can be constructed without throwing.
+            _ = try identity.makeServerTLSOptions()
+        }
     }
 }

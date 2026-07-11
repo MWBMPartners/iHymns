@@ -101,6 +101,21 @@ public actor RemoteSessionActor {
     var expectedFingerprint: String?
     var pairingToken: String?
 
+    /// The most recently known pairing token — the value to persist
+    /// (Keychain, `synchronizable: false`, PR-7's job) so the NEXT
+    /// `connect(to:expectedFingerprint:token:)` call can take the fast
+    /// `hello(token:)` reconnect path instead of re-running the ceremony.
+    /// Set from the CONNECT-supplied token immediately (#1420) and
+    /// OVERWRITTEN the moment a fresh `.pairSuccess(token:)` arrives
+    /// (#1421, `RemoteSessionActor+Connection.swift`'s `handleIncomingFrameData`)
+    /// — a brand-new ceremony's token always supersedes whatever was
+    /// passed in at connect time.
+    ///
+    /// ELI5: "What's the current secret password this remote uses to prove
+    /// it's already trusted?" — PR-7's UI reads this after a successful
+    /// pairing so it can save it for next time.
+    public var currentPairingToken: String? { pairingToken }
+
     public private(set) var phase: RemoteSessionPhase = .idle
     let phaseContinuation: AsyncStream<RemoteSessionPhase>.Continuation
     /// A live feed of every phase transition — the UI (PR-7) drives its

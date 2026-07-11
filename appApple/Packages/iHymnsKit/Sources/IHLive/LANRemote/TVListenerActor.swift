@@ -93,6 +93,13 @@ public actor TVListenerActor {
         /// The injected clock every outgoing frame's `timestamp` is drawn
         /// from — see `LANRemoteClock.swift`.
         public var clock: any LANRemoteClock
+        /// The pairing-ceremony tunables (TTL / rotation / attempt caps /
+        /// the cumulative brute-force ceiling) — see
+        /// `LANRemotePairingCeremonyState.Configuration`. Defaulted to the
+        /// strategy numbers; injectable so a test can drive, e.g., the
+        /// cumulative-ceiling path with a low `maxCeremonyFailures` without
+        /// staging dozens of real attempts.
+        public var pairingConfiguration: LANRemotePairingCeremonyState.Configuration
 
         public init(
             port: NWEndpoint.Port = .any,
@@ -100,7 +107,8 @@ public actor TVListenerActor {
             advertiseViaBonjour: Bool = true,
             maxUnpairedConnections: Int = 4,
             pairingAuthority: any LANRemotePairingAuthority,
-            clock: any LANRemoteClock = SystemLANRemoteClock()
+            clock: any LANRemoteClock = SystemLANRemoteClock(),
+            pairingConfiguration: LANRemotePairingCeremonyState.Configuration = .init()
         ) {
             self.port = port
             self.advertisedName = advertisedName
@@ -108,6 +116,7 @@ public actor TVListenerActor {
             self.maxUnpairedConnections = maxUnpairedConnections
             self.pairingAuthority = pairingAuthority
             self.clock = clock
+            self.pairingConfiguration = pairingConfiguration
         }
     }
 
@@ -169,12 +178,33 @@ public actor TVListenerActor {
     /// stream/continuation pair is fixed at `init` and never reassigned.
     public nonisolated let controlEvents: AsyncStream<ControlEvent>
 
+    /// The pairing-ceremony state machine (#1421, PR-6 spec §3.3/§3.4) —
+    /// pure `struct` state OWNED by this actor and mutated exclusively
+    /// under its isolation, the same "`IHRPFrameDecoder` is a struct the
+    /// actor mutates" precedent `IHRPFramer.swift`'s header documents.
+    /// `internal` (not `private`) so `TVListenerActor+Pairing.swift` (a
+    /// same-target extension file) and `+Messages.swift`'s `handlePairConfirm`
+    /// dispatch can both read/mutate it.
+    var pairingCeremony: LANRemotePairingCeremonyState
+
+    let pairingContinuation: AsyncStream<TVPairingEvent>.Continuation
+
+    /// A live feed of pairing-ceremony transitions — `TVRemoteControlCoordinator`
+    /// (`IHFeatures`, PR-6) drives the pairing overlay's UI state off this,
+    /// the same `controlEvents` idiom above. `nonisolated` for the
+    /// identical reason.
+    public nonisolated let pairingEvents: AsyncStream<TVPairingEvent>
+
     public init(identity: LANRemoteIdentity, configuration: Configuration) {
         self.identity = identity
         self.configuration = configuration
+        self.pairingCeremony = LANRemotePairingCeremonyState(configuration: configuration.pairingConfiguration)
         let (stream, continuation) = AsyncStream.makeStream(of: ControlEvent.self)
         self.controlEvents = stream
         self.continuation = continuation
+        let (pairingStream, pairingContinuation) = AsyncStream.makeStream(of: TVPairingEvent.self)
+        self.pairingEvents = pairingStream
+        self.pairingContinuation = pairingContinuation
     }
 
     /// The actual bound port once `start()` has succeeded — `nil` before

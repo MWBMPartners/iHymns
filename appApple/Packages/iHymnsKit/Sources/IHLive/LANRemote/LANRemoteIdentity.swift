@@ -33,18 +33,44 @@
 // **Why `SecItemAdd`/Keychain at all, if persistence is out of scope?**
 // Apple's `Security.framework` has no PUBLIC API to construct a `SecIdentity`
 // (the type `NWProtocolTLS.Options`' local-identity setter requires) purely
-// in-memory from a `SecCertificate` + a matching `SecKey` — the only
-// documented routes are importing a PKCS#12 blob (`SecPKCS12Import`, which
-// would mean hand-encoding ANOTHER binary format just to avoid this one) or
-// adding the certificate and key as loose Keychain items under a shared
-// label and querying `kSecClassIdentity`, which is the well-established
-// technique this file uses (and the one Apple's own Network.framework
-// sample code for custom peer-to-peer protocols uses too). Every item this
-// file adds is tagged with a UUID-unique label and is meant to be removed
-// via `removeFromKeychain()` once no longer needed (`LANRemoteTests` does
-// this in a `defer`) — this is Keychain used as unavoidable OS PLUMBING to
+// in-memory from a `SecCertificate` + a matching `SecKey` — the documented
+// route this file uses is `SecIdentityCreateWithCertificate`, which bridges
+// a certificate to its MATCHING private key already present in the
+// Keychain (found by the certificate's own embedded public-key hash).
+// Every item this file adds is tagged with a UUID-unique label (unless a
+// persistent one is supplied, #1421) and is meant to be removed via
+// `removeFromKeychain()` once no longer needed (`LANRemoteTests` does this
+// in a `defer`) — this is Keychain used as unavoidable OS PLUMBING to
 // bridge two in-memory objects into the shape TLS needs, not as the
 // "remember this across app launches" persistence PR-6 owns.
+//
+// **#1421 FIX #1 — the private key MUST be generated with
+// `kSecAttrIsPermanent: true` directly inside `SecKeyCreateRandomKey`'s OWN
+// attributes, never generated ephemeral-then-`SecItemAdd`-ed afterward.**
+// Empirically verified: an ephemeral key added via a SEPARATE
+// `SecItemAdd(kSecValueRef:)` is findable again by its own custom
+// `kSecAttrLabel`, but `SecIdentityCreateWithCertificate` silently FAILS
+// (`errSecItemNotFound`) to bridge it against ANY matching certificate —
+// that second-hand add never wires up the key's `kSecAttrApplicationLabel`
+// (its public-key hash), the ONLY thing identity-bridging matches on.
+// Apple's documented "generate a keychain-resident key" pattern
+// (https://developer.apple.com/documentation/security/certificate_key_and_trust_services/keys/generating_new_cryptographic_keys)
+// fixes this on the first try.
+//
+// **#1421 FIX #2 — never store or look up the certificate via
+// `kSecClassCertificate` + `kSecAttrLabel`.** Also empirically verified:
+// `SecItemAdd` silently OVERWRITES a certificate's requested `kSecAttrLabel`
+// with a value derived from its own Subject Common Name — a custom-label
+// lookup is unreliable the instant two self-signed identities share a
+// Common Name (every call with this factory's default `commonName`, for
+// instance). This file never stores the certificate as a
+// `kSecClassCertificate` item; its DER bytes go into a plain
+// `kSecClassGenericPassword` item instead (the same reliable pattern
+// `KeychainTokenStore`/`KeychainLANRemotePairingAuthority` already use),
+// keyed by the caller's own `label`, reconstructed via
+// `SecCertificateCreateWithData` whenever `queryIdentity(label:)` needs it —
+// `SecIdentityCreateWithCertificate` never requires the certificate itself
+// to be a stored item, only the matching PRIVATE KEY does.
 import Foundation
 import Network
 import Security
@@ -138,18 +164,45 @@ public enum LANRemoteIdentityFactory {
     ///     well-formed certificate needs SOME validity window; defaults to
     ///     5 years so a persisted (PR-6) identity doesn't need routine
     ///     rotation.
+    ///   - keychainLabel: `nil` (every PR-4 call site, UNCHANGED) keeps
+    ///     today's fresh-per-call `"app.ihymns.lanremote.\(UUID())"` label —
+    ///     this parameter is purely ADDITIVE. A non-nil value (#1421,
+    ///     `LANRemoteIdentityStore.swift`'s persistent-identity path) uses
+    ///     that EXACT label instead — the one thing that makes
+    ///     `LANRemoteIdentityStore.loadOrCreate()` able to find the SAME
+    ///     identity again on the next launch via `queryIdentity(label:)`.
     public static func generateSelfSigned(
         commonName: String = "iHymnsTV",
-        validityDays: Int = 365 * 5
+        validityDays: Int = 365 * 5,
+        keychainLabel: String? = nil
     ) throws -> LANRemoteIdentity {
+        let label = keychainLabel ?? "app.ihymns.lanremote.\(UUID().uuidString)"
+        if keychainLabel != nil {
+            // A caller-supplied (persistent) label may have stray items
+            // left over from a half-completed PRIOR generate under this
+            // same label — pre-delete so this attempt doesn't fail with
+            // `errSecDuplicateItem`. A fresh per-call UUID label (every
+            // PR-4 call site) can never collide, so this only runs for
+            // #1421's persistent-identity path.
+            removeFromKeychain(label: label)
+        }
+
+        // `kSecAttrIsPermanent: true` HERE (not a separate `SecItemAdd`
+        // afterward) — this file's #1421 header update explains why that
+        // distinction is load-bearing for `SecIdentityCreateWithCertificate`
+        // to ever succeed.
         let keyAttributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
-            kSecAttrKeySizeInBits as String: 256
+            kSecAttrKeySizeInBits as String: 256,
+            kSecAttrIsPermanent as String: true,
+            kSecAttrLabel as String: label,
+            kSecAttrApplicationTag as String: Data(label.utf8),
+            // `.afterFirstUnlock` (#1421): readable right after a tvOS
+            // reboot, before a SECOND unlock — `KeychainTokenStore.save(_:)`'s
+            // identical "early-launch read must succeed" reasoning.
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
-        var keyGenError: Unmanaged<CFError>?
-        guard let privateKey = SecKeyCreateRandomKey(keyAttributes as CFDictionary, &keyGenError) else {
-            throw LANRemoteIdentityError.keyGenerationFailed(describe(keyGenError))
-        }
+        let privateKey = try generatePermanentKey(attributes: keyAttributes)
         guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
             throw LANRemoteIdentityError.keyGenerationFailed("SecKeyCopyPublicKey returned nil")
         }
@@ -165,22 +218,47 @@ public enum LANRemoteIdentityFactory {
             validityDays: validityDays
         )
 
-        guard let certificate = SecCertificateCreateWithData(nil, certificateDER as CFData) else {
-            throw LANRemoteIdentityError.certificateCreationFailed
-        }
-
-        let label = "app.ihymns.lanremote.\(UUID().uuidString)"
-        try bridgeToKeychainIdentity(privateKey: privateKey, certificate: certificate, label: label)
+        try persistCertificateDER(certificateDER, label: label)
         let secIdentityRef = try queryIdentity(label: label)
 
-        let fingerprint = LANRemoteFingerprint.sha256Hex(certificateDER)
-
         return LANRemoteIdentity(
-            fingerprint: fingerprint,
+            fingerprint: LANRemoteFingerprint.sha256Hex(certificateDER),
             certificateDER: certificateDER,
             secIdentityRef: secIdentityRef,
             keychainLabel: label
         )
+    }
+
+    /// Generates a PERMANENT (`kSecAttrIsPermanent: true`) private key,
+    /// retrying a bounded number of times on a TRANSIENT Keychain-daemon
+    /// contention failure.
+    ///
+    /// ELI5: "Ask the Keychain for a new permanent key — if it's briefly
+    /// busy and says no, wait a moment and ask again, a couple of times,
+    /// before giving up for real."
+    ///
+    /// DETAILED: #1421. Empirically observed: concurrent
+    /// `SecKeyCreateRandomKey(kSecAttrIsPermanent: true)` calls (this PR's
+    /// test suites all exercise the same factory at once) can transiently
+    /// fail (`errSecItemNotFound`/"failed to generate CDSA key") — a real
+    /// macOS/iOS Keychain-daemon contention artifact, not a defect in the
+    /// attributes passed. A bounded retry with a short linear backoff is
+    /// cheap insurance for a call that happens at most once per TV launch
+    /// in production. A genuine, non-transient failure fails identically
+    /// on every attempt and surfaces after the retries, same as before.
+    private static func generatePermanentKey(attributes: [String: Any]) throws -> SecKey {
+        var lastError: Unmanaged<CFError>?
+        for attempt in 0..<3 {
+            var keyGenError: Unmanaged<CFError>?
+            if let key = SecKeyCreateRandomKey(attributes as CFDictionary, &keyGenError) {
+                return key
+            }
+            lastError = keyGenError
+            if attempt < 2 {
+                Thread.sleep(forTimeInterval: 0.05 * Double(attempt + 1))
+            }
+        }
+        throw LANRemoteIdentityError.keyGenerationFailed(describe(lastError))
     }
 
     /// Builds and self-signs the minimal X.509 DER certificate — see
@@ -225,55 +303,91 @@ public enum LANRemoteIdentityFactory {
         return Data(certificate)
     }
 
-    /// Bridges a loose `SecKey`+`SecCertificate` pair into a queryable
-    /// `SecIdentity` by adding both to the Keychain under the same
-    /// `kSecAttrLabel` — see this file's header comment.
-    private static func bridgeToKeychainIdentity(privateKey: SecKey, certificate: SecCertificate, label: String) throws {
-        let keyQuery: [String: Any] = [
-            kSecClass as String: kSecClassKey,
-            kSecValueRef as String: privateKey,
-            kSecAttrLabel as String: label,
-            kSecAttrApplicationTag as String: Data(label.utf8)
-        ]
-        let keyStatus = SecItemAdd(keyQuery as CFDictionary, nil)
-        guard keyStatus == errSecSuccess else {
-            throw LANRemoteIdentityError.keychainBridgeFailed(status: keyStatus)
-        }
+    /// The `kSecClassGenericPassword` namespace the certificate DER bytes
+    /// are persisted under (this file's #1421 header update explains why
+    /// NOT `kSecClassCertificate`) — `kSecAttrAccount` is the caller's own
+    /// `label`, so each identity's certificate is independently addressable
+    /// the same way its private key is.
+    private static let certificateDERService = "app.ihymns.lanremote.identitycert"
 
-        let certificateQuery: [String: Any] = [
-            kSecClass as String: kSecClassCertificate,
-            kSecValueRef as String: certificate,
-            kSecAttrLabel as String: label
-        ]
-        let certificateStatus = SecItemAdd(certificateQuery as CFDictionary, nil)
-        guard certificateStatus == errSecSuccess else {
-            throw LANRemoteIdentityError.keychainBridgeFailed(status: certificateStatus)
+    /// Persists `der` (replace semantics — matches `KeychainTokenStore
+    /// .save(_:)`'s identical "delete any existing item first" convention)
+    /// so `queryIdentity(label:)` can reconstruct the certificate again in
+    /// a LATER process launch.
+    private static func persistCertificateDER(_ der: Data, label: String) throws {
+        SecItemDelete(certificateDERQuery(label: label) as CFDictionary)
+        var query = certificateDERQuery(label: label)
+        query[kSecValueData as String] = der
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw LANRemoteIdentityError.keychainBridgeFailed(status: status)
         }
     }
 
-    private static func queryIdentity(label: String) throws -> SecIdentity {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassIdentity,
-            kSecAttrLabel as String: label,
-            kSecReturnRef as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
+    private static func certificateDERQuery(label: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: certificateDERService,
+            kSecAttrAccount as String: label,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
+    }
+
+    /// Looks up the `SecIdentity` bridged under `label` — `internal` (not
+    /// `private`, #1421 PR-6 spec §5.1) so `LANRemoteIdentityStore.swift`
+    /// (a DIFFERENT file, same `IHLive` module) can reuse this EXACT lookup
+    /// rather than duplicating it — this repo's "extract first, use
+    /// second" modularity rule applied to a same-module, cross-file helper.
+    ///
+    /// **#1421 FIX — never a direct `kSecClassIdentity`+`kSecAttrLabel`
+    /// query, and never `kSecClassCertificate`+`kSecAttrLabel` either.**
+    /// Both were empirically verified broken (this file's header). This
+    /// instead (1) reads the certificate's raw DER bytes back from the
+    /// reliable `kSecClassGenericPassword` store
+    /// `persistCertificateDER(_:label:)` wrote, (2) reconstructs a
+    /// `SecCertificate` via `SecCertificateCreateWithData`, then (3)
+    /// bridges it to a `SecIdentity` via `SecIdentityCreateWithCertificate`
+    /// — which finds the matching PERMANENT private key by the
+    /// certificate's own embedded public-key hash, never by a label.
+    ///
+    /// SECURITY-RELEVANT, not cosmetic: the ORIGINAL broken lookup meant
+    /// `TVListenerActor.start()` could silently build its TLS options from
+    /// a WRONG `SecIdentity` (some unrelated cert+key already in the login
+    /// keychain) whose ACTUAL presented fingerprint would never match the
+    /// `LANRemoteIdentity.fingerprint` shown to/pinned by a remote — every
+    /// real connection would then fail `RemoteSessionActor`'s pin check.
+    /// Existing tests never caught this because CI/most dev runs start
+    /// from a keychain with NO other identity present, where the
+    /// (unfiltered) match happened to coincide with the only identity that
+    /// existed.
+    static func queryIdentity(label: String) throws -> SecIdentity {
+        var query = certificateDERQuery(label: label)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let result, CFGetTypeID(result) == SecIdentityGetTypeID() else {
+        guard status == errSecSuccess, let der = result as? Data else {
             throw LANRemoteIdentityError.keychainBridgeFailed(status: status)
         }
-        // swiftlint:disable:next force_cast
-        return (result as! SecIdentity)
+        guard let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
+            throw LANRemoteIdentityError.certificateCreationFailed
+        }
+
+        var identityRef: SecIdentity?
+        let identityStatus = SecIdentityCreateWithCertificate(nil, certificate, &identityRef)
+        guard identityStatus == errSecSuccess, let identityRef else {
+            throw LANRemoteIdentityError.keychainBridgeFailed(status: identityStatus)
+        }
+        return identityRef
     }
 
     /// Removes the Keychain items tagged with `label` — see
     /// `LANRemoteIdentity.removeFromKeychain()`'s doc comment.
     static func removeFromKeychain(label: String) {
         let keyQuery: [String: Any] = [kSecClass as String: kSecClassKey, kSecAttrLabel as String: label]
-        let certificateQuery: [String: Any] = [kSecClass as String: kSecClassCertificate, kSecAttrLabel as String: label]
         SecItemDelete(keyQuery as CFDictionary)
-        SecItemDelete(certificateQuery as CFDictionary)
+        SecItemDelete(certificateDERQuery(label: label) as CFDictionary)
     }
 
     private static func describe(_ error: Unmanaged<CFError>?) -> String {

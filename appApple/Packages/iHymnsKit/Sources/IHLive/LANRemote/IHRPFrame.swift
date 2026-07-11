@@ -63,6 +63,9 @@ extension IHRPFrame: Codable {
         case token, kind, songId, componentIndex, lineIndex, index, delta
         case displayState, theme, textScale, ackSeq, errorCode, message
         case state, capabilities
+        // #1421 (PR-6 spec §4) — the pairing sub-protocol's own fields.
+        // `token` (above) is REUSED for `pairSuccess`, not re-declared.
+        case proof, nonce, deviceName
     }
 
     // One `case` per `IHRPMessage` kind is the whole point of this custom
@@ -141,6 +144,22 @@ extension IHRPFrame: Codable {
             self.message = .pong
         case "capabilities":
             self.message = .capabilities(try container.decode(IHRPCapabilities.self, forKey: .capabilities))
+        case "pairChallenge":
+            guard let nonce = try container.decodeIfPresent(String.self, forKey: .nonce) else {
+                throw IHRPDecodingError.missingField("nonce", forType: type)
+            }
+            self.message = .pairChallenge(nonce: nonce)
+        case "pairConfirm":
+            guard let proof = try container.decodeIfPresent(String.self, forKey: .proof) else {
+                throw IHRPDecodingError.missingField("proof", forType: type)
+            }
+            let deviceName = try container.decodeIfPresent(String.self, forKey: .deviceName)
+            self.message = .pairConfirm(proof: proof, deviceName: deviceName)
+        case "pairSuccess":
+            guard let token = try container.decodeIfPresent(String.self, forKey: .token) else {
+                throw IHRPDecodingError.missingField("token", forType: type)
+            }
+            self.message = .pairSuccess(token: token)
         default:
             throw IHRPDecodingError.unknownMessageType(type)
         }
@@ -186,6 +205,13 @@ extension IHRPFrame: Codable {
             try container.encodeIfPresent(text, forKey: .message)
         case .capabilities(let capabilities):
             try container.encode(capabilities, forKey: .capabilities)
+        case .pairChallenge(let nonce):
+            try container.encode(nonce, forKey: .nonce)
+        case .pairConfirm(let proof, let deviceName):
+            try container.encode(proof, forKey: .proof)
+            try container.encodeIfPresent(deviceName, forKey: .deviceName)
+        case .pairSuccess(let token):
+            try container.encode(token, forKey: .token)
         }
     }
 }

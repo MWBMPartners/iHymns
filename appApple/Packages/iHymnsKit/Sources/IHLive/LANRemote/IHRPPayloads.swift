@@ -161,6 +161,16 @@ public enum IHRPErrorCode: String, Sendable, Codable, Equatable, CaseIterable {
     /// `.unpaired`/`.pairing` states) and sent a control message anyway —
     /// this file's `IHRPMessage` doc comment.
     case unauthorized
+    /// The pairing PROOF was rejected — wrong/expired code, or no active
+    /// ceremony at all (`LANRemotePairingCeremony.swift`'s TTL/single-use
+    /// rules). New in #1421 (PR-6 spec §4/D-2): deliberately a DIFFERENT
+    /// code from `.unauthorized` because `RemoteSessionActor
+    /// .handleIncomingFrameData` (`RemoteSessionActor+Connection.swift`)
+    /// only disconnects on `.unauthorized` — a mistyped 6-digit code must
+    /// stay retryable ON THE SAME CONNECTION (the user just tries again)
+    /// until the per-connection attempt cap (`TVListenerActor+Pairing.swift`)
+    /// forces a teardown instead.
+    case pairingRejected
     /// The TV's own `song_detail` fetch for the requested song was denied by
     /// content gating (`.claude/CLAUDE.md` rule #28) — strategy §2.4.3.
     case contentUnavailable

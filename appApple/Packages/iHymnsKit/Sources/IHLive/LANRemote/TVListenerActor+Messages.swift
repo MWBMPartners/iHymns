@@ -65,10 +65,37 @@ extension TVListenerActor {
                 // comment).
                 IHLog.remote.notice("lanremote.pairing unpaired -> paired (reconnect)")
                 send(id: id, message: .capabilities(IHRPCapabilities(currentState: canonicalState)))
+            } else if state.pairingPhase == .pairing, let existingNonce = state.pairingNonce {
+                // A REPEAT `hello` on a connection ALREADY parked in
+                // `.pairing` (#1421 adversarial-review fix) — re-send the
+                // SAME challenge idempotently. **Never re-mint the nonce**
+                // (that would invalidate a proof the remote may already be
+                // computing over the first one) and **never re-yield
+                // `.remoteEnteredPairing`** (that would inflate the overlay's
+                // "N remotes trying to pair" count with no matching leave —
+                // one connection could otherwise drive it arbitrarily high).
+                send(id: id, message: .pairChallenge(nonce: existingNonce))
             } else {
+                // #1421 (PR-6 spec §3.4/§4) — parks a FRESH connection in
+                // `.pairing`, mints the per-connection nonce the proof
+                // will bind to, and sends `.pairChallenge` — the signal
+                // that doubles as "show the code-entry UI now" for the
+                // remote (PR-7). `.notice` carries the CASE NAME only,
+                // never the nonce value itself.
                 state.pairingPhase = .pairing
+                let nonce = LANRemotePairingSecrets.mintNonce()
+                state.pairingNonce = nonce
                 IHLog.remote.notice("lanremote.pairing unpaired -> pairing")
+                send(id: id, message: .pairChallenge(nonce: nonce))
+                pairingContinuation.yield(.remoteEnteredPairing(connectionId: id, kind: kind))
             }
+
+        case .pairConfirm(let proof, let deviceName):
+            // #1421 — the ceremony's actual verification lives in
+            // `TVListenerActor+Pairing.swift`'s `handlePairConfirm`; this
+            // is purely the dispatch (mirrors `.hello`'s own dispatch
+            // shape above).
+            await handlePairConfirm(id: id, state: state, proof: proof, deviceName: deviceName)
 
         default:
             IHLog.remote.error(
@@ -85,11 +112,14 @@ extension TVListenerActor {
         case .ping:
             send(id: id, message: .pong)
 
-        case .hello, .state, .ack, .error, .pong, .capabilities:
-            // A duplicate `hello`, or a response-only case a well-behaved
-            // remote should never SEND — reject without dropping an
-            // already-trusted connection over what is most likely a bug,
-            // not an attack.
+        case .hello, .state, .ack, .error, .pong, .capabilities, .pairChallenge, .pairConfirm, .pairSuccess:
+            // A duplicate `hello`, a response-only case a well-behaved
+            // remote should never SEND, or one of the pairing-sub-protocol
+            // cases (#1421, PR-6 spec §1's explicit reject-list — a PAIRED
+            // remote injecting `.pairConfirm` must NEVER surface as a
+            // `ControlEvent`; §7.5 has a dedicated test for exactly this)
+            // — reject without dropping an already-trusted connection over
+            // what is most likely a bug, not an attack.
             send(id: id, message: .error(.malformedRequest, message: "unexpected on a paired connection"))
 
         default:
@@ -135,16 +165,29 @@ extension TVListenerActor {
     /// ELI5: "The person standing at the TV just confirmed this remote —
     /// let it in."
     ///
+    /// DETAILED: #1421 — now a thin delegate to `TVListenerActor+Pairing.swift`'s
+    /// `promoteToPaired(id:token:metadata:)`, the SAME success path
+    /// `handlePairConfirm`'s real ceremony verification uses (spec §3.4:
+    /// "`completePairing`... becomes a thin delegate to this"). Public
+    /// SIGNATURE stays byte-identical to PR-4's (`LANRemoteLoopbackTests`
+    /// calls this directly) — the only behavioural addition is that a
+    /// `.pairSuccess(token:)` frame is now ALSO sent, which is semantically
+    /// correct for every completion path and harmless to existing tests
+    /// (they `waitFor` a SPECIFIC frame on the stream; an extra frame is
+    /// simply skipped by the predicate).
+    ///
     /// - Returns: `false` if `connectionId` isn't currently `.pairing`
     ///   (already paired, already gone, or never entered pairing) — the
     ///   caller should treat that as "nothing to confirm," not an error.
     @discardableResult
     public func completePairing(connectionId: UUID, token: String) async -> Bool {
         guard let state = connections[connectionId], state.pairingPhase == .pairing else { return false }
-        await configuration.pairingAuthority.registerPairedToken(token)
-        state.pairingPhase = .paired(token: token)
+        await promoteToPaired(
+            id: connectionId,
+            token: token,
+            metadata: LANRemotePairingMetadata(name: nil, kind: state.remoteKind, pairedAt: configuration.clock.now())
+        )
         IHLog.remote.notice("lanremote.pairing pairing -> paired")
-        send(id: connectionId, message: .capabilities(IHRPCapabilities(currentState: canonicalState)))
         return true
     }
 

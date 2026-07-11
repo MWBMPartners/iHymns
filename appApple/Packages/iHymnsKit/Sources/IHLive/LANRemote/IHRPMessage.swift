@@ -140,6 +140,34 @@ public enum IHRPMessage: Sendable, Equatable {
     /// Sent once, right after a `hello` is accepted (paired or freshly
     /// completes pairing) — strategy §2.4.4's `capabilities` response.
     case capabilities(IHRPCapabilities)
+
+    // MARK: Pairing sub-protocol (#1421, PR-6 spec §4)
+    //
+    // The out-of-band-code ceremony that promotes a `.pairing` connection
+    // to `.paired` — a MIX of directions (TV asks first, remote answers,
+    // TV confirms), which is why these three don't slot cleanly into
+    // either MARK section above. `LANRemotePairingProof.swift`'s header
+    // comment is the crypto design doc for `proof`; NEVER interpolate any
+    // of `nonce`/`proof`/`token` into an `IHLog` call anywhere in this
+    // module (this file's own top-of-file header note, repeated here
+    // because it's the sharpest edge in the whole sub-protocol).
+
+    /// TV → remote, sent immediately after a `hello` parks the connection
+    /// in `.pairing` — carries the per-connection nonce the proof binds to
+    /// (`LANRemotePairingProof.swift` §3.2), and doubles as the "show the
+    /// code-entry UI now" signal for the remote-side app (PR-7).
+    case pairChallenge(nonce: String)
+
+    /// Remote → TV: the pairing proof plus an optional user-facing device
+    /// name for the trusted-remotes list. **Never logged verbatim** — the
+    /// proof is code-derived (a leaked proof is nearly as sensitive as the
+    /// code itself while the ceremony is still active).
+    case pairConfirm(proof: String, deviceName: String?)
+
+    /// TV → remote, on ceremony success: the freshly-minted raw pairing
+    /// token the remote must persist (Keychain, `synchronizable: false` —
+    /// PR-7's job). **Never logged.**
+    case pairSuccess(token: String)
 }
 
 // MARK: - #1420 logging-safe case name (mirrors `IHAPI/APIError.swift`'s
@@ -171,6 +199,9 @@ extension IHRPMessage {
         case .error: return "error"
         case .pong: return "pong"
         case .capabilities: return "capabilities"
+        case .pairChallenge: return "pairChallenge"
+        case .pairConfirm: return "pairConfirm"
+        case .pairSuccess: return "pairSuccess"
         }
     }
 
@@ -190,9 +221,9 @@ extension IHRPMessage {
         switch self {
         case .hello, .prepare, .selectSong, .nextComponent, .prevComponent,
              .nextLine, .prevLine, .jumpLine, .setDisplayState, .scroll,
-             .setAppearance, .endControl, .ping:
+             .setAppearance, .endControl, .ping, .pairConfirm:
             return true
-        case .state, .ack, .error, .pong, .capabilities:
+        case .state, .ack, .error, .pong, .capabilities, .pairChallenge, .pairSuccess:
             return false
         }
     }

@@ -52,6 +52,18 @@ final class TVRemoteConnectionState {
     var decoder = IHRPFrameDecoder()
     var remoteKind: IHRPRemoteKind?
 
+    /// The per-connection nonce minted the instant this connection entered
+    /// `.pairing` (#1421, PR-6 spec §3.2) — `.pairConfirm`'s proof binds to
+    /// THIS value; `nil` before `.pairing` is entered and cleared again by
+    /// `promoteToPaired` once pairing succeeds (`TVListenerActor+Pairing.swift`).
+    var pairingNonce: String?
+
+    /// `.pairConfirm` attempts made ON THIS CONNECTION — the per-connection
+    /// cap `TVListenerActor+Pairing.swift`'s `handlePairConfirm` enforces
+    /// (distinct from `LANRemotePairingCeremonyState.wrongAttempts`, which
+    /// is GLOBAL per-code, not per-connection).
+    var pairingAttempts: Int = 0
+
     init(id: UUID, connection: NWConnection) {
         self.id = id
         self.connection = connection
@@ -177,6 +189,12 @@ extension TVListenerActor {
     /// Closes and forgets a connection.
     func teardownConnection(id: UUID, reason: String) {
         guard let state = connections.removeValue(forKey: id) else { return }
+        // #1421 (PR-6 spec §2) — a `.pairing` connection that never
+        // confirmed is disappearing; the overlay's "N remotes trying to
+        // pair" indicator needs to know, or it would over-count forever.
+        if state.pairingPhase == .pairing {
+            pairingContinuation.yield(.remoteLeftPairing(connectionId: id))
+        }
         state.connection.cancel()
         IHLog.remote.notice("lanremote.connection closed reason=\(reason, privacy: .public)")
     }
