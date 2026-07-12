@@ -1873,18 +1873,21 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 <i class="bi bi-people" aria-hidden="true"></i>
                 <span>
                     <strong><?= number_format($totalInUseUnregistered) ?></strong>
-                    name<?= $totalInUseUnregistered === 1 ? '' : 's' ?> cited on at least one song
-                    <em>aren't</em> in the registry yet.
+                    <?= $totalInUseUnregistered === 1 ? 'person is' : 'people are' ?> credited on a song
+                    but <em><?= $totalInUseUnregistered === 1 ? "isn't" : "aren't" ?></em> saved to Credit People yet.
                 </span>
+                <!-- #1543 — plain-English CTA labels. The action still "promotes"
+                     (bulk_register_unregistered) internally; only the user-facing
+                     wording changed so non-technical admins understand it. -->
                 <a href="/manage/credit-people-bulk-promote" class="btn btn-sm btn-amber-solid ms-auto">
-                    <i class="bi bi-magic me-1"></i>Bulk promote with fuzzy-match
+                    <i class="bi bi-magic me-1"></i>Review &amp; add (checks for duplicates)
                 </a>
                 <form method="POST" class="d-inline"
-                      onsubmit="return confirm('Register all <?= (int)$totalInUseUnregistered ?> remaining cited-but-unregistered name(s) as new registry entries?\n\nThis skips the fuzzy-match duplicate review — use &quot;Bulk promote with fuzzy-match&quot; instead if you want to check for near-duplicates first.');">
+                      onsubmit="return confirm('Add all <?= (int)$totalInUseUnregistered ?> credited <?= $totalInUseUnregistered === 1 ? 'person' : 'people' ?> to Credit People as new entries?\n\nThis adds them straight away, without checking for possible duplicates first. Use &quot;Review &amp; add&quot; instead if you want to check for near-duplicates.');">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                     <input type="hidden" name="action" value="bulk_register_unregistered">
                     <button type="submit" class="btn btn-sm btn-outline-info">
-                        <i class="bi bi-person-plus me-1"></i>Promote all remaining (<?= number_format($totalInUseUnregistered) ?>)
+                        <i class="bi bi-person-plus me-1"></i>Add all <?= number_format($totalInUseUnregistered) ?> now
                     </button>
                 </form>
             </div>
