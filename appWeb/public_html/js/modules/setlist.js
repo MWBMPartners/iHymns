@@ -1481,7 +1481,14 @@ export class SetList {
         try {
             const url = `${this.app.config.apiUrl}?action=setlist_get&id=${encodeURIComponent(shareId)}`;
             const response = await fetch(url, {
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    /* #1535 — send the bearer token when signed in so the server
+                       can tell whether the VIEWER is this share's OWNER. Anonymous
+                       viewers send no token and are never treated as the owner
+                       (they still see the share + Import normally). */
+                    ...(this.app?.userAuth?.authHeaders?.() || {}),
+                },
             });
 
             /* #1380 — 410 Gone: the share was a LIVE link to a setlist the owner
@@ -1504,6 +1511,9 @@ export class SetList {
                 /* #1380 — true when the server resolved the owner's CURRENT setlist
                    (a live link); the page can note "updates live" to the viewer. */
                 live: data.live === true,
+                /* #1535 — true when the signed-in viewer IS this share's owner, so
+                   the page hides the "shared with you" banner + Import buttons. */
+                isOwner: data.isOwner === true,
             };
         } catch {
             return null;
@@ -1625,6 +1635,17 @@ export class SetList {
             liveNoteEl.classList.toggle('d-none', !sharedData.live);
         }
 
+        /* #1535 — the OWNER viewing their OWN shared link shouldn't be told it was
+           "shared with you" nor offered to Import it into itself. Hide the shared
+           banner + both Import buttons and show the owner note instead; a non-owner
+           / anonymous viewer keeps the normal shared+import UI. (The live-link note
+           above stays useful — those are the owner's own edits flowing through.) */
+        const viewerIsOwner = sharedData.isOwner === true;
+        document.getElementById('shared-setlist-banner')?.classList.toggle('d-none', viewerIsOwner);
+        document.getElementById('shared-setlist-owner-note')?.classList.toggle('d-none', !viewerIsOwner);
+        document.getElementById('shared-setlist-import-btn')?.classList.toggle('d-none', viewerIsOwner);
+        document.getElementById('shared-setlist-import-btn-bottom')?.classList.toggle('d-none', viewerIsOwner);
+
         if (titleEl) titleEl.textContent = sharedData.name;
         if (countEl) countEl.textContent = sharedData.songIds.length;
         if (pluralEl) pluralEl.textContent = sharedData.songIds.length !== 1 ? 's' : '';
@@ -1653,19 +1674,22 @@ export class SetList {
         /* Enrich song items with metadata from the API */
         this.enrichSharedSongItems(sharedData.songIds);
 
-        /* Bind import buttons */
-        const importHandler = async () => {
-            const imported = await this.importSharedSetlist(sharedData);
-            if (imported) {
-                this.app.showToast(`Set list "${sharedData.name}" imported with ${imported.songs.length} songs`, 'success', 3000);
-                this.app.router.navigate('/setlist');
-            } else {
-                this.app.showToast('Failed to import set list', 'danger', 3000);
-            }
-        };
+        /* Bind import buttons — skipped entirely for the owner (#1535); their
+           buttons are hidden above, so there's nothing to import into itself. */
+        if (!viewerIsOwner) {
+            const importHandler = async () => {
+                const imported = await this.importSharedSetlist(sharedData);
+                if (imported) {
+                    this.app.showToast(`Set list "${sharedData.name}" imported with ${imported.songs.length} songs`, 'success', 3000);
+                    this.app.router.navigate('/setlist');
+                } else {
+                    this.app.showToast('Failed to import set list', 'danger', 3000);
+                }
+            };
 
-        document.getElementById('shared-setlist-import-btn')?.addEventListener('click', importHandler);
-        document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
+            document.getElementById('shared-setlist-import-btn')?.addEventListener('click', importHandler);
+            document.getElementById('shared-setlist-import-btn-bottom')?.addEventListener('click', importHandler);
+        }
     }
 
     /**
