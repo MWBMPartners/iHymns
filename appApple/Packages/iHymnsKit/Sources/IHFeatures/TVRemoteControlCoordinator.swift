@@ -142,13 +142,22 @@ public final class TVRemoteControlCoordinator {
         usingDefaultPort: Bool, identity: LANRemoteIdentity, authority: KeychainLANRemotePairingAuthority, advertisedName: String
     ) async throws -> TVListenerActor {
         let configuration = usingDefaultPort
-            // `7269` — strategy §2.4.5's documented default port. Written
-            // as a literal integer EXPRESSION directly here (never hoisted
-            // into a separate `UInt16` constant) because that literal form
-            // is specifically what triggers `NWEndpoint.Port`'s
-            // `ExpressibleByIntegerLiteral` conformance (this file's header
-            // comment) — an already-typed `UInt16` variable passed to this
-            // same parameter would NOT implicitly convert.
+            // `7269` — strategy §2.4.5's documented default port, now ALSO
+            // the shared `LANRemoteDiscovery.defaultPort: UInt16` constant
+            // (#1424, D-13) `LANRemoteManualAddress`/`ManualConnectSheet`
+            // read. **Deliberately kept as a literal HERE, not a reference
+            // to that constant** — `LANRemoteDiscovery.defaultPort` is a
+            // concrete `UInt16`, and this parameter is `NWEndpoint.Port`;
+            // Swift's `ExpressibleByIntegerLiteral` conversion only fires
+            // for a literal token at the call site (this file's own header
+            // comment above), never for an already-typed `UInt16` value —
+            // spelling `NWEndpoint.Port(rawValue:)` explicitly to bridge
+            // the two would require `import Network` in this file, which
+            // this file's header deliberately avoids (spec §8 D-11 applies
+            // the same tripwire to IHFeatures views/coordinators generally).
+            // `LANRemoteManualAddressTests`/`IHSettingsStoreTests` assert
+            // `LANRemoteDiscovery.defaultPort == 7269` literally, so this
+            // literal drifting from that constant would be caught there.
             ? TVListenerActor.Configuration(
                 port: 7269, advertisedName: advertisedName, pairingAuthority: authority, clock: SystemLANRemoteClock()
               )

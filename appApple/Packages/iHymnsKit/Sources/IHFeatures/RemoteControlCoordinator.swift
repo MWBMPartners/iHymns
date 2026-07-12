@@ -29,19 +29,16 @@ import Observation
 @Observable
 public final class RemoteControlCoordinator {
 
-    /// Everything the browsing/connecting/controlling screens render from —
-    /// the PURE `uiPhase(after:current:tvName:)` mapping (below) is what
-    /// turns a `RemoteControlSession.Event` into one of these.
-    public enum UIPhase: Equatable {
-        case browsing
-        case connecting(tvName: String, attempt: Int)
-        case codeEntry(tvName: String, failedAttempts: Int)
-        case controlling(tvName: String, state: IHRPState)
-        case reconnecting(tvName: String, attempt: Int)
-        case suspended(tvName: String)
-    }
+    // `UIPhase` + the pure `uiPhase(after:current:tvName:)` mapping live in
+    // `RemoteControlCoordinator+UIPhase.swift` (#1424, relocated for the
+    // LOC budget — see that file's header).
 
-    public private(set) var uiPhase: UIPhase = .browsing
+    // `internal(set)` (not `private(set)`, #1424) — `+ManualConnect.swift`
+    // needs to drive `uiPhase`/`notice` directly for the fingerprint
+    // interstitial (mirrors PR-7's own split conventions, e.g.
+    // `RemoteControlSession`'s stored properties are plain `var`, never
+    // `private`, so `+Link.swift` can drive them).
+    public internal(set) var uiPhase: UIPhase = .browsing
     /// Resolver-built (`RemotePairingEntryResolver.listRows`) — saved TVs
     /// first, then unpaired nearby ones, rebuilt whenever either the saved
     /// list or the discovered set changes.
@@ -49,7 +46,7 @@ public final class RemoteControlCoordinator {
     /// A transient, inline themed notice — "Not a valid iHymns pairing
     /// code," "ask the operator for a fresh code," etc. Cleared on the next
     /// successful action.
-    public private(set) var notice: String?
+    public internal(set) var notice: String?
     /// Set when Bonjour browsing itself was denied Local Network
     /// permission. **Always `false` in this PR** — `RemoteSessionActor`'s
     /// current discovery API (`RemoteSessionActor.swift`'s
@@ -82,16 +79,36 @@ public final class RemoteControlCoordinator {
     /// actor, fresh stream, fresh `spawnEventsConsumer()` — every time it
     /// runs. The old, already-`stop()`'d session is simply dropped; it has
     /// no background tasks left by the time `stop()` returns, so nothing leaks.
-    private var session: RemoteControlSession
-    private var savedRecords: [PairedTVRecord] = []
+    ///
+    /// `internal` (not `private`, #1424) — `+ManualConnect.swift` reads
+    /// `session`/`savedRecords` directly for `attachByAddress`/the known-TV
+    /// shortcut lookup, the same cross-file-reuse convention this doc
+    /// comment already describes.
+    var session: RemoteControlSession
+    var savedRecords: [PairedTVRecord] = []
     private var discoveredServices: [LANRemoteDiscoveredService] = []
 
     /// The TV currently being attached to/controlled — tracked HERE (not
     /// read back from `RemoteControlSession`, which only exposes ITS OWN
     /// events) so `.paired`/`.controlling` events can be turned into both a
     /// `PairedTVRecord` upsert and a `UIPhase` carrying the right name.
-    private var currentTVName: String?
-    private var currentFingerprint: String?
+    /// `internal` (not `private`, #1424) so `+ManualConnect.swift` can set
+    /// them for the TOFU path too.
+    var currentTVName: String?
+    var currentFingerprint: String?
+    /// #1424 — `true` from `connectByAddress(hostInput:portInput:)` until
+    /// the attempt resolves one way or another (`.paired`/`.controlling`/
+    /// `.pairingEnded`/`.ended` all clear it) — lets `apply(_:)`'s
+    /// `.pairingEnded(.connectionTornDown)` branch pick the manual-connect
+    /// -specific "couldn't reach it" copy instead of the generic operator
+    /// -guidance line (spec §6.5).
+    var isManualConnectInFlight = false
+    /// #1424 — the most recently parsed "Connect by Address" input, kept
+    /// for the manual-failure copy (`manualConnectionTornDownNotice()`) and
+    /// as the `host`/`port`/`displayName` inputs to
+    /// `RemotePairingEntryResolver.manualResolution` (the known-TV
+    /// shortcut, spec §4.3).
+    var lastManualParsed: LANRemoteManualAddress.Parsed?
 
     /// Guards `touchLastConnected()` so it only runs on the FIRST
     /// `.controlling` arrival for the CURRENT attach/reconnect, not on
@@ -137,6 +154,8 @@ public final class RemoteControlCoordinator {
         currentTVName = nil
         currentFingerprint = nil
         hasTouchedThisLink = false
+        isManualConnectInFlight = false
+        lastManualParsed = nil
 
         savedRecords = await store.listPairedTVs()
         rebuildRows()
@@ -295,6 +314,8 @@ public final class RemoteControlCoordinator {
             // connection's first `.controlling` on the wire (spec §1.1),
             // so resetting again costs nothing.
             hasTouchedThisLink = false
+            isManualConnectInFlight = false
+            lastManualParsed = nil
             await persistPaired(token: token, resolved: resolved)
         case .controlling:
             // `.controlling` fires on EVERY TV state broadcast — including
@@ -305,6 +326,7 @@ public final class RemoteControlCoordinator {
             // own "FIRST-arrival" doc comment (#1422 review fix 2): only
             // the first arrival since the last `.connecting`/
             // `.reconnecting`/`.paired` runs it; later echoes no-op.
+            isManualConnectInFlight = false
             if !hasTouchedThisLink {
                 hasTouchedThisLink = true
                 await touchLastConnected()
@@ -316,11 +338,23 @@ public final class RemoteControlCoordinator {
             case .cancelled:
                 notice = nil
             case .connectionTornDown:
-                notice = "Pairing didn't complete. Ask the operator to open pairing on the TV again."
+                // #1424 — a manual connect that never reached (or dropped
+                // before/during) the ceremony gets its OWN "couldn't reach
+                // it" copy instead of the generic operator-guidance line —
+                // spec §6.5.
+                notice = isManualConnectInFlight
+                    ? manualConnectionTornDownNotice()
+                    : "Pairing didn't complete. Ask the operator to open pairing on the TV again."
             }
+            isManualConnectInFlight = false
+            lastManualParsed = nil
         case .ended:
             currentTVName = nil
             currentFingerprint = nil
+            isManualConnectInFlight = false
+            lastManualParsed = nil
+        case .awaitingFingerprintConfirmation(let fingerprint):
+            await handleFingerprintObservation(fingerprint)
         case .awaitingCodeEntry, .detached, .suspended:
             break
         }
@@ -357,38 +391,7 @@ public final class RemoteControlCoordinator {
         rebuildRows()
     }
 
-    // MARK: - The pure event → UI mapping (spec §7.3-testable)
-
-    /// Turns one `RemoteControlSession.Event` into the next `UIPhase` —
-    /// pure and static so `RemoteControlUIStateTests` can drive it with zero
-    /// actors/sessions/network involved.
-    ///
-    /// ELI5: "Given what just happened, what should the screen show now?"
-    nonisolated static func uiPhase(after event: RemoteControlSession.Event, current: UIPhase, tvName: String) -> UIPhase {
-        switch event {
-        case .connecting(let attempt):
-            return .connecting(tvName: tvName, attempt: attempt)
-        case .awaitingCodeEntry(let failedAttempts):
-            return .codeEntry(tvName: tvName, failedAttempts: failedAttempts)
-        case .pairingEnded:
-            return .browsing
-        case .paired:
-            // `.controlling` always follows on the same connection (§1.1's
-            // wire contract) — no visible transition needed here.
-            return current
-        case .controlling(let state):
-            return .controlling(tvName: tvName, state: state)
-        case .detached:
-            // The ladder's first `.reconnecting(attempt: 0, …)` is only
-            // moments away; show it immediately rather than leaving a stale
-            // `.controlling` phase on screen for that brief window.
-            return .reconnecting(tvName: tvName, attempt: 0)
-        case .reconnecting(let attempt, _):
-            return .reconnecting(tvName: tvName, attempt: attempt)
-        case .suspended:
-            return .suspended(tvName: tvName)
-        case .ended:
-            return .browsing
-        }
-    }
+    // `uiPhase(after:current:tvName:)` lives in
+    // `RemoteControlCoordinator+UIPhase.swift` (#1424, relocated for the
+    // LOC budget).
 }

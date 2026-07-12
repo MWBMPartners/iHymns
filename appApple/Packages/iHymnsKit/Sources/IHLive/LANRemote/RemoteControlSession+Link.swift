@@ -105,8 +105,12 @@ extension RemoteControlSession {
             // A brand-new FAST-PATH attach's very first connect attempt
             // failed outright (e.g. the saved address is unreachable) —
             // there is no ceremony to report failure through, so this
-            // reuses the same terminal vocabulary directly.
+            // reuses the same terminal vocabulary directly. #1424: a
+            // TOFU connect that drops before confirmation lands here too —
+            // sweep its state alongside `target` (spec §4.2).
             target = nil
+            manualConnect = nil
+            pendingChallengeNonce = nil
             eventContinuation.yield(.pairingEnded(.connectionTornDown))
             return
         }
@@ -188,6 +192,16 @@ extension RemoteControlSession {
     func handleIncoming(_ frame: IHRPFrame) async {
         switch frame.message {
         case .pairChallenge(let nonce):
+            // #1424 — the challenge-before-armed race (spec §4.2): mid-TOFU
+            // the actor auto-sends `hello`, so the TV's challenge can arrive
+            // while `attachByAddress` is still suspended (real at loopback
+            // speed). `flow`/`target` don't exist yet, so stash the nonce for
+            // `confirmObservedFingerprint()` to replay, gated on
+            // `manualConnect != nil` so a post-teardown challenge stays dropped.
+            if manualConnect != nil, flow == nil, target == nil {
+                pendingChallengeNonce = nonce
+                return
+            }
             if flow == nil, let target {
                 // The stale-token fallback (this file's header point 2) —
                 // path B semantics: no known code, prompt the human.
@@ -320,5 +334,66 @@ extension RemoteControlSession {
 
         expectedIdleCount += 1
         try? await remote.connect(to: endpoint, expectedFingerprint: target.expectedFingerprint, token: target.token)
+    }
+
+    // MARK: - Suspend / resume (scenePhase wiring)
+    // #1424 — relocated from `RemoteControlSession.swift` (pure move + D-12's new mid-TOFU branch) for the LOC budget.
+    /// `scenePhase` wiring — `true` when the app leaves `.active`
+    /// (quiesce, keep the target so resuming is a fast token reconnect);
+    /// `false` on return to `.active` (immediate reconnect).
+    ///
+    /// ELI5: "The app just went to the background" / "the app just came
+    /// back to the foreground."
+    public func setSuspended(_ suspended: Bool) async {
+        guard suspended != isSuspended else { return }
+        isSuspended = suspended
+
+        if suspended {
+            pingTask?.cancel(); pingTask = nil
+            reconnectTask?.cancel(); reconnectTask = nil
+            isAttached = false
+            expectedIdleCount += 1
+
+            if manualConnect != nil {
+                // #1424, D-12 — backgrounding mid-TOFU is a CANCEL, never a
+                // `.suspended` awaiting resume: there's no pinned target to
+                // resume into, and auto-resuming a half-confirmed trust
+                // decision is exactly what TOFU must never do.
+                manualConnect = nil
+                pendingChallengeNonce = nil
+                await remote.disconnect()
+                eventContinuation.yield(.pairingEnded(.cancelled))
+                return
+            }
+
+            try? await remote.send(.endControl)
+            await remote.disconnect()
+            eventContinuation.yield(.suspended)
+            return
+        }
+
+        guard let target else { return }
+        backoff.reset()
+        eventContinuation.yield(.connecting(attempt: 0))
+        // ★ Adversarial-review finding: `RemoteSessionActor.disconnect()`
+        // cancels `connection` but does NOT synchronously stop an
+        // already-in-flight `connection.receive(...)` completion — that
+        // callback can still fire moments later (Network.framework's own
+        // queue), and `onReceive`'s error/`isComplete` path calls
+        // `disconnect()` AGAIN as a delayed echo of a teardown we already
+        // initiated ourselves. If that echo lands AFTER this method has
+        // ALREADY started a brand-new `connect(...)` (which sets its own
+        // fresh `pendingConnectContinuation`), the echo's `disconnect()`
+        // resumes THAT continuation with `.notConnected` — cancelling a
+        // perfectly healthy new connection attempt out from under itself.
+        // `RemoteSessionActor` is additive-only (no connect/disconnect
+        // semantics changes allowed), so the fix lives here: a short settle
+        // wait gives Network.framework's queue time to flush the echo
+        // BEFORE we ask for a new continuation, at negligible cost against
+        // spec §3.4's "<1s" resume budget (production; this suite's
+        // millisecond configuration still comfortably clears it too).
+        try? await Task.sleep(for: .milliseconds(20))
+        expectedIdleCount += 1
+        try? await remote.connect(to: target.endpoint, expectedFingerprint: target.expectedFingerprint, token: target.token)
     }
 }

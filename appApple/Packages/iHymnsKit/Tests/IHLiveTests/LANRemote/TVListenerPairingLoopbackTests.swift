@@ -22,43 +22,6 @@ import Network
 import Testing
 @testable import IHLive
 
-/// A test-double remote that drives the REAL pairing wire ceremony against
-/// a real `RemoteSessionActor` — this IS the exact recipe PR-7's real
-/// client will use: `LANRemotePairingProof.compute(...)` is the SAME
-/// public function the TV's `handlePairConfirm` verifies against (one
-/// implementation, two callers, per this repo's modularity rule).
-///
-/// ELI5: A pretend phone that actually does the pairing dance for real —
-/// connects, waits for the code-challenge, computes (or, for the invalid-
-/// proof tests, fakes) the proof, and sends it back.
-private struct PairingTestRemote {
-    let remote: RemoteSessionActor
-
-    init(kind: IHRPRemoteKind = .phone) {
-        remote = RemoteSessionActor(configuration: .init(kind: kind))
-    }
-
-    /// Connects fresh (no saved token) and waits for the TV's
-    /// `.pairChallenge`, returning the nonce it carries.
-    func connectAndAwaitChallenge(to endpoint: NWEndpoint, expectedFingerprint: String) async throws -> String {
-        try await remote.connect(to: endpoint, expectedFingerprint: expectedFingerprint, token: nil)
-        let frame = try await waitFor(remote.incomingMessages) { if case .pairChallenge = $0.message { true } else { false } }
-        guard case .pairChallenge(let nonce) = frame.message else {
-            throw LANRemoteTestTimeoutError()
-        }
-        return nonce
-    }
-
-    /// Computes the real proof (or, `invalidProof: true`, substitutes
-    /// garbage) and sends `.pairConfirm`.
-    func sendPairConfirm(code: String, fingerprintHex: String, nonce: String, deviceName: String? = nil, invalidProof: Bool = false) async throws {
-        let proof = invalidProof
-            ? String(repeating: "0", count: 64)
-            : LANRemotePairingProof.compute(code: code, fingerprintHex: fingerprintHex, nonceHex: nonce)
-        try await remote.send(.pairConfirm(proof: proof, deviceName: deviceName))
-    }
-}
-
 @Suite(
     "TVListenerActor pairing ceremony — TLS loopback integration",
     .enabled(
@@ -73,7 +36,11 @@ struct TVListenerPairingLoopbackTests {
     ///   — returning a 3-tuple here would trip SwiftLint's `large_tuple`
     ///   rule, so the caller supplies (and keeps) the clock instead of
     ///   receiving it back.
-    private func makeListener(
+    ///
+    /// `internal` (not `private`, #1424) — reused by
+    /// `TVListenerPairingRelayLoopbackTests.swift` for the identical
+    /// cross-file-reuse reason `PairingTestRemote`'s own doc comment gives.
+    func makeListener(
         maxUnpaired: Int = 4,
         pairingAuthority: any LANRemotePairingAuthority = InMemoryLANRemotePairingAuthority(),
         clock: any LANRemoteClock = ManualLANRemoteClock(),
@@ -102,7 +69,9 @@ struct TVListenerPairingLoopbackTests {
         return (listener, identity)
     }
 
-    private func hostPortEndpoint(port: NWEndpoint.Port) -> NWEndpoint {
+    /// `internal` (not `private`, #1424) — same cross-file-reuse reason as
+    /// `makeListener` above.
+    func hostPortEndpoint(port: NWEndpoint.Port) -> NWEndpoint {
         .hostPort(host: "127.0.0.1", port: port)
     }
 

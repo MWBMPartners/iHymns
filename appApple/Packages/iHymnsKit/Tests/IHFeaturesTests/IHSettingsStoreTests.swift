@@ -39,6 +39,7 @@ struct IHSettingsStoreTests {
         #expect(store.hasSeenOnboarding == false)        // #190: unset = genuinely fresh install
         #expect(store.hasSeenLocalNetworkPrimer == false) // #1422: unset = show the explainer before discovery starts
         #expect(store.apiEnvironmentOverride == nil)     // use the build default
+        #expect(store.lastManualConnectAddress == nil)   // #1424: nothing typed into Connect by Address yet
     }
 
     @Test("Every setting round-trips through a second store on the same suite")
@@ -54,6 +55,7 @@ struct IHSettingsStoreTests {
         writer.hasSeenOnboarding = true
         writer.hasSeenLocalNetworkPrimer = true
         writer.apiEnvironmentOverride = .beta
+        writer.lastManualConnectAddress = "192.168.1.50:8080"
 
         // A DIFFERENT store instance on the same underlying suite must see
         // every persisted value — proves it's really in UserDefaults, not
@@ -66,6 +68,7 @@ struct IHSettingsStoreTests {
         #expect(reader.hasSeenOnboarding == true)
         #expect(reader.hasSeenLocalNetworkPrimer == true)
         #expect(reader.apiEnvironmentOverride == .beta)
+        #expect(reader.lastManualConnectAddress == "192.168.1.50:8080")
     }
 
     @Test("#190: onboarding 'seen' gate — false until explicitly marked, then stays true across instances")
@@ -96,6 +99,15 @@ struct IHSettingsStoreTests {
         #expect(store.apiEnvironmentOverride == .prod)
         store.apiEnvironmentOverride = nil
         #expect(store.apiEnvironmentOverride == nil)
+    }
+
+    @Test("#1424: clearing lastManualConnectAddress removes the key, not stores an empty string")
+    func clearingLastManualConnectAddress() {
+        let store = makeStore()
+        store.lastManualConnectAddress = "hall-tv.local"
+        #expect(store.lastManualConnectAddress == "hall-tv.local")
+        store.lastManualConnectAddress = nil
+        #expect(store.lastManualConnectAddress == nil)
     }
 
     @Test("An unknown persisted raw value falls back to the default, never crashes")

@@ -104,4 +104,33 @@ struct RemoteControlUIStateTests {
         let result = RemoteControlCoordinator.uiPhase(after: .ended, current: current, tvName: tvName)
         #expect(result == .browsing)
     }
+
+    // MARK: - #1424 additions: awaitingFingerprintConfirmation + the interstitial's Cancel round-trip
+
+    @Test("awaitingFingerprintConfirmation from EVERY current phase returns that phase unchanged (a coordinator-driven side effect sets .confirmingFingerprint instead)")
+    func awaitingFingerprintConfirmationLeavesCurrentPhaseUnchanged() {
+        let state = IHRPState(songId: nil, componentIndex: nil, lineIndex: nil, displayState: .lyrics, revision: 0)
+        let currentPhases: [RemoteControlCoordinator.UIPhase] = [
+            .browsing,
+            .connecting(tvName: tvName, attempt: 0),
+            .codeEntry(tvName: tvName, failedAttempts: 1),
+            .controlling(tvName: tvName, state: state),
+            .reconnecting(tvName: tvName, attempt: 2),
+            .suspended(tvName: tvName),
+            .confirmingFingerprint(tvName: tvName, fingerprintHex: String(repeating: "a", count: 64))
+        ]
+        for current in currentPhases {
+            let result = RemoteControlCoordinator.uiPhase(
+                after: .awaitingFingerprintConfirmation(fingerprintHex: String(repeating: "b", count: 64)), current: current, tvName: tvName
+            )
+            #expect(result == current)
+        }
+    }
+
+    @Test("pairingEnded(.cancelled) from .confirmingFingerprint returns to .browsing — the interstitial's Cancel round-trip")
+    func cancelledFromConfirmingFingerprintReturnsToBrowsing() {
+        let current = RemoteControlCoordinator.UIPhase.confirmingFingerprint(tvName: tvName, fingerprintHex: String(repeating: "a", count: 64))
+        let result = RemoteControlCoordinator.uiPhase(after: .pairingEnded(.cancelled), current: current, tvName: tvName)
+        #expect(result == .browsing)
+    }
 }

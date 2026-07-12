@@ -92,7 +92,17 @@ public struct TVSettingsRemoteView: View {
             // The FULL value — this is the out-of-band value strategy
             // §2.4.3's trust model actually pins against; the overlay's own
             // line is a truncated 12-character convenience only.
-            Text(PairingFingerprintDisplay.grouped(fingerprint))
+            //
+            // #1424 mechanical swap (PR-8 spec §2, "extract first, use
+            // second"): this row's whole-string grouping now calls the
+            // canonical `LANRemoteFingerprint.displayGrouped(_:every:)`
+            // (`IHLive`) — the SAME helper `FingerprintConfirmView`'s TOFU
+            // interstitial uses — instead of this package's own
+            // `PairingFingerprintDisplay.grouped(_:prefixLength:)`.
+            // `TVPairingOverlayView`'s 12-character-PREFIX short line keeps
+            // using `PairingFingerprintDisplay` — that truncate-then-group
+            // shape isn't part of this new helper's contract.
+            Text(LANRemoteFingerprint.displayGrouped(fingerprint))
                 .font(.footnote.monospaced())
         }
     }

@@ -318,3 +318,64 @@ public enum RemotePairingEntryResolver {
         return .hostPort(host: .init(address.host), port: port)
     }
 }
+
+// MARK: - Path D (#1424) — a manual connect-by-address TOFU observation
+
+extension RemotePairingEntryResolver {
+    /// The two things a TOFU manual connect's OBSERVED fingerprint can turn
+    /// out to be — see `.claude/apple-phase2-pr8-spec.md` §3.4/§4.3.
+    public enum ManualResolution: Sendable {
+        /// `observedFingerprint` matches an ALREADY-saved TV — connect via
+        /// the NORMAL PINNED path with the saved token; the typed address
+        /// is the primary endpoint, the record's own `lastAddress` (when it
+        /// differs) the fallback. No new trust decision is made here — the
+        /// pin check at TLS is what actually protects this shortcut (spec
+        /// §4.3: an impostor squatting the typed address fails the pinned
+        /// handshake instead of silently TOFU-ing).
+        case knownTV(RemoteConnectTarget)
+        /// Never seen this fingerprint before — the fingerprint-confirm
+        /// interstitial + full ceremony must run (spec §6.3, Decision D-3).
+        case unknownTV
+    }
+
+    /// Resolves a TOFU connect's observed fingerprint against the saved-TV
+    /// list — spec §3.4/§4.3's "the known-TV shortcut's decision," exactly.
+    ///
+    /// ELI5: "I just typed an address and got shown this fingerprint — have
+    /// I already trusted this TV, or is it new to me?"
+    public static func manualResolution(
+        observedFingerprint: String, host: String, port: UInt16,
+        displayName: String, saved: [PairedTVRecord]
+    ) -> ManualResolution {
+        guard let record = saved.first(where: { $0.fingerprintHex == observedFingerprint }) else {
+            return .unknownTV
+        }
+        guard let typedPort = NWEndpoint.Port(rawValue: port) else {
+            // Defensive — the parser (`LANRemoteManualAddress`) already
+            // guarantees `port` is `1...65535`.
+            return .unknownTV
+        }
+        let typedEndpoint = NWEndpoint.hostPort(host: .init(host), port: typedPort)
+
+        // A saved `lastAddress` that's DIFFERENT from the address the user
+        // just typed becomes the fallback; one that's the SAME address
+        // (the ordinary "re-finding a TV whose last-good address is the
+        // one I'm typing again" case) is not duplicated as its own
+        // fallback (spec §7.1: "no self-fallback").
+        var fallback: NWEndpoint?
+        if let lastAddress = record.lastAddress, lastAddress.host != host || lastAddress.port != port,
+           let fallbackPort = NWEndpoint.Port(rawValue: lastAddress.port) {
+            fallback = .hostPort(host: .init(lastAddress.host), port: fallbackPort)
+        }
+
+        return .knownTV(RemoteConnectTarget(
+            // The REAL saved name, never the typed host (spec §3.4).
+            tvName: record.name,
+            endpoint: typedEndpoint,
+            fallbackEndpoint: fallback,
+            expectedFingerprint: record.fingerprintHex,
+            token: record.token,
+            knownCode: nil
+        ))
+    }
+}

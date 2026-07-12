@@ -57,6 +57,18 @@ public actor RemoteControlSession {
         public var health: RemoteLinkHealthState.Configuration = .init()
         public var backoff: RemoteReconnectBackoffState.Configuration = .init()
         public var clock: any LANRemoteClock = SystemLANRemoteClock()
+        /// #1424 Opus-review fix M2 — how long `attachByAddress`'s
+        /// Trust-On-First-Use connect (`RemoteSessionActor
+        /// .connectTrustingFirstUse(to:timeout:)`, `+TOFU.swift`) waits
+        /// before giving up on an address stuck in `.waiting`. Production
+        /// default `10s` is unchanged; this exists so the loopback test
+        /// suites (`RemoteControlSessionLoopbackTests.makeSession()`, shared
+        /// by `ManualConnectLoopbackTests`) can inject a SHORT value instead
+        /// — a fixed 10 s wait on the "nothing listening" case made the
+        /// mandated combined 4-suite loopback run flaky/slow under
+        /// concurrent load, exactly the class of tunable `health`/`backoff`
+        /// above already solve the same way.
+        public var tofuConnectTimeout: Duration = .seconds(10)
 
         public init(remoteKind: IHRPRemoteKind, deviceName: String? = nil) {
             self.remoteKind = remoteKind
@@ -96,6 +108,15 @@ public actor RemoteControlSession {
         case suspended
         /// `stop()`/`endControl()` completed — deliberate, final.
         case ended
+        /// #1424 — a Trust-On-First-Use manual connect (`attachByAddress`)
+        /// reached `.awaitingPairing` and observed this fingerprint. The
+        /// coordinator decides what happens next: an already-trusted
+        /// fingerprint silently re-attaches via the pinned path (spec
+        /// §4.3's known-TV shortcut, zero new trust decision); an unknown
+        /// one shows the `FingerprintConfirmView` interstitial (spec §6.3,
+        /// Decision D-3 — REQUIRED, never skippable) before any code is
+        /// typed.
+        case awaitingFingerprintConfirmation(fingerprintHex: String)
     }
 
     let configuration: Configuration
@@ -135,6 +156,28 @@ public actor RemoteControlSession {
     /// `connect`/`disconnect` call causes an internal `.idle` at all.
     var expectedIdleCount = 0
     var lastKnownRevision: UInt64?
+
+    /// #1424 — non-nil while a Trust-On-First-Use manual connect
+    /// (`attachByAddress`, `+ManualConnect.swift`) is in flight, BEFORE the
+    /// ceremony `flow`/`target` are armed. The TYPE lives in
+    /// `+ManualConnect.swift`; the stored `var` lives here because every
+    /// actor's stored properties must live in the actor body itself. Swept
+    /// at EVERY terminal site (spec §4.2): `attach(to:)`, `cancelPairing()`,
+    /// `endControl()`, `stop()`, `setSuspended(true)` mid-flight, and
+    /// `handleIdleOrFailed()`'s terminal branch (`+Link.swift`) — an
+    /// orphaned value here is the exact bug class §4.2 designs out.
+    var manualConnect: ManualConnectState?
+    /// #1424 — a `.pairChallenge` nonce that arrived WHILE `manualConnect
+    /// != nil` but BEFORE `confirmObservedFingerprint()` armed `flow`/
+    /// `target` (spec §4.2's "challenge-before-armed race": the TOFU
+    /// connect auto-sends `hello`, so the TV's challenge can race the still
+    /// -suspended `attachByAddress` call at loopback speed). Stashed here
+    /// so it can be replayed the instant the human confirms; cleared
+    /// alongside `manualConnect` at every terminal site above — gated on
+    /// `manualConnect != nil` specifically so a challenge arriving AFTER a
+    /// cancel/teardown (state already cleared) is dropped, never
+    /// resurrected.
+    var pendingChallengeNonce: String?
 
     var pingTask: Task<Void, Never>?
     var reconnectTask: Task<Void, Never>?
@@ -182,6 +225,13 @@ public actor RemoteControlSession {
         ensureDriverLoopStarted()
         pingTask?.cancel(); pingTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
+        // #1424 — sweeps any in-flight TOFU manual-connect state. This is
+        // ALSO what the known-TV shortcut (`+ManualConnect.swift`'s
+        // `handleFingerprintObservation`) relies on when it calls this
+        // method mid-manual-connect: taking over an already-parked TOFU
+        // connection via the ordinary pinned path.
+        manualConnect = nil
+        pendingChallengeNonce = nil
 
         self.target = target
         self.isAttached = false
@@ -210,12 +260,16 @@ public actor RemoteControlSession {
         await apply(effect)
     }
 
-    /// The code sheet was dismissed by the person — disconnects and reports
-    /// `.pairingEnded(.cancelled)`; never auto-retries (this is an
-    /// UNPAIRED/mid-ceremony connection, spec §3.4 point 3's own rule).
+    /// The code sheet — OR (#1424) the TOFU fingerprint-confirm
+    /// interstitial, before a `flow` is even armed — was dismissed by the
+    /// person: disconnects and reports `.pairingEnded(.cancelled)`; never
+    /// auto-retries (this is an UNPAIRED/mid-ceremony connection, spec §3.4
+    /// point 3's own rule).
     public func cancelPairing() async {
-        guard flow != nil else { return }
+        guard flow != nil || manualConnect != nil else { return }
         flow = nil
+        manualConnect = nil
+        pendingChallengeNonce = nil
         target = nil
         expectedIdleCount += 1
         await remote.disconnect()
@@ -240,6 +294,8 @@ public actor RemoteControlSession {
         pingTask?.cancel(); pingTask = nil
         reconnectTask?.cancel(); reconnectTask = nil
         flow = nil
+        manualConnect = nil
+        pendingChallengeNonce = nil
         target = nil
         hasEverControlled = false
         isAttached = false
@@ -247,52 +303,6 @@ public actor RemoteControlSession {
         try? await remote.send(.endControl)
         await remote.disconnect()
         eventContinuation.yield(.ended)
-    }
-
-    /// `scenePhase` wiring — `true` when the app leaves `.active`
-    /// (quiesce, keep the target so resuming is a fast token reconnect);
-    /// `false` on return to `.active` (immediate reconnect).
-    ///
-    /// ELI5: "The app just went to the background" / "the app just came
-    /// back to the foreground."
-    public func setSuspended(_ suspended: Bool) async {
-        guard suspended != isSuspended else { return }
-        isSuspended = suspended
-
-        if suspended {
-            pingTask?.cancel(); pingTask = nil
-            reconnectTask?.cancel(); reconnectTask = nil
-            isAttached = false
-            expectedIdleCount += 1
-            try? await remote.send(.endControl)
-            await remote.disconnect()
-            eventContinuation.yield(.suspended)
-            return
-        }
-
-        guard let target else { return }
-        backoff.reset()
-        eventContinuation.yield(.connecting(attempt: 0))
-        // ★ Adversarial-review finding: `RemoteSessionActor.disconnect()`
-        // cancels `connection` but does NOT synchronously stop an
-        // already-in-flight `connection.receive(...)` completion — that
-        // callback can still fire moments later (Network.framework's own
-        // queue), and `onReceive`'s error/`isComplete` path calls
-        // `disconnect()` AGAIN as a delayed echo of a teardown we already
-        // initiated ourselves. If that echo lands AFTER this method has
-        // ALREADY started a brand-new `connect(...)` (which sets its own
-        // fresh `pendingConnectContinuation`), the echo's `disconnect()`
-        // resumes THAT continuation with `.notConnected` — cancelling a
-        // perfectly healthy new connection attempt out from under itself.
-        // `RemoteSessionActor` is additive-only (no connect/disconnect
-        // semantics changes allowed), so the fix lives here: a short settle
-        // wait gives Network.framework's queue time to flush the echo
-        // BEFORE we ask for a new continuation, at negligible cost against
-        // spec §3.4's "<1s" resume budget (production; this suite's
-        // millisecond configuration still comfortably clears it too).
-        try? await Task.sleep(for: .milliseconds(20))
-        expectedIdleCount += 1
-        try? await remote.connect(to: target.endpoint, expectedFingerprint: target.expectedFingerprint, token: target.token)
     }
 
     /// Full teardown — cancels every loop, disconnects, and finishes
@@ -312,6 +322,8 @@ public actor RemoteControlSession {
         phaseTask?.cancel()
         messageTask?.cancel()
         flow = nil
+        manualConnect = nil
+        pendingChallengeNonce = nil
         target = nil
         hasEverControlled = false
         isAttached = false
