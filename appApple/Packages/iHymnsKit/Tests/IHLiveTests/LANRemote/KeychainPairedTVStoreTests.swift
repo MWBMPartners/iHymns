@@ -12,11 +12,23 @@
 // Gated on `lanRemoteKeychainIdentityAvailable()` — the exact PR-6 gate/
 // skip-message style (`LANRemoteTestSupport.swift`) — because a headless,
 // unsigned `swift test` binary can't always bridge a Keychain item on every
-// CI runner. Every test wraps its Keychain work in `KeychainTestSerialization
-// .shared.run { }` (PR-6's contention-avoidance precedent) and cleans up in
-// `defer`, capturing only immutable `String` fingerprints (never the whole
-// mutable record) into cleanup `Task`s — the identical "don't send a
-// non-Sendable/mutable value across a `Task` boundary" discipline
+// CI runner.
+//
+// **Every test wraps its ENTIRE body — every read AND every write — in
+// `KeychainTestSerialization.shared.run { }`**, matching
+// `KeychainPairingAuthorityTests.swift`'s exact precedent (adversarial-review
+// finding: an EARLIER version of this file wrapped only the initial `save()`
+// call, leaving `record(forFingerprint:)`/`listPairedTVs()`/`delete(
+// fingerprint:)` to hit the real Keychain UNSERIALIZED — which reproduced
+// the identical rare contention `KeychainTestSerialization`'s own header
+// warns about, this time as intermittent `read == nil` failures under a
+// full-suite run alongside `KeychainPairingAuthorityTests`/
+// `LANRemoteIdentityStoreTests`. The serialization mutex only helps when
+// EVERY real-Keychain call from EVERY suite goes through it — a partially
+// -wrapped test body defeats the whole point). Cleans up in `defer`,
+// capturing only immutable `String` fingerprints (never the whole mutable
+// record) into cleanup `Task`s — the identical "don't send a non-Sendable
+// /mutable value across a `Task` boundary" discipline
 // `KeychainPairingAuthorityTests.swift` already follows.
 import Foundation
 import Testing
@@ -53,49 +65,49 @@ struct KeychainPairedTVStoreTests {
 
     @Test("save() then record(forFingerprint:) returns the record INCLUDING the raw token")
     func saveThenRead() async throws {
-        let store = makeStore()
-        let fingerprint = "aa-\(UUID().uuidString)"
-        let original = record(fingerprint: fingerprint)
         try await KeychainTestSerialization.shared.run {
-            await store.save(original)
-        }
-        defer { Task { await store.delete(fingerprint: fingerprint) } }
+            let store = makeStore()
+            let fingerprint = "aa-\(UUID().uuidString)"
+            let original = record(fingerprint: fingerprint)
+            defer { Task { await store.delete(fingerprint: fingerprint) } }
 
-        let read = await store.record(forFingerprint: fingerprint)
-        #expect(read == original)
-        #expect(read?.token == "raw-token-value")
+            await store.save(original)
+            let read = await store.record(forFingerprint: fingerprint)
+            #expect(read == original)
+            #expect(read?.token == "raw-token-value")
+        }
     }
 
     @Test("save() upserts by fingerprint — a re-save replaces rather than duplicates")
     func upsertReplaces() async throws {
-        let store = makeStore()
-        let fingerprint = "aa-\(UUID().uuidString)"
         try await KeychainTestSerialization.shared.run {
+            let store = makeStore()
+            let fingerprint = "aa-\(UUID().uuidString)"
+            defer { Task { await store.delete(fingerprint: fingerprint) } }
+
             await store.save(record(fingerprint: fingerprint))
+            var renamed = record(fingerprint: fingerprint)
+            renamed.name = "Renamed TV"
+            await store.save(renamed)
+
+            let all = await store.listPairedTVs()
+            let matching = all.filter { $0.fingerprintHex == fingerprint }
+            #expect(matching.count == 1)
+            #expect(matching.first?.name == "Renamed TV")
         }
-        defer { Task { await store.delete(fingerprint: fingerprint) } }
-
-        var renamed = record(fingerprint: fingerprint)
-        renamed.name = "Renamed TV"
-        await store.save(renamed)
-
-        let all = await store.listPairedTVs()
-        let matching = all.filter { $0.fingerprintHex == fingerprint }
-        #expect(matching.count == 1)
-        #expect(matching.first?.name == "Renamed TV")
     }
 
     @Test("delete() removes the record; an unknown fingerprint returns nil")
     func deleteRemoves() async throws {
-        let store = makeStore()
-        let fingerprint = "aa-\(UUID().uuidString)"
         try await KeychainTestSerialization.shared.run {
-            await store.save(record(fingerprint: fingerprint))
-        }
+            let store = makeStore()
+            let fingerprint = "aa-\(UUID().uuidString)"
 
-        await store.delete(fingerprint: fingerprint)
-        #expect(await store.record(forFingerprint: fingerprint) == nil)
-        #expect(await store.record(forFingerprint: "never-existed") == nil)
+            await store.save(record(fingerprint: fingerprint))
+            await store.delete(fingerprint: fingerprint)
+            #expect(await store.record(forFingerprint: fingerprint) == nil)
+            #expect(await store.record(forFingerprint: "never-existed") == nil)
+        }
     }
 
     @Test("baseAttributes(account:) is synchronizable == false, accessible == AfterFirstUnlock, and the pairedTVs service")
@@ -112,6 +124,9 @@ extension KeychainPairedTVStore {
     /// boundary — only this `Bool` result does, which strict concurrency is
     /// happy with. Mirrors `KeychainLANRemotePairingAuthority
     /// .baseAttributesInvariantsHold(account:)`'s identical test-only shape.
+    /// Reads no Keychain state at all (`baseAttributes` is a pure dictionary
+    /// builder), so — unlike every other test above — this one needs no
+    /// `KeychainTestSerialization` wrapping.
     fileprivate func baseAttributesInvariantsHold(account: String?) -> Bool {
         let attributes = baseAttributes(account: account)
         guard attributes[kSecAttrSynchronizable as String] as? Bool == false else { return false }
