@@ -92,8 +92,61 @@ function _escSongbook(s) {
  * @returns {string} HTML with both spans
  */
 export function songbookLabel(abbr, fullName) {
-    const full = fullName || SONGBOOK_NAMES[abbr] || abbr;
+    /* #1531 — resolve order: an explicit override → the client songbook
+       registry (covers EVERY songbook, loaded once from /api?action=songbooks)
+       → the six hardcoded fallbacks → the abbreviation. This is what makes
+       list views (setlists, favourites, search, home) show the full Songbook
+       NAME rather than the abbreviation, for all songbooks not just the six. */
+    const full = fullName || songbookFullName(abbr) || SONGBOOK_NAMES[abbr] || abbr;
     const safeAbbr = _escSongbook(abbr);
     if (full === abbr) return safeAbbr; /* no full name available */
     return `<span class="songbook-name-full">${_escSongbook(full)}</span><span class="songbook-name-abbr">${safeAbbr}</span>`;
+}
+
+/* ── #1531 — Client songbook registry ──────────────────────────────────────
+   The ONE abbr → { name, isOfficial } source so every list view shows the full
+   Songbook NAME (not the abbreviation) for ALL songbooks — not just the six in
+   SONGBOOK_NAMES above. Populated once from /api?action=songbooks at app init
+   (App.init() calls loadSongbookRegistry); songbookLabel()/songbookFullName()
+   read it synchronously. Best-effort: if the fetch hasn't completed (or failed)
+   the resolvers fall back to SONGBOOK_NAMES / the abbreviation, so nothing
+   breaks — the name simply fills in once the registry loads. */
+const _SONGBOOK_REGISTRY = new Map();
+
+/** Load the songbook registry once. Fire-and-forget from App.init(). */
+export async function loadSongbookRegistry(apiUrl) {
+    if (!apiUrl) return;
+    try {
+        const res = await fetch(`${apiUrl}?action=songbooks`, {
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        for (const book of (data.songbooks || [])) {
+            if (book && book.id) {
+                _SONGBOOK_REGISTRY.set(book.id, {
+                    name: book.name || '',
+                    /* IsOfficial is a strict bool from the API (#502); default
+                       to true when a book is somehow absent so an unknown book
+                       is never mis-flagged as "unofficial". */
+                    isOfficial: book.isOfficial !== false,
+                });
+            }
+        }
+    } catch {
+        /* Best-effort — songbookLabel falls back to SONGBOOK_NAMES / abbr. */
+    }
+}
+
+/** Full name for a songbook abbreviation from the registry, or null. */
+export function songbookFullName(abbr) {
+    const entry = _SONGBOOK_REGISTRY.get(abbr);
+    return (entry && entry.name) || null;
+}
+
+/** Whether a songbook is official (registry), defaulting to true if unknown.
+   Enables the "Unofficial → show writing team" treatment (#1531 part 2). */
+export function songbookIsOfficial(abbr) {
+    const entry = _SONGBOOK_REGISTRY.get(abbr);
+    return entry ? entry.isOfficial : true;
 }
