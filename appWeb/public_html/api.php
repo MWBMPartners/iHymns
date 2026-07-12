@@ -1842,22 +1842,40 @@ if ($action !== null) {
                 break;
             }
 
-            /* Raw snapshot — id / created / updated only (the resolver projects
-               name/songs/arrangements/live). Private owner keys are never read here. */
+            /* Raw snapshot — id / created / updated + the PRIVATE owner id (used
+               ONLY for the isOwner comparison below; never echoed). The resolver
+               projects name/songs/arrangements/live. */
             $meta = sharedSetlistGet($shareId);
 
             sharedSetlistMarkViewed($shareId);
 
+            /* #1535 — is the CURRENT authenticated viewer this share's OWNER? The
+               client suppresses the "shared with you" banner + the Import buttons
+               for the owner (importing your own set list into itself is
+               nonsensical) and shows an owner note instead. This is a BOOLEAN
+               ONLY — the owner's identity (_ownerUserId) is NEVER echoed, so the
+               public-safe allow-list below is unchanged. No auth, no live-link
+               owner, or a different user ⇒ false. */
+            $viewerIsOwner     = false;
+            $sharedOwnerUserId = $meta['_ownerUserId'] ?? null;
+            if ($sharedOwnerUserId !== null) {
+                $viewer = getAuthenticatedUser();
+                if ($viewer !== null && (int)($viewer['Id'] ?? 0) === (int)$sharedOwnerUserId) {
+                    $viewerIsOwner = true;
+                }
+            }
+
             /* PUBLIC-SAFE response — strict ALLOW-LIST. NEVER echo any of the
                owner-identifying fields: owner (anon UUID), _ownerUserId,
                _sourceSetlistId, CreatedBy, or any email. The only fields that
-               leave the server are: id, name, songs, live, created, updated, and
-               (optionally) arrangements. (#1380) */
+               leave the server are: id, name, songs, live, isOwner (a boolean),
+               created, updated, and (optionally) arrangements. (#1380 / #1535) */
             $response = [
                 'id'      => $meta['id'] ?? $shareId,
                 'name'    => $wire['name'],
                 'songs'   => $wire['songs'],
                 'live'    => $wire['live'],
+                'isOwner' => $viewerIsOwner,
                 'created' => $meta['created'] ?? null,
                 'updated' => $meta['updated'] ?? null,
             ];

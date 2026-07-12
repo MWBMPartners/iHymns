@@ -59,8 +59,9 @@ declare(strict_types=1);
     <!-- Shared set list content (hidden by default, populated by JS) -->
     <div id="shared-setlist-content" class="d-none">
 
-        <!-- Shared indicator banner -->
-        <div class="alert alert-info d-flex align-items-center gap-2 mb-3" role="status">
+        <!-- Shared indicator banner — hidden by JS for the OWNER (#1535), who
+             sees the owner note below instead of a "shared with you" message. -->
+        <div id="shared-setlist-banner" class="alert alert-info d-flex align-items-center gap-2 mb-3" role="status">
             <i class="fa-solid fa-share-nodes" aria-hidden="true"></i>
             <div>
                 <strong>Shared Set List</strong>
@@ -72,6 +73,18 @@ declare(strict_types=1);
                     <i class="fa-solid fa-rotate me-1" aria-hidden="true"></i>
                     This set list updates live — you&rsquo;ll always see the latest version.
                 </small>
+            </div>
+        </div>
+
+        <!-- #1535 — Owner-viewing-own-share note. Shown by JS only when the
+             server reports data.isOwner (the signed-in viewer IS this share's
+             owner), replacing the "shared with you" banner + Import buttons.
+             Also reinforces the #1380 live-share model for the owner. -->
+        <div id="shared-setlist-owner-note" class="alert alert-secondary d-flex align-items-center gap-2 mb-3 d-none" role="status">
+            <i class="fa-solid fa-user-check" aria-hidden="true"></i>
+            <div>
+                <strong>This is your set list</strong>
+                <small class="d-block">You&rsquo;re viewing your own shared link — there&rsquo;s nothing to import. Anyone you shared it with always sees your latest changes.</small>
             </div>
         </div>
 
