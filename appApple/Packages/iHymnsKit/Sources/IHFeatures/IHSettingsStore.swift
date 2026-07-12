@@ -158,6 +158,22 @@ public struct IHSettingsStore: @unchecked Sendable {
         }
     }
 
+    /// The last address/port a human typed into "Connect by Address"
+    /// (#1424, `.claude/apple-phase2-pr8-spec.md` §6.2/§6.4) — pre-fills
+    /// BOTH `ManualConnectSheet` and `NetworkTroubleshooterView`'s address
+    /// field next time, since a venue's TV usually keeps the same address.
+    /// `nil` on a fresh install (nothing typed yet). A LAN host string is
+    /// not a secret (this repo's own `LANRemoteManualAddress.swift` header:
+    /// "UX-grade validation... not a security boundary") — `UserDefaults`
+    /// is the correct custody, same posture as every other property here.
+    ///
+    /// ELI5: "The last TV address you typed in by hand, so you don't have
+    /// to retype it next time."
+    public var lastManualConnectAddress: String? {
+        get { defaults.string(forKey: Keys.lastManualConnectAddress) }
+        nonmutating set { defaults.set(newValue, forKey: Keys.lastManualConnectAddress) }
+    }
+
     /// The `UserDefaults` keys this store owns exclusively — kept as one
     /// private namespace so every property above reads/writes the exact
     /// same literal, never a copy-pasted string that could drift.
@@ -169,5 +185,6 @@ public struct IHSettingsStore: @unchecked Sendable {
         static let hasSeenOnboarding = "ihHasSeenOnboarding"
         static let hasSeenLocalNetworkPrimer = "ihHasSeenLocalNetworkPrimer"
         static let apiEnvironment = "ihApiEnvironmentOverride"
+        static let lastManualConnectAddress = "ihLastManualConnectAddress"
     }
 }

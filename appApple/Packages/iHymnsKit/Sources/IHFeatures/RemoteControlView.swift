@@ -22,6 +22,8 @@ public struct RemoteControlView: View {
     private let rootViewModel: AppRootViewModel
     @State private var coordinator = RemoteControlCoordinator()
     @State private var isPresentingPairingSheet = false
+    /// #1424 — presents `ManualConnectSheet` ("Connect by Address").
+    @State private var isPresentingManualSheet = false
     @State private var hasSeenPrimer = IHSettingsStore().hasSeenLocalNetworkPrimer
     @Environment(\.scenePhase) private var scenePhase
 
@@ -44,6 +46,15 @@ public struct RemoteControlView: View {
                         coordinator.handleScannedOrPasted(string)
                     },
                     onCancel: { isPresentingPairingSheet = false }
+                )
+            }
+            .sheet(isPresented: $isPresentingManualSheet) {
+                ManualConnectSheet(
+                    onConnect: { host, port in
+                        isPresentingManualSheet = false
+                        coordinator.connectByAddress(hostInput: host, portInput: port)
+                    },
+                    onCancel: { isPresentingManualSheet = false }
                 )
             }
     }
@@ -69,6 +80,15 @@ public struct RemoteControlView: View {
             )
         case .suspended(let tvName):
             ContentUnavailableView("Reconnecting to \(tvName)…", systemImage: "antenna.radiowaves.left.and.right")
+        case .confirmingFingerprint(let tvName, let fingerprintHex):
+            // #1424 — the TOFU interstitial (spec §6.3, Decision D-3):
+            // full-screen, not a sheet, so Cancel is unambiguous (the
+            // `.codeEntry` precedent).
+            FingerprintConfirmView(
+                tvName: tvName, fingerprintHex: fingerprintHex,
+                onConfirm: { coordinator.confirmFingerprint() },
+                onCancel: { Task { await coordinator.cancelPairing() } }
+            )
         }
     }
 
@@ -94,8 +114,19 @@ public struct RemoteControlView: View {
                 ForEach(coordinator.rows) { row in
                     rowView(row)
                 }
+                cantFindYourTVSection
             }
             .toolbar { pairingToolbar }
+        }
+    }
+
+    /// #1424 — the "expect connectivity without discovery" rung (strategy
+    /// §2.4.5): a venue's VPN'd-in remote or an AP-isolated network never
+    /// sees anything in `coordinator.rows` at all, so this affordance has
+    /// to be reachable from EVERY browsing state, not just the empty one.
+    private var cantFindYourTVSection: some View {
+        Section("Can't find your TV?") {
+            Button("Connect by Address…") { isPresentingManualSheet = true }
         }
     }
 
@@ -119,13 +150,17 @@ public struct RemoteControlView: View {
             #if os(iOS)
             Text("Open iHymns on your Apple TV, then scan the QR code in its Settings → Remote Control.")
             #else
+            // #1424 — macOS/visionOS gain their first fully self-contained
+            // NEW-pair path that needs no payload string conveyed from the
+            // TV at all (PR-7 §4.3 noted "that TV waits for PR-8").
             Text(
                 "Open iHymns on your Apple TV, then scan the QR code in its Settings → Remote Control… "
-                    + "or paste the pairing code from the TV screen."
+                    + "paste the pairing code from the TV screen, or connect by address below."
             )
             #endif
         } actions: {
             Button("Enter Code") { isPresentingPairingSheet = true }
+            Button("Connect by Address…") { isPresentingManualSheet = true }
         }
     }
 
