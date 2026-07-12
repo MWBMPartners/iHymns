@@ -144,6 +144,17 @@ public enum RemotePairingEntryResolver {
         /// matched `payload.name` — there is genuinely no address to dial
         /// (spec §4 row A/B: "if neither → error card").
         case noRouteToTV
+        /// The scanned/pasted payload's own fields fail the basic sanity
+        /// checks spec §8's threat-model table promises: `fingerprintHex`
+        /// isn't exactly 64 lowercase hex characters, or `port` is present
+        /// but `0` — see `isValidFingerprint(_:)`/`resolvePayload(_:saved:
+        /// discovered:)` (#1422 review fix 4). A malformed field here is
+        /// either an honest scanning glitch (a partially-obscured QR, a
+        /// mis-copied paste) or a deliberately crafted payload; either way
+        /// there is nothing safe to connect to, so this is rejected BEFORE
+        /// any endpoint/token resolution — never surfaced merely as a later
+        /// TLS-pin mismatch at connect time.
+        case malformedPayload
     }
 
     public enum Resolution: Sendable {
@@ -196,6 +207,20 @@ public enum RemotePairingEntryResolver {
     private static func resolvePayload(
         _ payload: LANRemotePairingPayload, saved: [PairedTVRecord], discovered: [LANRemoteDiscoveredService]
     ) -> Resolution {
+        // Spec §8's threat-model clamp, made real (#1422 review fix 4): a
+        // payload comes from a camera scan or a pasted string — untrusted
+        // input by construction — so its shape is validated BEFORE this
+        // resolver ever builds a `RemoteConnectTarget` from it, rather than
+        // letting a malformed fingerprint sail through to `RemoteSessionActor
+        // .connect(to:expectedFingerprint:token:)` and rely on the TLS pin
+        // simply never matching as the only thing standing in the way.
+        guard isValidFingerprint(payload.fingerprintHex) else {
+            return .unpairable(reason: .malformedPayload)
+        }
+        if let port = payload.port, port == 0 {
+            return .unpairable(reason: .malformedPayload)
+        }
+
         guard let endpoint = endpointFromPayload(payload, discovered: discovered) else {
             return .unpairable(reason: .noRouteToTV)
         }
@@ -236,6 +261,28 @@ public enum RemotePairingEntryResolver {
             return .hostPort(host: .init(host), port: nwPort)
         }
         return discovered.first { $0.name == payload.name }?.endpoint
+    }
+
+    /// The exact alphabet a valid fingerprint may use — lowercase only, spec
+    /// §8: "non-64-hex fingerprint ⇒ reject." Every REAL `LANRemoteIdentity
+    /// .fingerprint` (`IHLive`, PR-4) is a sha256 digest hex-encoded
+    /// lowercase, so this is checking "is this shaped like a real
+    /// fingerprint," not merely "is this hex" — `Character.isHexDigit`
+    /// alone would also accept uppercase `A`-`F`, which this payload format
+    /// never produces and which the TV's own fingerprint never contains.
+    private static let lowercaseHexDigits = Set("0123456789abcdef")
+
+    /// Spec §8's payload clamp (#1422 review fix 4): exactly 64 lowercase
+    /// hex characters. Anything else — wrong length, any uppercase letter,
+    /// any non-hex character — is NOT a fingerprint this app could ever
+    /// have generated itself, so `resolvePayload(_:saved:discovered:)`
+    /// rejects it up front rather than letting it become a wasted (or
+    /// worse, ambiguous) connect attempt.
+    ///
+    /// ELI5: "does this look like a real fingerprint, character for
+    /// character?"
+    private static func isValidFingerprint(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy(lowercaseHexDigits.contains)
     }
 
     // MARK: - Path C — a tap on an already-saved list row

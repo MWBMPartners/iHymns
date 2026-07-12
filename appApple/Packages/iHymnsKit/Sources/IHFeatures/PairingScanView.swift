@@ -17,6 +17,12 @@
 // (spec §8 D-15's "no new external package" tripwire).
 #if os(iOS)
 import AVFoundation
+// `LANRemotePairingPayload(qrString:)` (used in `handleScanned` to pre-filter
+// non-iHymns QR codes) lives in IHLive — imported explicitly here because Swift
+// imports are per-FILE, and this file's whole body is `#if os(iOS)`, so a
+// missing import only ever surfaces on an iOS compile (the macOS/tvOS builds
+// compile this file to nothing). #1422.
+import IHLive
 import SwiftUI
 
 /// The QR-scanning camera screen — see this file's header for the full
@@ -122,7 +128,38 @@ private struct CameraPreview: UIViewRepresentable {
     /// Owns the capture session and starts/stops it on a background
     /// (utility) queue — Apple's own guidance: never start/stop
     /// `AVCaptureSession` on the main thread.
-    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+    ///
+    /// ELI5: this class touches a camera from more than one thread, so we
+    /// have to PROVE to Swift 6 that it's doing so safely — `@unchecked
+    /// Sendable` is that proof, backed by the discipline documented below,
+    /// not a way of skipping the check.
+    ///
+    /// DETAILED (#1422 review fix 5): under Swift 6 strict concurrency,
+    /// `DispatchQueue.async(execute:)` takes an `@escaping @Sendable`
+    /// closure — capturing `self` (a plain `NSObject` subclass, not
+    /// `Sendable`) in either `sessionQueue.async { [weak self] … }` below
+    /// (`configure(previewView:)`'s `startSession()` kickoff, `stop()`'s
+    /// `stopRunning()`) produced a "capture of non-Sendable type in a
+    /// `@Sendable` closure" warning. The underlying design was already
+    /// safe, just not provably so to the compiler: EVERY mutable property
+    /// here (`session`'s own configuration/state, `hasDelivered`) is
+    /// touched ONLY from `sessionQueue` — a dedicated serial queue — after
+    /// construction; `session` itself is a `let` (the reference never
+    /// changes), and the ONE MainActor touch, `configure(previewView:)`'s
+    /// `previewView.videoPreviewLayer.session = session`, only hands that
+    /// same immutable reference to the preview layer (assigning
+    /// `AVCaptureVideoPreviewLayer.session` from the main thread while
+    /// `startRunning()`/`stopRunning()`/`addInput`/`addOutput` run on a
+    /// background queue is Apple's own documented, blessed pattern — no
+    /// property of THIS type is ever read or written from two different
+    /// queues at once, which is exactly what `Sendable` verification exists
+    /// to prove and exactly what the compiler cannot see through a
+    /// hand-rolled `DispatchQueue` confinement discipline). Hence
+    /// `@unchecked` — this silences the warnings without changing any
+    /// runtime behaviour; a future change that starts mutating `session`'s
+    /// configuration or `hasDelivered` from anywhere OTHER than
+    /// `sessionQueue` would break the discipline this comment documents.
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate, @unchecked Sendable {
         private let onScanned: (String) -> Void
         private let session = AVCaptureSession()
         private let sessionQueue = DispatchQueue(label: "app.ihymns.lanremote.scan", qos: .userInitiated)

@@ -112,9 +112,41 @@ public enum IHColorTokens {
     /// before committing to the asset-backed `Color`. `#if canImport`
     /// covers every platform this package targets (`Package.swift`'s
     /// `platforms:` list: iOS/iPadOS, macOS, tvOS, watchOS, visionOS all
-    /// provide EITHER UIKit or AppKit).
+    /// provide EITHER UIKit or AppKit) — EXCEPT watchOS needs its OWN
+    /// branch ahead of the `canImport(UIKit)` one (see below).
+    ///
+    /// ELI5: watchOS has UIKit, but not the one UIKit colour-lookup
+    /// function this file leans on — so watchOS gets its own answer
+    /// instead of calling that function and failing to build at all.
+    ///
+    /// DETAILED (#1422 review — PR-7 fix 1): `UIColor(named:in:
+    /// compatibleWith:)` is `API_UNAVAILABLE(watchOS)` in UIKit's own
+    /// header, but `#if canImport(UIKit)` is still TRUE on watchOS (its
+    /// UIKit module exists, just without this particular initializer) — so
+    /// before this fix, the watchOS build of `IHDesign` hit an unavailable
+    /// symbol and failed outright the moment anything actually compiled it
+    /// FOR watchOS. That never happened until PR-7's new iOS-Simulator CI
+    /// build started embedding `iHymnsWatch` (which links `IHDesign` for
+    /// watchOS) — a pre-existing latent bug PR-7's own new CI step was the
+    /// first thing to exercise, so the fix ships alongside it. The fix:
+    /// branch on `os(watchOS)` FIRST and skip the failable lookup
+    /// entirely — the bundled `Accent`/`AccentHighContrast` colour sets are
+    /// always compiled into `Bundle.module` (never optionally downloaded),
+    /// and SwiftUI's `Color(_:bundle:)` DOES resolve Asset-Catalog colour
+    /// sets on watchOS (only the FAILABLE `UIColor` lookup is missing), so
+    /// assuming "present" here is safe — this guard exists to catch a
+    /// genuinely MISSING asset, which cannot happen for a colour set
+    /// shipped inside this package's own bundle. iOS/tvOS/macOS keep their
+    /// existing branches, byte-for-byte unchanged (`UIColor(named:in:
+    /// compatibleWith:)` IS available on tvOS).
     private static func assetExists(_ name: String) -> Bool {
-        #if canImport(UIKit)
+        #if os(watchOS)
+        // watchOS has no failable `UIColor(named:in:compatibleWith:)`
+        // (`API_UNAVAILABLE(watchOS)`) — see this function's DETAILED
+        // comment above. Assume-present: the bundled colour sets are
+        // always compiled in, and `Color(_:bundle:)` resolves them fine.
+        return true
+        #elseif canImport(UIKit)
         return UIColor(named: name, in: .module, compatibleWith: nil) != nil
         #elseif canImport(AppKit)
         return NSColor(named: name, bundle: .module) != nil

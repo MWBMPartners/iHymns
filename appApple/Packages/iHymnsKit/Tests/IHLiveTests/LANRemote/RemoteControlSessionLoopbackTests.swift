@@ -50,14 +50,19 @@ import Testing
 struct RemoteControlSessionLoopbackTests {
 
     /// A session configured for millisecond-fast ping/backoff — spec §7.5.
-    private func makeSession() -> RemoteControlSession {
+    /// `internal` (not `private`) so `RemoteControlSessionReArmTests.swift`
+    /// — split out purely to keep this struct's `type_body_length` under
+    /// SwiftLint's budget (#1422 review fix 3) — can reuse it; it stays
+    /// invisible outside this test target either way.
+    func makeSession() -> RemoteControlSession {
         var configuration = RemoteControlSession.Configuration(remoteKind: .phone, deviceName: "Test Phone")
         configuration.health = .init(pingInterval: .milliseconds(40), maxMissedPongs: 3)
         configuration.backoff = .init(baseDelay: 0.05, multiplier: 2, maxDelay: 0.2, jitterFraction: 0.2)
         return RemoteControlSession(configuration: configuration)
     }
 
-    private func makeListener(
+    /// `internal` for the same cross-file-reuse reason as `makeSession()` above.
+    func makeListener(
         port: NWEndpoint.Port = .any,
         pairingAuthority: any LANRemotePairingAuthority = InMemoryLANRemotePairingAuthority(),
         clock: any LANRemoteClock = ManualLANRemoteClock()
@@ -74,7 +79,8 @@ struct RemoteControlSessionLoopbackTests {
         return (listener, identity)
     }
 
-    private func target(
+    /// `internal` for the same cross-file-reuse reason as `makeSession()` above.
+    func target(
         tvName: String = "Fellowship Hall TV", port: NWEndpoint.Port, fingerprint: String,
         token: String? = nil, knownCode: String? = nil
     ) -> RemoteControlSession.Target {

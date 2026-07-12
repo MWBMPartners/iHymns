@@ -115,6 +115,65 @@ struct RemotePairingEntryResolverTests {
         #expect(reason == .noRouteToTV)
     }
 
+    // MARK: - §8 threat-model clamps (#1422 review fix 4) — table-driven
+
+    @Test("A payload with port == 0 is rejected as .malformedPayload before any connect is attempted")
+    func payloadWithZeroPortIsMalformed() {
+        let payload = LANRemotePairingPayload(name: "TV", host: "10.0.0.9", port: 0, fingerprintHex: fingerprint, code: "042317")
+        let resolution = RemotePairingEntryResolver.resolve(.payload(payload), saved: [], discovered: [])
+        guard case .unpairable(let reason) = resolution else {
+            Issue.record("expected .unpairable, got \(resolution)")
+            return
+        }
+        #expect(reason == .malformedPayload)
+    }
+
+    @Test("A payload whose fingerprint is 63 hex characters (one short of 64) is rejected as .malformedPayload")
+    func payloadWithShortFingerprintIsMalformed() {
+        let shortFingerprint = String(fingerprint.dropLast())
+        let payload = LANRemotePairingPayload(name: "TV", host: "10.0.0.9", port: 7269, fingerprintHex: shortFingerprint, code: "042317")
+        let resolution = RemotePairingEntryResolver.resolve(.payload(payload), saved: [], discovered: [])
+        guard case .unpairable(let reason) = resolution else {
+            Issue.record("expected .unpairable, got \(resolution)")
+            return
+        }
+        #expect(reason == .malformedPayload)
+    }
+
+    @Test("A payload whose fingerprint contains uppercase hex characters is rejected as .malformedPayload")
+    func payloadWithUppercaseFingerprintIsMalformed() {
+        let uppercaseFingerprint = fingerprint.uppercased()
+        let payload = LANRemotePairingPayload(name: "TV", host: "10.0.0.9", port: 7269, fingerprintHex: uppercaseFingerprint, code: "042317")
+        let resolution = RemotePairingEntryResolver.resolve(.payload(payload), saved: [], discovered: [])
+        guard case .unpairable(let reason) = resolution else {
+            Issue.record("expected .unpairable, got \(resolution)")
+            return
+        }
+        #expect(reason == .malformedPayload)
+    }
+
+    @Test("A payload whose fingerprint contains a non-hex character is rejected as .malformedPayload")
+    func payloadWithNonHexFingerprintIsMalformed() {
+        let nonHexFingerprint = "zz" + String(fingerprint.dropFirst(2))
+        let payload = LANRemotePairingPayload(name: "TV", host: "10.0.0.9", port: 7269, fingerprintHex: nonHexFingerprint, code: "042317")
+        let resolution = RemotePairingEntryResolver.resolve(.payload(payload), saved: [], discovered: [])
+        guard case .unpairable(let reason) = resolution else {
+            Issue.record("expected .unpairable, got \(resolution)")
+            return
+        }
+        #expect(reason == .malformedPayload)
+    }
+
+    @Test("A well-formed payload (valid 64-lowercase-hex fingerprint, non-zero port) still resolves to .connect")
+    func validPayloadStillResolvesToConnect() {
+        let payload = LANRemotePairingPayload(name: "TV", host: "10.0.0.9", port: 7269, fingerprintHex: fingerprint, code: "042317")
+        let resolution = RemotePairingEntryResolver.resolve(.payload(payload), saved: [], discovered: [])
+        guard case .connect = resolution else {
+            Issue.record("expected .connect, got \(resolution)")
+            return
+        }
+    }
+
     // MARK: - Path C: a tap on an already-saved row
 
     @Test("A saved row with a name-matched discovery uses the discovered endpoint as primary, saved address as fallback")

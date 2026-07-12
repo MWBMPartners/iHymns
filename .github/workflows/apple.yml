@@ -76,23 +76,23 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      # The generic iOS-Simulator destination below needs the iOS 26.0
-      # platform, which is NOT preinstalled on the GitHub-hosted macos-26
-      # runner — same fix as the tvOS step below (#1504), needed here because
       # #1422 (PR-7) ships the first `#if os(iOS)`-only IHFeatures UI
-      # (`PairingScanView.swift`) and the macOS build above never compiles it.
-      - name: Install iOS platform (runner ships without it, #1422)
-        run: sudo xcodebuild -downloadPlatform iOS
-
-      - name: Build (iOS Simulator destination — proves the iOS-only remote-control UI, #1422)
-        working-directory: appApple
+      # (`PairingScanView.swift`, AVFoundation camera) which the macOS build
+      # above never compiles. We verify it with a PACKAGE build cross-compiled
+      # for the iOS-Simulator SDK — deliberately NOT the full `iHymns` app
+      # scheme, because that scheme embeds `iHymnsWatch`, which imports
+      # IHFeatures and does NOT yet compile for watchOS (a pre-existing,
+      # never-CI-built gap — ~9 IHFeatures views use watchOS-unavailable
+      # SwiftUI APIs; tracked in #1549, which will re-enable the full
+      # app-scheme iOS build once the watch compiles). A `swift build`
+      # cross-compile needs only the iOS SDK (always present on the runner),
+      # so no `-downloadPlatform iOS` is required.
+      - name: Build iHymnsKit for iOS Simulator (proves the iOS-only remote UI, #1422)
+        working-directory: appApple/Packages/iHymnsKit
         run: |
-          xcodebuild \
-            -project iHymns.xcodeproj \
-            -scheme iHymns \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+          swift build \
+            --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            -Xswiftc -target -Xswiftc arm64-apple-ios26.0-simulator
 
       # The generic tvOS-Simulator destination below needs the tvOS 26.0
       # platform, which is NOT preinstalled on the GitHub-hosted macos-26

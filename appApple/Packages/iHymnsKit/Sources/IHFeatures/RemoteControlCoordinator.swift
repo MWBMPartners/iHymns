@@ -63,7 +63,26 @@ public final class RemoteControlCoordinator {
     public private(set) var localNetworkDenied = false
 
     private let store: any PairedTVStoring
-    private let session: RemoteControlSession
+    /// Kept so `start()` can build a BRAND-NEW `RemoteControlSession` on
+    /// every (re)start rather than the one this type used to construct
+    /// ONCE in `init` — see `session`'s own doc comment (#1422 review fix 3).
+    private let sessionConfiguration: RemoteControlSession.Configuration
+    /// `var`, not `let` (#1422 review fix 3): `RemoteControlSession.stop()`
+    /// is TERMINAL — `eventContinuation.finish()` means its `events` stream
+    /// never yields again, no matter what's called on the actor afterwards.
+    /// Before this fix `session` was a `let` built ONCE in `init` and
+    /// `start()` was one-shot (`hasStarted`, never reset) — so a view that
+    /// saw `onDisappear` (→ `stop()`) and then re-`appear`ed (a tab switch
+    /// while this screen stays pushed; SwiftUI keeps this `@Observable`
+    /// coordinator's `@State` alive across that and just re-runs `.task`,
+    /// `RemoteControlView.swift:35-36`) hit a genuinely DEAD screen:
+    /// `start()` no-op'd, and even if it hadn't, the OLD session's stream
+    /// was finished for good either way. Fix: `stop()` resets `hasStarted`
+    /// so `start()` re-arms, and `start()` builds a FRESH session — fresh
+    /// actor, fresh stream, fresh `spawnEventsConsumer()` — every time it
+    /// runs. The old, already-`stop()`'d session is simply dropped; it has
+    /// no background tasks left by the time `stop()` returns, so nothing leaks.
+    private var session: RemoteControlSession
     private var savedRecords: [PairedTVRecord] = []
     private var discoveredServices: [LANRemoteDiscoveredService] = []
 
@@ -73,6 +92,12 @@ public final class RemoteControlCoordinator {
     /// `PairedTVRecord` upsert and a `UIPhase` carrying the right name.
     private var currentTVName: String?
     private var currentFingerprint: String?
+
+    /// Guards `touchLastConnected()` so it only runs on the FIRST
+    /// `.controlling` arrival for the CURRENT attach/reconnect, not on
+    /// every subsequent state broadcast — see `apply(_:)`'s `.controlling`
+    /// case for the full story (#1422 review fix 2).
+    private var hasTouchedThisLink = false
 
     private var hasStarted = false
     private var eventsTask: Task<Void, Never>?
@@ -85,17 +110,33 @@ public final class RemoteControlCoordinator {
         )
     ) {
         self.store = store
+        self.sessionConfiguration = sessionConfiguration
         self.session = RemoteControlSession(configuration: sessionConfiguration)
     }
 
-    /// Idempotent — loads the saved-TV list, starts discovery IF the Local
+    /// Idempotent (re-armable — #1422 review fix 3) — rebuilds a fresh
+    /// `session`, loads the saved-TV list, starts discovery IF the Local
     /// Network primer has already been shown, and spawns the ONE
-    /// `session.events` consumer this coordinator ever runs.
+    /// `session.events` consumer this coordinator ever runs FOR THAT
+    /// session. Safe to call again after a matching `stop()` — see
+    /// `session`'s own doc comment for why.
     ///
-    /// ELI5: "Get the remote-control screen ready."
+    /// ELI5: "Get the remote-control screen ready" — including "ready
+    /// again," if the screen went away and came back.
     public func start() async {
         guard !hasStarted else { return }
         hasStarted = true
+
+        // A brand-new session every time — never reuse one a prior
+        // `stop()` already finished. Also reset the transient per-
+        // connection UI state: a stale `.controlling`/`.codeEntry` screen
+        // must not linger over a session attached to nothing.
+        session = RemoteControlSession(configuration: sessionConfiguration)
+        uiPhase = .browsing
+        notice = nil
+        currentTVName = nil
+        currentFingerprint = nil
+        hasTouchedThisLink = false
 
         savedRecords = await store.listPairedTVs()
         rebuildRows()
@@ -115,7 +156,14 @@ public final class RemoteControlCoordinator {
         await beginDiscovery()
     }
 
+    /// Full teardown — also re-arms `start()` (#1422 review fix 3): a
+    /// LATER `start()` call (the view reappearing) must not see
+    /// `hasStarted == true` and no-op over a session this just finished.
+    /// `guard hasStarted` makes a repeat/stray `stop()` call a cheap no-op
+    /// instead of re-finishing an already-finished session.
     public func stop() async {
+        guard hasStarted else { return }
+        hasStarted = false
         discoveryTask?.cancel(); discoveryTask = nil
         eventsTask?.cancel(); eventsTask = nil
         await session.stop()
@@ -153,6 +201,13 @@ public final class RemoteControlCoordinator {
             Task { await session.attach(to: target) }
         case .unpairable(.noRouteToTV):
             notice = "Couldn't find \(tvName) on this network. Scan its QR code again from the TV's screen."
+        case .unpairable(.malformedPayload):
+            // Spec §8's clamp (#1422 review fix 4) rejected the payload's
+            // OWN fields (port 0 / a malformed fingerprint) before this
+            // resolver even looked for a route — a distinct, more specific
+            // notice than "couldn't find it on the network" since the
+            // payload itself is the problem, not reachability.
+            notice = "Not a valid iHymns pairing code."
         }
     }
 
@@ -228,10 +283,32 @@ public final class RemoteControlCoordinator {
         uiPhase = Self.uiPhase(after: event, current: uiPhase, tvName: tvName)
 
         switch event {
+        case .connecting, .reconnecting:
+            // A NEW connection attempt is (re)starting — arm
+            // `hasTouchedThisLink` back to `false` so the next
+            // `.controlling` arrival still gets exactly one touch
+            // (#1422 review fix 2).
+            hasTouchedThisLink = false
         case .paired(let token, let resolved):
+            // Defensive re-reset: `.connecting` already cleared this for
+            // the same attempt, but `.paired` always precedes this
+            // connection's first `.controlling` on the wire (spec §1.1),
+            // so resetting again costs nothing.
+            hasTouchedThisLink = false
             await persistPaired(token: token, resolved: resolved)
         case .controlling:
-            await touchLastConnected()
+            // `.controlling` fires on EVERY TV state broadcast — including
+            // the TV's echo of our OWN intents (spec §1.1) — so touching
+            // unconditionally would hit the Keychain (read+delete+add) +
+            // `listPairedTVs()`/`rebuildRows()` on every next/prev/scroll
+            // tap. This gate makes the code match `touchLastConnected()`'s
+            // own "FIRST-arrival" doc comment (#1422 review fix 2): only
+            // the first arrival since the last `.connecting`/
+            // `.reconnecting`/`.paired` runs it; later echoes no-op.
+            if !hasTouchedThisLink {
+                hasTouchedThisLink = true
+                await touchLastConnected()
+            }
         case .pairingEnded(let failure):
             currentTVName = nil
             currentFingerprint = nil
@@ -244,7 +321,7 @@ public final class RemoteControlCoordinator {
         case .ended:
             currentTVName = nil
             currentFingerprint = nil
-        case .connecting, .awaitingCodeEntry, .detached, .reconnecting, .suspended:
+        case .awaitingCodeEntry, .detached, .suspended:
             break
         }
     }
