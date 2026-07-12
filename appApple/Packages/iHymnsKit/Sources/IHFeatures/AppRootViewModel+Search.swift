@@ -40,10 +40,28 @@ extension AppRootViewModel {
     public var filteredSongs: [SongSummary] {
         guard case .loaded(let songs) = catalogueLoadState else { return [] }
         let faceted = applyFacetFilters(to: songs)
-        guard !searchText.isEmpty else { return faceted }
+        return Self.songsMatching(searchText, in: faceted)
+    }
 
-        if let numberQuery = CatalogueNumberQuery(rawQuery: searchText) {
-            let numberMatches = faceted.filter(numberQuery.matches)
+    /// The number-then-substring matching core `filteredSongs` delegates
+    /// to — extracted (#1422, `.claude/apple-phase2-pr7-spec.md` §2/D-8) so
+    /// `RemoteSongPickerView` (`IHFeatures`) can reuse the EXACT SAME
+    /// matching logic over its own (unfiltered by songbook/language facets)
+    /// song list without re-forking the number/substring ladder — this
+    /// repo's own named regression class (`.claude/CLAUDE.md`'s "the
+    /// builder's old private `_bsls_*` copies" precedent, applied here to
+    /// Swift search matching instead of PHP similarity scoring). An empty
+    /// query returns `songs` unchanged (`filteredSongs`' own original
+    /// behaviour, now shared).
+    ///
+    /// ELI5: "Of these songs, which ones match what was typed?" — the same
+    /// answer whether you're searching the whole catalogue or picking a
+    /// song from the TV remote.
+    public nonisolated static func songsMatching(_ query: String, in songs: [SongSummary]) -> [SongSummary] {
+        guard !query.isEmpty else { return songs }
+
+        if let numberQuery = CatalogueNumberQuery(rawQuery: query) {
+            let numberMatches = songs.filter(numberQuery.matches)
             // Only trust the number interpretation if it actually found
             // something. A query like "Song 23" parses just fine as
             // songbook-prefix "SONG" + number 23, but no real songbook is
@@ -54,8 +72,8 @@ extension AppRootViewModel {
             if !numberMatches.isEmpty { return numberMatches }
         }
 
-        let needle = searchText.lowercased()
-        return faceted.filter {
+        let needle = query.lowercased()
+        return songs.filter {
             $0.title.lowercased().contains(needle)
                 || $0.displayNumber.contains(needle)
                 || $0.songbookAbbreviation.lowercased().contains(needle)

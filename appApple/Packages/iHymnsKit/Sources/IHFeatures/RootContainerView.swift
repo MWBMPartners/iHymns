@@ -42,14 +42,12 @@
 // `SettingsViewModel` and applies its `theme` as `.preferredColorScheme` on
 // the whole app.
 //
-// `.live` remains a DELIBERATE, honestly-labelled "coming soon" placeholder
+// `.live` WAS a DELIBERATE, honestly-labelled "coming soon" placeholder
 // (this task's own brief: "a Live tab/Setlists can be a labelled 'coming
-// soon' placeholder for now, don't fake them") — no `IHLive` engine is
-// wired to any UI yet in this package, so pretending there's a real Live
-// screen here would be exactly the kind of faked surface this task
-// explicitly rules out. `ContentUnavailableView` is the same "genuinely
-// nothing here yet" idiom the rest of this package already uses for
-// empty/error states, reused here for "not built yet" instead.
+// soon' placeholder for now, don't fake them") — no `IHLive` engine was
+// wired to any UI yet in this package, so pretending there was a real Live
+// screen here would have been exactly the kind of faked surface this task
+// explicitly ruled out.
 //
 // #181 UPDATE (setlists half) — `.setlists` is now a REAL section
 // (`SetlistsView`), split out of what was previously a combined "Live &
@@ -58,6 +56,16 @@
 // with the still-unbuilt Live placeholder would now be the dishonest
 // surface this file's own header warns against. `.live` alone keeps the
 // placeholder, relabelled to just "Live."
+//
+// #1422 UPDATE (Apple Phase-2 PR-7, `.claude/apple-phase2-pr7-spec.md`
+// §6.1/D-6) — `.live` is a placeholder no longer: it now hosts
+// `LiveHubView`, whose real "TV Remote" card leads to the full LAN
+// remote-control screens (`RemoteControlView`/`RemoteControlSurfaceView`).
+// `LiveHubView` itself RETAINS the honest "Live Follow & Service Mode —
+// coming in a future update" `ContentUnavailableView` copy for the
+// server-mediated half that's still unbuilt — this file's own "don't fake
+// a screen" rule is satisfied, not violated, by the split: the half that's
+// real is real, the half that isn't still says so.
 //
 // Compiles on every platform `IHFeatures` targets (`Package.swift`'s
 // `platforms:` list includes tvOS/watchOS too) even though only the
@@ -319,7 +327,7 @@ public struct RootContainerView: View {
             .tag(RootSection.setlists)
 
             NavigationStack {
-                liveComingSoonView
+                LiveHubView(rootViewModel: viewModel)
             }
             .tabItem { Label(RootSection.live.title, systemImage: RootSection.live.systemImage) }
             .tag(RootSection.live)
@@ -366,7 +374,7 @@ public struct RootContainerView: View {
             case .setlists:
                 SetlistsView(rootViewModel: viewModel)
             case .live:
-                liveComingSoonView
+                LiveHubView(rootViewModel: viewModel)
             case .settings:
                 SettingsView(rootViewModel: viewModel, settings: settingsViewModel)
             }
@@ -377,20 +385,6 @@ public struct RootContainerView: View {
                 description: Text("Choose a song from the list to view its lyrics.")
             )
         }
-    }
-
-    /// The honestly-labelled "coming soon" placeholder for Live Follow /
-    /// Service Mode — see this file's header for why this is a real,
-    /// explicit placeholder rather than a faked screen (setlists, formerly
-    /// lumped in here too, now have their own real `.setlists` section
-    /// above). Shared by both `tabbedRoot`'s Live tab and `splitView`'s
-    /// `.live` section so the wording only lives in one place.
-    private var liveComingSoonView: some View {
-        ContentUnavailableView(
-            "Live",
-            systemImage: "dot.radiowaves.left.and.right",
-            description: Text("Live Follow and Service Mode are coming in a future update.")
-        )
     }
 }
 

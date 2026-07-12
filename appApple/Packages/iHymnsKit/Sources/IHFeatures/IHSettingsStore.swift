@@ -112,6 +112,24 @@ public struct IHSettingsStore: @unchecked Sendable {
         nonmutating set { defaults.set(newValue, forKey: Keys.hasSeenOnboarding) }
     }
 
+    /// Whether the user has already been shown the LAN-remote screen's
+    /// Local Network explainer card (#1422, `.claude/apple-phase2-pr7-spec.md`
+    /// §4.3: "permission prompt explained pre-fire" — strategy §2.4.5).
+    /// Same shape as `hasSeenOnboarding` above: an unset key means the card
+    /// hasn't been shown yet, so `RemoteControlView` shows it before the
+    /// FIRST `NWBrowser` start (which is what actually triggers the OS's own
+    /// Local Network permission prompt) rather than letting that system
+    /// prompt appear with no context. Set `true` the moment the card's
+    /// "Continue" button is tapped (`RemoteControlCoordinator
+    /// .acknowledgeLocalNetworkPrimer()`).
+    ///
+    /// ELI5: "Have you already seen the explanation for why iHymns wants to
+    /// look for devices on your network?"
+    public var hasSeenLocalNetworkPrimer: Bool {
+        get { defaults.bool(forKey: Keys.hasSeenLocalNetworkPrimer) }
+        nonmutating set { defaults.set(newValue, forKey: Keys.hasSeenLocalNetworkPrimer) }
+    }
+
     /// An explicit override of which backend deployment (`IHAPI
     /// .APIEnvironment`) this device targets, or `nil` to use the app
     /// shell's own compiled-in default (`IHymnsApp.swift`'s `.dev`, per
@@ -149,6 +167,7 @@ public struct IHSettingsStore: @unchecked Sendable {
         static let dyslexiaReadingMode = "ihDyslexiaReadingModeEnabled"
         static let analyticsConsent = "ihAnalyticsConsentEnabled"
         static let hasSeenOnboarding = "ihHasSeenOnboarding"
+        static let hasSeenLocalNetworkPrimer = "ihHasSeenLocalNetworkPrimer"
         static let apiEnvironment = "ihApiEnvironmentOverride"
     }
 }
