@@ -23,6 +23,18 @@ public enum LANRemoteDiscovery {
     /// `_tcp` (not `_udp`) — every IHRP connection is a plain TCP+TLS
     /// stream (strategy §2.4.2's Network.framework client/server model).
     public static let bonjourServiceType = "_ihymns-remote._tcp"
+
+    /// The documented default TCP port a TV listens on and a remote dials —
+    /// strategy §2.4.5's "TCP 7269" (#1424, D-13). Was a bare `7269` integer
+    /// literal duplicated across `TVRemoteControlCoordinator.swift` (the
+    /// tvOS listener's own port), the manual-connect-by-address parser
+    /// (`LANRemoteManualAddress.swift`), and the manual-connect sheet's
+    /// pre-filled Port field — this is now the ONE literal all three read,
+    /// per this repo's "extract first, use second" modularity rule.
+    ///
+    /// ELI5: "The one phone-number-like port number every iHymns TV remote
+    /// uses, unless something else is already using it."
+    public static let defaultPort: UInt16 = 7269
 }
 
 /// One discovered TV, as seen by a remote's `NWBrowser` — strategy §2.4.5:
