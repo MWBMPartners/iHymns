@@ -134,8 +134,10 @@ struct SongMetadataView: View {
             // `DisclosureGroup` is UNAVAILABLE on tvOS (D-1, #1504's
             // tvOS-build gate) — shown always-expanded there instead of
             // collapsible (a metadata footnote, not worth a bespoke
-            // expand/collapse affordance on a remote-driven focus UI).
-            #if os(tvOS)
+            // expand/collapse affordance on a remote-driven focus UI). Also
+            // UNAVAILABLE on watchOS (#1549) — same always-expanded
+            // fallback applies there too.
+            #if os(tvOS) || os(watchOS)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Song Identifiers").font(.headline)
                 authorityIdsContent(royaltyIds: royaltyIds)

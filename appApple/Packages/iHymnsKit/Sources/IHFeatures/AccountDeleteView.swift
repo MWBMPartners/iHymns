@@ -130,7 +130,16 @@ public struct AccountDeleteView: View {
                         Text(option.rawValue).tag(option)
                     }
                 }
+                // `.segmented` is UNAVAILABLE on watchOS (#1549) — this
+                // screen is never shown on the watch (`iHymnsWatch` links the
+                // whole IHFeatures target, so it must still COMPILE there);
+                // `.automatic` is a compile-only fallback, non-watch keeps
+                // `.segmented` unchanged.
+                #if os(watchOS)
+                .pickerStyle(.automatic)
+                #else
                 .pickerStyle(.segmented)
+                #endif
                 .onChange(of: reauthMode) { _, _ in errorMessage = nil }
             }
 

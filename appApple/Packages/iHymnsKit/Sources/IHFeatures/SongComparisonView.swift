@@ -139,7 +139,18 @@ public struct SongComparisonView: View {
                 Text(sideLabel(isPrimary: true)).tag(ComparisonSide.primary)
                 Text(sideLabel(isPrimary: false)).tag(ComparisonSide.secondary)
             }
+            // `.segmented` is UNAVAILABLE on watchOS (#1549) — `pagedContent`
+            // is never actually REACHED on watchOS at runtime (mirrors this
+            // file's own macOS `pagedTabViewStyle()` note below: `layout`
+            // always resolves `.sideBySide` off-iOS), but the file must
+            // still COMPILE for that platform since `iHymnsWatch` links the
+            // whole IHFeatures target; `.automatic` is a compile-only
+            // fallback, non-watch keeps `.segmented` unchanged.
+            #if os(watchOS)
+            .pickerStyle(.automatic)
+            #else
             .pickerStyle(.segmented)
+            #endif
             .padding([.horizontal, .top])
 
             TabView(selection: $selectedSide) {
