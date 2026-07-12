@@ -506,8 +506,18 @@ body:has(.navbar-admin) {
 
 .btn-amber-solid {
     color: #fff;
-    background: linear-gradient(135deg, var(--accent-start), var(--accent-end));
-    border: 1px solid var(--accent-solid);
+    /* A SOLID call-to-action with WHITE text needs a consistently dark-enough
+       background in EVERY theme. The theme's --accent-* are tuned for text/links
+       on a dark surface, so dark mode LIGHTENS them (indigo-400 #818cf8 →
+       violet-400 #a78bfa) — which drops white-on-button contrast to ~2:1, well
+       below WCAG 2.2 AA (the unreadable "Bulk promote" button, #1542). Pin a
+       fixed indigo-600 → violet-600 gradient here instead: white text scores
+       ≈6.7:1 / ≈5.2:1 (AA pass) in light, dark AND colour-blind modes, and it
+       stays visually on-brand. High-contrast mode re-pins to its own maximal
+       #0000cc token below. Systematic fix for every such reuse is tracked in
+       #1542. */
+    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    border: 1px solid #4f46e5;
     font-weight: 600;
     transition: filter var(--transition-fast),
                 transform var(--transition-fast);
@@ -521,6 +531,12 @@ body:has(.navbar-admin) {
 .btn-amber-solid:active {
     transform: translateY(1px);
     filter: brightness(0.95);
+}
+/* High-contrast theme re-pins this button to its maximal-contrast accent
+   (#0000cc) — white text on it is very high contrast (#1542). */
+[data-ihymns-theme="high-contrast"] .btn-amber-solid {
+    background: var(--accent-solid);
+    border-color: var(--accent-solid);
 }
 
 /* ==========================================================================
