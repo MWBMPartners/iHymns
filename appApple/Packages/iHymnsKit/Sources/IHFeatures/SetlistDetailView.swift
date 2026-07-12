@@ -188,8 +188,11 @@ public struct SetlistDetailView: View {
             // `.dropDestination` is UNAVAILABLE on tvOS (D-1, #1504) — its
             // counterpart `.draggable` on `SetlistCatalogueBrowserView`'s row
             // is ALSO tvOS-omitted, so nothing would ever drag INTO this
-            // drop target there anyway.
-            #if !os(tvOS)
+            // drop target there anyway. Also UNAVAILABLE on watchOS (#1549,
+            // same reasoning) — this screen is never shown on the watch
+            // anyway (`iHymnsWatch` links the whole IHFeatures target, so it
+            // must still COMPILE there).
+            #if !os(tvOS) && !os(watchOS)
             .dropDestination(for: String.self) { droppedIds, _ in
                 return handleDrop(droppedIds, into: setlist)
             }

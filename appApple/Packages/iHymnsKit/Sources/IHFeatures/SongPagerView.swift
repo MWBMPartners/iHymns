@@ -168,7 +168,7 @@ public struct SongPagerView: View {
     /// from.
     @ToolbarContentBuilder
     private var pagerToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
+        ToolbarItemGroup(placement: pagerToolbarPlacement) {
             Button {
                 goToPrevious()
             } label: {
@@ -177,8 +177,12 @@ public struct SongPagerView: View {
             .disabled(!hasPrevious)
             // `.keyboardShortcut` is UNAVAILABLE on tvOS (D-1, #1504) — no
             // physical keyboard concept there; the button itself stays
-            // focusable/selectable via the Siri Remote regardless.
-            #if !os(tvOS)
+            // focusable/selectable via the Siri Remote regardless. Also
+            // UNAVAILABLE on watchOS (#1549, same "no hardware keyboard"
+            // reasoning) — this screen is never shown on the watch anyway
+            // (`iHymnsWatch` links the whole IHFeatures target, so it must
+            // still COMPILE there).
+            #if !os(tvOS) && !os(watchOS)
             .keyboardShortcut(.leftArrow, modifiers: [])
             #endif
             .help("Previous Song")
@@ -189,11 +193,23 @@ public struct SongPagerView: View {
                 Label("Next Song", systemImage: "chevron.right")
             }
             .disabled(!hasNext)
-            #if !os(tvOS)
+            #if !os(tvOS) && !os(watchOS)
             .keyboardShortcut(.rightArrow, modifiers: [])
             #endif
             .help("Next Song")
         }
+    }
+
+    /// `.navigation` is UNAVAILABLE on watchOS (#1549) — this screen is
+    /// never shown on the watch anyway (`iHymnsWatch` links the whole
+    /// IHFeatures target, so it must still COMPILE there); `.automatic` is
+    /// a compile-only fallback, non-watch keeps `.navigation` unchanged.
+    private var pagerToolbarPlacement: ToolbarItemPlacement {
+        #if os(watchOS)
+        .automatic
+        #else
+        .navigation
+        #endif
     }
 }
 

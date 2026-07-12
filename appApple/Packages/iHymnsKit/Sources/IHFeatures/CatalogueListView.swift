@@ -174,6 +174,14 @@ public struct CatalogueListView: View {
     /// The button's own glyph fills in when a filter is active, so the
     /// affordance is visible without opening the menu at all.
     private var filterMenu: some View {
+        // `Menu` (incl. its nested submenus) is UNAVAILABLE on watchOS
+        // (#1549) — `CatalogueListView` is a full-app screen never shown on
+        // the watch (`iHymnsWatch` links the whole IHFeatures target, so it
+        // must still COMPILE there); `EmptyView` is a compile-only stub,
+        // non-watch keeps the real filter menu unchanged.
+        #if os(watchOS)
+        EmptyView()
+        #else
         Menu {
             if !viewModel.availableSongbookAbbreviations.isEmpty {
                 Menu("Songbook") {
@@ -220,5 +228,6 @@ public struct CatalogueListView: View {
                 systemImage: viewModel.hasActiveFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle"
             )
         }
+        #endif
     }
 }

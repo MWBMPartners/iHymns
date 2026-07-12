@@ -100,8 +100,11 @@ public struct SetlistCatalogueBrowserView: View {
         // `.draggable` is UNAVAILABLE on tvOS (D-1, #1504's tvOS-build
         // gate) — no drag-and-drop concept there; the Button's own tap
         // action (`onAdd`) is already the tvOS-reachable "add to setlist"
-        // affordance regardless.
-        #if !os(tvOS)
+        // affordance regardless. Also UNAVAILABLE on watchOS (#1549, same
+        // "no drag-and-drop" reasoning) — this browser is never shown on
+        // the watch anyway (`iHymnsWatch` links the whole IHFeatures
+        // target, so it must still COMPILE there).
+        #if !os(tvOS) && !os(watchOS)
         .draggable(song.songId.rawValue)
         #endif
     }

@@ -145,7 +145,16 @@ public struct RemoteControlSurfaceView: View {
                 Text("Logo").tag(IHRPDisplayState.logo)
                 Text("Freeze").tag(IHRPDisplayState.frozen)
             }
+            // `.segmented` is UNAVAILABLE on watchOS (#1549) — this screen
+            // is never shown on the watch (`iHymnsWatch` links the whole
+            // IHFeatures target, so it must still COMPILE there);
+            // `.automatic` is a compile-only fallback, non-watch keeps
+            // `.segmented` unchanged.
+            #if os(watchOS)
+            .pickerStyle(.automatic)
+            #else
             .pickerStyle(.segmented)
+            #endif
         }
         .ihGlassCard()
     }
@@ -159,6 +168,14 @@ public struct RemoteControlSurfaceView: View {
     private var appearanceCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Appearance").font(.subheadline).foregroundStyle(.secondary)
+            // `Menu` is UNAVAILABLE on watchOS (#1549) — this screen is
+            // never shown on the watch (`iHymnsWatch` links the whole
+            // IHFeatures target, so it must still COMPILE there); `EmptyView`
+            // is a compile-only stub, non-watch keeps the real theme menu
+            // unchanged.
+            #if os(watchOS)
+            EmptyView()
+            #else
             Menu {
                 ForEach(Self.themeOptions, id: \.self) { theme in
                     Button(theme.capitalized) { onIntent(.setAppearance(theme: theme, textScale: nil)) }
@@ -166,6 +183,7 @@ public struct RemoteControlSurfaceView: View {
             } label: {
                 Label("Theme", systemImage: "paintbrush")
             }
+            #endif
             HStack {
                 Text("Text Size")
                 Spacer()
