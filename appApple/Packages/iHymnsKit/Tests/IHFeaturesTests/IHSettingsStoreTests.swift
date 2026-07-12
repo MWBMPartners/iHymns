@@ -37,6 +37,7 @@ struct IHSettingsStoreTests {
         #expect(store.dyslexiaReadingModeEnabled == false)
         #expect(store.analyticsConsentEnabled == false)  // strategy §3.1: OFF by default
         #expect(store.hasSeenOnboarding == false)        // #190: unset = genuinely fresh install
+        #expect(store.hasSeenLocalNetworkPrimer == false) // #1422: unset = show the explainer before discovery starts
         #expect(store.apiEnvironmentOverride == nil)     // use the build default
     }
 
@@ -51,6 +52,7 @@ struct IHSettingsStoreTests {
         writer.dyslexiaReadingModeEnabled = true
         writer.analyticsConsentEnabled = true
         writer.hasSeenOnboarding = true
+        writer.hasSeenLocalNetworkPrimer = true
         writer.apiEnvironmentOverride = .beta
 
         // A DIFFERENT store instance on the same underlying suite must see
@@ -62,6 +64,7 @@ struct IHSettingsStoreTests {
         #expect(reader.dyslexiaReadingModeEnabled == true)
         #expect(reader.analyticsConsentEnabled == true)
         #expect(reader.hasSeenOnboarding == true)
+        #expect(reader.hasSeenLocalNetworkPrimer == true)
         #expect(reader.apiEnvironmentOverride == .beta)
     }
 

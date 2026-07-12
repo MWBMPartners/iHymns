@@ -101,6 +101,22 @@ public actor RemoteSessionActor {
     var expectedFingerprint: String?
     var pairingToken: String?
 
+    /// The actual `host:port` the current (or just-was-current) connection
+    /// resolved to, captured off `NWConnection.currentPath?.remoteEndpoint`
+    /// the instant a connection reaches `.ready` (`+Connection.swift`'s
+    /// `onConnectionStateChanged`) — `nil` before any connection has ever
+    /// gone `.ready`, and cleared every time `disconnect()` runs. #1422
+    /// (`.claude/apple-phase2-pr7-spec.md` §2/§5.2): PR-7's
+    /// `RemoteControlSession` reads this via `currentResolvedRemoteAddress`
+    /// to persist `PairedTVRecord.lastAddress` — additive-only, no existing
+    /// connect/verify/disconnect behaviour changes.
+    var resolvedRemoteAddress: LANRemoteResolvedAddress?
+
+    /// The public accessor for `resolvedRemoteAddress` above.
+    ///
+    /// ELI5: "What address is this connection actually using right now?"
+    public var currentResolvedRemoteAddress: LANRemoteResolvedAddress? { resolvedRemoteAddress }
+
     /// The most recently known pairing token — the value to persist
     /// (Keychain, `synchronizable: false`, PR-7's job) so the NEXT
     /// `connect(to:expectedFingerprint:token:)` call can take the fast
