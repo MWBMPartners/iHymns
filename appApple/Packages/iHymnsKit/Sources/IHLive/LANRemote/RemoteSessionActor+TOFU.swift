@@ -85,9 +85,19 @@ extension RemoteSessionActor {
     /// unreachable in practice, §1.2) if it somehow reached `.ready`
     /// without the verify block ever observing a certificate.
     ///
+    /// - Parameter timeout: #1424 Opus-review fix M2 — how long to wait for
+    ///   `.ready`/`.failed` before giving up on an address stuck in
+    ///   `.waiting` (this file's header). Defaults to the production value
+    ///   (`10s`) so this method's ONE real call site
+    ///   (`RemoteControlSession.attachByAddress`, this file's header point
+    ///   3) stays the only thing that ever overrides it — via the injected
+    ///   `RemoteControlSession.Configuration.tofuConnectTimeout`, never a
+    ///   second hard-coded constant. The pinned-path-free TOFU signature
+    ///   itself is otherwise unchanged (D-2).
+    ///
     /// ELI5: "Connect to whatever's at this address, and tell me what
     /// certificate it showed you — I'm not asking you to trust it yet."
-    public func connectTrustingFirstUse(to endpoint: NWEndpoint) async throws -> String {
+    public func connectTrustingFirstUse(to endpoint: NWEndpoint, timeout: Duration = .seconds(10)) async throws -> String {
         disconnect()
         // The stored `expectedFingerprint`/`pairingToken` are the SAME
         // write-only bookkeeping fields the pinned `connect(...)` sets
@@ -154,7 +164,7 @@ extension RemoteSessionActor {
         // address nothing has ever answered on — this timeout is what
         // turns that into an honest failure instead of an indefinite hang.
         let timeoutTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.tofuConnectTimeout)
+            try? await Task.sleep(for: timeout)
             await self?.failConnectIfStillPending(conn)
         }
         defer { timeoutTask.cancel() }
@@ -186,14 +196,6 @@ extension RemoteSessionActor {
         self.expectedFingerprint = observed
         return observed
     }
-
-    /// How long a TOFU connect waits for `.ready`/`.failed` before giving
-    /// up on an address stuck in `.waiting` (this file's header) — long
-    /// enough that a genuinely slow/degraded network still gets a fair
-    /// chance, short enough that a manual "Connect by Address" attempt to a
-    /// dead/mistyped address gives the human a bounded, sane wait instead
-    /// of an indefinite spinner.
-    private static let tofuConnectTimeout: Duration = .seconds(10)
 
     /// Fails `conn`'s connect attempt out IF it is still THIS actor's
     /// current connection AND still has a pending connect continuation —

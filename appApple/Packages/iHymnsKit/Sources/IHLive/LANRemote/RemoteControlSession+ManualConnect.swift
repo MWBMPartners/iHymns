@@ -77,7 +77,9 @@ extension RemoteControlSession {
             return
         }
 
-        let observed = try? await remote.connectTrustingFirstUse(to: .hostPort(host: .init(host), port: nwPort))
+        let observed = try? await remote.connectTrustingFirstUse(
+            to: .hostPort(host: .init(host), port: nwPort), timeout: configuration.tofuConnectTimeout
+        )
         guard let observed else {
             // On throw: no event yielded here — see this method's own doc
             // comment for why (`handleIdleOrFailed` already covers it).

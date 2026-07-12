@@ -58,6 +58,23 @@ struct RemoteControlSessionLoopbackTests {
         var configuration = RemoteControlSession.Configuration(remoteKind: .phone, deviceName: "Test Phone")
         configuration.health = .init(pingInterval: .milliseconds(40), maxMissedPongs: 3)
         configuration.backoff = .init(baseDelay: 0.05, multiplier: 2, maxDelay: 0.2, jitterFraction: 0.2)
+        // #1424 Opus-review fix M2: the production default (10 s) made a
+        // TOFU connect to a closed loopback port (`ManualConnectLoopbackTests
+        // .nothingListeningYieldsExactlyOnePairingEnded`) sit the FULL 10 s
+        // before failing — reused by every session this helper builds
+        // (`ManualConnectLoopbackTests` composes THIS suite's `helper`), so
+        // it was paid on every loopback run, not just that one test.
+        // EMPIRICALLY TUNED, not guessed: `.seconds(3)` passed every
+        // `ManualConnectLoopbackTests` test running ALONE, but under the
+        // concurrent CPU/Keychain contention of the mandated combined
+        // 4-suite run (`ManualConnectLoopback|LANConnectivityProbeLoopback|
+        // RemoteControlSessionLoopback|TVListenerPairingLoopback`), several
+        // genuinely-succeeding TOFU handshakes took longer than 3 s and were
+        // wrongly timed out — see this PR's verification log. `.seconds(8)`
+        // reliably passed the combined run twice in a row while still
+        // resolving the closed-port case noticeably faster than the 10 s
+        // production default.
+        configuration.tofuConnectTimeout = .seconds(8)
         return RemoteControlSession(configuration: configuration)
     }
 

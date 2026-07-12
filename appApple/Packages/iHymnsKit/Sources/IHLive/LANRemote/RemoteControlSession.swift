@@ -57,6 +57,18 @@ public actor RemoteControlSession {
         public var health: RemoteLinkHealthState.Configuration = .init()
         public var backoff: RemoteReconnectBackoffState.Configuration = .init()
         public var clock: any LANRemoteClock = SystemLANRemoteClock()
+        /// #1424 Opus-review fix M2 — how long `attachByAddress`'s
+        /// Trust-On-First-Use connect (`RemoteSessionActor
+        /// .connectTrustingFirstUse(to:timeout:)`, `+TOFU.swift`) waits
+        /// before giving up on an address stuck in `.waiting`. Production
+        /// default `10s` is unchanged; this exists so the loopback test
+        /// suites (`RemoteControlSessionLoopbackTests.makeSession()`, shared
+        /// by `ManualConnectLoopbackTests`) can inject a SHORT value instead
+        /// — a fixed 10 s wait on the "nothing listening" case made the
+        /// mandated combined 4-suite loopback run flaky/slow under
+        /// concurrent load, exactly the class of tunable `health`/`backoff`
+        /// above already solve the same way.
+        public var tofuConnectTimeout: Duration = .seconds(10)
 
         public init(remoteKind: IHRPRemoteKind, deviceName: String? = nil) {
             self.remoteKind = remoteKind

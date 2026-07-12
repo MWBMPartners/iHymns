@@ -127,7 +127,16 @@ public struct RemoteControlView: View {
     private var cantFindYourTVSection: some View {
         Section("Can't find your TV?") {
             Button("Connect by Address…") { isPresentingManualSheet = true }
-            NavigationLink("Troubleshoot Connection…") { NetworkTroubleshooterView() }
+            NavigationLink("Troubleshoot Connection…") {
+                // #1424 Opus-review fix L1 — the troubleshooter's own
+                // "Connect by Address" button used to dead-end (dismiss
+                // with no connect); it now forwards straight to THIS
+                // screen's one coordinator, same as the toolbar/empty-state
+                // entry points below.
+                NetworkTroubleshooterView(onConnectByAddress: { host, port in
+                    coordinator.connectByAddress(hostInput: host, portInput: port)
+                })
+            }
         }
     }
 
@@ -162,7 +171,16 @@ public struct RemoteControlView: View {
         } actions: {
             Button("Enter Code") { isPresentingPairingSheet = true }
             Button("Connect by Address…") { isPresentingManualSheet = true }
-            NavigationLink("Troubleshoot Connection…") { NetworkTroubleshooterView() }
+            NavigationLink("Troubleshoot Connection…") {
+                // #1424 Opus-review fix L1 — the troubleshooter's own
+                // "Connect by Address" button used to dead-end (dismiss
+                // with no connect); it now forwards straight to THIS
+                // screen's one coordinator, same as the toolbar/empty-state
+                // entry points below.
+                NetworkTroubleshooterView(onConnectByAddress: { host, port in
+                    coordinator.connectByAddress(hostInput: host, portInput: port)
+                })
+            }
         }
     }
 

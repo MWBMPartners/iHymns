@@ -14,6 +14,17 @@
 // runs (a user went straight here instead of the "TV Remote" tab first) —
 // the OS Local Network permission prompt fires then, which is exactly
 // where a user is primed for network questions (spec §5.4).
+//
+// #1424 Opus-review fix L1: `onConnectByAddress` is a plain `(host,
+// portInput)` closure (the exact shape of `ManualConnectSheet.onConnect`
+// and `RemoteControlCoordinator.connectByAddress(hostInput:portInput:)`),
+// not a coordinator reference — this file never imports `IHFeatures`'
+// coordinator type or `Network` (this repo's D-14 tripwire), it just
+// forwards whatever `RemoteControlView` (which OWNS the ONE coordinator
+// for the whole remote screen, this repo's composition-root rule) hands
+// it. `dismiss()` afterward pops THIS pushed screen back to the remote
+// list — the caller sees the connecting banner / interstitial there,
+// exactly where every other connect entry point already surfaces it.
 import IHLive
 import SwiftUI
 
@@ -21,8 +32,16 @@ import SwiftUI
 public struct NetworkTroubleshooterView: View {
     @State private var viewModel = NetworkTroubleshooterViewModel()
     @State private var isPresentingManualSheet = false
+    @Environment(\.dismiss) private var dismiss
 
-    public init() {}
+    /// Forwards a "Connect" tap from this screen's own `ManualConnectSheet`
+    /// to `RemoteControlCoordinator.connectByAddress(hostInput:portInput:)`
+    /// — see this file's header (#1424 Opus-review fix L1).
+    private let onConnectByAddress: (String, String?) -> Void
+
+    public init(onConnectByAddress: @escaping (String, String?) -> Void) {
+        self.onConnectByAddress = onConnectByAddress
+    }
 
     public var body: some View {
         Form {
@@ -77,7 +96,16 @@ public struct NetworkTroubleshooterView: View {
         .navigationTitle("Troubleshoot Connection")
         .sheet(isPresented: $isPresentingManualSheet) {
             ManualConnectSheet(
-                onConnect: { _, _ in isPresentingManualSheet = false },
+                onConnect: { host, port in
+                    isPresentingManualSheet = false
+                    onConnectByAddress(host, port)
+                    // #1424 Opus-review fix L1 — pop back to the remote
+                    // list so the connecting banner / fingerprint
+                    // interstitial (both driven off `RemoteControlView`'s
+                    // OWN `coordinator.uiPhase`, never rendered by this
+                    // screen) is actually visible.
+                    dismiss()
+                },
                 onCancel: { isPresentingManualSheet = false }
             )
         }
