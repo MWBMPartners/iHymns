@@ -129,6 +129,9 @@ extension RemoteSessionActor {
         connection?.cancel()
         connection = nil
         decoder = IHRPFrameDecoder()
+        // #1422 — additive: clear the last-resolved address alongside every
+        // other per-connection piece of state this method already resets.
+        resolvedRemoteAddress = nil
         if let pendingConnectContinuation {
             pendingConnectContinuation.resume(throwing: RemoteSessionError.notConnected)
             self.pendingConnectContinuation = nil
@@ -139,6 +142,12 @@ extension RemoteSessionActor {
     func onConnectionStateChanged(_ state: NWConnection.State) async {
         switch state {
         case .ready:
+            // #1422 — additive: capture the ACTUAL host:port this connection
+            // resolved to (which may differ from a dialled Bonjour service
+            // endpoint) — PR-7's `RemoteControlSession` persists this as the
+            // paired-TV's last-good reconnect address (spec §2/§5.2). Never
+            // changes connect/verify/disconnect semantics.
+            resolvedRemoteAddress = Self.resolvedAddress(from: connection)
             setPhase(.awaitingPairing)
             pendingConnectContinuation?.resume()
             pendingConnectContinuation = nil
@@ -251,5 +260,16 @@ extension RemoteSessionActor {
         }
         let der = SecCertificateCopyData(leaf) as Data
         return LANRemoteFingerprint.sha256Hex(der)
+    }
+
+    /// #1422 (spec §2) — additive helper for `resolvedRemoteAddress`'s
+    /// capture above: `NWConnection.currentPath?.remoteEndpoint` reports the
+    /// endpoint actually in use, which is a resolved `.hostPort` for a live
+    /// connection (as opposed to whatever `NWEndpoint` — a Bonjour
+    /// `.service`, say — was originally dialled). `nil` for anything else
+    /// (no connection, no current path, or a path shape this isn't).
+    static func resolvedAddress(from connection: NWConnection?) -> LANRemoteResolvedAddress? {
+        guard case .hostPort(let host, let port) = connection?.currentPath?.remoteEndpoint else { return nil }
+        return LANRemoteResolvedAddress(host: "\(host)", port: port.rawValue)
     }
 }
