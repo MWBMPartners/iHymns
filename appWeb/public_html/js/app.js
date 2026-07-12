@@ -56,6 +56,7 @@ import {
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_DISCLAIMER_ACCEPTED,
     STORAGE_AUTO_UPDATE_SONGS,
+    loadSongbookRegistry,
 } from './constants.js';
 
 /**
@@ -166,6 +167,14 @@ class iHymnsApp {
              * are available immediately (#133, Layer 1). */
             this.subdomainSync = new SubdomainSync();
             this.subdomainSync.init();
+
+            /* #1531 — populate the client songbook registry (abbr → full name)
+               once, fire-and-forget, so every list view can show the full
+               Songbook NAME instead of the abbreviation. Best-effort and
+               non-blocking: songbookLabel() falls back to the abbreviation until
+               this resolves (list views are navigated to after init, by which
+               time it's ready). */
+            loadSongbookRegistry(this.config.apiUrl);
 
             /* Settings must be first — it sets theme, motion prefs, etc. */
             this.settings = new Settings(this);

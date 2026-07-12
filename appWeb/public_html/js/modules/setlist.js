@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, SONGBOOK_NAMES } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, songbookFullName, SONGBOOK_NAMES } from '../constants.js';
 
 export class SetList {
     /**
@@ -1718,7 +1718,16 @@ export class SetList {
                     const badge = item.querySelector('.song-number-badge');
 
                     if (titleEl) titleEl.textContent = toTitleCase(json.song.title) || songId;
-                    if (metaEl) metaEl.textContent = json.song.songbook || '';
+                    /* #1531 — show the full Songbook NAME, not the abbreviation.
+                       textContent (not innerHTML) so the plain name is used:
+                       the song detail's own songbookName if present, else the
+                       client registry, else the six fallbacks, else the abbr. */
+                    if (metaEl) {
+                        metaEl.textContent = json.song.songbookName
+                            || songbookFullName(json.song.songbook)
+                            || SONGBOOK_NAMES[json.song.songbook]
+                            || json.song.songbook || '';
+                    }
                     if (badge) {
                         badge.textContent = json.song.number ?? '';
                         badge.dataset.songbook = json.song.songbook || '';
