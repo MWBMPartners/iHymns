@@ -48,6 +48,28 @@
 //     fresh user gesture. Every reconnect (the ladder, `setSuspended`
 //     resume, a saved-row tap) calls the PINNED `connect(...)` instead —
 //     see that method's own doc comment; nothing here changes it.
+//
+// **THE ONE GENUINE BEHAVIOURAL ADDITION vs. the pinned mirror: a bounded
+// connect timeout.** Empirically verified against a real `NWConnection`
+// (a standalone diagnostic script, not a guess): connecting to a LOOPBACK
+// port NOTHING has EVER listened on reaches `NWConnection.State.waiting`
+// (carrying `POSIXErrorCode.ECONNREFUSED`) and then SITS there — Network
+// .framework's own documented "this might become possible later, keep
+// retrying" policy for `.waiting`, which `onConnectionStateChanged`
+// (`RemoteSessionActor+Connection.swift`, UNCHANGED by this PR, D-2) only
+// ever resolves via `.ready`/`.failed`, never `.waiting`. A connection that
+// WAS previously live (a paired TV's socket closing) instead surfaces
+// through `onReceive`'s error/`isComplete` path, which the pinned actor
+// DOES handle — so this gap is invisible to every EXISTING (PR-4→PR-7)
+// code path, which only ever reconnects to addresses that answered at
+// least once. The manual "Connect by Address" rung is the FIRST path that
+// can target an address NOTHING has ever answered on, so it is the first
+// to need this timeout — kept entirely inside this NEW file (no
+// `RemoteSessionActor`/`+Connection.swift` diff, D-2 intact): a
+// reference-identity-scoped timeout task calls `disconnect()` if — and
+// ONLY if — THIS SPECIFIC connection is still the actor's current one and
+// still awaiting its connect continuation, so a timeout that fires late
+// can never touch a different, later connection.
 import Foundation
 import IHLog
 import Network
@@ -128,6 +150,15 @@ extension RemoteSessionActor {
             Task { await self.onConnectionStateChanged(state) }
         }
 
+        // This file's header: `.waiting` never resolves on its own for an
+        // address nothing has ever answered on — this timeout is what
+        // turns that into an honest failure instead of an indefinite hang.
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.tofuConnectTimeout)
+            await self?.failConnectIfStillPending(conn)
+        }
+        defer { timeoutTask.cancel() }
+
         do {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 pendingConnectContinuation = continuation
@@ -154,5 +185,27 @@ extension RemoteSessionActor {
         }
         self.expectedFingerprint = observed
         return observed
+    }
+
+    /// How long a TOFU connect waits for `.ready`/`.failed` before giving
+    /// up on an address stuck in `.waiting` (this file's header) — long
+    /// enough that a genuinely slow/degraded network still gets a fair
+    /// chance, short enough that a manual "Connect by Address" attempt to a
+    /// dead/mistyped address gives the human a bounded, sane wait instead
+    /// of an indefinite spinner.
+    private static let tofuConnectTimeout: Duration = .seconds(10)
+
+    /// Fails `conn`'s connect attempt out IF it is still THIS actor's
+    /// current connection AND still has a pending connect continuation —
+    /// both checked so a timeout that fires after the connection already
+    /// resolved (or after a LATER, unrelated connect attempt has replaced
+    /// it) is a safe no-op, never a wrongful cancel of something else.
+    /// `connection === conn` is a REFERENCE identity check (`NWConnection`
+    /// is a class) — the only reliable way to know "is this still the
+    /// exact attempt I was watching."
+    private func failConnectIfStillPending(_ conn: NWConnection) {
+        guard connection === conn, pendingConnectContinuation != nil else { return }
+        IHLog.remote.notice("lanremote.pin tofu-connect-timed-out")
+        disconnect()
     }
 }
