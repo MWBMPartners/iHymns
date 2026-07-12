@@ -127,6 +127,7 @@ public struct RemoteControlView: View {
     private var cantFindYourTVSection: some View {
         Section("Can't find your TV?") {
             Button("Connect by Address…") { isPresentingManualSheet = true }
+            NavigationLink("Troubleshoot Connection…") { NetworkTroubleshooterView() }
         }
     }
 
@@ -161,6 +162,7 @@ public struct RemoteControlView: View {
         } actions: {
             Button("Enter Code") { isPresentingPairingSheet = true }
             Button("Connect by Address…") { isPresentingManualSheet = true }
+            NavigationLink("Troubleshoot Connection…") { NetworkTroubleshooterView() }
         }
     }
 
