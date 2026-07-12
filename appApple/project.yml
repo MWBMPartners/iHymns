@@ -106,6 +106,22 @@ targets:
         # by hand each time — declaring it here answers the question at
         # build time instead, for every upload from this target.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+    # #1422 (PR-7 spec §6.5, D-13) — the LOAD-BEARING Local Network keys (TN3179:
+    # BROWSING is the restricted operation; the tvOS listener side's copy of
+    # NSLocalNetworkUsageDescription, `iHymnsTV`'s own `settings.base` below
+    # in this file, is belt-and-braces — THIS one is not). NSBonjourServices
+    # is array-typed with no INFOPLIST_KEY_ build-setting equivalent, so it
+    # rides XcodeGen's `info:` mechanism (the iHymnsWidgets precedent below)
+    # — Xcode merges the INFOPLIST_KEY_* settings above into this generated
+    # file's content at build time, so the existing flat keys keep working
+    # unchanged. Run `xcodegen generate` after editing.
+    info:
+      path: Apps/iHymns/Generated/Info.plist
+      properties:
+        NSLocalNetworkUsageDescription: "iHymns looks for iHymns on your Apple TV over your local network so this device can act as its remote control."
+        NSBonjourServices:
+          - _ihymns-remote._tcp
+        NSCameraUsageDescription: "iHymns uses the camera only to scan the pairing QR code shown on your TV."
     # #186 (Apple Phase 1, "Sharing & social") — claims Universal Links for
     # every host `DeepLinkRouter.allowedHosts` (`IHAppSupport`) resolves a
     # `DeepLink` from, so a tapped `https://ihymns.app/song/...`-shaped link
