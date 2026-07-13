@@ -164,6 +164,33 @@ struct LiveSyncPresenceCookieTests {
     }
 }
 
+/// PR-10 Opus-review FIX 3 — the D-6 residual: a cross-host 3xx must never
+/// carry the presence Cookie forward. Exercises `RedirectCookieGuard`'s
+/// pure decision function directly (see that type's own doc comment for
+/// why a real `URLSessionTask` isn't practical to construct here) rather
+/// than the delegate method itself.
+@Suite("LiveSync — redirect-guard host comparison (PR-10 review FIX 3, D-6 residual)")
+struct RedirectCookieGuardTests {
+
+    @Test("Same host (any case) keeps the cookie")
+    func sameHostKeepsCookie() {
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: "app.ihymns.com", redirectHost: "app.ihymns.com") == false)
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: "App.iHymns.com", redirectHost: "app.ihymns.com") == false)
+    }
+
+    @Test("A different host strips the cookie")
+    func differentHostStripsCookie() {
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: "app.ihymns.com", redirectHost: "attacker.example.com") == true)
+    }
+
+    @Test("An indeterminate comparison (either host missing) fails CLOSED — strips the cookie")
+    func indeterminateHostFailsClosed() {
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: nil, redirectHost: "app.ihymns.com") == true)
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: "app.ihymns.com", redirectHost: nil) == true)
+        #expect(RedirectCookieGuard.shouldStripCookie(originalHost: nil, redirectHost: nil) == true)
+    }
+}
+
 @Suite("LiveSync — decoding the 9 fixtures")
 struct LiveSyncDecodingTests {
 

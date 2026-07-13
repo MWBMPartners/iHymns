@@ -82,7 +82,18 @@ struct ServiceModeEngineTests {
             let probe = APIClient.makeURLRequest(for: .songsIndex, in: .dev, presenceToken: await client.servicePresenceToken)
             #expect(probe.value(forHTTPHeaderField: "Cookie") == "ihymns_sf_presence_token=\(Self.presenceToken)")
 
-            await waitUntil { await !collector.received.isEmpty }
+            // PR-10 review FIX 2: wait on the SECOND event actually being
+            // present, not merely on the array becoming non-empty. `.joined`
+            // is yielded first and `.presenceChanged` second
+            // (`ServiceModeEngine.swift:99-100`), so `!received.isEmpty`
+            // is already satisfied by `.joined` alone — a race against the
+            // collector's own independent `for await` consumer Task, which
+            // still needs its own scheduling turn to drain the SECOND
+            // yielded value. Waiting on `.presenceChanged` directly (the
+            // later of the two events this test asserts on) removes the
+            // race entirely, mirroring `pollSequenceToServerEnded`'s
+            // `waitUntil { ... .contains(.left(.serverEnded)) }` below.
+            await waitUntil { await collector.received.contains(.presenceChanged) }
             let received = await collector.received
             #expect(received.contains(.joined(initial: info.initial)))
             #expect(received.contains(.presenceChanged))

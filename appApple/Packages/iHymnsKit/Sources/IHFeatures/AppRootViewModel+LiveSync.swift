@@ -34,21 +34,39 @@ extension AppRootViewModel {
     /// `TaskGroup` running two child tasks, each the sole `for await` loop
     /// over its own stream (the PR-5 single-consumer rule, applied to two
     /// DIFFERENT streams rather than one shared one).
+    ///
+    /// PR-10 Opus-review FIX 1 (retain cycle): neither engines' `events`
+    /// stream ever calls `continuation.finish()` (they're live for the
+    /// app's whole run), so each `for await` below only ends on
+    /// cancellation. The ENGINES are captured STRONGLY via the capture
+    /// list (`liveFollowEngine`/`serviceModeEngine` resolve to
+    /// `self.liveFollowEngine`/`self.serviceModeEngine`, read ONCE while
+    /// `self` is still guaranteed alive — this method is only ever called
+    /// from `AppRootViewModel.init`) — the EXACT `[weak self,
+    /// sessionController]` shape `observeSessionState()`
+    /// (`AppRootViewModel.swift`) already uses for its own indefinite
+    /// `for await`. `self` itself is captured only WEAKLY, and re-checked
+    /// INSIDE the loop on every iteration (`guard let self,
+    /// !Task.isCancelled else { break }`) rather than once before it. The
+    /// PRE-FIX shape (`guard let self else { return }` evaluated once,
+    /// then looping on `self.<engine>.events`) bound a STRONG `self` for
+    /// the closure's entire suspended lifetime — and since `deinit` is
+    /// what cancels `liveObservationTask` in the first place, that strong
+    /// reference meant `self` could never reach `deinit`, leaking the VM
+    /// + both engines + all three tasks on every instance (benign for the
+    /// one lifelong production root VM, but every test-created VM leaked).
     func observeLiveSyncEvents() {
-        liveObservationTask = Task { [weak self] in
-            guard let self else { return }
+        liveObservationTask = Task { [liveFollowEngine, serviceModeEngine] in
             await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else { return }
-                    for await event in self.liveFollowEngine.events {
-                        guard !Task.isCancelled else { break }
+                group.addTask { [weak self, liveFollowEngine] in
+                    for await event in liveFollowEngine.events {
+                        guard let self, !Task.isCancelled else { break }
                         await self.apply(event)
                     }
                 }
-                group.addTask { [weak self] in
-                    guard let self else { return }
-                    for await event in self.serviceModeEngine.events {
-                        guard !Task.isCancelled else { break }
+                group.addTask { [weak self, serviceModeEngine] in
+                    for await event in serviceModeEngine.events {
+                        guard let self, !Task.isCancelled else { break }
                         await self.apply(event)
                     }
                 }
