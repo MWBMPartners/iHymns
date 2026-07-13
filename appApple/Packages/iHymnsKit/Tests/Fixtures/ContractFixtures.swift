@@ -75,6 +75,40 @@ public enum ContractFixtures {
         try data(named: "song_of_the_day")
     }
 
+    // MARK: - Apple Phase-2 PR-10 (#1426, #1427) — Live Follow / Service Mode
+    //
+    // See `README.md`'s provenance block: the four `*_not_found`/`*_inactive`
+    // fixtures below are LIVE-RECORDED (`dev.ihymns.app`, 2026-07-13); the
+    // five plain-named ones are CODE-DERIVED-and-marked, carrying the
+    // re-record obligation documented there.
+
+    /// `?action=live_follow_join&code=ZZZZ99` — the real opaque 404 body.
+    public static func liveFollowJoinNotFound() throws -> Data { try data(named: "live_follow_join_not_found") }
+
+    /// `?action=live_follow_poll&code=ZZZZ99` — `{"active":false}`.
+    public static func liveFollowPollInactive() throws -> Data { try data(named: "live_follow_poll_inactive") }
+
+    /// CODE-DERIVED `live_follow_join` success shape.
+    public static func liveFollowJoin() throws -> Data { try data(named: "live_follow_join") }
+
+    /// CODE-DERIVED `live_follow_poll` `changed:true` shape.
+    public static func liveFollowPollChanged() throws -> Data { try data(named: "live_follow_poll_changed") }
+
+    /// `POST ?action=service_join` (unknown code) — the real opaque 404 body.
+    public static func serviceJoinNotActive() throws -> Data { try data(named: "service_join_not_active") }
+
+    /// `?action=service_poll` (malformed/unknown token) — `{"active":false}`.
+    public static func servicePollInactive() throws -> Data { try data(named: "service_poll_inactive") }
+
+    /// CODE-DERIVED `service_join` success shape.
+    public static func serviceJoin() throws -> Data { try data(named: "service_join") }
+
+    /// CODE-DERIVED `service_poll` `changed:true` shape.
+    public static func servicePollChanged() throws -> Data { try data(named: "service_poll_changed") }
+
+    /// CODE-DERIVED `service_poll` `changed:false` shape.
+    public static func servicePollUnchanged() throws -> Data { try data(named: "service_poll_unchanged") }
+
     /// Shared lookup: resolves `<name>.json` in this target's resource
     /// bundle and reads it into `Data`.
     private static func data(named name: String) throws -> Data {

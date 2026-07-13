@@ -65,6 +65,18 @@ public actor APIClient {
     /// once a user signs in, via `updateBearerToken(_:)` below.
     private(set) var bearerToken: String?
 
+    /// The current Service Mode presence token, if a congregant session is
+    /// active — `nil` otherwise. Set/cleared ONLY by `ServiceModeEngine`
+    /// (`IHLive`) on join/leave/end (PR-10, #1427; spec §3.5/§4.3, D-6) via
+    /// `updateServicePresenceToken(_:)` below, mirroring `bearerToken`'s own
+    /// custody shape exactly. `makeURLRequest` attaches this as the
+    /// `ihymns_sf_presence_token` Cookie header (never a query param — see
+    /// that method's own doc comment) on every request while non-nil, which
+    /// is what lets the (dormant, `content_gating_enabled='0'`) CCLI unlock
+    /// on `song_detail`/`random` (`api.php:810-815`) work for a native
+    /// congregant with zero backend change.
+    private(set) var servicePresenceToken: String?
+
     /// Base delay (seconds) for the exponential-backoff retry policy in
     /// `APIClient+Networking.swift`. A real Double, not a fixed constant,
     /// purely so the test suite can shrink it to a few milliseconds —
@@ -109,6 +121,16 @@ public actor APIClient {
         bearerToken = token
     }
 
+    /// Sets/clears the Service Mode presence token this client attaches as a
+    /// Cookie header (PR-10, #1427; spec §3.5/§4.3) — called by
+    /// `ServiceModeEngine` on join/leave/end. `nil` = "no active presence,"
+    /// which restores byte-identical pre-PR-10 request shapes.
+    ///
+    /// ELI5: "Here's the venue room-key" (or `nil` for "I've left the room").
+    public func updateServicePresenceToken(_ token: String?) {
+        servicePresenceToken = token
+    }
+
     /// Builds the fully-formed `URLRequest` for an `Endpoint`, WITHOUT
     /// sending it.
     ///
@@ -134,10 +156,22 @@ public actor APIClient {
     ///     `precondition` below rather than surfaced as an `APIError`
     ///     (an authenticated call attempted with no token is a bug in the
     ///     calling code, not an expected runtime condition).
+    ///   - presenceToken: The active Service Mode presence token, if any
+    ///     (PR-10, #1427; spec §4.3/D-6). DEFAULTED to `nil`, so every
+    ///     pre-PR-10 call site builds a byte-identical request. When
+    ///     non-nil AND shaped like a genuine 43-char base64url token
+    ///     (`^[A-Za-z0-9_-]{43}$`, `api.php:14642`), attaches it as the
+    ///     SAME named cookie a browser congregant sends
+    ///     (`ihymns_sf_presence_token`) — never a query param, which would
+    ///     persist into server access logs (strategy §3.2's "Bearer header
+    ///     ... stays out of access logs" rule, applied identically to this
+    ///     second secret). A corrupted/malformed persisted value is dropped
+    ///     silently rather than ever reaching the wire.
     nonisolated public static func makeURLRequest(
         for endpoint: Endpoint,
         in environment: APIEnvironment,
-        bearerToken: String? = nil
+        bearerToken: String? = nil,
+        presenceToken: String? = nil
     ) -> URLRequest {
         precondition(
             !endpoint.requiresAuth || bearerToken != nil,
@@ -177,7 +211,30 @@ public actor APIClient {
             request.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
         }
 
+        // PR-10 (#1427) D-6: attach the presence Cookie on EVERY request
+        // while a Service Mode presence is active — mirroring a browser,
+        // which sends its cookie jar on every same-origin request; the
+        // server ignores it everywhere except the two gating reads
+        // (`song_detail`/`random`), so this is zero-drift for every other
+        // endpoint. `httpShouldHandleCookies = false` ONLY on these requests
+        // (Apple docs: https://developer.apple.com/documentation/foundation/urlrequest/2011591-httpshouldhandlecookies)
+        // — determinism: `URLSession`'s shared `HTTPCookieStorage` must
+        // never merge/override/persist this explicit header.
+        if let presenceToken, Self.isValidPresenceTokenShape(presenceToken) {
+            request.setValue("ihymns_sf_presence_token=\(presenceToken)", forHTTPHeaderField: "Cookie")
+            request.httpShouldHandleCookies = false
+        }
+
         return request
+    }
+
+    /// Whether `token` is shaped like a genuine 43-char base64url presence
+    /// token (`api.php:14642`, `^[A-Za-z0-9_-]{43}$`) — the defensive check
+    /// `makeURLRequest` runs before ever attaching a Cookie header, so a
+    /// corrupted persisted value can never reach the wire.
+    nonisolated private static func isValidPresenceTokenShape(_ token: String) -> Bool {
+        guard token.count == 43 else { return false }
+        return token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
     }
 
     /// Maps a raw `URLResponse`/status code into the `APIError` taxonomy.

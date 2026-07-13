@@ -100,7 +100,20 @@ let package = Package(
                 .copy("songbooks.json"),
                 .copy("song_links.json"),
                 .copy("related_songs.json"),
-                .copy("song_of_the_day.json")
+                .copy("song_of_the_day.json"),
+                // Apple Phase-2 PR-10 (#1426, #1427) — Live Follow / Service
+                // Mode wire-contract fixtures (`README.md`'s own provenance
+                // block: 4 live-recorded negatives + 5 code-derived-and-
+                // marked positives).
+                .copy("live_follow_join_not_found.json"),
+                .copy("live_follow_poll_inactive.json"),
+                .copy("live_follow_join.json"),
+                .copy("live_follow_poll_changed.json"),
+                .copy("service_join_not_active.json"),
+                .copy("service_poll_inactive.json"),
+                .copy("service_join.json"),
+                .copy("service_poll_changed.json"),
+                .copy("service_poll_unchanged.json")
             ],
             swiftSettings: sharedSwiftSettings
         ),
@@ -223,8 +236,11 @@ let package = Package(
         .testTarget(
             name: "IHLiveTests",
             // #1420: the new `LANRemoteTests` suite constructs `SongID`
-            // fixtures directly for IHRP message round-trip tests.
-            dependencies: ["IHLive", "IHModels"],
+            // fixtures directly for IHRP message round-trip tests. PR-10
+            // (#1426, #1427) adds `IHAPI` (constructing a real `APIClient`
+            // against a mocked `URLSession`) + `IHAPITestSupport`
+            // (`MockURLProtocol`) for the `ServerLive/` engine-loop suites.
+            dependencies: ["IHLive", "IHModels", "IHAPI", "IHAPITestSupport"],
             swiftSettings: sharedSwiftSettings
         ),
 

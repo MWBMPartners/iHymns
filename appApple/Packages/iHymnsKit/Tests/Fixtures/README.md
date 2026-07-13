@@ -72,3 +72,62 @@ in the same commit that first recorded them by hand
 
 No token/PII scrubbing was needed: every endpoint here is an unauthenticated
 public read, and the payloads are public hymn catalogue metadata.
+
+## Apple Phase-2 PR-10 (#1426, #1427) — Live Follow / Service Mode
+
+Nine fixtures for the server-mediated live-sync wire contract
+(`.claude/apple-phase2-pr10-spec.md` §7.1). Split honestly between
+LIVE-RECORDED and CODE-DERIVED, per that spec's honesty rule (the
+`song_links.json`/`Work.swift` precedent above):
+
+**LIVE-RECORDED** (`https://dev.ihymns.app`, 2026-07-13, no auth/session
+needed — every one of these is a genuine "wrong/expired code" or "session
+gone" answer, which needs no live session to produce):
+- **`live_follow_join_not_found.json`** — `?action=live_follow_join&code=ZZZZ99`.
+  The real opaque 404 body (`api.php:14160`).
+- **`live_follow_poll_inactive.json`** — `?action=live_follow_poll&code=ZZZZ99`.
+  `{"active":false}` (`api.php:14226`).
+- **`service_join_not_active.json`** — `POST ?action=service_join` with
+  `{"code":"ZZZZ99","presenceDeviceId":"fixture-recorder"}`. The real opaque
+  404 body (`api.php:14627`), including the live curly-apostrophe in
+  "isn't."
+- **`service_poll_inactive.json`** — `?action=service_poll&presenceToken=<43
+  junk chars>&since=0`. `{"active":false}` (a malformed-shape token short
+  -circuits to the same answer as a genuine-shape-but-unknown one,
+  `api.php:14698`).
+
+**CODE-DERIVED** (built field-by-field from the `sendJson(...)` call sites
+cited in `.claude/apple-phase2-pr10-spec.md` §1.3 — **NOT live-recorded**,
+because producing any of these five requires an actual signed-in host or an
+operator-started venue session on `dev`, and no dev operator session was
+available when this PR was authored):
+- **`live_follow_join.json`** — the `live_follow_join` success shape
+  (`api.php:14171-14180`): a host code, a follower token, a host display
+  name, and an in-progress broadcast.
+- **`live_follow_poll_changed.json`** — the `live_follow_poll` `changed:true`
+  shape (`api.php:14231-14237`).
+- **`service_join.json`** — the `service_join` success shape
+  (`api.php:14683-14691`): an opaque 43-char base64url presence token, a
+  server-declared `pollIntervalMs`, and an in-progress broadcast.
+- **`service_poll_changed.json`** — the `service_poll` `changed:true` shape
+  (`api.php:14742-14749`).
+- **`service_poll_unchanged.json`** — the `service_poll` `changed:false`
+  shape (`api.php:14741`).
+
+**RE-RECORD OBLIGATION:** all five CODE-DERIVED fixtures above must be
+replaced with genuine live recordings during the multi-device live verify
+(plan §2 gate), once a real host session (for the two `live_follow_*` ones)
+and a real operator-started venue session (for the three `service_*` ones)
+exist on `dev`. `tools/apple-refresh-fixtures.sh` re-records the four
+LIVE-RECORDED negatives above on every run; it deliberately does NOT attempt
+the five CODE-DERIVED positives (no session to record against) — re-record
+those by hand and replace the files directly. The envelope tests
+(`LiveSyncModelTests`/`LiveSyncAPITests`) prove the DTOs decode the
+DOCUMENTED shape either way; only the CODE-DERIVED files carry residual risk
+that the live shape has quietly drifted from `api.php`'s current source.
+
+Every value in every one of these nine fixtures is either a placeholder
+(`ZZZZ99`, `fixture-recorder`, `MP-0031` reused from the catalogue fixtures
+above) or synthetically generated (the follow/presence tokens) — none is a
+real user's data, a real venue's rotating code, or a real host's display
+name.

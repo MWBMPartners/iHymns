@@ -158,4 +158,33 @@ with open('$FIXTURES_DIR/song_of_the_day.json', 'w', encoding='utf-8') as out:
     out.write('\n')
 "
 
+# Apple Phase-2 PR-10 (#1426, #1427) — the 4 live-recordable Live Follow /
+# Service Mode NEGATIVE envelopes (unauthenticated, no live session needed —
+# see `Tests/Fixtures/README.md`'s provenance block for these 4). The 5
+# POSITIVE fixtures (`live_follow_join.json`/`live_follow_poll_changed.json`/
+# `service_join.json`/`service_poll_changed.json`/`service_poll_unchanged.json`)
+# are CODE-DERIVED (no dev operator session was available when they were
+# authored) and are NOT re-recorded by this script — re-record them by hand
+# during the multi-device live verify (plan §2 gate) once a real host/venue
+# session exists on `dev`, then replace the marked placeholder JSON directly.
+curl -fsSL "https://${HOST}/api?action=live_follow_join&code=ZZZZ99" -o "$TMP_DIR/live_follow_join_not_found.json" || true
+curl -fsSL "https://${HOST}/api?action=live_follow_poll&code=ZZZZ99" -o "$TMP_DIR/live_follow_poll_inactive.json" || true
+curl -fsSL -X POST -H 'X-Requested-With: XMLHttpRequest' -H 'Content-Type: application/json' \
+    -d '{"code":"ZZZZ99","presenceDeviceId":"fixture-recorder"}' \
+    "https://${HOST}/api?action=service_join" -o "$TMP_DIR/service_join_not_active.json" || true
+curl -fsSL "https://${HOST}/api?action=service_poll&presenceToken=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&since=0" \
+    -o "$TMP_DIR/service_poll_inactive.json" || true
+
+for name in live_follow_join_not_found live_follow_poll_inactive service_join_not_active service_poll_inactive; do
+    if [ -s "$TMP_DIR/${name}.json" ]; then
+        python3 -c "
+import json
+with open('$TMP_DIR/${name}.json') as f: d = json.load(f)
+with open('$FIXTURES_DIR/${name}.json', 'w', encoding='utf-8') as out:
+    json.dump(d, out, indent=2, ensure_ascii=False)
+    out.write('\n')
+"
+    fi
+done
+
 echo "Done. Review the diff, then: cd appApple/Packages/iHymnsKit && swift test"
