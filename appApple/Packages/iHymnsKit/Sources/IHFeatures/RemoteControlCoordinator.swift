@@ -145,6 +145,9 @@ public final class RemoteControlCoordinator {
     /// ELI5: "Get the remote-control screen ready" — including "ready
     /// again," if the screen went away and came back.
     public func start() async {
+        // #1423 handoff hook 1 (spec §4.3): retire any live headless linger
+        // FIRST (idempotent) — this screen never races a background session.
+        await relayRetireHeadless()
         guard !hasStarted else { return }
         hasStarted = true
 
@@ -164,6 +167,7 @@ public final class RemoteControlCoordinator {
         savedRecords = await store.listPairedTVs()
         rebuildRows()
         spawnEventsConsumer()
+        relayRegister() // #1423 — the hub now routes .foreground here (spec §6.1)
 
         if IHSettingsStore().hasSeenLocalNetworkPrimer {
             await beginDiscovery()
@@ -190,6 +194,7 @@ public final class RemoteControlCoordinator {
         discoveryTask?.cancel(); discoveryTask = nil
         eventsTask?.cancel(); eventsTask = nil
         await session.stop()
+        relayUnregister() // #1423 — the hub falls back to routing .headless again
     }
 
     // MARK: - Entry paths (spec §4)
@@ -221,7 +226,8 @@ public final class RemoteControlCoordinator {
             notice = nil
             currentTVName = tvName
             currentFingerprint = fingerprint
-            Task { await session.attach(to: target) }
+            // #1423 handoff hook 2 (spec §4.3): retire any live linger first.
+            Task { await self.relayRetireHeadless(); await self.session.attach(to: target) }
         case .unpairable(.noRouteToTV):
             notice = "Couldn't find \(tvName) on this network. Scan its QR code again from the TV's screen."
         case .unpairable(.malformedPayload):
@@ -260,6 +266,10 @@ public final class RemoteControlCoordinator {
 
     /// `scenePhase` wiring.
     public func setScenePhaseActive(_ active: Bool) async {
+        // #1423 handoff hook 3 (spec §4.3): foregrounding may resume onto a
+        // live headless burst that started while backgrounded — retire it
+        // first so this screen takes over cleanly.
+        if active { await relayRetireHeadless() }
         await session.setSuspended(!active)
     }
 
@@ -364,6 +374,11 @@ public final class RemoteControlCoordinator {
         case .awaitingCodeEntry, .detached, .suspended:
             break
         }
+
+        // #1423 — the relay tap: a tap of ALREADY-APPLIED state (incl.
+        // `+ManualConnect.swift`'s direct `uiPhase` writes above), never a
+        // second `session.events` consumer (spec §6.1/D-2).
+        relayPublish()
     }
 
     // `persistPaired(token:resolved:)` and `touchLastConnected()` live in
