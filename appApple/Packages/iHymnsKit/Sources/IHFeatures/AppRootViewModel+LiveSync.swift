@@ -1,0 +1,194 @@
+// AppRootViewModel+LiveSync.swift
+// IHFeatures
+//
+// ELI5: The ONE place that listens to both live engines and turns whatever
+// they announce into a simple "what should the Live screen show right now?"
+// value, plus the handful of buttons (join, go live, leave, "I just opened
+// this song") every Live-related view actually taps.
+//
+// DETAILED: Apple Phase-2 PR-10 (#1426, #1427; `.claude/apple-phase2-pr10-spec.md`
+// §6.5, strategy §2.4.6, plan §2 PR-10). The PR-5 lesson applies verbatim
+// here: `AsyncStream` is single-consumer, so each engine's `events` stream
+// gets EXACTLY one consumer — the `TaskGroup` inside `observeLiveSyncEvents()`
+// below, started once from `AppRootViewModel.init` and cancelled in
+// `deinit` (`liveObservationTask`, primary file). Every UI view reads the
+// published `liveState`/`liveSnapshot`, never the streams themselves.
+import Foundation
+import IHLive
+import IHModels
+
+/// What the `.live` section should currently show — derived entirely from
+/// the two engines' events, never read back from either engine directly.
+public enum LiveSyncUIState: Sendable, Equatable {
+    case idle
+    /// `currentSongTitle` is the RAW `songId` today (no title-fetch is
+    /// wired for the host's own display yet — see PR-10's final report
+    /// "Deviations from spec").
+    case hosting(code: String, currentSongTitle: String?)
+    case followingLeader(hostDisplayName: String, isFresh: Bool)
+    case followingService(isFresh: Bool)
+}
+
+extension AppRootViewModel {
+    /// The ONE consumer of both engines' `events` streams — an inner
+    /// `TaskGroup` running two child tasks, each the sole `for await` loop
+    /// over its own stream (the PR-5 single-consumer rule, applied to two
+    /// DIFFERENT streams rather than one shared one).
+    func observeLiveSyncEvents() {
+        liveObservationTask = Task { [weak self] in
+            guard let self else { return }
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    for await event in self.liveFollowEngine.events {
+                        guard !Task.isCancelled else { break }
+                        await self.apply(event)
+                    }
+                }
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    for await event in self.serviceModeEngine.events {
+                        guard !Task.isCancelled else { break }
+                        await self.apply(event)
+                    }
+                }
+            }
+        }
+    }
+
+    @MainActor
+    func apply(_ event: LiveFollowEvent) {
+        switch event {
+        case .hostingStarted(let code):
+            liveState = .hosting(code: code, currentSongTitle: nil)
+            liveSnapshot = nil
+        case .hostingEnded:
+            if case .hosting = liveState { liveState = .idle; liveSnapshot = nil }
+        case .followingStarted(_, let hostDisplayName, let initial):
+            liveState = .followingLeader(hostDisplayName: hostDisplayName, isFresh: true)
+            liveSnapshot = initial
+        case .followingEnded:
+            if case .followingLeader = liveState { liveState = .idle; liveSnapshot = nil }
+        case .snapshot(let snapshot):
+            liveSnapshot = snapshot
+        case .freshnessChanged(let isFresh):
+            if case .followingLeader(let host, _) = liveState {
+                liveState = .followingLeader(hostDisplayName: host, isFresh: isFresh)
+            }
+        }
+    }
+
+    @MainActor
+    func apply(_ event: ServiceModeEvent) {
+        switch event {
+        case .joined(let initial):
+            liveState = .followingService(isFresh: true)
+            liveSnapshot = initial
+        case .snapshot(let snapshot):
+            liveSnapshot = snapshot
+        case .left:
+            if case .followingService = liveState { liveState = .idle; liveSnapshot = nil }
+        case .freshnessChanged(let isFresh):
+            if case .followingService = liveState { liveState = .followingService(isFresh: isFresh) }
+        case .presenceChanged:
+            break
+        }
+    }
+
+    // MARK: - Façade (called directly by the Live views/sheets)
+
+    /// The unified join (D-8, spec §6.2): tries the Service Mode namespace
+    /// FIRST (venue codes rotate every 75 s — the more time-sensitive one),
+    /// falling back to Live Follow only on `.codeNotActive`. Any OTHER
+    /// failure (`.temporarilyUnavailable`, `.network`, mutual-exclusion)
+    /// propagates immediately — trying the other namespace after a genuine
+    /// "the site is down" answer would just repeat the same failure.
+    ///
+    /// ELI5: "Join whatever this code is for" — service first, then a
+    /// leader's Live Follow code.
+    public func joinWithCode(_ rawCode: String) async throws {
+        let code = Self.normalizedJoinCode(rawCode)
+        guard Self.isValidJoinCode(code) else { throw LiveSyncError.codeNotActive }
+        do {
+            _ = try await serviceModeEngine.join(code: code)
+        } catch LiveSyncError.codeNotActive {
+            _ = try await liveFollowEngine.join(code: code)
+        }
+    }
+
+    /// "Go Live" — starts hosting with no song broadcasting yet (the host
+    /// console's own "Open a song to broadcast it" footer explains the rest).
+    public func goLive() async throws {
+        _ = try await liveFollowEngine.goLive(songId: nil, componentIndex: nil)
+    }
+
+    /// Leaves/ends whichever live role is currently active — a no-op while
+    /// `.idle`.
+    public func leaveLive() async {
+        switch liveState {
+        case .hosting:
+            await liveFollowEngine.endHosting()
+        case .followingLeader:
+            await liveFollowEngine.leaveFollow()
+        case .followingService:
+            await serviceModeEngine.leave()
+        case .idle:
+            break
+        }
+    }
+
+    /// The native `live-follow.js initSongPage` broadcast hook (spec §6.5):
+    /// call this from the ONE per-song appear path (`SongDetailView`). A
+    /// fire-and-forget no-op unless this device is actually hosting.
+    /// Optimistically updates the LOCAL "currently broadcasting" display
+    /// immediately (rather than waiting on a network round trip + an engine
+    /// event neither role emits for the host's own outgoing broadcasts).
+    ///
+    /// ELI5: "I just opened this song — if I'm hosting, tell everyone."
+    public func liveSongViewed(_ songId: SongID) {
+        if case .hosting(let code, _) = liveState {
+            liveState = .hosting(code: code, currentSongTitle: songId.rawValue)
+        }
+        Task { [liveFollowEngine] in
+            await liveFollowEngine.broadcast(songId: songId.rawValue, componentIndex: nil)
+        }
+    }
+
+    /// `scenePhase` wiring (`RootContainerView`'s `.onChange(of: scenePhase)`,
+    /// the `RemoteControlView.swift` precedent) — forwards to both engines;
+    /// each is independently a no-op unless it's the one currently active.
+    public func setLiveScenePhaseActive(_ active: Bool) {
+        Task { [liveFollowEngine, serviceModeEngine] in
+            await liveFollowEngine.setScenePhaseActive(active)
+            await serviceModeEngine.setScenePhaseActive(active)
+        }
+    }
+
+    /// Cold-start resume — call once at launch. Drives ONLY `ServiceModeEngine
+    /// .resumeIfPossible()`: no `LiveFollowEngine`-side resume method exists
+    /// in this PR's binding engine shape (spec §3.4/§3.5 define
+    /// `resumeIfPossible()` on `ServiceModeEngine` only), so a cold-launched
+    /// host/follower session is NOT restored here — see PR-10's final report
+    /// "Deviations from spec."
+    public func resumeLiveIfPossible() {
+        Task { [serviceModeEngine] in
+            await serviceModeEngine.resumeIfPossible()
+        }
+    }
+
+    // MARK: - Join-code normalisation (web parity, `live-follow.js:231-239`)
+
+    /// Uppercases, then strips everything that isn't an ASCII letter/digit —
+    /// tolerates spaces/hyphens/NBSP/smart-punctuation a person might type
+    /// or paste alongside a code. `nonisolated` — a pure string function
+    /// with no actor state to protect, callable from any context.
+    nonisolated static func normalizedJoinCode(_ raw: String) -> String {
+        String(raw.uppercased().filter { $0.isASCII && ($0.isLetter || $0.isNumber) })
+    }
+
+    /// `^[A-Z0-9]{4,12}$`, applied to an ALREADY-normalised code. `nonisolated`
+    /// for the same reason as `normalizedJoinCode(_:)` above.
+    nonisolated static func isValidJoinCode(_ code: String) -> Bool {
+        (4...12).contains(code.count) && code.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
+    }
+}

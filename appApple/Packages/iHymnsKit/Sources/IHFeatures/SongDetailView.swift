@@ -126,6 +126,9 @@ public struct SongDetailView: View {
         }
         .navigationTitle(navigationTitleText)
         .task { await viewModel.loadIfNeeded() }
+        // PR-10 (#1426) — the native `live-follow.js initSongPage` broadcast
+        // hook: a no-op unless this device is currently hosting.
+        .task { rootViewModel.liveSongViewed(songId) }
         .handoffActivity(webpageURL: shareURL, title: navigationTitleText)
         .toolbar {
             SongDetailToolbarContent(

@@ -161,6 +161,8 @@ public struct RootContainerView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     #endif
 
+    @Environment(\.scenePhase) private var scenePhase // PR-10: drives viewModel.setLiveScenePhaseActive(_:)
+
     public init(
         viewModel: AppRootViewModel,
         navigationState: AppNavigationState = AppNavigationState(),
@@ -214,8 +216,9 @@ public struct RootContainerView: View {
             .sheet(isPresented: $isPresentingOnboarding, onDismiss: markOnboardingSeen) {
                 OnboardingView { isPresentingOnboarding = false }
             }
+            .onChange(of: scenePhase) { _, newPhase in viewModel.setLiveScenePhaseActive(newPhase == .active) }
     }
-
+    private var liveStatusBanner: some View { LiveStatusBanner(rootViewModel: viewModel, navigationState: navigationState) }
     /// Persists `IHSettingsStore.hasSeenOnboarding = true` — see the
     /// `.sheet(onDismiss:)` call above for why this fires regardless of
     /// which affordance closed the sheet.
@@ -283,6 +286,7 @@ public struct RootContainerView: View {
     private func restoreAndSync() async {
         await viewModel.restoreSessionIfNeeded()
         await viewModel.loadFavoritesIfNeeded()
+        viewModel.resumeLiveIfPossible()
     }
 
     /// iPhone/compact-iPad root: one Liquid Glass `TabView` tab per
@@ -338,6 +342,7 @@ public struct RootContainerView: View {
             .tabItem { Label(RootSection.settings.title, systemImage: RootSection.settings.systemImage) }
             .tag(RootSection.settings)
         }
+        .safeAreaInset(edge: .bottom) { liveStatusBanner }
     }
 
     /// iPad(regular)/Mac/visionOS root: a 3-column `NavigationSplitView` —
@@ -385,6 +390,7 @@ public struct RootContainerView: View {
                 description: Text("Choose a song from the list to view its lyrics.")
             )
         }
+        .safeAreaInset(edge: .bottom) { liveStatusBanner }
     }
 }
 

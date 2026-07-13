@@ -205,7 +205,11 @@ public final class AppRootViewModel {
     /// it directly for every favourites cache/queue operation.
     let offlineStore: OfflineStore
 
-    private let liveFollowEngine: LiveFollowEngine
+    /// PR-10 (#1426, #1427) — see `AppRootViewModel+LiveSync.swift`.
+    let liveFollowEngine: LiveFollowEngine
+    let serviceModeEngine: ServiceModeEngine
+    public internal(set) var liveState: LiveSyncUIState = .idle
+    public internal(set) var liveSnapshot: LiveBroadcastSnapshot?
 
     /// Persists `recentSearches` (#1436) — see `RecentSearchesStore`'s own
     /// header for why this is a plain injectable value type rather than
@@ -253,11 +257,15 @@ public final class AppRootViewModel {
     @ObservationIgnored
     nonisolated(unsafe) private var sessionObservationTask: Task<Void, Never>?
 
+    /// PR-10: consumes both engines' events (`+LiveSync.swift`, which sets this).
+    @ObservationIgnored nonisolated(unsafe) var liveObservationTask: Task<Void, Never>?
+
     public init(
         sessionController: SessionController,
         apiClient: APIClient,
         offlineStore: OfflineStore,
         liveFollowEngine: LiveFollowEngine,
+        serviceModeEngine: ServiceModeEngine? = nil,
         recentSearchesStore: RecentSearchesStore = RecentSearchesStore(),
         recentlyViewedStore: RecentlyViewedStore = RecentlyViewedStore(),
         usageActivityStore: UsageActivityStore = UsageActivityStore()
@@ -266,28 +274,22 @@ public final class AppRootViewModel {
         self.apiClient = apiClient
         self.offlineStore = offlineStore
         self.liveFollowEngine = liveFollowEngine
+        self.serviceModeEngine = serviceModeEngine ?? ServiceModeEngine(apiClient: apiClient)
         self.recentSearchesStore = recentSearchesStore
         self.recentSearches = recentSearchesStore.load()
         self.recentlyViewedStore = recentlyViewedStore
         self.recentlyViewedSongs = recentlyViewedStore.load()
         self.usageActivityStore = usageActivityStore
         observeSessionState()
+        observeLiveSyncEvents()
     }
 
     deinit {
         sessionObservationTask?.cancel()
+        liveObservationTask?.cancel()
     }
 
-    /// The list of songs currently cached for offline use — a thin,
-    /// MainActor-safe read-through to `OfflineStore`, demonstrating
-    /// IHFeatures' IHPersistence dependency without pulling GRDB types into
-    /// this module's public surface.
-    ///
-    /// ELI5: "What songs have we already saved for offline use?"
-    public func cachedSongSummaries() async throws -> [SongSummary] {
-        try await offlineStore.allSongSummaries()
-    }
-
+    // `cachedSongSummaries()` moved to `AppRootViewModel+Offline.swift` (PR-10 LOC relief).
     // `restoreSessionIfNeeded()`/`isSignedInNow()` (native login/account UI
     // task) live in `AppRootViewModel+Auth.swift` — moved out purely to keep
     // this file under the repo's LOC-budget tripwire now that it also
@@ -390,6 +392,8 @@ public final class AppRootViewModel {
             for await state in sessionController.stateUpdates {
                 guard let self, !Task.isCancelled else { break }
                 self.sessionState = state
+                // PR-10: force-end hosting on sign-out (no-op unless hosting).
+                if case .signedOut = state { Task { await self.liveFollowEngine.endHostingForSignOut() } }
             }
         }
     }

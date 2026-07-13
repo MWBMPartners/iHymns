@@ -27,6 +27,17 @@ import IHModels
 import IHPersistence
 
 extension AppRootViewModel {
+    /// The list of songs currently cached for offline use — a thin,
+    /// MainActor-safe read-through to `OfflineStore`. Moved here from the
+    /// primary file (PR-10, #1426/#1427 LOC-budget relief) — unchanged
+    /// behaviour, just relocated alongside this file's other `OfflineStore`
+    /// pass-throughs.
+    ///
+    /// ELI5: "What songs have we already saved for offline use?"
+    public func cachedSongSummaries() async throws -> [SongSummary] {
+        try await offlineStore.allSongSummaries()
+    }
+
     /// Saves `detail`'s full record for offline reading — a thin
     /// `OfflineStore` pass-through, called by `SongDetailViewModel
     /// .toggleOfflineSave()` once a song has successfully loaded.

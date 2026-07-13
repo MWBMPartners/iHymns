@@ -56,12 +56,18 @@ extension AppRootViewModel {
         // swiftlint:disable:next force_try
         let offlineStore = try! OfflineStore(path: offlineStorePath(), mediaCacheDirectory: mediaCacheDirectory())
         let liveFollowEngine = LiveFollowEngine(apiClient: apiClient)
+        // PR-10 (#1426, #1427) — the composition root stays the ONE real
+        // wiring; an explicit instance here (rather than relying on
+        // `AppRootViewModel.init`'s own defaulted fallback) keeps every
+        // engine this view model owns visibly constructed in one place.
+        let serviceModeEngine = ServiceModeEngine(apiClient: apiClient)
 
         return AppRootViewModel(
             sessionController: sessionController,
             apiClient: apiClient,
             offlineStore: offlineStore,
-            liveFollowEngine: liveFollowEngine
+            liveFollowEngine: liveFollowEngine,
+            serviceModeEngine: serviceModeEngine
         )
     }
 
