@@ -59,7 +59,11 @@ public final class RemoteControlCoordinator {
     /// tracked as follow-up, not guessed at here.
     public private(set) var localNetworkDenied = false
 
-    private let store: any PairedTVStoring
+    /// `internal` (not `private`, #1423) — `RemoteControlCoordinator
+    /// +Persistence.swift`'s relocated `persistPaired`/`touchLastConnected`
+    /// need direct access, the same cross-file-reuse convention this file
+    /// already uses for `session`/`currentTVName`/`savedRecords`.
+    let store: any PairedTVStoring
     /// Kept so `start()` can build a BRAND-NEW `RemoteControlSession` on
     /// every (re)start rather than the one this type used to construct
     /// ONCE in `init` — see `session`'s own doc comment (#1422 review fix 3).
@@ -282,7 +286,9 @@ public final class RemoteControlCoordinator {
         rebuildRows()
     }
 
-    private func rebuildRows() {
+    /// `internal` (not `private`, #1423) — `+Persistence.swift`'s relocated
+    /// `persistPaired`/`touchLastConnected` call this after every upsert.
+    func rebuildRows() {
         rows = RemotePairingEntryResolver.listRows(saved: savedRecords, discovered: discoveredServices)
     }
 
@@ -360,36 +366,10 @@ public final class RemoteControlCoordinator {
         }
     }
 
-    private func persistPaired(token: String, resolved: LANRemoteResolvedAddress?) async {
-        guard let fingerprint = currentFingerprint, let name = currentTVName else { return }
-        let now = Date()
-        let existing = await store.record(forFingerprint: fingerprint)
-        let record = PairedTVRecord(
-            fingerprintHex: fingerprint, name: name, token: token,
-            lastAddress: resolved ?? existing?.lastAddress,
-            pairedAt: existing?.pairedAt ?? now, lastConnectedAt: now
-        )
-        await store.save(record)
-        savedRecords = await store.listPairedTVs()
-        rebuildRows()
-    }
-
-    /// On each `.controlling` first-arrival after an attach/reconnect,
-    /// update `lastConnectedAt`/`lastAddress` on the EXISTING saved record
-    /// (spec §5.2) — distinct from `persistPaired`, which only runs once per
-    /// FRESH ceremony. A fast-path reconnect (no `.paired` event at all)
-    /// still needs its `lastConnectedAt` refreshed, which is what this call
-    /// is for.
-    private func touchLastConnected() async {
-        guard let fingerprint = currentFingerprint, var record = await store.record(forFingerprint: fingerprint) else { return }
-        record.lastConnectedAt = Date()
-        if let resolved = await session.currentResolvedAddress() {
-            record.lastAddress = resolved
-        }
-        await store.save(record)
-        savedRecords = await store.listPairedTVs()
-        rebuildRows()
-    }
+    // `persistPaired(token:resolved:)` and `touchLastConnected()` live in
+    // `RemoteControlCoordinator+Persistence.swift` (#1423, a pure
+    // relocation for the LOC budget — same reason `uiPhase(after:current:
+    // tvName:)` lives in `+UIPhase.swift` below).
 
     // `uiPhase(after:current:tvName:)` lives in
     // `RemoteControlCoordinator+UIPhase.swift` (#1424, relocated for the
