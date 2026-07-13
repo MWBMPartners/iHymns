@@ -77,33 +77,36 @@ jobs:
             build
 
       # #1422 (PR-7) shipped the first `#if os(iOS)`-only IHFeatures UI
-      # (`PairingScanView.swift`, AVFoundation camera), which the macOS build
-      # above never compiles. That PR verified it with a PACKAGE build
-      # cross-compiled for the iOS-Simulator SDK rather than the full `iHymns`
-      # app scheme, because that scheme embeds `iHymnsWatch` (`project.yml`
-      # `embed: true, destinationFilters: [iOS]`), which imports IHFeatures —
-      # and IHFeatures did NOT yet compile for watchOS (a pre-existing,
-      # never-CI-built gap: ~9 IHFeatures views used watchOS-unavailable
-      # SwiftUI APIs). **#1549 fixed that** (each usage now falls back to a
-      # watch-safe alternative under `#if os(watchOS)`/`#if !os(watchOS)`), so
-      # the full app-scheme build below now embeds AND compiles the watch app
-      # too — this replaces the old package-only interim build with the real
-      # thing. Needs the iOS Simulator platform installed first, same as the
-      # tvOS step below needs tvOS (`-destination 'generic/platform=...'`
-      # isn't the macOS SDK, which is the only one preinstalled on the
-      # macos-26 runner).
-      - name: Install iOS platform (runner ships without it, #1549)
-        run: sudo xcodebuild -downloadPlatform iOS
-
-      - name: Build (iOS Simulator destination — proves the full app + embedded watch, #1549)
-        working-directory: appApple
+      # (`PairingScanView.swift`), and #1549 made the whole IHFeatures target
+      # compile for watchOS too (the embedded `iHymnsWatch` app links it).
+      # We verify BOTH with fast PACKAGE cross-compiles against the iOS- and
+      # watchOS-Simulator SDKs — deliberately NOT the full `iHymns` app scheme.
+      # That scheme embeds `iHymnsWatch` (`project.yml` `embed: true,
+      # destinationFilters: [iOS]`), so an iOS-Simulator app build REQUIRES the
+      # watchOS *platform runtime* installed on the runner (not just the SDK) —
+      # "watchOS 26.0 must be installed in order to run the scheme" — i.e. a
+      # ~15 GB `xcodebuild -downloadPlatform` on top of iOS's, for a check that
+      # isn't required (#1526). (#1549 originally re-enabled the app-scheme iOS
+      # build here and it went red on every appApple PR for exactly this reason
+      # — fixed forward to package cross-compiles.) A `swift build`
+      # cross-compile needs only the SDK (always present on the macos-26
+      # runner), covers the exact iOS-only + watchOS code paths, and runs in
+      # seconds. The macOS app-scheme build above proves the app links; the
+      # iOS/watch embed is a stable project-config concern (verified locally +
+      # on the deploy pipeline).
+      - name: Build iHymnsKit for iOS Simulator (proves the iOS-only UI, #1422/#1549)
+        working-directory: appApple/Packages/iHymnsKit
         run: |
-          xcodebuild \
-            -project iHymns.xcodeproj \
-            -scheme iHymns \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
+          swift build \
+            --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+            -Xswiftc -target -Xswiftc arm64-apple-ios26.0-simulator
+
+      - name: Build iHymnsKit for watchOS Simulator (proves the watch compiles, #1549)
+        working-directory: appApple/Packages/iHymnsKit
+        run: |
+          swift build \
+            --sdk "$(xcrun --sdk watchsimulator --show-sdk-path)" \
+            -Xswiftc -target -Xswiftc arm64-apple-watchos26.0-simulator
 
       # The generic tvOS-Simulator destination below needs the tvOS 26.0
       # platform, which is NOT preinstalled on the GitHub-hosted macos-26
