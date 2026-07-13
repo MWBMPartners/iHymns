@@ -128,13 +128,14 @@ extension APIClient {
             let request = Self.makeURLRequest(
                 for: endpoint,
                 in: environment,
-                bearerToken: endpoint.requiresAuth ? bearerToken : nil
+                bearerToken: endpoint.requiresAuth ? bearerToken : nil,
+                presenceToken: servicePresenceToken
             )
 
             let data: Data
             let response: URLResponse
             do {
-                (data, response) = try await session.data(for: request)
+                (data, response) = try await session.data(for: request, delegate: Self.redirectCookieGuard)
             } catch is URLError {
                 // Every transport-level failure (no connectivity, DNS failure,
                 // timed out, connection lost mid-flight, ...) is surfaced as
@@ -258,5 +259,68 @@ extension APIClient {
         let exponential = base * pow(2.0, Double(attempt - 1))
         let jitter = Double.random(in: 0...(exponential * 0.25))
         return exponential + jitter
+    }
+
+    /// PR-10 Opus-review FIX 3 (D-6 residual, spec §4.3): one stateless,
+    /// reusable per-task redirect delegate, handed to every `session.data(
+    /// for:delegate:)` call above. It holds no state, so a single shared
+    /// instance is safe across every request with no actor-isolation
+    /// concern — `internal` (not `private`), matching this file's existing
+    /// same-target-visibility convention, so `IHAPITests` can unit-test
+    /// its pure decision function directly.
+    nonisolated static let redirectCookieGuard = RedirectCookieGuard()
+}
+
+/// Strips the Service-Mode presence `Cookie` header (`makeURLRequest`,
+/// `APIClient.swift`) before `URLSession` follows an HTTP redirect to a
+/// DIFFERENT host.
+///
+/// ELI5: if the server ever says "actually, go ask THIS OTHER website
+/// instead," don't hand that other website our venue room-key.
+///
+/// DETAILED: `makeURLRequest` attaches `Cookie: ihymns_sf_presence_token=…`
+/// to every request while a Service Mode presence is active (D-6) — but
+/// that's a manually-set header, not one `URLSession`'s cookie-jar
+/// machinery manages (`httpShouldHandleCookies = false` on those same
+/// requests, spec §4.3), so `URLSession`'s DEFAULT redirect handling would
+/// otherwise forward it VERBATIM to whatever host a 3xx response names.
+/// **No live hole today** — none of the `/api` endpoints this client calls
+/// (`live_follow_*`/`service_*`, `api.php`) issue a cross-host redirect —
+/// but this closes the residual defensively rather than depending on that
+/// staying true forever. `URLSessionTaskDelegate` conformance requires
+/// `Sendable` under Swift 6 strict concurrency; `@unchecked` is sound here
+/// because the type carries zero mutable (or any) stored state.
+///
+/// The host-comparison itself is split into a `nonisolated static` PURE
+/// function (`shouldStripCookie(originalHost:redirectHost:)`) precisely so
+/// it can be unit-tested with plain strings — constructing a real
+/// `URLSessionTask` with a specific `originalRequest` outside of an actual
+/// `URLSession` round trip isn't practical, so the delegate method itself
+/// stays a thin, obviously-correct wrapper around the tested logic (the
+/// same "pure core, thin glue" discipline `LiveFollowerReducer`/
+/// `LiveSyncConfiguration` follow elsewhere in this PR).
+final class RedirectCookieGuard: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest
+    ) async -> URLRequest? {
+        guard Self.shouldStripCookie(originalHost: task.originalRequest?.url?.host, redirectHost: request.url?.host) else {
+            return request
+        }
+        var stripped = request
+        stripped.setValue(nil, forHTTPHeaderField: "Cookie")
+        return stripped
+    }
+
+    /// Fail-CLOSED: the cookie is kept ONLY when both hosts are known and
+    /// match (case-insensitively — hostnames aren't case-sensitive); an
+    /// indeterminate comparison (either host missing — not expected in
+    /// practice, since every request this client builds has an absolute
+    /// URL with a host) strips it rather than risking a false negative.
+    nonisolated static func shouldStripCookie(originalHost: String?, redirectHost: String?) -> Bool {
+        guard let originalHost, let redirectHost else { return true }
+        return originalHost.caseInsensitiveCompare(redirectHost) != .orderedSame
     }
 }
