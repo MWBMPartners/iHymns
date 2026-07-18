@@ -72,10 +72,13 @@ extension APIClient {
     }
 
     /// `?action=service_join` — joins a Service Mode congregation by the
-    /// venue's rotating code. Returns the public info PLUS the engine-only
-    /// `presenceToken` (the CCLI-unlock gate key, §4.3/D-6 — custody stays
-    /// with `ServiceModeEngine`, which calls `updateServicePresenceToken(_:)`
-    /// below the instant this returns).
+    /// venue's rotating code, as EITHER a congregant follower or (Apple
+    /// Phase-2 PR-15, #1428) the venue's tvOS projector — `role` is the
+    /// server's own `"congregant"`/`"projector"` string (`api.php:14615`).
+    /// Returns the public info PLUS the engine-only `presenceToken` (the
+    /// CCLI-unlock gate key, §4.3/D-6 — custody stays with `ServiceModeEngine`,
+    /// which calls `updateServicePresenceToken(_:)` below the instant this
+    /// returns).
     public func serviceJoin(code: String, presenceDeviceId: String, role: String) async throws -> ServiceJoinResult {
         let endpoint = try Endpoint.serviceJoin(code: code, presenceDeviceId: presenceDeviceId, role: role)
         let data = try await performOnce(endpoint)

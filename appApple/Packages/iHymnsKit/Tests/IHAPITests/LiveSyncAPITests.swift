@@ -102,6 +102,14 @@ struct LiveSyncEndpointFactoryTests {
         #expect(body.role == "congregant")
     }
 
+    @Test("serviceJoin: role:\"projector\" (Apple Phase-2 PR-15, #1428) encodes verbatim — the tvOS projector's join")
+    func serviceJoinProjectorRoleShape() throws {
+        let endpoint = try Endpoint.serviceJoin(code: "ABC123", presenceDeviceId: "tv-1", role: "projector")
+        struct Body: Decodable { let role: String }
+        let body = try JSONDecoder().decode(Body.self, from: try #require(endpoint.httpBody))
+        #expect(body.role == "projector")
+    }
+
     @Test("servicePoll: GET, no auth, presenceToken + since as query items")
     func servicePollShape() {
         let endpoint = Endpoint.servicePoll(presenceToken: "tok-1", since: 5)
@@ -247,6 +255,13 @@ struct LiveSyncDecodingTests {
         let result = try APIClient.decodeServiceJoin(from: ContractFixtures.serviceJoin())
         #expect(result.presenceToken.count == 43)
         #expect(result.info.pollIntervalMs == 2500)
+        #expect(result.info.initial.songId == "MP-0031")
+    }
+
+    @Test("service_join_projector.json (code-derived, PR-15/#1428) decodes pollIntervalMs:1000 — the projector's faster cadence")
+    func decodesServiceJoinProjectorFixture() throws {
+        let result = try APIClient.decodeServiceJoin(from: ContractFixtures.serviceJoinProjector())
+        #expect(result.info.pollIntervalMs == 1000)
         #expect(result.info.initial.songId == "MP-0031")
     }
 

@@ -68,10 +68,13 @@ extension Endpoint {
     }
 
     /// `?action=service_join` — POST, anonymous (`api.php:14599`).
-    /// `presenceDeviceId` is REQUIRED by the server (`:14613`); `role`
-    /// always sent as `"congregant"` by this native client (never
-    /// `"projector"` — that's the deferred operator/projector console,
-    /// spec §5.3).
+    /// `presenceDeviceId` is REQUIRED by the server (`:14613`); `role` is
+    /// `"congregant"` (the phone/tablet follower clients, `ServiceModeEngine
+    /// .join(code:role:)`'s default) or `"projector"` (Apple Phase-2 PR-15,
+    /// #1428: the tvOS venue screen, `TVServiceFollowCoordinator`) —
+    /// `#1406`'s optional client-declared role (`api.php:14615`) selects the
+    /// per-role poll cadence/budget the server hands back
+    /// (`pollIntervalMs`, `:14686`; the poll-rate ceiling, `:14711-14712`).
     static func serviceJoin(code: String, presenceDeviceId: String, role: String) throws -> Endpoint {
         let body = try JSONEncoder().encode(ServiceJoinBody(code: code, presenceDeviceId: presenceDeviceId, role: role))
         return Endpoint(action: "service_join", httpMethod: "POST", httpBody: body)

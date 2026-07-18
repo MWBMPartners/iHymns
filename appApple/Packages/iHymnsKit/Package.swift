@@ -113,7 +113,10 @@ let package = Package(
                 .copy("service_poll_inactive.json"),
                 .copy("service_join.json"),
                 .copy("service_poll_changed.json"),
-                .copy("service_poll_unchanged.json")
+                .copy("service_poll_unchanged.json"),
+                // Apple Phase-2 PR-15 (#1428) — the tvOS projector's
+                // `role:"projector"` join shape (`pollIntervalMs:1000`).
+                .copy("service_join_projector.json")
             ],
             swiftSettings: sharedSwiftSettings
         ),

@@ -103,6 +103,13 @@ public enum ContractFixtures {
     /// CODE-DERIVED `service_join` success shape.
     public static func serviceJoin() throws -> Data { try data(named: "service_join") }
 
+    /// CODE-DERIVED `service_join` success shape for a `role:"projector"`
+    /// join (Apple Phase-2 PR-15, #1428) — identical to `serviceJoin()`
+    /// except `pollIntervalMs:1000` (the projector's faster cadence,
+    /// `api.php:14686`), proving the join decode carries the server's
+    /// per-role cadence through untouched.
+    public static func serviceJoinProjector() throws -> Data { try data(named: "service_join_projector") }
+
     /// CODE-DERIVED `service_poll` `changed:true` shape.
     public static func servicePollChanged() throws -> Data { try data(named: "service_poll_changed") }
 
