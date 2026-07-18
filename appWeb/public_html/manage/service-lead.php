@@ -108,6 +108,12 @@ foreach ($sessions as $s) {
     $label = (string)($s['VenueName'] ?? 'Venue');
     if (!empty($s['ScheduleTitle'])) { $label .= ' · ' . (string)$s['ScheduleTitle']; }
     if (!empty($s['OccurrenceDate'])) { $label .= ' · ' . (string)$s['OccurrenceDate']; }
+    /* #1425 — expose the numeric session id in the picker label so an operator
+       can read it off and type it into the iHymns app (TV Remote → Congregant
+       Mirror, PR-14) to mirror the LAN TV state to this Service session.
+       Display-only: no endpoint/contract change, the JS already carries
+       `sessionId` separately for its own calls. */
+    $label .= ' · #' . (int)$s['Id'];
     $sessionList[] = ['sessionId' => (int)$s['Id'], 'label' => $label];
 }
 
