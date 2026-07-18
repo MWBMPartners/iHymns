@@ -16,6 +16,26 @@
 // future-proofing, not load-bearing). Needs NO entitlement and NO
 // `Info.plist` key (fact 14/15) — `WCSession.sendMessage` waking a
 // background launch is a documented, built-in framework behaviour.
+//
+// **The linger bracket's dedup safety (a deliberate refinement of the
+// spec's named `onDriverActivity` hook, which does not exist on the built
+// `RemoteControlRelayHub`/`HeadlessRelayDriver` — do NOT add it; this
+// file's `push(_:)`, driven from the hub's already-deduped `onSnapshot`,
+// is the correct trigger):** `updateLingerBracket(for:)` derives the
+// bracket purely from the MERGED snapshot's `phase` inside `push()`. This
+// is safe against `RemoteControlRelayHub.republish()`'s own
+// `guard merged != lastMerged else { return }` dedup because (a) a
+// headless burst ALWAYS transits through merged `.connecting` before it
+// can ever reach `.controlling` — the begin-bracket branch is therefore
+// never skipped by dedup swallowing an intermediate state; and (b) every
+// teardown path ends in `HeadlessRelayDriver.publishBaseline()`, which
+// always republishes `.standby`/`.noSavedTV` — the end-bracket branch is
+// therefore never skipped either. Holding the bracket open while the
+// FOREGROUND coordinator is controlling (merged phase also reads
+// `.controlling` then) is legal and free per §4.4's "begin/end while
+// foreground is registration only, expiration never fires" — and
+// self-heals the moment backgrounding suspends the coordinator (its
+// `.standby` republish ends the bracket the ordinary way).
 import Foundation
 #if os(iOS) && canImport(WatchConnectivity)
 import IHLive
@@ -86,7 +106,13 @@ final class PhoneRelayDelegate: NSObject, WCSessionDelegate, Sendable {
         guard let data = message[WatchRelayCodec.commandKey] as? Data else {
             // Malformed shape — STILL answer (a swallowed reply surfaces as
             // a spurious watch timeout); no command to decode, so no
-            // `.command` case is yielded.
+            // `.command` case is yielded. `.noSavedTV` (not `lastMerged`) is
+            // the only snapshot available here: this delegate is
+            // `nonisolated` and cannot synchronously read the `@MainActor`
+            // hub's `lastMerged` from inside a callback. Genuine command
+            // bytes that merely fail to DECODE still get the real
+            // `lastMerged` — that path runs on the consumer (`handleCommand`,
+            // `@MainActor`), which can read it.
             box.send(replyData: WatchRelayCodec.encode(reply: .init(outcome: .failed, snapshot: .noSavedTV)))
             return
         }
@@ -111,6 +137,17 @@ public final class PhoneWatchRelayService {
     private var delegate: PhoneRelayDelegate?
     private var inboundTask: Task<Void, Never>?
     private var lingerTaskID: UIBackgroundTaskIdentifier = .invalid
+    /// UUID-keyed rather than a single `var` slot: `beginBackgroundTask`'s
+    /// `expirationHandler` and `handleCommand`'s own `defer` can BOTH race
+    /// to end the SAME bracket (the expiration handler firing moments before
+    /// the reply finishes encoding) — a naive shared var would let the
+    /// second caller read a value the first already invalidated (a Swift 6
+    /// data-race on plain `var` capture), and worse, could double-end (or
+    /// silently end a LATER command's bracket) if two commands overlapped.
+    /// Keying by a fresh `UUID` per bracket plus `removeValue(forKey:)`'s
+    /// idempotent nil-on-miss makes double-end and cross-command aliasing
+    /// structurally impossible.
+    private var commandBrackets: [UUID: UIBackgroundTaskIdentifier] = [:]
 
     private init() {}
 
@@ -167,8 +204,8 @@ public final class PhoneWatchRelayService {
     }
 
     private func handleCommand(_ data: Data, box: WatchRelayReplyBox) async {
-        let taskID = beginBackgroundTask(name: "watchrelay.command")
-        defer { endBackgroundTask(taskID) }
+        let bracket = beginCommandBracket()
+        defer { endCommandBracket(bracket) }
 
         let reply: WatchRelayReply
         switch WatchRelayCodec.decodeCommand(data) {
@@ -204,22 +241,46 @@ public final class PhoneWatchRelayService {
     /// The command bracket: begun when a `.command` arrives, ended right
     /// after the reply is sent — guarantees the decode→route→(wake-
     /// connect)→forward→reply pipeline survives even a stingy background
-    /// runtime grant.
-    private func beginBackgroundTask(name: String) -> UIBackgroundTaskIdentifier {
-        UIApplication.shared.beginBackgroundTask(withName: name) {
-            IHLog.remote.debug("watchrelay.phone command-task-expired")
+    /// runtime grant. Returns `nil` when iOS refuses the grant outright
+    /// (`beginBackgroundTask` returning `.invalid`) — `handleCommand` still
+    /// runs (best-effort), it just isn't bracketed.
+    ///
+    /// ELI5: "Ask iOS for a little extra time to finish this one command,
+    /// and remember which command this timer belongs to."
+    private func beginCommandBracket() -> UUID? {
+        let key = UUID()
+        let identifier = UIApplication.shared.beginBackgroundTask(withName: "watchrelay.command") { [weak self] in
+            // iOS wants the time back before the reply finished — force
+            // this bracket closed from the SAME actor `endCommandBracket`
+            // itself runs on, so the dictionary mutation is never touched
+            // from two isolation domains at once.
+            Task { @MainActor in
+                IHLog.remote.debug("watchrelay.phone command-task-expired")
+                self?.endCommandBracket(key)
+            }
         }
+        guard identifier != .invalid else { return nil }
+        commandBrackets[key] = identifier
+        return key
     }
 
-    private func endBackgroundTask(_ taskID: UIBackgroundTaskIdentifier) {
-        guard taskID != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(taskID)
+    /// `removeValue(forKey:)` returns `nil` (a silent no-op) on a KEY that
+    /// was already ended — the expiration handler firing and `handleCommand`'s
+    /// own `defer` racing to close the SAME bracket can therefore never
+    /// double-end it (double-ending a `UIBackgroundTaskIdentifier` is an
+    /// Apple-side assertion crash).
+    private func endCommandBracket(_ key: UUID?) {
+        guard let key, let identifier = commandBrackets.removeValue(forKey: key) else { return }
+        UIApplication.shared.endBackgroundTask(identifier)
     }
 
-    /// The linger bracket: begun the moment the driver reports a live burst
-    /// (`.connecting`/`.controlling`), ended once it returns to
-    /// `.standby`/`.noSavedTV`/`.pairing`. Its `expirationHandler` forces
-    /// the driver down immediately — the phone NEVER holds a connection
+    /// The linger bracket: begun the moment the MERGED snapshot reports a
+    /// live burst (`.connecting`/`.controlling`), ended once it returns to
+    /// `.standby`/`.noSavedTV`/`.pairing`. See this file's header for why
+    /// deriving this from `push()`'s merged phase — rather than the spec's
+    /// non-existent `onDriverActivity` hook — is dedup-safe on both edges.
+    /// Its `expirationHandler` forces the driver down immediately (expire
+    /// FIRST, then end the bracket) — the phone NEVER holds a connection
     /// past what iOS grants; the idle default (20s) undercuts the ~30s
     /// budget with margin anyway.
     private func updateLingerBracket(for phase: WatchRelaySnapshot.Phase) {
