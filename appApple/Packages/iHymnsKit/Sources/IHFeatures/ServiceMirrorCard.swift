@@ -59,7 +59,13 @@ struct ServiceMirrorCard: View {
                     #if os(iOS) || os(visionOS)
                     .keyboardType(.numberPad)
                     #endif
+                    #if !os(watchOS)
+                    // `.roundedBorder` is unavailable on watchOS; IHFeatures
+                    // must still COMPILE there (#1549), even though this
+                    // operator card is only ever SHOWN on the phone/iPad/Mac
+                    // LAN-remote screen. watchOS falls back to the plain field.
                     .textFieldStyle(.roundedBorder)
+                    #endif
                     .frame(maxWidth: 120)
                 Button("Start Mirroring") {
                     guard let sessionId = parsedSessionId else { return }
