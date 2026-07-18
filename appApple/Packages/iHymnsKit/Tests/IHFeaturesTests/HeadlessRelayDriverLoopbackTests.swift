@@ -53,6 +53,38 @@ private func waitFor<Element: Sendable>(
     }
 }
 
+/// Polls `TVListenerActor.pairedConnectionCount` until it reaches `target`
+/// or the timeout elapses, returning the last-observed value.
+///
+/// ELI5: "Wait a moment for the TV to NOTICE the connection went away
+/// before checking that it's gone."
+///
+/// DETAILED: the TV decrements its paired-connection count when it OBSERVES
+/// the peer's TCP close — which is inherently ASYNCHRONOUS to the
+/// client-side `retire()`/disconnect: there is no application-level
+/// close-acknowledgement riding back over a one-way FIN, so the client
+/// genuinely cannot know the instant the TV's `NWListener` runloop has
+/// processed the drop. An immediate `#expect(... == 0)` the moment
+/// `retire()` returns therefore RACES the TV's runloop and fails
+/// intermittently-to-consistently under load (test (a) sidesteps the same
+/// race by sleeping 500 ms first). This awaits the eventual, correct settle
+/// instead of asserting on an instant that is not yet observable — a
+/// test-timing fix, NOT a product change: the connection IS closed by
+/// `retire()`; only the TV's observation of it lags.
+private func waitForConnectionCount(
+    _ listener: TVListenerActor,
+    toReach target: Int,
+    timeout: Duration = .seconds(2)
+) async -> Int {
+    let deadline = ContinuousClock().now.advanced(by: timeout)
+    var count = await listener.pairedConnectionCount
+    while count != target, ContinuousClock().now < deadline {
+        try? await Task.sleep(for: .milliseconds(20))
+        count = await listener.pairedConnectionCount
+    }
+    return count
+}
+
 @Suite(
     "HeadlessRelayDriver — real TLS loopback, no watch/WCSession/devices needed",
     .serialized,
@@ -232,7 +264,10 @@ struct HeadlessRelayDriverLoopbackTests {
         #expect(await listener.pairedConnectionCount == 1)
 
         await driver.retire()
-        #expect(await listener.pairedConnectionCount == 0)
+        // The TV observes the peer's close ASYNCHRONOUSLY (no close-ack over
+        // the one-way FIN) — poll for the settle rather than racing the TV
+        // runloop with an immediate `== 0` (see `waitForConnectionCount`).
+        #expect(await waitForConnectionCount(listener, toReach: 0) == 0)
 
         let second = await driver.perform(.prevComponent)
         #expect(second.outcome == .forwarded)
