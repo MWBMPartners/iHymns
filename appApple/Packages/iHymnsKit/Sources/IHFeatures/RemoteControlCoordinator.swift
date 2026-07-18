@@ -47,6 +47,14 @@ public final class RemoteControlCoordinator {
     /// code," "ask the operator for a fresh code," etc. Cleared on the next
     /// successful action.
     public internal(set) var notice: String?
+    /// The optional PR-14 Service-Mode mirror (#1425, strategy §2.4.1) —
+    /// `nil` unless `RemoteControlView` built one and assigned it before
+    /// `start()`. Deliberately NOT reset by `start()`/`stop()`: mirror
+    /// lifecycle is operator-controlled (armed/disarmed only from
+    /// `ServiceMirrorCard`, never implicitly), so a LAN reconnect/
+    /// rediscovery cycle must never silently kill an armed mirror out from
+    /// under the operator.
+    public var serviceMirror: ServiceMirrorController?
     /// Set when Bonjour browsing itself was denied Local Network
     /// permission. **Always `false` in this PR** — `RemoteSessionActor`'s
     /// current discovery API (`RemoteSessionActor.swift`'s
@@ -59,7 +67,10 @@ public final class RemoteControlCoordinator {
     /// tracked as follow-up, not guessed at here.
     public private(set) var localNetworkDenied = false
 
-    private let store: any PairedTVStoring
+    /// `internal` (not `private`) so the relocated persistence helpers in
+    /// `RemoteControlCoordinator+Persistence.swift` (#1425) can reach it —
+    /// same-module access only; never part of the public API.
+    let store: any PairedTVStoring
     /// Kept so `start()` can build a BRAND-NEW `RemoteControlSession` on
     /// every (re)start rather than the one this type used to construct
     /// ONCE in `init` — see `session`'s own doc comment (#1422 review fix 3).
@@ -282,7 +293,8 @@ public final class RemoteControlCoordinator {
         rebuildRows()
     }
 
-    private func rebuildRows() {
+    // `internal` so `+Persistence.swift` (#1425) can call it after a save.
+    func rebuildRows() {
         rows = RemotePairingEntryResolver.listRows(saved: savedRecords, discovered: discoveredServices)
     }
 
@@ -317,7 +329,7 @@ public final class RemoteControlCoordinator {
             isManualConnectInFlight = false
             lastManualParsed = nil
             await persistPaired(token: token, resolved: resolved)
-        case .controlling:
+        case .controlling(let state):
             // `.controlling` fires on EVERY TV state broadcast — including
             // the TV's echo of our OWN intents (spec §1.1) — so touching
             // unconditionally would hit the Keychain (read+delete+add) +
@@ -331,6 +343,14 @@ public final class RemoteControlCoordinator {
                 hasTouchedThisLink = true
                 await touchLastConnected()
             }
+            // #1425 (strategy §2.4.1) — every `.controlling` arrival,
+            // INCLUDING the TV's echo of our own intents, is exactly the
+            // "what's on the TV right now" signal an armed Service-Mode
+            // mirror needs to rebroadcast. `serviceMirror` is `nil` unless
+            // `RemoteControlView` wired one up, and `observe(_:)` itself
+            // no-ops while unarmed, so this is a byte-identical no-op for
+            // every other caller of this coordinator.
+            serviceMirror?.observe(state)
         case .pairingEnded(let failure):
             currentTVName = nil
             currentFingerprint = nil
@@ -360,38 +380,8 @@ public final class RemoteControlCoordinator {
         }
     }
 
-    private func persistPaired(token: String, resolved: LANRemoteResolvedAddress?) async {
-        guard let fingerprint = currentFingerprint, let name = currentTVName else { return }
-        let now = Date()
-        let existing = await store.record(forFingerprint: fingerprint)
-        let record = PairedTVRecord(
-            fingerprintHex: fingerprint, name: name, token: token,
-            lastAddress: resolved ?? existing?.lastAddress,
-            pairedAt: existing?.pairedAt ?? now, lastConnectedAt: now
-        )
-        await store.save(record)
-        savedRecords = await store.listPairedTVs()
-        rebuildRows()
-    }
-
-    /// On each `.controlling` first-arrival after an attach/reconnect,
-    /// update `lastConnectedAt`/`lastAddress` on the EXISTING saved record
-    /// (spec §5.2) — distinct from `persistPaired`, which only runs once per
-    /// FRESH ceremony. A fast-path reconnect (no `.paired` event at all)
-    /// still needs its `lastConnectedAt` refreshed, which is what this call
-    /// is for.
-    private func touchLastConnected() async {
-        guard let fingerprint = currentFingerprint, var record = await store.record(forFingerprint: fingerprint) else { return }
-        record.lastConnectedAt = Date()
-        if let resolved = await session.currentResolvedAddress() {
-            record.lastAddress = resolved
-        }
-        await store.save(record)
-        savedRecords = await store.listPairedTVs()
-        rebuildRows()
-    }
-
-    // `uiPhase(after:current:tvName:)` lives in
-    // `RemoteControlCoordinator+UIPhase.swift` (#1424, relocated for the
-    // LOC budget).
+    // `persistPaired(token:resolved:)` + `touchLastConnected()` live in
+    // `RemoteControlCoordinator+Persistence.swift` (#1425, relocated for the
+    // LOC budget); `uiPhase(after:current:tvName:)` lives in
+    // `RemoteControlCoordinator+UIPhase.swift` (#1424, same reason).
 }

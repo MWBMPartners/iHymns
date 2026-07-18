@@ -40,6 +40,7 @@ struct IHSettingsStoreTests {
         #expect(store.hasSeenLocalNetworkPrimer == false) // #1422: unset = show the explainer before discovery starts
         #expect(store.apiEnvironmentOverride == nil)     // use the build default
         #expect(store.lastManualConnectAddress == nil)   // #1424: nothing typed into Connect by Address yet
+        #expect(store.lastMirrorSessionId == nil)        // #1425: no Service session mirrored yet
     }
 
     @Test("Every setting round-trips through a second store on the same suite")
@@ -56,6 +57,7 @@ struct IHSettingsStoreTests {
         writer.hasSeenLocalNetworkPrimer = true
         writer.apiEnvironmentOverride = .beta
         writer.lastManualConnectAddress = "192.168.1.50:8080"
+        writer.lastMirrorSessionId = 42
 
         // A DIFFERENT store instance on the same underlying suite must see
         // every persisted value — proves it's really in UserDefaults, not
@@ -69,6 +71,16 @@ struct IHSettingsStoreTests {
         #expect(reader.hasSeenLocalNetworkPrimer == true)
         #expect(reader.apiEnvironmentOverride == .beta)
         #expect(reader.lastManualConnectAddress == "192.168.1.50:8080")
+        #expect(reader.lastMirrorSessionId == 42)
+    }
+
+    @Test("#1425: clearing lastMirrorSessionId removes the key, not stores a 0 sentinel")
+    func clearingLastMirrorSessionId() {
+        let store = makeStore()
+        store.lastMirrorSessionId = 7
+        #expect(store.lastMirrorSessionId == 7)
+        store.lastMirrorSessionId = nil
+        #expect(store.lastMirrorSessionId == nil)
     }
 
     @Test("#190: onboarding 'seen' gate — false until explicitly marked, then stays true across instances")
