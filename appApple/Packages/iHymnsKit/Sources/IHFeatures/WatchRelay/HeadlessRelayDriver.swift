@@ -69,6 +69,23 @@ public final class HeadlessRelayDriver: HeadlessRelayServicing {
 
     private var currentFingerprint: String?
     private var hasControlledThisBurst = false
+    /// Monotonic per-burst token that closes the retire-vs-cold-`perform`
+    /// race (#1423 fresh-context security review, Finding 1). `.startConnect`
+    /// is executed in a DEFERRED, un-awaited `Task` (it MUST run concurrently
+    /// with the connect-deadline tick — see `execute`), so a `retire()` /
+    /// `forceDown()` hook can interleave and tear this burst down BEFORE that
+    /// Task's `executeStartConnect` body ever runs. Without this token the
+    /// stale Task would then build + `attach` a FRESH session while the
+    /// policy is back in `.idle` — an orphaned, live, authenticated LAN
+    /// connection the (now-idle) single-owner machinery can no longer reap
+    /// (and a cross-burst teardown hazard). Bumped on every teardown,
+    /// captured when `.startConnect` is dispatched, and re-checked after
+    /// `executeStartConnect`'s own `await` so a stale dispatch ABORTS instead
+    /// of connecting. (The orphaned link is same-device + token-authenticated,
+    /// so it stays inside §8 row 9's trust envelope regardless — this closes
+    /// it as a resource/robustness leak against the D-17 single-owner
+    /// invariant, not a trust breach.)
+    private var burstGeneration = 0
     /// Set right before a `.sessionFailed` whose true cause is more
     /// specific than the policy's own generic `.couldNotReachTV` (an empty
     /// store, or a cancelled ceremony) — consumed (and cleared) by the very
@@ -147,8 +164,12 @@ public final class HeadlessRelayDriver: HeadlessRelayServicing {
                 // `.startConnect` in the SAME array (the idle->connecting
                 // transition), defeating the connect-deadline's entire
                 // purpose. Racing the tick against the connect requires
-                // them to run CONCURRENTLY, not sequentially.
-                Task { await self.executeStartConnect() }
+                // them to run CONCURRENTLY, not sequentially. Because it is
+                // deferred, capture the burst token NOW so a teardown that
+                // interleaves before the Task body runs makes it abort
+                // instead of connecting an orphan (see `burstGeneration`).
+                let generation = burstGeneration
+                Task { await self.executeStartConnect(generation: generation) }
             case .forward(let commands):
                 await executeForward(commands)
             case .failPending(let ids, let reason):
@@ -167,8 +188,16 @@ public final class HeadlessRelayDriver: HeadlessRelayServicing {
     /// fast path (`RemotePairingEntryResolver.resolve(.savedRow(record),
     /// saved:, discovered: [])`) is the ONLY resolution this driver ever
     /// calls — no discovery, no TOFU, ever.
-    private func executeStartConnect() async {
+    private func executeStartConnect(generation: Int) async {
         let records = await store.listPairedTVs()
+        // Re-check AFTER the store read: a `retire()`/`forceDown()` may have
+        // torn this burst down (bumping `burstGeneration`), or a fresh burst
+        // may have re-entered `.connecting`, while we awaited the store —
+        // either way this deferred dispatch is stale and must NOT build/
+        // attach an orphan session. The retire path has already resumed any
+        // pending command's continuation, so aborting here leaves nothing
+        // dangling (no watch-side hang).
+        guard generation == burstGeneration, case .connecting = policy.state else { return }
         guard let record = records.first else {
             pendingFailureOverride = .noSavedTV
             await execute(policy.handle(.sessionFailed))
@@ -243,6 +272,11 @@ public final class HeadlessRelayDriver: HeadlessRelayServicing {
     }
 
     private func executeDisconnect() async {
+        // Bump the burst token FIRST (synchronously, before any await) so a
+        // still-pending deferred `.startConnect` for the burst being torn
+        // down sees the new value and aborts instead of connecting an orphan
+        // (see `burstGeneration`, #1423 security review Finding 1).
+        burstGeneration += 1
         if let session {
             await session.endControl()
             await session.stop()
