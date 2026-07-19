@@ -60,11 +60,11 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: 'Fastlane lane to run (overrides the branch->lane mapping below)'
+        description: "Fastlane lane to run — use 'auto' to follow the branch->lane mapping below"
         required: false
         type: choice
         options:
-          - ''
+          - auto
           - alpha
           - beta
           - release
@@ -148,7 +148,7 @@ jobs:
       - name: Determine Fastlane lane
         id: lane
         run: |
-          if [ -n "${{ github.event.inputs.lane }}" ]; then
+          if [ -n "${{ github.event.inputs.lane }}" ] && [ "${{ github.event.inputs.lane }}" != "auto" ]; then
             echo "lane=${{ github.event.inputs.lane }}" >> "$GITHUB_OUTPUT"
           elif [ "${{ github.ref }}" = "refs/heads/alpha" ]; then
             echo "lane=alpha" >> "$GITHUB_OUTPUT"
