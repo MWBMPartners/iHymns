@@ -132,7 +132,20 @@ if (is_file($fixturePath)) {
     $fixtureDecoded = json_decode((string)file_get_contents($fixturePath), true);
     $contractState = liveActivityPush_contentState('MP-1008', 'Shine Jesus Shine', 2, '{"displayState":"live"}', 7, true);
     _talapAssert(is_array($fixtureDecoded), 'fixture file decodes as valid JSON');
-    _talapAssert($contractState == $fixtureDecoded, 'liveActivityPush_contentState() output matches the fixture the Swift suite decodes, key-for-key');
+    /* #1429 Audit-B F12 — a loose `==` compare here type-juggles ("7"==7,
+       true=="1"), which would silently pass even if the fixture stored its
+       revision/isLive as JSON strings instead of a number/bool — exactly
+       the class of drift this fixture exists to catch (this file's own
+       header: "the two sides can never silently drift apart"). `ksort`
+       both arrays (key ORDER must not matter for a semantic match) then
+       compare with strict `===`, matching the per-key is_int()/is_bool()
+       discipline the direct-output assertions above (~lines 75-78) already
+       use. */
+    $contractSorted = $contractState;
+    $fixtureSorted = is_array($fixtureDecoded) ? $fixtureDecoded : [];
+    ksort($contractSorted);
+    ksort($fixtureSorted);
+    _talapAssert($contractSorted === $fixtureSorted, 'liveActivityPush_contentState() output matches the fixture the Swift suite decodes, key-for-key (strict ===, no type juggling)');
 }
 
 /* ---------------------------------------------------------------------- *

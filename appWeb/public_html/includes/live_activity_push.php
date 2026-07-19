@@ -227,26 +227,35 @@ function liveActivityPush_apsPayload(array $contentState, string $event, int $no
  *   1. `tblApnsTokens` doesn't exist (un-migrated docroot) → return.
  *   2. No `Kind='liveActivity'` token rows for this session → return
  *      (the overwhelmingly common case: nobody has a Live Activity open).
- *   3. `apnsConfigured()` is false (no admin-provisioned key yet, #1429 C4)
- *      → return. Checked AFTER the token SELECT (not before) because the
- *      token SELECT is the cheaper of the two checks and short-circuits
- *      the common case without even resolving `apnsCredentials()`.
- *   4. Re-resolve the session itself, CHANNEL-SCOPED (rule #26) — a stale/
+ *   3. On `'end'`, delete every Live Activity token for this session HERE —
+ *      BEFORE the `apnsConfigured()` gate below (#1429 Audit-B F3a fix: this
+ *      cleanup used to run only after a successful send loop further down,
+ *      gated behind `apnsConfigured()`, so an ended session's tokens were
+ *      NEVER pruned on the overwhelmingly common un-configured docroot —
+ *      the normal state today, before an admin pastes a real APNs key).
+ *      The activity is over, nothing should ever push to it again (also
+ *      matches the plain "dismiss = clean up" mental model, and keeps
+ *      `tblApnsTokens` from accumulating one dead row per ended session per
+ *      docroot) — this cleanup must happen regardless of configuration.
+ *   4. `apnsConfigured()` is false (no admin-provisioned key yet, #1429 C4)
+ *      → return. Checked AFTER the token SELECT + end-cleanup (not before)
+ *      because those are cheaper and short-circuit/clean-up the common
+ *      case without even resolving `apnsCredentials()`.
+ *   5. Re-resolve the session itself, CHANNEL-SCOPED (rule #26) — a stale/
  *      wrong-channel/deleted session → return. For an `'update'` push
  *      specifically, an already-inactive session also short-circuits (an
  *      `'end'` push is expected to run against a JUST-deactivated row, so
  *      that check is skipped for `'end'`).
- *   5. Build the content-state + `aps` payload once (shared across every
+ *   6. Build the content-state + `aps` payload once (shared across every
  *      token this session has registered).
- *   6. Send to each token via `apnsSend()`. A `not_configured` /
- *      `http2_unsupported` / `transport_unavailable` / `transport_error`
- *      status means EVERY subsequent send in this loop would fail for the
- *      same structural reason (not a per-token problem), so the loop
- *      `break`s early rather than retrying the same failure N times.
- *   7. On `'end'`, delete every Live Activity token for this session — the
- *      activity is over, nothing should ever push to it again (also
- *      matches the plain "dismiss = clean up" mental model, and keeps
- *      `tblApnsTokens` from accumulating one dead row per ended session).
+ *   7. Send to each token via `apnsSend()` (using the ALREADY-fetched
+ *      in-memory `$tokens` array from step 2 — the row objects themselves,
+ *      not a re-SELECT, so step 3's delete never races this send). A
+ *      `not_configured` / `http2_unsupported` / `transport_unavailable` /
+ *      `transport_error` status means EVERY subsequent send in this loop
+ *      would fail for the same structural reason (not a per-token
+ *      problem), so the loop `break`s early rather than retrying the same
+ *      failure N times.
  *
  * @param \mysqli $db        Live DB handle.
  * @param int     $sessionId `tblLiveFollowSessions.Id` (host OR service kind — this hook is kind-agnostic).
@@ -261,7 +270,10 @@ function liveActivitySessionPush(\mysqli $db, int $sessionId, string $event = 'u
 
         $tokStmt = $db->prepare(
             "SELECT PushToken, ApnsEnv FROM tblApnsTokens
-              WHERE Kind = 'liveActivity' AND SessionId = ? LIMIT 25"
+              WHERE Kind = 'liveActivity' AND SessionId = ?
+                AND (ExpiresAt IS NULL OR ExpiresAt > UTC_TIMESTAMP())
+              ORDER BY Id
+              LIMIT 25"
         );
         $tokStmt->bind_param('i', $sessionId);
         $tokStmt->execute();
@@ -269,6 +281,19 @@ function liveActivitySessionPush(\mysqli $db, int $sessionId, string $event = 'u
         $tokStmt->close();
         if (!$tokens) {
             return;
+        }
+
+        /* #1429 Audit-B F3a — moved ABOVE the apnsConfigured() gate below
+           (was previously only reached after a successful send loop,
+           gated behind apnsConfigured() being true) so an ended session's
+           tokens are cleaned up regardless of whether an admin has
+           provisioned an APNs key yet — see this file's own "gate order"
+           doc comment above for the full rationale. */
+        if ($event === 'end') {
+            $delStmt = $db->prepare("DELETE FROM tblApnsTokens WHERE Kind = 'liveActivity' AND SessionId = ?");
+            $delStmt->bind_param('i', $sessionId);
+            $delStmt->execute();
+            $delStmt->close();
         }
 
         if (!apnsConfigured()) {
@@ -322,13 +347,6 @@ function liveActivitySessionPush(\mysqli $db, int $sessionId, string $event = 'u
                    would just repeat the same failure N more times. */
                 break;
             }
-        }
-
-        if ($event === 'end') {
-            $delStmt = $db->prepare("DELETE FROM tblApnsTokens WHERE Kind = 'liveActivity' AND SessionId = ?");
-            $delStmt->bind_param('i', $sessionId);
-            $delStmt->execute();
-            $delStmt->close();
         }
     } catch (\Throwable $e) {
         /* NEVER let a push-bridge failure surface to the caller — every

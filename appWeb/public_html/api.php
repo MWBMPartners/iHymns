@@ -2314,6 +2314,28 @@ if ($action !== null) {
                 $stmt->bind_param('s', $tokenHash);
                 $stmt->execute();
                 $stmt->close();
+
+                /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+                   sign-out/410") — a signed-out user's APNs/Live Activity
+                   push tokens must stop receiving pushes for a session
+                   that's no longer theirs. Wrapped defensively: sign-out
+                   itself must NEVER 500 because of this best-effort
+                   cleanup (mirrors live_activity_push.php's own "never let
+                   a push-bridge failure surface" posture). */
+                if ($authedUser) {
+                    try {
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                        if (apnsTokensTableExists($db)) {
+                            $apnsUserId = (int)$authedUser['Id'];
+                            $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                            $delApns->bind_param('i', $apnsUserId);
+                            $delApns->execute();
+                            $delApns->close();
+                        }
+                    } catch (\Throwable $e) {
+                        error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
+                    }
+                }
             }
 
             /* Also clear the auth cookie (#390) so a subsequent page load
@@ -3729,6 +3751,23 @@ if ($action !== null) {
                 sendJson(['error' => 'Unknown device.'], 404);
                 break;
             }
+
+            /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+               sign-out/410") — same cleanup as auth_logout above, wrapped
+               defensively so a signed-out device never sees a 500 because
+               of this best-effort cleanup. */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                if (apnsTokensTableExists($db)) {
+                    $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                    $delApns->bind_param('i', $userId);
+                    $delApns->execute();
+                    $delApns->close();
+                }
+            } catch (\Throwable $e) {
+                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
+            }
+
             sendJson(['ok' => true]);
             break;
         }
@@ -13949,15 +13988,23 @@ if ($action !== null) {
             /* One active session per host — supersede any prior one. #1429 —
                capture the OLD session's Id BEFORE deactivating so its Live
                Activity (if any device registered one) can be told the
-               broadcast has ended, rather than left stuck "live" forever. */
-            $oldSel = $db->prepare('SELECT Id FROM tblLiveFollowSessions WHERE HostUserId = ? AND IsActive = 1');
-            $oldSel->bind_param('i', $userId);
+               broadcast has ended, rather than left stuck "live" forever.
+               #1429 Audit-B F4 — CHANNEL-SCOPED (rule #26), matching
+               service_session_start's own supersede below: without this, a
+               host's prior active session on a DIFFERENT channel (e.g. an
+               alpha-created session, HostUserId shared across the 3
+               docroots via the same MySQL) would be silently deactivated
+               here with NO end-push ever sent for it (liveActivitySessionPush
+               itself channel-re-resolves and would just no-op on a
+               cross-channel session id). */
+            $oldSel = $db->prepare('SELECT Id FROM tblLiveFollowSessions WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $oldSel->bind_param('is', $userId, $channel);
             $oldSel->execute();
             $oldRow = $oldSel->get_result()->fetch_assoc();
             $oldSel->close();
 
-            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
-            $deact->bind_param('i', $userId);
+            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $deact->bind_param('is', $userId, $channel);
             $deact->execute();
             $superseded = $deact->affected_rows > 0;
             $deact->close();
