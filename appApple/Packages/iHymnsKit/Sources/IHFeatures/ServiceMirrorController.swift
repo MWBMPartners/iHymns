@@ -28,7 +28,14 @@
 // 403/404 — the session has ended, or this account was never authorised to
 // drive it). `disarm()` is the operator's own "Stop Mirroring" — always
 // available, always goes straight to `.off`, no notice (a deliberate stop
-// is not a failure).
+// is not a failure). A THIRD outcome (#1562 F-3): a 400/422 (the broadcast
+// song is unknown/invalid to the server — e.g. deleted server-side while
+// still cached on the TV) is SKIPPED, not retried — `.active` is kept, the
+// failed state's key is recorded as if accepted (so the identical state
+// never re-sends), and no retry Task is scheduled; only a genuinely NEW TV
+// state tries again. Without this, a stale/deleted song wedges the mirror
+// into an eternal 5 s retry loop behind a misleading "Reconnecting…" notice
+// even though nothing about THIS failure is transient.
 //
 // Send discipline: AT MOST one `service_broadcast` in flight at a time,
 // plus at most one COALESCED pending state (latest-wins — never a queue).
@@ -127,8 +134,28 @@ public final class ServiceMirrorController {
     /// `RemoteControlCoordinator.apply(_:)`'s `.controlling` tap — called
     /// on EVERY TV broadcast, including echoes of our own intents (spec
     /// §1.1). No-ops while `.off`, so this is safe to call unconditionally.
+    ///
+    /// ELI5 (#1562 F-2): while the TV picture is PINNED (`.frozen` —
+    /// `ProjectionViewModel`'s frozen-snapshot rule), don't tell the web
+    /// congregants what the operator is quietly navigating to behind the
+    /// freeze — they'd see it move even though the venue screen hasn't.
+    ///
+    /// DETAILED: `.controlling` echoes still carry the MOVING canonical
+    /// `IHRPState` while frozen (`RemoteControlCoordinator`'s own doc:
+    /// "Navigation intents keep working while frozen... only
+    /// `renderedContent`'s PICTURE stays pinned") — the canonical state is
+    /// truthful for the LAN remote's own UI, but mirroring it live would
+    /// leak the operator's in-progress navigation to every congregant
+    /// phone while the venue's actual screen stays frozen on the old song.
+    /// Skipped here rather than filtered at the dedup/`mirrorKey` layer
+    /// because the freeze is a DISPLAY concern, not a "same state as last
+    /// time" one. The unfreeze echo carries a different `mirrorKey`
+    /// (`displayState` changed), so re-sync to the congregants is
+    /// automatic the moment the operator unfreezes — no extra bookkeeping
+    /// needed here.
     public func observe(_ state: IHRPState) {
         guard phase != .off else { return }
+        guard state.displayState != .frozen else { return }
         guard let key = Self.mirrorKey(for: state), key != lastAcceptedKey else { return }
         guard sendTask == nil else {
             pendingState = state
@@ -229,6 +256,28 @@ public final class ServiceMirrorController {
             IHLog.remote.notice("servicemirror.stopped reason=terminal session=\(sessionId, privacy: .public)")
             return
         }
+        // #1562 F-3: a 400/422 means the SERVER rejected this exact song
+        // state as unknown/invalid (e.g. deleted server-side while still
+        // cached on the TV) — no amount of retrying changes that answer,
+        // so this is a SKIP, not a degrade-and-retry. Recording the failed
+        // state's own key as "accepted" stops the identical state from
+        // being resent (mirroring the real success path's dedup), while
+        // leaving `phase` at `.active` (never `.degraded`) keeps the UI
+        // honest: mirroring itself is fine, only this one song isn't.
+        guard !Self.isSkippable(error) else {
+            lastAcceptedKey = Self.mirrorKey(for: fallbackState)
+            phase = .active(sessionId: sessionId)
+            notice = "That song isn't available to the congregation."
+            IHLog.remote.notice("servicemirror.skipped session=\(sessionId, privacy: .public)")
+            // A newer TV update coalesced while this send was in flight is
+            // a GENUINELY different state — still worth trying, unlike a
+            // retry of the one that was just rejected.
+            if let pending = pendingState {
+                pendingState = nil
+                observe(pending)
+            }
+            return
+        }
         phase = .degraded(sessionId: sessionId)
         notice = "Reconnecting to iHymns — your projection is unaffected."
         IHLog.remote.notice("servicemirror.degraded session=\(sessionId, privacy: .public)")
@@ -245,6 +294,19 @@ public final class ServiceMirrorController {
             return true
         case APIError.server(let status, _):
             return status == 403 || status == 404
+        default:
+            return false
+        }
+    }
+
+    /// #1562 F-3: "this exact song state is unknown/invalid to the server"
+    /// — distinct from `isTerminal` (session-level: gone/unauthorised) and
+    /// from every other failure (presumed transient: offline/maintenance/
+    /// rate-limited/opaque 5xx). See `handleFailure`'s skip branch.
+    nonisolated private static func isSkippable(_ error: Error) -> Bool {
+        switch error {
+        case APIError.server(let status, _):
+            return status == 400 || status == 422
         default:
             return false
         }

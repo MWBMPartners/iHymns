@@ -218,6 +218,26 @@ struct ServiceMirrorControllerTests {
         #expect(await spy.callCount == 1)
     }
 
+    // MARK: - 6b. Frozen (#1562 F-2)
+
+    @Test("observe() while the TV is frozen never sends — the operator's in-flight navigation doesn't leak to congregants")
+    func observeWhileFrozenNeverSends() async {
+        let spy = BroadcastSpy()
+        let controller = makeController(spy: spy)
+        controller.arm(sessionId: 11, currentState: state(component: 1))
+        await waitUntil { await spy.callCount == 1 }
+        // Navigating WHILE frozen — the venue screen stays pinned to the
+        // old snapshot, so this must not mirror.
+        controller.observe(state(component: 2, display: .frozen))
+        await settle()
+        #expect(await spy.callCount == 1)
+        // Unfreezing (a genuinely different mirrorKey) resumes mirroring
+        // automatically, with no extra bookkeeping needed.
+        controller.observe(state(component: 2, display: .lyrics))
+        await waitUntil { await spy.callCount == 2 }
+        #expect(await spy.callCount == 2)
+    }
+
     // MARK: - 7. Retryable failures
 
     @Test("a retryable failure degrades but stays armed")
@@ -250,5 +270,49 @@ struct ServiceMirrorControllerTests {
         controller.observe(state(component: 1))
         await settle()
         #expect(await spy.callCount == 2)
+    }
+
+    // MARK: - 8. Skippable failures (#1562 F-3)
+
+    @Test("a 400/422 'this song isn't recognised' is SKIPPED — stays .active (never .degraded), and schedules no retry", arguments: [
+        APIError.server(status: 400, message: nil), APIError.server(status: 422, message: nil)
+    ])
+    func skippableFailureStaysActiveWithNoRetry(_ error: APIError) async {
+        let spy = BroadcastSpy()
+        await spy.setPersistentError(error)
+        let controller = makeController(spy: spy, retryDelaySeconds: 0)
+        controller.arm(sessionId: 13, currentState: state(component: 1))
+        // `notice` starts `nil` (set by `arm()`) and only a completed
+        // failure handler sets it — a reliable signal the async send +
+        // `handleFailure` have both finished, unlike racing on `callCount`.
+        await waitUntil { controller.notice != nil }
+        #expect(controller.phase == .active(sessionId: 13))
+        #expect(controller.notice == "That song isn't available to the congregation.")
+        // No retry Task was scheduled — settling past the (zero-second)
+        // retry delay proves nothing more was sent automatically (a
+        // `.degraded` retry loop would have sent again by now).
+        await settle()
+        #expect(await spy.callCount == 1)
+        // `lastAcceptedKey` was set to the FAILED send's own key, so the
+        // identical state is treated as already-mirrored and dedups.
+        controller.observe(state(component: 1))
+        await settle()
+        #expect(await spy.callCount == 1)
+    }
+
+    @Test("a state coalesced during a skipped send is still tried — it's a NEW state, not a retry of the rejected one")
+    func skippableFailureStillTriesACoalescedNewerState() async {
+        let spy = BroadcastSpy()
+        await spy.enableGate()
+        let controller = makeController(spy: spy, retryDelaySeconds: 0)
+        controller.arm(sessionId: 15, currentState: state(component: 1))   // send #1 (component 1) suspends at the gate
+        await waitUntil { await spy.callCount == 1 }
+        controller.observe(state(component: 2))   // coalesces while #1 is in flight
+        await spy.setPersistentError(APIError.server(status: 400, message: nil))
+        await spy.releaseGateAndOpen()   // #1 resumes and fails with 400 -> skip -> re-observes the coalesced component 2
+        await waitUntil { await spy.callCount == 2 }
+        let components = await spy.calls.map(\.componentIndex)
+        #expect(components == [1, 2])
+        #expect(controller.phase == .active(sessionId: 15))
     }
 }

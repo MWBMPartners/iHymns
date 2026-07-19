@@ -206,8 +206,28 @@ public final class TVServiceFollowCoordinator {
     /// OUTCOME, not "we didn't even attempt one, and here's why"); both
     /// calls are pure and read the IDENTICAL `snapshot`/`projectionState`
     /// with no `await` between them, so there is no race between the two.
-    private func applySnapshotAndUpdateNotice(_ snapshot: LiveBroadcastSnapshot) async {
+    ///
+    /// ELI5/DETAILED (#1562 correctness sweep, F-1): `plan.displayState` is
+    /// applied HERE, BEFORE the D-13 unparsable-songId early return — a
+    /// blackout/logo change riding the SAME snapshot as an unparsable
+    /// legacy songId must still land on the projector; only the SELECTION
+    /// half of the snapshot is legitimately skipped for D-13. Mirrors
+    /// `TVServiceFollowBridge.apply(_:to:)`'s own "displayState FIRST" rule
+    /// (that function's doc comment) — this direct-plan path was the one
+    /// place that rule had gone missing, because the early return sat
+    /// ABOVE the apply instead of below it.
+    ///
+    /// `internal`, not `private` (#1562) — the SAME "small, independently
+    /// testable seam" convention `RemoteControlCoordinator.swift`/
+    /// `AppRootViewModel+LiveSync.swift .apply(_:)` already document, so
+    /// `TVServiceFollowCoordinatorTests` can drive this directly with a
+    /// fabricated `LiveBroadcastSnapshot` rather than standing up a real
+    /// `ServiceModeEngine` + network mock just to reach a private method.
+    func applySnapshotAndUpdateNotice(_ snapshot: LiveBroadcastSnapshot) async {
         let plan = TVServiceFollowBridge.plan(for: snapshot, current: projectionViewModel.projectionState)
+        if let displayState = plan.displayState {
+            projectionViewModel.setDisplayState(displayState)
+        }
         if plan.unparsableSongId != nil {
             songNotice = "This song can't be displayed on this TV."
             return
