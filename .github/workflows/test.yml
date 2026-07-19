@@ -471,6 +471,24 @@ jobs:
           php tests/php/test-apns-jwt.php
 
       # -----------------------------------------------------------------------
+      # Step 5o: Live Activities push bridge (#1429, Apple Phase-2 PR-16)
+      # Exercises the PURE content-state/aps-payload builders in
+      # includes/live_activity_push.php, cross-checks the output against the
+      # SAME fixture a Swift decode test reads
+      # (appApple/Packages/iHymnsKit/Tests/Fixtures/
+      # live_activity_content_state.json), proves the hook never throws even
+      # against an unconnected DB handle (dormancy), and structurally guards
+      # that api.php's six broadcast/end/supersede case bodies all call the
+      # hook, live_follow_create now exposes 'sessionId', and apns_register's
+      # liveActivity branch is gated on serviceMode_userCanOperate() (#1429
+      # C3's auth fix).
+      # -----------------------------------------------------------------------
+      - name: Live Activities push bridge (#1429)
+        run: |
+          echo "Running Live Activities push-bridge test..."
+          php tests/php/test-apns-live-activity-push.php
+
+      # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
       # Validates: data/songs.json, manifest.json (in both beta and production)
@@ -679,3 +697,6 @@ jobs:
 
       - name: APNs bridge — ES256 provider-token JWT (#1410)
         run: php tests/php/test-apns-jwt.php
+
+      - name: Live Activities push bridge (#1429)
+        run: php tests/php/test-apns-live-activity-push.php
