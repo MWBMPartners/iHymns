@@ -298,10 +298,18 @@ let package = Package(
             // committed fixtures `IHAPITests`/`IHModelsTests` use, against
             // the same `MockURLProtocol` mock transport — hence
             // `IHTestFixtures`/`IHAPITestSupport` alongside the existing
-            // engine dependencies.
+            // engine dependencies. #1415 adds `IHAppSupport` directly (not
+            // just transitively through `IHFeatures`) — `IntentRoutingTests`/
+            // `SongEntityResolverTests`/`AppRootViewModelSystemIndexTests`
+            // reference `DeepLinkRouter`/`SpotlightIndexEntry`/
+            // `SpotlightIndexing`/`SpotlightIndexer` types directly, which
+            // needs this test target to `import IHAppSupport` itself (SwiftPM
+            // doesn't grant transitive import access the way it links
+            // transitive binaries — the same reasoning `IHLive`'s own
+            // `Package.swift` comment documents for its `IHModels` addition).
             dependencies: [
                 "IHFeatures", "IHAPI", "IHAuth", "IHLive", "IHModels", "IHPersistence",
-                "IHTestFixtures", "IHAPITestSupport"
+                "IHAppSupport", "IHTestFixtures", "IHAPITestSupport"
             ],
             swiftSettings: sharedSwiftSettings
         ),
