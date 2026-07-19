@@ -90,8 +90,9 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Determine bump type
         id: bump
+        env:
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
           echo "Commit message: $COMMIT_MSG"
 
           if echo "$COMMIT_MSG" | grep -qiE 'BREAKING CHANGE|!\:'; then
