@@ -74,6 +74,22 @@
 // explicit runtime step. Called from `init()` (the earliest point this
 // shell runs its own code, before `body` builds any scene/view) so it has
 // already happened by the time the first `Font.custom(...)` is resolved.
+//
+// #1415 UPDATE (App Intents / Siri / Shortcuts / Spotlight,
+// `.claude/apple-native-strategy.md` §2.3#4) — `rootViewModel`/
+// `navigationState` move from `@State`'s own default-value-expression
+// initializers into `init()` itself (`State(initialValue:)`), so `init()`
+// can register the EXACT SAME two instances with `AppDependencyManager
+// .shared.add(dependency:)` — every App Intent's `@Dependency` then
+// resolves to the SAME `AppRootViewModel`/`AppNavigationState` SwiftUI is
+// rendering with, never a second, disconnected copy. Also adds two more
+// `View` modifiers to `body`: `.onContinueUserActivity(CSSearchableItemActionType)`
+// (a tapped Spotlight result) and `.onChange(of: navigationState.pendingDeepLink)`
+// (an App Intent's `perform()` requesting navigation) — both funnel into the
+// SAME `handle(url:)`/`incomingDeepLink` pipeline a tapped Universal Link
+// already uses.
+import AppIntents
+import CoreSpotlight
 import IHAPI
 import IHAppSupport
 import IHDesign
@@ -82,26 +98,31 @@ import SwiftUI
 
 @main
 struct IHymnsApp: App {
+    /// Builds BOTH the one `AppRootViewModel` and the one
+    /// `AppNavigationState` this run of the app uses, THEN registers both
+    /// with `AppDependencyManager` (#1415) so every App Intent's
+    /// `@Dependency` resolves to these SAME instances — see this file's
+    /// header, and `rootViewModel`/`navigationState`'s own doc comments
+    /// below, for why this replaced two separate `@State` default-value
+    /// expressions.
     init() {
         IHFonts.registerBundledFonts()
+        let model = AppRootViewModel.makeLive(
+            environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
+        )
+        let navigation = AppNavigationState()
+        _rootViewModel = State(initialValue: model)
+        _navigationState = State(initialValue: navigation)
+        AppDependencyManager.shared.add(dependency: model)
+        AppDependencyManager.shared.add(dependency: navigation)
     }
 
-    /// The one `AppRootViewModel` this app run uses — built once via
-    /// `@State`'s default-value expression (evaluated exactly once, at
-    /// scene creation) and handed down to `RootContainerView`, which
-    /// composes every screen from it.
-    ///
-    /// #182 UPDATE — the environment is no longer hard-coded to `.dev`: it
-    /// reads the user's persisted `IHSettingsStore.apiEnvironmentOverride`
-    /// (set from Settings → Developer, `DEBUG`-only) and falls back to
-    /// `APIEnvironment.defaultForBuild` (Debug→dev, Release→prod). Read once
-    /// at launch because `APIClient` is an immutable-once-built `actor`
-    /// (`APIEnvironment` is a `let` on it) — changing the override takes
-    /// effect on the NEXT launch, exactly as `IHSettingsStore
-    /// .apiEnvironmentOverride`'s own doc comment promises the user.
-    @State private var rootViewModel = AppRootViewModel.makeLive(
-        environment: IHSettingsStore().apiEnvironmentOverride ?? .defaultForBuild
-    )
+    /// The one `AppRootViewModel` this app run uses — built in `init()`
+    /// above (not this property's own default-value expression, #1415) so
+    /// `init()` can hand `AppDependencyManager` the EXACT SAME instance
+    /// SwiftUI ends up rendering with. #182's environment-override
+    /// reasoning (dev/beta/prod, `apiEnvironmentOverride`) is unchanged.
+    @State private var rootViewModel: AppRootViewModel
 
     /// The most recently resolved inbound deep link — `nil` bound directly
     /// to `RootContainerView.incomingDeepLink`, which presents it and
@@ -110,11 +131,12 @@ struct IHymnsApp: App {
     @State private var incomingDeepLink: DeepLink?
 
     /// #185 — the one `AppNavigationState` this app run uses, mirroring how
-    /// `rootViewModel` above is the one `AppRootViewModel`. Handed down to
-    /// `RootContainerView` AND read/written by this file's own `.commands`
-    /// block below, so a Mac menu click and a sidebar/tab tap change the
-    /// exact same state.
-    @State private var navigationState = AppNavigationState()
+    /// `rootViewModel` above is the one `AppRootViewModel`; also built in
+    /// `init()` now (#1415), for the identical `AppDependencyManager`
+    /// reason `rootViewModel` documents. Handed down to `RootContainerView`
+    /// AND read/written by this file's own `.commands` block below, so a
+    /// Mac menu click and a sidebar/tab tap change the exact same state.
+    @State private var navigationState: AppNavigationState
 
     /// Lets `handle(url:)` hand an unresolved/undeep-linkable URL to the
     /// system browser instead of the app silently swallowing it.
@@ -133,6 +155,31 @@ struct IHymnsApp: App {
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
                     guard let url = activity.webpageURL else { return }
                     handle(url: url)
+                }
+                // #1415 — a tapped Spotlight search result hands back its
+                // `uniqueIdentifier` via this SAME `NSUserActivity`
+                // mechanism (`CSSearchableItemActionType`);
+                // `SpotlightIndexer.tapURL(fromActivityUserInfo:)`
+                // (`IHAppSupport`) recovers the original song URL, which
+                // then flows through the EXACT SAME `handle(url:)` a
+                // Universal Link tap already uses.
+                .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard let url = SpotlightIndexer.tapURL(fromActivityUserInfo: activity.userInfo) else { return }
+                    handle(url: url)
+                }
+                // #1415 — an App Intent (running in-process, possibly
+                // before any UI was ever shown) sets `AppNavigationState
+                // .pendingDeepLink` as its ONE way to say "go here"; this
+                // mirrors that into the SAME `incomingDeepLink`
+                // presentation pipeline a tapped Universal Link/Spotlight
+                // result already uses, then clears it so running the SAME
+                // intent twice still re-presents (the identical reset
+                // `RootContainerView` already applies to `incomingDeepLink`
+                // itself).
+                .onChange(of: navigationState.pendingDeepLink) { _, newValue in
+                    guard let newValue else { return }
+                    incomingDeepLink = newValue
+                    navigationState.pendingDeepLink = nil
                 }
         }
         #if os(macOS)
