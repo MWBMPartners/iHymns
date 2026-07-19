@@ -1,22 +1,26 @@
 // APIClient+LiveSync.swift
 // IHAPI
 //
-// ELI5: The nine actual "phone calls" for Live Follow + Service Mode — thin
+// ELI5: The ten actual "phone calls" for Live Follow + Service Mode — thin
 // wrappers that build the request, send it, and hand back the decoded
 // shape. No cadence/retry/custody logic lives here at all — that's
-// `IHLive`'s job (`LiveFollowEngine`/`ServiceModeEngine`).
+// `IHLive`'s job (`LiveFollowEngine`/`ServiceModeEngine`), or — for the
+// PR-14 operator mirror — `IHFeatures.ServiceMirrorController`'s.
 //
 // DETAILED: Apple Phase-2 PR-10 (#1426, #1427; `.claude/apple-phase2-pr10-spec.md`
-// §4.2). The four non-idempotent POSTs that MUTATE session state
-// (`create`/`update`/`heartbeat`/`leave`, both families) go through the
-// non-retrying `performOnce` — the SAME "never auto-retry a non-idempotent
-// POST" rule `APIClient+Auth.swift`'s header documents (a client-side retry
-// of `live_follow_update` could double-log a song-change breadcrumb
-// server-side). The three GETs (`live_follow_join`/`live_follow_poll`/
-// `service_poll`) are ordinary idempotent reads, so they go through
-// `performIdempotentGET` like every other catalogue read — `IHLive`'s own
-// poll-cadence/backoff sits ABOVE this layer and is unaffected by
-// `performIdempotentGET`'s few-hundred-millisecond internal retry budget.
+// §4.2) plus PR-14 (#1425, `.claude/apple-native-strategy.md` §2.4.1). The
+// non-idempotent POSTs that MUTATE session state (`create`/`update`/
+// `heartbeat`/`leave`, both families, plus `serviceBroadcast`) go through
+// the non-retrying `performOnce` — the SAME "never auto-retry a
+// non-idempotent POST" rule `APIClient+Auth.swift`'s header documents (a
+// client-side retry of `live_follow_update`/`service_broadcast` could
+// double-log a song-change breadcrumb server-side; `ServiceMirrorController`
+// owns its OWN deliberate, dedup-gated retry above this layer instead). The
+// three GETs (`live_follow_join`/`live_follow_poll`/`service_poll`) are
+// ordinary idempotent reads, so they go through `performIdempotentGET` like
+// every other catalogue read — `IHLive`'s own poll-cadence/backoff sits
+// ABOVE this layer and is unaffected by `performIdempotentGET`'s
+// few-hundred-millisecond internal retry budget.
 import Foundation
 import IHModels
 
@@ -98,5 +102,17 @@ extension APIClient {
     public func serviceLeave(presenceToken: String) async throws {
         let endpoint = try Endpoint.serviceLeave(presenceToken: presenceToken)
         _ = try await performOnce(endpoint)
+    }
+
+    /// `?action=service_broadcast` — the PR-14 operator mirror (#1425,
+    /// strategy §2.4.1): rebroadcasts a LAN-remote-controlled TV's current
+    /// song/section/display state into a Service Mode session. Returns the
+    /// new revision; reuses `decodeLiveFollowUpdate` since the response
+    /// shape is the identical `{ok,revision}` (`api.php:14478-14597`'s
+    /// success branch) — no separate decoder needed for the same shape.
+    public func serviceBroadcast(sessionId: Int, songId: String, componentIndex: Int?, displayState: String) async throws -> Int {
+        let endpoint = try Endpoint.serviceBroadcast(sessionId: sessionId, songId: songId, componentIndex: componentIndex, displayState: displayState)
+        let data = try await performOnce(endpoint)
+        return try Self.decodeLiveFollowUpdate(from: data)
     }
 }

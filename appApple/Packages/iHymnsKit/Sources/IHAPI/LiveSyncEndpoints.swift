@@ -1,18 +1,25 @@
 // LiveSyncEndpoints.swift
 // IHAPI
 //
-// ELI5: The nine recipe cards (see `Endpoint.swift`) for "start a live
+// ELI5: The ten recipe cards (see `Endpoint.swift`) for "start a live
 // session," "tell everyone what I'm looking at now," "still there?," "I'm
 // done," "let me follow that code," "anything new?," "let me join this
-// service," "anything new for me?," and "I'm leaving."
+// service," "anything new for me?," "I'm leaving," and "mirror what's on
+// this TV to a running service session."
 //
 // DETAILED: Apple Phase-2 PR-10 (#1426, #1427; `.claude/apple-phase2-pr10-spec.md`
-// §4.1). Verified against the LIVE `appWeb/public_html/api.php` handlers
-// (`live_follow_*` `:13870-14239`, `service_*` `:14599-14771`) on 2026-07-13.
-// `state` is deliberately NEVER sent by any factory below — the native host
-// broadcasts song/section only, exactly like the web host
-// (`live-follow.js:176-179`); writing `displayState`/`blank`/... is the
-// projector/operator's job (PR-15/the deferred operator console, spec §5.3).
+// §4.1) plus PR-14 (#1425, `.claude/apple-native-strategy.md` §2.4.1's
+// "optional Service-Mode mirror"). Verified against the LIVE
+// `appWeb/public_html/api.php` handlers (`live_follow_*` `:13870-14239`,
+// `service_*` `:14599-14771`, `service_broadcast` `:14478-14597`) on
+// 2026-07-13/2026-07-18. `state` is deliberately NEVER sent by any Live
+// Follow factory below — the native host broadcasts song/section only,
+// exactly like the web host (`live-follow.js:176-179`); writing
+// `displayState`/`blank`/... is normally the projector/operator's job
+// (PR-15/the deferred operator console, spec §5.3) — `serviceBroadcast`
+// below is the ONE deliberate exception, because it's PR-14's own operator
+// mirror, and `displayState` is exactly what it exists to send (matching
+// the web `service-broadcast.js` driver's identical contract).
 // Mirrors `AuthEndpoints.swift`'s pattern: `internal` (not `public`) factory
 // members — only `APIClient+LiveSync.swift` (same module) and
 // `@testable import IHAPI` tests call these directly.
@@ -93,6 +100,23 @@ extension Endpoint {
         let body = try JSONEncoder().encode(LiveSyncPresenceTokenBody(presenceToken: presenceToken))
         return Endpoint(action: "service_leave", httpMethod: "POST", httpBody: body)
     }
+
+    /// `?action=service_broadcast` — the PR-14 operator mirror: rebroadcasts
+    /// THIS TV's current song/section/display state into a Service Mode
+    /// session so its congregants stay in sync too (#1425, strategy
+    /// §2.4.1's "optional Service-Mode mirror," `api.php:14478-14597` +
+    /// `includes/service_mode.php:140-178`). POST, auth required — the
+    /// server authorises via `serviceMode_userCanOperate`. `songId` is
+    /// REQUIRED (this mirror only ever sends a real song, never an idle/no
+    /// -song broadcast — `ServiceMirrorController.mirrorKey(for:)`'s own
+    /// `nil`-on-no-song guard is what enforces that before this factory is
+    /// ever reached).
+    static func serviceBroadcast(sessionId: Int, songId: String, componentIndex: Int?, displayState: String) throws -> Endpoint {
+        let body = try JSONEncoder().encode(
+            ServiceBroadcastBody(sessionId: sessionId, songId: songId, componentIndex: componentIndex, state: ServiceBroadcastState(displayState: displayState))
+        )
+        return Endpoint(action: "service_broadcast", requiresAuth: true, httpMethod: "POST", httpBody: body)
+    }
 }
 
 // MARK: - Request bodies (private — `Optional` fields encode as an absent
@@ -123,4 +147,15 @@ private struct ServiceJoinBody: Encodable {
 
 private struct LiveSyncPresenceTokenBody: Encodable {
     let presenceToken: String
+}
+
+private struct ServiceBroadcastBody: Encodable {
+    let sessionId: Int
+    let songId: String
+    let componentIndex: Int?
+    let state: ServiceBroadcastState
+}
+
+private struct ServiceBroadcastState: Encodable {
+    let displayState: String
 }

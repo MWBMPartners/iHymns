@@ -13,7 +13,12 @@
 // its `uiPhase` — this view never reaches into `RemoteControlSession`/
 // `RemoteSessionActor` itself. `scenePhase` drives `setScenePhaseActive(_:)`
 // (strategy §2.4.4's "backgrounded remote = detached, TV holds state, <1s
-// reconnect").
+// reconnect"). Also owns the ONE PR-14 `ServiceMirrorController` (#1425,
+// strategy §2.4.1) for this screen, built here (not by the coordinator)
+// because it needs `rootViewModel.apiClient`/`isSignedInNow()` — collaborators
+// the coordinator itself never touches.
+import IHAPI
+import IHAuth
 import IHLive
 import SwiftUI
 
@@ -21,6 +26,7 @@ import SwiftUI
 public struct RemoteControlView: View {
     private let rootViewModel: AppRootViewModel
     @State private var coordinator = RemoteControlCoordinator()
+    @State private var serviceMirror: ServiceMirrorController
     @State private var isPresentingPairingSheet = false
     /// #1424 — presents `ManualConnectSheet` ("Connect by Address").
     @State private var isPresentingManualSheet = false
@@ -29,15 +35,40 @@ public struct RemoteControlView: View {
 
     public init(rootViewModel: AppRootViewModel) {
         self.rootViewModel = rootViewModel
+        // Captures the LOCAL `rootViewModel` parameter (not `self
+        // .rootViewModel`, which isn't assignable-from yet at this point in
+        // `init`) — `[weak rootViewModel]` is legal here the same way
+        // `RemoteControlCoordinator`'s own `discoveryTask`/`eventsTask`
+        // capture `[weak self]` inside a `@Sendable` `Task {}` closure: a
+        // reference to a `@MainActor`-isolated class is safe to hold and
+        // `await`-call from any concurrency domain, isolation is enforced
+        // at the call, not the capture.
+        _serviceMirror = State(initialValue: ServiceMirrorController(send: { [weak rootViewModel] sessionId, songId, componentIndex, displayState in
+            guard let rootViewModel, await rootViewModel.isSignedInNow() else { throw APIError.unauthorized }
+            return try await rootViewModel.apiClient.serviceBroadcast(
+                sessionId: sessionId, songId: songId, componentIndex: componentIndex, displayState: displayState
+            )
+        }))
     }
 
     public var body: some View {
         content
             .navigationTitle("TV Remote")
-            .task { await coordinator.start() }
+            .task {
+                coordinator.serviceMirror = serviceMirror
+                await coordinator.start()
+            }
             .onDisappear { Task { await coordinator.stop() } }
             .onChange(of: scenePhase) { _, newPhase in
                 Task { await coordinator.setScenePhaseActive(newPhase == .active) }
+            }
+            .onChange(of: rootViewModel.sessionState) { _, newValue in
+                // #1425 — a mirror MUST be authenticated to call
+                // `service_broadcast`; if the account signs out mid-mirror,
+                // stop it rather than let it keep failing silently.
+                if !newValue.isSignedIn {
+                    serviceMirror.disarm()
+                }
             }
             .sheet(isPresented: $isPresentingPairingSheet) {
                 PairingPayloadEntrySheet(
@@ -76,7 +107,8 @@ public struct RemoteControlView: View {
             RemoteControlSurfaceView(
                 tvName: tvName, state: state, rootViewModel: rootViewModel,
                 onIntent: { message in Task { await coordinator.sendIntent(message) } },
-                onDisconnect: { Task { await coordinator.disconnect() } }
+                onDisconnect: { Task { await coordinator.disconnect() } },
+                serviceMirror: serviceMirror
             )
         case .suspended(let tvName):
             ContentUnavailableView("Reconnecting to \(tvName)…", systemImage: "antenna.radiowaves.left.and.right")

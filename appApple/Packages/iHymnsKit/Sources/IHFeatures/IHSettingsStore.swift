@@ -174,6 +174,25 @@ public struct IHSettingsStore: @unchecked Sendable {
         nonmutating set { defaults.set(newValue, forKey: Keys.lastManualConnectAddress) }
     }
 
+    /// The last Service Mode session number a human typed into
+    /// `ServiceMirrorCard`'s "Start Mirroring" field (#1425, `.claude
+    /// /apple-native-strategy.md` §2.4.1's "optional Service-Mode mirror")
+    /// — pre-fills the field next time, since a venue usually reuses the
+    /// same projection-laptop session across a service. `nil` on a fresh
+    /// install (nothing typed yet). `Int?` (not `String?`, and NOT
+    /// `defaults.integer(forKey:)`) because `UserDefaults.integer(forKey:)`
+    /// returns `0` — never `nil` — for an unset key, which would be
+    /// indistinguishable from a genuinely-typed `0`; `object(forKey:) as?
+    /// Int` preserves the real "never set" case the same way
+    /// `apiEnvironmentOverride` above preserves "never overridden."
+    ///
+    /// ELI5: "The last Service session number you mirrored to, so you don't
+    /// have to retype it next time."
+    public var lastMirrorSessionId: Int? {
+        get { defaults.object(forKey: Keys.lastMirrorSessionId) as? Int }
+        nonmutating set { defaults.set(newValue, forKey: Keys.lastMirrorSessionId) }
+    }
+
     /// The `UserDefaults` keys this store owns exclusively — kept as one
     /// private namespace so every property above reads/writes the exact
     /// same literal, never a copy-pasted string that could drift.
@@ -186,5 +205,6 @@ public struct IHSettingsStore: @unchecked Sendable {
         static let hasSeenLocalNetworkPrimer = "ihHasSeenLocalNetworkPrimer"
         static let apiEnvironment = "ihApiEnvironmentOverride"
         static let lastManualConnectAddress = "ihLastManualConnectAddress"
+        static let lastMirrorSessionId = "ihLastMirrorSessionId"
     }
 }
