@@ -63,6 +63,23 @@ struct NowSingingActivityReducerTests {
         #expect(state.isLive == true)
     }
 
+    @Test("context -> a context with a DIFFERENT sessionId is .start (session identity changed), not .update")
+    func differentSessionIdIsStart() {
+        var next = Self.context
+        next.sessionId = 99
+        next.sessionCode = "ZZZZZZ"
+        let command = NowSingingActivityReducer.command(previous: Self.context, current: next)
+        guard case .start(let attributes, let state) = command else {
+            Issue.record("expected .start, got \(command)")
+            return
+        }
+        #expect(attributes.role == .host)
+        #expect(attributes.sessionCode == "ZZZZZZ")
+        #expect(attributes.sessionId == 99)
+        #expect(state.songId == next.songId)
+        #expect(state.isLive == true)
+    }
+
     @Test("context -> nil is .end(final:), isLive false, carrying the LAST known values")
     func contextToNilIsEnd() {
         let command = NowSingingActivityReducer.command(previous: Self.context, current: nil)

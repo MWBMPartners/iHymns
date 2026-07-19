@@ -85,9 +85,12 @@ extension AppRootViewModel {
             // Live Activity context (no song broadcast yet, revision reset
             // to 0); `syncNowSingingActivity()` (`+LiveActivity.swift`)
             // diffs this against whatever was showing before (from a PRIOR
-            // session, if any — the reducer's `.end`-then-`.start` pair
-            // handles that transition correctly with no special-casing
-            // needed here).
+            // session, if any — Audit-B F1: the reducer's `(.some, .some)`
+            // arm detects the SESSION-IDENTITY change (sessionId/sessionCode
+            // differ from the prior session) and returns `.start` directly,
+            // which `NowSingingActivityController.start(attributes:state:)`
+            // handles correctly by ending any running activity first — no
+            // special-casing needed here).
             hostSongId = nil
             hostComponentIndex = nil
             nowSingingContext = NowSingingHostContext(
@@ -100,6 +103,15 @@ extension AppRootViewModel {
             hostSongId = nil
             hostComponentIndex = nil
             nowSingingContext = nil
+            // #1429 Audit-B F9 — a token parked by `registerActivityPushToken(_:)`
+            // while `nowSingingContext?.sessionId` was still nil (a legacy-
+            // backend session with no sessionId) must NOT survive to flush
+            // against the NEXT hosting session's id — `flushPendingActivityPushToken
+            // (sessionId:)` only runs from `.hostingStarted` below, so without
+            // this reset a stale token from a PRIOR ended session would
+            // silently register itself against a session it was never minted
+            // for.
+            pendingActivityPushTokenHex = nil
             syncNowSingingActivity()
         case .followingStarted(_, let hostDisplayName, let initial):
             liveState = .followingLeader(hostDisplayName: hostDisplayName, isFresh: true)

@@ -67,7 +67,18 @@ extension AppRootViewModel {
         let command = NowSingingActivityReducer.command(previous: nowSingingSyncedContext, current: nowSingingContext)
         nowSingingSyncedContext = nowSingingContext
         guard command != .none, let nowSingingActivity else { return }
-        Task { await nowSingingActivity.apply(command) }
+        /* #1429 Audit-B F5 — chain onto `lastApplyTask` (`AppRootViewModel
+           .swift`) rather than spawning an independent `Task` per call: two
+           back-to-back syncs (e.g. `hostingEnded` then a fresh
+           `hostingStarted`, both MainActor-synchronous) would otherwise
+           race whichever `Task` happens to get scheduled/hop first, with no
+           guarantee the `.end` reaches the controller before the `.start`
+           does. Awaiting `prev?.value` before this call's own `apply(_:)`
+           enforces strict FIFO with no lock needed. */
+        lastApplyTask = Task { [prev = lastApplyTask] in
+            await prev?.value
+            await nowSingingActivity.apply(command)
+        }
     }
 
     // MARK: - Host section navigation (the Live Activity's Next/Previous buttons)

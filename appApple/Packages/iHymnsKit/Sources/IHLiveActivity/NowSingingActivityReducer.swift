@@ -105,6 +105,27 @@ public enum NowSingingActivityReducer {
 
         case (.some(let old), .some(let new)):
             guard old != new else { return .none }
+            /* #1429 Audit-B F1 — a SESSION-IDENTITY change (a fresh
+               `goLive`/`live_follow_create` superseding a prior hosting
+               session, or the server minting a new sessionCode for the
+               SAME sessionId) must RESTART the activity, not `.update` it
+               in place: `NowSingingActivityAttributes.sessionCode`/
+               `.sessionId` are the STATIC half (this file's header),
+               fixed for an activity's whole lifetime, so an in-place
+               `.update` could never actually change them even if we tried
+               — the OLD session's stale attributes would keep showing.
+               `.start` is safe to return unconditionally here (rather than
+               `.end`-then-`.start`) because `NowSingingActivityController
+               .start(attributes:state:)` (`IHLiveActivity`) ALREADY ends
+               any running activity first before starting the new one. */
+            if old.sessionId != new.sessionId || old.sessionCode != new.sessionCode {
+                let attributes = NowSingingActivityAttributes(
+                    role: .host,
+                    sessionCode: new.sessionCode,
+                    sessionId: new.sessionId
+                )
+                return .start(attributes, contentState(for: new, isLive: true))
+            }
             return .update(contentState(for: new, isLive: true))
         }
     }

@@ -136,15 +136,23 @@ public struct NowSingingActivityAttributes: Codable, Hashable, Sendable {
 }
 
 public extension NowSingingActivityAttributes.ContentState {
-    /// The ONE client-side mapping from a live poll/broadcast snapshot to a
-    /// Live Activity `ContentState` — every caller (`AppRootViewModel
-    /// +LiveActivity.swift`'s `syncNowSingingActivity()`, via
-    /// `NowSingingActivityReducer`) goes through this rather than
-    /// hand-assembling the struct field-by-field, so the mapping only ever
-    /// lives in one place.
+    /// A convenience mapping from a live poll/broadcast snapshot to a Live
+    /// Activity `ContentState`. #1429 Audit-B F11 correction: `AppRootViewModel
+    /// +LiveActivity.swift`'s `syncNowSingingActivity()` does NOT call this
+    /// — `NowSingingActivityReducer`'s own private `contentState(for:isLive:)`
+    /// builds the struct field-by-field from a `NowSingingHostContext`
+    /// instead (there is no `LiveBroadcastSnapshot` at that call site). This
+    /// initializer's actual callers today are `NowSingingContentStateContractTests
+    /// .swift` (the wire-shape fixture round-trip this file's header
+    /// describes); it's also the shape the PLANNED follower-side "watch the
+    /// leader's now-singing card" activity (#1560, see `NowSingingActivityAttributes
+    /// .SessionRole.follower`'s own doc comment) will consume once a
+    /// follower has a real `LiveBroadcastSnapshot` to map from — kept for
+    /// that reason rather than removed as dead code.
     ///
     /// ELI5: "Turn what the server just told us into what the card should
-    /// show."
+    /// show" — used by the tests today, and by a follower card that's
+    /// planned but not built yet.
     init(snapshot: LiveBroadcastSnapshot, songTitle: String?, isLive: Bool) {
         self.init(
             songId: snapshot.songId,

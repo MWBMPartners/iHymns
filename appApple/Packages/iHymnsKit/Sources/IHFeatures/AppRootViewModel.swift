@@ -241,6 +241,19 @@ public final class AppRootViewModel {
     /// A push token that arrived before the session id was known; flushed
     /// once `hostingStarted` delivers it (`+LiveActivity.swift`).
     var pendingActivityPushTokenHex: String?
+    /// #1429 Audit-B F5 — FIFO-serializes `nowSingingActivity?.apply(_:)`
+    /// calls (`syncNowSingingActivity()`, `+LiveActivity.swift`): each new
+    /// call chains `await prev?.value` before its own `apply(_:)`, so a
+    /// rapid `.end`-then-`.start` pair (e.g. `hostingEnded` immediately
+    /// followed by a fresh `hostingStarted`) can never reorder on the wire
+    /// — without this, two independently-spawned `Task { await ... }`s race
+    /// the actor hop with no ordering guarantee. Not `private`: same
+    /// cross-file-extension reason `pendingActivityPushTokenHex` above
+    /// documents — `private` is file-scoped in Swift, so the sibling
+    /// extension file needs at least `internal` write access.
+    /// `@ObservationIgnored`: pure plumbing, never read by a view.
+    @ObservationIgnored
+    var lastApplyTask: Task<Void, Never>?
 
     /// Persists `recentSearches` (#1436) — see `RecentSearchesStore`'s own
     /// header for why this is a plain injectable value type rather than

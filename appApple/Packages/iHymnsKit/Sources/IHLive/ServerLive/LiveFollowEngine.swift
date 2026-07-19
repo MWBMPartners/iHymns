@@ -80,11 +80,17 @@ public actor LiveFollowEngine {
     /// the shared `endHostingLocally(reason:)` supersede/serverEnded
     /// teardown, `+Host.swift`). `nil` while `.idle`/`.following`, and
     /// (defensively) also `nil` while `.hosting` against a legacy backend
-    /// whose create response omitted the field. `public internal(set)` —
-    /// `AppRootViewModel+LiveActivity.swift` reads it to register a Live
-    /// Activity push token once `hostingStarted`'s OWN `sessionId` payload
-    /// isn't enough (e.g. a controller that re-reads engine state directly
-    /// rather than only reacting to the event stream).
+    /// whose create response omitted the field. `public internal(set)` for
+    /// the SAME cross-file-extension reason `role` above documents — NOT
+    /// because `IHFeatures` reads it directly. #1429 Audit-B F11
+    /// correction: nothing under `Sources/` actually reads `hostSessionId`
+    /// — `AppRootViewModel+LiveActivity.swift` gets the session id from
+    /// `hostingStarted`'s OWN `sessionId` event payload (`LiveSyncEvents
+    /// .swift`'s own doc comment: "surfaced here too so `AppRootViewModel
+    /// +LiveActivity.swift` ... WITHOUT reaching back into the actor-
+    /// isolated engine for it") — the event payload IS the conduit. This
+    /// property's only reader today is `Tests/IHLiveTests/ServerLive/
+    /// LiveFollowEngineLoopTests.swift`, verifying every end path clears it.
     public internal(set) var hostSessionId: Int?
     /// The follower reducer's state — meaningful only while `.following`;
     /// left at its default while `.idle`/`.hosting`.
