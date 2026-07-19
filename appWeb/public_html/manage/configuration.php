@@ -566,6 +566,46 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $webLoginEnabledVal = implode(',', array_map('strtolower', $webChannelTokens));
                 }
 
+                /* #1429 C4 — APNs Auth Key (Live Activities push bridge,
+                   #1410/#1429). A THIRD, SEPARATE Apple key from the SIWA
+                   one above (same Apple Developer Team, different purpose:
+                   this one signs APNs provider-authentication JWTs, not
+                   Sign-in-with-Apple client_secrets) — validated with the
+                   IDENTICAL "must parse as EC P-256" guard, and the
+                   IDENTICAL blank-means-keep secret convention, as the SIWA
+                   private key just above. Reusing apple_team_id (no second
+                   Team ID setting — see includes/apns.php::apnsCredentials()'s
+                   own docblock for why). Entirely dormant until BOTH this
+                   Key ID and this .p8 are saved (apnsConfigured() stays
+                   false otherwise, so apnsSend() keeps returning
+                   'not_configured' regardless of anything else). */
+                $apnsKeyIdVal = strtoupper(trim((string)($_POST['apple_apns_key_id'] ?? '')));
+                if ($apnsKeyIdVal !== '' && !preg_match('/^[A-Z0-9]{10}$/', $apnsKeyIdVal)) {
+                    throw new \RuntimeException('APNs Key ID must be exactly 10 letters/digits (e.g. "ABCDE12345"), or left blank.');
+                }
+
+                $apnsPrivateKeyRaw = (string)($_POST['apple_apns_private_key'] ?? '');
+                $apnsPrivateKeyVal = null; /* null = "don't touch the stored value" */
+                if (trim($apnsPrivateKeyRaw) !== '') {
+                    $apnsCandidate = trim($apnsPrivateKeyRaw);
+                    if (!str_starts_with($apnsCandidate, '-----BEGIN PRIVATE KEY-----')) {
+                        throw new \RuntimeException('APNs private key must be the raw .p8 file contents, starting with "-----BEGIN PRIVATE KEY-----" (paste the ENTIRE downloaded file, including the BEGIN/END lines).');
+                    }
+                    $apnsParsedKey = @openssl_pkey_get_private($apnsCandidate);
+                    if ($apnsParsedKey === false) {
+                        throw new \RuntimeException('APNs private key could not be parsed — check you pasted the complete, unmodified .p8 file contents.');
+                    }
+                    $apnsKeyDetails = @openssl_pkey_get_details($apnsParsedKey);
+                    $apnsCurveName  = is_array($apnsKeyDetails) ? ($apnsKeyDetails['ec']['curve_name'] ?? null) : null;
+                    $apnsIsEcP256   = is_array($apnsKeyDetails)
+                        && ($apnsKeyDetails['type'] ?? null) === OPENSSL_KEYTYPE_EC
+                        && ($apnsCurveName === 'prime256v1' || $apnsCurveName === 'secp256r1');
+                    if (!$apnsIsEcP256) {
+                        throw new \RuntimeException('APNs private key must be an EC P-256 key (an "Apple Push Notifications service (APNs)" key) — this parsed as a different key type. Do NOT paste the SIWA key or the App Store Connect API deploy key here; those are separate, unrelated keys.');
+                    }
+                    $apnsPrivateKeyVal = $apnsCandidate;
+                }
+
                 $changedKeys = ['apple_team_id', 'apple_siwa_key_id'];
                 $saveSetting($db, 'apple_team_id', $teamIdVal);
                 $saveSetting($db, 'apple_siwa_key_id', $keyIdVal);
@@ -577,6 +617,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $saveSetting($db, 'apple_siwa_services_id', $servicesIdVal);
                 $changedKeys[] = 'apple_web_login_enabled';
                 $saveSetting($db, 'apple_web_login_enabled', $webLoginEnabledVal);
+                $changedKeys[] = 'apple_apns_key_id';
+                $saveSetting($db, 'apple_apns_key_id', $apnsKeyIdVal);
+                if ($apnsPrivateKeyVal !== null) {
+                    $changedKeys[] = 'apple_apns_private_key';
+                    $saveSetting($db, 'apple_apns_private_key', $apnsPrivateKeyVal);
+                }
 
                 if (function_exists('logActivity')) {
                     logActivity(
@@ -740,6 +786,13 @@ $appleSiwaPrivateKeySet = ((string)(getAppSetting('apple_siwa_private_key', '') 
    viewing it from). */
 $appleSiwaServicesId = (string)(getAppSetting('apple_siwa_services_id', '') ?? '');
 $appleWebLoginEnabledSetting = (string)(getAppSetting('apple_web_login_enabled', '') ?? '');
+
+/* APNs Auth Key (#1429 C4) — Live Activities push bridge (#1410/#1429).
+   Same getAppSetting()/secret-status convention as the SIWA pair above;
+   the private key's VALUE is likewise never read into a form-echoable
+   variable. */
+$appleApnsKeyId = (string)(getAppSetting('apple_apns_key_id', '') ?? '');
+$appleApnsPrivateKeySet = ((string)(getAppSetting('apple_apns_private_key', '') ?? '')) !== '';
 
 /* Native app store IDs (#1403/#1462) — the values echoed back are the
    CANONICAL, parsed IDs saved by save_native_apps above (never a raw
@@ -1088,6 +1141,58 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                         this is a staged-rollout dial for the shared-DB deploy — e.g. start with
                         <code>alpha</code>, widen to <code>alpha,beta</code> once verified, then
                         <code>all</code>. Leave blank to disable on every channel (the safe default).
+                    </div>
+                </div>
+
+                <div class="col-12"><hr class="text-secondary my-2"></div>
+
+                <div class="col-12">
+                    <h3 class="h6 mb-1">
+                        <i class="bi bi-bell me-1"></i>APNs Auth Key — Live Activities (#1429)
+                        <span class="badge <?= $appleApnsKeyId === '' ? 'bg-secondary' : 'bg-success' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleApnsKeyId === '' ? 'Key ID not set' : 'Key ID set' ?>
+                        </span>
+                        <span class="badge <?= $appleApnsPrivateKeySet ? 'bg-success' : 'bg-secondary' ?> ms-1" style="font-size: 0.65rem;">
+                            <?= $appleApnsPrivateKeySet ? '.p8 key set' : '.p8 key not set' ?>
+                        </span>
+                    </h3>
+                    <p class="small text-secondary mb-3">
+                        Powers push updates to the Lock Screen / Dynamic Island "Live Activity" card
+                        during a Live Follow or Service Mode broadcast — entirely dormant (no push is
+                        ever attempted) until BOTH fields below are saved. This is a THIRD, SEPARATE
+                        Apple key from the Sign in with Apple one above — same Apple Developer Team,
+                        different purpose. developer.apple.com &rarr; Certificates, Identifiers &amp;
+                        Profiles &rarr; Keys &rarr; create a key with the
+                        <strong>Apple Push Notifications service (APNs)</strong> capability enabled
+                        &rarr; download the <code>.p8</code> (one-time download) and note its
+                        10-character Key ID.
+                    </p>
+                </div>
+                <div class="col-md-4">
+                    <label for="apple_apns_key_id" class="form-label">APNs Key ID</label>
+                    <input type="text" name="apple_apns_key_id" id="apple_apns_key_id" class="form-control"
+                           style="text-transform: uppercase;" maxlength="10" pattern="[A-Za-z0-9]{10}"
+                           placeholder="ABCDE12345" autocomplete="off"
+                           value="<?= htmlspecialchars($appleApnsKeyId, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Exactly 10 letters/digits. Leave blank to clear.</div>
+                </div>
+                <div class="col-md-8">
+                    <label for="apple_apns_private_key" class="form-label">
+                        APNs private key (.p8)
+                        <?php if ($appleApnsPrivateKeySet): ?>
+                            <span class="badge bg-secondary ms-1" style="font-size: 0.65rem;">saved — leave blank to keep</span>
+                        <?php endif; ?>
+                    </label>
+                    <textarea name="apple_apns_private_key" id="apple_apns_private_key" class="form-control font-monospace"
+                              rows="4" autocomplete="off" spellcheck="false"
+                              placeholder="<?= $appleApnsPrivateKeySet ? '•••••••• (saved — paste a new .p8 to replace)' : "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----" ?>"></textarea>
+                    <div class="form-text">
+                        Paste the ENTIRE downloaded <code>.p8</code> file contents, including the
+                        <code>-----BEGIN/END PRIVATE KEY-----</code> lines. Stored in
+                        <code>tblAppSettings</code>, encrypted at rest; never echoed back to this
+                        form. This is <strong>not</strong> the SIWA key above, and <strong>not</strong>
+                        the App Store Connect API deploy key (<code>APPLE_ASC_KEY_P8</code>) — those
+                        are separate, unrelated keys.
                     </div>
                 </div>
 
