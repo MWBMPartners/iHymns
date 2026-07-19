@@ -38,6 +38,14 @@ struct TVServiceFollowView: View {
 
     @State private var codeText = ""
 
+    /// #1562 A-2: drives the status-strip auto-reveal below — a VoiceOver
+    /// user has no reliable way to discover/trigger the bare `.onTapGesture`
+    /// on the `.focusable()` `followingSurface` ZStack (`.focusable()`'s
+    /// OWN activation is a Siri Remote click, which VoiceOver intercepts
+    /// for its own navigation, and the strip holds the ONLY "Leave" control
+    /// on this whole screen).
+    @Environment(\.accessibilityVoiceOverEnabled) private var isVoiceOverRunning
+
     /// Whether the translucent status strip is showing while following —
     /// same "starts hidden on tvOS, a tap reveals it; always visible
     /// elsewhere" posture `ProjectionSceneView.isStripVisible` establishes
@@ -59,6 +67,13 @@ struct TVServiceFollowView: View {
         content
             .onAppear { coordinator.setSurfaceVisible(true) }
             .onDisappear { coordinator.setSurfaceVisible(false) }
+            // #1562 A-3: a failed `join(code:)` only ever shows up as a red
+            // `Text` next to the code field — silent to VoiceOver, which
+            // doesn't re-read a view that merely changed its text.
+            .onChange(of: coordinator.joinErrorMessage) { _, newValue in
+                guard let newValue else { return }
+                AccessibilityNotification.Announcement(newValue).post()
+            }
     }
 
     @ViewBuilder
@@ -86,6 +101,9 @@ struct TVServiceFollowView: View {
                 .autocorrectionDisabled()
                 .font(.system(.title2, design: .monospaced))
                 .frame(maxWidth: 400)
+                // #1562 A-4: bare placeholder text ("Code") is all
+                // VoiceOver would otherwise read for this field.
+                .accessibilityLabel("Join code")
             if let joinErrorMessage = coordinator.joinErrorMessage {
                 Text(joinErrorMessage).foregroundStyle(.red)
             } else {
@@ -113,12 +131,20 @@ struct TVServiceFollowView: View {
             if !coordinator.hasSnapshotSong {
                 ContentUnavailableView("Waiting for the first song…", systemImage: "music.note")
             }
-            if isStripVisible { statusStrip }
+            // #1562 A-2: the strip holds the ONLY "Leave" control on this
+            // screen — auto-reveal it under VoiceOver rather than relying
+            // on a sighted-only tap-to-discover gesture (below).
+            if isStripVisible || isVoiceOverRunning { statusStrip }
             if let songNotice = coordinator.songNotice { noticeOverlay(songNotice) }
         }
         #if os(tvOS)
         .focusable()
         .onTapGesture { isStripVisible.toggle() }
+        // Defensive backup to the auto-reveal above, for any assistive
+        // technology other than VoiceOver that surfaces custom actions
+        // instead of raw taps.
+        .accessibilityAction(named: "Show controls") { isStripVisible = true }
+        .accessibilityHint("Shows the Leave button and connection status.")
         #endif
     }
 
@@ -145,6 +171,10 @@ struct TVServiceFollowView: View {
             Text(isFresh ? "Live" : "Reconnecting…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                // #1562 A-3: this text silently flips between "Live" and
+                // "Reconnecting…" as freshness changes — flag it as
+                // continuously updating for assistive tech.
+                .accessibilityAddTraits(.updatesFrequently)
             Button("Leave", role: .destructive) { Task { await coordinator.leave() } }
         }
         .padding()

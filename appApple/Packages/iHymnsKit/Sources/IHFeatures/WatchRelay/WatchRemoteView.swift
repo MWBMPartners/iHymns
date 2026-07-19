@@ -87,6 +87,20 @@ public struct WatchRemoteView: View {
             }
             .padding(.horizontal, 2)
         }
+        // #1562 A-3: `transientOverlay` auto-clears itself the moment the
+        // NEXT reply/push lands (this file's own header: "never cleared by
+        // THIS view") — a sighted user catches the flash, but a VoiceOver
+        // user who wasn't already focused on this exact spot never learns
+        // "Waking iPhone…" happened, or what the notice that replaced it
+        // said, before it's gone again.
+        .onChange(of: controller.isWakingPhone) { _, isWaking in
+            guard isWaking else { return }
+            AccessibilityNotification.Announcement("Waking iPhone…").post()
+        }
+        .onChange(of: controller.transientNotice) { _, newNotice in
+            guard let newNotice else { return }
+            AccessibilityNotification.Announcement(newNotice).post()
+        }
     }
 
     // MARK: - 1. Status header (2 lines)

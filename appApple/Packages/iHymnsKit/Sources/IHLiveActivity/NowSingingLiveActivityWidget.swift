@@ -113,6 +113,22 @@ private struct NowSingingLockScreenView: View {
         // Blackout/logo dims the whole card — see this file's header. A
         // stale card dims the SAME way (F8, above).
         .opacity((state.resolvedDisplayState == .live && !isStale) ? 1 : 0.55)
+        // #1562 A-6: the dim above is OPACITY ONLY — invisible to
+        // VoiceOver, which reads the same title/section either way. A
+        // sighted glance at a dimmed card tells you "nothing's actually
+        // showing right now"; this makes that same fact audible.
+        .accessibilityValue(accessibilityDisplayStateValue ?? "")
+    }
+
+    /// `nil` while genuinely live (nothing extra to say — the title/section
+    /// already read normally); a short human sentence for the two states
+    /// where the venue screen ISN'T showing the song.
+    private var accessibilityDisplayStateValue: String? {
+        switch state.resolvedDisplayState {
+        case .live: return nil
+        case .blackout: return "Screen blacked out"
+        case .logo: return "Showing logo"
+        }
     }
 }
 
@@ -199,6 +215,10 @@ private struct NowSingingSectionBadge: View {
         if let componentIndex = state.componentIndex {
             Text("\(componentIndex + 1)")
                 .font(.caption2)
+                // #1562 A-5: this compact-trailing slot renders a BARE
+                // number ("3") — read on its own by VoiceOver with no
+                // context for what it counts.
+                .accessibilityLabel("Section \(componentIndex + 1)")
         } else if state.isLive {
             Text("LIVE")
                 .font(.caption2)
@@ -215,7 +235,13 @@ private struct NowSingingHostControls: View {
     var body: some View {
         HStack {
             Button(intent: NowSingingPreviousSectionIntent()) {
+                // #1562 A-5: a bare SF Symbol has no hit-target guarantee
+                // on the Lock Screen/Dynamic Island — same 44x44 minimum
+                // `RemoteControlSurfaceView.remoteButton`/`WatchRemoteView
+                // .navigationButton` already enforce for every OTHER
+                // icon-only control in this app.
                 Image(systemName: "chevron.left")
+                    .frame(minWidth: 44, minHeight: 44)
             }
             // #1429 Audit-B F7 — icon-only button; VoiceOver would
             // otherwise read the SF Symbol's raw name instead of its
@@ -224,6 +250,7 @@ private struct NowSingingHostControls: View {
             Spacer()
             Button(intent: NowSingingNextSectionIntent()) {
                 Image(systemName: "chevron.right")
+                    .frame(minWidth: 44, minHeight: 44)
             }
             .accessibilityLabel("Next section")
         }

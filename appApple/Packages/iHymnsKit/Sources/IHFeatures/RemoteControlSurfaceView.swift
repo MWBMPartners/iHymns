@@ -83,21 +83,30 @@ public struct RemoteControlSurfaceView: View {
 
     private var headerCard: some View {
         HStack {
-            Circle()
-                .fill(.green)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tvName).font(.headline)
-                Text(state.songId?.rawValue ?? "Nothing selected")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            // #1562 A-1: `.combine` scoped to ONLY the status dot + name/song
+            // labels — the PREVIOUS `.combine` sat on the whole `HStack`,
+            // which swallowed the "Disconnect" `Button` into the SAME
+            // element and made it untappable by VoiceOver (lost its button
+            // trait + `.destructive` role). The Button now stays a SIBLING,
+            // outside this nested group — same fix as `ServiceMirrorCard
+            // .armedRow`.
+            HStack {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tvName).font(.headline)
+                    Text(state.songId?.rawValue ?? "Nothing selected")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .accessibilityElement(children: .combine)
             Spacer(minLength: 12)
             Button("Disconnect", role: .destructive, action: onDisconnect)
         }
         .ihGlassCard()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - 2. Song

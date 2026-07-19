@@ -45,6 +45,32 @@ struct ServiceMirrorCard: View {
             }
         }
         .ihGlassCard()
+        // #1562 A-3: the ONLY signal a VoiceOver user gets that mirroring
+        // just changed state — the status dot is `.accessibilityHidden`
+        // (A-1 below) and everything else here just silently re-renders.
+        // ELI5: "Say out loud what just changed, since nobody's looking at
+        // the screen while running a service." Both `phase` and `notice`
+        // are separately observed because a phase change doesn't always
+        // carry a fresh notice (e.g. `.degraded` -> `.active` on recovery
+        // clears `notice` to `nil`) and a notice can occasionally repeat
+        // across the SAME phase (e.g. two consecutive F-3 skips).
+        .onChange(of: controller.phase) { _, newPhase in
+            AccessibilityNotification.Announcement(Self.phaseAnnouncement(for: newPhase)).post()
+        }
+        .onChange(of: controller.notice) { _, newNotice in
+            guard let newNotice else { return }
+            AccessibilityNotification.Announcement(newNotice).post()
+        }
+    }
+
+    /// #1562 A-3: one short, phase-specific line per `ServiceMirrorController
+    /// .Phase` transition — see this file's `body` `.onChange` above.
+    private static func phaseAnnouncement(for phase: ServiceMirrorController.Phase) -> String {
+        switch phase {
+        case .off: return "Mirroring stopped."
+        case .active: return "Mirroring active."
+        case .degraded: return "Mirroring reconnecting."
+        }
     }
 
     // MARK: - .off
@@ -66,7 +92,16 @@ struct ServiceMirrorCard: View {
                     // LAN-remote screen. watchOS falls back to the plain field.
                     .textFieldStyle(.roundedBorder)
                     #endif
-                    .frame(maxWidth: 120)
+                    // #1562 A-7: NO `maxWidth` cap — a hard 120pt cap was
+                    // fine at the default text size but clips the digits at
+                    // larger Dynamic Type accessibility sizes; `minWidth`
+                    // alone still keeps the field from collapsing to
+                    // nothing next to "Start Mirroring" at the default size.
+                    .frame(minWidth: 60)
+                    // #1562 A-4: bare placeholder text ("Session #") is all
+                    // VoiceOver would otherwise read for this field — name
+                    // what it actually is.
+                    .accessibilityLabel("Service session number")
                 Button("Start Mirroring") {
                     guard let sessionId = parsedSessionId else { return }
                     IHSettingsStore().lastMirrorSessionId = sessionId
@@ -87,17 +122,29 @@ struct ServiceMirrorCard: View {
 
     private func armedRow(sessionId: Int, isDegraded: Bool) -> some View {
         HStack {
-            Circle()
-                .fill(isDegraded ? Color.orange : Color.green)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
-            Text(isDegraded ? "Reconnecting to iHymns — your projection is unaffected." : "Mirroring to session #\(sessionId)")
-                .font(.subheadline)
+            // #1562 A-1: `.combine` scoped to ONLY the status dot + label —
+            // combining the whole row (as before) swallowed the "Stop
+            // Mirroring" `Button` into the SAME element, losing its button
+            // trait/`.destructive` role and making it untappable by
+            // VoiceOver. The Button stays a SIBLING below, outside this
+            // nested group.
+            HStack {
+                Circle()
+                    .fill(isDegraded ? Color.orange : Color.green)
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                Text(isDegraded ? "Reconnecting to iHymns — your projection is unaffected." : "Mirroring to session #\(sessionId)")
+                    .font(.subheadline)
+                    // #1562 A-3: this label is the live "what's happening
+                    // right now" status text — flags it as continuously
+                    // updating for assistive tech that debounces re-reads.
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
+            .accessibilityElement(children: .combine)
             Spacer(minLength: 12)
             Button("Stop Mirroring", role: .destructive) {
                 controller.disarm()
             }
         }
-        .accessibilityElement(children: .combine)
     }
 }
