@@ -122,6 +122,13 @@ targets:
         NSBonjourServices:
           - _ihymns-remote._tcp
         NSCameraUsageDescription: "iHymns uses the camera only to scan the pairing QR code shown on your TV."
+        # #1429 (Apple Phase-2 PR-16, strategy §2.3) — Apple REQUIRES this
+        # key before an app may call `Activity.request(...)` at all (Live
+        # Activities/Dynamic Island); without it, ActivityKit throws
+        # `.unsupportedTarget` unconditionally, regardless of the user's own
+        # Settings toggle. `NowSingingActivityController.start(...)`
+        # (`IHLiveActivity`) is the ONE call site this unlocks.
+        NSSupportsLiveActivities: true
     # #186 (Apple Phase 1, "Sharing & social") — claims Universal Links for
     # every host `DeepLinkRouter.allowedHosts` (`IHAppSupport`) resolves a
     # `DeepLink` from, so a tapped `https://ihymns.app/song/...`-shaped link
@@ -158,6 +165,17 @@ targets:
           - activitycontinuation:www.ihymns.app
           - activitycontinuation:beta.ihymns.app
           - activitycontinuation:dev.ihymns.app
+        # #1429 (Apple Phase-2 PR-16) — required for `Activity.request(...,
+        # pushType: .token)` to mint a REAL push token at all (the ActivityKit
+        # push-updates path `NowSingingActivityController` uses,
+        # `IHLiveActivity`). `development` matches every debug/TestFlight
+        # build's own APNs environment (`ApnsEnvironmentDefault.current`,
+        # same file) — a Release App Store build's REAL entitlement value is
+        # `production`, set by Xcode's own automatic signing at archive time
+        # per Apple's documented behaviour for this exact key, not by this
+        # YAML (see `apns.php`'s own `APNS_ENVIRONMENTS` header for the
+        # matching server-side sandbox/production split).
+        aps-environment: development
     dependencies:
       # Every shell imports IHFeatures (shared screens/view models) and
       # IHDesign (tokens/glass wrappers) directly — both declared explicitly
@@ -325,5 +343,7 @@ targets:
       # The Phase-0 placeholder widget only needs design tokens; real
       # widgets (SOTD/favourites/resume, strategy §2.3) will add IHModels/
       # IHAPI/IHPersistence once they read real data in Phase 1.5.
+      # #1429 (Apple Phase-2 PR-16) adds IHLiveActivity — the first REAL
+      # widget, `NowSingingLiveActivityWidget` (`IHymnsWidgetsBundle.swift`).
       - package: iHymnsKit
-        products: [IHDesign]
+        products: [IHDesign, IHLiveActivity]
