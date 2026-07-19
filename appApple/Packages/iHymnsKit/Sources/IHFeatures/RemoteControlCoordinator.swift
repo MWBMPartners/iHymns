@@ -355,13 +355,10 @@ public final class RemoteControlCoordinator {
                 hasTouchedThisLink = true
                 await touchLastConnected()
             }
-            // #1425 (strategy §2.4.1) — every `.controlling` arrival,
-            // INCLUDING the TV's echo of our own intents, is exactly the
-            // "what's on the TV right now" signal an armed Service-Mode
-            // mirror needs to rebroadcast. `serviceMirror` is `nil` unless
-            // `RemoteControlView` wired one up, and `observe(_:)` itself
-            // no-ops while unarmed, so this is a byte-identical no-op for
-            // every other caller of this coordinator.
+            // #1425 (strategy §2.4.1) — mirror every `.controlling` (incl.
+            // the TV's echo of our own intents) to an armed Service-Mode
+            // mirror; `serviceMirror` is nil + `observe(_:)` no-ops while
+            // unarmed, so this is a byte-identical no-op otherwise.
             serviceMirror?.observe(state)
         case .pairingEnded(let failure):
             currentTVName = nil
@@ -391,8 +388,7 @@ public final class RemoteControlCoordinator {
             break
         }
 
-        // #1423 — the relay tap: a tap of ALREADY-APPLIED state (incl.
-        // `+ManualConnect.swift`'s direct `uiPhase` writes above), never a
+        // #1423 — the relay tap: publishes ALREADY-APPLIED state, never a
         // second `session.events` consumer (spec §6.1/D-2).
         relayPublish()
     }
