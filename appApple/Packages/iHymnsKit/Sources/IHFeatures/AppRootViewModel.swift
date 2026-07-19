@@ -50,6 +50,7 @@ import Foundation
 import IHAPI
 import IHAuth
 import IHLive
+import IHLiveActivity
 import IHModels
 import IHPersistence
 import Observation
@@ -63,11 +64,17 @@ import Observation
 @Observable
 public final class AppRootViewModel {
     /// A main-thread-readable mirror of `SessionController.state`,
-    /// kept in sync via `stateUpdates` (see `observeSessionState()` below).
+    /// kept in sync via `stateUpdates` (`observeSessionState()`,
+    /// `AppRootViewModel+Auth.swift`).
     ///
     /// ELI5: "Are we signed in?" — safe for any SwiftUI view to read
     /// directly, no `await` needed.
-    public private(set) var sessionState: SessionState = .signedOut
+    ///
+    /// `internal(set)` (not `private(set)`) — `observeSessionState()` moved
+    /// to `AppRootViewModel+Auth.swift` (#1429 LOC-budget tripwire), the
+    /// SAME cross-file-extension mutation reason `recentSearches` below
+    /// documents.
+    public internal(set) var sessionState: SessionState = .signedOut
 
     /// The current load state of the slim catalogue index (#1399) —
     /// `CatalogueListView` renders its loading/error/list states directly
@@ -211,6 +218,43 @@ public final class AppRootViewModel {
     public internal(set) var liveState: LiveSyncUIState = .idle
     public internal(set) var liveSnapshot: LiveBroadcastSnapshot?
 
+    /// PR-16 (#1429) — see `AppRootViewModel+LiveActivity.swift`. Real
+    /// only behind `#if os(iOS) && canImport(ActivityKit)` (`IHLiveActivity
+    /// .NowSingingActivityController`, injected by `+Live.swift`'s
+    /// `makeLive(environment:)`); `nil` elsewhere, which every
+    /// `+LiveActivity.swift` call site treats as a silent no-op
+    /// (`IHFeatures` holds the PROTOCOL, never `ActivityKit` itself).
+    let nowSingingActivity: (any NowSingingActivityControlling)?
+    /// The host's current Live Activity content (`nil` = no card showing),
+    /// diffed old→new via `NowSingingActivityReducer` by
+    /// `syncNowSingingActivity()` (`+LiveActivity.swift`).
+    var nowSingingContext: NowSingingHostContext?
+    /// Shadow of `nowSingingContext` as of the last successful sync — the
+    /// reducer's "previous" input. `@ObservationIgnored`: pure plumbing.
+    @ObservationIgnored
+    var nowSingingSyncedContext: NowSingingHostContext?
+    /// The host's current song id, mirrored locally so `hostAdvanceSection(_:)`
+    /// avoids an extra `await` hop into the actor-isolated engine.
+    var hostSongId: String?
+    /// The host's current section index — reset to `nil` on a new song.
+    var hostComponentIndex: Int?
+    /// A push token that arrived before the session id was known; flushed
+    /// once `hostingStarted` delivers it (`+LiveActivity.swift`).
+    var pendingActivityPushTokenHex: String?
+    /// #1429 Audit-B F5 — FIFO-serializes `nowSingingActivity?.apply(_:)`
+    /// calls (`syncNowSingingActivity()`, `+LiveActivity.swift`): each new
+    /// call chains `await prev?.value` before its own `apply(_:)`, so a
+    /// rapid `.end`-then-`.start` pair (e.g. `hostingEnded` immediately
+    /// followed by a fresh `hostingStarted`) can never reorder on the wire
+    /// — without this, two independently-spawned `Task { await ... }`s race
+    /// the actor hop with no ordering guarantee. Not `private`: same
+    /// cross-file-extension reason `pendingActivityPushTokenHex` above
+    /// documents — `private` is file-scoped in Swift, so the sibling
+    /// extension file needs at least `internal` write access.
+    /// `@ObservationIgnored`: pure plumbing, never read by a view.
+    @ObservationIgnored
+    var lastApplyTask: Task<Void, Never>?
+
     /// Persists `recentSearches` (#1436) — see `RecentSearchesStore`'s own
     /// header for why this is a plain injectable value type rather than
     /// `@AppStorage` directly on the property above. Deliberately NOT
@@ -232,30 +276,17 @@ public final class AppRootViewModel {
     let usageActivityStore: UsageActivityStore
 
     /// The background observation loop mirroring `sessionController.stateUpdates`
-    /// into `sessionState`. Held so it can be cancelled in `deinit`.
-    ///
-    /// DETAILED: `deinit` on a `@MainActor` class is itself `nonisolated`
-    /// (deallocation can be triggered from any thread, so the compiler
-    /// can't prove actor isolation there — Swift 6 strict concurrency
-    /// forbids touching MainActor-isolated state from it). By the time
-    /// `deinit` runs, though, there are — by definition — zero other
-    /// references to `self`, so no concurrent access to this property can
-    /// possibly be racing with the cancel below; `nonisolated(unsafe)` is
-    /// the sanctioned escape hatch for exactly this "provably safe, but the
-    /// compiler can't see why" situation (see the Swift evolution pitch on
-    /// task cancellation in `deinit`, and Migrating to Swift 6:
-    /// https://www.swift.org/migration/documentation/migrationguide/).
-    ///
-    /// `@ObservationIgnored` because this is pure plumbing, not UI-facing
-    /// state (a SwiftUI view should never re-render because this changed);
-    /// it also sidesteps `@Observable`'s macro-generated tracked accessor,
-    /// which does not support plain `nonisolated` on a mutable stored
-    /// property — `nonisolated(unsafe)` is the correct tool once the
-    /// property is no longer being wrapped by that macro. Safety argument
-    /// is unchanged: by the time `deinit` reads/cancels it, `self` has no
-    /// other live references, so nothing can race with this access.
+    /// into `sessionState` (`observeSessionState()`, moved to
+    /// `AppRootViewModel+Auth.swift` — LOC-budget tripwire — which is why
+    /// this is `internal` not `private`: same cross-file-extension mutation
+    /// reason `liveObservationTask` below documents). Held so it can be
+    /// cancelled in `deinit`; `nonisolated(unsafe)` because `deinit` itself
+    /// is `nonisolated` (runs from any thread) but is PROVABLY safe here —
+    /// by the time it fires, `self` has zero other references, so nothing
+    /// races with the cancel (see `observeSessionState()`'s own doc comment
+    /// for the full argument).
     @ObservationIgnored
-    nonisolated(unsafe) private var sessionObservationTask: Task<Void, Never>?
+    nonisolated(unsafe) var sessionObservationTask: Task<Void, Never>?
 
     /// PR-10: consumes both engines' events (`+LiveSync.swift`, which sets this).
     @ObservationIgnored nonisolated(unsafe) var liveObservationTask: Task<Void, Never>?
@@ -268,7 +299,10 @@ public final class AppRootViewModel {
         serviceModeEngine: ServiceModeEngine? = nil,
         recentSearchesStore: RecentSearchesStore = RecentSearchesStore(),
         recentlyViewedStore: RecentlyViewedStore = RecentlyViewedStore(),
-        usageActivityStore: UsageActivityStore = UsageActivityStore()
+        usageActivityStore: UsageActivityStore = UsageActivityStore(),
+        // PR-16 (#1429) — `nil` DEFAULT keeps every existing call site
+        // unchanged; only `+Live.swift`'s `makeLive(environment:)` (iOS) passes a real one.
+        nowSingingActivity: (any NowSingingActivityControlling)? = nil
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -280,8 +314,10 @@ public final class AppRootViewModel {
         self.recentlyViewedStore = recentlyViewedStore
         self.recentlyViewedSongs = recentlyViewedStore.load()
         self.usageActivityStore = usageActivityStore
+        self.nowSingingActivity = nowSingingActivity
         observeSessionState()
         observeLiveSyncEvents()
+        configureNowSingingActivity()
     }
 
     deinit {
@@ -352,49 +388,12 @@ public final class AppRootViewModel {
     // its ONE #1446 addition (recording the open into `usageActivityStore`)
     // is unchanged from being called at this exact call site.
 
-    /// Starts a `Task` that mirrors every `SessionState` change published by
-    /// `sessionController` onto `sessionState`.
-    ///
-    /// ELI5: Keeps our main-thread copy of "signed in or not" always up to
-    /// date.
-    ///
-    /// DETAILED: Created as a plain (non-detached) `Task` from within this
-    /// `@MainActor` initializer, so — per Swift's structured-concurrency
-    /// isolation-inheritance rule — the task's body itself runs
-    /// MainActor-isolated, meaning `self.sessionState = state` below needs
-    /// no extra `await MainActor.run { ... }` hop. Captures `self` WEAKLY:
-    /// `sessionController.stateUpdates` never terminates on its own, so a
-    /// strong capture here would keep this task (and therefore this whole
-    /// view model) alive forever — a classic retain cycle. With a weak
-    /// capture, once `self` is deallocated the loop simply exits on its
-    /// next iteration instead of pinning it in memory.
-    ///
-    /// DELIBERATELY side-effect-free beyond that mirror (native login/
-    /// account UI + favourites task): the "on sign-in, refresh my profile +
-    /// reconcile favourites with the server; on sign-out, forget them
-    /// locally" behaviour lives in `AppRootViewModel+Auth.swift`'s
-    /// `signIn(...)`/`signInWithEmailCode(...)`/`signOut()`/
-    /// `restoreSessionIfNeeded()` themselves, called DIRECTLY right after
-    /// each one's own `sessionController` call succeeds — NOT wired through
-    /// this passive stream. Two reasons: (1) every existing
-    /// `SessionController`-level test (`SessionControllerTests`) and several
-    /// `AppRootViewModelTests` drive `sessionController.signIn(token:)`
-    /// directly, bypassing `AppRootViewModel` entirely — hanging a real
-    /// network call (`apiClient.favorites()`/`authMe()`) off THIS loop would
-    /// have made those pre-existing, already-green tests start issuing real,
-    /// unmocked network requests the moment they touched sign-in state, a
-    /// regression this task must not introduce; (2) calling the sync
-    /// directly from each entry point is strictly more deterministic and
-    /// easier to unit test than racing it against this loop's own
-    /// `AsyncStream` delivery timing.
-    private func observeSessionState() {
-        sessionObservationTask = Task { [weak self, sessionController] in
-            for await state in sessionController.stateUpdates {
-                guard let self, !Task.isCancelled else { break }
-                self.sessionState = state
-                // PR-10: force-end hosting on sign-out (no-op unless hosting).
-                if case .signedOut = state { Task { await self.liveFollowEngine.endHostingForSignOut() } }
-            }
-        }
-    }
+    // `observeSessionState()` (mirrors every `SessionState` change published
+    // by `sessionController` onto `sessionState`, and force-ends hosting on
+    // sign-out) moved to `AppRootViewModel+Auth.swift` (#1429 PR-16
+    // LOC-budget tripwire) — see that file's own copy of this doc comment
+    // for the full "why this is deliberately NOT where sign-in/out syncs
+    // its side effects" rationale. A pure move: `sessionObservationTask`
+    // above is `internal` (not `private`) for exactly this cross-file
+    // mutation, mirroring `liveObservationTask`'s own precedent.
 }

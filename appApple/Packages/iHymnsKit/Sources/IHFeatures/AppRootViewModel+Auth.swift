@@ -246,4 +246,52 @@ extension AppRootViewModel {
     func isSignedInNow() async -> Bool {
         await sessionController.state.isSignedIn
     }
+
+    /// Starts a `Task` that mirrors every `SessionState` change published by
+    /// `sessionController` onto `sessionState` — moved here from
+    /// `AppRootViewModel.swift` (#1429 PR-16 LOC-budget tripwire); called
+    /// once from `AppRootViewModel.init` exactly as before the move.
+    ///
+    /// ELI5: Keeps our main-thread copy of "signed in or not" always up to
+    /// date.
+    ///
+    /// DETAILED: Created as a plain (non-detached) `Task` from within the
+    /// `@MainActor` initializer, so — per Swift's structured-concurrency
+    /// isolation-inheritance rule — the task's body itself runs
+    /// MainActor-isolated, meaning `self.sessionState = state` below needs
+    /// no extra `await MainActor.run { ... }` hop. Captures `self` WEAKLY:
+    /// `sessionController.stateUpdates` never terminates on its own, so a
+    /// strong capture here would keep this task (and therefore this whole
+    /// view model) alive forever — a classic retain cycle. With a weak
+    /// capture, once `self` is deallocated the loop simply exits on its
+    /// next iteration instead of pinning it in memory.
+    ///
+    /// DELIBERATELY side-effect-free beyond that mirror (native login/
+    /// account UI + favourites task): the "on sign-in, refresh my profile +
+    /// reconcile favourites with the server; on sign-out, forget them
+    /// locally" behaviour lives in THIS file's `signIn(...)`/
+    /// `signInWithEmailCode(...)`/`signOut()`/`restoreSessionIfNeeded()`
+    /// themselves, called DIRECTLY right after each one's own
+    /// `sessionController` call succeeds — NOT wired through this passive
+    /// stream. Two reasons: (1) every existing `SessionController`-level
+    /// test (`SessionControllerTests`) and several `AppRootViewModelTests`
+    /// drive `sessionController.signIn(token:)` directly, bypassing
+    /// `AppRootViewModel` entirely — hanging a real network call
+    /// (`apiClient.favorites()`/`authMe()`) off THIS loop would have made
+    /// those pre-existing, already-green tests start issuing real,
+    /// unmocked network requests the moment they touched sign-in state, a
+    /// regression this task must not introduce; (2) calling the sync
+    /// directly from each entry point is strictly more deterministic and
+    /// easier to unit test than racing it against this loop's own
+    /// `AsyncStream` delivery timing.
+    func observeSessionState() {
+        sessionObservationTask = Task { [weak self, sessionController] in
+            for await state in sessionController.stateUpdates {
+                guard let self, !Task.isCancelled else { break }
+                self.sessionState = state
+                // PR-10: force-end hosting on sign-out (no-op unless hosting).
+                if case .signedOut = state { Task { await self.liveFollowEngine.endHostingForSignOut() } }
+            }
+        }
+    }
 }

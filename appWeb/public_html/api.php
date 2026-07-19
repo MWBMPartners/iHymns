@@ -2314,6 +2314,28 @@ if ($action !== null) {
                 $stmt->bind_param('s', $tokenHash);
                 $stmt->execute();
                 $stmt->close();
+
+                /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+                   sign-out/410") — a signed-out user's APNs/Live Activity
+                   push tokens must stop receiving pushes for a session
+                   that's no longer theirs. Wrapped defensively: sign-out
+                   itself must NEVER 500 because of this best-effort
+                   cleanup (mirrors live_activity_push.php's own "never let
+                   a push-bridge failure surface" posture). */
+                if ($authedUser) {
+                    try {
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                        if (apnsTokensTableExists($db)) {
+                            $apnsUserId = (int)$authedUser['Id'];
+                            $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                            $delApns->bind_param('i', $apnsUserId);
+                            $delApns->execute();
+                            $delApns->close();
+                        }
+                    } catch (\Throwable $e) {
+                        error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
+                    }
+                }
             }
 
             /* Also clear the auth cookie (#390) so a subsequent page load
@@ -3729,6 +3751,23 @@ if ($action !== null) {
                 sendJson(['error' => 'Unknown device.'], 404);
                 break;
             }
+
+            /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+               sign-out/410") — same cleanup as auth_logout above, wrapped
+               defensively so a signed-out device never sees a 500 because
+               of this best-effort cleanup. */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                if (apnsTokensTableExists($db)) {
+                    $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                    $delApns->bind_param('i', $userId);
+                    $delApns->execute();
+                    $delApns->close();
+                }
+            } catch (\Throwable $e) {
+                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
+            }
+
             sendJson(['ok' => true]);
             break;
         }
@@ -3800,13 +3839,18 @@ if ($action !== null) {
             $sessionExpiresAt = null;
             if ($kind === 'liveActivity') {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+                /* #1429 C3 — session_control_token.php supplies the shared
+                   serviceMode_userCanOperate() operator check (the SAME test
+                   service_broadcast/service_session_start use), reused here
+                   rather than re-forking a 4th inline copy. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
                 $rawSessionId = (int)($body['sessionId'] ?? 0);
                 if ($rawSessionId <= 0) {
                     sendJson(['error' => 'sessionId is required for kind=liveActivity.'], 400);
                     break;
                 }
                 $channel = serviceMode_channel();
-                $sstmt = $db->prepare('SELECT Id, ExpiresAt FROM tblLiveFollowSessions WHERE Id = ? AND Channel = ? AND IsActive = 1');
+                $sstmt = $db->prepare('SELECT Id, ExpiresAt, HostUserId, OrgId FROM tblLiveFollowSessions WHERE Id = ? AND Channel = ? AND IsActive = 1');
                 $sstmt->bind_param('is', $rawSessionId, $channel);
                 $sstmt->execute();
                 $srow = $sstmt->get_result()->fetch_assoc();
@@ -3815,6 +3859,26 @@ if ($action !== null) {
                     sendJson(['error' => 'Unknown or ended session.'], 404);
                     break;
                 }
+
+                /* GAP FIX (#1429 C3) — before this, ANY authenticated user
+                   could register a push token against ANY active session by
+                   guessing/enumerating its numeric id, letting a stranger's
+                   device receive Live Activity updates for someone else's
+                   service. Only someone allowed to OPERATE the session
+                   (global/org admin, the session's own host, or an
+                   org-admin of the session's org) may register a token for
+                   it. Live-Follow HOST sessions carry OrgId=NULL (cast to 0
+                   below), so for those the HostUserId===userId arm is the
+                   one that actually fires. This gate applies ONLY to
+                   kind=liveActivity — ordinary device tokens (kind='device')
+                   are never session-scoped, so they are unaffected. */
+                $role = (string)($authUser['Role'] ?? '');
+                if (!serviceMode_userCanOperate($userId, $role, (int)($srow['OrgId'] ?? 0), (int)($srow['HostUserId'] ?? 0))) {
+                    logActivity('apns.token.register', 'user', (string)$userId, ['kind' => $kind, 'session_id' => $rawSessionId, 'reason' => 'not_authorised'], 'failure');
+                    sendJson(['error' => 'Not authorised for this session.'], 403);
+                    break;
+                }
+
                 $sessionId = (int)$srow['Id'];
                 $sessionExpiresAt = (string)$srow['ExpiresAt'];
             }
@@ -13882,6 +13946,7 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -13920,12 +13985,32 @@ if ($action !== null) {
                 if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
             }
 
-            /* One active session per host — supersede any prior one. */
-            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
-            $deact->bind_param('i', $userId);
+            /* One active session per host — supersede any prior one. #1429 —
+               capture the OLD session's Id BEFORE deactivating so its Live
+               Activity (if any device registered one) can be told the
+               broadcast has ended, rather than left stuck "live" forever.
+               #1429 Audit-B F4 — CHANNEL-SCOPED (rule #26), matching
+               service_session_start's own supersede below: without this, a
+               host's prior active session on a DIFFERENT channel (e.g. an
+               alpha-created session, HostUserId shared across the 3
+               docroots via the same MySQL) would be silently deactivated
+               here with NO end-push ever sent for it (liveActivitySessionPush
+               itself channel-re-resolves and would just no-op on a
+               cross-channel session id). */
+            $oldSel = $db->prepare('SELECT Id FROM tblLiveFollowSessions WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $oldSel->bind_param('is', $userId, $channel);
+            $oldSel->execute();
+            $oldRow = $oldSel->get_result()->fetch_assoc();
+            $oldSel->close();
+
+            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $deact->bind_param('is', $userId, $channel);
             $deact->execute();
             $superseded = $deact->affected_rows > 0;
             $deact->close();
+            if ($oldRow) {
+                liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+            }
 
             /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
             $alphabet = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
@@ -13963,7 +14048,10 @@ if ($action !== null) {
                 'has_song'    => $songId !== null,
             ]);
 
-            sendJson(['ok' => true, 'code' => $code, 'revision' => 0]);
+            /* #1429 — sessionId exposed so the native app can immediately
+               register a Live Activity push token against THIS session
+               (apns_register's kind=liveActivity branch requires it). */
+            sendJson(['ok' => true, 'code' => $code, 'revision' => 0, 'sessionId' => $newSessionId]);
             break;
         }
 
@@ -13972,6 +14060,7 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -14036,6 +14125,13 @@ if ($action !== null) {
             $rev = $revRow ? (int)$revRow[0] : 0;
             $sel->close();
 
+            /* #1429 — $preRow['Id'] is the session's numeric Id (unchanged by
+               this UPDATE, since it filters on SessionCode+HostUserId, not
+               Id) — reused here rather than re-selecting it. */
+            if (isset($preRow['Id'])) {
+                liveActivitySessionPush($db, (int)$preRow['Id'], 'update');
+            }
+
             sendJson(['ok' => true, 'revision' => $rev]);
             break;
         }
@@ -14083,6 +14179,7 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
 
             $body = json_decode(file_get_contents('php://input'), true);
@@ -14107,6 +14204,7 @@ if ($action !== null) {
 
             if ($endRow) {
                 logActivity('live.session.end', 'live_session', (string)$endRow['Id'], []);
+                liveActivitySessionPush($db, (int)$endRow['Id'], 'end');
             }
 
             sendJson(['ok' => true]);
@@ -14253,6 +14351,7 @@ if ($action !== null) {
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -14302,6 +14401,20 @@ if ($action !== null) {
             }
             $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz);
 
+            /* #1429 — capture the OLD session's Id BEFORE deactivating (same
+               rationale as live_follow_create's supersede, above) so its
+               Live Activity is told the broadcast ended rather than left
+               stuck "live". */
+            $oldSel = $db->prepare(
+                "SELECT Id FROM tblLiveFollowSessions
+                  WHERE SessionKind = 'service' AND IsActive = 1 AND Channel = ?
+                    AND VenueId = ? AND OccurrenceDate = ? AND (ScheduleId <=> ?)"
+            );
+            $oldSel->bind_param('sisi', $channel, $venueId, $occDate, $scheduleIdN);
+            $oldSel->execute();
+            $oldRow = $oldSel->get_result()->fetch_assoc();
+            $oldSel->close();
+
             /* Supersede any prior active service session for the same occurrence + channel. */
             $deact = $db->prepare(
                 "UPDATE tblLiveFollowSessions SET IsActive = 0
@@ -14312,6 +14425,9 @@ if ($action !== null) {
             $deact->execute();
             $superseded = $deact->affected_rows > 0;
             $deact->close();
+            if ($oldRow) {
+                liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+            }
 
             /* Insert the session (SessionKind=service; SessionCode is the spine's
                required unique id, internal — congregants use the rotating codes).
@@ -14361,6 +14477,7 @@ if ($action !== null) {
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -14417,6 +14534,7 @@ if ($action !== null) {
                     $db->commit();
                 } catch (\Throwable $e) { $db->rollback(); throw $e; }
                 logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                liveActivitySessionPush($db, $sessionId, 'end');
                 sendJson(['ok' => true]);
                 break;
             }
@@ -14483,6 +14601,7 @@ if ($action !== null) {
                serviceMode_userCanOperate() check AND the control-token
                validator the new delegated-auth path below consults. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
 
             /* #1408 — EARLY per-IP throttle, DISTINCT bucket from the
                per-user one below. Before this change, an unauthenticated
@@ -14579,6 +14698,8 @@ if ($action !== null) {
             $rev->execute();
             $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
             $rev->close();
+
+            liveActivitySessionPush($db, $sessionId, 'update');
 
             /* §3.2 — song-change only, never on a component-index-only nudge.
                'via' (#1408) is a fixed 'bearer'|'control_token' string —

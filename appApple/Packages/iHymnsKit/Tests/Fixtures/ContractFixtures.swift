@@ -116,6 +116,21 @@ public enum ContractFixtures {
     /// CODE-DERIVED `service_poll` `changed:false` shape.
     public static func servicePollUnchanged() throws -> Data { try data(named: "service_poll_unchanged") }
 
+    // MARK: - Apple Phase-2 PR-16 (#1429) — Live Activities
+    //
+    // The client and server halves of the Live Activity `ActivityContentState`
+    // contract are verified against this ONE shared file — never two
+    // independently-hand-typed shapes that could silently drift apart. See
+    // `includes/live_activity_push.php`'s file header (PHP side) and
+    // `IHLiveActivityTests/NowSingingContentStateContractTests.swift` (Swift
+    // side) for the two consumers.
+
+    /// `?action=live_follow_update`/`service_broadcast`'s ActivityKit push
+    /// `content-state` shape — `{songId,songTitle,componentIndex,
+    /// displayState,revision,isLive}`, every optional field OMITTED (never
+    /// `null`) when absent.
+    public static func liveActivityContentState() throws -> Data { try data(named: "live_activity_content_state") }
+
     /// Shared lookup: resolves `<name>.json` in this target's resource
     /// bundle and reads it into `Data`.
     private static func data(named name: String) throws -> Data {
