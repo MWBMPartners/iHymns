@@ -84,6 +84,18 @@ import SwiftUI
 struct IHymnsApp: App {
     init() {
         IHFonts.registerBundledFonts()
+        // #1423 — pocket-control: installs the WCSession delegate + builds
+        // the headless relay driver on EVERY launch path, including a
+        // watch-triggered BACKGROUND launch (where scene bodies/`.task`
+        // may never run) — called from `init`, not `.task`, because `App`
+        // is itself `@MainActor` so this call is isolation-correct, and a
+        // background launch needs the delegate installed before anything
+        // else runs. Runtime no-op on iPad/Mac/visionOS
+        // (`WCSession.isSupported() == false`, `PhoneWatchRelayService`'s
+        // own doc comment).
+        #if os(iOS)
+        PhoneWatchRelayService.shared.activate()
+        #endif
     }
 
     /// The one `AppRootViewModel` this app run uses — built once via

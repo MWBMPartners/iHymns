@@ -1,17 +1,37 @@
 // RemoteControlCoordinator+Persistence.swift
 // IHFeatures
 //
-// ELI5: The two little "remember this TV" jobs — writing a freshly-paired TV
-// into the Keychain-backed store, and bumping "last seen just now" on one
-// that reconnected — moved out of the big coordinator file so it stays under
-// the line budget. Nothing about WHAT they do changed.
+// ELI5: The coordinator's own "remember this TV" bookkeeping — writing down
+// a freshly-paired TV's token, and refreshing "we just talked to this TV
+// again" on every reconnect — moved into its own small file so the main
+// coordinator file has room to grow.
 //
-// DETAILED: #1425. A PURE relocation out of `RemoteControlCoordinator.swift`
-// (LOC budget — the PR-14 Service-Mode-mirror hook pushed the core file over
-// 400 lines), mirroring the `+UIPhase.swift` (#1424) precedent already noted
-// at the end of the core file. `persistPaired(token:resolved:)` +
-// `touchLastConnected()` move here byte-identically from the PR-7/PR-8 shape;
-// the existing coordinator tests exercise both paths UNCHANGED.
+// DETAILED: #1423 (`.claude/apple-phase2-pr11-pocket-spec.md` §2, fact 12 —
+// BINDING) AND #1425 — BOTH the PR-11 watch-relay hooks and the PR-14
+// Service-Mode-mirror hook independently pushed the coordinator over the
+// 400-line LOC budget, so both needed this exact extraction; on integration
+// they resolve to this one file (the method bodies are byte-identical). A
+// PURE relocation out of `RemoteControlCoordinator.swift:363-392` —
+// `persistPaired(token:resolved:)` and `touchLastConnected()` move here
+// BYTE-IDENTICALLY in body, the same "LOC-budget relocation" the
+// `+UIPhase.swift` file already established (#1424 precedent). The one
+// mechanical change a cross-file move requires: `store`/`rebuildRows()`
+// promote from `private` to plain (internal) access on the main type — the
+// same "internal (not private) so this sibling file can reach it" pattern
+// `RemoteControlCoordinator.swift`'s own doc comments already use for
+// `session`/`currentTVName`/`savedRecords` (`+ManualConnect.swift`'s
+// precedent). `RemoteControlUIStateTests` (unaffected — it only exercises
+// `uiPhase(after:current:tvName:)`) and every other existing suite stay
+// green, unchanged, across this commit.
+//
+// This is DISTINCT from the new `PairedTVStoring.touchLastConnected(
+// fingerprint:resolvedAddress:now:)` protocol extension
+// (`Sources/IHLive/WatchRelay/PairedTVStoring+Touch.swift`) the headless
+// driver uses — that one takes its fingerprint/address/`now` as explicit
+// parameters so it works with no `RemoteControlCoordinator` in scope at
+// all; this method reads `currentFingerprint`/`session` directly, exactly
+// as it always has. The coordinator does not adopt the shared helper here
+// (spec §2's file table: "the coordinator MAY adopt later").
 import Foundation
 import IHLive
 
