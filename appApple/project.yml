@@ -168,13 +168,21 @@ targets:
         # #1429 (Apple Phase-2 PR-16) — required for `Activity.request(...,
         # pushType: .token)` to mint a REAL push token at all (the ActivityKit
         # push-updates path `NowSingingActivityController` uses,
-        # `IHLiveActivity`). `development` matches every debug/TestFlight
-        # build's own APNs environment (`ApnsEnvironmentDefault.current`,
-        # same file) — a Release App Store build's REAL entitlement value is
-        # `production`, set by Xcode's own automatic signing at archive time
-        # per Apple's documented behaviour for this exact key, not by this
-        # YAML (see `apns.php`'s own `APNS_ENVIRONMENTS` header for the
-        # matching server-side sandbox/production split).
+        # `IHLiveActivity`). `development` matches only a genuine DEBUG-
+        # config build's own APNs environment (`ApnsEnvironmentDefault
+        # .current`, same file: `#if DEBUG "sandbox" #else "production"`).
+        # #1429 Audit-B F11 correction: TestFlight is NOT a debug build —
+        # Apple always serves TestFlight installs from the SAME production
+        # APNs environment as the App Store, never sandbox, because a
+        # TestFlight build is a RELEASE-config archive. It's exactly that
+        # RELEASE→`production` branch in `ApnsEnvironmentDefault.current`
+        # that matches what Xcode's own automatic signing swaps THIS
+        # `development` value to at archive time (per Apple's documented
+        # behaviour for this exact key, not by this YAML) for both
+        # TestFlight and App Store archives — so `development` here is only
+        # ever correct for a genuine local debug run (see `apns.php`'s own
+        # `APNS_ENVIRONMENTS` header for the matching server-side sandbox/
+        # production split).
         aps-environment: development
     dependencies:
       # Every shell imports IHFeatures (shared screens/view models) and

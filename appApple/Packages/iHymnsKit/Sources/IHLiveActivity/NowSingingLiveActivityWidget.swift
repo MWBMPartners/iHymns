@@ -44,19 +44,27 @@ public struct NowSingingLiveActivityWidget: Widget {
 
     public var body: some WidgetConfiguration {
         ActivityConfiguration(for: NowSingingActivityAttributes.self) { context in
-            NowSingingLockScreenView(attributes: context.attributes, state: context.state)
+            NowSingingLockScreenView(attributes: context.attributes, state: context.state, isStale: context.isStale)
                 .activityBackgroundTint(Color.black.opacity(0.85))
                 .activitySystemActionForegroundColor(IHColorTokens.accent)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
+                    // #1429 Audit-B F8 — dim the expanded island's glyph +
+                    // title (mirrors the Lock Screen card's own dimming)
+                    // when `context.isStale` (ActivityKit-computed from the
+                    // `staleDate` `NowSingingActivityController` sets on
+                    // every start/update): a dead host's card should read
+                    // as visually quieter, not still-confidently "LIVE".
                     NowSingingGlyph(state: context.state)
+                        .opacity(context.isStale ? 0.55 : 1)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    NowSingingLivePill(state: context.state)
+                    NowSingingLivePill(state: context.state, isStale: context.isStale)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     NowSingingTitleText(state: context.state)
+                        .opacity(context.isStale ? 0.55 : 1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     if context.attributes.role == .host {
@@ -81,6 +89,13 @@ public struct NowSingingLiveActivityWidget: Widget {
 private struct NowSingingLockScreenView: View {
     let attributes: NowSingingActivityAttributes
     let state: NowSingingActivityAttributes.ContentState
+    /// #1429 Audit-B F8 — `ActivityViewContext.isStale`, `true` once
+    /// ActivityKit decides the last pushed `staleDate` has passed (the SAME
+    /// 180s window `NowSingingActivityController` sets on every start/
+    /// update). Neither side previously READ this — both set the stale
+    /// date, but the card kept showing a confident "LIVE" for a host that
+    /// had gone dark for hours.
+    let isStale: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -88,15 +103,16 @@ private struct NowSingingLockScreenView: View {
                 NowSingingGlyph(state: state)
                 NowSingingTitleText(state: state)
                 Spacer()
-                NowSingingLivePill(state: state)
+                NowSingingLivePill(state: state, isStale: isStale)
             }
             if attributes.role == .host {
                 NowSingingHostControls()
             }
         }
         .padding()
-        // Blackout/logo dims the whole card — see this file's header.
-        .opacity(state.resolvedDisplayState == .live ? 1 : 0.55)
+        // Blackout/logo dims the whole card — see this file's header. A
+        // stale card dims the SAME way (F8, above).
+        .opacity((state.resolvedDisplayState == .live && !isStale) ? 1 : 0.55)
     }
 }
 
@@ -124,18 +140,37 @@ private struct NowSingingTitleText: View {
     }
 }
 
-/// The small "LIVE" badge — shown only while `state.isLive`.
+/// The small "LIVE"/"Reconnecting…" badge — shown while `state.isLive`.
+/// #1429 Audit-B F8 — swaps to "Reconnecting…" while `isStale`, rather than
+/// keep asserting "LIVE" for a host that's gone dark.
 private struct NowSingingLivePill: View {
     let state: NowSingingActivityAttributes.ContentState
+    let isStale: Bool
 
     var body: some View {
-        if state.isLive {
+        if isStale {
+            Text("Reconnecting…")
+                .font(.caption2.weight(.semibold))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary, in: Capsule())
+                .foregroundStyle(.white)
+        } else if state.isLive {
             Text("LIVE")
                 .font(.caption2.weight(.bold))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(IHColorTokens.accent, in: Capsule())
                 .foregroundStyle(.white)
+                // #1429 Audit-B F7 — redundant with the row itself already
+                // being a live, visible "now singing" card (VoiceOver
+                // doesn't need "LIVE" spoken on top of the song title it
+                // already reads, mirrors the repo's #680/#856 badge-a11y
+                // precedent of folding a redundant badge out of the AX
+                // tree). The "Reconnecting…" branch above stays fully
+                // accessible — it conveys genuinely new information a
+                // VoiceOver user has no other way to learn.
+                .accessibilityHidden(true)
         }
     }
 }
@@ -148,6 +183,10 @@ private struct NowSingingGlyph: View {
     var body: some View {
         Image(systemName: "music.note")
             .foregroundStyle(state.resolvedDisplayState == .live ? IHColorTokens.accent : Color.secondary)
+            // #1429 Audit-B F7 — purely decorative; `NowSingingTitleText`
+            // (the song title + section) is the actual accessible content
+            // everywhere this glyph is shown alongside it.
+            .accessibilityHidden(true)
     }
 }
 
@@ -178,10 +217,15 @@ private struct NowSingingHostControls: View {
             Button(intent: NowSingingPreviousSectionIntent()) {
                 Image(systemName: "chevron.left")
             }
+            // #1429 Audit-B F7 — icon-only button; VoiceOver would
+            // otherwise read the SF Symbol's raw name instead of its
+            // actual function.
+            .accessibilityLabel("Previous section")
             Spacer()
             Button(intent: NowSingingNextSectionIntent()) {
                 Image(systemName: "chevron.right")
             }
+            .accessibilityLabel("Next section")
         }
         .tint(IHColorTokens.accent)
     }
