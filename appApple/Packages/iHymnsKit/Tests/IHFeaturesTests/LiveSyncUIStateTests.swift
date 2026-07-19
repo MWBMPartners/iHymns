@@ -229,7 +229,11 @@ struct LiveSyncUIStateTests {
                 serviceModeEngine: ServiceModeEngine(apiClient: apiClient)
             )
 
-            _ = try await viewModel.goLive()
+            // #1415 — `goLive()` now returns the freshly minted join code
+            // (`StartServiceIntent` reads it back to speak it aloud); this
+            // mock's `live_follow_create` response fixes it at "K7M4PQ".
+            let code = try await viewModel.goLive()
+            #expect(code == "K7M4PQ")
             try await sessionController.signOut()
 
             // `observeSessionState()`'s sign-out hook fires a detached
