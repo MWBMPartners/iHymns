@@ -22,8 +22,10 @@ import IHModels
 
 extension APIClient {
     /// `?action=live_follow_create` — starts (or restarts) a hosting
-    /// session. Returns the new session code.
-    public func liveFollowCreate(songId: String?, componentIndex: Int?) async throws -> String {
+    /// session. Returns the new session's code AND numeric id (#1429 C6 —
+    /// the id is what `?action=apns_register`'s `kind=liveActivity` branch
+    /// needs to scope a Live Activity push token to THIS session).
+    public func liveFollowCreate(songId: String?, componentIndex: Int?) async throws -> LiveFollowCreateResult {
         let endpoint = try Endpoint.liveFollowCreate(songId: songId, componentIndex: componentIndex)
         let data = try await performOnce(endpoint)
         return try Self.decodeLiveFollowCreate(from: data)

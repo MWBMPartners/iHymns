@@ -26,8 +26,13 @@ import IHAPITestSupport
 @Suite("LiveFollowEngine — host + follower loops", .serialized)
 struct LiveFollowEngineLoopTests {
 
-    private static func createBody(code: String = "K7M4PQ") -> Data {
-        Data(#"{"ok":true,"code":"\#(code)","revision":0}"#.utf8)
+    // #1429 C6/C7 — `sessionId` defaults to a real value (not omitted) so
+    // every EXISTING test in this suite exercises the new field for free;
+    // `LiveFollowCreateSessionIdDecodingTests` (`IHAPITests`) separately
+    // covers the LEGACY no-`sessionId` response shape.
+    private static func createBody(code: String = "K7M4PQ", sessionId: Int? = 99) -> Data {
+        let sessionIdJson = sessionId.map(String.init) ?? "null"
+        return Data(#"{"ok":true,"code":"\#(code)","revision":0,"sessionId":\#(sessionIdJson)}"#.utf8)
     }
 
     private static func updateOkBody(revision: Int) -> Data {
@@ -84,15 +89,19 @@ struct LiveFollowEngineLoopTests {
 
             let code = try await engine.goLive(songId: nil, componentIndex: nil)
             #expect(code == "K7M4PQ")
+            // #1429 C7 — goLive stores the create response's sessionId.
+            #expect(await engine.hostSessionId == 99)
 
-            await waitUntil { await collector.received.contains(.hostingStarted(code: "K7M4PQ")) }
+            await waitUntil { await collector.received.contains(.hostingStarted(code: "K7M4PQ", sessionId: 99)) }
             let received = await collector.received
-            #expect(received.contains(.hostingStarted(code: "K7M4PQ")))
+            #expect(received.contains(.hostingStarted(code: "K7M4PQ", sessionId: 99)))
 
             await waitUntil { !sleeps.recorded.isEmpty }
             #expect(sleeps.recorded.first == .seconds(30))
 
             await engine.endHosting()
+            // #1429 C7 — every end path clears hostSessionId.
+            #expect(await engine.hostSessionId == nil)
         }
     }
 
@@ -113,6 +122,8 @@ struct LiveFollowEngineLoopTests {
 
             let received = await collector.received
             #expect(received.contains(.hostingEnded(.serverEnded)))
+            // #1429 C7 — the serverEnded end path clears hostSessionId too.
+            #expect(await engine.hostSessionId == nil)
         }
     }
 
@@ -166,6 +177,8 @@ struct LiveFollowEngineLoopTests {
             await waitUntil { await collector.received.contains(.hostingEnded(.superseded)) }
             let received = await collector.received
             #expect(received.contains(.hostingEnded(.superseded)))
+            // #1429 C7 — the superseded end path clears hostSessionId too.
+            #expect(await engine.hostSessionId == nil)
         }
     }
 
@@ -183,6 +196,8 @@ struct LiveFollowEngineLoopTests {
 
             #expect(queue.count(of: "live_follow_leave") == 1)
             #expect(await engine.role == .idle)
+            // #1429 C7 — the userLeft end path clears hostSessionId too.
+            #expect(await engine.hostSessionId == nil)
         }
     }
 

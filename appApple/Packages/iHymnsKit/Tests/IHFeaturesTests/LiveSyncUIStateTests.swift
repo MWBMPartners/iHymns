@@ -62,7 +62,7 @@ struct LiveSyncUIStateTests {
     @MainActor
     func hostingStartedMapsToHosting() throws {
         let viewModel = try makeViewModel()
-        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ"))
+        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ", sessionId: 42))
         #expect(viewModel.liveState == .hosting(code: "K7M4PQ", currentSongTitle: nil))
     }
 
@@ -106,7 +106,7 @@ struct LiveSyncUIStateTests {
     @MainActor
     func hostingEndedMapsToIdle() throws {
         let viewModel = try makeViewModel()
-        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ"))
+        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ", sessionId: 42))
         viewModel.apply(LiveFollowEvent.hostingEnded(.userLeft))
         #expect(viewModel.liveState == .idle)
         #expect(viewModel.liveSnapshot == nil)

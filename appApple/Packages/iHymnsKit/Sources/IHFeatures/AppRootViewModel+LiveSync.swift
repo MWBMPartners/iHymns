@@ -15,6 +15,7 @@
 // published `liveState`/`liveSnapshot`, never the streams themselves.
 import Foundation
 import IHLive
+import IHLiveActivity
 import IHModels
 
 /// What the `.live` section should currently show — derived entirely from
@@ -77,11 +78,29 @@ extension AppRootViewModel {
     @MainActor
     func apply(_ event: LiveFollowEvent) {
         switch event {
-        case .hostingStarted(let code):
+        case .hostingStarted(let code, let sessionId):
             liveState = .hosting(code: code, currentSongTitle: nil)
             liveSnapshot = nil
+            // PR-16 (#1429) — a fresh hosting session always starts a fresh
+            // Live Activity context (no song broadcast yet, revision reset
+            // to 0); `syncNowSingingActivity()` (`+LiveActivity.swift`)
+            // diffs this against whatever was showing before (from a PRIOR
+            // session, if any — the reducer's `.end`-then-`.start` pair
+            // handles that transition correctly with no special-casing
+            // needed here).
+            hostSongId = nil
+            hostComponentIndex = nil
+            nowSingingContext = NowSingingHostContext(
+                sessionCode: code, sessionId: sessionId, songId: nil, songTitle: nil, componentIndex: nil, revision: 0
+            )
+            syncNowSingingActivity()
+            flushPendingActivityPushToken(sessionId: sessionId)
         case .hostingEnded:
             if case .hosting = liveState { liveState = .idle; liveSnapshot = nil }
+            hostSongId = nil
+            hostComponentIndex = nil
+            nowSingingContext = nil
+            syncNowSingingActivity()
         case .followingStarted(_, let hostDisplayName, let initial):
             liveState = .followingLeader(hostDisplayName: hostDisplayName, isFresh: true)
             liveSnapshot = initial
@@ -166,6 +185,22 @@ extension AppRootViewModel {
     public func liveSongViewed(_ songId: SongID) {
         if case .hosting(let code, _) = liveState {
             liveState = .hosting(code: code, currentSongTitle: songId.rawValue)
+            // PR-16 (#1429) — mirror the new song onto the Live Activity
+            // context too. `songTitle` reuses the RAW songId, the SAME
+            // "no title-fetch is wired for the host's own display yet"
+            // placeholder `liveState.hosting(currentSongTitle:)` above
+            // already relies on (PR-10's own "Deviations from spec" note) —
+            // never lyric text, content-gating-safe either way.
+            hostSongId = songId.rawValue
+            hostComponentIndex = nil
+            if var context = nowSingingContext {
+                context.songId = songId.rawValue
+                context.songTitle = songId.rawValue
+                context.componentIndex = nil
+                context.revision += 1
+                nowSingingContext = context
+                syncNowSingingActivity()
+            }
         }
         Task { [liveFollowEngine] in
             await liveFollowEngine.broadcast(songId: songId.rawValue, componentIndex: nil)
