@@ -210,7 +210,7 @@ $joinBase = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https
            either; the HTML parser terminates the <script> on the raw bytes
            regardless of JS comment syntax. */
         const SESSIONS = <?= json_encode($sessionList, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
-        const KEEPALIVE_MS = 45000;   // idle heartbeat — comfortably inside the 90s freshness window
+        const KEEPALIVE_MS = 45000;   // idle heartbeat — comfortably inside the 180s freshness window
         let session = null, keepaliveTimer = null, broadcaster = null;
 
         const sessionSel = document.getElementById('svc-lead-session');
