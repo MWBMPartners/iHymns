@@ -32,7 +32,12 @@ extension RemoteControlCoordinator {
             currentFingerprint = nil
             isManualConnectInFlight = true
             lastManualParsed = parsed
-            Task { await session.attachByAddress(host: parsed.host, port: parsed.port, displayName: parsed.host) }
+            // #1423 — handoff hook 4 (spec §4.3): retire any live headless
+            // linger BEFORE this manual-connect entry attaches.
+            Task {
+                await self.relayRetireHeadless()
+                await self.session.attachByAddress(host: parsed.host, port: parsed.port, displayName: parsed.host)
+            }
         }
     }
 

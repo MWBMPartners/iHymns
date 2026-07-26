@@ -19,11 +19,17 @@
 // and spot-checked by the LOC/quality gates in Scripts/):
 //
 //   IHFeatures  (screens + view models)
-//      ├── IHModels, IHAPI, IHAuth, IHPersistence, IHLive, IHDesign, IHAppSupport, IHLog
+//      ├── IHModels, IHAPI, IHAuth, IHPersistence, IHLive, IHDesign, IHAppSupport, IHLog, IHLiveActivity
 //   IHAuth        → IHAPI, IHModels, IHLog
 //   IHAPI         → IHModels, IHLog
 //   IHPersistence → IHModels                (+ GRDB.swift, external dep)
 //   IHLive        → IHAPI, IHModels, IHLog
+//   IHLiveActivity → IHModels, IHDesign     (Apple Phase-2 PR-16, #1429 — the
+//                     Live Activity/Dynamic Island contract + pure cores +
+//                     the iOS-only ActivityKit/AppIntents/WidgetKit UI, all
+//                     `#if os(iOS) && canImport(...)`-guarded so this target
+//                     itself still cross-compiles for watchOS/tvOS/macOS;
+//                     see strategy §2.3)
 //   IHAppSupport  → IHModels
 //   IHDesign      → (SwiftUI only, no iHymnsKit deps)
 //   IHModels      → (no deps — the foundation: Sendable Codable DTOs)
@@ -61,7 +67,8 @@ let package = Package(
         .library(name: "IHLive", targets: ["IHLive"]),
         .library(name: "IHDesign", targets: ["IHDesign"]),
         .library(name: "IHFeatures", targets: ["IHFeatures"]),
-        .library(name: "IHAppSupport", targets: ["IHAppSupport"])
+        .library(name: "IHAppSupport", targets: ["IHAppSupport"]),
+        .library(name: "IHLiveActivity", targets: ["IHLiveActivity"])
     ],
 
     dependencies: [
@@ -113,7 +120,17 @@ let package = Package(
                 .copy("service_poll_inactive.json"),
                 .copy("service_join.json"),
                 .copy("service_poll_changed.json"),
-                .copy("service_poll_unchanged.json")
+                .copy("service_poll_unchanged.json"),
+                // Apple Phase-2 PR-15 (#1428) — the tvOS projector's
+                // `role:"projector"` join shape (`pollIntervalMs:1000`).
+                .copy("service_join_projector.json"),
+                // Apple Phase-2 PR-16 (#1429) — the Live Activity
+                // `ActivityContentState` contract fixture: the SAME file
+                // `includes/live_activity_push.php`'s PHP-side test reads
+                // (`tests/php/test-apns-live-activity-push.php`), so the two
+                // sides can never silently drift apart (that PHP file's own
+                // header explains the byte-shape guarantee).
+                .copy("live_activity_content_state.json")
             ],
             swiftSettings: sharedSwiftSettings
         ),
@@ -277,6 +294,38 @@ let package = Package(
             swiftSettings: sharedSwiftSettings
         ),
 
+        // MARK: - IHLiveActivity (→ IHModels, IHDesign)
+        //
+        // Apple Phase-2 PR-16 (#1429; strategy §2.3) — the Live Activity/
+        // Dynamic Island "now singing" card. Holds the wire-contract DTOs
+        // (`NowSingingActivityAttributes`/`ContentState`), the three pure
+        // cores (`NowSingingActivityReducer`/`NowSingingSectionNavigator`/
+        // `NowSingingIntentBridge`) every platform in `Package.swift`'s
+        // `platforms:` list builds, AND the iOS-only ActivityKit/AppIntents/
+        // WidgetKit UI (`NowSingingActivityController`/`NowSingingIntents`/
+        // `NowSingingLiveActivityWidget`) — every one of THOSE types is
+        // `#if os(iOS) && canImport(...)`-guarded internally so this ONE
+        // target still cross-compiles cleanly for watchOS/tvOS/macOS/
+        // visionOS (only the pure cores + the unguarded
+        // `NowSingingActivityControlling` protocol survive the `#if` on
+        // those platforms), mirroring `IHLive/LANRemote`'s own "one target,
+        // platform-guarded internals" shape rather than splitting into a
+        // second SwiftPM target per platform. `IHDesign` (not just
+        // `IHModels`) is a direct dependency because the Live Activity/
+        // Dynamic Island UI (`NowSingingLiveActivityWidget.swift`) reads
+        // `IHColorTokens` the same way every other iHymnsKit UI surface
+        // does — never a duplicated colour literal.
+        .target(
+            name: "IHLiveActivity",
+            dependencies: ["IHModels", "IHDesign"],
+            swiftSettings: sharedSwiftSettings
+        ),
+        .testTarget(
+            name: "IHLiveActivityTests",
+            dependencies: ["IHLiveActivity", "IHTestFixtures"],
+            swiftSettings: sharedSwiftSettings
+        ),
+
         // MARK: - IHFeatures (→ everything — the composition root for screens)
         .target(
             name: "IHFeatures",
@@ -288,7 +337,8 @@ let package = Package(
                 "IHLive",
                 "IHDesign",
                 "IHAppSupport",
-                "IHLog"
+                "IHLog",
+                "IHLiveActivity"
             ],
             swiftSettings: sharedSwiftSettings
         ),
@@ -298,10 +348,11 @@ let package = Package(
             // committed fixtures `IHAPITests`/`IHModelsTests` use, against
             // the same `MockURLProtocol` mock transport — hence
             // `IHTestFixtures`/`IHAPITestSupport` alongside the existing
-            // engine dependencies.
+            // engine dependencies. PR-16 (#1429) adds `IHLiveActivity` for
+            // `AppRootViewModel+LiveActivity.swift`'s spy-controller tests.
             dependencies: [
                 "IHFeatures", "IHAPI", "IHAuth", "IHLive", "IHModels", "IHPersistence",
-                "IHTestFixtures", "IHAPITestSupport"
+                "IHTestFixtures", "IHAPITestSupport", "IHLiveActivity"
             ],
             swiftSettings: sharedSwiftSettings
         ),
