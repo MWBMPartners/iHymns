@@ -76,7 +76,29 @@ _Last updated: 2026-07-26._
 - **Public export fix** — #1565 (CSP wiring — the real bug), #1566 (relative bundle URL), #1567
   (editor2 protobuf), #1568 (Present button + keydown leak), #1570 (shared menu partial + ChordPro on
   songbooks), #1569 (CI guard + regression tests, every one proven able to fail).
-- Issues filed this session: **#1565–#1575**.
+- **Live Follow / Service Mode docs** (#1577) — they were undocumented and conflated, which is what
+  made Live Follow look permanently broken. Now split across `help/live-follow.md`, two `help.php`
+  topics, `wiki/Live-Follow-&-Service-Mode.md` and Apple's `HelpView`.
+- **Recovered** (`50ff2b80`) the prompt-polish agent skill + `.claude/settings.local.json`, which an
+  earlier merge had wrongly excluded as "strays". See the handoff's warning box.
+- Issues filed this session: **#1565–#1577**.
+
+## Live features — the distinction that keeps costing time
+**Live Follow (#1268) and Service Mode (#1323/#1335) are DIFFERENT features sharing one table.**
+- `live_follow_create` requires **only a sign-in** — no venue, no schedule, no org (`OrgId` hardcoded
+  NULL, `api.php:13968`). Fixed 6-char code, song-level sync, 4h life.
+- `service_session_start` requires **venue + occurrence date + org-admin** (`api.php:14366-14385`).
+  Rotating venue-screen code, song **and** section sync.
+- A session is walled to its **`Channel`** — dev/beta/www share ONE database but sessions never cross.
+  Desktop-on-dev + phone-PWA-on-www **always** fails, with only a generic wrong-code toast.
+- The **Go Live button doesn't render when signed out** (`live-follow.js:399`).
+- ⛔ Un-applied Service Mode migration ⇒ **Go Live 500s for plain Live Follow too** (its INSERT names
+  `Channel`). Confirm the two cards on `/manage/setup-database` before debugging anything else (#1339).
+
+## Offline download is broken in 7 ways (not yet fixed — see the handoff)
+Worst: the SW caps `RECENT_CACHE` at 2000 and trims on **every song view**, so bulk downloads silently
+self-destruct (14k-song download → 12,001 entries deleted on the next song opened). Offline navigation
+is also dead for every non-song fragment, and each deploy wipes all downloaded audio.
 
 ## Key pointers
 - Export: `js/modules/export-ui.js` (wiring, router-driven) · `manage/editor/format-export.js`
