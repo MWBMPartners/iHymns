@@ -31,6 +31,8 @@ on:
       - 'package-lock.json'
       - '.eslintrc*'
       - 'eslint.config.*'
+      - 'tests/**'
+      - '.github/workflows/test.yml'
 
   # PRs intentionally have NO paths filter — see #851. Branch protection
   # on `alpha` requires this workflow as a status check; skipping the
@@ -128,6 +130,17 @@ jobs:
               exit 0
             }
           fi
+
+      # -----------------------------------------------------------------------
+      # Step 4b: Node unit tests (export) (#1569)
+      # protobufjs (devDependencies, installed by Step 3 above) backs the
+      # ProPresenter 7+ exporter's schema encode/decode round-trip; both
+      # files are plain `node:vm` / ESM unit tests — no browser, no jsdom.
+      # -----------------------------------------------------------------------
+      - name: Node unit tests (export)
+        run: |
+          node tests/test-propresenter-export.js
+          node tests/test-export-ui.js
 
       # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
@@ -260,6 +273,18 @@ jobs:
         run: |
           echo "Running tblSongComponents JSON-column guard..."
           php tests/php/test-component-json-guard.php
+
+      # -----------------------------------------------------------------------
+      # Fragment inline-script CSP guard (#1565 / #1569). Fails when
+      # includes/pages/*.php or includes/partials/*.php grows a <script> that
+      # the enforcing nonce CSP can never trust (those fragments are AJAX-
+      # injected / shared-cache responses, never a full document — rule #6),
+      # outside the count-exact allowlist in the guard itself. This is the
+      # regression class that shipped the #1565 bug (Export dropdowns doing
+      # nothing on song.php / songbook.php).
+      # -----------------------------------------------------------------------
+      - name: Fragment inline-script CSP guard (#1565)
+        run: php tests/php/test-fragment-inline-scripts.php
 
       - name: Hard-key counterpart auto-promoter planner (#1125)
         run: |
@@ -634,6 +659,12 @@ jobs:
 
       - name: Component JSON-payload column guard (P4 C5)
         run: php tests/php/test-component-json-guard.php
+
+      # No Node here — this job is PHP-only (see the box comment above
+      # `php-compat:`) — so only the PHP guard runs; the Node unit tests
+      # (test-propresenter-export.js / test-export-ui.js) run once, in `lint`.
+      - name: Fragment inline-script CSP guard (#1565)
+        run: php tests/php/test-fragment-inline-scripts.php
 
       - name: Hard-key counterpart auto-promoter planner (#1125)
         run: php tests/php/test-auto-link-hard-id.php

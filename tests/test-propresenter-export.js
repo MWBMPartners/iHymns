@@ -116,6 +116,52 @@ const SAMPLE_SONG = {
 const decodeRoot = protobuf.Root.fromJSON(bundle);
 const Presentation = decodeRoot.lookupType('rv.data.Presentation');
 
+/* ELI5: this builds a brand-new pretend-browser tab for the bundle-URL
+   tests below, instead of reusing the one already opened at the top of
+   this file.
+   Detail: `protoRoot` / `initPromise` (SECTION 1 of the module) are plain
+   closure variables captured once by the IIFE the FIRST time it runs in a
+   `vm` context — `init()` early-returns the cached `initPromise` on every
+   subsequent call. The suite's shared `sandbox`/`exporter` above already
+   called `init({ bundle })` once, so re-running assertions against it
+   would silently observe the FIRST run's cached state (and never touch
+   `fetch` again) rather than the runtime fetch path this section exists
+   to exercise (#1566). A fresh `vm.createContext()` + a fresh
+   `vm.runInContext()` re-executes the IIFE and mints new closure
+   variables, so each test below gets its own untouched module instance. */
+function createFreshExporter(overrides) {
+    const freshSandbox = {
+        window: {},
+        protobuf: protobuf,
+        crypto: globalThis.crypto,
+        TextEncoder: globalThis.TextEncoder,
+        TextDecoder: globalThis.TextDecoder,
+        Uint8Array: globalThis.Uint8Array,
+        Uint32Array: globalThis.Uint32Array,
+        Math: Math,
+        Object: Object,
+        Error: Error,
+        Array: Array,
+        String: String,
+        Number: Number,
+        Boolean: Boolean,
+        JSON: JSON,
+        isNaN: isNaN,
+        parseInt: parseInt,
+        Date: Date,
+        Promise: Promise,
+        Buffer: Buffer,
+        Blob: globalThis.Blob,
+        URL: undefined,
+        document: undefined,
+        fetch: undefined,
+        ...overrides
+    };
+    vm.createContext(freshSandbox);
+    vm.runInContext(scriptSource, freshSandbox, { filename: SCRIPT_PATH });
+    return freshSandbox.window.iHymnsProPresenter;
+}
+
 (async function run() {
     /* ---------------------------------------------------------------- */
     console.log('Initialisation:');
@@ -564,6 +610,78 @@ const Presentation = decodeRoot.lookupType('rv.data.Presentation');
             exporter._internal.getTuneTitle({ tuneTitle: 'New Britain' }),
             'New Britain'
         );
+    });
+
+    /* ---------------------------------------------------------------- */
+    console.log('\nBundle URL (#1566):');
+    /* This whole section guards the fix that shipped in commit 4abfc366:
+       the descriptor URL the module fetch()es at runtime, exercised via
+       the REAL fetch code path (SECTION 2 of propresenter-export.js) —
+       not the test-injected `{ bundle }` shortcut the rest of this file
+       (deliberately) uses. That shortcut is exactly why the bug survived
+       code review the first time: every existing `init()` call bypassed
+       `fetch()` entirely, so a broken URL never had a chance to fail. */
+
+    await test('DEFAULT_BUNDLE_URL is pinned to the root-absolute path', () => {
+        /* ELI5: check the actual line of code, word for word, so a future
+           edit that quietly puts the leading slash back to a relative
+           path ('protos/proto-bundle.json') fails immediately here —
+           before it ever reaches a browser.
+           Detail: a relative URL resolves against the DOCUMENT's location
+           (whatever /song/<id> or /songbook/<abbr> page imported this
+           script from), not the <script src>'s own location — see the
+           SECTION 1 doc-comment in propresenter-export.js and #1566. */
+        assert.match(
+            scriptSource,
+            /DEFAULT_BUNDLE_URL\s*=\s*'\/manage\/editor\/protos\/proto-bundle\.json'/,
+            'DEFAULT_BUNDLE_URL must stay the root-absolute /manage/editor/... path'
+        );
+    });
+
+    await test('the pinned URL maps to a real, committed file', () => {
+        /* Belt-and-braces: the string above is only useful if that exact
+           absolute path is actually where the bundle lives on disk (i.e.
+           where Apache/the docroot will serve it from), so a rename of
+           protos/proto-bundle.json without updating the constant is also
+           caught here rather than surfacing as a 404 in production. */
+        assert.ok(
+            fs.existsSync(BUNDLE_PATH),
+            'expected ' + BUNDLE_PATH + ' to exist alongside the pinned DEFAULT_BUNDLE_URL'
+        );
+    });
+
+    await test('init() with no bundle/bundleUrl fetches DEFAULT_BUNDLE_URL (runtime path)', async () => {
+        /* THE gap: build a fresh sandbox with a real `fetch` stand-in
+           (unlike the shared `sandbox` above, which sets `fetch: undefined`
+           and is never exercised) and call init() the way a real page
+           does — no `{ bundle }` override — so SECTION 2's `if
+           (typeof fetch !== 'function') { throw … }` / `await fetch(url)`
+           branch actually runs. */
+        let seenUrl = null;
+        const freshExporter = createFreshExporter({
+            fetch: async (url) => {
+                seenUrl = url;
+                return { ok: true, json: async () => bundle };
+            }
+        });
+        const root = await freshExporter.init({ protobuf: protobuf });
+        assert.equal(seenUrl, '/manage/editor/protos/proto-bundle.json');
+        /* init() resolving at all means protoRoot.lookupType() succeeded
+           against the REAL on-disk bundle returned by the fetch stub. */
+        assert.ok(root != null);
+        assert.ok(freshExporter._internal.getRoot().lookupType('rv.data.Presentation'));
+    });
+
+    await test('an explicit { bundleUrl } overrides DEFAULT_BUNDLE_URL', async () => {
+        let seenUrl = null;
+        const freshExporter = createFreshExporter({
+            fetch: async (url) => {
+                seenUrl = url;
+                return { ok: true, json: async () => bundle };
+            }
+        });
+        await freshExporter.init({ protobuf: protobuf, bundleUrl: '/custom/bundle.json' });
+        assert.equal(seenUrl, '/custom/bundle.json');
     });
 
     console.log(`\n${pass} passed, ${fail} failed`);

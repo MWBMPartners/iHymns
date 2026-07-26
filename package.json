@@ -21,7 +21,8 @@
     "test": "node tests/test-song-parser.js",
     "test:php": "find appWeb -name '*.php' -exec php -l {} \\;",
     "test:js": "find appWeb -name '*.js' -not -path '*/node_modules/*' -exec node --check {} \\;",
-    "test:all": "npm test && npm run test:php && npm run test:js"
+    "test:export": "node tests/test-propresenter-export.js && node tests/test-export-ui.js",
+    "test:all": "npm test && npm run test:php && npm run test:js && npm run test:export"
   },
   "repository": {
     "type": "git",
