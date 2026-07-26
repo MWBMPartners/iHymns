@@ -115,7 +115,13 @@ export function initSongExport(songId) {
                 if (!data || !data.song) { throw new Error('song not found'); }
                 if (fmtKey === 'proPresenter7') {
                     await loadPP7();
-                    window.iHymnsProPresenter.exportSong(data.song, {});
+                    /* #1566 — exportSong() is async (it encodes the protobuf
+                       then triggers the download); the songbook path below
+                       (initSongbookExport) already awaits its bundle
+                       equivalent. Missing this await let an encode failure
+                       become an unhandled promise rejection instead of the
+                       catch block's toast — the user saw nothing at all. */
+                    await window.iHymnsProPresenter.exportSong(data.song, {});
                     return;
                 }
                 await loadExportLibs();

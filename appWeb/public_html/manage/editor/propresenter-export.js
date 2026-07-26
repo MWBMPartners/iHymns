@@ -65,8 +65,30 @@
     var protoRoot = null;
     var initPromise = null;
 
-    /* Where to fetch the descriptor from when running in the browser. */
-    var DEFAULT_BUNDLE_URL = 'protos/proto-bundle.json';
+    /* Where to fetch the descriptor from when running in the browser.
+     * ELI5: this used to be a relative path ('protos/proto-bundle.json'),
+     * like a filename with no leading slash — the browser fills in "the
+     * rest" using wherever the CURRENT PAGE lives, not where this script
+     * file lives.
+     * Detail: fetch() resolves a relative URL against the document's own
+     * location, not the <script src> that defined it (same rule as
+     * relative href/src elsewhere in HTML — there is no per-script base).
+     * https://developer.mozilla.org/docs/Web/API/Window/fetch
+     * This module is loaded from THREE surfaces sharing one docroot: the
+     * v1 editor (/manage/editor/index.php), the v2 editor
+     * (/manage/editor/editor2.php) and the public export-ui.js
+     * (loaded from any /song/<id> or /songbook/<abbr> page, #1166). Only
+     * the editor pages happen to live under /manage/editor/, so a relative
+     * URL only ever resolved correctly from there. From a public song page
+     * the same relative path resolved to e.g. /song/protos/proto-bundle.json,
+     * which doesn't exist — but the SPA's catch-all rewrite
+     * (.htaccess:180) answers every unknown path with the app shell (200 +
+     * HTML) instead of a 404, so response.json() threw a SyntaxError
+     * trying to parse HTML as JSON instead of failing with a clear "not
+     * found" (#1566). A root-absolute path resolves the same way
+     * regardless of which page imported this script, matching the
+     * repo-wide root-absolute convention for shared assets. */
+    var DEFAULT_BUNDLE_URL = '/manage/editor/protos/proto-bundle.json';
 
     /* ProPresenter ACTION_TYPE_PRESENTATION_SLIDE = 11 (from
        action.proto). Hard-coded as a named constant so the intent is
