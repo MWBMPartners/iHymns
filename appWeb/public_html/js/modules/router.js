@@ -616,6 +616,22 @@ export class Router {
             this.app.compare.initSongPage();
             if (this.app.liveFollow) { this.app.liveFollow.initSongPage(); }  // #1268 Live Follow controls + host broadcast
             this.app.transpose.initSongPage();
+
+            /* ELI5: hook up the Export ▾ menu and the Present button once the song
+               fragment is on the page.
+               Detail: these two lived as inline <script>s inside the fragment. The
+               document sends an enforcing nonce CSP (#117) which refuses nonce-less
+               inline scripts, and the fragment is a SHARED-CACHE response (rule #6)
+               so it can never carry the per-request nonce — they never ran (#1565,
+               #1568). Same fix as home-page.js: real modules, imported here.
+               https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy/script-src */
+            const exportSongId = document.querySelector('.page-song')?.dataset.songId || params.id || '';
+            import('./export-ui.js')
+                .then(m => m.initSongExport(exportSongId))
+                .catch(err => console.error('[Router] export-ui init failed:', err));
+            import('./present-mode.js')
+                .then(m => m.initPresentMode())
+                .catch(err => console.error('[Router] present-mode init failed:', err));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant
@@ -800,6 +816,18 @@ export class Router {
         if (page === 'songbook') {
             this.app.songbookIndex.initSongbookPage();
             this.trackRecentSongbook(params.id);
+
+            /* Export ▾ dropdown (#1565) — same router-driven wiring as the
+               song page above: the fragment's own inline <script> was
+               refused by the enforcing CSP (#117) and can't carry a nonce
+               (shared-cache rule #6), so it never ran. `.page-songbook`'s
+               `data-songbook-abbr` (songbook.php) is the id source the
+               router already trusts elsewhere; `params.id` is only the
+               fallback for a stale service-worker-cached fragment. */
+            const sbAbbr = document.querySelector('.page-songbook')?.dataset.songbookAbbr || params.id || '';
+            import('./export-ui.js')
+                .then(m => m.initSongbookExport(sbAbbr))
+                .catch(err => console.error('[Router] export-ui init failed:', err));
         }
 
         /* Initialise search page controls */

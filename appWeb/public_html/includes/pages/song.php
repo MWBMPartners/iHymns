@@ -879,7 +879,14 @@ try {
 
                 <!-- Export to a worship-presentation format (#1166). The dropdown
                      items are wired by export-ui.js (initSongExport), which
-                     lazy-loads the export libs (format-export.js) on first use. -->
+                     lazy-loads the export libs (format-export.js) on first use.
+                     Wiring is ROUTER-driven, not a fragment-inline <script> — the
+                     enforcing nonce CSP (#117) refuses nonce-less inline scripts
+                     and this response is a shared-cache fragment that can never
+                     carry a per-request nonce (rule #6), so an inline <script>
+                     here never ran. The SPA router imports export-ui.js and calls
+                     initSongExport() once this fragment lands (#1565); see
+                     router.js afterPageLoad(). -->
                 <div class="btn-group song-toolbar-btn">
                     <button type="button"
                             class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
@@ -1502,18 +1509,6 @@ try {
     </nav>
 
 </article>
-
-<!-- Export-to-format wiring (#1166). The SPA re-runs injected inline scripts,
-     so this binds the Export dropdown after the fragment loads. -->
-<script>
-(function () {
-    if (!document.querySelector('.btn-export-song')) { return; }
-    var songId = <?= json_encode($song['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
-    import('/js/modules/export-ui.js')
-        .then(function (m) { m.initSongExport(songId); })
-        .catch(function () { /* export is best-effort; never block the page */ });
-})();
-</script>
 
 <!-- Presentation mode JS (#297) -->
 <script>

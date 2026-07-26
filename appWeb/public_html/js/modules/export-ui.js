@@ -10,6 +10,24 @@
  *  We load BOTH on demand (first export click) so pages that never export pay
  *  nothing. Song data comes from the public ?action=song_data endpoint; whole
  *  songbooks from ?action=songbook_export (both DB-direct, rule #17).
+ *
+ *  Wiring is ROUTER-driven (#1565), NOT fragment-inline. `initSongExport()` /
+ *  `initSongbookExport()` used to be called from a `<script>` embedded in the
+ *  song.php / songbook.php AJAX fragments themselves. Two things broke that:
+ *   1. The document sends an enforcing nonce CSP (`script-src 'self'
+ *      'nonce-…'`, no `unsafe-inline` — #117), which refuses any inline
+ *      <script> that doesn't carry that exact per-request nonce.
+ *      https://developer.mozilla.org/docs/Web/HTTP/Headers/Content-Security-Policy/script-src
+ *   2. These fragments are shared-cache API responses (`/api?page=song` /
+ *      `?page=songbook`, rule #6 in .claude/CLAUDE.md) — the SAME cached HTML
+ *      is served to every visitor, so it can never be stamped with any one
+ *      request's nonce. There is no fix on the fragment side.
+ *  So the inline scripts silently no-oped for every visitor from the day the
+ *  CSP shipped — clicking Export did nothing. The fix mirrors home-page.js:
+ *  the SPA router (`router.js` `afterPageLoad()`) imports this module as a
+ *  real ES module (allowed under `script-src 'self'`) and calls these two
+ *  functions itself once the fragment is in the DOM, so no inline script is
+ *  ever required.
  * ========================================================================== */
 
 /* The format keys exactly match window.iHymnsFormatExport's registry. */
@@ -151,7 +169,3 @@ export function initSongbookExport(abbr) {
         });
     });
 }
-
-/* Expose for the inline initialisers in song.php / songbook view (the SPA
-   re-runs injected inline scripts; they call these after the fragment loads). */
-window.iHymnsExportUi = { initSongExport, initSongbookExport };
