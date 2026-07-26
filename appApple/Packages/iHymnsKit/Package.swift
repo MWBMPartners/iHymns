@@ -350,9 +350,18 @@ let package = Package(
             // `IHTestFixtures`/`IHAPITestSupport` alongside the existing
             // engine dependencies. PR-16 (#1429) adds `IHLiveActivity` for
             // `AppRootViewModel+LiveActivity.swift`'s spy-controller tests.
+            // #1415 adds `IHAppSupport` directly (not just transitively
+            // through `IHFeatures`) — `IntentRoutingTests`/
+            // `SongEntityResolverTests`/`AppRootViewModelSystemIndexTests`
+            // reference `DeepLinkRouter`/`SpotlightIndexEntry`/
+            // `SpotlightIndexing`/`SpotlightIndexer` types directly, which
+            // needs this test target to `import IHAppSupport` itself (SwiftPM
+            // doesn't grant transitive import access the way it links
+            // transitive binaries — the same reasoning `IHLive`'s own
+            // `Package.swift` comment documents for its `IHModels` addition).
             dependencies: [
                 "IHFeatures", "IHAPI", "IHAuth", "IHLive", "IHModels", "IHPersistence",
-                "IHTestFixtures", "IHAPITestSupport", "IHLiveActivity"
+                "IHAppSupport", "IHTestFixtures", "IHAPITestSupport", "IHLiveActivity"
             ],
             swiftSettings: sharedSwiftSettings
         ),

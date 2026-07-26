@@ -166,9 +166,14 @@ extension AppRootViewModel {
     }
 
     /// "Go Live" — starts hosting with no song broadcasting yet (the host
-    /// console's own "Open a song to broadcast it" footer explains the rest).
-    public func goLive() async throws {
-        _ = try await liveFollowEngine.goLive(songId: nil, componentIndex: nil)
+    /// console's own "Open a song to broadcast it" footer explains the
+    /// rest). Returns the freshly minted join code — #1415's
+    /// `StartServiceIntent` reads it back out to speak it aloud;
+    /// `LiveHubView`'s pre-existing `Task { try? await rootViewModel.goLive() }`
+    /// call keeps compiling unchanged thanks to `@discardableResult`.
+    @discardableResult
+    public func goLive() async throws -> String {
+        try await liveFollowEngine.goLive(songId: nil, componentIndex: nil)
     }
 
     /// Leaves/ends whichever live role is currently active — a no-op while

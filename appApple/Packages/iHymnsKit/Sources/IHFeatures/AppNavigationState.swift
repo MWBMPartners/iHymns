@@ -33,6 +33,7 @@
 // rather than grow an already-large one" instinct `AppRootViewModel`'s own
 // `AppRootViewModel+*.swift` siblings already establish, just for a type
 // that was never going to fit there in the first place.
+import IHAppSupport
 import Observation
 
 /// Cross-cutting "what's currently showing / presented" UI state for the
@@ -56,6 +57,21 @@ public final class AppNavigationState {
     /// is currently presented — flipped `true` by the Mac ⌘/ command or a
     /// Settings row, and by the sheet's own dismissal back to `false`.
     public var isPresentingKeyboardShortcutsHelp = false
+
+    /// #1415 — the ONE way an App Intent (`OpenSongIntent`/
+    /// `PlaySongOfTheDayIntent`, `IHFeatures/AppIntents/`) hands a resolved
+    /// destination to the UI: the intent runs in-process (via `@Dependency`,
+    /// registered on this SAME instance by `Apps/iHymns/Sources/IHymnsApp.swift`'s
+    /// `AppDependencyManager.shared.add(dependency:)`), sets this property,
+    /// and that app shell's `.onChange(of:)` turns it into the SAME
+    /// `incomingDeepLink` presentation a tapped Universal Link already uses
+    /// — App Intents feed the EXISTING deep-link pipeline rather than
+    /// inventing a second navigation path (this repo's modularity rule,
+    /// `.claude/CLAUDE.md`).
+    ///
+    /// ELI5: "An App Intent just said 'go here' — the app shell picks this
+    /// up and shows it, exactly like tapping a shared link would."
+    public var pendingDeepLink: DeepLink?
 
     public init() {}
 }

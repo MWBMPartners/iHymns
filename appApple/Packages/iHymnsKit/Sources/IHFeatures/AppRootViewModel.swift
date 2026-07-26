@@ -48,6 +48,7 @@
 // write).
 import Foundation
 import IHAPI
+import IHAppSupport
 import IHAuth
 import IHLive
 import IHLiveActivity
@@ -80,7 +81,10 @@ public final class AppRootViewModel {
     /// `CatalogueListView` renders its loading/error/list states directly
     /// from this. `[SongSummary]` (not a bare `Bool`/`String` pair) so a
     /// `.loaded` payload IS the data a view needs, no second lookup.
-    public private(set) var catalogueLoadState: LoadState<[SongSummary]> = .idle
+    /// `internal(set)` (#1415, was `private(set)`) — `loadCatalogue()` moved
+    /// to `AppRootViewModel+Catalog.swift`, the same cross-file-extension
+    /// reason `recentSearches`/`favorites` above already document.
+    public internal(set) var catalogueLoadState: LoadState<[SongSummary]> = .idle
 
     /// Local search text, bound directly to a SwiftUI `.searchable(text:)`
     /// — filtering is entirely client-side (strategy §2.2's "search text/
@@ -275,6 +279,23 @@ public final class AppRootViewModel {
     /// per-song open counts. `internal`, for `AppRootViewModel+Activity.swift`.
     let usageActivityStore: UsageActivityStore
 
+    /// The on-device Spotlight indexer (#1415) — kept a `let` (never
+    /// reassigned after init). `AppRootViewModel+Catalog.swift`'s moved
+    /// `loadCatalogue()` fires into it on every successful catalogue load
+    /// (via `syncSystemIndexes(_:)`, same file) so Siri/Spotlight search
+    /// always reflects the latest catalogue. `@ObservationIgnored` — a
+    /// background indexing engine is pure plumbing no SwiftUI view should
+    /// ever re-render over, mirroring `sessionObservationTask`'s reasoning
+    /// below. Defaulted (`SpotlightIndexer()`) so every existing
+    /// `AppRootViewModel(...)` call site (every test in this package, plus
+    /// `makeLive(environment:)`) keeps compiling unchanged;
+    /// `AppRootViewModelSystemIndexTests` injects a spy in its place.
+    ///
+    /// ELI5: The thing that tells Siri/Spotlight "here's the current song
+    /// list" whenever we've just fetched a fresh one.
+    @ObservationIgnored
+    let spotlightIndexer: SpotlightIndexer
+
     /// The background observation loop mirroring `sessionController.stateUpdates`
     /// into `sessionState` (`observeSessionState()`, moved to
     /// `AppRootViewModel+Auth.swift` — LOC-budget tripwire — which is why
@@ -302,7 +323,8 @@ public final class AppRootViewModel {
         usageActivityStore: UsageActivityStore = UsageActivityStore(),
         // PR-16 (#1429) — `nil` DEFAULT keeps every existing call site
         // unchanged; only `+Live.swift`'s `makeLive(environment:)` (iOS) passes a real one.
-        nowSingingActivity: (any NowSingingActivityControlling)? = nil
+        nowSingingActivity: (any NowSingingActivityControlling)? = nil,
+        spotlightIndexer: SpotlightIndexer = SpotlightIndexer()
     ) {
         self.sessionController = sessionController
         self.apiClient = apiClient
@@ -315,6 +337,7 @@ public final class AppRootViewModel {
         self.recentlyViewedSongs = recentlyViewedStore.load()
         self.usageActivityStore = usageActivityStore
         self.nowSingingActivity = nowSingingActivity
+        self.spotlightIndexer = spotlightIndexer
         observeSessionState()
         observeLiveSyncEvents()
         configureNowSingingActivity()
@@ -342,42 +365,17 @@ public final class AppRootViewModel {
     // so the behaviour itself is free to live in its own file purely to
     // keep this one from re-growing past the repo's LOC-budget tripwire.
 
-    /// Fetches the catalogue index over the network — but only if it
-    /// hasn't already been fetched (or isn't currently mid-fetch). Safe to
-    /// call from `CatalogueListView`'s `.task {}` on every re-appearance
-    /// (e.g. navigating back from a song and returning to the list) without
-    /// re-issuing the network call each time.
-    ///
-    /// ELI5: "Get the song list, but only if we don't already have it."
-    public func loadCatalogueIfNeeded() async {
-        guard case .idle = catalogueLoadState else { return }
-        await loadCatalogue()
-    }
-
-    /// Forces a catalogue (re)fetch regardless of current state — the hook
-    /// a future manual "retry"/pull-to-refresh action calls into.
-    ///
-    /// ELI5: "Go get the song list right now, even if we already tried."
-    public func loadCatalogue() async {
-        catalogueLoadState = .loading
-        do {
-            let songs = try await apiClient.songsIndex()
-            catalogueLoadState = .loaded(songs)
-        } catch let error as APIError {
-            catalogueLoadState = .error(error.userFacingMessage)
-        } catch {
-            catalogueLoadState = .error("Something went wrong loading the song list. Please try again.")
-        }
-    }
-
-    // `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)`/`songbooks()`/
-    // `songOfTheDay()` (#1399/#180/#1437/#183's read pass-throughs to
-    // `APIClient`) live in `AppRootViewModel+Catalog.swift` — moved out
-    // (native login/account UI + favourites task) purely to keep this file
-    // from crossing the repo's LOC-budget tripwire (`Scripts/loc-budget.sh`)
-    // now that it also carries `favorites`/`currentUser` state; every one of
-    // them only touches `apiClient` (already `internal`-visible below), so
-    // the move is behaviourally a no-op.
+    // `loadCatalogueIfNeeded()`/`loadCatalogue()` (#1399's original fetch
+    // pair) AND `songDetail(id:)`/`songLinks(id:)`/`relatedSongs(id:)`/
+    // `songbooks()`/`songOfTheDay()` (#1399/#180/#1437/#183's read
+    // pass-throughs to `APIClient`) all live in `AppRootViewModel+Catalog.swift`
+    // — moved out purely to keep this file from crossing the repo's
+    // LOC-budget tripwire (`Scripts/loc-budget.sh`), most recently (#1415)
+    // to pay for this file's new `spotlightIndexer` stored property above.
+    // Every one of them only touches `apiClient`/`offlineStore`/
+    // `spotlightIndexer` (already `internal`-visible on this file), so the
+    // move is behaviourally a no-op EXCEPT for one new line #1415 adds
+    // inside `loadCatalogue()` itself — see that file's own header.
 
     // `recordRecentlyViewed(_:)` (#183, the "last opened song" hook called
     // from `SongDetailViewModel`'s successful primary load) lives in
