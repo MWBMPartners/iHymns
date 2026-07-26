@@ -85,11 +85,20 @@ struct ServiceMirrorCard: View {
                     #if os(iOS) || os(visionOS)
                     .keyboardType(.numberPad)
                     #endif
-                    #if !os(watchOS)
-                    // `.roundedBorder` is unavailable on watchOS; IHFeatures
-                    // must still COMPILE there (#1549), even though this
-                    // operator card is only ever SHOWN on the phone/iPad/Mac
-                    // LAN-remote screen. watchOS falls back to the plain field.
+                    #if !os(watchOS) && !os(tvOS)
+                    // `.roundedBorder` is unavailable on BOTH watchOS and tvOS,
+                    // but IHFeatures must still COMPILE for every platform
+                    // (#1549) even though this operator card is only ever SHOWN
+                    // on the phone/iPad/Mac LAN-remote screen. Both of those
+                    // platforms fall back to the plain, unstyled field.
+                    //
+                    // The tvOS half of this guard was missing until PR #1578:
+                    // PR-14 (#1425) was verified with iOS + watchOS package
+                    // cross-compiles only, so nothing ever compiled this file
+                    // for tvOS and `error: 'roundedBorder' is unavailable in
+                    // tvOS` did not surface until the consolidated branch hit
+                    // apple.yml's tvOS app-scheme build.
+                    // https://developer.apple.com/documentation/swiftui/roundedbordertextfieldstyle
                     .textFieldStyle(.roundedBorder)
                     #endif
                     // #1562 A-7: NO `maxWidth` cap — a hard 120pt cap was
