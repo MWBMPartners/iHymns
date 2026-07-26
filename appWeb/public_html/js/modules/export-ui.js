@@ -30,17 +30,6 @@
  *  ever required.
  * ========================================================================== */
 
-/* The format keys exactly match window.iHymnsFormatExport's registry. */
-const FORMATS = [
-    { key: 'openSong',      label: 'OpenSong (.xml)' },
-    { key: 'openLyrics',    label: 'OpenLyrics / OpenLP (.xml)' },
-    { key: 'proPresenter6', label: 'ProPresenter 6 (.pro6)' },
-    { key: 'videoPsalm',    label: 'VideoPsalm (.json)' },
-    { key: 'freeShow',      label: 'FreeShow (.show)' },
-    { key: 'proclaim',      label: 'Proclaim (.txt)' },
-    { key: 'chordPro',      label: 'ChordPro (.cho)' },
-];
-
 let _libsPromise = null;
 
 /** Lazy-load the export libraries once (ProPresenter ZIP writer first). */

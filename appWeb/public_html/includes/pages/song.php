@@ -895,16 +895,14 @@ try {
                         <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                         Export
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-end song-export-menu">
-                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="chordPro">ChordPro</button></li>
-                    </ul>
+                    <?php
+                        /* #1570 — one shared partial for both the song and songbook
+                           export menus; see the partial's doc-block for the
+                           $exportMenuSurface contract + why the format list lives
+                           there instead of two hand-written copies. */
+                        $exportMenuSurface = 'song';
+                        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'export-menu.php';
+                    ?>
                 </div>
 
                 <!-- Chord charts toggle (#299) -->
