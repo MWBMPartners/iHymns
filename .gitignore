@@ -99,8 +99,18 @@ build/
 # variant must stay local so one developer's paths + grants never leak into
 # the shared repo. The generic `*.local` rule above does NOT match a
 # `.local.json` suffix, so this explicit entry is required.
-.claude/settings.local.json
+#
+# DELIBERATE EXCEPTION (owner decision, 2026-07-26): the ROOT
+# `.claude/settings.local.json` IS tracked. The owner wants their accumulated
+# permission allowlist to travel with the repo across machines and sessions
+# rather than be rebuilt each time. The negation below keeps that one file
+# tracked while `**/settings.local.json` still protects every other location.
+# Consequence to be aware of: it embeds one machine's absolute home paths, so
+# treat edits to it as machine-specific and avoid clobbering another dev's
+# copy. Review the diff before committing changes to it — same discipline as
+# `.claude/sessions/` (see that directory's README).
 **/settings.local.json
+!.claude/settings.local.json
 
 # ----------------------------------------------------------------------------
 # Xcode

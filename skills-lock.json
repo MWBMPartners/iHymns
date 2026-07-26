@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "prompt-polish": {
+      "source": "mfarzanansari/prompt-polish",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "60eca358b6e78ab49aa39a3fed820a1187f1959c6174fc8da66f5113f058e9c5"
+    }
+  }
+}
