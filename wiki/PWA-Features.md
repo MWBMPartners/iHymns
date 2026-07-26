@@ -36,6 +36,15 @@
 - **Import shared setlists** — import from shared links
 - **Cross-device sync** — merge local and server setlists when logged in
 
+### Live Follow & Service Mode
+- **Host broadcast** — any signed-in user taps **Go Live** on a song to broadcast the songs they open to anyone who joins with their code (Live Follow, #1268)
+- **Anonymous join** — following either kind of session needs no account, just the code
+- **Near-instant follow** — ~2.5s song-level follow for Live Follow; Service Mode additionally syncs which section (verse/chorus) is showing
+- **Rotating venue codes** — a church's Service Mode code rotates roughly every 30 seconds, with the previous code still accepted for a short grace period
+- **Colour-coded banners** — a blue "Following … live" bar for Live Follow, a green "Following the service live" bar for Service Mode, so the two are never confused at a glance
+
+See [[Live Follow & Service Mode]] for the full comparison and setup requirements.
+
 ### Audio & Sheet Music
 - **MIDI playback** — play MIDI audio files where available (CP, JP, MP)
 - **PDF sheet music** — view sheet music PDFs where available (CP, JP, MP)

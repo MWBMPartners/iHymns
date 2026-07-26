@@ -48,6 +48,50 @@
 - **Cause:** Browser may not support MIDI playback, or the MIDI file is missing
 - **Fix:** MIDI playback requires Web MIDI API support. Not all songbooks have MIDI files (only CP, JP, MP)
 
+### Live Follow / Service Mode
+
+See [[Live Follow & Service Mode]] for how the two features differ. Common symptoms:
+
+#### Tapping "Go Live" shows "Could not start the session: Unknown column 'Channel'…" (or another 500 error)
+- **Cause:** The Service Mode schema hasn't been applied on this install yet — Live Follow needs it too, even though it uses no venue
+- **Fix:** An admin runs the "Org Venues & Service Schedules" then "Service Mode sessions" cards on `/manage/setup-database`
+
+#### No "Go Live" button appears on a song page
+- **Cause:** The button only renders for signed-in users
+- **Fix:** Sign in, then reload the page
+
+#### "That doesn't look like a valid session code."
+- **Cause:** The code isn't 4–12 letters/digits once spaces/dashes are stripped
+- **Fix:** Re-type it — real codes never contain `0`, `1`, `O`, `I`, `L`, or `U`
+
+#### "That code isn't active. Check the screen and try again."
+- **Cause:** The code has rotated past its ~75s window, or the wrong site/venue was targeted
+- **Fix:** Read the current code straight off the screen and retry
+
+#### "Session not found or ended." even though the leader's device shows LIVE
+- **Cause:** The two devices are on different environments (e.g. one on `dev`, one on `www`) — sessions never cross environments even though they share one database
+- **Fix:** Put both devices on the exact same site address
+
+#### Same message, but both devices are genuinely on the same address
+- **Cause:** The leader's screen slept (heartbeat lapsed past the 180s freshness window), the code was mistyped, or the 4-hour hard ceiling was reached
+- **Fix:** Wake the leader's screen (it self-heals on `focus`/`visibilitychange`) and re-join
+
+#### "The live session has ended." / "The service has ended." mid-follow
+- **Cause:** The host ended it, signed out, started a new session (which supersedes the old one), their screen slept past the freshness window, or it hit its lifetime cap
+- **Fix:** Get the new code and re-join
+
+#### "iHymns is down for maintenance — try the code again in a minute. The leader's code is fine."
+- **Cause:** Maintenance mode is on for that site; the admin host bypasses it, anonymous joiners don't
+- **Fix:** Wait a minute and retry — the code itself isn't the problem
+
+#### "Too many requests. Please try again later."
+- **Cause:** Rate limits (20 session-creates/hour/user, 120 joins/minute) were hit
+- **Fix:** Wait a minute and try again
+
+#### "Leave the session you're following before hosting your own."
+- **Cause:** One device can't simultaneously host a Live Follow session and follow another
+- **Fix:** Leave (or End) the existing session first
+
 ### Database
 
 #### SQLite database gets wiped on deployment
@@ -87,6 +131,9 @@ A: Carol Praise (CP), Junior Praise (JP), Mission Praise (MP), SDA Hymnal (SDAH)
 
 **Q: Do I need an account to use iHymns?**
 A: No. You can browse, search, and save favourites without an account. An account is only needed for cross-device setlist sync.
+
+**Q: Do I need an account to follow along live?**
+A: No, to join either kind of session — Live Follow or Service Mode. You need any free account to lead your own session with Go Live (Live Follow), and church-admin rights to run Service Mode. See [[Live Follow & Service Mode]].
 
 ### User Accounts
 

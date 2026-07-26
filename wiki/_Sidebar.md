@@ -8,6 +8,7 @@
 - [[Getting Started]]
 - [[PWA Features]]
 - [[Setlists & Arrangements]]
+- [[Live Follow & Service Mode]]
 - [[User Accounts & Roles]]
 - [[Troubleshooting & FAQ]]
 

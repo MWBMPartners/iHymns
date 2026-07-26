@@ -43,6 +43,7 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 - [[PWA Features]]
 - [[User Accounts & Roles]]
 - [[Setlists & Arrangements]]
+- [[Live Follow & Service Mode]]
 - [[Troubleshooting & FAQ]]
 
 ### For Developers
