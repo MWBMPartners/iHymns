@@ -6,6 +6,8 @@
 
 ## Web PWA
 
+Following a worship leader or your church's live service and it's not working? See the "If it doesn't work" section of [Live Follow & Live Services](live-follow.md) for the full list of symptoms and fixes.
+
 ### Songs not loading
 
 - **Check your internet connection** — the first load requires an internet connection
