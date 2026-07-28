@@ -198,10 +198,31 @@ struct ProjectionViewModelTests {
         let (collector, consumer) = makeCollector(for: viewModel)
         defer { consumer.cancel() }
 
+        // ORDERING GUARD (#1559) — the two `selectSong` calls must ENTER the
+        // view model in a known order, and only the fetcher can prove that.
+        //
+        // ELI5: we have to be sure A knocked on the door before B did.
+        //
+        // `selectSong` bumps `fetchGeneration` SYNCHRONOUSLY on entry, so
+        // "latest wins" means latest-BY-ENTRY. Starting both with back-to-back
+        // `async let` says nothing about which child task the runtime resumes
+        // first: if B entered first it took generation 1 and A took 2, making A
+        // legitimately the winner — the production code behaving correctly on an
+        // order the test never pinned down. That inversion (A `.shown`,
+        // B `.failed("superseded")`, `song == MP-9001`) is exactly how this
+        // failed on CI, and it is why `--no-parallel` (#1558) could not fix it:
+        // the race is INSIDE this test, not between suites.
+        //
+        // `waitUntilArrived` is the barrier that settles it. It returns only
+        // once that id has actually reached `GatedFetcher.fetch`, which is past
+        // the generation bump and parked on a continuation — so awaiting A's
+        // arrival BEFORE issuing B guarantees A holds the older generation.
+        // Awaiting it AFTER both `async let`s (as this test used to) proves
+        // nothing about entry order at all.
         async let resultA = viewModel.selectSong(songId: songA.songId)
-        async let resultB = viewModel.selectSong(songId: songB.songId)
-
         await fetcher.waitUntilArrived(songA.songId)
+
+        async let resultB = viewModel.selectSong(songId: songB.songId)
         await fetcher.waitUntilArrived(songB.songId)
 
         await fetcher.release(songB.songId)

@@ -79,8 +79,15 @@ jobs:
       # trades ~40s of wall-clock for a deterministic result.
       #
       # This does NOT address #1559's `ProjectionViewModelTests` "latest-wins"
-      # race, which that issue records as failing serially too; that one needs
-      # a real fix in the test's own ordering guard.
+      # race, which that issue records as failing serially too — and it did,
+      # on this very PR. That one needed a real fix in the test's own ordering
+      # guard, and has now had one: the test used to start BOTH `selectSong`
+      # calls with back-to-back `async let` and only then wait for either to
+      # reach the fetcher, so it never pinned down which call ENTERED the view
+      # model first. Since `selectSong` bumps `fetchGeneration` synchronously on
+      # entry, "latest wins" means latest-by-entry, and the runtime scheduling
+      # B's child task first made A the legitimate winner. The test now awaits
+      # A's arrival at the gated fetcher BEFORE issuing B.
       # https://developer.apple.com/documentation/swift-testing/parallelization
       - name: iHymnsKit package tests
         working-directory: appApple/Packages/iHymnsKit
