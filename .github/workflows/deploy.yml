@@ -214,7 +214,28 @@ jobs:
       # not a space, so those are never miscounted as a new top-level
       # section) and hard-caps the result at 48 KB (`head -c`) so one
       # unusually long changelog entry can never bloat the deployed
-      # fragment — markdown_lite.php degrades gracefully on a mid-syntax cut.
+      # fragment.
+      #
+      # H1 (adversarial-review finding): `head -c` cuts on a BYTE boundary,
+      # which can land mid-way through a multi-byte UTF-8 character —
+      # CHANGELOG.md's real first-3-sections excerpt is already well over
+      # this cap, so this is not a hypothetical, it happens on ordinary
+      # deploys. `iconv -f UTF-8 -t UTF-8 -c` re-validates the cut output
+      # and drops (`-c`) any incomplete trailing sequence the byte-cap
+      # left behind, so the file this step writes is always well-formed
+      # UTF-8 — belt-and-braces on top of markdown_lite.php's own
+      # ENT_SUBSTITUTE fix (H1's other half) and whats-new.php's
+      # empty-render fallback, not a replacement for either: this step
+      # still can't know where CHANGELOG.md's sentence boundaries are, so
+      # it stays a best-effort content trim, not a markdown-aware one.
+      # iconv exits non-zero specifically when the LAST bytes of its input
+      # are an incomplete sequence (exactly the case a byte-cap produces)
+      # even though it still writes the trimmed-clean output — `|| true`
+      # keeps that expected, already-handled condition from failing the
+      # deploy step, consistent with "must never fail the deploy" above;
+      # stderr is left unsuppressed so the (harmless, expected-on-most-
+      # deploys) warning is still visible in the run log for debugging.
+      # https://www.gnu.org/software/libiconv/documentation/libiconv/iconv.1.html
       - name: Extract What's New from CHANGELOG.md
         if: steps.changes.outputs.has_changes == 'true'
         run: |
@@ -230,7 +251,8 @@ jobs:
             awk '
               /^## / { section++; if (section > 3) exit }
               section >= 1 { print }
-            ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" > "$WHATS_NEW_FILE"
+            ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" \
+              | iconv -f UTF-8 -t UTF-8 -c > "$WHATS_NEW_FILE" || true
             echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes -> $WHATS_NEW_FILE"
           fi
 

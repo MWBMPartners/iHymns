@@ -99,8 +99,37 @@ function markdownLiteRender(string $md): string
     /* Step 1 — ESCAPE FIRST (see the file doc-block; this ordering IS the
        security model). Every byte of the input is neutralised before a
        single markdown rule runs, so nothing downstream can ever emit a
-       tag the input itself supplied. */
-    $escaped = htmlspecialchars($md, ENT_QUOTES, 'UTF-8');
+       tag the input itself supplied.
+       ELI5: `ENT_SUBSTITUTE` tells PHP "if a chunk of text isn't valid
+       UTF-8, replace just that chunk with a placeholder instead of
+       giving up on the whole string" — the opposite of what happens
+       without it.
+       DETAIL (H1, adversarial-review finding): PHP's own default $flags
+       (when the parameter is omitted entirely) is
+       `ENT_QUOTES | ENT_SUBSTITUTE | ENT_HTML401` as of PHP 8.1 — but
+       this call passes `ENT_QUOTES` EXPLICITLY, which overrides that
+       default and drops ENT_SUBSTITUTE. Without it, `htmlspecialchars()`
+       on malformed UTF-8 (e.g. a multi-byte character truncated
+       mid-sequence — exactly what `.github/workflows/deploy.yml`'s
+       byte-oriented `head -c $WHATS_NEW_MAX_BYTES` cap can produce, since
+       a byte cut has no notion of character boundaries) returns an EMPTY
+       STRING rather than throwing or warning. That empty string then
+       flows straight through every block/inline transform below as
+       still-empty, so `markdownLiteRender()` silently returns `''` for a
+       genuinely non-empty input — a blank "What's New" card with no
+       error, no log line, nothing (the #1565/#1566 "silent no-op" class
+       CLAUDE.md rule #30 exists to prevent). `ENT_SUBSTITUTE` instead
+       replaces the offending bytes with U+FFFD (the Unicode replacement
+       character) and keeps going, so a truncation mid-character degrades
+       to "one ugly glyph" rather than "the entire page vanishes".
+       `includes/pages/whats-new.php::_whatsNewRenderExcerpt()` also
+       treats a still-empty render as "nothing to show" (falls back to
+       the themed card) as defence in depth, in case some OTHER edge case
+       produces `''` in the future.
+       See tests/php/test-whats-new-render.php's malformed-UTF-8
+       assertion (added for this finding) and
+       https://www.php.net/manual/en/function.htmlspecialchars.php */
+    $escaped = htmlspecialchars($md, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 
     /* Step 2 — split into lines and walk them, grouping into blocks.
        preg_split() only returns false on a regex-engine failure (never on

@@ -38,11 +38,14 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'markd
  * DETAIL: `is_file()` (not `file_exists()`) so a directory accidentally
  * named `whats-new.md` can't be misread as content; `is_readable()` guards
  * a permissions edge case. `file_get_contents()` returning `false` (I/O
- * error) and an all-whitespace file are both treated the same as "absent"
- * — the visible fallback card is always preferable to an empty-but-styled
- * card or, worse, a PHP warning. Nothing here ever throws: the function
- * returns `null` and the caller below renders the fallback state, matching
- * the "never an error, never a fatal" requirement for this page.
+ * error), an all-whitespace file, AND a well-formed-looking file that
+ * still renders to an empty string (H1 — a byte-truncated deploy excerpt
+ * cut mid-UTF-8-character; see the inline comment below) are all treated
+ * the same as "absent" — the visible fallback card is always preferable
+ * to an empty-but-styled card or, worse, a PHP warning. Nothing here ever
+ * throws: the function returns `null` and the caller below renders the
+ * fallback state, matching the "never an error, never a fatal" requirement
+ * for this page.
  *
  * Takes the file path as a PARAMETER (rather than resolving it inline)
  * specifically so it is directly unit-testable against a deliberately
@@ -62,7 +65,19 @@ function _whatsNewRenderExcerpt(string $filePath): ?string
     if ($raw === false || trim($raw) === '') {
         return null;
     }
-    return markdownLiteRender($raw);
+    /* H1 (adversarial-review finding): a NON-empty, non-whitespace $raw
+       can still render to an empty string — the deploy's byte-oriented
+       truncation cap can cut mid-UTF-8-character, and prior to this fix
+       markdown_lite.php's htmlspecialchars() call turned malformed UTF-8
+       into '' rather than substituting it (see that file's Step 1
+       comment). Treating '' the SAME as "nothing to show" here (instead
+       of only checking the raw input above) means the caller's
+       `$whatsNewHtml !== null` branch below can never render a card with
+       an empty body — a degenerate render now falls back to the same
+       themed "no data yet" alert as a genuinely missing file, rather
+       than a silently blank card. */
+    $html = markdownLiteRender($raw);
+    return $html === '' ? null : $html;
 }
 
 $whatsNewFile = __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . '..'

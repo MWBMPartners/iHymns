@@ -95,12 +95,21 @@ function check(name, ok, detail) {
  * ==================================================================== */
 console.log('Assertion 1 — no raw ihymns:*/iHymns:* string literals outside constants.js:');
 
-/* The exact regex from the #1581 spec: a quote char, 'i', h-or-H,
-   'ymns:', then a lowercase-and-hyphen event-name tail, then a
-   matching quote char. Deliberately case-flexible on the 'h' so it
-   ALSO catches the historical capital-H typo this whole test exists
-   to prevent from ever coming back. */
-const LITERAL_RE = /(['"`])i[hH]ymns:([a-z][a-z-]*)\1/g;
+/* The regex from the #1581 spec: a quote char, 'i', h-or-H, 'ymns:',
+   then an event-name tail, then a matching quote char. Deliberately
+   case-flexible on the 'h' so it ALSO catches the historical capital-H
+   typo this whole test exists to prevent from ever coming back.
+   L7 (adversarial-review finding, OBS-VERIFY.md): the tail class was
+   originally `[a-z][a-z-]*` — lowercase letters and hyphens only — which
+   misses a camelCase or digit tail (e.g. 'ihymns:languageFilterChanged',
+   'ihymns:refresh2'); every existing EVT_* name in constants.js happens
+   to be all-lowercase-hyphenated today, so this was a live blind spot,
+   not a hypothetical one — a future name in either shape would sail
+   straight through this ban undetected. Widened to
+   `[A-Za-z0-9][A-Za-z0-9-]*` (a leading alphanumeric, then any run of
+   alphanumerics/hyphens) so a mixed-case or digit-bearing tail is caught
+   the same way. https://developer.mozilla.org/docs/Web/JavaScript/Guide/Regular_expressions/Character_classes */
+const LITERAL_RE = /(['"`])i[hH]ymns:([A-Za-z0-9][A-Za-z0-9-]*)\1/g;
 
 /* Narrow, documented exceptions — NOT event names that got missed,
    but two genuinely different things a plain regex can't tell apart

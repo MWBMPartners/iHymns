@@ -44,10 +44,19 @@
  *   The payload NEVER includes `location.search`, `location.hash`,
  *   cookies, or localStorage — only `location.pathname`. Every string
  *   field is run through `_scrub()`, which strips anything shaped like a
- *   64-hex-char token (session ids, API keys) or a `Bearer <token>`
- *   header value, mirroring the server-side backstop in
+ *   64-hex-char token (session ids, API keys), a `Bearer <token>` header
+ *   value, or a `?token=…`/`&password=…`-shaped query-string secret (M2,
+ *   #1582 adversarial-review follow-up — `m`, the free-text error
+ *   message, has no other query-string handling, unlike `r`/`s` which are
+ *   pathname-only by construction), mirroring the server-side backstop in
  *   `includes/client_error_report.php::clientErrorScrub()` (defence in
  *   depth — a client can be tampered with, so the server scrubs again).
+ *   A non-`Error` rejection reason (`Promise.reject(anything)`) is NEVER
+ *   serialised wholesale — `_safeStringify()` reduces it to a shape-only
+ *   summary (its `.name` if it has one, else `typeof`) so an arbitrary
+ *   object's fields (a token, a cookie, user-typed content) can never
+ *   reach the network via `JSON.stringify()`, which the string-shaped
+ *   scrub patterns above cannot see into.
  *
  * THROTTLE — three independent layers, all must pass before a beacon is
  * sent (see `_shouldBeacon()`):
@@ -98,11 +107,35 @@ const MAX_STACK_FRAMES  = 3;              /* payload.st — top-N frames only */
 const SEEN_KEY = 'ihymns_error_monitor_seen';
 
 /* Secret-shaped substrings to strip from anything that might reach the
-   server or a log line. Matches the server-side pair in
+   server or a log line. Matches the server-side trio in
    includes/client_error_report.php::clientErrorScrub() byte-for-byte so
    "what the client redacts" and "what the server redacts" never drift. */
 const BEARER_RE = /Bearer\s+\S+/gi;
 const HEX64_RE  = /[0-9a-f]{64}/gi;
+
+/* M2 (adversarial-review finding, OBS-VERIFY.md): `m` (the error message)
+ * is free text — anything a `throw new Error(...)` call site happens to
+ * interpolate ends up here, and a URL embedded in that text (e.g.
+ * `throw new Error('Failed to fetch ' + url)` where `url` still carries
+ * its query string) can carry exactly the kind of secret the `r`/`s`
+ * fields deliberately strip (see the PRIVACY section above) — but `m`
+ * had NO query-string handling at all before this pattern existed.
+ * ELI5: looks for the part of a URL that says "...?token=xyz" or
+ * "&password=xyz" and blanks out just the secret-looking VALUE, keeping
+ * the parameter NAME so the report stays diagnostically useful (a
+ * curator can still see "there was a token param", just not its value).
+ * DETAIL: a closed allow-list of parameter-name keywords (not a deny-list
+ * of "things that look secret") — token/auth/key/secret/password/sid/
+ * session/code cover this app's own query-string vocabulary
+ * (`X-Preferred-Languages` aside, grep the tree for `?token=`, `&sid=`,
+ * `auth_token`, session ids, OAuth `code=` callbacks) plus the common
+ * third-party shapes a `throw new Error(url)` might carry. `[^&\s]+`
+ * (not `.+`) stops at the next `&` or whitespace so only the ONE
+ * parameter's value is redacted, not the rest of the string. Mirrors
+ * `includes/client_error_report.php::clientErrorScrub()`'s identical
+ * pattern byte-for-byte (same drift-prevention rule as BEARER_RE/HEX64_RE
+ * above). */
+const QUERY_SECRET_RE = /([?&](?:token|auth|key|secret|password|sid|session|code)=)[^&\s]+/gi;
 
 /* Browser-extension URL schemes an 'error' event's `filename` can carry
    when the failure is actually inside a browser extension's injected
@@ -199,13 +232,25 @@ function handleError(event, kind) {
         /* --- 4. Throttle --- */
         const fp = `${payload.m}|${payload.s}|${payload.l}`;
         if (!_shouldBeacon(fp)) return;
-        _markFingerprintSent(fp);
-        beaconCount += 1;
-        lastBeaconAt = Date.now();
-        _sendReport(payload);
+        /* L10 (adversarial-review finding, OBS-VERIFY.md): mark the
+           fingerprint sent / count it toward the hard cap ONLY once
+           _sendReport() confirms a send was actually attempted — see
+           that function's doc-block. Marking these BEFORE the send (the
+           pre-fix order) meant a synchronous transport failure would
+           suppress this exact fingerprint for 10 minutes (sessionStorage
+           layer 1) and permanently burn one of the 10 hard-cap slots
+           (layer 2) despite nothing having reached the server. */
+        if (_sendReport(payload)) {
+            _markFingerprintSent(fp);
+            beaconCount += 1;
+            lastBeaconAt = Date.now();
+        }
 
-        /* --- 5. Toast — AFTER the beacon, so a throwing toast (see file
-           header) can never prevent the report itself from being sent. --- */
+        /* --- 5. Toast — AFTER the beacon attempt, so a throwing toast
+           (see file header) can never prevent the report itself from
+           being sent. Fires regardless of send success/failure — this
+           is a user-facing "something broke" notice, independent of
+           whether the diagnostic report actually reached the server. --- */
         _maybeToast(fp);
     } catch (_e) {
         /* Swallow. See file header RE-ENTRANCY note — this handler must
@@ -253,15 +298,51 @@ function _extract(event, kind) {
     };
 }
 
-/** Best-effort string form of an arbitrary rejection reason. Never throws. */
+/**
+ * Best-effort string form of an arbitrary rejection reason. Never throws.
+ *
+ * M2 (adversarial-review finding, OBS-VERIFY.md): this used to fall
+ * through to `JSON.stringify(reason)` for any non-Error, non-primitive
+ * reason. `Promise.reject()` accepts literally anything, and
+ * `JSON.stringify()` serialises EVERY enumerable field of an arbitrary
+ * object wholesale — `Promise.reject({token, password, email})`,
+ * `Promise.reject({url, body: userTypedLyrics})`, even a `Response`
+ * object with fields that happen to stringify to something sensitive —
+ * straight into the beacon's `m` field. `_scrub()`'s patterns (BEARER_RE
+ * / HEX64_RE / QUERY_SECRET_RE) only match STRING SHAPES; they cannot
+ * protect against a field name they've never seen, so a wholesale object
+ * dump was a standing bypass of the scrub layer entirely, not merely an
+ * unscrubbed edge case.
+ *
+ * ELI5: if a promise was rejected with a real error, or a plain string/
+ * number, that's still safe to report as-is (and still gets scrubbed
+ * downstream). But if it was rejected with some ARBITRARY OBJECT, this
+ * never looks inside it — it just says roughly "an object of this shape
+ * was thrown", never what's actually in it.
+ *
+ * @param {*} reason
+ * @returns {string}
+ */
 function _safeStringify(reason) {
     if (reason === undefined) return 'undefined';
     if (reason === null) return 'null';
     if (typeof reason === 'string') return reason;
-    try {
-        return JSON.stringify(reason);
-    } catch {
+    if (typeof reason === 'number' || typeof reason === 'boolean' || typeof reason === 'bigint') {
         return String(reason);
+    }
+    /* Object / array / function / symbol reason — SHAPE ONLY, never field
+       contents. `.name` is read defensively (a getter on an untrusted
+       object could itself throw) and only trusted if it's already a
+       short-ish string, matching how DOMException/error-like objects
+       self-describe (e.g. 'AbortError'). Anything else degrades to
+       `typeof reason` ('object' / 'function' / 'symbol'). */
+    try {
+        const name = (typeof reason === 'object' && reason !== null && typeof reason.name === 'string' && reason.name !== '')
+            ? reason.name
+            : typeof reason;
+        return `[non-Error rejection: ${name}]`.slice(0, 100);
+    } catch {
+        return `[non-Error rejection: ${typeof reason}]`;
     }
 }
 
@@ -298,7 +379,10 @@ function _isExtensionOrEmpty(source) {
  */
 function _scrub(s) {
     if (typeof s !== 'string' || s === '') return '';
-    return s.replace(BEARER_RE, 'Bearer [redacted]').replace(HEX64_RE, '[redacted]');
+    return s
+        .replace(BEARER_RE, 'Bearer [redacted]')
+        .replace(HEX64_RE, '[redacted]')
+        .replace(QUERY_SECRET_RE, '$1[redacted]'); /* M2 — see QUERY_SECRET_RE above */
 }
 
 /**
@@ -456,39 +540,79 @@ const REPORT_ENDPOINT = '/api?action=client_error_report';
  * the fallback for browsers/situations where sendBeacon is unavailable
  * or refuses the send.
  *
+ * L10 (adversarial-review finding, OBS-VERIFY.md): now returns whether a
+ * send was actually ATTEMPTED without throwing, so the caller
+ * (`handleError()`) can gate marking the fingerprint as sent / counting
+ * it toward the hard cap on that — see this function's call site.
+ * ELI5: this used to just fire-and-forget with no way for the caller to
+ * know "did that even get past the starting line?" Now it hands back a
+ * yes/no so the throttle bookkeeping isn't lied to.
+ * DETAIL: `new Blob()` / `navigator.sendBeacon()` are wrapped in their own
+ * try/catch — the spec says `sendBeacon()` should never throw, but a
+ * broken polyfill, a hardened/sandboxed embed, or `Blob` being
+ * unavailable could still make either throw SYNCHRONOUSLY. Before this
+ * fix, that throw would propagate out of `_sendReport()` into
+ * `handleError()`'s own try/catch (swallowed there), but only AFTER the
+ * caller had already marked the fingerprint sent and incremented the
+ * hard-cap counter — so a report that never left the browser would still
+ * suppress that exact bug from being reported again for the next 10
+ * minutes (sessionStorage layer 1) and permanently eat one slot of the
+ * 10-beacon hard cap (layer 2). A synchronous sendBeacon/Blob throw now
+ * falls through to the fetch fallback instead of being treated as
+ * success. The fetch fallback itself stays fire-and-forget (its actual
+ * network outcome is inherently asynchronous — `.catch()` swallows a
+ * LATER delivery failure exactly as before, since there is no way to
+ * know that outcome synchronously); only a SYNCHRONOUS throw from the
+ * `fetch()` call itself (not its returned Promise rejecting) counts as
+ * "not even attempted" here.
+ *
  * @param {object} payload
- * @returns {void}
+ * @returns {boolean} True if a send was attempted (queued) without a
+ *                     synchronous throw; false if every transport threw.
  */
 function _sendReport(payload) {
     const json = JSON.stringify(payload);
 
     if (navigator.sendBeacon) {
-        const blob = new Blob([json], { type: 'application/json' });
-        const sent = navigator.sendBeacon(REPORT_ENDPOINT, blob);
-        if (sent) return;
+        try {
+            const blob = new Blob([json], { type: 'application/json' });
+            if (navigator.sendBeacon(REPORT_ENDPOINT, blob)) return true;
+        } catch (_e) {
+            /* new Blob()/sendBeacon() threw synchronously (L10) — fall
+               through to the fetch fallback below rather than treating
+               this as a successful send. */
+        }
     }
 
-    fetch(REPORT_ENDPOINT, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            /* sendBeacon() CANNOT set custom headers at all (it's a "simple
-               request" by spec) — this fetch fallback can, so it still
-               sends the app's usual same-origin marker for defence in
-               depth. The server doesn't strictly require it for THIS
-               action though: api.php's no-JS same-origin allow-list
-               includes 'client_error_report' precisely because the
-               PRIMARY transport (sendBeacon) can never carry it — see
-               that file's CSRF policy block. */
-            'X-Requested-With': 'XMLHttpRequest',
-        },
-        body: json,
-        keepalive: true,
-    }).catch(() => {
-        /* Best-effort — a network failure while reporting an error must
-           not itself become a new error (would defeat the whole point of
-           this module and could cascade through the throttle layers). */
-    });
+    try {
+        fetch(REPORT_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                /* sendBeacon() CANNOT set custom headers at all (it's a "simple
+                   request" by spec) — this fetch fallback can, so it still
+                   sends the app's usual same-origin marker for defence in
+                   depth. The server doesn't strictly require it for THIS
+                   action though: api.php's no-JS same-origin allow-list
+                   includes 'client_error_report' precisely because the
+                   PRIMARY transport (sendBeacon) can never carry it — see
+                   that file's CSRF policy block. */
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: json,
+            keepalive: true,
+        }).catch(() => {
+            /* Best-effort — a network failure while reporting an error must
+               not itself become a new error (would defeat the whole point of
+               this module and could cascade through the throttle layers). */
+        });
+        return true;
+    } catch (_e) {
+        /* fetch() itself threw SYNCHRONOUSLY (defensive — real browsers
+           don't do this, but a broken polyfill or a CSP-blocked global
+           might) — nothing was even queued for delivery. */
+        return false;
+    }
 }
 
 /* =========================================================================

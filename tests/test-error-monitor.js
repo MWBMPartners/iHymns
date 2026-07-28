@@ -219,6 +219,89 @@ console.log('Scrub (secrets never reach the network):');
 }
 
 /* ======================================================================
+ * Assertion — M2 (adversarial-review finding, OBS-VERIFY.md): a
+ * query-string secret embedded in the free-text `m` field is redacted.
+ *
+ * ELI5: `m` is whatever text a `throw new Error(...)` call site wrote —
+ * unlike `r`/`s` (which are reduced to a bare pathname), `m` had NO
+ * query-string handling at all before this fix, so a message built from
+ * a URL (`throw new Error('Failed to fetch ' + url)`) could carry a
+ * live `?token=...`/`&sid=...` straight into the beacon.
+ *
+ * PROVE-FAIL RECORD: before accepting this assertion, QUERY_SECRET_RE
+ * was temporarily neutered (replaced with a pattern that can never
+ * match, `/$never-matches^/`) and this block was re-run — it went red,
+ * reporting the raw "SUPERSECRETVALUE" / "abc123session" strings
+ * surviving into the beacon payload:
+ *   FAIL  a query-string token= value never reaches the payload
+ *   FAIL  a query-string sid= value never reaches the payload
+ *   FAIL  the token/sid param names survive with redacted values
+ * Restored immediately after; see the PR description for the literal
+ * captured output.
+ * ==================================================================== */
+console.log('');
+console.log('Scrub — query-string secrets in the message field (M2):');
+{
+    resetAll();
+    const urlSecretMessage =
+        'TypeError: Failed to fetch https://ihymns.app/api?action=x&token=SUPERSECRETVALUE&sid=abc123session';
+    handleError(makeErrorEvent(urlSecretMessage), 'error');
+    check('a scrubbed report was actually sent (sanity check)', beaconCalls.length === 1, `beaconCalls=${beaconCalls.length}`);
+
+    if (beaconCalls.length === 1) {
+        const sentJson = await beaconCalls[0].blob.text();
+        check('a query-string token= value never reaches the payload', !sentJson.includes('SUPERSECRETVALUE'), sentJson);
+        check('a query-string sid= value never reaches the payload', !sentJson.includes('abc123session'), sentJson);
+        check(
+            'the token/sid param names survive with redacted values (still diagnostically useful)',
+            sentJson.includes('token=[redacted]') && sentJson.includes('sid=[redacted]'),
+            sentJson
+        );
+    }
+}
+
+/* ======================================================================
+ * Assertion — M2 (adversarial-review finding, OBS-VERIFY.md): a
+ * non-Error `Promise.reject(object)` reason is never serialised
+ * wholesale via JSON.stringify(), which would bypass every string-shaped
+ * scrub pattern above (they match SHAPES, not object structure).
+ *
+ * PROVE-FAIL RECORD: before accepting this assertion, `_safeStringify()`
+ * was temporarily reverted to its pre-fix `JSON.stringify(reason)`
+ * fallback and this block was re-run — it went red, reporting the raw
+ * "hunter2-secret-password" / "leak-me@example.com" field VALUES
+ * surviving into the beacon payload (the whole rejected object had been
+ * dumped verbatim into `m`):
+ *   FAIL  an object rejection's field VALUES never reach the payload
+ * Restored immediately after; see the PR description for the literal
+ * captured output.
+ * ==================================================================== */
+console.log('');
+console.log('Scrub — object rejection reasons never serialised wholesale (M2):');
+{
+    resetAll();
+    handleError(
+        makeRejectionEvent({
+            token: 'a-live-bearer-style-token',
+            password: 'hunter2-secret-password',
+            email: 'leak-me@example.com',
+        }),
+        'rejection'
+    );
+    check('a report was sent for the object-reason rejection (sanity check)', beaconCalls.length === 1, `beaconCalls=${beaconCalls.length}`);
+
+    if (beaconCalls.length === 1) {
+        const sentJson = await beaconCalls[0].blob.text();
+        check(
+            "an object rejection's field VALUES never reach the payload",
+            !sentJson.includes('hunter2-secret-password') && !sentJson.includes('leak-me@example.com') && !sentJson.includes('a-live-bearer-style-token'),
+            sentJson
+        );
+        check('the payload still records SOME diagnostic shape for the rejection, not an empty message', sentJson.includes('"m":"[non-Error rejection'), sentJson);
+    }
+}
+
+/* ======================================================================
  * Assertion — dedupe suppresses a repeat, fail-proofed
  *
  * PROVE-FAIL RECORD: before accepting this assertion, the module's
@@ -265,6 +348,69 @@ console.log('Dedupe (per-fingerprint throttle, layer 1):');
         'the fingerprint stays suppressed across a simulated reload (sessionStorage persists)',
         beaconCalls.length === 0,
         `beaconCalls=${beaconCalls.length}`
+    );
+}
+
+/* ======================================================================
+ * Assertion — L10 (adversarial-review finding, OBS-VERIFY.md): a send
+ * that fails synchronously must NOT mark the fingerprint as sent.
+ *
+ * ELI5: if the "mail this report" step itself blows up before anything
+ * left the browser, the app must not act like it succeeded — otherwise
+ * the SAME bug goes unreported for a full 10 minutes (the sessionStorage
+ * dedupe window) even though the server never heard about it even once.
+ *
+ * PROVE-FAIL RECORD: before accepting this assertion, `handleError()`'s
+ * throttle step was temporarily reverted to mark the fingerprint sent /
+ * increment the hard-cap counter BEFORE calling `_sendReport()` (the
+ * pre-fix order) and this block was re-run — it went red:
+ *   FAIL  the SAME fingerprint beacons successfully once a working
+ *         transport is available (not falsely suppressed by a prior
+ *         failed attempt)
+ *         beaconCalls=0 (expected exactly 1)
+ * i.e. the retry with a WORKING transport was silently swallowed by the
+ * layer-1 dedupe window, because the failed first attempt had already
+ * (wrongly) marked that exact fingerprint as delivered. Restored
+ * immediately after; see the PR description for the literal captured
+ * output.
+ * ==================================================================== */
+console.log('');
+console.log('L10 — a synchronously-failing send does not falsely mark the fingerprint as sent:');
+{
+    resetAll();
+    const originalSendBeacon = globalThis.navigator.sendBeacon;
+    const originalFetch = globalThis.fetch;
+    /* Simulate BOTH transports throwing synchronously — the "everything
+       failed before anything left the browser" case _sendReport() must
+       report back to the caller as "not sent". */
+    globalThis.navigator.sendBeacon = () => {
+        throw new Error('sendBeacon boom — simulated synchronous failure (e.g. Blob unsupported)');
+    };
+    globalThis.fetch = () => {
+        throw new Error('fetch boom — simulated synchronous failure');
+    };
+
+    let threw = false;
+    try {
+        handleError(makeErrorEvent('TypeError: L10 send-failure probe'), 'error');
+    } catch (_e) {
+        threw = true;
+    }
+    check('a synchronously-throwing sendBeacon AND fetch never escapes handleError', !threw);
+    check('nothing was actually beaconed when every transport threw synchronously', beaconCalls.length === 0, `beaconCalls=${beaconCalls.length}`);
+
+    /* Restore a WORKING transport and retry the EXACT SAME error. If the
+       failed attempt above had (incorrectly) marked this fingerprint as
+       sent, this retry would be silently suppressed by the layer-1
+       sessionStorage dedupe window for 10 minutes despite nothing ever
+       having reached the server. */
+    globalThis.navigator.sendBeacon = originalSendBeacon;
+    globalThis.fetch = originalFetch;
+    handleError(makeErrorEvent('TypeError: L10 send-failure probe'), 'error');
+    check(
+        'the SAME fingerprint beacons successfully once a working transport is available (not falsely suppressed by a prior failed attempt)',
+        beaconCalls.length === 1,
+        `beaconCalls=${beaconCalls.length} (expected exactly 1)`
     );
 }
 
@@ -345,6 +491,61 @@ console.log('Re-entrancy (throwing toast):');
     }
     check('the handler is usable again immediately after a swallowed throw (inHandler cleared in finally)', !secondRethrew);
     check('the second, different bug still beacons (handler is not permanently wedged)', beaconCalls.length === 2, `beaconCalls=${beaconCalls.length}`);
+}
+
+/* ======================================================================
+ * Assertion — M3 (adversarial-review finding, OBS-VERIFY.md): the
+ * `inHandler` re-entrancy guard is load-bearing on its own, separately
+ * from the outer try/catch group above.
+ *
+ * ELI5: the group above proves a THROWING toast can't crash the handler
+ * or double-beacon. This group proves something narrower: a toast that
+ * doesn't throw at all, but instead calls straight back into this app's
+ * error handler WHILE the first error is still being processed (e.g. a
+ * toast-construction step that itself reports its own error
+ * synchronously) — must be dropped outright, not run to completion as a
+ * second, independent report.
+ *
+ * DETAIL: a `try/catch` alone cannot stop this — the re-entrant call
+ * here never throws, so there's nothing for the catch to swallow; it's
+ * `inHandler` at the top of `handleError()` (checked BEFORE anything
+ * else runs) that recognises "we are already inside a handler call" and
+ * bails out immediately.
+ *
+ * PROVE-FAIL RECORD: before accepting this assertion, the module's
+ * `inHandler` guard (the `if (inHandler) return; inHandler = true;` pair
+ * at the top of `handleError()`, and the `inHandler = false;` in its
+ * `finally`) was temporarily deleted — leaving ONLY the outer try/catch
+ * — and this block was re-run. It went red:
+ *   FAIL  a synchronous re-entrant call from inside showToast() is
+ *         dropped by the inHandler guard (only the outer beacon fires)
+ *         beaconCalls=2 (expected exactly 1 — the re-entrant call must
+ *         be silently ignored, not beacon under its own, different
+ *         fingerprint)
+ * — the re-entrant call ran to completion and sent its OWN beacon for a
+ * DIFFERENT fingerprint, so one user-visible failure was reported twice.
+ * Confirms the guard is genuinely load-bearing, not merely redundant
+ * with the try/catch. Restored immediately after; see the PR description
+ * for the literal captured output.
+ * ==================================================================== */
+console.log('');
+console.log('Re-entrancy (synchronous re-entrant call from inside showToast, M3):');
+{
+    resetAll();
+    globalThis.window.iHymnsApp = {
+        showToast() {
+            /* Re-enters the handler SYNCHRONOUSLY, mid-call, with a
+               DISTINCT error — never throws, so the try/catch above has
+               nothing to do with stopping this; only `inHandler` can. */
+            handleError(makeErrorEvent('TypeError: re-entrant bug fired from inside showToast'), 'error');
+        },
+    };
+    handleError(makeErrorEvent('TypeError: outer bug that triggers the toast'), 'error');
+    check(
+        'a synchronous re-entrant call from inside showToast() is dropped by the inHandler guard (only the outer beacon fires)',
+        beaconCalls.length === 1,
+        `beaconCalls=${beaconCalls.length} (expected exactly 1 — the re-entrant call must be silently ignored, not beacon under its own, different fingerprint)`
+    );
 }
 
 /* ======================================================================

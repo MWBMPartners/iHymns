@@ -50,6 +50,37 @@ ok('plain text with no secret shape round-trips unchanged', clientErrorScrub('Ty
 ok('an empty string round-trips unchanged', clientErrorScrub('') === '');
 ok('scrub is case-insensitive on "bearer"', !str_contains(clientErrorScrub('bearer sometoken123'), 'sometoken123'));
 
+/* --- clientErrorScrub(): M2 (adversarial-review finding, OBS-VERIFY.md) —
+   a query-string secret embedded in free text is redacted. `m` has no
+   other query-string handling (unlike `s`/`r`, which are reduced to a
+   bare path by _clientErrorCleanPath()), so a message built from a URL
+   could otherwise carry a live token/password straight into
+   tblActivityLog.
+
+   PROVE-FAIL RECORD: before accepting these assertions,
+   CLIENT_ERROR_QUERY_SECRET_PATTERN was temporarily neutered (replaced
+   with a pattern that can never match) and this block was re-run — it
+   went red, reporting the raw "SUPERSECRETVALUE" / "hunter2plain" /
+   "abc123session" strings surviving clientErrorScrub(). Restored
+   immediately after; see the PR description for the literal captured
+   output. --------------------------------------------------------- */
+
+$urlWithToken = 'Failed to fetch https://ihymns.app/api?action=x&token=SUPERSECRETVALUE&sid=abc123session';
+ok('a query-string token= value is redacted', !str_contains(clientErrorScrub($urlWithToken), 'SUPERSECRETVALUE'));
+ok('a query-string sid= value is redacted', !str_contains(clientErrorScrub($urlWithToken), 'abc123session'));
+ok(
+    'the token/sid param names survive with redacted values (still forensically useful)',
+    str_contains(clientErrorScrub($urlWithToken), 'token=[redacted]') && str_contains(clientErrorScrub($urlWithToken), 'sid=[redacted]')
+);
+ok(
+    'a query-string password= value is redacted',
+    !str_contains(clientErrorScrub('url=/api?action=login&password=hunter2plain&email=user@example.com'), 'hunter2plain')
+);
+ok(
+    'an unrelated query param (e.g. action=) is left alone — not a deny-list of everything after "?"',
+    str_contains(clientErrorScrub('url=/api?action=login&token=SUPERSECRETVALUE'), 'action=login')
+);
+
 /* --- clientErrorValidate(): happy path ---------------------------------- */
 
 $valid = clientErrorValidate([
@@ -87,6 +118,23 @@ $cappedResult = clientErrorValidate(['k' => 'error', 'm' => $longMessage]);
 ok('an over-length message is capped, not rejected', $cappedResult !== null && mb_strlen($cappedResult['m']) === CLIENT_ERROR_MAX_MESSAGE_LENGTH);
 $secretMessage = clientErrorValidate(['k' => 'error', 'm' => 'AuthError: Bearer topsecret123 failed']);
 ok('the message field is scrubbed before storage', $secretMessage !== null && !str_contains($secretMessage['m'], 'topsecret123'));
+
+/* M2 (adversarial-review finding, OBS-VERIFY.md): the same query-string
+   secret redaction, exercised end-to-end through clientErrorValidate()
+   (not just the raw clientErrorScrub() helper above) — proves the fix
+   holds at the level api.php's `client_error_report` case actually calls. */
+$tokenBearingMessage = clientErrorValidate([
+    'k' => 'error',
+    'm' => 'TypeError: Failed to fetch https://ihymns.app/api?action=x&token=SUPERSECRETVALUE&sid=abc123session',
+]);
+ok(
+    'a token-bearing message never validates with the raw token value intact (M2, end-to-end)',
+    $tokenBearingMessage !== null && !str_contains($tokenBearingMessage['m'], 'SUPERSECRETVALUE')
+);
+ok(
+    'a token-bearing message never validates with the raw sid value intact (M2, end-to-end)',
+    $tokenBearingMessage !== null && !str_contains($tokenBearingMessage['m'], 'abc123session')
+);
 
 /* --- s / r (path fields): query string + fragment stripped, capped ------ */
 

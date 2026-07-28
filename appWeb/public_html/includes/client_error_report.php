@@ -26,12 +26,15 @@ declare(strict_types=1);
  * PRIVACY / SCRUB (security requirement — read before touching this file):
  *   `clientErrorScrub()` strips anything shaped like a 64-hex-char token
  *   (session ids, API keys — the same shape `activityLogScrubQuery()` in
- *   `activity_log.php` treats as credential-like) or a `Bearer <token>`
- *   header value. This is a DELIBERATE SECOND scrub on top of the client's
- *   own `_scrub()` (js/modules/error-monitor.js) — the client can be
- *   tampered with (a malicious actor can POST directly to this endpoint,
- *   bypassing the browser entirely), so the server never trusts a payload
- *   is already clean just because it came from the app's own JS.
+ *   `activity_log.php` treats as credential-like), a `Bearer <token>`
+ *   header value, or a `?token=…`/`&password=…`-shaped query-string
+ *   secret (M2, #1582 adversarial-review follow-up —
+ *   CLIENT_ERROR_QUERY_SECRET_PATTERN below). This is a DELIBERATE SECOND
+ *   scrub on top of the client's own `_scrub()` (js/modules/error-monitor.js)
+ *   — the client can be tampered with (a malicious actor can POST directly
+ *   to this endpoint, bypassing the browser entirely), so the server never
+ *   trusts a payload is already clean just because it came from the app's
+ *   own JS.
  *   Neither this file nor its caller ever logs a bearer token, a
  *   session id, or a password — matching `activity_log.php`'s own header
  *   policy ("NEVER log … bearer tokens").
@@ -88,6 +91,22 @@ const CLIENT_ERROR_MAX_FRAMES = 3;
 /** Cap for the `v` (app version) / `ch` (deploy channel) labels. */
 const CLIENT_ERROR_MAX_LABEL_LENGTH = 32;
 
+/**
+ * M2 (adversarial-review finding, OBS-VERIFY.md): `m` (the error message)
+ * is free text with no other query-string handling — unlike `s`/`r`,
+ * which are stripped down to a bare path by `_clientErrorCleanPath()`,
+ * a message like `"Failed to fetch " . $url` can carry the URL's full
+ * query string, including a session id, auth token, or password a
+ * fetch-wrapper embedded while building a diagnostic message. Mirrors
+ * `js/modules/error-monitor.js`'s identical `QUERY_SECRET_RE` pattern
+ * byte-for-byte (same drift-prevention rule as the Bearer/hex64 patterns
+ * below). A closed allow-list of parameter-NAME keywords (not a deny-list
+ * of "things that look secret") — `[^&\s]+` (not `.+`) stops the match at
+ * the next `&` or whitespace so only the one parameter's VALUE is
+ * redacted, keeping the parameter name for diagnostic value.
+ */
+const CLIENT_ERROR_QUERY_SECRET_PATTERN = '/([?&](?:token|auth|key|secret|password|sid|session|code)=)[^&\\s]+/i';
+
 /** Defensive upper bound on `l` / `c` — no real source file/column is this
  *  large; anything past it is treated as "not a usable number". */
 const CLIENT_ERROR_MAX_LINE_NUMBER = 10_000_000;
@@ -106,7 +125,7 @@ const CLIENT_ERROR_ALLOWED_KINDS = ['error', 'rejection'];
  * ELI5: goes looking for anything that LOOKS like a password or an API
  * key hiding inside an error message or stack trace, and blanks it out.
  *
- * DETAIL: mirrors the two patterns the CLIENT already applies
+ * DETAIL: mirrors the three patterns the CLIENT already applies
  * (`js/modules/error-monitor.js::_scrub()`) byte-for-byte, so "what gets
  * redacted" can never quietly drift between the two layers:
  *   - `Bearer\s+\S+` — an `Authorization: Bearer <token>` value that ended
@@ -116,6 +135,11 @@ const CLIENT_ERROR_ALLOWED_KINDS = ['error', 'rejection'];
  *     the shape of this app's own session/API-key material in several
  *     places (see `activityLogScrubQuery()`'s docblock in
  *     `activity_log.php` for the same threat model).
+ *   - a `?token=…` / `&password=…`-shaped query-string secret (M2,
+ *     #1582 adversarial-review follow-up) — `m` is free text with no
+ *     other query-string handling, unlike `s`/`r` which are reduced to a
+ *     bare path by `_clientErrorCleanPath()` below; see
+ *     CLIENT_ERROR_QUERY_SECRET_PATTERN's doc-block for the allow-list.
  * Pure (no I/O), so it's directly unit-testable — see
  * `tests/php/test-client-error-report.php`.
  *
@@ -130,6 +154,8 @@ function clientErrorScrub(string $s): string
     $s = preg_replace('/Bearer\s+\S+/i', 'Bearer [redacted]', $s);
     if ($s === null) $s = ''; /* preg_replace() returns null only on a regex engine error */
     $s = preg_replace('/[0-9a-f]{64}/i', '[redacted]', $s);
+    if ($s === null) $s = '';
+    $s = preg_replace(CLIENT_ERROR_QUERY_SECRET_PATTERN, '$1[redacted]', $s);
     if ($s === null) $s = '';
     return $s;
 }
