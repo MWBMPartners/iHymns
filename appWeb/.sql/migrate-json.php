@@ -8,13 +8,28 @@ declare(strict_types=1);
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Reads songs.json and inserts all songbooks, songs, writers, composers,
- * and components into the MySQL database. Uses MySQLi with prepared
- * statements and wraps the entire import in a transaction.
+ * LEGACY pre-#1010 bootstrap importer. Reads songs.json and inserts all
+ * songbooks, songs, writers, composers, and components into the MySQL
+ * database. Uses MySQLi with prepared statements and wraps the entire
+ * import in a transaction.
+ *
+ * ⚠ DESTRUCTIVE — TRUNCATEs tblSongComponents/tblSongComposers/
+ * tblSongWriters/tblSongs/tblSongbooks before re-importing. Song reads have
+ * been DB-direct since the WS-J #1020 cutover (rule #17 of .claude/CLAUDE.md)
+ * — this repo's data/songs.json is now a stale historical snapshot, not a
+ * live source, so running this against a database with any post-#1010
+ * curator edits DESTROYS them and orphans tblLyricLines. Only ever intended
+ * for bootstrapping a brand-new, empty install. Requires --confirm (CLI) or
+ * ?confirm=1 (web) — without it, the script only prints its pre-flight
+ * summary (file found, songbook/song counts, DB connectivity) and exits,
+ * same convention as this folder's other destructive scripts (restore.php,
+ * drop-legacy-tables.php).
  *
  * USAGE:
- *   CLI:  php appWeb/.sql/migrate-json.php
- *   CLI:  php appWeb/.sql/migrate-json.php --json=/path/to/songs.json
+ *   CLI dry-run: php appWeb/.sql/migrate-json.php
+ *   CLI execute: php appWeb/.sql/migrate-json.php --confirm
+ *   CLI:         php appWeb/.sql/migrate-json.php --json=/path/to/songs.json --confirm
+ *   Web:         /manage/setup-database.php?action=migrate&confirm=1
  *
  * PREREQUISITES:
  *   1. Run install.php first to create the tables
@@ -160,6 +175,53 @@ if (!$_mjLinesPresent) {
     output("ABORT: tblSongComponents.LinesJson is gone (#1235 P4/C6 retired era).");
     output("This legacy JSON bootstrap import is incompatible with the post-cutover thin schema");
     output("and would discard the authoritative tblLyricLines. Use the editor / importers instead.");
+    return;
+}
+
+/* =========================================================================
+ * CONFIRM GATE — this is a DESTRUCTIVE, irreversible legacy bootstrap.
+ *
+ * ELI5: this script wipes the live songs table and rebuilds it from a JSON
+ * file that hasn't been updated in months — so it needs the operator to
+ * explicitly say "yes, do that" before it touches anything, exactly like the
+ * other two data-destroying scripts in this folder (restore.php,
+ * drop-legacy-tables.php) already require.
+ *
+ * DETAILED — before this gate, `?action=migrate` on setup-database.php ran
+ * this script (TRUNCATE tblSongComponents/tblSongComposers/tblSongWriters/
+ * tblSongs/tblSongbooks, then a full re-import) from a single unconfirmed
+ * GET request, with only a client-side `confirm()` dialog standing between a
+ * click (or a followed link, or a bookmarked/replayed URL, none of which run
+ * JavaScript) and destroying the live corpus. Since the DB-direct rewrite
+ * (epic #1010, rule #17 of .claude/CLAUDE.md) MySQL — not this repo's
+ * data/songs.json — is the ONLY source of truth for songs; that JSON
+ * snapshot is a pre-#1010 bootstrap artifact that predates months of
+ * curator edits, so re-importing it is almost certainly never what anyone
+ * actually wants outside a brand-new empty install. Mirrors restore.php /
+ * drop-legacy-tables.php's own confirm=1 gate exactly (CLI --confirm / web
+ * ?confirm=1); the informational summary above (file found, songbook/song
+ * counts, DB connection, the #1235 P4/C6 guard) still runs unconditionally
+ * as a safe preview — only the destructive section below is gated.
+ * ========================================================================= */
+$_mjConfirmed = false;
+if ($isCli) {
+    foreach ($argv as $arg) {
+        if ($arg === '--confirm') { $_mjConfirmed = true; }
+    }
+} else {
+    $_mjConfirmed = (($_GET['confirm'] ?? '') === '1');
+}
+
+if (!$_mjConfirmed) {
+    output("⚠ DESTRUCTIVE — this is the LEGACY pre-#1010 bootstrap importer.");
+    output("It will TRUNCATE tblSongComponents, tblSongComposers, tblSongWriters,");
+    output("tblSongs and tblSongbooks, then re-import EVERYTHING from the JSON file above.");
+    output("Song reads have been DB-direct since #1010 (rule #17) — this repo's songs.json");
+    output("snapshot is now months stale, so this will DESTROY newer curator edits and");
+    output("orphan tblLyricLines. This is almost certainly not what you want.");
+    output("");
+    output("DRY RUN — nothing has been changed.");
+    output("Re-run with --confirm (CLI) or ?confirm=1 (web) to proceed.");
     return;
 }
 
