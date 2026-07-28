@@ -181,6 +181,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    endpoint (analyticsIngestValidateEvent()/analyticsIngestValidatePlatform()).
    Loaded top-level like its rate-limiting neighbours above. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'analytics_ingest.php';
+/* #1582 — validate/scrub/fingerprint helpers for the global client-side
+   error-beacon endpoint (clientErrorValidate()/clientErrorScrub()/
+   clientErrorFingerprint()). Same "pure helpers loaded top-level" pattern
+   as analytics_ingest.php immediately above. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'client_error_report.php';
 /* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
    validators below can defensively resolve a PublicId passed by a non-web
    client back to its underlying SongId before the existing allow-list regex
@@ -289,12 +294,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
            cross-site CSRF attempt would carry a different host and
            get rejected here.
 
-           This block intentionally allows ONLY song_request_submit —
+           #1582 — `?action=client_error_report` is allow-listed here for
+           a DIFFERENT reason than song_request_submit's no-JS fallback:
+           it's the beacon target of `navigator.sendBeacon()`
+           (js/modules/error-monitor.js), and the Beacon API is defined
+           as a "simple request" that can NEVER carry a custom header —
+           there is no no-JS/CSP-failure scenario to work around, the
+           primary (and often only, e.g. during page unload) transport
+           simply has no way to set X-Requested-With, full stop. The same
+           Origin/Referer same-origin check applies; POST requests
+           (unlike GET) get an Origin header from the browser even when
+           same-origin, so this passes in practice for every real client.
+
+           This block intentionally allows ONLY these two actions —
            every other POST endpoint stays on the strict
            X-Requested-With requirement. If a new endpoint ever needs
-           a no-JS path, extend this allow-list explicitly. */
+           a no-JS / no-custom-header path, extend this allow-list
+           explicitly. */
         $action = (string)($_GET['action'] ?? '');
-        $noJsAllowedActions = ['song_request_submit'];
+        $noJsAllowedActions = ['song_request_submit', 'client_error_report'];
         $passesSameOrigin = false;
         if (in_array($action, $noJsAllowedActions, true)) {
             $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
@@ -9633,6 +9651,117 @@ if ($action !== null) {
                 logActivityError('analytics.ingest', 'analytics_event', '', $e);
                 sendJson(['error' => 'Could not record events.'], 500);
             }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * #1582 — Global client-side JS error / unhandled-rejection beacon.
+         * POST a small JSON body from `navigator.sendBeacon()` (fetch as
+         * fallback) — see `js/modules/error-monitor.js::bootErrorMonitor()`:
+         *   { "m": "TypeError: x is not a function", "s": "/js/app.js",
+         *     "l": 1204, "c": 7, "r": "/song/MP-1008", "v": "3.4.0",
+         *     "ch": "Alpha", "k": "error", "st": ["/js/app.js:1204", ...] }
+         * Anonymous — no auth, no CSRF token; sendBeacon() cannot carry
+         * custom headers at all, so this action is on the no-JS same-
+         * origin allow-list above (Origin/Referer check) rather than the
+         * standard X-Requested-With gate — see that block's #1582 note.
+         * Mirrors analytics_ingest's shape immediately above (rate limit,
+         * body cap, POST-only) but writes through the EXISTING audit
+         * trail — no new table (rule #19/#20). Validation, scrubbing and
+         * fingerprinting are the pure helpers in
+         * includes/client_error_report.php; this case only wires DB +
+         * rate limiting around them.
+         * ----------------------------------------------------------------- */
+        case 'client_error_report': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* Same generic tblLoginAttempts-backed counter analytics_ingest
+               uses. Tight budget — this is a rare "something broke" signal
+               from ONE beacon per throttled fingerprint, not a batching
+               client, so 10/60s comfortably covers a legitimate burst of a
+               few distinct bugs while still capping a runaway client. */
+            checkRateLimit('client_error', $ip, 10, 60, true);
+            recordRateLimitHit('client_error', $ip);
+
+            $rawBody = (string)file_get_contents('php://input');
+            /* 8 KB body cap — a single report (message + up to 3 short
+               stack frames, all pre-capped client-side) fits in well
+               under 1 KB; anything past 8 KB isn't a real report. */
+            if (strlen($rawBody) > 8192) {
+                sendJson(['error' => 'Request body too large.'], 413);
+                break;
+            }
+            $body = json_decode($rawBody, true);
+            /* clientErrorValidate() independently normalises every field
+               and returns null only for a fundamentally unusable payload
+               (missing/unknown `k`, empty `m`) — see that function's
+               doc-block. A malformed body is silently dropped below
+               rather than surfaced as an error the sendBeacon() caller
+               has no way to read anyway. */
+            $clean = is_array($body) ? clientErrorValidate($body) : null;
+
+            if ($clean !== null) {
+                $env  = ihymns_environment();
+                $hash = clientErrorFingerprint($clean, $env);
+
+                /* Server-side dedupe backstop (15 min), ON TOP OF the
+                   client's own 10-min sessionStorage throttle — a second
+                   tab, a different device, or a client that cleared
+                   sessionStorage hitting the SAME bug within the window
+                   would otherwise still double-write. Queries the
+                   existing idx_Entity (EntityType, EntityId) index.
+                   FAILS OPEN: mysqli throws under STRICT (CLAUDE.md rule
+                   #19), and losing the dedupe check is far cheaper than
+                   losing the underlying report, so any read failure here
+                   just falls through to logging anyway. */
+                $recentlyLogged = false;
+                try {
+                    $db = getDbMysqli();
+                    $entityType = 'client';
+                    $stmt = $db->prepare(
+                        'SELECT 1 FROM tblActivityLog
+                          WHERE EntityType = ? AND EntityId = ?
+                            AND CreatedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+                          LIMIT 1'
+                    );
+                    $stmt->bind_param('ss', $entityType, $hash);
+                    $stmt->execute();
+                    $recentlyLogged = (bool)$stmt->get_result()->fetch_row();
+                    $stmt->close();
+                } catch (\Throwable $e) {
+                    error_log('[client_error_report] dedupe check failed: ' . $e->getMessage());
+                    $recentlyLogged = false; /* fail open — see docblock above */
+                }
+
+                if (!$recentlyLogged) {
+                    /* logActivity() is itself best-effort (never throws —
+                       see activity_log.php's header), so no try/catch
+                       needed here. EntityId=$hash is what the dedupe
+                       SELECT above keys on for the NEXT beacon. */
+                    logActivity('client.jserror', 'client', $hash, [
+                        'kind'    => $clean['k'],
+                        'message' => $clean['m'],
+                        'source'  => $clean['s'],
+                        'line'    => $clean['l'],
+                        'col'     => $clean['c'],
+                        'path'    => $clean['r'],
+                        'version' => $clean['v'],
+                        'channel' => $clean['ch'],
+                        'stack'   => $clean['st'],
+                    ], 'error');
+                }
+            }
+
+            /* Always ok=true — this is a fire-and-forget beacon (often
+               sent via sendBeacon(), whose caller never reads the
+               response body). A rejected/deduped/malformed payload is
+               silently dropped rather than surfaced as an error the
+               client has no way to act on. */
+            sendJson(['ok' => true]);
             break;
         }
 

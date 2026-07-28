@@ -51,6 +51,7 @@ import { Gestures } from './modules/gestures.js';
 import { PullToRefresh } from './modules/pull-to-refresh.js';
 import { Analytics } from './modules/analytics.js';
 import { Notifications } from './modules/notifications.js';
+import { bootErrorMonitor } from './modules/error-monitor.js';
 import { escapeHtml } from './utils/html.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
@@ -60,6 +61,15 @@ import {
     EVT_REFRESH_REQUESTED,
     EVT_REFRESH_COMPLETE,
 } from './constants.js';
+
+/* #1582 — install the global error/unhandledrejection listeners BEFORE
+   the App class below does any work at all. This sits at module top
+   level (runs the instant this file is evaluated, ahead of the
+   DOMContentLoaded listener at the bottom of this file that constructs
+   `iHymnsApp`), so a failure during the app's own construction/init() —
+   not just a failure after it's already running — is still captured. See
+   js/modules/error-monitor.js for the full design. */
+bootErrorMonitor();
 
 /**
  * iHymnsApp — Main application class

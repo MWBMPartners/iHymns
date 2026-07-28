@@ -133,13 +133,16 @@ jobs:
       # Step 4b: Node unit tests
       # Pure-function / static-analysis tests that run directly under `node`
       # (no browser, no DOM) — Node 22 + npm ci are already set up above
-      # (Steps 2-3). Currently just the #1581 event-name registry guard;
+      # (Steps 2-3). The #1581 event-name registry guard, plus the #1582
+      # global-error-monitor throttle/scrub/re-entrancy guard (stubs a
+      # minimal window/navigator/sessionStorage — no real browser needed);
       # more `tests/test-*.js` scripts land here as they're added.
       # -----------------------------------------------------------------------
       - name: Node unit tests
         run: |
           echo "Running Node unit tests..."
           node tests/test-event-names.js
+          node tests/test-error-monitor.js
 
       # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
@@ -448,6 +451,19 @@ jobs:
         run: |
           echo "Running analytics-ingestion validation test..."
           php tests/php/test-analytics-ingest.php
+
+      # -----------------------------------------------------------------------
+      # Step 5l-2: Client error-report validation/scrub/fingerprint (#1582)
+      # Guards clientErrorScrub()'s Bearer-token/hex64 redaction, the
+      # independent-per-field validation `?action=client_error_report` runs
+      # on every sendBeacon() report from js/modules/error-monitor.js, and
+      # clientErrorFingerprint()'s stability + per-environment scoping (the
+      # dedupe key the endpoint's tblActivityLog lookup keys on).
+      # -----------------------------------------------------------------------
+      - name: Client error-report validation (#1582)
+        run: |
+          echo "Running client-error-report validation test..."
+          php tests/php/test-client-error-report.php
 
       # -----------------------------------------------------------------------
       # Step 5m: RFC 8628 device-code pairing (#1407)
