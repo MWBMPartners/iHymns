@@ -9,27 +9,31 @@
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
 (the 2026-07-26 handoff it supersedes is still the reference for the export root-cause chain).
 
-**There is ONE work-in-progress branch: `claude/observability-alpha-3k9wqz`** — pushed, no PR yet,
-targeting `alpha`. It subsumed `claude/apple-branches-cleanup-export-7mxhpo` (whose PR **#1578 must
-be CLOSED as superseded, never merged**) and with it the whole nine-branch consolidation: the Apple
-Phase-2 batch (PR-11 / PR-14 / PR-15 / PR-16), App Intents #1415, the docs branch, and the public
-export fix family. Containment was proved by comparing blob SHAs, not commit messages.
+**The big consolidation has LANDED.** PR #1585 merged to `alpha` as squash **`887bcd2f`** — 98
+commits, 228 files — carrying the whole nine-branch consolidation (Apple Phase-2 PR-11/14/15/16,
+App Intents #1415, the docs branch, the public export fix family) plus the observability trio
+(#1581/#1582/#1583), the deploy media guard (#1584), the Apple CI serialisation (#1558), the ad-hoc
+Service Mode expiry floor (#1576), the `migrate-json.php` confirm gate, the HA integrity-audit path
+fix, the Swagger UI hardening (#1587) and the repo-wide documentation overhaul (#1586).
+Containment was proved by comparing blob SHAs, not commit messages.
 
-Aboard, beyond the consolidation: the **observability trio** (#1581 event-name constants, #1582
-client error surfacing, #1583 What's New page), the **deploy media guard** (#1584 — every deploy was
-wiping `/data/audio` and `/data/music`), the Apple CI serialisation (#1558), the ad-hoc Service Mode
-expiry floor (#1576), the `migrate-json.php` confirm gate, the HA integrity-audit path fix, the
-**Swagger UI hardening** (#1587) and the **repo-wide documentation overhaul** (#1586).
+**Both `claude/*` branches are now deleted.** The remote holds only `alpha`, `beta`, `main` and
+`archive/alpha`. PR #1578 was closed as superseded before its branch went.
 
-**Version is `0.4000.0`** — `appWeb/public_html/includes/infoAppVer.php` is the only authoritative
-source (auto-bumped by `version-bump.yml` on a push to **beta**, not alpha). Any version number
-written into a doc rots; prefer pointing at the footer or that file.
+**Version is `0.4001.0`** — bumped in `bad5ca4f` (PR #1592).
+`appWeb/public_html/includes/infoAppVer.php` is the only authoritative source. ⚠️ `version-bump.yml`
+fires **only on a push to `beta`**, so an `alpha` merge NEVER bumps — that is why 98 commits shipped
+under one version string and the bump had to be done by hand. Expect to repeat that after any large
+alpha batch. Any version number written into a doc rots; prefer pointing at the footer or that file.
 
-Still the standing caveat from 2026-07-26: **the merged Swift has never been compiled locally** —
-the consolidation ran in a Linux container with no toolchain, so `apple.yml` on the PR is its first
-real build. Use the **draft-PR-until-green** procedure in the handoff to avoid the #1526 auto-merge
-race (`apple.yml` is not a required check, so an appApple PR otherwise auto-merges on the ~2-minute
-web lint, half an hour before the Apple build finishes).
+**Current WIP branch: `claude/sotd-language-filter-typeahead-a11y`** (off `bad5ca4f`) — two
+owner-reported bugs: **#1593** Song of the Day vanishes when more than one language is selected
+(works at 0 and at 1, disappears at 2), and **#1594** the location typeahead is mouse-only.
+
+The 2026-07-26 caveat is **discharged**: the merged Swift compiled green on CI (`apple.yml` `build`,
+run 30365569513) before #1585 merged. The **draft-PR-until-green** procedure is still the standing
+practice for any PR touching `appApple/` — `apple.yml` is not a required check (#1526), so a ready
+PR auto-merges on the ~45-second web lint, roughly 25 minutes before the Apple build reports.
 
 Two house rules came out of the export work and are now load-bearing: **rule #30** (an SPA fragment
 can never carry an executable inline `<script>` — the enforcing nonce CSP refuses it *silently*,
@@ -50,7 +54,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: **`0.4000.0`** (alpha, Phase 1). The authoritative source is
+- **Current Version**: **`0.4001.0`** (alpha, Phase 1). The authoritative source is
   `appWeb/public_html/includes/infoAppVer.php` — `version-bump.yml` bumps it on a push to **beta**,
   so a number written into any doc goes stale within days. Historical version-by-version narrative
   (the #1010 DB-direct rewrite, the v0.550→0.770 lyrics-platform program, the 2026-05 catalogue

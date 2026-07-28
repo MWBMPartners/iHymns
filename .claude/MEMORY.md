@@ -9,17 +9,27 @@
 _Last updated: 2026-07-28._
 
 ## Where things stand
-- **Version:** `0.4000.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
-  (auto-bumped by `version-bump.yml` on push to **beta**, not alpha; the PWA service-worker cache
-  version auto-syncs off it, #81). Docs that hardcode a version rot within days — point at the file.
+- **Version:** `0.4001.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
+  (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
+  hardcode a version rot within days — point at the file.
+  ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. That is
+  how 98 commits shipped under one version string; the bump had to be done by hand (`bad5ca4f`,
+  PR #1592) using the workflow's own arithmetic (`MINOR+1`, `PATCH=0`) so the two don't drift.
+  **Expect to repeat this after any large alpha batch.**
+- **`beta` is frozen at v0.1254.1** (~2026-06-25, PR #1369) and predates the entire Live Follow fix
+  train (#1375/#1377/#1386/#1405). The promotion PR #1580 was **closed unmerged** — alpha and beta
+  have **unrelated histories**, so it needs a tree-replacement, not a merge. Before any future
+  promotion, set `APPLE_DEPLOY_ENABLED=false`: `apple-deploy.yml` has failed 5/5 runs (#1579), and
+  fixing it would re-arm a TestFlight **external** upload on every beta push.
 - **Environments / deploy:** single shared MySQL; `alpha` → `dev.ihymns.app` (auto-merge + SFTP),
   `beta` → `beta.ihymns.app`, `main` → `www.ihymns.app`. Most work targets **`alpha`**.
 - **Reads are LIVE MySQL** — there is NO `songs.json` corpus cache (epic #1010). Scoped reads only
   (`getSongsSlimIndex` / `getSongs($abbr)` / `getSongById`); a DB outage is a themed 503, never stale.
-- **Active branch (2026-07-28):** **`claude/observability-alpha-3k9wqz`** — THE single WIP branch
-  (90+ commits ahead of alpha, pushed, no PR). It subsumed
-  `claude/apple-branches-cleanup-export-7mxhpo` via merge `753ed895`; that branch's PR #1578 must be
-  CLOSED as superseded, not merged. See the handoff for the exact branch-deletion list.
+- **The consolidation LANDED (2026-07-28):** PR #1585 merged to alpha as squash **`887bcd2f`** (98
+  commits, 228 files); the version bump followed in **`bad5ca4f`** (PR #1592). Both `claude/*`
+  branches are deleted — the remote is just `alpha`, `beta`, `main`, `archive/alpha`.
+- **Active branch:** **`claude/sotd-language-filter-typeahead-a11y`** — #1593 (Song of the Day
+  vanishes with >1 language selected) + #1594 (location typeahead is mouse-only).
 - **Verified counts** (re-derived 2026-07-28 — most docs disagreed with all of these): **142** tables
   in `schema.sql`; **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
   **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
