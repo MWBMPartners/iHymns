@@ -232,8 +232,19 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         const consoleBody = document.getElementById('svc-op-body');
         const toggleBtn = document.getElementById('svc-op-toggle');
 
-        // Default date = today (local).
-        dateInp.value = new Date().toISOString().slice(0, 10);
+        /* Default date = today (LOCAL, #1576). ELI5: `toISOString()` always
+           reports the UTC calendar date, not the operator's own "today" —
+           for a venue WEST of UTC (most of the Americas), local evening
+           already falls on the NEXT UTC calendar day (e.g. 7pm US Eastern
+           is already after midnight UTC), so an operator starting an
+           evening service saw TOMORROW's date pre-filled instead of
+           today's. DETAILED: `toLocaleDateString('en-CA')` happens to
+           render as 'YYYY-MM-DD' (the en-CA locale's format, and exactly
+           the shape an <input type="date"> value needs) but — unlike
+           `toISOString()` — it's computed from the browser's LOCAL
+           clock/timezone, not UTC. See
+           https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/toLocaleDateString */
+        dateInp.value = new Date().toLocaleDateString('en-CA');
 
         VENUES.forEach(function (v) {
             const o = document.createElement('option');

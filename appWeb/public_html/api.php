@@ -14525,8 +14525,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authorised for this organisation.'], 403); break;
             }
 
-            /* Schedule (if given) must belong to the venue → start/duration/tz. */
+            /* Schedule (if given) must belong to the venue → start/duration/tz.
+               No schedule selected (scheduleId <= 0) is the AD-HOC path: the
+               10:00/90-minute values below are a placeholder, not a real
+               chosen time (#1576 — see serviceMode_occurrenceEndUtc()'s
+               doc-block for why that matters to the end-time floor). */
             $startTime = '10:00:00'; $duration = 90; $schedTz = $venueTz; $scheduleIdN = null;
+            $isAdHoc = true;
             if ($scheduleId > 0) {
                 $sstmt = $db->prepare('SELECT StartTime, DurationMins, TimeZone FROM tblOrgServiceSchedules WHERE Id = ? AND VenueId = ?');
                 $sstmt->bind_param('ii', $scheduleId, $venueId);
@@ -14538,8 +14543,11 @@ if ($action !== null) {
                 $duration    = (int)$sched['DurationMins'];
                 $schedTz     = ($sched['TimeZone'] ?? '') ?: $venueTz;
                 $scheduleIdN = $scheduleId;
+                $isAdHoc     = false;
             }
-            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz);
+            /* #1576 — $isAdHoc floors the result so an ad-hoc evening start
+               is never born already-expired; an explicit schedule stays honest. */
+            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz, $isAdHoc);
 
             /* #1429 — capture the OLD session's Id BEFORE deactivating (same
                rationale as live_follow_create's supersede, above) so its
