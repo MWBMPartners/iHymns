@@ -230,6 +230,12 @@ data/.DS_Store
 # CI/CD injected environment channel file (deploy-time only)
 appWeb/public_html/.env-channel
 
+# What's New excerpt (#1583) — generated from CHANGELOG.md by deploy.yml's
+# "Extract What's New from CHANGELOG.md" step on every deploy; not
+# source-of-truth. Absent locally is expected — includes/pages/whats-new.php
+# renders a themed fallback card rather than an error when it's missing.
+appWeb/public_html/data/whats-new.md
+
 # ----------------------------------------------------------------------------
 # Source Scraped Song data
 # ----------------------------------------------------------------------------

@@ -466,6 +466,19 @@ jobs:
           php tests/php/test-client-error-report.php
 
       # -----------------------------------------------------------------------
+      # Step 5l-3: What's New excerpt render — escape-first guard (#1583)
+      # Guards markdown_lite.php's load-bearing ESCAPE-FIRST ordering: a raw
+      # `<script>` in the deploy-time CHANGELOG.md excerpt must always render
+      # as inert escaped text, a `javascript:`-scheme link must never become
+      # a clickable `<a>`, and a missing data/whats-new.md must render the
+      # themed fallback card rather than throwing.
+      # -----------------------------------------------------------------------
+      - name: What's New render — escape-first guard (#1583)
+        run: |
+          echo "Running What's New markdown-lite render test..."
+          php tests/php/test-whats-new-render.php
+
+      # -----------------------------------------------------------------------
       # Step 5m: RFC 8628 device-code pairing (#1407)
       # Exercises the pure user_code minter/normaliser (Crockford alphabet
       # round-trip, invalid-length/-glyph/-type rejection), then structurally

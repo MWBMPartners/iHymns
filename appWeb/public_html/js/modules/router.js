@@ -317,6 +317,11 @@ export class Router {
                 return { page: 'iswc', params: { code: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
+            case 'whats-new':
+                /* #1583 — a deploy-time CHANGELOG.md excerpt, modelled
+                   exactly on 'help' immediately above (no params, no
+                   auth). See includes/pages/whats-new.php. */
+                return { page: 'whats-new', params: {} };
             case 'terms':
                 return { page: 'terms', params: {} };
             case 'privacy':
@@ -558,6 +563,7 @@ export class Router {
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
             'help': 'Help — ' + appName,
+            'whats-new': "What's New — " + appName,
             'terms': 'Terms of Use — ' + appName,
             'privacy': 'Privacy Policy — ' + appName,
             'request': 'Request a Song — ' + appName,

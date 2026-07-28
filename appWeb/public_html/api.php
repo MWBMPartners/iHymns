@@ -390,6 +390,10 @@ if ($page !== null) {
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
         'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
+        /* #1583 — a deploy-time CHANGELOG.md excerpt, identical for every
+           visitor (no per-user data), so it's cacheable on the same terms
+           as help/terms/privacy. */
+        'whats-new',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -519,6 +523,13 @@ if ($page !== null) {
 
         case 'help':
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'help.php';
+            break;
+
+        case 'whats-new':
+            /* #1583 — reads the deploy-time CHANGELOG.md excerpt (data/
+               whats-new.md, absent on a fresh checkout) via markdown_lite.php's
+               escape-first renderer. No parameters, no DB access. */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'whats-new.php';
             break;
 
         case 'terms':

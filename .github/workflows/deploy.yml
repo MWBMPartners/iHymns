@@ -202,6 +202,38 @@ jobs:
           echo "${{ steps.target.outputs.channel }}" > appWeb/public_html/.env-channel
           echo "Injected .env-channel: ${{ steps.target.outputs.channel }}"
 
+      # -- Extract What's New excerpt from CHANGELOG.md (#1583) --
+      # includes/pages/whats-new.php reads appWeb/public_html/data/whats-new.md
+      # (via markdown_lite.php's escape-first renderer) and falls back to a
+      # themed "no data yet" card when the file is absent — so this step is
+      # deliberately best-effort: a missing CHANGELOG.md (or an empty extract)
+      # must never fail the deploy, it just means visitors see the fallback
+      # card until the next deploy that does have one. Takes the first 3
+      # top-level `## ` sections (an awk state machine — `^## ` only matches
+      # a TWO-hash heading, since a `### ` sub-heading's 3rd character is `#`
+      # not a space, so those are never miscounted as a new top-level
+      # section) and hard-caps the result at 48 KB (`head -c`) so one
+      # unusually long changelog entry can never bloat the deployed
+      # fragment — markdown_lite.php degrades gracefully on a mid-syntax cut.
+      - name: Extract What's New from CHANGELOG.md
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
+          WHATS_NEW_DIR="${SOURCE_DIR}data"
+          WHATS_NEW_FILE="${WHATS_NEW_DIR}/whats-new.md"
+          WHATS_NEW_MAX_BYTES=49152
+
+          if [[ ! -f "CHANGELOG.md" ]]; then
+            echo "CHANGELOG.md not found — skipping What's New extraction (whats-new.php renders its fallback card)"
+          else
+            mkdir -p "$WHATS_NEW_DIR"
+            awk '
+              /^## / { section++; if (section > 3) exit }
+              section >= 1 { print }
+            ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" > "$WHATS_NEW_FILE"
+            echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes -> $WHATS_NEW_FILE"
+          fi
+
       # -- Populate vendor/ for PWA offline-fallback (#354 / #526) --
       # The local vendor/ files are referenced by the onerror fallback
       # handlers in index.php for every CDN-loaded library (Bootstrap,
