@@ -22,7 +22,7 @@
 ### Favourites
 - **Save/unsave** songs with star button or `F` keyboard shortcut
 - **Favourites page** — browse all favourited songs
-- **Persistent** — stored in localStorage
+- **Persistent** — synced to your account when signed in (cross-device); stored locally when signed out
 
 ### Setlists
 - **Create setlists** — named playlists for worship services
@@ -44,6 +44,11 @@
 - **Colour-coded banners** — a blue "Following … live" bar for Live Follow, a green "Following the service live" bar for Service Mode, so the two are never confused at a glance
 
 See [[Live Follow & Service Mode]] for the full comparison and setup requirements.
+
+### Export & Present
+- **Export ▾** — on any song page or songbook page, download the words in the format your projection software uses: OpenSong, OpenLyrics/OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain chord-sheet file) — 8 formats, offered on both surfaces
+- **Present** — opens a full-screen, one-stanza-at-a-time view for projection, no export needed
+- If the Export menu opens but nothing downloads, a hard-reload once usually fixes it (an older cached service worker) — see [[Troubleshooting & FAQ]]
 
 ### Audio & Sheet Music
 - **MIDI playback** — play MIDI audio files where available (CP, JP, MP)
@@ -71,6 +76,7 @@ See [[Live Follow & Service Mode]] for the full comparison and setup requirement
 - **Quick-jump** — type a number to jump to that song in the current songbook
 - **Reading progress** — scroll-linked progress bar on song pages
 - **Alphabetical index** — quick letter-jump on songbook song lists
+- **What's New** — the version number in the footer links to `/whats-new`, which shows what changed in recent releases (#1583)
 
 ### Responsive Design
 - **Mobile-first** — optimised for phones
@@ -83,15 +89,15 @@ See [[Live Follow & Service Mode]] for the full comparison and setup requirement
 ## PWA Capabilities
 
 ### Offline Support
-- **Service worker** — caches all assets and song data for offline use
-- **Bulk download** — download entire songbooks in seconds via optimised bulk API (~6 requests instead of 3,612 individual requests)
+- **Service worker** — caches app assets for offline use, plus whichever songbooks you've explicitly downloaded
+- **Bulk download** — download entire songbooks in seconds via an optimised bulk API (a handful of requests per songbook instead of one request per song)
 - **Per-songbook downloads** — download individual songbooks from Settings with estimated storage sizes
 - **Background downloads** — downloads continue when navigating away from Settings
 - **Offline indicator** — shows connection status in UI
 - **Auto-update** — detects new service worker versions and prompts to refresh; optional auto-update for offline songs
-- **Songs cached** — full `songs.json` available offline via service worker
+- **Downloaded songbooks** — songbooks you explicitly save are stored on-device; a slim id/number/title index enables offline search of what you've saved
 - **Popular songs offline** — falls back to localStorage view history when server unavailable
-- **Graceful degradation** — all features work in JSON fallback mode when database is unavailable
+- **Graceful degradation** — if the database is unreachable the app shows a friendly maintenance page; songbooks you previously downloaded stay readable
 
 ### Installation
 - **Install banner** — dismissible prompt for PWA installation

@@ -28,7 +28,8 @@ cd iHymns
 # Install Node.js dependencies
 npm install
 
-# Parse song data (generates data/songs.json)
+# Parse song data (generates data/songs.json — a one-time DB migration
+# input, not a runtime file; the app itself reads live MySQL)
 npm run parse-songs
 
 # Run unit tests
@@ -51,7 +52,7 @@ php -S localhost:8080
 # docker-compose up
 ```
 
-Ensure `appWeb/data_share/` exists alongside `public_html/` with a copy of `data/songs.json` at `data_share/song_data/songs.json`.
+Ensure `appWeb/.auth/db_credentials.php` is configured (see [[Database & Migrations]]) — the app reads live MySQL at runtime, so a working DB connection is required even for local development, not a `data_share/` JSON copy.
 
 ---
 
@@ -152,7 +153,7 @@ docs: update wiki with API reference
 
 | File | Purpose |
 |---|---|
-| `data/songs.json` | Canonical song database (single source of truth) |
+| `data/songs.json` | One-time migration input for `appWeb/.sql/migrate-json.php`; MySQL is canonical at runtime |
 | `data/songs.schema.json` | JSON Schema (draft 2020-12) for validation |
 | `tools/parse-songs.js` | Parses `.SourceSongData/` into songs.json |
 | `tools/build-web.js` | Web build/packaging script |

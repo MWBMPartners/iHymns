@@ -77,7 +77,7 @@ Used by: `/manage/` area (editor, user management, setup)
 | Lifetime | 24 hours |
 | Cookie flags | `httponly`, `samesite=Strict`, `secure` (when HTTPS) |
 | CSRF | Per-session CSRF tokens |
-| Database | MySQL via PDO |
+| Database | MySQL via `getDbMysqli()` (mysqli — PDO was fully removed, #554/#555) |
 
 ### 2. Public API (Bearer Token)
 

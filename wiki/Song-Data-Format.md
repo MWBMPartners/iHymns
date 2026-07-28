@@ -63,7 +63,7 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 
 ## Parsed JSON (`data/songs.json`)
 
-The parser (`tools/parse-songs.js`) converts source files into structured JSON. The output `data/songs.json` is the single canonical copy used by all platforms.
+The parser (`tools/parse-songs.js`) converts source files into structured JSON. The output `data/songs.json` is the import format consumed by `appWeb/.sql/migrate-json.php` as a one-time seed — the **database is canonical at runtime** (every read is live MySQL; see [[Architecture]]).
 
 ### Song Object
 

@@ -21,40 +21,48 @@ All branches deploy from `appWeb/public_html/` — the branch determines the rem
 | Directory | Purpose | Deployment |
 |---|---|---|
 | `appWeb/public_html/` | Single source directory | Deployed to all environments |
-| `appWeb/data_share/` | Shared data (songs.json, setlists, SQLite DB) | Deployed alongside public_html (without `--delete`) |
+| `appWeb/data_share/` | Runtime shared data (shared setlists, etc.) — the song-corpus JSON/SQLite mirror was removed in WS-J #1020 | Deployed alongside public_html (without `--delete`) |
 | `appWeb/private_html/` | Private admin tools, song editor | Separate SFTP path (`SFTP_PRIVATE_PATH`) |
 
 ---
 
 ## GitHub Actions Workflows
 
-### 1. Deploy (`deploy.yml`)
+14 workflow files live in `.github/workflows/`:
 
-SFTP mirroring using `lftp`. Triggered on push to `alpha`, `beta`, or `main`.
+| Workflow | File | Purpose |
+|---|---|---|
+| Deploy | `deploy.yml` | SFTP mirror to the environment matching the pushed branch (see pipeline below) |
+| Version Bump | `version-bump.yml` | Auto-bumps `infoAppVer.php` via conventional commits on push to `beta` |
+| Changelog | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commit messages on push to `beta` |
+| Release | `release.yml` | Creates a GitHub Release with a tagged version |
+| CI Lint & Validation | `test.yml` | Runs linting + the PHP/JS unit test suites |
+| Lint Workflows | `lint.yml` | Lints the workflow YAML files themselves on any change under `.github/workflows/` |
+| Apple CI | `apple.yml` | Builds + runs Swift tests on push to the Apple integration branch |
+| Apple Deploy | `apple-deploy.yml` | Signs and ships an Apple build on push to `alpha`/`beta`/`main` touching `appApple/**` |
+| Apple macOS DMG | `apple-dmg.yml` | Manual/tag-triggered: builds and attaches a signed macOS DMG to a release |
+| Android Build & Distribution | `build-android.yml` | Manual: builds a debug or release Android APK |
+| Auto-Merge Alpha PRs | `auto-merge-alpha.yml` | Auto-merges eligible PRs targeting `alpha` once checks pass |
+| Promotion Deploy Bridge | `promotion-deploy-bridge.yml` | Fires follow-up automation when a PR merges into a promotion branch |
+| Maintenance — HA Integrity Audit | `maintenance-ha-integrity-audit.yml` | Scheduled monthly (14th) integrity audit |
+| Maintenance — Issues Sweep | `maintenance-issues-sweep.yml` | Scheduled monthly (28th) GitHub Issues hygiene sweep |
 
-- Uses `lftp mirror --reverse` for one-way sync
-- `--exclude` uses **regex patterns** (NOT shell globs): e.g., `\.xcodeproj$` not `*.xcodeproj`
-- `appWeb/data_share/` deployed **without** `--delete` to preserve runtime data (SQLite DB, shared setlists)
+There is also a `.github/workflows/scripts/` subdirectory of helper scripts — not a workflow itself.
+
+### Deploy (`deploy.yml`)
+
+Triggered on push to `alpha`, `beta`, or `main`; SFTP mirroring via `lftp`. The pipeline runs, in order:
+
+1. **Change detection** — diffs against the previous deployed commit to decide what needs uploading (`[deploy all]` in the commit message forces a full upload).
+2. **What's New extraction** — the top three `## ` sections of the root `CHANGELOG.md` are extracted into `public_html/data/whats-new.md`, rendered at `/whats-new` via `includes/markdown_lite.php` (#1583). A malformed top section is user-visible here.
+3. **Vendor populate** — `tools/download-vendor.sh` fetches/refreshes the offline-fallback copies of CDN libraries.
+4. **Minify** — `*.js`, `*.css`, `*.html`/`*.htm`, and `*.xml` files are minified before upload. YAML is deliberately **not** minified.
+5. **SFTP mirror** — `lftp mirror --reverse --delete` one-way sync. `--exclude` uses **regex patterns** (NOT shell globs): e.g. `\.xcodeproj$`, not `*.xcodeproj`. `^data/audio/` and `^data/music/` are excluded from the docroot mirror (#1584) — server-side song audio/sheet-music files are not tracked in git and a `--delete` mirror would otherwise wipe them on every deploy. `appWeb/data_share/` is deployed **without** `--delete` to preserve runtime data.
+
+Other deploy behaviour:
 - `.env-channel` file injected by CI for server-side environment detection
-- `[deploy all]` in commit message forces full upload (ignores change detection)
 - `[skip ci]` in commit message skips all workflows
 - Kill switch: `vars.SFTP_ENABLED` must be `true`
-
-### 2. Version Bump (`version-bump.yml`)
-
-Auto-bumps version via conventional commits on push to `beta`.
-
-### 3. Changelog Generation (`changelog.yml`)
-
-Auto-generates `CHANGELOG.md` from conventional commit messages.
-
-### 4. GitHub Releases (`release.yml`)
-
-Creates GitHub Releases with tagged versions.
-
-### 5. CI Lint/Test (`test.yml`)
-
-Runs linting and the 33 unit tests.
 
 ---
 

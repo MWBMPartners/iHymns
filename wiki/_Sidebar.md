@@ -17,7 +17,7 @@
 **Developer Guide**
 - [[Architecture]]
 - [[Development Setup]]
-- [[API Reference]]
+- [[API Reference]] — plus the live OpenAPI spec + Swagger UI at `/manage/api-docs`
 - [[Song Data Format]]
 - [[Database & Migrations]]
 - [[Security]]
