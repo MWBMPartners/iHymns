@@ -68,6 +68,23 @@ jobs:
     if: vars.SFTP_ENABLED == 'true'
 
     # Shared lftp exclude flags — available to all steps via $LFTP_EXCLUDES.
+    #
+    # ⚠️ `^data/audio/` + `^data/music/` are LOAD-BEARING (#1584). The docroot
+    # mirror runs `--reverse --delete`, and the song audio (`/data/audio/<SongId>.mp3`,
+    # api.php) and sheet music (`/data/music/`) live on the SERVER only — git tracks
+    # zero files under `appWeb/public_html/data/`. Without these two excludes the
+    # mirror deletes the entire media library on every deploy.
+    #
+    # This became sharper with #1583: the What's New step now GENERATES
+    # `public_html/data/whats-new.md` before the mirror runs, so `data/` exists
+    # locally and lftp descends into it — turning a whole-directory removal into a
+    # surgical delete of audio/ and music/ while keeping whats-new.md. Both excludes
+    # are therefore scoped to the two media subdirectories, NOT a blanket `^data/`,
+    # which would stop What's New deploying at all.
+    #
+    # Verified with real lftp 4.9.2 against a local file:/ mirror using this exact
+    # flag set. Do not remove without re-running that check.
+    #
     # IMPORTANT: patterns with wildcards MUST be single-quoted here in YAML
     # so they are passed as literal strings to the shell env, and then
     # referenced inside double-quoted heredocs/commands where bash won't
@@ -96,6 +113,8 @@ jobs:
         --exclude \.swp$
         --exclude \.swo$
         --exclude ~$
+        --exclude ^data/audio/
+        --exclude ^data/music/
 
     steps:
       # -- Checkout code --
