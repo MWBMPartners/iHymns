@@ -7,18 +7,23 @@
  * In-app help and user guide. Provides instructions for using the
  * application, including accounts &amp; signing in (email, password,
  * Sign in with Apple), searching, reading a song (transpose/chords,
- * sheet music, audio, compare versions, Presentation mode), favourites,
- * setlists, collections/series, Song of the Day, personal stats, themes,
+ * sheet music, audio, compare versions, Presentation mode), sharing &amp;
+ * exporting songs to projection software, favourites, setlists,
+ * collections/series, Song of the Day, personal stats, themes,
  * PWA install, offline songs, following a live service (Service Mode,
  * for a congregant), Go Live (Live Follow — any signed-in user hosting
  * their own live session), keyboard shortcuts, and accessibility.
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-26 (v0.4000.0) — split the single "Following a
- * Live Service" item into two adjacent items so Service Mode (church
- * admin console, rotating venue code) and Live Follow (any signed-in
- * user, fixed personal code) can no longer be confused for one another
+ * Last updated: 2026-07-28 (v0.4000.0) — added the "Sharing & exporting
+ * songs" topic (#1586), which had zero coverage despite the public
+ * Export ▾ menu shipping on both the song and songbook pages; also
+ * pointed "Getting Started" at the footer's What's New link (#1583).
+ * Previous update 2026-07-26 split the single "Following a Live
+ * Service" item into two adjacent items so Service Mode (church admin
+ * console, rotating venue code) and Live Follow (any signed-in user,
+ * fixed personal code) can no longer be confused for one another
  * (#1577).
  */
 
@@ -62,6 +67,10 @@ declare(strict_types=1);
                         <li>Save songs to <strong>Favourites</strong> for quick access later</li>
                         <li>Use <strong>Shuffle</strong> to discover a random song</li>
                     </ul>
+                    <p class="small text-muted mb-0">
+                        Curious what changed since your last visit? The version number in
+                        the footer links to the <strong>What&rsquo;s New</strong> page.
+                    </p>
                 </div>
             </div>
         </div>
@@ -178,6 +187,40 @@ declare(strict_types=1);
                         <li><strong>Presentation mode:</strong> tap <strong>Presentation</strong> (or press <kbd>P</kbd>) for a large, full-screen, one-stanza-at-a-time view suitable for projecting or reading at a distance. Use the arrow keys to move between sections.</li>
                         <li><strong>Previous / next:</strong> step through the songbook in number order with the <kbd>&larr;</kbd> and <kbd>&rarr;</kbd> arrow keys.</li>
                     </ul>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sharing & exporting songs (#1586) — the public Export ▾ menu
+             (includes/partials/export-menu.php) ships on both the song
+             page and the songbook page, but had zero help-page coverage
+             until now. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-export"
+                        aria-expanded="false"
+                        aria-controls="help-export">
+                    <i class="fa-solid fa-file-export me-2" aria-hidden="true"></i>
+                    Sharing &amp; Exporting Songs
+                </button>
+            </h2>
+            <div id="help-export" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        On any song page — or a whole songbook page — open <strong>Export
+                        &#9662;</strong> to download the words in the format your projection
+                        software uses: ProPresenter 6, ProPresenter 7+, OpenLyrics / OpenLP,
+                        OpenSong, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain
+                        chord-sheet file). Your browser downloads a file that you then open
+                        or import in that program.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        If the menu opens but nothing downloads, refresh the page once — you
+                        may be running an older cached version of iHymns.
+                    </p>
                 </div>
             </div>
         </div>
