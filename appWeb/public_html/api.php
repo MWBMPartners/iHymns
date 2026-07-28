@@ -181,6 +181,11 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    endpoint (analyticsIngestValidateEvent()/analyticsIngestValidatePlatform()).
    Loaded top-level like its rate-limiting neighbours above. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'analytics_ingest.php';
+/* #1582 — validate/scrub/fingerprint helpers for the global client-side
+   error-beacon endpoint (clientErrorValidate()/clientErrorScrub()/
+   clientErrorFingerprint()). Same "pure helpers loaded top-level" pattern
+   as analytics_ingest.php immediately above. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'client_error_report.php';
 /* #1343-B — song PublicId (IHUID) helpers. Loaded once here so the SongId
    validators below can defensively resolve a PublicId passed by a non-web
    client back to its underlying SongId before the existing allow-list regex
@@ -289,12 +294,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
            cross-site CSRF attempt would carry a different host and
            get rejected here.
 
-           This block intentionally allows ONLY song_request_submit —
+           #1582 — `?action=client_error_report` is allow-listed here for
+           a DIFFERENT reason than song_request_submit's no-JS fallback:
+           it's the beacon target of `navigator.sendBeacon()`
+           (js/modules/error-monitor.js), and the Beacon API is defined
+           as a "simple request" that can NEVER carry a custom header —
+           there is no no-JS/CSP-failure scenario to work around, the
+           primary (and often only, e.g. during page unload) transport
+           simply has no way to set X-Requested-With, full stop. The same
+           Origin/Referer same-origin check applies; POST requests
+           (unlike GET) get an Origin header from the browser even when
+           same-origin, so this passes in practice for every real client.
+
+           This block intentionally allows ONLY these two actions —
            every other POST endpoint stays on the strict
            X-Requested-With requirement. If a new endpoint ever needs
-           a no-JS path, extend this allow-list explicitly. */
+           a no-JS / no-custom-header path, extend this allow-list
+           explicitly. */
         $action = (string)($_GET['action'] ?? '');
-        $noJsAllowedActions = ['song_request_submit'];
+        $noJsAllowedActions = ['song_request_submit', 'client_error_report'];
         $passesSameOrigin = false;
         if (in_array($action, $noJsAllowedActions, true)) {
             $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
@@ -372,6 +390,10 @@ if ($page !== null) {
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
         'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
+        /* #1583 — a deploy-time CHANGELOG.md excerpt, identical for every
+           visitor (no per-user data), so it's cacheable on the same terms
+           as help/terms/privacy. */
+        'whats-new',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -501,6 +523,13 @@ if ($page !== null) {
 
         case 'help':
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'help.php';
+            break;
+
+        case 'whats-new':
+            /* #1583 — reads the deploy-time CHANGELOG.md excerpt (data/
+               whats-new.md, absent on a fresh checkout) via markdown_lite.php's
+               escape-first renderer. No parameters, no DB access. */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'whats-new.php';
             break;
 
         case 'terms':
@@ -2314,6 +2343,28 @@ if ($action !== null) {
                 $stmt->bind_param('s', $tokenHash);
                 $stmt->execute();
                 $stmt->close();
+
+                /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+                   sign-out/410") — a signed-out user's APNs/Live Activity
+                   push tokens must stop receiving pushes for a session
+                   that's no longer theirs. Wrapped defensively: sign-out
+                   itself must NEVER 500 because of this best-effort
+                   cleanup (mirrors live_activity_push.php's own "never let
+                   a push-bridge failure surface" posture). */
+                if ($authedUser) {
+                    try {
+                        require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                        if (apnsTokensTableExists($db)) {
+                            $apnsUserId = (int)$authedUser['Id'];
+                            $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                            $delApns->bind_param('i', $apnsUserId);
+                            $delApns->execute();
+                            $delApns->close();
+                        }
+                    } catch (\Throwable $e) {
+                        error_log('[api/auth_logout] apns token cleanup failed: ' . $e->getMessage());
+                    }
+                }
             }
 
             /* Also clear the auth cookie (#390) so a subsequent page load
@@ -3729,6 +3780,23 @@ if ($action !== null) {
                 sendJson(['error' => 'Unknown device.'], 404);
                 break;
             }
+
+            /* #1429 Audit-B F3b (strategy §3.2 "push tokens deleted on
+               sign-out/410") — same cleanup as auth_logout above, wrapped
+               defensively so a signed-out device never sees a 500 because
+               of this best-effort cleanup. */
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apns.php';
+                if (apnsTokensTableExists($db)) {
+                    $delApns = $db->prepare('DELETE FROM tblApnsTokens WHERE UserId = ?');
+                    $delApns->bind_param('i', $userId);
+                    $delApns->execute();
+                    $delApns->close();
+                }
+            } catch (\Throwable $e) {
+                error_log('[api/device_signout] apns token cleanup failed: ' . $e->getMessage());
+            }
+
             sendJson(['ok' => true]);
             break;
         }
@@ -3800,13 +3868,18 @@ if ($action !== null) {
             $sessionExpiresAt = null;
             if ($kind === 'liveActivity') {
                 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+                /* #1429 C3 — session_control_token.php supplies the shared
+                   serviceMode_userCanOperate() operator check (the SAME test
+                   service_broadcast/service_session_start use), reused here
+                   rather than re-forking a 4th inline copy. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
                 $rawSessionId = (int)($body['sessionId'] ?? 0);
                 if ($rawSessionId <= 0) {
                     sendJson(['error' => 'sessionId is required for kind=liveActivity.'], 400);
                     break;
                 }
                 $channel = serviceMode_channel();
-                $sstmt = $db->prepare('SELECT Id, ExpiresAt FROM tblLiveFollowSessions WHERE Id = ? AND Channel = ? AND IsActive = 1');
+                $sstmt = $db->prepare('SELECT Id, ExpiresAt, HostUserId, OrgId FROM tblLiveFollowSessions WHERE Id = ? AND Channel = ? AND IsActive = 1');
                 $sstmt->bind_param('is', $rawSessionId, $channel);
                 $sstmt->execute();
                 $srow = $sstmt->get_result()->fetch_assoc();
@@ -3815,6 +3888,26 @@ if ($action !== null) {
                     sendJson(['error' => 'Unknown or ended session.'], 404);
                     break;
                 }
+
+                /* GAP FIX (#1429 C3) — before this, ANY authenticated user
+                   could register a push token against ANY active session by
+                   guessing/enumerating its numeric id, letting a stranger's
+                   device receive Live Activity updates for someone else's
+                   service. Only someone allowed to OPERATE the session
+                   (global/org admin, the session's own host, or an
+                   org-admin of the session's org) may register a token for
+                   it. Live-Follow HOST sessions carry OrgId=NULL (cast to 0
+                   below), so for those the HostUserId===userId arm is the
+                   one that actually fires. This gate applies ONLY to
+                   kind=liveActivity — ordinary device tokens (kind='device')
+                   are never session-scoped, so they are unaffected. */
+                $role = (string)($authUser['Role'] ?? '');
+                if (!serviceMode_userCanOperate($userId, $role, (int)($srow['OrgId'] ?? 0), (int)($srow['HostUserId'] ?? 0))) {
+                    logActivity('apns.token.register', 'user', (string)$userId, ['kind' => $kind, 'session_id' => $rawSessionId, 'reason' => 'not_authorised'], 'failure');
+                    sendJson(['error' => 'Not authorised for this session.'], 403);
+                    break;
+                }
+
                 $sessionId = (int)$srow['Id'];
                 $sessionExpiresAt = (string)$srow['ExpiresAt'];
             }
@@ -9637,6 +9730,117 @@ if ($action !== null) {
         }
 
         /* -----------------------------------------------------------------
+         * #1582 — Global client-side JS error / unhandled-rejection beacon.
+         * POST a small JSON body from `navigator.sendBeacon()` (fetch as
+         * fallback) — see `js/modules/error-monitor.js::bootErrorMonitor()`:
+         *   { "m": "TypeError: x is not a function", "s": "/js/app.js",
+         *     "l": 1204, "c": 7, "r": "/song/MP-1008", "v": "3.4.0",
+         *     "ch": "Alpha", "k": "error", "st": ["/js/app.js:1204", ...] }
+         * Anonymous — no auth, no CSRF token; sendBeacon() cannot carry
+         * custom headers at all, so this action is on the no-JS same-
+         * origin allow-list above (Origin/Referer check) rather than the
+         * standard X-Requested-With gate — see that block's #1582 note.
+         * Mirrors analytics_ingest's shape immediately above (rate limit,
+         * body cap, POST-only) but writes through the EXISTING audit
+         * trail — no new table (rule #19/#20). Validation, scrubbing and
+         * fingerprinting are the pure helpers in
+         * includes/client_error_report.php; this case only wires DB +
+         * rate limiting around them.
+         * ----------------------------------------------------------------- */
+        case 'client_error_report': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* Same generic tblLoginAttempts-backed counter analytics_ingest
+               uses. Tight budget — this is a rare "something broke" signal
+               from ONE beacon per throttled fingerprint, not a batching
+               client, so 10/60s comfortably covers a legitimate burst of a
+               few distinct bugs while still capping a runaway client. */
+            checkRateLimit('client_error', $ip, 10, 60, true);
+            recordRateLimitHit('client_error', $ip);
+
+            $rawBody = (string)file_get_contents('php://input');
+            /* 8 KB body cap — a single report (message + up to 3 short
+               stack frames, all pre-capped client-side) fits in well
+               under 1 KB; anything past 8 KB isn't a real report. */
+            if (strlen($rawBody) > 8192) {
+                sendJson(['error' => 'Request body too large.'], 413);
+                break;
+            }
+            $body = json_decode($rawBody, true);
+            /* clientErrorValidate() independently normalises every field
+               and returns null only for a fundamentally unusable payload
+               (missing/unknown `k`, empty `m`) — see that function's
+               doc-block. A malformed body is silently dropped below
+               rather than surfaced as an error the sendBeacon() caller
+               has no way to read anyway. */
+            $clean = is_array($body) ? clientErrorValidate($body) : null;
+
+            if ($clean !== null) {
+                $env  = ihymns_environment();
+                $hash = clientErrorFingerprint($clean, $env);
+
+                /* Server-side dedupe backstop (15 min), ON TOP OF the
+                   client's own 10-min sessionStorage throttle — a second
+                   tab, a different device, or a client that cleared
+                   sessionStorage hitting the SAME bug within the window
+                   would otherwise still double-write. Queries the
+                   existing idx_Entity (EntityType, EntityId) index.
+                   FAILS OPEN: mysqli throws under STRICT (CLAUDE.md rule
+                   #19), and losing the dedupe check is far cheaper than
+                   losing the underlying report, so any read failure here
+                   just falls through to logging anyway. */
+                $recentlyLogged = false;
+                try {
+                    $db = getDbMysqli();
+                    $entityType = 'client';
+                    $stmt = $db->prepare(
+                        'SELECT 1 FROM tblActivityLog
+                          WHERE EntityType = ? AND EntityId = ?
+                            AND CreatedAt > DATE_SUB(NOW(), INTERVAL 15 MINUTE)
+                          LIMIT 1'
+                    );
+                    $stmt->bind_param('ss', $entityType, $hash);
+                    $stmt->execute();
+                    $recentlyLogged = (bool)$stmt->get_result()->fetch_row();
+                    $stmt->close();
+                } catch (\Throwable $e) {
+                    error_log('[client_error_report] dedupe check failed: ' . $e->getMessage());
+                    $recentlyLogged = false; /* fail open — see docblock above */
+                }
+
+                if (!$recentlyLogged) {
+                    /* logActivity() is itself best-effort (never throws —
+                       see activity_log.php's header), so no try/catch
+                       needed here. EntityId=$hash is what the dedupe
+                       SELECT above keys on for the NEXT beacon. */
+                    logActivity('client.jserror', 'client', $hash, [
+                        'kind'    => $clean['k'],
+                        'message' => $clean['m'],
+                        'source'  => $clean['s'],
+                        'line'    => $clean['l'],
+                        'col'     => $clean['c'],
+                        'path'    => $clean['r'],
+                        'version' => $clean['v'],
+                        'channel' => $clean['ch'],
+                        'stack'   => $clean['st'],
+                    ], 'error');
+                }
+            }
+
+            /* Always ok=true — this is a fire-and-forget beacon (often
+               sent via sendBeacon(), whose caller never reads the
+               response body). A rejected/deduped/malformed payload is
+               silently dropped rather than surfaced as an error the
+               client has no way to act on. */
+            sendJson(['ok' => true]);
+            break;
+        }
+
+        /* -----------------------------------------------------------------
          * #462 — Effective licence set for a given user (admin-only).
          * Returns the resolved inheritance-aware list for debugging +
          * future admin UI. Shape matches licences.php::getUserEffectiveLicences.
@@ -13882,6 +14086,7 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -13920,12 +14125,32 @@ if ($action !== null) {
                 if (!$songOk) { sendJson(['error' => 'Unknown song.'], 400); break; }
             }
 
-            /* One active session per host — supersede any prior one. */
-            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
-            $deact->bind_param('i', $userId);
+            /* One active session per host — supersede any prior one. #1429 —
+               capture the OLD session's Id BEFORE deactivating so its Live
+               Activity (if any device registered one) can be told the
+               broadcast has ended, rather than left stuck "live" forever.
+               #1429 Audit-B F4 — CHANNEL-SCOPED (rule #26), matching
+               service_session_start's own supersede below: without this, a
+               host's prior active session on a DIFFERENT channel (e.g. an
+               alpha-created session, HostUserId shared across the 3
+               docroots via the same MySQL) would be silently deactivated
+               here with NO end-push ever sent for it (liveActivitySessionPush
+               itself channel-re-resolves and would just no-op on a
+               cross-channel session id). */
+            $oldSel = $db->prepare('SELECT Id FROM tblLiveFollowSessions WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $oldSel->bind_param('is', $userId, $channel);
+            $oldSel->execute();
+            $oldRow = $oldSel->get_result()->fetch_assoc();
+            $oldSel->close();
+
+            $deact = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1 AND Channel = ?');
+            $deact->bind_param('is', $userId, $channel);
             $deact->execute();
             $superseded = $deact->affected_rows > 0;
             $deact->close();
+            if ($oldRow) {
+                liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+            }
 
             /* Crockford-ish base32, no ambiguous glyphs (no I/L/O/U/0/1). */
             $alphabet = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
@@ -13963,7 +14188,10 @@ if ($action !== null) {
                 'has_song'    => $songId !== null,
             ]);
 
-            sendJson(['ok' => true, 'code' => $code, 'revision' => 0]);
+            /* #1429 — sessionId exposed so the native app can immediately
+               register a Live Activity push token against THIS session
+               (apns_register's kind=liveActivity branch requires it). */
+            sendJson(['ok' => true, 'code' => $code, 'revision' => 0, 'sessionId' => $newSessionId]);
             break;
         }
 
@@ -13972,6 +14200,7 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $liveIp = $_SERVER['REMOTE_ADDR'] ?? '';
 
@@ -14036,6 +14265,13 @@ if ($action !== null) {
             $rev = $revRow ? (int)$revRow[0] : 0;
             $sel->close();
 
+            /* #1429 — $preRow['Id'] is the session's numeric Id (unchanged by
+               this UPDATE, since it filters on SessionCode+HostUserId, not
+               Id) — reused here rather than re-selecting it. */
+            if (isset($preRow['Id'])) {
+                liveActivitySessionPush($db, (int)$preRow['Id'], 'update');
+            }
+
             sendJson(['ok' => true, 'revision' => $rev]);
             break;
         }
@@ -14083,6 +14319,7 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { sendJson(['error' => 'POST method required.'], 405); break; }
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
 
             $body = json_decode(file_get_contents('php://input'), true);
@@ -14107,6 +14344,7 @@ if ($action !== null) {
 
             if ($endRow) {
                 logActivity('live.session.end', 'live_session', (string)$endRow['Id'], []);
+                liveActivitySessionPush($db, (int)$endRow['Id'], 'end');
             }
 
             sendJson(['ok' => true]);
@@ -14253,6 +14491,7 @@ if ($action !== null) {
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -14286,8 +14525,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Not authorised for this organisation.'], 403); break;
             }
 
-            /* Schedule (if given) must belong to the venue → start/duration/tz. */
+            /* Schedule (if given) must belong to the venue → start/duration/tz.
+               No schedule selected (scheduleId <= 0) is the AD-HOC path: the
+               10:00/90-minute values below are a placeholder, not a real
+               chosen time (#1576 — see serviceMode_occurrenceEndUtc()'s
+               doc-block for why that matters to the end-time floor). */
             $startTime = '10:00:00'; $duration = 90; $schedTz = $venueTz; $scheduleIdN = null;
+            $isAdHoc = true;
             if ($scheduleId > 0) {
                 $sstmt = $db->prepare('SELECT StartTime, DurationMins, TimeZone FROM tblOrgServiceSchedules WHERE Id = ? AND VenueId = ?');
                 $sstmt->bind_param('ii', $scheduleId, $venueId);
@@ -14299,8 +14543,25 @@ if ($action !== null) {
                 $duration    = (int)$sched['DurationMins'];
                 $schedTz     = ($sched['TimeZone'] ?? '') ?: $venueTz;
                 $scheduleIdN = $scheduleId;
+                $isAdHoc     = false;
             }
-            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz);
+            /* #1576 — $isAdHoc floors the result so an ad-hoc evening start
+               is never born already-expired; an explicit schedule stays honest. */
+            $endUtc = serviceMode_occurrenceEndUtc($occDate, $startTime, $duration, $schedTz, $isAdHoc);
+
+            /* #1429 — capture the OLD session's Id BEFORE deactivating (same
+               rationale as live_follow_create's supersede, above) so its
+               Live Activity is told the broadcast ended rather than left
+               stuck "live". */
+            $oldSel = $db->prepare(
+                "SELECT Id FROM tblLiveFollowSessions
+                  WHERE SessionKind = 'service' AND IsActive = 1 AND Channel = ?
+                    AND VenueId = ? AND OccurrenceDate = ? AND (ScheduleId <=> ?)"
+            );
+            $oldSel->bind_param('sisi', $channel, $venueId, $occDate, $scheduleIdN);
+            $oldSel->execute();
+            $oldRow = $oldSel->get_result()->fetch_assoc();
+            $oldSel->close();
 
             /* Supersede any prior active service session for the same occurrence + channel. */
             $deact = $db->prepare(
@@ -14312,6 +14573,9 @@ if ($action !== null) {
             $deact->execute();
             $superseded = $deact->affected_rows > 0;
             $deact->close();
+            if ($oldRow) {
+                liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+            }
 
             /* Insert the session (SessionKind=service; SessionCode is the spine's
                required unique id, internal — congregants use the rotating codes).
@@ -14361,6 +14625,7 @@ if ($action !== null) {
             if (!$authUser) { sendJson(['error' => 'Not authenticated.'], 401); break; }
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'service_mode.php';
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'entitlements.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
             $userId = (int)$authUser['Id'];
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
@@ -14417,6 +14682,7 @@ if ($action !== null) {
                     $db->commit();
                 } catch (\Throwable $e) { $db->rollback(); throw $e; }
                 logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
+                liveActivitySessionPush($db, $sessionId, 'end');
                 sendJson(['ok' => true]);
                 break;
             }
@@ -14483,6 +14749,7 @@ if ($action !== null) {
                serviceMode_userCanOperate() check AND the control-token
                validator the new delegated-auth path below consults. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'session_control_token.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'live_activity_push.php';
 
             /* #1408 — EARLY per-IP throttle, DISTINCT bucket from the
                per-user one below. Before this change, an unauthenticated
@@ -14579,6 +14846,8 @@ if ($action !== null) {
             $rev->execute();
             $revision = (int)($rev->get_result()->fetch_assoc()['StateRevision'] ?? 0);
             $rev->close();
+
+            liveActivitySessionPush($db, $sessionId, 'update');
 
             /* §3.2 — song-change only, never on a component-index-only nudge.
                'via' (#1408) is a fixed 'bearer'|'control_token' string —

@@ -22,6 +22,7 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
 
 export class SongOfTheDay {
     /**
@@ -36,15 +37,31 @@ export class SongOfTheDay {
     }
 
     /**
-     * Initialise — wire a single iHymns:language-filter-changed listener
+     * Initialise — wire a single EVT_LANGUAGE_FILTER_CHANGED listener
      * (#855) so the SoTD card re-fetches when the user toggles the
      * "Show languages" filter. Bound on document (not the container) so it
      * survives the SPA's home-section re-renders without rebinding.
+     *
+     * #1581 — M4 correction: this listener and songbook-language-filter.js's
+     * dispatch were NEVER the mismatched pair — both already used the same
+     * capital-H 'iHymns:...' spelling and matched each other correctly (by
+     * luck of matching typos, not by design). THE actual bug lived in
+     * settings-language-filter.js, which dispatched a DIFFERENT, lowercase
+     * 'ihymns:...' spelling that this listener (bound to the capital-H
+     * name) could never match — DOM event types are case-sensitive, so
+     * toggling the language filter from Settings silently never refreshed
+     * this card. All three modules now import the same
+     * EVT_LANGUAGE_FILTER_CHANGED constant (the lowercase spelling, since
+     * that's what js/constants.js standardised on), so no dispatch/listen
+     * site can drift from any other again. (See
+     * tests/test-event-names.js, which bans a raw quoted event-name
+     * literal outside constants.js — the '...' shorthand above is
+     * deliberate, not the full literal.)
      */
     init() {
         if (this._langFilterBound) return;
         this._langFilterBound = true;
-        document.addEventListener('iHymns:language-filter-changed', () => {
+        document.addEventListener(EVT_LANGUAGE_FILTER_CHANGED, () => {
             this.renderHomeSection();
         });
     }

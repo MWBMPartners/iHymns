@@ -8,12 +8,19 @@
 // DETAILED: #190 (Apple Phase 1 — "In-app Help... concise how-to content +
 // a link to the web help/support"). Content is a DELIBERATELY SHORT native
 // summary, not a mirror of the web's much larger accordion-style help page
-// (`appWeb/public_html/includes/pages/help.php`, 18 topics incl. web-only
+// (`appWeb/public_html/includes/pages/help.php`, 21 topics incl. web-only
 // features like "Practice / Memorisation Mode," "Requesting a song," and
 // the Admin Portal) — this task's own brief calls for "concise," and this
 // screen only covers what the NATIVE app actually ships today (verified
 // against `SongDetailToolbar.swift`'s real toolbar actions and this
-// package's real screens, not the web feature list). The "More on the
+// package's real screens, not the web feature list). Six sections today:
+// Browse & Search, Reading a Song, Favourites & Setlists, Live Sessions,
+// Offline Songs, and Accessibility. The "Live Sessions" section (#1577)
+// covers BOTH Live Follow and Service Mode in one terse paragraph — the
+// native `LiveHubView` already keeps the two visually distinct (a
+// "Join with a Code…" entry anyone can use, a "Go Live" section gated on
+// sign-in), so this screen only needs to point at the Live tab, not
+// re-explain the split the web help now leads with. The "More on the
 // web" link (`CanonicalURL.help`) is where the fuller guide lives — surveyed
 // `appWeb/public_html` first (see that file's own doc comment) rather than
 // inventing a `/support`/`/contact` URL that doesn't exist.
@@ -34,6 +41,9 @@ public struct HelpView: View {
             }
             Section("Favourites & Setlists") {
                 Text("Tap the heart icon on a song to favourite it. Build a setlist from the Setlists tab, add songs to it, then share it with your team.")
+            }
+            Section("Live Sessions") {
+                Text("Open the Live tab to follow along in real time. Tap \"Join with a Code…\" and enter the code from the venue screen or your worship leader — no sign-in needed. If you're signed in, tap \"Go Live\" to broadcast the songs you open, then share the code shown with your group.")
             }
             Section("Offline Songs") {
                 Text("Tap the download icon on a song to save it for offline reading. Manage everything you've saved from Settings → Storage & Offline.")

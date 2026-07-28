@@ -13,6 +13,8 @@
  * logged-in).
  */
 
+import { EVT_AUTH_CHANGED } from '../constants.js';
+
 const POLL_INTERVAL_MS = 60_000;   /* 1 min — cheap enough, avoids bursty refresh */
 const MAX_VISIBLE_ROWS = 50;
 
@@ -29,8 +31,8 @@ export class Notifications {
 
         /* Reveal / hide + refresh on auth changes (login, logout, remote
            session invalidation). The user-auth module dispatches
-           `ihymns:auth-changed` — see user-auth.js::_broadcastAuthChanged. */
-        document.addEventListener('ihymns:auth-changed', () => this._applyAuthState());
+           `EVT_AUTH_CHANGED` — see user-auth.js::_broadcastAuthChanged. */
+        document.addEventListener(EVT_AUTH_CHANGED, () => this._applyAuthState());
         this._applyAuthState();
 
         /* Mark-all-read button in the panel header. */

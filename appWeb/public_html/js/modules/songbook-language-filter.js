@@ -34,6 +34,24 @@
  * an SPA navigation) without binding duplicate handlers.
  */
 
+/* #1581 — M4 correction: this module's own dispatch/listener pair with
+   song-of-the-day.js was NEVER the mismatch — both already used the same
+   capital-H event-name spelling and matched each other correctly (by
+   luck of matching typos, not by design). THE actual bug lived in
+   settings-language-filter.js, which dispatched a DIFFERENT, lowercase
+   spelling of the same event name that neither listener was ever bound
+   for — DOM event types are case-sensitive, so toggling the language
+   filter from Settings silently never refreshed anything. Importing the
+   shared constant here (now the lowercase spelling, since that's what
+   js/constants.js standardised on) means every dispatch/listen site
+   reads from one source of truth and two files can never disagree on
+   spelling again — this module's own pairing with song-of-the-day.js
+   was already fine, but is now provably so rather than fine by
+   coincidence. See tests/test-event-names.js, which bans a raw quoted
+   event-name literal outside constants.js — that's also why this note
+   describes the two spellings in prose instead of quoting them. */
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+
 const STORAGE_KEY = 'songbook-language-filter';
 
 /**
@@ -214,7 +232,7 @@ function applyFilter(rootEl, subtags) {
        Detail.subtags carries the canonical lowercase array; an empty
        array means "All" / no filter. */
     try {
-        document.dispatchEvent(new CustomEvent('iHymns:language-filter-changed', {
+        document.dispatchEvent(new CustomEvent(EVT_LANGUAGE_FILTER_CHANGED, {
             detail: { subtags: Array.from(set) },
         }));
     } catch (_e) { /* polyfill territory; harmless to skip */ }

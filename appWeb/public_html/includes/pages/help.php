@@ -7,14 +7,24 @@
  * In-app help and user guide. Provides instructions for using the
  * application, including accounts &amp; signing in (email, password,
  * Sign in with Apple), searching, reading a song (transpose/chords,
- * sheet music, audio, compare versions, Presentation mode), favourites,
- * setlists, collections/series, Song of the Day, personal stats, themes,
- * PWA install, offline songs, Service Mode (congregation live-follow),
- * keyboard shortcuts, and accessibility.
+ * sheet music, audio, compare versions, Presentation mode), sharing &amp;
+ * exporting songs to projection software, favourites, setlists,
+ * collections/series, Song of the Day, personal stats, themes,
+ * PWA install, offline songs, following a live service (Service Mode,
+ * for a congregant), Go Live (Live Follow — any signed-in user hosting
+ * their own live session), keyboard shortcuts, and accessibility.
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-10 (v0.4000.0)
+ * Last updated: 2026-07-28 (v0.4000.0) — added the "Sharing & exporting
+ * songs" topic (#1586), which had zero coverage despite the public
+ * Export ▾ menu shipping on both the song and songbook pages; also
+ * pointed "Getting Started" at the footer's What's New link (#1583).
+ * Previous update 2026-07-26 split the single "Following a Live
+ * Service" item into two adjacent items so Service Mode (church admin
+ * console, rotating venue code) and Live Follow (any signed-in user,
+ * fixed personal code) can no longer be confused for one another
+ * (#1577).
  */
 
 declare(strict_types=1);
@@ -57,6 +67,10 @@ declare(strict_types=1);
                         <li>Save songs to <strong>Favourites</strong> for quick access later</li>
                         <li>Use <strong>Shuffle</strong> to discover a random song</li>
                     </ul>
+                    <p class="small text-muted mb-0">
+                        Curious what changed since your last visit? The version number in
+                        the footer links to the <strong>What&rsquo;s New</strong> page.
+                    </p>
                 </div>
             </div>
         </div>
@@ -177,6 +191,40 @@ declare(strict_types=1);
             </div>
         </div>
 
+        <!-- Sharing & exporting songs (#1586) — the public Export ▾ menu
+             (includes/partials/export-menu.php) ships on both the song
+             page and the songbook page, but had zero help-page coverage
+             until now. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-export"
+                        aria-expanded="false"
+                        aria-controls="help-export">
+                    <i class="fa-solid fa-file-export me-2" aria-hidden="true"></i>
+                    Sharing &amp; Exporting Songs
+                </button>
+            </h2>
+            <div id="help-export" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        On any song page — or a whole songbook page — open <strong>Export
+                        &#9662;</strong> to download the words in the format your projection
+                        software uses: ProPresenter 6, ProPresenter 7+, OpenLyrics / OpenLP,
+                        OpenSong, VideoPsalm, FreeShow, Proclaim, or ChordPro (a plain
+                        chord-sheet file). Your browser downloads a file that you then open
+                        or import in that program.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        If the menu opens but nothing downloads, refresh the page once — you
+                        may be running an older cached version of iHymns.
+                    </p>
+                </div>
+            </div>
+        </div>
+
         <!-- External Links & Works (#833 / #840) -->
         <div class="accordion-item">
             <h2 class="accordion-header">
@@ -290,7 +338,13 @@ declare(strict_types=1);
             </div>
         </div>
 
-        <!-- Service Mode — congregation live-follow (#1323/#1335) -->
+        <!-- Following a Live Service (Service Mode) — church admin console,
+             rotating venue code (#1323/#1335). Kept anchor #help-service-mode
+             to preserve deep links. This item and "Go Live" immediately below
+             it are DELIBERATELY split into two adjacent items (#1577) — the
+             two features share a join dialog and have been mistaken for one
+             another in every failed test of this feature to date. Do not
+             merge them back into one item. -->
         <div class="accordion-item">
             <h2 class="accordion-header">
                 <button class="accordion-button collapsed"
@@ -300,22 +354,85 @@ declare(strict_types=1);
                         aria-expanded="false"
                         aria-controls="help-service-mode">
                     <i class="fa-solid fa-tower-broadcast me-2" aria-hidden="true"></i>
-                    Following a Live Service
+                    Following a Live Service (Service Mode)
                 </button>
             </h2>
             <div id="help-service-mode" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
                 <div class="accordion-body">
                     <p>
-                        If your church has switched on <strong>Service Mode</strong>, a rotating code is
-                        shown on the venue's screen. Tap <strong>Join a live service</strong> on the home
-                        page, enter the code, and your device follows along — as the leader moves through
-                        the songs, your screen automatically switches to the same song they're on.
+                        If your church runs <strong>Service Mode</strong>, a short code appears on the
+                        venue's screen and changes every half-minute or so — the latest one always
+                        works. Tap <strong>Join a live service</strong> on the home page, enter it, and
+                        your screen follows the service: as the leader moves through songs and verses,
+                        yours moves too. This is different from <strong>Live Follow</strong> below —
+                        that code comes from a person, this one comes from the screen.
                     </p>
-                    <ul class="mb-0">
+                    <ul>
                         <li>No account is required to join — a green <strong>Following the service live</strong> bar appears at the bottom of the screen while you're connected.</li>
                         <li>Tap <strong>Leave</strong> on that bar to stop following at any time.</li>
                         <li>Following ends automatically once the service is over, or if the code's session expires.</li>
+                        <li>If the code is refused, read the <strong>current</strong> code off the screen and try again — and make sure you're on the same iHymns site address as your church.</li>
                     </ul>
+                    <p class="small text-muted mb-0">
+                        Leading the service? Start and project the code from
+                        <a href="/manage/service-projection">Service Projection</a>, or drive it from
+                        your phone at <a href="/manage/service-lead">Lead a Service</a> — both in the
+                        admin console under Venues.
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Go Live — Lead Your Own Live Session (Live Follow) — any signed-in
+             user, no church setup (#1268). NEW anchor, sits immediately after
+             Service Mode above (#1577) so the two are read together and
+             contrasted, not encountered in isolation. -->
+        <div class="accordion-item">
+            <h2 class="accordion-header">
+                <button class="accordion-button collapsed"
+                        type="button"
+                        data-bs-toggle="collapse"
+                        data-bs-target="#help-live-follow"
+                        aria-expanded="false"
+                        aria-controls="help-live-follow">
+                    <i class="fa-solid fa-tower-cell me-2" aria-hidden="true"></i>
+                    Go Live &mdash; Lead Your Own Live Session (Live Follow)
+                </button>
+            </h2>
+            <div id="help-live-follow" class="accordion-collapse collapse" data-bs-parent="#help-accordion">
+                <div class="accordion-body">
+                    <p>
+                        <strong>Live Follow</strong> lets any signed-in user broadcast the songs they
+                        open, to any device that joins with their code — no church setup, no venue,
+                        nothing to configure. It's ideal for a band rehearsal, a home group, or a
+                        leader sharing with the AV desk.
+                    </p>
+
+                    <h3 class="h6">To lead</h3>
+                    <ol>
+                        <li>Sign in, open any song.</li>
+                        <li>Tap <strong>Go Live</strong> in the song's button row — you'll get a
+                            six-character code (this one doesn't change).</li>
+                        <li>Share it; then open songs as normal — everyone following switches with
+                            you.</li>
+                        <li>Tap <strong>End</strong> when done.</li>
+                    </ol>
+
+                    <h3 class="h6 mt-3">To follow</h3>
+                    <ol class="mb-3">
+                        <li>Tap <strong>Join Live</strong> on any song page (or <strong>Join a live
+                            service</strong> on the home page — it accepts either kind of code).</li>
+                        <li>Enter the code — capitals, spaces and dashes don't matter.</li>
+                        <li>A blue <strong>Following &hellip; live</strong> bar appears; tap
+                            <strong>Leave</strong> to stop.</li>
+                    </ol>
+
+                    <p class="small text-muted mb-0">
+                        Keep the leader's screen awake &mdash; if it sleeps for more than a few
+                        minutes the session pauses and followers may need to re-join. Everyone must
+                        be on the same iHymns site address. Signing out, or going live again (which
+                        makes a new code), ends the previous session.
+                    </p>
                 </div>
             </div>
         </div>

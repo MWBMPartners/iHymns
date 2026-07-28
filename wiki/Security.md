@@ -23,6 +23,12 @@ upgrade-insecure-requests;
 
 All CDN resources include **Subresource Integrity (SRI)** hashes.
 
+The CSP is **enforcing** — no `'unsafe-inline'` on `script-src`. Because of this, SPA page fragments (served as separate, sometimes shared-cache, HTTP responses from `api.php?page=...`) must never carry an executable inline `<script>`: the browser silently refuses a nonce-less script node, with no visible error. A CI guard (`tests/php/test-fragment-inline-scripts.php`) fails the build on any such script under `includes/pages/` or `includes/partials/`. See [[Architecture]] for the full SPA-fragment pattern.
+
+### Client error telemetry (#1582)
+
+Uncaught browser errors surface one generic toast to the user and are beaconed — deduplicated, throttled, and privacy-scrubbed — to the existing activity log (`POST ?action=client_error_report` → `tblActivityLog`, `Action=client.jserror`). Scrubbing strips bearer tokens, 64-hex strings, and query-string secrets, and reduces stack traces to `pathname:line`. Reports are anonymous, rate-limited, and fail open — this is not a new PII surface, and not consent-gated analytics.
+
 ---
 
 ## Authentication Security
@@ -68,11 +74,9 @@ All CDN resources include **Subresource Integrity (SRI)** hashes.
 
 ### MySQLi Prepared Statements
 
-All song data queries use MySQLi with **prepared statements** — no string interpolation of user input into SQL. This prevents SQL injection attacks.
+**All** queries — song data, admin panel, and auth alike — go through the single `getDbMysqli()` connection factory (`includes/db_mysql.php`) using MySQLi with **prepared statements**; every value entering a SQL string is bound via `$stmt->bind_param(...)`, never string-interpolated. This prevents SQL injection attacks.
 
-### PDO Prepared Statements
-
-All admin panel / auth queries use PDO with prepared statements, providing the same SQL injection protection.
+**PDO was fully removed from the codebase** (#554/#555) — there is no PDO connection anywhere, admin panel included. mysqli runs under `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT`, so a failing statement throws rather than silently returning `false`.
 
 ### Credential Storage
 
@@ -170,12 +174,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 ## Rate Limiting
 
-Currently not implemented at the application level. Recommendations:
+Application-level rate limiting exists on multiple layers:
 
-- Use web server rate limiting (Apache `mod_ratelimit`, nginx `limit_req`)
-- Consider adding application-level rate limiting for auth endpoints
-- Rate limit password reset requests per IP
+- **Read endpoints** — `enforceReadRateLimit()` / `enforceReadRateLimitKeyed()` (`includes/read_rate_limit.php`, #1354) throttle the heaviest public reads (e.g. bulk song lists) against a `tblReadRateLimit` windowed counter, per IP or per auth context
+- **Admin login lockout** — 10 failed attempts from an IP within 15 minutes locks out further attempts (checked against `tblLoginAttempts`) **before** the password is even verified, so the lockout holds even for a correct guess during the window
+- **Live Follow / Service Mode** — session-creates and joins are separately rate-limited (see [[Live Follow & Service Mode]])
 - Song requests are rate-limited to `max_song_requests_per_day` per IP (configurable via `tblAppSettings`)
+
+Web-server-level rate limiting (Apache `mod_ratelimit`, nginx `limit_req`) can still be layered on top as defence-in-depth, but is no longer the only line of defence.
 
 ---
 
@@ -192,7 +198,7 @@ Currently not implemented at the application level. Recommendations:
 ## Recommendations for Production
 
 1. **Enable HTTPS** — the session cookie `secure` flag activates automatically
-2. **Set up rate limiting** at the web server level for `/api.php` auth endpoints
+2. **Consider additional web-server-level rate limiting** for `/api.php` auth endpoints as defence-in-depth (application-level login lockout and read-endpoint rate limiting already exist — see Rate Limiting above)
 3. **Remove `_dev_token`** from `auth_forgot_password` response in production
 4. **Implement email delivery** for password reset tokens
 5. **Monitor** `tblApiTokens` table size and clean up expired tokens periodically

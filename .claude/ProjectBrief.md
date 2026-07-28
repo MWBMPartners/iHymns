@@ -4,6 +4,44 @@
 
 ---
 
+## 📌 Continuation note — 2026-07-28
+
+**Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
+(the 2026-07-26 handoff it supersedes is still the reference for the export root-cause chain).
+
+**There is ONE work-in-progress branch: `claude/observability-alpha-3k9wqz`** — pushed, no PR yet,
+targeting `alpha`. It subsumed `claude/apple-branches-cleanup-export-7mxhpo` (whose PR **#1578 must
+be CLOSED as superseded, never merged**) and with it the whole nine-branch consolidation: the Apple
+Phase-2 batch (PR-11 / PR-14 / PR-15 / PR-16), App Intents #1415, the docs branch, and the public
+export fix family. Containment was proved by comparing blob SHAs, not commit messages.
+
+Aboard, beyond the consolidation: the **observability trio** (#1581 event-name constants, #1582
+client error surfacing, #1583 What's New page), the **deploy media guard** (#1584 — every deploy was
+wiping `/data/audio` and `/data/music`), the Apple CI serialisation (#1558), the ad-hoc Service Mode
+expiry floor (#1576), the `migrate-json.php` confirm gate, the HA integrity-audit path fix, the
+**Swagger UI hardening** (#1587) and the **repo-wide documentation overhaul** (#1586).
+
+**Version is `0.4000.0`** — `appWeb/public_html/includes/infoAppVer.php` is the only authoritative
+source (auto-bumped by `version-bump.yml` on a push to **beta**, not alpha). Any version number
+written into a doc rots; prefer pointing at the footer or that file.
+
+Still the standing caveat from 2026-07-26: **the merged Swift has never been compiled locally** —
+the consolidation ran in a Linux container with no toolchain, so `apple.yml` on the PR is its first
+real build. Use the **draft-PR-until-green** procedure in the handoff to avoid the #1526 auto-merge
+race (`apple.yml` is not a required check, so an appApple PR otherwise auto-merges on the ~2-minute
+web lint, half an hour before the Apple build finishes).
+
+Two house rules came out of the export work and are now load-bearing: **rule #30** (an SPA fragment
+can never carry an executable inline `<script>` — the enforcing nonce CSP refuses it *silently*,
+which is how the entire public Export feature stayed dead for ~7 weeks) and the `fetch()`
+relative-URL red flag. Both have CI guards.
+
+> **Note on pruned handoffs:** some references below point at `.claude/sessions/*-HANDOFF.md` files
+> that were pruned in `254e9744`. They remain in git history — see `.claude/sessions/README.md` for
+> the two commands that list and recover them.
+
+---
+
 ## 🎯 What Is iHymns?
 
 A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship.
@@ -12,9 +50,14 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 - **Copyright**: © 2026– MWBM Partners Ltd
 - **License**: Proprietary (third-party components retain their own licenses)
 - **GitHub Repo**: <https://github.com/MWBMPartners/iHymns>
-- **Current Version**: `0.1250.0` (alpha, Phase 1). ✅ **MERGED TO ALPHA 2026-06-05 (PR #1160, merge `586b2265`; auto-merged + SFTP-deployed; CI green).** The **DB-direct data-layer rewrite** (epic #1010, WS-A→WS-K) — every read hits live MySQL; the whole-corpus `songs.json` file cache **decommissioned** (WS-J #1020); a DB outage returns a themed 503 (WS-K #1021) — plus the **v0.550→0.770 multi-format & lyrics-platform program** (one-pass schema #1066/#1088/#1090, importers, the #1147 home-UX rethink) is now **live on alpha** (88-commit PR: 253 files, +45k/−8.5k, 31 additive/dormant migrations). Verify-pass follow-ups also merged: W3C validity fixes (#1161/#1150), the song-link-confidence migration **OR-probe** drift fix + the v0.770.0 bump (#1162). main was promoted from beta on 2026-05-07 (PR #896, merge `76154dc4`) and the release line sits at 0.25.2. Feature flow continues through the 2026-05 #840–#852 catalogue-refresh batch (Works composition grouping, DB-driven URL auto-detect, responsive admin lists, sortable headers everywhere, bulk-promote credit-people, plus three CI/auto-merge hotfixes). Bulk-import UX improvements landed 2026-05-09 in #909 (per-songbook breakdown), #910 (activity-log per-failure rows + summary headers), and #911 (instant + live progress UX with phase labels, XHR upload progress, top-right reposition, auto-dismiss).
-- **Database**: MySQL 5.7+ (~131 tables, tblCamelCase naming). All three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to a **single shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns` — confirmed via `/manage/setup-database` connection banner across all three. 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`), per-component language override (#858 — `tblSongComponents.Language`), song media uploads (#853 — `tblSongMedia`), arrangement persistence (#892 — `tblSongs.ArrangementJson`), and bulk-import diagnostics (#906 + #907 — `tblBulkImportJobs.PerSongbookJson` + `PhaseLabel`).
-- **API**: 70+ JSON endpoints via `api.php` (now including public `action=scripts` + `action=regions` listings for native clients, #682; `?page=work&slug=…` for the Works public page, #840; the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail`, #1010/#1020; and the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave`, #1323/#1335), plus the editor's separate `/manage/editor/api.php` (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads). OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` (refreshed for Works + ExternalLink shared schemas in #843)
+- **Current Version**: **`0.4000.0`** (alpha, Phase 1). The authoritative source is
+  `appWeb/public_html/includes/infoAppVer.php` — `version-bump.yml` bumps it on a push to **beta**,
+  so a number written into any doc goes stale within days. Historical version-by-version narrative
+  (the #1010 DB-direct rewrite, the v0.550→0.770 lyrics-platform program, the 2026-05 catalogue
+  refresh, the bulk-import UX batch) has moved to the historical log at the foot of this file. The
+  release line on `main` sits at 0.25.2; `main` was promoted from `beta` on 2026-05-07 (PR #896).
+- **Database**: MySQL 5.7+ (**142 tables**, tblCamelCase naming — counted from `appWeb/.sql/schema.sql`). All three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to a **single shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns` — confirmed via `/manage/setup-database` connection banner across all three. 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`), per-component language override (#858 — `tblSongComponents.Language`), song media uploads (#853 — `tblSongMedia`), arrangement persistence (#892 — `tblSongs.ArrangementJson`), and bulk-import diagnostics (#906 + #907 — `tblBulkImportJobs.PerSongbookJson` + `PhaseLabel`).
+- **API**: **≈195 JSON actions** via `api.php`, of which 189+ are documented in the OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` — browsable with Try-it-out at `/manage/api-docs` (Swagger UI, `view_api_docs` entitlement, hardened in #1587). Notable families: the public `action=scripts` + `action=regions` listings for native clients (#682); `?page=work&slug=…` for the Works public page (#840); the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail` (#1010/#1020); the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave` (#1323/#1335); and the telemetry endpoint `action=client_error_report` (#1582). The editor has its own separate `/manage/editor/api.php` + `api2.php` (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads) — the whole-song save now lives in the shared `save_song_core.php` served by both.
 - **★ Latest (2026-06-25) — branch `feat/api-native-gating`, ~25 commits, PR in flight (this session):** the **API-native-gating + content-gating program**. **(1) Extensible gating registry** (#1352, CLAUDE.md **rule #28**) — `TIER_CAPS` in `includes/access_tier_validation.php` is the single registry; a new gateable cap is **ONE line + its migration card**, stored in the additive **`tblAccessTiers.Capabilities` JSON column** (the 7 original caps keep their `TINYINT` columns; all per-tier values live in MySQL, edited at `/manage/tiers`). **(2) Server-side content-gating enforcement** (#1353) — `includes/content_gating.php::contentGatingApply()` strips gated fields (lyric body, media) from `song_detail`/`song_data`/`random`; `checkTierAccess()` is registry-driven; **ENTIRELY DORMANT + a verified no-op unless `content_gating_enabled='1'`**, fail-open + STRICT-safe. **(3) Tier-aware web/offline gating** (#1357) — `song.php` (+ the `bulk_songs` offline bundle) composes the tier axis with the entity model; presence unlock overrides tier. **(4) Read rate-limiting** (#1354) — `includes/read_rate_limit.php` + `tblReadRateLimit` on the heavy public reads (per token/IP, 429, fail-open). **(5) Robust same-origin CSRF** (CLAUDE.md **rule #29**) — `validateCsrfRequest()` in `manage/includes/auth.php`; fixes the sporadic stale-token errors; swept across ALL manage AJAX-write pages (duplicate-songs, places-api, editor, api-keys, tags, languages, activity-log, songbooks). **(6) Editor save→v2** — `manage/editor/save_song_core.php` served by both editor APIs; editor POSTs save to api2 under its CSRF gate. **(7) The full API platform** — `/manage/api-keys` usage+limits dashboard, `catalogue:read` keyed reads (`enforceReadRateLimitKeyed`), the **dormant `content:gated`** scope (per-partner licensing grant), and **self-serve key requests** (`tblApiKeyRequests` + `request_api_keys` entitlement). Plus: the `?action=songs` whole-corpus **OOM fix** (rule #17), XSS `JSON_HEX_*` hardening, **OpenAPI refreshed to 0.1250.0**, a comprehensive docs pass (fixed stale Wiki/help.php/.md + a new Wiki `Service-Mode.md`), and the version bump to **0.1250.0**. **OPERATOR — run these `/manage/setup-database` cards** (not auto-applied): **JSON-backed tier capabilities** (#1352), **Public-read rate-limit** (#1354), **Self-serve API-key requests** (Phase D), and the **#1066 API-key usage** card. **content_gating_enabled stays `'0'`** until you decide #1357 follow-ons. **STILL TODO (own efforts):** Phase-D **webhooks**; **#1358** static `/data/audio` gating (a STAGED VERIFIED rollout — `.htaccess` deny changes live playback, can't test locally). Full detail: `.claude/sessions/2026-06-25-HANDOFF.md` (+ Continuation block) + the auto-memory resume + CLAUDE.md rules #28/#29 + `.claude/api-platform-strategy.md`. *(Prior 2026-06-21 Service Mode landing recorded in `.claude/sessions/2026-06-21-HANDOFF.md`.)*
 
 ---
@@ -50,7 +93,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
 | Platform | Technology | Directory | Status |
 | --- | --- | --- | --- |
 | Web/PWA | PHP 8.5+, Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | `appWeb/` | Core + Enhanced complete |
-| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | `appApple/` | Scaffold / in-progress (~14 Swift files) |
+| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | `appApple/` | Phase 1 + Phase 2 code-complete (`iHymnsKit` SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled, unreleased; device matrices + APNs provisioning owner-gated |
 | Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | `appAndroid/` | Scaffold / in-progress (~12 Kotlin files) |
 
 ### Application IDs
@@ -251,6 +294,18 @@ New deferred items from the 2026-05 batch:
 - **#839** — chip-list editor for song external links in `/manage/editor`.
 
 ---
+
+## 🗄 Historical log (superseded — newest entry first)
+
+> **Read this section as history, not as current state.** What follows is a stack of dated
+> "Last updated" narratives from earlier sessions, appended over months without pruning. Each was
+> accurate on its date and several contradict each other (and the header above) on version numbers,
+> table counts and platform status. When they disagree with the block at the top of this file, or
+> with `.claude/MEMORY.md`, **the top of this file wins** — and when a fact matters, read it from the
+> code (`infoAppVer.php`, `schema.sql`, `admin-links.php`) rather than from any document.
+>
+> Kept because the *reasoning* is valuable: why a schema batch was shaped the way it was, what a
+> workstream was trying to fix, which alternatives were rejected.
 
 Last updated: 2026-05-10 — refreshed at the close of the post-#852 catch-up batches (v0.50→v0.110):
 

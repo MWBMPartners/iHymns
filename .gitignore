@@ -91,6 +91,28 @@ build/
 *.code-workspace
 
 # ----------------------------------------------------------------------------
+# Claude Code — per-machine local settings
+# ----------------------------------------------------------------------------
+# `.claude/settings.local.json` is Claude Code's per-developer override file
+# (a machine-specific Bash/tool permission allowlist that embeds absolute
+# home paths). The shared `.claude/settings.json` IS committed; the `.local`
+# variant must stay local so one developer's paths + grants never leak into
+# the shared repo. The generic `*.local` rule above does NOT match a
+# `.local.json` suffix, so this explicit entry is required.
+#
+# DELIBERATE EXCEPTION (owner decision, 2026-07-26): the ROOT
+# `.claude/settings.local.json` IS tracked. The owner wants their accumulated
+# permission allowlist to travel with the repo across machines and sessions
+# rather than be rebuilt each time. The negation below keeps that one file
+# tracked while `**/settings.local.json` still protects every other location.
+# Consequence to be aware of: it embeds one machine's absolute home paths, so
+# treat edits to it as machine-specific and avoid clobbering another dev's
+# copy. Review the diff before committing changes to it — same discipline as
+# `.claude/sessions/` (see that directory's README).
+**/settings.local.json
+!.claude/settings.local.json
+
+# ----------------------------------------------------------------------------
 # Xcode
 # ----------------------------------------------------------------------------
 xcuserdata/
@@ -229,6 +251,12 @@ data/.DS_Store
 
 # CI/CD injected environment channel file (deploy-time only)
 appWeb/public_html/.env-channel
+
+# What's New excerpt (#1583) — generated from CHANGELOG.md by deploy.yml's
+# "Extract What's New from CHANGELOG.md" step on every deploy; not
+# source-of-truth. Absent locally is expected — includes/pages/whats-new.php
+# renders a themed fallback card rather than an error when it's missing.
+appWeb/public_html/data/whats-new.md
 
 # ----------------------------------------------------------------------------
 # Source Scraped Song data

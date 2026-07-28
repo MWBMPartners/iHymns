@@ -74,6 +74,24 @@ public actor LiveFollowEngine {
     /// same-module extension in another file needs at least `internal`
     /// write access).
     public internal(set) var role: Role = .idle
+    /// `tblLiveFollowSessions.Id` for the CURRENT hosting session — set in
+    /// `goLive` from `?action=live_follow_create`'s response (#1429 C6/C7),
+    /// cleared on EVERY end path (`endHosting`, `endHostingForSignOut`, and
+    /// the shared `endHostingLocally(reason:)` supersede/serverEnded
+    /// teardown, `+Host.swift`). `nil` while `.idle`/`.following`, and
+    /// (defensively) also `nil` while `.hosting` against a legacy backend
+    /// whose create response omitted the field. `public internal(set)` for
+    /// the SAME cross-file-extension reason `role` above documents — NOT
+    /// because `IHFeatures` reads it directly. #1429 Audit-B F11
+    /// correction: nothing under `Sources/` actually reads `hostSessionId`
+    /// — `AppRootViewModel+LiveActivity.swift` gets the session id from
+    /// `hostingStarted`'s OWN `sessionId` event payload (`LiveSyncEvents
+    /// .swift`'s own doc comment: "surfaced here too so `AppRootViewModel
+    /// +LiveActivity.swift` ... WITHOUT reaching back into the actor-
+    /// isolated engine for it") — the event payload IS the conduit. This
+    /// property's only reader today is `Tests/IHLiveTests/ServerLive/
+    /// LiveFollowEngineLoopTests.swift`, verifying every end path clears it.
+    public internal(set) var hostSessionId: Int?
     /// The follower reducer's state — meaningful only while `.following`;
     /// left at its default while `.idle`/`.hosting`.
     var followerState = LiveFollowerState()

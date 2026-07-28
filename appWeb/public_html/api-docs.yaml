@@ -333,6 +333,17 @@ tags:
       ingestion (#1448, `analytics_ingest`). Distinct from **Admin —
       Analytics** below (which is curator-facing reporting reads) — this
       is the public write side the Apple app's analytics sink posts to.
+  - name: Telemetry
+    description: |
+      Crash / error surfacing (#1582, `client_error_report`) — NOT
+      consent-gated analytics. `js/modules/error-monitor.js` beacons a
+      small, scrubbed JSON payload for every uncaught client-side
+      exception or unhandled promise rejection, unconditionally (no
+      opt-in), the same way a native crash reporter would. There is no
+      new table and no new PII surface: the endpoint reuses the existing
+      `logActivity()` write path and lands as `Action=client.jserror`
+      rows in `tblActivityLog`, the same audit trail every other
+      server-side action already writes to.
   - name: Admin — Analytics
     description: |
       Read-only analytics endpoints. Two of the three
@@ -3489,6 +3500,418 @@ paths:
                 $ref: "#/components/schemas/Error"
 
   # ===========================================================================
+  # DEVICE-CODE PAIRING (RFC 8628, #1407) — sign in a limited-input client
+  # (tvOS today) that cannot type a username/password: it mints a
+  # device_code (kept secret, polled with) + a short user_code (shown
+  # on-screen); a human enters that user_code at /link on a device they're
+  # already signed into and approves/denies; the limited-input client keeps
+  # polling until it gets back a normal iHymns bearer token.
+  #
+  # `tblAuthDeviceCodes` shipped live-dormant (#1511) — every action below
+  # is gated on authDeviceCodesTableExists() and degrades to 503 on an
+  # un-migrated install rather than a STRICT-mode mysqli error.
+  # ===========================================================================
+
+  /api.php?action=auth_device_code_request:
+    post:
+      operationId: authDeviceCodeRequest
+      tags: [Authentication]
+      summary: Start a device-code pairing flow (RFC 8628 §3.1, #1407)
+      description: |
+        Anonymous — no identity exists yet, that's the whole point of the
+        flow. Mints a secret `device_code` (for the limited-input client
+        to poll with) and a short, human-typeable `user_code` (shown
+        on-screen for a human to enter at `/link`). No request body.
+        Rate-limited to 20 mints / hour per IP (necessarily per-IP, since
+        there is no caller identity to key on yet).
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_code_request] }
+      responses:
+        "200":
+          description: Pairing started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  device_code:
+                    type: string
+                    description: Secret — the polling credential. Never shown to the human.
+                  user_code:
+                    type: string
+                    example: ABCD-EFGH
+                    description: Short Crockford-base32 code (XXXX-XXXX) for a human to type at `/link`.
+                  verification_uri:
+                    type: string
+                    format: uri
+                    example: https://ihymns.app/link
+                  verification_uri_complete:
+                    type: string
+                    format: uri
+                    description: verification_uri with `?user_code=` pre-filled, for a QR code / deep link.
+                  expires_in:
+                    type: integer
+                    description: Seconds until the device_code/user_code expire.
+                    example: 300
+                  interval:
+                    type: integer
+                    description: Minimum seconds between poll calls.
+                    example: 5
+        "405":
+          description: POST method required
+        "503":
+          description: Device pairing is not available yet (tblAuthDeviceCodes not migrated), or the mint failed — retry
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_device_code_poll:
+    post:
+      operationId: authDeviceCodePoll
+      tags: [Authentication]
+      summary: Poll a device code for approval (RFC 8628 §3.4, #1407)
+      description: |
+        Anonymous — gated only by knowing the secret `device_code`.
+        Rate-limited PER DEVICE-CODE (hashed), never per-IP, since several
+        limited-input devices can legitimately share one IP (e.g. a
+        church media room) — 120 polls / 60s. Every poll bumps
+        `PollCount`/`LastPolledAt` regardless of outcome.
+
+        An unknown device_code and an expired one return the SAME
+        `expired_token` error (RFC 8628 §3.5 anti-probe). On success, mints
+        the SAME kind of bearer token `auth_login` does and atomically
+        marks the code `consumed` — a concurrent second poll for the same
+        code, or a replay after success, gets `expired_token` too.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_code_poll] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [device_code]
+              properties:
+                device_code:
+                  type: string
+                  description: 64-char lowercase hex, from `auth_device_code_request`.
+      responses:
+        "200":
+          description: Approved — signed in
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: |
+            One of RFC 8628's polling states, all returned as `400` with
+            `{error: "<code>"}`: `invalid_request` (malformed device_code),
+            `authorization_pending` (still waiting for a human),
+            `slow_down` (polled faster than `interval`), `access_denied`
+            (human denied it, or the approved account is no longer active),
+            `expired_token` (unknown / expired / already-consumed code —
+            opaque, same message for all three).
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: temporarily_unavailable — tblAuthDeviceCodes not migrated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_device_code_link_lookup:
+    get:
+      operationId: authDeviceCodeLinkLookup
+      tags: [Authentication]
+      summary: Look up a pending user_code before approving/denying it (#1407)
+      description: |
+        Backs the `/link` page — lets the signed-in human confirm the code
+        they typed is genuinely pending (and see how long it has left)
+        before choosing approve/deny. Requires authentication (any signed-in
+        user may look up any pending code — the approve/deny step is what's
+        gated to acting on the caller's own account). Rate-limited (shared
+        budget with approve/deny) to 10 attempts / 600s per IP, keyed per
+        user. Unknown / already-resolved / expired codes all return the
+        SAME `not_found` (anti-probe).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_code_link_lookup] }
+        - name: user_code
+          in: query
+          required: true
+          description: Accepts either XXXXXXXX or XXXX-XXXX; case-insensitive.
+          schema: { type: string, example: ABCD-EFGH }
+      responses:
+        "200":
+          description: |
+            `{ok: true, userCode, expiresIn}` when pending, or
+            `{ok: false, error: "not_found"}` — both are HTTP 200 (the
+            client branches on `ok`).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  userCode: { type: string }
+                  expiresIn: { type: integer, description: Seconds remaining. }
+                  error: { type: string }
+        "400":
+          description: Missing/malformed user_code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string, example: invalid_code } } } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: Device pairing is not available yet (tblAuthDeviceCodes not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_device_code_approve:
+    post:
+      operationId: authDeviceCodeApprove
+      tags: [Authentication]
+      summary: Approve a pending device-code pairing (#1407)
+      description: |
+        The human's confirmation step at `/link`: approves the `user_code`
+        for the CALLER'S OWN account (the poller then gets a bearer token
+        for this account). Requires authentication plus the same-origin
+        CSRF check (`validateCsrfRequest()`, rule #29). Shares the
+        `auth_device_code_link` rate-limit budget with `_link_lookup` /
+        `_deny` (10 / 600s, keyed per authenticated user).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_code_approve] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code:
+                  type: string
+                  example: ABCD-EFGH
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Approved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Missing/malformed user_code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string, example: invalid_code } } } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: "That code isn't active — unknown, already resolved, or expired"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string, example: "That code isn't active. Check the device and try again." }
+        "405":
+          description: POST method required
+        "503":
+          description: Device pairing is not available yet (tblAuthDeviceCodes not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=auth_device_code_deny:
+    post:
+      operationId: authDeviceCodeDeny
+      tags: [Authentication]
+      summary: Deny a pending device-code pairing (#1407)
+      description: |
+        Same request/response contract, auth requirement, CSRF gate, and
+        shared rate-limit budget as `auth_device_code_approve` — the ONLY
+        difference is the code is marked `denied` instead of `approved`
+        (the poller then gets `access_denied`).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [auth_device_code_deny] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_code]
+              properties:
+                user_code:
+                  type: string
+                  example: ABCD-EFGH
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Denied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Missing/malformed user_code
+          content: { application/json: { schema: { type: object, properties: { ok: { type: boolean, example: false }, error: { type: string, example: invalid_code } } } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: "That code isn't active — unknown, already resolved, or expired"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: false }
+                  error: { type: string, example: "That code isn't active. Check the device and try again." }
+        "405":
+          description: POST method required
+        "503":
+          description: Device pairing is not available yet (tblAuthDeviceCodes not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  # ===========================================================================
+  # DEVICE MANAGEMENT (#1409, Apple Phase-2 PR-12) — list + remote sign-out of
+  # a user's OWN signed-in devices. `tblApiTokens.DeviceName/Platform/
+  # AppVersion/LastSeenAt` shipped live-dormant (#1511); every action below
+  # is apiTokensDeviceMetaColumnsExist()-gated and degrades to a graceful
+  # empty list (never an error) on an un-migrated install. The device "id"
+  # handed to the client is a truncated hash prefix — NEVER the raw token,
+  # NEVER the full stored hash.
+  # ===========================================================================
+
+  /api.php?action=devices_list:
+    get:
+      operationId: devicesList
+      tags: [Authentication]
+      summary: List the caller's own signed-in devices (#1409)
+      description: |
+        Returns every non-expired `tblApiTokens` row for the caller,
+        newest-active first, with a truncated hash-derived `id` (never the
+        raw token) so the client can offer per-device remote sign-out via
+        `device_signout`. `isCurrent` flags the token this very request
+        authenticated with. Degrades to `{devices: []}` (not an error) on
+        an un-migrated install.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [devices_list] }
+      responses:
+        "200":
+          description: The caller's devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  devices:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:         { type: string, description: Truncated hash-derived device id (never the raw token). }
+                        deviceName: { type: string, nullable: true }
+                        platform:   { type: string, nullable: true }
+                        appVersion: { type: string, nullable: true }
+                        lastSeenAt: { type: string, format: date-time, nullable: true }
+                        createdAt:  { type: string, format: date-time }
+                        expiresAt:  { type: string, format: date-time }
+                        isCurrent:  { type: boolean, description: True for the token this request itself authenticated with. }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=device_signout:
+    post:
+      operationId: deviceSignout
+      tags: [Authentication]
+      summary: Remotely sign out one of the caller's own devices (#1409)
+      description: |
+        Own-only — the DELETE's `WHERE UserId = ?` clause means this can
+        never touch another user's token, regardless of what `id` is
+        supplied. Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
+        user. Best-effort also clears any APNs push tokens for the caller
+        (#1429 F3b — "push tokens deleted on sign-out"), wrapped so that
+        cleanup failure never turns a successful sign-out into a 500.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [device_signout] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:
+                  type: string
+                  description: The device `id` from `devices_list` (16-char lowercase hex).
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Signed out
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid device id
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown device (already signed out, or belongs to a different user)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+
+  # ===========================================================================
   # USER ACCESS
   # ===========================================================================
 
@@ -5517,6 +5940,12 @@ paths:
       operationId: pushSubscribe
       tags: [Push]
       summary: Register a Web Push subscription for the current user
+      description: |
+        Dormant: no web client subscribes yet and the service worker
+        (`service-worker.js.php`) has no `push` event handler yet either,
+        so a stored subscription is never sent to. Relates to #1435; the
+        endpoint itself is live and writes to `tblPushSubscriptions`, it
+        simply has no caller.
       security:
         - bearerAuth: []
       parameters:
@@ -5551,6 +5980,11 @@ paths:
       operationId: pushUnsubscribe
       tags: [Push]
       summary: Remove a Web Push subscription
+      description: |
+        Dormant: no web client subscribes yet and the service worker
+        has no `push` event handler yet either (same #1435 gap as
+        `push_subscribe`) — the endpoint itself is live and idempotent,
+        it simply has no caller.
       security:
         - bearerAuth: []
       parameters:
@@ -5573,6 +6007,147 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+
+  # ===========================================================================
+  # APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-TOKEN REGISTRATION ONLY.
+  # Entirely dormant: nothing in this codebase calls includes/apns.php's
+  # apnsSend() yet, and even a future caller gets a guaranteed
+  # `not_configured` no-op until an owner provisions a real Apple APNs Auth
+  # Key. `tblApnsTokens` shipped live-dormant (#1511); every action below is
+  # apnsTokensTableExists()-gated.
+  # ===========================================================================
+
+  /api.php?action=apns_register:
+    post:
+      operationId: apnsRegister
+      tags: [Push]
+      summary: Register (or refresh) an APNs device/Live-Activity push token (#1410)
+      description: |
+        Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
+        user. Upserts on the token's unique key (`ON DUPLICATE KEY
+        UPDATE`), so re-registering the same token just refreshes its
+        row.
+
+        `kind: liveActivity` tokens are additionally SESSION-SCOPED: the
+        referenced `sessionId` must be an active `SessionKind='service'`
+        row in the caller's channel, AND the caller must be authorised to
+        OPERATE that session (`serviceMode_userCanOperate()` — global/org
+        admin, the session's host, or an org-admin of the session's org)
+        — otherwise `403`. This closes a gap where any authenticated user
+        could otherwise register a token against any active session by
+        guessing its numeric id. Ordinary `kind: device` tokens are not
+        session-scoped and skip this check entirely.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [apns_register] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pushToken]
+              properties:
+                pushToken:
+                  type: string
+                  description: Hex-encoded APNs device token, 32-200 chars, even length.
+                apnsEnv:
+                  type: string
+                  enum: [sandbox, production]
+                  default: production
+                  description: An unrecognised value silently falls back to `production` rather than rejecting the request.
+                kind:
+                  type: string
+                  enum: [device, liveActivity]
+                  default: device
+                  description: An unrecognised value silently falls back to `device`.
+                sessionId:
+                  type: integer
+                  description: Required (and validated) only when `kind` is `liveActivity`.
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid/missing pushToken, or missing sessionId for kind=liveActivity
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate), or (for kind=liveActivity) not authorised to operate the referenced session
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: kind=liveActivity referenced an unknown or ended session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Push registration is not available yet (tblApnsTokens not migrated), or the upsert failed — retry
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=apns_unregister:
+    post:
+      operationId: apnsUnregister
+      tags: [Push]
+      summary: Remove an APNs push token (#1410)
+      description: |
+        Requires authentication plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 / hour per
+        user. Own-only (`WHERE UserId = ?`). On an un-migrated install
+        (no `tblApnsTokens`) returns `{ok: true}` — nothing to unregister
+        — rather than a `503`, since this is a cleanup call a client may
+        fire during sign-out regardless of migration state.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [apns_unregister] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pushToken]
+              properties:
+                pushToken:
+                  type: string
+                  description: Hex-encoded APNs device token, 32-200 chars, even length.
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Removed (idempotent — `ok:true` whether or not a matching token existed)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400":
+          description: Invalid/missing pushToken
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
 
   # ===========================================================================
   # EDITOR API  (separate entry point — /manage/editor/api.php)
@@ -8631,6 +9206,32 @@ paths:
           description: HTML fragment
           content: { text/html: { schema: { type: string } } }
 
+  /api.php?page=whats-new:
+    get:
+      operationId: pageWhatsNew
+      tags: [Pages]
+      summary: Rendered What's New page (#1583)
+      description: |
+        Renders a deploy-time excerpt of `CHANGELOG.md` (extracted into
+        `data/whats-new.md` by `.github/workflows/deploy.yml`, absent on
+        a fresh checkout) through the escape-first `markdown_lite.php`
+        renderer. No parameters, no database access. A missing/empty/
+        unreadable source file, or one that renders to an empty string
+        (e.g. a byte-truncated deploy excerpt cut mid-UTF-8-character),
+        degrades to a themed "no data yet" fallback card rather than an
+        error — this page never fails. Cacheable fragment (ETag) — `whats-new`
+        is in the same-for-everyone cacheable-pages allow-list, alongside
+        `help`/`terms`/`privacy`.
+      parameters:
+        - name: page
+          in: query
+          required: true
+          schema: { type: string, enum: [whats-new] }
+      responses:
+        "200":
+          description: HTML fragment (fallback alert markup when no excerpt is available)
+          content: { text/html: { schema: { type: string } } }
+
   /api.php?page=settings:
     get:
       operationId: pageSettings
@@ -8898,6 +9499,147 @@ paths:
           description: Rate limit exceeded (20 calls / 60s per IP)
         "500":
           description: Could not record events
+
+  # ===========================================================================
+  # TELEMETRY  (#1582 — crash / error surfacing, NOT consent-gated analytics)
+  # ===========================================================================
+
+  /api.php?action=client_error_report:
+    post:
+      operationId: clientErrorReport
+      tags: [Telemetry]
+      summary: Report an uncaught client-side JS error or unhandled rejection
+      description: |
+        Fire-and-forget beacon target for `js/modules/error-monitor.js`'s
+        `bootErrorMonitor()` — every uncaught `window.onerror` /
+        `unhandledrejection` turns into one small JSON POST here.
+        Anonymous — no auth, no CSRF token.
+
+        **Transport / same-origin gate.** The primary transport is
+        `navigator.sendBeacon()` (survives page unload), falling back to
+        `fetch(…, {keepalive:true})`; the Beacon API is defined as a
+        "simple request" that can NEVER carry a custom header, so unlike
+        every other state-changing POST on this API this action is
+        exempted from the mandatory `X-Requested-With` same-origin gate
+        and instead allow-listed for an `Origin`/`Referer` host-match
+        check (api.php's top-of-file CSRF guard, #1582 note) — the same
+        no-JS fallback mechanism `song_request_submit` uses, for a
+        different reason.
+
+        **Limits.** Rate-limited to 10 calls / 60s per IP (tight —
+        this is a rare "something broke" signal, not a batching
+        client). Request body capped at 8 KB (a real report — message
+        + up to 3 short capped stack frames — fits well under 1 KB).
+
+        **Validation is independent-per-field**, via
+        `clientErrorValidate()` (`includes/client_error_report.php`):
+        only `k` (kind — closed allow-list `error` | `rejection`) and
+        `m` (message — required, non-empty) can reject the whole
+        payload; every other field (`s`/`r` source/current-page paths,
+        `l`/`c` line/column, `v`/`c` version/channel labels, `st` stack
+        frames) degrades to a safe default (empty string / `null` /
+        capped list) rather than failing the report. Every string field
+        is independently scrubbed of secret-shaped substrings (a
+        `Bearer <token>` value, a 64-hex-char digest, or a
+        `?token=`/`&password=`-shaped query-string parameter) before
+        it is stored anywhere.
+
+        **A malformed/rejected/invalid-JSON body is silently dropped**
+        — `sendBeacon()`'s caller has no way to read a response body
+        (especially during page unload), so there is nothing useful an
+        error reply could communicate; the handler always answers
+        `{ok:true}` for any body that at least parses past the method
+        and size checks.
+
+        **Server-side dedupe.** On top of the client's own 10-minute
+        `sessionStorage` throttle, the server independently dedupes by
+        a 16-hex-char fingerprint (`clientErrorFingerprint()`, hashing
+        `{env}|message|source|line`) against `tblActivityLog` for the
+        last 15 minutes — a second tab, a different device, or a
+        client that cleared `sessionStorage` hitting the same bug
+        within the window doesn't double-log. The dedupe check
+        **fails open**: if the lookup itself throws, the report is
+        logged anyway rather than silently lost.
+
+        **No new table** (rule #19/#20) — writes through the existing
+        `logActivity()` path as `Action=client.jserror`,
+        `EntityType=client`, `EntityId=<fingerprint>` rows in
+        `tblActivityLog`.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [client_error_report]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [k, m]
+              properties:
+                k:
+                  type: string
+                  description: Kind — closed 2-value allow-list. Anything else rejects the whole report.
+                  enum: [error, rejection]
+                m:
+                  type: string
+                  description: Error message. Required, non-empty; scrubbed and capped to 300 chars server-side.
+                s:
+                  type: string
+                  description: Source file path/URL. Query string and fragment are stripped server-side; capped to 255 chars.
+                l:
+                  type: integer
+                  nullable: true
+                  description: Source line number. Non-numeric/negative/absurdly large values degrade to null rather than rejecting the report.
+                c:
+                  type: integer
+                  nullable: true
+                  description: Source column number. Same clamping as `l`.
+                r:
+                  type: string
+                  description: Current-page path at the time of the error. Same query/fragment stripping and cap as `s`.
+                v:
+                  type: string
+                  description: App/build version label. Capped to 32 chars.
+                ch:
+                  type: string
+                  description: Deploy channel label (e.g. `Alpha`). Capped to 32 chars.
+                st:
+                  type: array
+                  description: Stack frames (`"path:line"` strings). Capped to the top 3, each independently scrubbed and capped to 120 chars.
+                  items: { type: string }
+            example:
+              k: error
+              m: "TypeError: x is not a function"
+              s: /js/app.js
+              l: 1204
+              c: 7
+              r: /song/MP-1008
+              v: 3.4.0
+              ch: Alpha
+              st: ["/js/app.js:1204"]
+      responses:
+        "200":
+          description: |
+            Always `{ok:true}` for any body that passes the method/size
+            checks — a rejected/deduped/malformed payload is silently
+            dropped rather than surfaced as an error the `sendBeacon()`
+            caller has no way to act on.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+        "405":
+          description: POST method required
+        "413":
+          description: Request body exceeds the 8 KB cap
+        "429":
+          description: Rate limit exceeded (10 calls / 60s per IP)
 
   # ===========================================================================
   # LICENCES (#462) — multi-licence, inheritance-aware resolution
@@ -10181,6 +10923,160 @@ paths:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
         "405":
           description: POST method required
+
+  # ---------------------------------------------------------------------------
+  # SESSION CONTROL TOKENS (#1408, Apple Phase-2 PR-9) — delegated remote
+  # control of ONE live/service session without sharing the operator's login.
+  # `tblSessionControlTokens` shipped live-dormant (#1511); every action
+  # below is sessionControlTokensTableExists()-gated. `service_broadcast`
+  # (above) is the mechanism that CONSUMES a minted token (an operator-auth
+  # OR a valid controlToken both authorise a broadcast) — but as of this
+  # writing NOTHING in this repository (no web JS, no `appApple/` code) ever
+  # calls `service_control_token_mint` to obtain one in the first place.
+  #
+  # RESERVED: no shipped client uses this yet. The leader-device flow that
+  # ships today drives a session with the operator's own bearer token via
+  # the `service_code_*` actions plus `service_broadcast` directly; a
+  # delegated co-leader device that never signs in (the scenario this pair
+  # of endpoints exists for) has no UI anywhere that calls them.
+  # ---------------------------------------------------------------------------
+
+  /api.php?action=service_control_token_mint:
+    post:
+      operationId: serviceControlTokenMint
+      tags: [Service Mode]
+      summary: Mint a delegated, revocable control token for a service session (#1408)
+      description: |
+        **Reserved: no shipped client uses this yet** — see this section's
+        header note. When used, it would let an operator hand a
+        `broadcast`-scoped token to a co-leader's device (e.g. a phone at
+        the back of the room) that can then call `service_broadcast`
+        without ever signing in, by presenting `controlToken` in that
+        call's body instead of a bearer/cookie session.
+
+        Requires an authenticated operator (`serviceMode_userCanOperate()`
+        — global/org admin, the session's host, or an org-admin of the
+        session's org) plus the same-origin CSRF check
+        (`validateCsrfRequest()`, rule #29). Rate-limited to 30 mints /
+        hour per user. The minted token's expiry is capped to the
+        session's own `ExpiresAt`.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_control_token_mint] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: integer }
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Token minted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  token:
+                    type: string
+                    description: The delegated control token — pass as `controlToken` to `service_broadcast`.
+                  scope: { type: string, example: broadcast }
+                  sessionId: { type: integer }
+        "400":
+          description: Missing sessionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate), or not authorised to operate this session
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown or ended `service`-kind session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Session control tokens are not available yet (tblSessionControlTokens not migrated), or the mint failed — retry
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  /api.php?action=service_control_token_revoke:
+    post:
+      operationId: serviceControlTokenRevoke
+      tags: [Service Mode]
+      summary: Revoke every delegated control token for a service session (#1408)
+      description: |
+        **Reserved: no shipped client uses this yet** — see the
+        `service_control_token_mint` header note above; a co-leader
+        control token is never minted in the first place today, so there
+        is nothing shipped that would call this either.
+
+        Requires the same operator authorisation and CSRF gate as
+        `service_control_token_mint`. Rate-limited to 60 revokes / hour
+        per user. Revokes ALL outstanding tokens for the session at once
+        (there is no per-token id in the request) — the response reports
+        how many rows were revoked.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [service_control_token_revoke] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId: { type: integer }
+                csrf_token:
+                  type: string
+                  description: Optional when the request already carries the same-origin X-Requested-With header.
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  revoked:
+                    type: integer
+                    description: Number of tokens revoked.
+        "400":
+          description: Missing sessionId
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "401":
+          description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "403":
+          description: Cross-origin request rejected (CSRF gate), or not authorised to operate this session
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: Unknown `service`-kind session (for this channel)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "405":
+          description: POST method required
+        "503":
+          description: Session control tokens are not available yet (tblSessionControlTokens not migrated)
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
 # =============================================================================
 # COMPONENTS

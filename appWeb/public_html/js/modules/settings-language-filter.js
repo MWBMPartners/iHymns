@@ -13,6 +13,10 @@
  * non-grid context.
  */
 
+/* #1581 — shared event-name constant; see songbook-language-filter.js for
+   the case-sensitivity bug this registry exists to prevent. */
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+
 const STORAGE_KEY = 'songbook-language-filter';
 
 function loadSavedSubtags() {
@@ -120,7 +124,7 @@ async function buildPicker(host) {
         saveToAccount(subtags);
         /* Notify other modules on the page that the filter changed
            so the songbook grid (if visible) re-applies. */
-        document.dispatchEvent(new CustomEvent('ihymns:language-filter-changed', {
+        document.dispatchEvent(new CustomEvent(EVT_LANGUAGE_FILTER_CHANGED, {
             detail: { subtags },
         }));
     }

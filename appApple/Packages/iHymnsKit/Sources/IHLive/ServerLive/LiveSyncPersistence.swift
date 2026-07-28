@@ -69,21 +69,41 @@ public struct LiveSyncPersistence: @unchecked Sendable {
     // MARK: - Service presence (`ServiceModeEngine.swift`)
 
     /// One point-in-time presence record: the opaque token, the last-known
-    /// revision, and when this device joined (the 4 h hard-ceiling clock —
-    /// spec §3.5/D-10).
+    /// revision, when this device joined (the 4 h hard-ceiling clock — spec
+    /// §3.5/D-10), and (Apple Phase-2 PR-15, #1428) the server-declared poll
+    /// cadence from the join that created this record.
+    ///
+    /// `pollIntervalMs` is `Int?` (not a plain `Int`) for TWO independent
+    /// reasons, both of which need it to decode successfully even when
+    /// absent: (1) the join response itself may omit it (an un-migrated
+    /// backend, `ServiceJoinInfo.pollIntervalMs`'s own doc comment), and (2)
+    /// a record persisted by a PRE-PR-15 build of this app never wrote this
+    /// key at all — `JSONDecoder` treats a missing `Optional` key as `nil`
+    /// rather than failing the whole decode, so an old on-disk record from
+    /// before this PR still loads via `loadServicePresence()`'s existing
+    /// `try?` (this file's header: "Optional ⇒ legacy records decode via
+    /// the existing try? loader").
     public struct ServicePresenceRecord: Codable, Sendable {
         public let token: String
         public let revision: Int
         public let joinedAt: Date
+        public let pollIntervalMs: Int?
     }
 
-    func saveServicePresence(token: String, revision: Int, joinedAt: Date) {
-        save(ServicePresenceRecord(token: token, revision: revision, joinedAt: joinedAt), forKey: Keys.servicePresence)
+    func saveServicePresence(token: String, revision: Int, joinedAt: Date, pollIntervalMs: Int? = nil) {
+        save(ServicePresenceRecord(token: token, revision: revision, joinedAt: joinedAt, pollIntervalMs: pollIntervalMs), forKey: Keys.servicePresence)
     }
 
+    /// Refreshes ONLY the revision — `pollIntervalMs` (like `token`/
+    /// `joinedAt`) is carried forward UNCHANGED from the existing record, so
+    /// a mid-session poll never quietly resets the cadence this device
+    /// joined with.
     func updateServiceRevision(_ revision: Int) {
         guard let record = loadServicePresence() else { return }
-        save(ServicePresenceRecord(token: record.token, revision: revision, joinedAt: record.joinedAt), forKey: Keys.servicePresence)
+        save(
+            ServicePresenceRecord(token: record.token, revision: revision, joinedAt: record.joinedAt, pollIntervalMs: record.pollIntervalMs),
+            forKey: Keys.servicePresence
+        )
     }
 
     /// Reads the persisted presence record, if any — `ServiceModeEngine

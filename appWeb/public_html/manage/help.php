@@ -268,6 +268,12 @@ $sections = [
         'group' => 'Operations',
     ],
     [
+        'id'    => 'api-docs',
+        'icon'  => 'bi-file-earmark-code',
+        'title' => 'API Docs (Swagger UI)',
+        'group' => 'Help',
+    ],
+    [
         'id'    => 'troubleshooting',
         'icon'  => 'bi-life-preserver',
         'title' => 'Troubleshooting & FAQs',
@@ -423,6 +429,17 @@ foreach ($sections as $s) {
                         relevant role or entitlement (see
                         <a href="#roles">Roles</a> and
                         <a href="#entitlements">Entitlements</a> below).
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Not sure which environment you're testing on? The public site's
+                        header carries a colour-distinct badge next to the version number
+                        &mdash; amber for <strong>Alpha</strong>, blue for <strong>Beta</strong>
+                        &mdash; and that same version number links through to the
+                        <strong>What's New</strong> page (#1583). Confirming this with a
+                        tester before you dig into a bug report is worth it: a Live Follow
+                        or Service Mode session hosted on one site can never be joined from
+                        another, and &ldquo;works on my machine&rdquo; is often just two
+                        people on two different environments.
                     </p>
                 </section>
 
@@ -1318,6 +1335,9 @@ foreach ($sections as $s) {
                     <p>
                         Server-side exceptions raised by admin POST handlers (the &ldquo;Database error — check server logs&rdquo; banner) are mirrored into the activity log with <code>Result='error'</code> and the exception message + class in the <code>Details</code> column. The viewer's <strong>Result = error</strong> filter is a one-click triage list — you no longer need SSH to see why a save failed.
                     </p>
+                    <ul>
+                        <li><strong>Client errors (#1582):</strong> browser-side crashes now appear here too, as <code>client.jserror</code> rows — one row per deduplicated error, not one per occurrence. When a tester says &ldquo;the button does nothing,&rdquo; filter <strong>Action</strong> to <code>client.jserror</code> and check here first, before asking for logs or a screen-share.</li>
+                    </ul>
                     <p class="small text-muted">
                         Verb prefix convention: web admin writes <code>&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>songbook.create</code>, <code>org.member_add</code>); the public-API surfaces use <code>api.admin.&lt;entity&gt;.&lt;verb&gt;</code> (e.g. <code>api.admin.songbook.create</code>) so timeline readers can tell which surface drove the change.
                     </p>
@@ -1557,7 +1577,50 @@ foreach ($sections as $s) {
                 </section>
 
                 <!-- ====================================================================
-                     HELP / TROUBLESHOOTING
+                     HELP
+                     ==================================================================== -->
+
+                <section id="api-docs" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-file-earmark-code me-2"></i>API Docs (Swagger UI)</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        <a href="/manage/api-docs">API Docs</a> is a browsable rendering of the project's OpenAPI
+                        spec (<a href="/api-docs.yaml"><code>/api-docs.yaml</code></a>) via Swagger UI &mdash;
+                        every public REST endpoint with its request / response shape, in one searchable page,
+                        instead of reading the raw YAML file. It's the same spec the <a href="#native-api">Native
+                        API surface</a> and <a href="#api-keys">API Keys</a> sections describe; this page is just
+                        a friendlier way to browse it.
+                    </p>
+                    <p class="small text-muted">
+                        Both the sidebar link and the page itself are gated on the
+                        <code>view_api_docs</code> entitlement (editor, admin, global_admin). They used to
+                        disagree &mdash; the page admitted any Curator-and-above while the link checked the
+                        entitlement, so a Curator saw no link but could still open the page by typing the
+                        address. Fixed in #1587.
+                    </p>
+                    <h3 class="h6">Authorize dialog</h3>
+                    <p>
+                        Click <strong>Authorize</strong> near the top of the page and paste a Bearer token (the
+                        same kind described under <a href="#native-api">Native API surface</a>) to let Swagger UI
+                        attach it to every request you try from here on. You don't need to re-enter it between
+                        endpoints in the same visit.
+                    </p>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> <em>Try it out</em> is enabled and fires <strong>real requests
+                        against this environment</strong> &mdash; it is not a sandbox. A <em>Try it out</em> call
+                        on a write endpoint (create, update, delete) really creates, updates, or deletes the row,
+                        and is written to the <a href="#activity-log">Activity Log</a> exactly like any other
+                        admin action. Read-only endpoints are safe to explore freely; think before you click
+                        <em>Execute</em> on anything that writes.
+                    </div>
+                </section>
+
+                <!-- ====================================================================
+                     TROUBLESHOOTING
                      ==================================================================== -->
 
                 <section id="troubleshooting" class="help-section card-admin mb-4">

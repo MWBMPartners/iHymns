@@ -58,9 +58,40 @@ jobs:
       - name: SwiftLint
         run: swiftlint --config appApple/.swiftlint.yml appApple
 
+      # `--no-parallel` is LOAD-BEARING on CI (#1558). Swift Testing runs
+      # different `@Suite` types CONCURRENTLY by default, and several suites
+      # (`KeychainLANRemotePairingAuthority`, `KeychainPairedTVStore`,
+      # `IHRPFrameOrderingTests`) all drive the real macOS Keychain via
+      # `LANRemoteIdentityFactory`. Under concurrent load the Keychain daemon
+      # intermittently returns `errSecItemNotFound` (-25300) —
+      # `keychainBridgeFailed(status: -25300)` — on an entitlement-less,
+      # unsigned `swift test` binary that has no unlocked login keychain.
+      #
+      # This is an ENVIRONMENT artifact, not a logic defect: each suite passes
+      # in isolation, and the real signed app builds its identity fine. The
+      # per-suite `.serialized` traits those suites already carry only stop a
+      # suite's own tests overlapping EACH OTHER — not another suite's, which
+      # is exactly what #1558 documents.
+      #
+      # It had become the dominant CI failure — 2 of 3 runs on PR #1585 —
+      # blocking otherwise-green PRs and training reviewers to ignore a red
+      # Apple build, which is the more expensive problem. Serial execution
+      # trades ~40s of wall-clock for a deterministic result.
+      #
+      # This does NOT address #1559's `ProjectionViewModelTests` "latest-wins"
+      # race, which that issue records as failing serially too — and it did,
+      # on this very PR. That one needed a real fix in the test's own ordering
+      # guard, and has now had one: the test used to start BOTH `selectSong`
+      # calls with back-to-back `async let` and only then wait for either to
+      # reach the fetcher, so it never pinned down which call ENTERED the view
+      # model first. Since `selectSong` bumps `fetchGeneration` synchronously on
+      # entry, "latest wins" means latest-by-entry, and the runtime scheduling
+      # B's child task first made A the legitimate winner. The test now awaits
+      # A's arrival at the gated fetcher BEFORE issuing B.
+      # https://developer.apple.com/documentation/swift-testing/parallelization
       - name: iHymnsKit package tests
         working-directory: appApple/Packages/iHymnsKit
-        run: swift test
+        run: swift test --no-parallel
 
       - name: Generate Xcode project
         working-directory: appApple

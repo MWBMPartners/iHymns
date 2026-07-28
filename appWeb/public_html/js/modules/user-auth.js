@@ -16,7 +16,7 @@
 import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
-import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER } from '../constants.js';
+import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
 
 export class UserAuth {
@@ -103,14 +103,14 @@ export class UserAuth {
     }
 
     /**
-     * Fire the global `ihymns:auth-changed` event so any UI that depends
+     * Fire the global `EVT_AUTH_CHANGED` event so any UI that depends
      * on signed-in state can refresh itself (header menu, settings page
      * Account card, setlist sync bar, etc.). The detail payload is the
      * current user object, or null when signed out.
      */
     _broadcastAuthChanged() {
         try {
-            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+            document.dispatchEvent(new CustomEvent(EVT_AUTH_CHANGED, {
                 detail: {
                     loggedIn: this.isLoggedIn(),
                     user: this.getUser(),
@@ -376,7 +376,7 @@ export class UserAuth {
      * Run the web Sign in with Apple popup flow (js/modules/apple-signin.js)
      * and, on success, persist the returned session via the SAME
      * saveCredentials() path password/email login use — so header state,
-     * the setlist sync bar, and every downstream `ihymns:auth-changed`
+     * the setlist sync bar, and every downstream `EVT_AUTH_CHANGED`
      * listener behave identically regardless of which method signed the
      * user in.
      *
@@ -685,11 +685,11 @@ export class UserAuth {
         /* First sign-in of the session (email login, magic link, OR a
            cross-subdomain bridged token that never went through
            _onLoginSuccess) → one-time DB-first backfill of every user-data
-           store. The router re-dispatches ihymns:auth-changed on each page
+           store. The router re-dispatches EVT_AUTH_CHANGED on each page
            load with the current state, so the first loggedIn one fires this;
            the per-session guard inside triggerUserDataSync makes repeats a
            no-op. */
-        document.addEventListener('ihymns:auth-changed', (e) => {
+        document.addEventListener(EVT_AUTH_CHANGED, (e) => {
             if (e?.detail?.loggedIn) this.triggerUserDataSync();
         });
 

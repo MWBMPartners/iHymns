@@ -317,4 +317,10 @@ struct ServiceModeEngineTests {
             }
         }
     }
+
+    // Apple Phase-2 PR-15 (#1428)'s projector `role`/`pollIntervalMs`
+    // persistence tests live in the sibling `ServiceModeEngineProjectorTests.swift`
+    // (own `@Suite`, own small copy of the `presenceToken`/`joinBody`/
+    // `unchangedPollBody`/`makeEngine` fixtures) — kept out of THIS file to
+    // stay under `Scripts/loc-budget.sh`'s 400-line-per-file tripwire.
 }

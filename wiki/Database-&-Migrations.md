@@ -16,7 +16,7 @@ iHymns uses **MySQL** (v5.7+ / MariaDB 10.3+) as the primary data store for all 
 - **Multilingual** — languages, song translations
 - **Configuration** — runtime app settings
 
-All queries use **MySQLi with prepared statements** for song data, and **PDO** for the admin panel authentication system. Both share the same MySQL credentials.
+**All** queries — song data, admin panel auth, everything — use **MySQLi with prepared statements** via the single `getDbMysqli()` connection factory. **PDO was fully removed from the codebase** (#554/#555); there is no separate driver for the admin panel.
 
 ---
 
@@ -47,11 +47,13 @@ If the interactive installer cannot be used (non-interactive shell, web server):
 
 ### Data Migration
 
-After table creation, import song data from `songs.json`:
+After table creation, `data/songs.json` can be imported as a **one-time seed** — this is the only role `songs.json` plays; every runtime read is live MySQL (epic #1010):
 
 ```bash
-php appWeb/.sql/migrate-json.php
+php appWeb/.sql/migrate-json.php --confirm
 ```
+
+Without `--confirm` (CLI) / `?confirm=1` (web, via `/manage/setup-database`), the script only prints a pre-flight summary and does nothing — a bare unconfirmed request must never be able to truncate a live corpus.
 
 ---
 
@@ -63,7 +65,7 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 
 | Table | Purpose |
 |---|---|
-| `tblSongbooks` | Songbook definitions (CP, JP, MP, SDAH, CH, Misc) |
+| `tblSongbooks` | Songbook definitions (30+ songbooks, e.g. CP, JP, MP, SDAH, CH — see the live list at `/songbooks`) |
 | `tblSongs` | Core song metadata + `LyricsText` for full-text search |
 | `tblSongWriters` | Song lyricist credits (many-to-one) |
 | `tblSongComposers` | Song composer credits (many-to-one) |
@@ -173,10 +175,9 @@ Access is the **union** of all group memberships — if any group grants access 
 
 | Component | Driver | Used By |
 |---|---|---|
-| Song data queries | **MySQLi** (prepared statements) | `SongData.php`, `db_mysql.php` |
-| Admin panel auth | **PDO** (MySQL driver) | `auth.php`, `db.php` |
+| All queries — song data, admin panel, auth | **MySQLi** (prepared statements) via `getDbMysqli()` | `SongData.php`, `db_mysql.php`, `manage/includes/auth.php`, `manage/includes/db.php` (thin wrapper) |
 
-Both share credentials from `appWeb/.auth/db_credentials.php`.
+`getDbMysqli()` is the **one** connection factory in the codebase; a `new PDO(...)` or a second `new mysqli(...)` outside it is a regression. All queries share credentials from `appWeb/.auth/db_credentials.php`, and mysqli runs under `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT` — a failing statement throws rather than returning `false`.
 
 ---
 
@@ -195,14 +196,14 @@ appWeb/
 │   ├── db_credentials.example.php     ← Template (tracked)
 │   └── db_credentials.php             ← Credentials (NOT tracked)
 ├── .sql/
-│   ├── schema.sql                     ← Full MySQL schema
+│   ├── schema.sql                     ← Full MySQL schema (canonical for a fresh install)
 │   ├── install.php                    ← Interactive installer
-│   └── migrate-json.php              ← JSON-to-MySQL data migration
+│   └── migrate-json.php               ← One-time JSON-to-MySQL seed (confirm-gated)
 └── public_html/
     ├── includes/
-    │   ├── db_mysql.php               ← MySQLi connection factory
-    │   └── SongData.php               ← Song data handler (MySQL-backed)
+    │   ├── db_mysql.php               ← getDbMysqli() — the ONE MySQLi connection factory
+    │   └── SongData.php                ← Song data handler (scoped live-read methods)
     └── manage/includes/
-        ├── db.php                     ← PDO connection factory (admin panel)
+        ├── db.php                     ← Thin wrapper calling getDbMysqli() (admin panel)
         └── auth.php                   ← Authentication functions
 ```

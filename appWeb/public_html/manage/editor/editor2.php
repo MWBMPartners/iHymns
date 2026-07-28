@@ -145,7 +145,14 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch. -->
     <script src="/js/modules/place-search.js"></script>
 
-    <!-- Export serializers (reused by export.js). propresenter-export.js first (format-export reuses its ZIP writer). -->
+    <!-- Export serializers (reused by export.js). propresenter-export.js first (format-export reuses its ZIP writer).
+         #1567 — protobuf.min.js loaded FIRST: propresenter-export.js's ProPresenter
+         7+ (.pro) encoder reads the `window.protobuf` global via its getProtobuf()
+         helper (mirrors the v1 editor's index.php load order, #887); v2's export.js
+         (ITEMS registry, mounted below via mountExportMenu) calls into the same
+         window.iHymnsProPresenter this pair exposes, so without it PP7 export
+         throws "protobufjs runtime not found" the first time it's invoked. -->
+    <script src="vendor/protobuf.min.js"></script>
     <script src="propresenter-export.js"></script>
     <script src="format-export.js"></script>
 

@@ -15,7 +15,7 @@
  * messages to the SW and listens for progress events back.
  */
 
-import { STORAGE_OFFLINE_INCLUDE_AUDIO } from '../constants.js';
+import { STORAGE_OFFLINE_INCLUDE_AUDIO, EVT_OFFLINE_SETTINGS_CHANGED } from '../constants.js';
 
 /** Is this browser capable of offline caching? */
 export function isOfflineSupported() {
@@ -234,7 +234,7 @@ export function bootOfflineUi() {
     /* Respect the Include Audio pref implicitly — future work once the
        SW actually consumes a flag. Exposed via global event for JS
        listeners on the Settings page. */
-    window.addEventListener('ihymns:offline-settings-changed', () => {
+    window.addEventListener(EVT_OFFLINE_SETTINGS_CHANGED, () => {
         /* No-op placeholder so Settings can trigger re-evaluation; the
            decision lives on the server / SW when we hook audio caching
            through the bulk_songs response. */

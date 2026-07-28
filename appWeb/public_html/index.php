@@ -167,6 +167,24 @@ if ($app["Application"]["Version"]["Development"]["Status"] === 'Alpha' && $comm
     }
 }
 
+/**
+ * Environment-badge colour (#1583).
+ * ELI5: Alpha's badge stays yellow; Beta's badge is now blue, so the two
+ * pre-production channels are told apart at a glance instead of both
+ * wearing the same "caution" colour.
+ * DETAIL: `Development.Status` (set in includes/infoAppVer.php from the
+ * deploy-time SFTP path / `.env-channel` fallback) is one of exactly
+ * `'Alpha' | 'Beta' | null` — see that file's `match(true)` arms — so a
+ * simple two-way branch is exhaustive; `null` never reaches this line
+ * because the badge markup below is itself wrapped in `if (Status)`.
+ * Bootstrap 5.3 theme-aware utility classes only (no bespoke CSS), same
+ * convention as the existing `bg-warning text-dark`.
+ * https://getbootstrap.com/docs/5.3/utilities/colors/
+ */
+$envBadgeClass = ($app["Application"]["Version"]["Development"]["Status"] === 'Beta')
+    ? 'bg-info text-dark'
+    : 'bg-warning text-dark';
+
 /** Library configuration shorthand */
 $libs = APP_CONFIG['libraries'];
 
@@ -1032,8 +1050,16 @@ if (!empty($breadcrumbItems)) {
                                  viewport so functional differences between Alpha/Beta and
                                  production stay obvious. Uses the dedicated `env-badge`
                                  class (admin.css / app.css) for stable padding instead of
-                                 Bootstrap's `small` modifier which collapsed awkwardly. -->
-                            <span class="badge env-badge bg-warning text-dark ms-1"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
+                                 Bootstrap's `small` modifier which collapsed awkwardly.
+                                 Colour now split Alpha=warning/Beta=info ($envBadgeClass,
+                                 #1583) so the two pre-production channels read apart at a
+                                 glance; production still renders no badge at all (the `if`
+                                 above). This <span> deliberately stays inside the
+                                 `dropdown-toggle` <button> rather than becoming its own
+                                 <a> — nesting an interactive element inside another is an
+                                 accessibility violation (WCAG 4.1.2), so the "What's new"
+                                 link lives as its own dropdown item below instead. -->
+                            <span class="badge env-badge <?= $envBadgeClass ?> ms-1"><?= htmlspecialchars($app["Application"]["Version"]["Development"]["Status"]) ?></span>
                         <?php endif; ?>
                     </button>
                     <ul class="dropdown-menu" aria-labelledby="logo-nav-btn">
@@ -1074,6 +1100,18 @@ if (!empty($breadcrumbItems)) {
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item" href="/help" data-navigate="help">
                             <i class="fa-solid fa-circle-question me-2" aria-hidden="true"></i> Help
+                        </a></li>
+                        <!-- What's New (#1583) — a deploy-time CHANGELOG.md
+                             excerpt (includes/pages/whats-new.php). Sits
+                             beside Help in the same support group rather
+                             than as a tap target on the env badge above,
+                             because a <span> nested inside the
+                             dropdown-toggle <button> can't also be an <a>
+                             without nesting two interactive elements
+                             (WCAG 4.1.2) — this dropdown item is the
+                             tap-through instead. -->
+                        <li><a class="dropdown-item" href="/whats-new" data-navigate="whats-new">
+                            <i class="fa-solid fa-bullhorn me-2" aria-hidden="true"></i> What's New
                         </a></li>
                     </ul>
                 </div>
@@ -1338,11 +1376,17 @@ if (!empty($breadcrumbItems)) {
             <small>
                 <?= $app["Application"]["Copyright"]["Full"] ?>
                 &nbsp;|&nbsp;
-                v<?= htmlspecialchars($versionDisplay) ?><?php
+                <?php
                     /* WS-J #1020: the "● json" data-source indicator is gone —
                        there is no JSON fallback any more (DB-direct only), so
-                       it could never light up. */
+                       it could never light up. #1583: the version text is now
+                       a tap-through to /whats-new (same `data-navigate`
+                       convention as Terms/Privacy below) — it's the one
+                       version indicator every visitor already looks at, so
+                       it doubles as the What's New affordance instead of
+                       adding a separate footer link. */
                 ?>
+                <a href="/whats-new" data-navigate="whats-new" class="footer-link" aria-label="What's new — v<?= htmlspecialchars($versionDisplay) ?>">v<?= htmlspecialchars($versionDisplay) ?></a>
                 &nbsp;|&nbsp;
                 <a href="/terms" data-navigate="terms" class="footer-link">Terms</a>
                 &nbsp;|&nbsp;

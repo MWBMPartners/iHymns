@@ -1,0 +1,4 @@
+interface:
+  display_name: "Prompt Polish"
+  short_description: "Rewrite a rough prompt into a polished, model-specific prompt"
+  default_prompt: "prompt-polish/FABLE 5/[paste your rough prompt]"

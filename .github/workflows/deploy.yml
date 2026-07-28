@@ -68,6 +68,23 @@ jobs:
     if: vars.SFTP_ENABLED == 'true'
 
     # Shared lftp exclude flags — available to all steps via $LFTP_EXCLUDES.
+    #
+    # ⚠️ `^data/audio/` + `^data/music/` are LOAD-BEARING (#1584). The docroot
+    # mirror runs `--reverse --delete`, and the song audio (`/data/audio/<SongId>.mp3`,
+    # api.php) and sheet music (`/data/music/`) live on the SERVER only — git tracks
+    # zero files under `appWeb/public_html/data/`. Without these two excludes the
+    # mirror deletes the entire media library on every deploy.
+    #
+    # This became sharper with #1583: the What's New step now GENERATES
+    # `public_html/data/whats-new.md` before the mirror runs, so `data/` exists
+    # locally and lftp descends into it — turning a whole-directory removal into a
+    # surgical delete of audio/ and music/ while keeping whats-new.md. Both excludes
+    # are therefore scoped to the two media subdirectories, NOT a blanket `^data/`,
+    # which would stop What's New deploying at all.
+    #
+    # Verified with real lftp 4.9.2 against a local file:/ mirror using this exact
+    # flag set. Do not remove without re-running that check.
+    #
     # IMPORTANT: patterns with wildcards MUST be single-quoted here in YAML
     # so they are passed as literal strings to the shell env, and then
     # referenced inside double-quoted heredocs/commands where bash won't
@@ -96,6 +113,8 @@ jobs:
         --exclude \.swp$
         --exclude \.swo$
         --exclude ~$
+        --exclude ^data/audio/
+        --exclude ^data/music/
 
     steps:
       # -- Checkout code --
@@ -201,6 +220,60 @@ jobs:
         run: |
           echo "${{ steps.target.outputs.channel }}" > appWeb/public_html/.env-channel
           echo "Injected .env-channel: ${{ steps.target.outputs.channel }}"
+
+      # -- Extract What's New excerpt from CHANGELOG.md (#1583) --
+      # includes/pages/whats-new.php reads appWeb/public_html/data/whats-new.md
+      # (via markdown_lite.php's escape-first renderer) and falls back to a
+      # themed "no data yet" card when the file is absent — so this step is
+      # deliberately best-effort: a missing CHANGELOG.md (or an empty extract)
+      # must never fail the deploy, it just means visitors see the fallback
+      # card until the next deploy that does have one. Takes the first 3
+      # top-level `## ` sections (an awk state machine — `^## ` only matches
+      # a TWO-hash heading, since a `### ` sub-heading's 3rd character is `#`
+      # not a space, so those are never miscounted as a new top-level
+      # section) and hard-caps the result at 48 KB (`head -c`) so one
+      # unusually long changelog entry can never bloat the deployed
+      # fragment.
+      #
+      # H1 (adversarial-review finding): `head -c` cuts on a BYTE boundary,
+      # which can land mid-way through a multi-byte UTF-8 character —
+      # CHANGELOG.md's real first-3-sections excerpt is already well over
+      # this cap, so this is not a hypothetical, it happens on ordinary
+      # deploys. `iconv -f UTF-8 -t UTF-8 -c` re-validates the cut output
+      # and drops (`-c`) any incomplete trailing sequence the byte-cap
+      # left behind, so the file this step writes is always well-formed
+      # UTF-8 — belt-and-braces on top of markdown_lite.php's own
+      # ENT_SUBSTITUTE fix (H1's other half) and whats-new.php's
+      # empty-render fallback, not a replacement for either: this step
+      # still can't know where CHANGELOG.md's sentence boundaries are, so
+      # it stays a best-effort content trim, not a markdown-aware one.
+      # iconv exits non-zero specifically when the LAST bytes of its input
+      # are an incomplete sequence (exactly the case a byte-cap produces)
+      # even though it still writes the trimmed-clean output — `|| true`
+      # keeps that expected, already-handled condition from failing the
+      # deploy step, consistent with "must never fail the deploy" above;
+      # stderr is left unsuppressed so the (harmless, expected-on-most-
+      # deploys) warning is still visible in the run log for debugging.
+      # https://www.gnu.org/software/libiconv/documentation/libiconv/iconv.1.html
+      - name: Extract What's New from CHANGELOG.md
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          SOURCE_DIR="${{ steps.target.outputs.source_dir }}"
+          WHATS_NEW_DIR="${SOURCE_DIR}data"
+          WHATS_NEW_FILE="${WHATS_NEW_DIR}/whats-new.md"
+          WHATS_NEW_MAX_BYTES=49152
+
+          if [[ ! -f "CHANGELOG.md" ]]; then
+            echo "CHANGELOG.md not found — skipping What's New extraction (whats-new.php renders its fallback card)"
+          else
+            mkdir -p "$WHATS_NEW_DIR"
+            awk '
+              /^## / { section++; if (section > 3) exit }
+              section >= 1 { print }
+            ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" \
+              | iconv -f UTF-8 -t UTF-8 -c > "$WHATS_NEW_FILE" || true
+            echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes -> $WHATS_NEW_FILE"
+          fi
 
       # -- Populate vendor/ for PWA offline-fallback (#354 / #526) --
       # The local vendor/ files are referenced by the onerror fallback

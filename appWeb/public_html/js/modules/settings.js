@@ -21,6 +21,7 @@ import {
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_SEARCH_HISTORY,
     STORAGE_CVD_MODE,
+    EVT_AUTH_CHANGED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
 
@@ -138,7 +139,7 @@ export class Settings {
            the user is on the Settings page (no navigation triggered).
            When signing in, also pull any synced prefs from the server so
            the UI reflects choices made on other devices. */
-        document.addEventListener('ihymns:auth-changed', (e) => {
+        document.addEventListener(EVT_AUTH_CHANGED, (e) => {
             this.refreshAccountSection();
             const loggedIn = !!e?.detail?.loggedIn;
             if (loggedIn && this._isSyncEnabled()) {

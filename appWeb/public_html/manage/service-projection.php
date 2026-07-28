@@ -193,6 +193,11 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         <div id="svc-op-console">
             <div class="svc-op-head">
                 <span class="svc-op-title"><i class="bi bi-music-note-list me-1"></i>Drive songs</span>
+                <!-- #1425 — the numeric session id, for typing into the iHymns
+                     app (TV Remote → Congregant Mirror, PR-14) so the LAN TV
+                     state also mirrors to this Service session. Set on start;
+                     display-only. -->
+                <span id="svc-op-session" class="small text-secondary" title="Enter this number in the iHymns app (TV Remote → Congregant Mirror) to mirror the TV to congregants"></span>
                 <button type="button" id="svc-op-toggle" class="btn btn-sm btn-outline-dark">Hide</button>
             </div>
             <div id="svc-op-body"></div>
@@ -227,8 +232,19 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         const consoleBody = document.getElementById('svc-op-body');
         const toggleBtn = document.getElementById('svc-op-toggle');
 
-        // Default date = today (local).
-        dateInp.value = new Date().toISOString().slice(0, 10);
+        /* Default date = today (LOCAL, #1576). ELI5: `toISOString()` always
+           reports the UTC calendar date, not the operator's own "today" —
+           for a venue WEST of UTC (most of the Americas), local evening
+           already falls on the NEXT UTC calendar day (e.g. 7pm US Eastern
+           is already after midnight UTC), so an operator starting an
+           evening service saw TOMORROW's date pre-filled instead of
+           today's. DETAILED: `toLocaleDateString('en-CA')` happens to
+           render as 'YYYY-MM-DD' (the en-CA locale's format, and exactly
+           the shape an <input type="date"> value needs) but — unlike
+           `toISOString()` — it's computed from the browser's LOCAL
+           clock/timezone, not UTC. See
+           https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date/toLocaleDateString */
+        dateInp.value = new Date().toLocaleDateString('en-CA');
 
         VENUES.forEach(function (v) {
             const o = document.createElement('option');
@@ -292,6 +308,8 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                 if (!d || !d.ok) { startErr.textContent = (d && d.error) || 'Could not start the service.'; return; }
                 session = d;
                 document.getElementById('svc-proj-venue').textContent = (v ? v.Name : '');
+                /* #1425 — surface the numeric session id for the app mirror. */
+                document.getElementById('svc-op-session').textContent = 'Session #' + session.sessionId;
                 showCode(d.code);
                 overlay.classList.add('active');
                 startRotate();

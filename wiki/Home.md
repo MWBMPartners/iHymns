@@ -2,7 +2,7 @@
 
 > A multiplatform Christian lyrics application for worship enhancement
 
-**Website**: [iHymns.app](https://ihymns.app) | **Repo**: [GitHub](https://github.com/MWBMPartners/iHymns) | **Version**: 0.11.0 (Phase 1 pre-release, content tiers + CCLI)
+**Website**: [iHymns.app](https://ihymns.app) | **Repo**: [GitHub](https://github.com/MWBMPartners/iHymns) | **Version**: see the app footer or the in-app What's New page
 
 ---
 
@@ -14,15 +14,7 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 
 ## Song Library
 
-| Songbook | Abbr. | Songs | MIDI Audio | Sheet Music |
-|---|---|---|---|---|
-| Carol Praise | CP | 243 | Yes | Yes |
-| Junior Praise | JP | 617 | Yes | Yes |
-| Mission Praise | MP | 1,355 | Yes | Yes |
-| SDA Hymnal | SDAH | 695 | — | — |
-| The Church Hymnal | CH | 702 | — | — |
-| Miscellaneous | Misc | 0 | — | — |
-| **Total** | | **3,612** | | |
+~14,000 songs across 30+ songbooks in ~20 languages, served live from the database — browse the current, always-accurate list at [/songbooks](https://ihymns.app/songbooks).
 
 ---
 
@@ -31,8 +23,8 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 | Platform | Technology | Status |
 |---|---|---|
 | Web PWA | PHP 8.5+, Bootstrap 5.3.6, Vanilla JS (ES modules), Fuse.js | Core + Enhanced complete |
-| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | Code complete |
-| Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | Code complete |
+| Apple (iOS/iPadOS/tvOS/visionOS/macOS/watchOS) | Swift 6.3, SwiftUI | Phase 1+2 code-complete, unreleased |
+| Android (+ Fire OS, Android TV) | Kotlin 2.1, Jetpack Compose | Scaffold / in progress |
 
 ---
 
@@ -43,6 +35,7 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 - [[PWA Features]]
 - [[User Accounts & Roles]]
 - [[Setlists & Arrangements]]
+- [[Live Follow & Service Mode]]
 - [[Troubleshooting & FAQ]]
 
 ### For Developers
@@ -59,11 +52,13 @@ iHymns provides searchable hymn and worship song lyrics from multiple songbooks,
 
 ## Two-Phase Approach
 
-### Phase ONE (Current) — v0.x.x / v1.x.x
+> This section describes the **original** project plan (historical). See [[Architecture]] for the current data flow and the Song Library section above for the current catalogue size — the DB-direct rewrite (epic #1010) has since made every runtime read live MySQL, well past the scope described as "Phase ONE" below.
+
+### Phase ONE (original scope) — v0.x.x / v1.x.x
 
 - Songs sourced from local `.SourceSongData/` text files
-- Parsed into structured JSON (`data/songs.json`) — single canonical copy
-- 6 songbooks, 3,612 songs across CP, JP, MP, SDAH, CH, Misc
+- Parsed into structured JSON (`data/songs.json`) — one-time migration input; runtime reads are live MySQL (#1010)
+- Originally 6 songbooks, 3,612 songs across CP, JP, MP, SDAH, CH, Misc — the catalogue has since grown substantially (see Song Library above)
 - Some songbooks include MIDI audio and PDF sheet music
 - Song Editor (admin tool) in `/manage/editor/`
 

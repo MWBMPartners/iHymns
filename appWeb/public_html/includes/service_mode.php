@@ -47,6 +47,26 @@ const LIVE_SESSION_FRESHNESS_SECONDS  = 180;
 const SERVICE_MODE_CODE_ALPHABET      = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
 
 /**
+ * #1576 — floor applied to an AD-HOC service occurrence only (never to an
+ * explicitly-scheduled one — see serviceMode_occurrenceEndUtc()'s doc-block).
+ *
+ * ELI5: if someone starts a service without picking a saved schedule, the
+ * caller always fills in a fixed 10:00-for-90-minutes placeholder just so the
+ * maths has SOME start/duration to work with — it isn't a real chosen time.
+ * If "now" is already past that placeholder's end (e.g. it's 7pm), the session
+ * would be born already-expired. This constant is the minimum number of
+ * minutes an ad-hoc session is guaranteed to live from the moment it's
+ * created, however late in the day it's started.
+ *
+ * DETAILED — chosen independently of the placeholder's own 90-minute duration
+ * so the floor still does something sane even if that upstream constant ever
+ * changes to something small; it is `max($durationMins, this)`, not a
+ * replacement for the duration. 15 minutes is enough for an operator to
+ * notice + restart if they really did mean to run a near-instant session.
+ */
+const SERVICE_MODE_ADHOC_MIN_MINUTES = 15;
+
+/**
  * Broadcast payload v2 (#1405) — the closed `displayState` vocabulary. VARCHAR
  * app-validated against this array, never an ENUM (rule #20 — a value-add
  * would otherwise be a schema ALTER; this lives entirely inside the existing
@@ -186,12 +206,42 @@ function serviceMode_cleanState(mixed $state): ?string
  * result is capped at SERVICE_MODE_HARD_CEILING_HOURS from now so a relayed
  * code can't unlock for an all-day window.
  *
+ * #1576 — AD-HOC FLOOR. `$isAdHoc` marks a session started with no schedule
+ * row (the caller — api.php's `service_session_start` — falls back to a
+ * hardcoded '10:00:00'/90-minute placeholder in that case, rather than a real
+ * chosen time). That placeholder has no relationship to when the operator is
+ * actually starting the service, so for an evening service it can already be
+ * in the past by the time duration is added — the computed $end would then be
+ * SMALLER than $ceiling (which is always in the future), so the old
+ * `$end > $ceiling ? $ceiling : $end` comparison let it through unflored and
+ * every presence row born under it was already expired (#1576).
+ *
+ * ELI5: this is the difference between "the service is scheduled to run from
+ * 10am to 11:30am" (a real time — if that's over, it's genuinely over) and
+ * "someone just tapped Start with no time picked" (there is no real time to
+ * be honest about, so we guarantee the ad-hoc session a minimum life from the
+ * moment it's created instead of measuring it against a placeholder clock).
+ *
+ * DETAILED — the floor is intentionally scoped to `$isAdHoc` only. An
+ * explicitly-scheduled occurrence (a real `tblOrgServiceSchedules` row) keeps
+ * its honest, un-floored end: if an operator asks to (re)join a occurrence
+ * whose scheduled window already passed, "expired" is the CORRECT answer, not
+ * a bug — flooring it would let a stale schedule silently stay "live"
+ * forever. See the commit body for the full floor-vs-scheduled reasoning.
+ *
  * @param string $occurrenceDate 'Y-m-d' of this occurrence.
  * @param string $startTime      Local 'HH:MM' or 'HH:MM:SS'.
  * @param int    $durationMins   Service window length.
  * @param string $tz             Venue IANA tz (e.g. 'Europe/London'); '' → UTC.
+ * @param bool   $isAdHoc        True when no schedule was picked (api.php's
+ *                                hardcoded 10:00/90-minute placeholder path);
+ *                                floors the result to at least
+ *                                max($durationMins, SERVICE_MODE_ADHOC_MIN_MINUTES)
+ *                                minutes from NOW. Default false preserves the
+ *                                original honest-end behaviour for every other
+ *                                (scheduled) caller.
  */
-function serviceMode_occurrenceEndUtc(string $occurrenceDate, string $startTime, int $durationMins, string $tz): string
+function serviceMode_occurrenceEndUtc(string $occurrenceDate, string $startTime, int $durationMins, string $tz, bool $isAdHoc = false): string
 {
     $utc = new \DateTimeZone('UTC');
     try {
@@ -204,7 +254,8 @@ function serviceMode_occurrenceEndUtc(string $occurrenceDate, string $startTime,
     $fmt    = strlen($hhmmss) >= 8 ? 'Y-m-d H:i:s' : 'Y-m-d H:i';
     $start  = \DateTime::createFromFormat($fmt, $occurrenceDate . ' ' . $hhmmss, $local);
 
-    $ceiling = new \DateTime('now', $utc);
+    $now     = new \DateTime('now', $utc);
+    $ceiling = clone $now;
     $ceiling->modify('+' . SERVICE_MODE_HARD_CEILING_HOURS . ' hours');
 
     if ($start === false) {
@@ -215,6 +266,14 @@ function serviceMode_occurrenceEndUtc(string $occurrenceDate, string $startTime,
     $end = clone $start;
     $end->modify('+' . max(1, $durationMins) . ' minutes');
     $end->setTimezone($utc);
+
+    /* #1576 — ad-hoc floor: never born already-expired. A genuinely
+       scheduled occurrence is left honest (no floor) — see the doc-block. */
+    if ($isAdHoc && $end <= $now) {
+        $floorMinutes = max($durationMins, SERVICE_MODE_ADHOC_MIN_MINUTES);
+        $end = clone $now;
+        $end->modify('+' . $floorMinutes . ' minutes');
+    }
 
     return ($end > $ceiling ? $ceiling : $end)->format('Y-m-d H:i:s');
 }

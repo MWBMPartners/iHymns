@@ -2553,15 +2553,28 @@ if ($hasCredentials && defined('DB_HOST')) {
                 </div>
             </div>
             <div class="col-md-6">
-                <div class="card bg-dark border-secondary h-100">
+                <div class="card bg-dark border-danger h-100">
                     <div class="card-body">
                         <h5 class="card-title">2. Migrate Song Data</h5>
                         <p class="card-text text-secondary small">
-                            Import all songs from <code>data/songs.json</code> into MySQL.
-                            Clears existing song data and re-imports.
+                            <!-- Loud warning: this is the LEGACY pre-#1010 bootstrap
+                                 importer. Since the DB-direct rewrite (rule #17), MySQL is
+                                 the ONLY source of truth for songs; data/songs.json is a
+                                 stale historical snapshot, not a live source. Running this
+                                 against a database with any post-#1010 curator edits
+                                 DESTROYS them. Only ever intended for bootstrapping a
+                                 brand-new, empty install. -->
+                            <strong class="text-danger">⚠ Legacy bootstrap only.</strong>
+                            TRUNCATEs songs/songbooks/writers/composers/components and
+                            re-imports everything from the repo's <code>data/songs.json</code>
+                            — a snapshot that is now months stale. This will destroy any
+                            curator edits made since (song reads are DB-direct, not JSON —
+                            see rule #17). Only use this to bootstrap a brand-new, empty
+                            install; never on a database with live data.
                         </p>
-                        <a href="?action=migrate" class="btn btn-warning btn-action <?= $hasCredentials ? '' : 'disabled' ?>"
-                           onclick="return confirm('This will replace ALL song data in the database. Continue?')">
+                        <a href="?action=migrate&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
+                           data-type-to-confirm="migrate"
+                           onclick="return confirm('This is a DESTRUCTIVE, irreversible legacy bootstrap import. It will TRUNCATE and REPLACE all song data with a stale JSON snapshot. Only proceed on a brand-new, empty install. Continue?')">
                             Run Song Migration
                         </a>
                     </div>

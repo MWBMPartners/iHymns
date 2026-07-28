@@ -388,13 +388,15 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 - Dynamic development status detection (Alpha/Beta/Production via directory path)
 - Consistent with other MWBM Partners Ltd projects (phpWhoIs/DomainCheckr)
 
-### Why JSON (not SQLite/IndexedDB) for Phase ONE?
+### Why JSON for the original data pipeline (historical — superseded by the DB-direct rewrite, epic #1010)?
 
 - Simplicity — songs.json loaded once, searched in-memory
 - Portable — same file used by web, Apple, Android
 - ~3,600 songs ≈ ~5 MB JSON (acceptable for PWA cache)
 - Fuse.js handles fuzzy search efficiently in-browser
 - Phase TWO will move to proper database (iLyrics dB API)
+
+Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migration input (see "MySQL Database Setup").
 
 ### Why `appWeb/`, `appApple/`, `appAndroid/` naming?
 
@@ -422,6 +424,7 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 4. Push to `main` → SFTP uploads `public_html/` → remote `public_html/`
 5. All branches also deploy `appWeb/data_share/` → remote `data_share/` (without `--delete`)
 6. Uses `lftp mirror --reverse --delete --only-newer` for efficient sync
+7. **Media excludes (#1584)** — the docroot mirror runs `--delete`, but song audio (`data/audio/`) and sheet music (`data/music/`) live on the SERVER only (git tracks zero files under `appWeb/public_html/data/`). `--exclude ^data/audio/` and `--exclude ^data/music/` are load-bearing in `deploy.yml`'s shared `$LFTP_EXCLUDES` — without them every deploy silently wiped uploaded/downloadable media (fixed in commit `8ef7b587`).
 
 ### Commit Message Flags
 
@@ -449,6 +452,27 @@ Language: fr-FR         ← Optional IETF BCP 47 language tag (defaults to songb
 | Web/PWA | `Ltd.MWBMPartners.iHymns.PWA` |
 | Apple | `Ltd.MWBMPartners.iHymns.Apple` |
 | Android | `Ltd.MWBMPartners.iHymns.Android` |
+
+### CI/CD Workflow Inventory
+
+14 YAML workflows in `.github/workflows/` (there is also a non-workflow `scripts/` subdirectory alongside them):
+
+| Workflow | Purpose |
+| --- | --- |
+| `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583) and media excludes (#1584) |
+| `version-bump.yml` | Auto-bumps `infoAppVer.php` on push to `beta` from conventional commits |
+| `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
+| `release.yml` | Creates a GitHub Release + extracts notes when a `v*` tag is pushed |
+| `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |
+| `lint.yml` | Lints the workflow YAML files themselves with `actionlint` |
+| `apple.yml` | Apple CI — SwiftLint, package tests, build (no signing) |
+| `apple-deploy.yml` | Builds + uploads to TestFlight Internal/External or the App Store, branch-dependent |
+| `apple-dmg.yml` | Builds a signed + notarized macOS `.dmg` as a GitHub Release asset (a distribution channel separate from the App Store) |
+| `auto-merge-alpha.yml` | Enables GitHub's native auto-merge on any PR whose base branch is `alpha` |
+| `build-android.yml` | Builds/distributes the Android app (Play Store, Amazon Appstore/Fire OS, direct APK) |
+| `maintenance-ha-integrity-audit.yml` | Monthly cross-source integrity audit (#699 Phase C) against the Spanish "Himnario Adventista" (HA) songbook |
+| `maintenance-issues-sweep.yml` | Monthly sweep that closes GitHub issues referenced by `closes #N` in commits merged to `alpha` but never auto-closed (GitHub only auto-closes on the default branch) |
+| `promotion-deploy-bridge.yml` | Fires the SFTP deploy when a promotion PR *merges* into `beta`/`main` (works around the `GITHUB_TOKEN` anti-recursion rule suppressing `deploy.yml`'s push trigger) |
 
 ---
 
@@ -549,7 +573,7 @@ The installer will:
 
 1. Test the connection before writing anything
 2. Write credentials to `appWeb/.auth/db_credentials.php` (permissions `0600`)
-3. Create all tables from `schema.sql` (~131 `CREATE TABLE` statements; idempotent — safe to re-run)
+3. Create all tables from `schema.sql` (142 `CREATE TABLE` statements; idempotent — safe to re-run)
 4. Seed default data: user groups, 14 languages, 5 access tiers, app settings
 
 > **Manual setup:** Copy `appWeb/.auth/db_credentials.example.php` to `db_credentials.php`, edit it, then re-run the installer.
@@ -668,7 +692,7 @@ client-side Fuse.js search).
 | **Interchange / identity** (#1066) | `tblSongIdentityMap`, `tblApiKeyUsage`, `tblApiKeyIdempotency`, `tblLyricsConflicts`, `tblLyricsReviewQueue`, … | Dormant interchange / ingest / identity batch |
 | **Catalogues** (user-labelled "Collections") | `tblCatalogues`, `tblCatalogueSongs` | Curated groupings; internal name stays `catalogue` (#1223) |
 
-Full schema: `appWeb/.sql/schema.sql` (~131 `CREATE TABLE` statements). Migrations
+Full schema: `appWeb/.sql/schema.sql` (142 `CREATE TABLE` statements). Migrations
 are NOT auto-applied on deploy — they are run via the web runner at
 `/manage/setup-database` (registry-driven "Apply all pending"; the operator is
 web-only, no CLI/SSH on the shared host).
@@ -1184,6 +1208,14 @@ The most restrictive rule wins when multiple systems overlap.
 
 ---
 
+## 📡 Observability (#1581 / #1582 / #1583)
+
+- **Event-name unification (#1581)** — custom DOM event names live once in `js/constants.js` (the `EVT_*` exports, e.g. `EVT_AUTH_CHANGED = 'ihymns:auth-changed'`). `tests/test-event-names.js` bans raw `ihymns:*` / `iHymns:*` string literals anywhere else in `appWeb/public_html/js/**/*.js` (a small allow-list aside) and cross-checks that every exported constant has both a dispatcher and a listener — this is the guard against the class of bug where a differently-cased spelling silently creates two unrelated events with no error.
+- **Client error surfacing (#1582)** — `js/modules/error-monitor.js` catches uncaught errors and unhandled promise rejections. Each one shows a single generic toast and, independently, is scrubbed and beaconed (`POST /api?action=client_error_report`) to `tblActivityLog` (`EntityType='client'`, `Action=client.jserror`) for review at `/manage/activity-log`. Both the toast and the beacon are throttled (the beacon has three independent layers: a per-fingerprint cooldown, a hard cap of 10 beacons per page load, and a minimum gap once past 3 beacons); the server (`includes/client_error_report.php`) re-scrubs every payload rather than trusting the client.
+- **What's New page (#1583)** — the deploy workflow extracts the top three `## ` sections of `CHANGELOG.md` into `public_html/data/whats-new.md`, rendered by `/whats-new` through the escape-first `includes/markdown_lite.php`. No database involved; it is a shared-cache fragment (same excerpt for every visitor) reached from the footer version number and the environment-badge dropdown.
+
+---
+
 ## 🤖 Auto-Merge for Alpha PRs
 
 PRs whose **base branch is `alpha`** are automatically merged once all required status checks (and reviews, if configured) pass. PRs targeting `main`, `beta`, or any other branch are **not** affected.
@@ -1375,10 +1407,12 @@ Works.
 
 ---
 
-> **Platform status:** Web/PWA is the active production app. The Apple
-> (~14 Swift files) and Android (~12 Kotlin files) targets are
-> **scaffold / in-progress**, not code-complete — the deployment-secrets and
-> store-submission sections above describe the intended CI/CD pipeline for when
-> those targets ship.
+> **Platform status:** Web/PWA is the active production app. Apple is
+> **Phase 1 + Phase 2 code-complete** (iHymnsKit SwiftPM package; watch relay,
+> tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled
+> but unreleased, with device matrices and APNs provisioning owner-gated.
+> Android (~12 Kotlin files) remains **scaffold / in progress** — the
+> deployment-secrets and store-submission sections above describe the intended
+> CI/CD pipeline for when it ships.
 
-Last updated: 2026-06-24
+Last updated: 2026-07-28

@@ -102,6 +102,14 @@ struct LiveSyncEndpointFactoryTests {
         #expect(body.role == "congregant")
     }
 
+    @Test("serviceJoin: role:\"projector\" (Apple Phase-2 PR-15, #1428) encodes verbatim — the tvOS projector's join")
+    func serviceJoinProjectorRoleShape() throws {
+        let endpoint = try Endpoint.serviceJoin(code: "ABC123", presenceDeviceId: "tv-1", role: "projector")
+        struct Body: Decodable { let role: String }
+        let body = try JSONDecoder().decode(Body.self, from: try #require(endpoint.httpBody))
+        #expect(body.role == "projector")
+    }
+
     @Test("servicePoll: GET, no auth, presenceToken + since as query items")
     func servicePollShape() {
         let endpoint = Endpoint.servicePoll(presenceToken: "tok-1", since: 5)
@@ -119,6 +127,40 @@ struct LiveSyncEndpointFactoryTests {
         #expect(!endpoint.requiresAuth)
         struct Body: Decodable { let presenceToken: String }
         #expect(try JSONDecoder().decode(Body.self, from: try #require(endpoint.httpBody)).presenceToken == "tok-1")
+    }
+
+    @Test("serviceBroadcast (#1425): POST, auth required, exact body shape byte-for-byte")
+    func serviceBroadcastShape() throws {
+        let endpoint = try Endpoint.serviceBroadcast(sessionId: 12, songId: "MP-1008", componentIndex: 2, displayState: "live")
+        #expect(endpoint.action == "service_broadcast")
+        #expect(endpoint.httpMethod == "POST")
+        #expect(endpoint.requiresAuth)
+        let json = try JSONSerialization.jsonObject(with: try #require(endpoint.httpBody)) as? [String: Any]
+        #expect(json?["sessionId"] as? Int == 12)
+        #expect(json?["songId"] as? String == "MP-1008")
+        #expect(json?["componentIndex"] as? Int == 2)
+        #expect((json?["state"] as? [String: Any])?["displayState"] as? String == "live")
+    }
+
+    @Test("serviceBroadcast: nil componentIndex is an ABSENT key, never null")
+    func serviceBroadcastOmitsNilComponentIndex() throws {
+        let endpoint = try Endpoint.serviceBroadcast(sessionId: 12, songId: "MP-1008", componentIndex: nil, displayState: "blackout")
+        let json = try JSONSerialization.jsonObject(with: try #require(endpoint.httpBody)) as? [String: Any]
+        #expect(json?.keys.contains("componentIndex") == false)
+    }
+
+    @Test("serviceBroadcast: makeURLRequest round-trip carries Authorization + X-Requested-With")
+    func serviceBroadcastRequestHeaders() throws {
+        let endpoint = try Endpoint.serviceBroadcast(sessionId: 12, songId: "MP-1008", componentIndex: nil, displayState: "live")
+        let request = APIClient.makeURLRequest(for: endpoint, in: .dev, bearerToken: "deadbeef")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer deadbeef")
+        #expect(request.value(forHTTPHeaderField: "X-Requested-With") != nil)
+    }
+
+    @Test("serviceBroadcast: decodes {ok,revision} via the shared decodeLiveFollowUpdate")
+    func serviceBroadcastDecodesRevision() throws {
+        let data = Data("{\"ok\":true,\"revision\":7}".utf8)
+        #expect(try APIClient.decodeLiveFollowUpdate(from: data) == 7)
     }
 }
 
@@ -247,6 +289,13 @@ struct LiveSyncDecodingTests {
         let result = try APIClient.decodeServiceJoin(from: ContractFixtures.serviceJoin())
         #expect(result.presenceToken.count == 43)
         #expect(result.info.pollIntervalMs == 2500)
+        #expect(result.info.initial.songId == "MP-0031")
+    }
+
+    @Test("service_join_projector.json (code-derived, PR-15/#1428) decodes pollIntervalMs:1000 — the projector's faster cadence")
+    func decodesServiceJoinProjectorFixture() throws {
+        let result = try APIClient.decodeServiceJoin(from: ContractFixtures.serviceJoinProjector())
+        #expect(result.info.pollIntervalMs == 1000)
         #expect(result.info.initial.songId == "MP-0031")
     }
 

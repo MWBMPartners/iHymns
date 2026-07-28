@@ -14,9 +14,9 @@
 | Framework | SwiftUI |
 | Min deployment | iOS 17, macOS 14, tvOS 17, visionOS 1, watchOS 10 |
 | App ID | `Ltd.MWBMPartners.iHymns.Apple` |
-| Architecture | Observable object + SwiftUI views |
-| Status | Code complete (offline features) |
-| Issue | [#257](https://github.com/MWBMPartners/iHymns/issues/257) — user accounts & API integration |
+| Architecture | `iHymnsKit` SwiftPM package (shared across all targets) + SwiftUI views |
+| Status | Phase 1 (web-app parity) + Phase 2 (Live features: watch relay, tvOS projector, Live Activities, App Intents) code-complete, unreleased. Compiled only by CI (`apple.yml`); device matrices + APNs provisioning are owner-gated |
+| Issue | [#257](https://github.com/MWBMPartners/iHymns/issues/257) — user accounts & API integration (superseded — see Current Features below; networking, auth, and sync have since landed) |
 
 ### Project Structure
 
@@ -41,22 +41,17 @@ appApple/iHymns/iHymns/
 ```
 
 ### Current Features
-- Songbook browsing and song detail views
+- Songbook browsing and song detail views, backed by a URLSession networking layer against the live bearer-token API (not bundled data)
 - Full-text search by title, lyrics, songbook, number
-- Favourites (UserDefaults persistence)
+- Offline cache via **GRDB.swift** (`IHPersistence` module) — on-disk SQLite-backed store with full-text search and versioned migrations for saved songs, setlists, and favourites (not UserDefaults/bundled JSON)
+- User authentication, setlist management with custom arrangements, and cross-device sync via the API
+- Live Follow and Service Mode (the `.live` tab) — see [[Live Follow & Service Mode]]
 - Adaptive UI: `TabView` (iPhone) / `NavigationSplitView` (iPad/Mac)
-- Apple TV and Vision Pro support
+- Apple TV, Vision Pro, and Apple Watch support; App Shortcuts / Siri phrases for Live Follow
 - Home screen widgets (Song of the Day, Recent Favourites)
 
-### Planned (Issue #257)
-- Networking layer (URLSession async/await)
-- User authentication (Keychain token storage)
-- Setlist management with custom arrangements
-- Cross-device setlist sync via API
-- Password reset flow
-- Background App Refresh for periodic sync
-- Handoff support between Apple devices
-- Sign in with Apple (future)
+### Status notes
+Phase 1 (web-app parity: the networking/auth/sync work originally tracked as "planned" under #257) and Phase 2 (Live features) are code-complete but **unreleased** — compiled only by CI, not shipped to any app store. Device-matrix QA and APNs provisioning are the remaining owner-gated steps.
 
 ---
 
@@ -71,7 +66,7 @@ appApple/iHymns/iHymns/
 | Min SDK | 24 (Android 7.0) |
 | App ID | `Ltd.MWBMPartners.iHymns.Android` |
 | Architecture | MVVM (ViewModel + StateFlow) |
-| Status | Code complete (offline features) |
+| Status | Scaffold / in progress — no shared networking or persistence layer yet |
 | Issue | [#258](https://github.com/MWBMPartners/iHymns/issues/258) — user accounts & API integration |
 
 ### Project Structure
@@ -159,9 +154,9 @@ The Android app has **zero Google Play Services dependencies**, making it fully 
 
 ## Phase 2 Roadmap
 
-In Phase 2 (v2.x.x), all platforms will migrate from bundled `songs.json` to the **iLyrics dB API**:
+The web app already reads live MySQL for every request (epic #1010), and Apple's `iHymnsKit` talks to the same live API with a GRDB offline cache — neither platform bundles `songs.json` today. The still-future **iLyrics dB API** integration is a separate, distinct roadmap item: a curated Christian-songs-only content source layered on top of the existing MySQL-backed catalogue, not a replacement for the current data flow:
 
-- Song data fetched from MySQL backend via REST API
+- Song data fetched from the iLyrics dB API
 - Search performed server-side
 - Real-time updates without app updates
 - Apple TV Remote Control: iPhone/iPad controls tvOS lyrics display over LAN

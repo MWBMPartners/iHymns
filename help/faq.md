@@ -34,7 +34,7 @@ Yes! Please [open a feature request](https://github.com/MWBMPartners/iHymns/issu
 
 ### Can I use iHymns offline?
 
-Yes. The web PWA caches all song data after your first visit. Native apps also work fully offline.
+Yes, for songs you've saved. iHymns doesn't automatically store the whole library — download the songbooks you want from **Settings → Offline Songs** and they'll be readable without a connection. (Our native apps are still in testing and not yet released.)
 
 ### Does iHymns have audio?
 

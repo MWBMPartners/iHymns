@@ -340,7 +340,17 @@ This repo already ships matching agent types as the natural vehicles — use the
 
 Standard mid-tier implementation work needs no special agent — run it on the default model. Reserve the two named agents for the ends of the spectrum.
 
-## 18. Extensible gating registry + native-API gating (#1352 / #1353 / #1354, branch `feat/api-native-gating`)
+## 18. Extensible gating registry + native-API gating (**#1590**, branch `feat/api-native-gating`)
+
+> ⚠️ **Citation warning.** This section, `CLAUDE.md` rules #28/#29, `MEMORY.md` and many in-code
+> comments cite **#1352 / #1353 / #1354** for this program. Those three numbers are **SDA scraper
+> HTTP-403 reports**, not this work — the mis-numbering was propagated into issue bodies at the time
+> (#1357 opens "follow-up to #1353 (content-gating enforcement…)"), which suggests the session that
+> built this cited numbers it expected to file rather than numbers it had filed. **#1590 is the
+> canonical tracker.** Numbers that ARE correct: #1357 (unify tier gating on the web/offline path),
+> #1358 (static `/data/audio` gating), #1481 (admin-configurable feature gating). The in-code
+> comments are left as-is until each file is next touched — a mass find-and-replace across the tree
+> is exactly the unreviewed sweep the annotation standard forbids.
 
 The expanded detail behind CLAUDE.md rules #28 and #29. This whole family is **additive, web-run, and dormant by default**: the 3 docroots (alpha / beta / prod) share ONE MySQL and migrations are NOT auto-applied on deploy — they are run from `/manage/setup-database` — so every new read MUST tolerate the un-migrated shape (STRICT-mode mysqli throws on a missing column/table; gate or try/catch it), and content gating is a verified no-op until an operator flips `tblAppSettings.content_gating_enabled=1`.
 
@@ -386,3 +396,35 @@ The heaviest sessionless public reads are throttled by `enforceReadRateLimit($sc
 ### 18.6 CSRF — `validateCsrfRequest()` for state-changing AJAX
 
 `validateCsrfRequest(?string $token)` in `manage/includes/auth.php` is the robust CSRF check for same-origin writes (#1352). It accepts the request when EITHER (a) a valid session token was supplied (back-compat with `validateCsrf()`), OR (b) it is a genuine same-origin AJAX request: `X-Requested-With` is present (a browser cannot set it cross-origin without a CORS preflight this server never grants) AND any present `Origin`/`Referer` host matches `HTTP_HOST` (explicit cross-origin host rejected; absent header allowed, since the custom header already proves same-origin and some privacy setups strip Referer). The `X-Requested-With` route **never goes stale**, which fixes the SPORADIC "CSRF error" on long-lived editor pages — a baked `$_SESSION['csrf_token']` rotates / GCs / changes across multi-tab sessions while the page stays open, so a legitimate merge/delete/save then carries a stale token and is rejected. Wired into `/manage/duplicate-songs` merge/delete, `/manage/places-api.php`, and a top-level POST gate on ALL legacy `/manage/editor/api.php` writes (clients send `X-Requested-With`). The whole-song save moved to the v2 editor API: it is now `editorSaveSongCore()` in `manage/editor/save_song_core.php`, served by BOTH `manage/editor/api.php` (back-compat shim) and `manage/editor/api2.php`, and the editor POSTs the save to api2 under its `X-Requested-With` CSRF gate. New state-changing AJAX endpoints call `validateCsrfRequest()` — never re-bake a per-render session token into a long-lived page and compare with `validateCsrf()` alone, and don't hand-roll a bespoke same-origin check inline instead of calling the shared helper.
+
+---
+
+## 19. Observability conventions (#1581 / #1582 / #1583)
+
+Three related pieces landed together in 2026-07. They exist because of one recurring failure mode: **something breaks in the browser and nobody finds out for weeks.** The public Export feature was dead for roughly seven weeks (#1565) and the Settings language filter silently never refreshed Song of the Day — in both cases the code *looked* alive, threw no visible error, and only a user's report surfaced it.
+
+### 19.1 Event names live once — `js/constants.js` (#1581)
+
+Every custom DOM event name (`ihymns:*`) is declared once in `appWeb/public_html/js/constants.js` and imported. A raw string literal anywhere else is banned by `tests/test-event-names.js`, which additionally asserts that **every declared name has both a dispatcher and a listener**.
+
+The reason is a real bug, not tidiness: a dispatcher spelled one thing, a listener spelled another, and the mismatch is a **perfect silent no-op** — no exception, no console warning, no failed network call. A pair-existence check is what actually catches it; a naming convention alone would not have.
+
+### 19.2 Client error surfacing — `js/modules/error-monitor.js` → `client_error_report` (#1582)
+
+`error-monitor.js` boots **first** in `app.js` (before anything it might need to observe), listens for `error` and `unhandledrejection`, shows the user **one** generic toast, and beacons a report to `POST /api?action=client_error_report`.
+
+Contract, and why each part is there:
+
+- **Throttled three ways** — a client-side per-fingerprint window (10 min, `sessionStorage`-persisted so it survives a reload), a hard per-session cap, and a **server-side 15-minute fingerprint backstop** plus a 10-per-60s per-IP rate limit. One broken page open in fifty tabs must not become fifty thousand rows, and the client half of that is attacker-controlled, so the server keeps its own.
+- **Scrubbed on both sides.** Bearer tokens, 64-hex strings and query-string secrets are stripped, and stacks are reduced to `pathname:line`. The client scrub is convenience; the server scrub is the one that counts, because the client is attacker-controlled.
+- **Reuses `logActivity()`** — reports land in `tblActivityLog` as `Action=client.jserror`, reviewable at `/manage/activity-log`. Deliberately **no new table**: this is crash surfacing for an internal admin audience, not product analytics, so it is not consent-gated and collects no new PII category.
+- **Malformed bodies are dropped silently and the endpoint fails open.** `navigator.sendBeacon` cannot read a response, so there is nobody to tell; and an error reporter that can itself break the page is worse than no error reporter.
+
+### 19.3 What's New — deploy-time extraction → `markdown_lite.php` (#1583)
+
+`deploy.yml` extracts the **first three `## ` sections** of `CHANGELOG.md` into `appWeb/public_html/data/whats-new.md` on every deploy; `/whats-new` renders it through `includes/markdown_lite.php`.
+
+Two consequences worth internalising:
+
+- **The top of `CHANGELOG.md` is a user-facing surface.** A malformed or duplicated top header ships straight to testers — exactly what happened when a consolidation merge left two `## [unreleased]` headers and the page showed *unreleased, unreleased, April* (#1586).
+- **`markdown_lite.php` is deliberately tiny and escape-first**: it escapes the input, then applies a small closed set of inline rules. Do **not** swap in a full Markdown library. The input is a repo file today, but the renderer's safety property should not depend on that staying true.

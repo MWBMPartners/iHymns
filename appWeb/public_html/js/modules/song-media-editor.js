@@ -18,6 +18,14 @@
  *   refreshes when the Media tab is shown — covers the case where the
  *   tab was hidden during the load event.
  *
+ *   #1581 — this literal is INTENTIONALLY not migrated to the shared
+ *   EVT_* registry in constants.js. Its dispatch side, editor.js, is a
+ *   classic (non-module) script with zero import/export — it cannot
+ *   `import` constants.js. The pair still matches today (both spelled
+ *   with the historical capital-H), so it's left as a documented,
+ *   allow-listed exception (see tests/test-event-names.js) rather than
+ *   forced into a registry only one side can reach.
+ *
  * Talks to:
  *   - GET  /manage/editor/api?action=song_media_list&song_id=<id>
  *   - POST /manage/editor/api?action=song_media_upload   (multipart)
@@ -489,6 +497,7 @@ export function bootSongMediaEditor(root) {
         if (currentSongId) refresh();
     }
 
+    /* #1581 — literal kept on purpose; see the file doc-block above. */
     document.addEventListener('iHymns:song-loaded', (e) => {
         const sid = String(e?.detail?.songId || '');
         if (!sid || sid === currentSongId) {

@@ -24,7 +24,7 @@
 | Platform | Technology | Status |
 | --- | --- | --- |
 | Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.4000.0) |
-| Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 (web-app parity) complete; in development on `feat/apple-universal`, not yet released |
+| Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
 The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning every Apple platform, with native-only extras — Sign in with Apple, an offline-first cache, Universal Links, Home Screen widgets — layered on top of web-app feature parity. It is in active development and not yet published to the App Store or TestFlight; see the [Native Apps](iHymns.wiki/Native-Apps-(Apple-&-Android).md) wiki page for current status.
@@ -55,6 +55,8 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Translation linking** — songs linked to equivalent translations in other languages.
 - **Song media** (#853) — curators upload audio (MP3 / M4A / OGG / WAV / FLAC / ALAC), sheet music (PDF), MIDI, and MusicXML via the Song Editor; served behind a gated `/song-media/<id>` route with HTTP Range support for audio scrubbing.
 - **Transpose** — shift song key up / down (persisted per song).
+- **Export & Present** (#1565–#1570) — the Export ▾ menu on every song and songbook page downloads the song in 8 worship-software formats (OpenSong, OpenLyrics / OpenLP, ProPresenter 6, ProPresenter 7+, VideoPsalm, FreeShow, Proclaim, ChordPro); Present opens a full-screen one-stanza view.
+- **Live Follow** (#1268) — any signed-in user taps **Go Live** on a song and shares a six-character code; others follow along on their own devices, no account needed. Distinct from Service Mode (below), which is venue / organisation-based.
 - **Service Mode — congregation Live-Follow** (#1323 / #1335) — congregants join a live service via a venue-displayed rotating code and follow songs in sync (org venues + recurring schedules, anonymous presence tokens, two broadcaster UIs at `/manage/service-projection` and `/manage/service-lead`). Ships dormant behind `content_gating_enabled` with a CCLI-licence content gate.
 
 ### Catalogue
@@ -97,6 +99,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Service worker** — precaches all app assets; cache version auto-derived from `infoAppVer.php` so every alpha build invalidates cleanly.
 - **Offline indicator** — shows connection status in UI.
 - **DB-direct reads, client-cache fallback** — song reads come live from MySQL (epic #1010 / WS-J; there is no server-side `songs.json` corpus cache and no JSON read fallback). When MySQL is unavailable the server returns a themed 503 (WS-K #1021); previously-downloaded songbooks remain available from the client offline cache.
+- **What's New page** (#1583) — `/whats-new` shows what changed in recent releases, extracted from the changelog on every deploy; linked from the footer version number and the environment-badge dropdown.
 
 ### Appearance & accessibility
 
@@ -129,23 +132,23 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Database setup** — web-accessible installer with backup restore upload, **pre-flight summary**, pre-restore auto-snapshot, transactional data-load, and live migration cards that auto-hide when fully applied (#820, #824, #405).
 - **Activity logging** — audit trail for significant actions (logins, admin writes, backup restores, song-media uploads).
 - **Analytics** — GA4, Plausible, Clarity, Matomo, Fathom with GDPR consent; admin dashboard with top songs / books / queries + zero-result queries + CSV export (#404).
+- **Client error surfacing** (#1582) — uncaught browser errors show one generic toast and are beaconed (deduplicated, privacy-scrubbed) to the Activity Log (`Action=client.jserror`).
 
 ---
 
 ## Admin Portal
 
-Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. The admin nav is grouped into several sections; ~48 distinct surfaces in total.
+Accessible at **`/manage/`** (alias: `/admin/`) for users with the appropriate role. 38 destinations registered in the shared admin nav (`manage/includes/admin-links.php`), organised as Dashboard + 6 groups.
 
 | Group | Surfaces |
 | --- | --- |
 | **Dashboard** | Library + activity snapshot, quick-links |
 | **Songs** | Song Editor · Song Requests · Revisions Audit · Missing Numbers · Duplicates & Links (`/manage/duplicate-songs`) |
-| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Credit People · Languages · Tags & Themes (`/manage/tags`) |
-| **Service Mode** | Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Service Lead (`/manage/service-lead`) |
-| **Access** | Content Restrictions · Access Tiers · Entitlements |
-| **People** | Users · User Groups · Organisations · My Organisations |
-| **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · Database Setup · Configuration · Notifications |
-| **Help** | Help / Guides |
+| **Catalogue** | Songbooks · Songbook Series · Works (`/manage/works`) · Collections (`/manage/catalogues`) · External-Link Types (`/manage/external-link-types`) · Print templates · Credit People · Languages · Tags & Themes (`/manage/tags`) |
+| **Access** | Content Restrictions · Access Tiers · Feature Gating · Entitlements |
+| **People** | Users · User Groups · Organisations · Venues (`/manage/venues`) · Service Projection (`/manage/service-projection`) · Lead a Service (`/manage/service-lead`) · My Organisations |
+| **Operations** | Analytics · CCLI Usage Report · Data Health · Activity Log · Schema Audit · SQL Diagnostics · Database Setup · Configuration · Notifications · API Keys |
+| **Help** | Help / Guides · API Docs (Swagger UI) |
 
 Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a robust same-origin check (requires `X-Requested-With`, validates any present `Origin`/`Referer` host) that also accepts a valid session token, so writes never fail on a stale baked token (#1352-family). DB error messages are never leaked to clients (see server error log).
 
@@ -207,7 +210,7 @@ npm run dev    # PHP dev server at http://localhost:8000
 
 ## Database Setup
 
-iHymns uses MySQL with a `tblCamelCase` schema spanning ~131 tables. The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
+iHymns uses MySQL with a `tblCamelCase` schema spanning 142 tables (`CREATE TABLE` statements in `appWeb/.sql/schema.sql`). The full migration manifest lives in `appWeb/public_html/manage/setup-database.php` (`$friendlyTitles`); see the [Database & Migrations](iHymns.wiki/Database-&-Migrations.md) wiki page for an authoritative per-table reference.
 
 ### Database prerequisites
 
@@ -293,7 +296,7 @@ iHymns/
 │   │   ├── manage/               Admin area + Song Editor
 │   │   └── song-media.php        Gated streaming endpoint (#853)
 │   └── .bulk_import_uploads/  Staging for bulk-import ZIPs
-├── appApple/             Native Apple Universal app (Swift / SwiftUI, iHymnsKit package) — Phase 1 complete, in development, not yet released
+├── appApple/             Native Apple Universal app (Swift / SwiftUI, iHymnsKit package) — Phase 1 + Phase 2 code-complete, consolidated and CI-compiled, unreleased
 ├── appAndroid/           Android app (Kotlin / Compose) — scaffold / in progress
 ├── iHymns.wiki/          GitHub wiki (cloned alongside as a sibling — see below)
 ├── help/                 User documentation

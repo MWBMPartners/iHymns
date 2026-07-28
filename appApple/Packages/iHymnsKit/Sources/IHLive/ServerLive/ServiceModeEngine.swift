@@ -20,6 +20,26 @@ import IHAPI
 import IHLog
 import IHModels
 
+/// Who's joining a Service Mode session — the server's own `role`
+/// vocabulary (`api.php:14615`, `#1406`), never re-derived elsewhere.
+///
+/// ELI5: "Are you a congregant's phone following along, or the venue's TV
+/// driving the big screen?"
+///
+/// DETAILED: Apple Phase-2 PR-15 (#1428). `.congregant` is `join(code:)`'s
+/// long-standing default (every existing call site — `AppRootViewModel
+/// +LiveSync.joinWithCode(_:)` — compiles unchanged); `.projector` is the
+/// tvOS projector's role (`TVServiceFollowCoordinator`, this same PR),
+/// joining the SAME session as a SECOND, independent presence — the server
+/// tracks `tblServicePresence.Role` per row (`api.php:14615`) and grants a
+/// projector its own higher poll-rate budget (90/min vs. a congregant's
+/// 40/min, `api.php:14711-14712`) and cadence (`pollIntervalMs`,
+/// `api.php:14686`: 1000 ms projector / 2500 ms congregant).
+public enum ServicePresenceRole: String, Sendable, Equatable {
+    case congregant
+    case projector
+}
+
 /// The Service Mode congregant actor — see this file's header.
 public actor ServiceModeEngine {
     /// The 4 h hard ceiling (`service_mode.php:35`,
@@ -72,16 +92,26 @@ public actor ServiceModeEngine {
     /// the D-6 gating hook can never be forgotten by a caller), persists a
     /// resume record, and starts polling.
     ///
-    /// ELI5: "Let me join this service."
+    /// ELI5: "Let me join this service" — `role` says whether that's a
+    /// congregant's phone or (PR-15) the venue's projector; either way this
+    /// is a SECOND, independent presence in the SAME session (this device's
+    /// own custody, own token, own poll loop) — never a role change on an
+    /// already-joined presence.
     ///
+    /// - Parameter role: `.congregant` (default — every pre-PR-15 call site
+    ///   compiles unchanged) or `.projector` (PR-15's tvOS projector,
+    ///   `TVServiceFollowCoordinator`) — forwarded verbatim as the server's
+    ///   own `role` string (`api.php:14615`), which is what selects the
+    ///   projector's faster `pollIntervalMs`/poll-rate budget
+    ///   (`api.php:14686`/`:14711-14712`).
     /// - Throws: `.codeNotActive` (opaque 404), `.temporarilyUnavailable`
     ///   (503 — the site is briefly down, NOT a bad code), or `.network` for
     ///   any other failure.
-    public func join(code: String) async throws -> ServiceJoinInfo {
+    public func join(code: String, role: ServicePresenceRole = .congregant) async throws -> ServiceJoinInfo {
         loopTask?.cancel()
         loopTask = nil
         do {
-            let result = try await apiClient.serviceJoin(code: code, presenceDeviceId: deviceIdentity.id, role: "congregant")
+            let result = try await apiClient.serviceJoin(code: code, presenceDeviceId: deviceIdentity.id, role: role.rawValue)
             let now = config.now()
             presenceToken = result.presenceToken
             pollIntervalMs = result.info.pollIntervalMs
@@ -94,7 +124,9 @@ public actor ServiceModeEngine {
                 latest: result.info.initial
             )
             await apiClient.updateServicePresenceToken(result.presenceToken)
-            persistence.saveServicePresence(token: result.presenceToken, revision: result.info.initial.revision, joinedAt: now)
+            persistence.saveServicePresence(
+                token: result.presenceToken, revision: result.info.initial.revision, joinedAt: now, pollIntervalMs: result.info.pollIntervalMs
+            )
             startPollLoopIfNeeded()
             eventContinuation.yield(.joined(initial: result.info.initial))
             eventContinuation.yield(.presenceChanged)
@@ -150,7 +182,14 @@ public actor ServiceModeEngine {
             let effect = LiveFollowerReducer.applyPoll(update, state: &state, now: now)
             followerState = state
             presenceToken = record.token
-            pollIntervalMs = nil
+            // PR-15 (#1428): restores the cadence this device originally
+            // joined with (a projector resumes at its own 1000ms cadence,
+            // not a re-guessed congregant default) — `nil` only for a
+            // record persisted before this PR ever wrote the field, or one
+            // whose ORIGINAL join response itself omitted it (an
+            // un-migrated backend); `LiveFollowerReducer.nextPollDelay`
+            // already falls back to `config.servicePollFallback` for `nil`.
+            pollIntervalMs = record.pollIntervalMs
             phase = .following
             await apiClient.updateServicePresenceToken(record.token)
             persistence.updateServiceRevision(followerState.revision)
