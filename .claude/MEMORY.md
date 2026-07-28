@@ -143,7 +143,9 @@ is also dead for every non-song fragment, and each deploy wipes all downloaded a
 - Lyric lines → read via `includes/lyric_lines_read.php`, write via `lyricLinesWriteComponents()`.
   ONE read path, ONE write path (rule #25).
 - Gating caps → `TIER_CAPS` in `includes/access_tier_validation.php` (rule #28). A new cap is ONE
-  `'json'` line — never a new column, never a second tier matrix.
+  `'json'` line — never a new column, never a second tier matrix. ⚠️ Its tracker is **#1590**;
+  the `#1352/#1353/#1354` cited all over the rules and code are **SDA scraper 403 reports**, not
+  this work.
 - Export formats — the ONE source is `$EXPORT_MENU_FORMATS` in `includes/partials/export-menu.php`:
   OpenSong · OpenLyrics/OpenLP · **ProPresenter 6** · **ProPresenter 7+** · VideoPsalm · FreeShow ·
   Proclaim · ChordPro. **There is no EasyWorship exporter on the public menu** (it exists only in the

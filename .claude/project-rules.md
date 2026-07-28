@@ -340,7 +340,17 @@ This repo already ships matching agent types as the natural vehicles — use the
 
 Standard mid-tier implementation work needs no special agent — run it on the default model. Reserve the two named agents for the ends of the spectrum.
 
-## 18. Extensible gating registry + native-API gating (#1352 / #1353 / #1354, branch `feat/api-native-gating`)
+## 18. Extensible gating registry + native-API gating (**#1590**, branch `feat/api-native-gating`)
+
+> ⚠️ **Citation warning.** This section, `CLAUDE.md` rules #28/#29, `MEMORY.md` and many in-code
+> comments cite **#1352 / #1353 / #1354** for this program. Those three numbers are **SDA scraper
+> HTTP-403 reports**, not this work — the mis-numbering was propagated into issue bodies at the time
+> (#1357 opens "follow-up to #1353 (content-gating enforcement…)"), which suggests the session that
+> built this cited numbers it expected to file rather than numbers it had filed. **#1590 is the
+> canonical tracker.** Numbers that ARE correct: #1357 (unify tier gating on the web/offline path),
+> #1358 (static `/data/audio` gating), #1481 (admin-configurable feature gating). The in-code
+> comments are left as-is until each file is next touched — a mass find-and-replace across the tree
+> is exactly the unreviewed sweep the annotation standard forbids.
 
 The expanded detail behind CLAUDE.md rules #28 and #29. This whole family is **additive, web-run, and dormant by default**: the 3 docroots (alpha / beta / prod) share ONE MySQL and migrations are NOT auto-applied on deploy — they are run from `/manage/setup-database` — so every new read MUST tolerate the un-migrated shape (STRICT-mode mysqli throws on a missing column/table; gate or try/catch it), and content gating is a verified no-op until an operator flips `tblAppSettings.content_gating_enabled=1`.
 
