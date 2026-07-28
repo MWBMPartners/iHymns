@@ -16,7 +16,11 @@ _Last updated: 2026-07-26._
   `beta` → `beta.ihymns.app`, `main` → `www.ihymns.app`. Most work targets **`alpha`**.
 - **Reads are LIVE MySQL** — there is NO `songs.json` corpus cache (epic #1010). Scoped reads only
   (`getSongsSlimIndex` / `getSongs($abbr)` / `getSongById`); a DB outage is a themed 503, never stale.
-- **Active branch (2026-07-26):** `claude/apple-branches-cleanup-export-7mxhpo` — **~64 commits ahead
+- **Active branch (2026-07-28):** **`claude/observability-alpha-3k9wqz`** — THE single WIP branch
+  (81 commits ahead of alpha, pushed, no PR). It subsumed
+  `claude/apple-branches-cleanup-export-7mxhpo` via merge `753ed895`; that branch's PR #1578 must be
+  CLOSED as superseded, not merged. See the handoff for the exact branch-deletion list.
+- **(superseded) `claude/apple-branches-cleanup-export-7mxhpo`** — **~64 commits ahead
   of alpha, pushed, NO PR opened**. Carries ALL outstanding Apple work (Phase-2 PR-11/14/15/16 +
   Phase-1.5 App Intents #1415) **plus** the public-export fix batch. See the 2026-07-26 handoff.
 - **Apple programme:** Phase-2 code-complete but **never compiled as a merged whole** — the
