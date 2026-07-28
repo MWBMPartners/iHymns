@@ -28,7 +28,16 @@
 // 1.5, strategy §2.3) if/when they render lyric snippets — this extension
 // is its own separate process, so it needs its own registration call at
 // that point, exactly like the three `App` shells' `init()`.
+//
+// #1429 UPDATE (Apple Phase-2 PR-16, strategy §2.3) — adds the REAL first
+// Live Activity/Dynamic Island widget, `IHLiveActivity.NowSingingLiveActivityWidget`
+// (`#if os(iOS) && canImport(ActivityKit)`-guarded inside that target
+// itself, so importing it here is safe even though this shell's own
+// `supportedDestinations` is iOS-only already — `project.yml`'s own
+// comment on the `iHymnsWidgets` target). `PhaseZeroWidget` stays exactly
+// as it was; this is additive, not a replacement.
 import IHDesign
+import IHLiveActivity
 import SwiftUI
 import WidgetKit
 
@@ -36,6 +45,7 @@ import WidgetKit
 struct IHymnsWidgetsBundle: WidgetBundle {
     var body: some Widget {
         PhaseZeroWidget()
+        NowSingingLiveActivityWidget()
     }
 }
 

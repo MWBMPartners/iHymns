@@ -879,7 +879,14 @@ try {
 
                 <!-- Export to a worship-presentation format (#1166). The dropdown
                      items are wired by export-ui.js (initSongExport), which
-                     lazy-loads the export libs (format-export.js) on first use. -->
+                     lazy-loads the export libs (format-export.js) on first use.
+                     Wiring is ROUTER-driven, not a fragment-inline <script> — the
+                     enforcing nonce CSP (#117) refuses nonce-less inline scripts
+                     and this response is a shared-cache fragment that can never
+                     carry a per-request nonce (rule #6), so an inline <script>
+                     here never ran. The SPA router imports export-ui.js and calls
+                     initSongExport() once this fragment lands (#1565); see
+                     router.js afterPageLoad(). -->
                 <div class="btn-group song-toolbar-btn">
                     <button type="button"
                             class="btn btn-sm btn-outline-secondary dropdown-toggle btn-export-song"
@@ -888,16 +895,14 @@ try {
                         <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                         Export
                     </button>
-                    <ul class="dropdown-menu dropdown-menu-end song-export-menu">
-                        <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
-                        <li><button type="button" class="dropdown-item" data-export-format="chordPro">ChordPro</button></li>
-                    </ul>
+                    <?php
+                        /* #1570 — one shared partial for both the song and songbook
+                           export menus; see the partial's doc-block for the
+                           $exportMenuSurface contract + why the format list lives
+                           there instead of two hand-written copies. */
+                        $exportMenuSurface = 'song';
+                        require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'export-menu.php';
+                    ?>
                 </div>
 
                 <!-- Chord charts toggle (#299) -->
@@ -1502,115 +1507,3 @@ try {
     </nav>
 
 </article>
-
-<!-- Export-to-format wiring (#1166). The SPA re-runs injected inline scripts,
-     so this binds the Export dropdown after the fragment loads. -->
-<script>
-(function () {
-    if (!document.querySelector('.btn-export-song')) { return; }
-    var songId = <?= json_encode($song['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
-    import('/js/modules/export-ui.js')
-        .then(function (m) { m.initSongExport(songId); })
-        .catch(function () { /* export is best-effort; never block the page */ });
-})();
-</script>
-
-<!-- Presentation mode JS (#297) -->
-<script>
-(function() {
-    const btnPresent = document.getElementById('btn-present');
-    if (!btnPresent) return;
-
-    btnPresent.addEventListener('click', () => {
-        /* Collect all song components from the rendered page */
-        const comps = document.querySelectorAll('.lyric-component');
-        if (comps.length === 0) return;
-
-        const slides = [];
-        comps.forEach(comp => {
-            const label = comp.querySelector('.lyric-label')?.textContent?.trim() || '';
-            const lines = Array.from(comp.querySelectorAll('.lyric-line')).map(l => l.textContent);
-            slides.push({ label, text: lines.join('\n') });
-        });
-
-        let current = 0;
-
-        /* Create overlay */
-        const overlay = document.createElement('div');
-        overlay.className = 'presentation-overlay';
-        overlay.innerHTML = `
-            <button class="present-close" aria-label="Close presentation">&times;</button>
-            <div class="present-label"></div>
-            <div class="present-lyrics"></div>
-            <div class="present-nav">
-                <button class="present-prev" aria-label="Previous"><i class="fa-solid fa-chevron-left me-1"></i>Prev</button>
-                <button class="present-counter"></button>
-                <button class="present-next" aria-label="Next">Next<i class="fa-solid fa-chevron-right ms-1"></i></button>
-            </div>
-        `;
-
-        const labelEl = overlay.querySelector('.present-label');
-        const lyricsEl = overlay.querySelector('.present-lyrics');
-        const counterEl = overlay.querySelector('.present-counter');
-        const prevBtn = overlay.querySelector('.present-prev');
-        const nextBtn = overlay.querySelector('.present-next');
-
-        function render() {
-            const slide = slides[current];
-            labelEl.textContent = slide.label;
-            lyricsEl.textContent = slide.text;
-            counterEl.textContent = (current + 1) + ' / ' + slides.length;
-            prevBtn.disabled = current === 0;
-            nextBtn.disabled = current === slides.length - 1;
-        }
-
-        function close() {
-            if (document.fullscreenElement) {
-                document.exitFullscreen().catch(() => {});
-            }
-            overlay.remove();
-        }
-
-        function next() { if (current < slides.length - 1) { current++; render(); } }
-        function prev() { if (current > 0) { current--; render(); } }
-
-        /* Navigation events */
-        overlay.querySelector('.present-close').addEventListener('click', close);
-        prevBtn.addEventListener('click', (e) => { e.stopPropagation(); prev(); });
-        nextBtn.addEventListener('click', (e) => { e.stopPropagation(); next(); });
-        counterEl.addEventListener('click', (e) => e.stopPropagation());
-
-        /* Click on lyrics area advances */
-        lyricsEl.addEventListener('click', next);
-
-        /* Keyboard navigation */
-        function onKey(e) {
-            if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
-            else if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); }
-            else if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); }
-        }
-        document.addEventListener('keydown', onKey);
-
-        /* Touch swipe support */
-        let touchStartX = 0;
-        overlay.addEventListener('touchstart', (e) => { touchStartX = e.changedTouches[0].screenX; }, { passive: true });
-        overlay.addEventListener('touchend', (e) => {
-            const diff = e.changedTouches[0].screenX - touchStartX;
-            if (Math.abs(diff) > 50) {
-                if (diff < 0) next(); else prev();
-            }
-        }, { passive: true });
-
-        /* Cleanup on removal */
-        overlay.addEventListener('remove', () => document.removeEventListener('keydown', onKey));
-
-        render();
-        document.body.appendChild(overlay);
-
-        /* Enter fullscreen if available */
-        if (overlay.requestFullscreen) {
-            overlay.requestFullscreen().catch(() => {});
-        }
-    });
-})();
-</script>

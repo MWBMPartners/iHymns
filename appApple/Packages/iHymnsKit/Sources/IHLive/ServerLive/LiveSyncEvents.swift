@@ -24,7 +24,14 @@ import IHModels
 /// `events` stream.
 public enum LiveFollowEvent: Sendable, Equatable {
     /// `goLive` succeeded — `code` is the shareable, on-screen host code.
-    case hostingStarted(code: String)
+    /// `sessionId` is `tblLiveFollowSessions.Id` (#1429 C6/C7 — `nil` only
+    /// against a LEGACY backend that hasn't shipped `live_follow_create`'s
+    /// `sessionId` field yet), the same id `LiveFollowEngine.hostSessionId`
+    /// carries for the life of this hosting session — surfaced here too so
+    /// `AppRootViewModel+LiveActivity.swift` (`IHFeatures`) can start a Live
+    /// Activity + register its push token WITHOUT reaching back into the
+    /// actor-isolated engine for it.
+    case hostingStarted(code: String, sessionId: Int?)
     case hostingEnded(LiveSyncEndReason)
     /// `join` succeeded.
     case followingStarted(code: String, hostDisplayName: String, initial: LiveBroadcastSnapshot)

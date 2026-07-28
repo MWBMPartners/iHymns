@@ -62,7 +62,7 @@ struct LiveSyncUIStateTests {
     @MainActor
     func hostingStartedMapsToHosting() throws {
         let viewModel = try makeViewModel()
-        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ"))
+        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ", sessionId: 42))
         #expect(viewModel.liveState == .hosting(code: "K7M4PQ", currentSongTitle: nil))
     }
 
@@ -106,7 +106,7 @@ struct LiveSyncUIStateTests {
     @MainActor
     func hostingEndedMapsToIdle() throws {
         let viewModel = try makeViewModel()
-        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ"))
+        viewModel.apply(LiveFollowEvent.hostingStarted(code: "K7M4PQ", sessionId: 42))
         viewModel.apply(LiveFollowEvent.hostingEnded(.userLeft))
         #expect(viewModel.liveState == .idle)
         #expect(viewModel.liveSnapshot == nil)
@@ -229,7 +229,11 @@ struct LiveSyncUIStateTests {
                 serviceModeEngine: ServiceModeEngine(apiClient: apiClient)
             )
 
-            _ = try await viewModel.goLive()
+            // #1415 — `goLive()` now returns the freshly minted join code
+            // (`StartServiceIntent` reads it back to speak it aloud); this
+            // mock's `live_follow_create` response fixes it at "K7M4PQ".
+            let code = try await viewModel.goLive()
+            #expect(code == "K7M4PQ")
             try await sessionController.signOut()
 
             // `observeSessionState()`'s sign-out hook fires a detached

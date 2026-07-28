@@ -19,6 +19,7 @@ import Foundation
 import IHAPI
 import IHAuth
 import IHLive
+import IHLiveActivity
 import IHPersistence
 
 extension AppRootViewModel {
@@ -67,8 +68,28 @@ extension AppRootViewModel {
             apiClient: apiClient,
             offlineStore: offlineStore,
             liveFollowEngine: liveFollowEngine,
-            serviceModeEngine: serviceModeEngine
+            serviceModeEngine: serviceModeEngine,
+            nowSingingActivity: makeNowSingingActivityController()
         )
+    }
+
+    /// PR-16 (#1429) — the ONE place the REAL `NowSingingActivityController`
+    /// is ever constructed, mirroring this file's own "wiring is defined
+    /// ONCE here, never repeated across app shells" charter. `nil` on every
+    /// platform without ActivityKit (`IHLiveActivity`'s own `#if os(iOS) &&
+    /// canImport(ActivityKit)` gate) — `AppRootViewModel`'s every
+    /// Live-Activity call site is written to treat that `nil` as a silent
+    /// no-op.
+    ///
+    /// ELI5: "If this device can actually show a Live Activity, build the
+    /// real controller for it — otherwise, there's nothing to build."
+    @MainActor
+    private static func makeNowSingingActivityController() -> (any NowSingingActivityControlling)? {
+        #if os(iOS) && canImport(ActivityKit)
+        return NowSingingActivityController()
+        #else
+        return nil
+        #endif
     }
 
     /// The on-disk path for the live app's offline database — inside the

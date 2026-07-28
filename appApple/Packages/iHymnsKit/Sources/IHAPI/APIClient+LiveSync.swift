@@ -1,29 +1,35 @@
 // APIClient+LiveSync.swift
 // IHAPI
 //
-// ELI5: The nine actual "phone calls" for Live Follow + Service Mode — thin
+// ELI5: The ten actual "phone calls" for Live Follow + Service Mode — thin
 // wrappers that build the request, send it, and hand back the decoded
 // shape. No cadence/retry/custody logic lives here at all — that's
-// `IHLive`'s job (`LiveFollowEngine`/`ServiceModeEngine`).
+// `IHLive`'s job (`LiveFollowEngine`/`ServiceModeEngine`), or — for the
+// PR-14 operator mirror — `IHFeatures.ServiceMirrorController`'s.
 //
 // DETAILED: Apple Phase-2 PR-10 (#1426, #1427; `.claude/apple-phase2-pr10-spec.md`
-// §4.2). The four non-idempotent POSTs that MUTATE session state
-// (`create`/`update`/`heartbeat`/`leave`, both families) go through the
-// non-retrying `performOnce` — the SAME "never auto-retry a non-idempotent
-// POST" rule `APIClient+Auth.swift`'s header documents (a client-side retry
-// of `live_follow_update` could double-log a song-change breadcrumb
-// server-side). The three GETs (`live_follow_join`/`live_follow_poll`/
-// `service_poll`) are ordinary idempotent reads, so they go through
-// `performIdempotentGET` like every other catalogue read — `IHLive`'s own
-// poll-cadence/backoff sits ABOVE this layer and is unaffected by
-// `performIdempotentGET`'s few-hundred-millisecond internal retry budget.
+// §4.2) plus PR-14 (#1425, `.claude/apple-native-strategy.md` §2.4.1). The
+// non-idempotent POSTs that MUTATE session state (`create`/`update`/
+// `heartbeat`/`leave`, both families, plus `serviceBroadcast`) go through
+// the non-retrying `performOnce` — the SAME "never auto-retry a
+// non-idempotent POST" rule `APIClient+Auth.swift`'s header documents (a
+// client-side retry of `live_follow_update`/`service_broadcast` could
+// double-log a song-change breadcrumb server-side; `ServiceMirrorController`
+// owns its OWN deliberate, dedup-gated retry above this layer instead). The
+// three GETs (`live_follow_join`/`live_follow_poll`/`service_poll`) are
+// ordinary idempotent reads, so they go through `performIdempotentGET` like
+// every other catalogue read — `IHLive`'s own poll-cadence/backoff sits
+// ABOVE this layer and is unaffected by `performIdempotentGET`'s
+// few-hundred-millisecond internal retry budget.
 import Foundation
 import IHModels
 
 extension APIClient {
     /// `?action=live_follow_create` — starts (or restarts) a hosting
-    /// session. Returns the new session code.
-    public func liveFollowCreate(songId: String?, componentIndex: Int?) async throws -> String {
+    /// session. Returns the new session's code AND numeric id (#1429 C6 —
+    /// the id is what `?action=apns_register`'s `kind=liveActivity` branch
+    /// needs to scope a Live Activity push token to THIS session).
+    public func liveFollowCreate(songId: String?, componentIndex: Int?) async throws -> LiveFollowCreateResult {
         let endpoint = try Endpoint.liveFollowCreate(songId: songId, componentIndex: componentIndex)
         let data = try await performOnce(endpoint)
         return try Self.decodeLiveFollowCreate(from: data)
@@ -72,10 +78,13 @@ extension APIClient {
     }
 
     /// `?action=service_join` — joins a Service Mode congregation by the
-    /// venue's rotating code. Returns the public info PLUS the engine-only
-    /// `presenceToken` (the CCLI-unlock gate key, §4.3/D-6 — custody stays
-    /// with `ServiceModeEngine`, which calls `updateServicePresenceToken(_:)`
-    /// below the instant this returns).
+    /// venue's rotating code, as EITHER a congregant follower or (Apple
+    /// Phase-2 PR-15, #1428) the venue's tvOS projector — `role` is the
+    /// server's own `"congregant"`/`"projector"` string (`api.php:14615`).
+    /// Returns the public info PLUS the engine-only `presenceToken` (the
+    /// CCLI-unlock gate key, §4.3/D-6 — custody stays with `ServiceModeEngine`,
+    /// which calls `updateServicePresenceToken(_:)` below the instant this
+    /// returns).
     public func serviceJoin(code: String, presenceDeviceId: String, role: String) async throws -> ServiceJoinResult {
         let endpoint = try Endpoint.serviceJoin(code: code, presenceDeviceId: presenceDeviceId, role: role)
         let data = try await performOnce(endpoint)
@@ -93,5 +102,17 @@ extension APIClient {
     public func serviceLeave(presenceToken: String) async throws {
         let endpoint = try Endpoint.serviceLeave(presenceToken: presenceToken)
         _ = try await performOnce(endpoint)
+    }
+
+    /// `?action=service_broadcast` — the PR-14 operator mirror (#1425,
+    /// strategy §2.4.1): rebroadcasts a LAN-remote-controlled TV's current
+    /// song/section/display state into a Service Mode session. Returns the
+    /// new revision; reuses `decodeLiveFollowUpdate` since the response
+    /// shape is the identical `{ok,revision}` (`api.php:14478-14597`'s
+    /// success branch) — no separate decoder needed for the same shape.
+    public func serviceBroadcast(sessionId: Int, songId: String, componentIndex: Int?, displayState: String) async throws -> Int {
+        let endpoint = try Endpoint.serviceBroadcast(sessionId: sessionId, songId: songId, componentIndex: componentIndex, displayState: displayState)
+        let data = try await performOnce(endpoint)
+        return try Self.decodeLiveFollowUpdate(from: data)
     }
 }

@@ -47,7 +47,7 @@ if ($book === null) {
 <!-- ================================================================
      SONGBOOK PAGE — Song list for a specific songbook
      ================================================================ -->
-<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>">
+<section class="page-songbook" aria-label="<?= htmlspecialchars($book['name']) ?>" data-songbook-abbr="<?= htmlspecialchars($book['id']) ?>">
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -153,8 +153,14 @@ if ($book === null) {
                 Shuffle
             </button>
             <!-- Export this whole songbook to a worship-presentation format
-                 (#1166). Wired by export-ui.js (initSongbookExport), which
-                 lazy-loads the export libs on first use. -->
+                 (#1166). Wired by export-ui.js (initSongbookExport). The
+                 fragment used to bootstrap that wiring itself via an inline
+                 <script> below the header, but the enforcing nonce CSP
+                 (#117) refuses nonce-less inline scripts and this response
+                 is a shared-cache fragment that can never carry one (rule
+                 #6) — the script never ran. The SPA router now imports
+                 export-ui.js and calls initSongbookExport() once this
+                 fragment lands (#1565); see router.js afterPageLoad(). -->
             <div class="btn-group">
                 <button type="button"
                         class="btn btn-outline-secondary btn-sm dropdown-toggle btn-export-songbook"
@@ -163,29 +169,18 @@ if ($book === null) {
                     <i class="fa-solid fa-file-export me-1" aria-hidden="true"></i>
                     Export
                 </button>
-                <ul class="dropdown-menu dropdown-menu-end songbook-export-menu">
-                    <li><button type="button" class="dropdown-item" data-export-format="openSong">OpenSong</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="openLyrics">OpenLyrics / OpenLP</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter6">ProPresenter 6</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="proPresenter7">ProPresenter 7+</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="videoPsalm">VideoPsalm</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="freeShow">FreeShow</button></li>
-                    <li><button type="button" class="dropdown-item" data-export-format="proclaim">Proclaim</button></li>
-                </ul>
+                <?php
+                    /* #1570 — one shared partial for both the song and songbook
+                       export menus (adds ChordPro here — every format's exporter
+                       already supports a songbook export, this menu had simply
+                       drifted out of sync with song.php's). See the partial's
+                       doc-block for the $exportMenuSurface contract. */
+                    $exportMenuSurface = 'songbook';
+                    require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'export-menu.php';
+                ?>
             </div>
         </div>
     </div>
-
-    <!-- Export wiring (#1166) — the SPA re-runs injected inline scripts. -->
-    <script>
-    (function () {
-        if (!document.querySelector('.btn-export-songbook')) { return; }
-        var abbr = <?= json_encode($book['id'] ?? '', JSON_UNESCAPED_SLASHES) ?>;
-        import('/js/modules/export-ui.js')
-            .then(function (m) { m.initSongbookExport(abbr); })
-            .catch(function () { /* best-effort */ });
-    })();
-    </script>
 
     <?php
         /* #833 — "Find this songbook elsewhere" panel. Reads from the

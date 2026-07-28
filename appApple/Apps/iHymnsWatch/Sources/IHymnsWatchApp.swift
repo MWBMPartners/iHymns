@@ -25,6 +25,17 @@
 // call) rather than left as a follow-up someone has to remember when the
 // real watch glance/remote UI (strategy §2.2) eventually lands — see
 // `IHymnsApp.swift`'s matching `init()` for the full rationale.
+//
+// #1423 UPDATE — the real watch UI has landed: `PhaseZeroSkeletonView` is
+// now historical (Phase-0's placeholder proved the shell boots; that job
+// is done). This shell now renders `WatchRootView` (`IHFeatures/WatchRelay`)
+// directly — the pocket-control remote (`.claude/apple-phase2-pr11-pocket-
+// spec.md` §5/§6.1). `WatchRootView` owns its OWN `NavigationStack`
+// internally (it needs to, since it also owns the `@State` controller
+// scoped to that one screen's lifetime) — this scene composes it bare,
+// with NO second `NavigationStack` wrapped around it (a nested
+// `NavigationStack` is a SwiftUI anti-pattern: the inner one's navigation
+// bar/back-gesture machinery fights the outer one's).
 import IHDesign
 import IHFeatures
 import SwiftUI
@@ -37,9 +48,7 @@ struct IHymnsWatchApp: App {
 
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                PhaseZeroSkeletonView(shellName: "watchOS")
-            }
+            WatchRootView()
         }
     }
 }

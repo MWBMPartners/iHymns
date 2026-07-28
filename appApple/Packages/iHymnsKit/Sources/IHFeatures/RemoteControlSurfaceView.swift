@@ -23,6 +23,7 @@
 // ~200-byte navigation intent (a song id, an index, an enum case) — no
 // lyric text ever crosses this seam in either direction this view can
 // observe (`IHRPMessage.swift`'s own header invariant).
+import IHAuth
 import IHLive
 import IHDesign
 import IHModels
@@ -36,18 +37,24 @@ public struct RemoteControlSurfaceView: View {
     let rootViewModel: AppRootViewModel
     let onIntent: (IHRPMessage) -> Void
     let onDisconnect: () -> Void
+    /// The PR-14 Service-Mode mirror (#1425, strategy §2.4.1) — `nil` on
+    /// every call site that hasn't wired one up yet (defaults to `nil` so
+    /// existing/preview construction stays source-compatible).
+    let serviceMirror: ServiceMirrorController?
 
     @State private var isPresentingSongPicker = false
 
     public init(
         tvName: String, state: IHRPState, rootViewModel: AppRootViewModel,
-        onIntent: @escaping (IHRPMessage) -> Void, onDisconnect: @escaping () -> Void
+        onIntent: @escaping (IHRPMessage) -> Void, onDisconnect: @escaping () -> Void,
+        serviceMirror: ServiceMirrorController? = nil
     ) {
         self.tvName = tvName
         self.state = state
         self.rootViewModel = rootViewModel
         self.onIntent = onIntent
         self.onDisconnect = onDisconnect
+        self.serviceMirror = serviceMirror
     }
 
     public var body: some View {
@@ -58,6 +65,7 @@ public struct RemoteControlSurfaceView: View {
                 lineCard
                 displayCard
                 appearanceCard
+                mirrorCard
             }
             .padding()
         }
@@ -75,21 +83,30 @@ public struct RemoteControlSurfaceView: View {
 
     private var headerCard: some View {
         HStack {
-            Circle()
-                .fill(.green)
-                .frame(width: 10, height: 10)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(tvName).font(.headline)
-                Text(state.songId?.rawValue ?? "Nothing selected")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+            // #1562 A-1: `.combine` scoped to ONLY the status dot + name/song
+            // labels — the PREVIOUS `.combine` sat on the whole `HStack`,
+            // which swallowed the "Disconnect" `Button` into the SAME
+            // element and made it untappable by VoiceOver (lost its button
+            // trait + `.destructive` role). The Button now stays a SIBLING,
+            // outside this nested group — same fix as `ServiceMirrorCard
+            // .armedRow`.
+            HStack {
+                Circle()
+                    .fill(.green)
+                    .frame(width: 10, height: 10)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(tvName).font(.headline)
+                    Text(state.songId?.rawValue ?? "Nothing selected")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .accessibilityElement(children: .combine)
             Spacer(minLength: 12)
             Button("Disconnect", role: .destructive, action: onDisconnect)
         }
         .ihGlassCard()
-        .accessibilityElement(children: .combine)
     }
 
     // MARK: - 2. Song
@@ -209,6 +226,19 @@ public struct RemoteControlSurfaceView: View {
     /// never a shared enum with the TV side, so this list is this view's
     /// own choice, not a protocol contract.
     private static let themeOptions = ["default", "warm", "cool", "highContrast"]
+
+    // MARK: - 6. Congregant mirror (#1425)
+
+    /// Only shown once a `serviceMirror` has been wired up AND the account
+    /// is actually signed in (`service_broadcast` is an auth-required
+    /// endpoint — offering the card to a signed-out browsing session would
+    /// just produce a guaranteed `.unauthorized` on the first tap).
+    @ViewBuilder
+    private var mirrorCard: some View {
+        if let serviceMirror, rootViewModel.sessionState.isSignedIn {
+            ServiceMirrorCard(controller: serviceMirror, currentState: state)
+        }
+    }
 
     private func remoteButton(_ label: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {

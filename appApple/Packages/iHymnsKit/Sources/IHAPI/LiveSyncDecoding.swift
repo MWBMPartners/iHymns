@@ -78,14 +78,37 @@ public struct ServiceJoinResult: Sendable, Equatable {
     }
 }
 
+/// `live_follow_create`'s full result — the shareable code PLUS the new
+/// session's numeric id (#1429 C6). `sessionId` is `Optional` (not a plain
+/// `Int`) so a response from a LEGACY/un-migrated backend that hasn't
+/// shipped the `sessionId` field yet still decodes successfully — see
+/// `decodeLiveFollowCreate(from:)`'s own doc comment.
+public struct LiveFollowCreateResult: Sendable, Equatable {
+    public let code: String
+    public let sessionId: Int?
+
+    public init(code: String, sessionId: Int?) {
+        self.code = code
+        self.sessionId = sessionId
+    }
+}
+
 extension APIClient {
-    /// Decodes a `live_follow_create` response body (`{"ok","code","revision"}`)
-    /// into just the new session code — `revision` is always `0` on a fresh
-    /// create (`api.php:13966`), so no caller needs it back.
-    nonisolated public static func decodeLiveFollowCreate(from data: Data) throws -> String {
-        struct Response: Decodable { let code: String }
+    /// Decodes a `live_follow_create` response body (`{"ok","code",
+    /// "revision","sessionId"}`) into the new session's code + id —
+    /// `revision` is always `0` on a fresh create (`api.php`'s own
+    /// handler), so no caller needs it back. `sessionId` decodes as
+    /// `Optional` (never a decode FAILURE if the key is simply absent) so a
+    /// legacy response shape (pre-#1429 C1, `{"ok","code","revision"}` only)
+    /// still decodes — `LiveFollowCreateResult.sessionId` is then `nil`,
+    /// and `LiveFollowEngine.goLive(songId:componentIndex:)` (`IHLive`)
+    /// simply has no session id to register a Live Activity push token
+    /// against yet.
+    nonisolated public static func decodeLiveFollowCreate(from data: Data) throws -> LiveFollowCreateResult {
+        struct Response: Decodable { let code: String; let sessionId: Int? }
         do {
-            return try JSONDecoder().decode(Response.self, from: data).code
+            let response = try JSONDecoder().decode(Response.self, from: data)
+            return LiveFollowCreateResult(code: response.code, sessionId: response.sessionId)
         } catch {
             throw APIError.decoding
         }

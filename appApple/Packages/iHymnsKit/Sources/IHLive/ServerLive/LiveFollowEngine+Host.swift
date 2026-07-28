@@ -32,13 +32,17 @@ extension LiveFollowEngine {
         loopTask?.cancel()
         loopTask = nil
 
-        let code = try await apiClient.liveFollowCreate(songId: songId, componentIndex: componentIndex)
-        role = .hosting(code: code)
+        let created = try await apiClient.liveFollowCreate(songId: songId, componentIndex: componentIndex)
+        role = .hosting(code: created.code)
+        // #1429 C7 — custody of the new session's numeric id, for the LIFE
+        // of this hosting session; cleared on every end path below (see
+        // `hostSessionId`'s own doc comment, primary file).
+        hostSessionId = created.sessionId
         lastBroadcastKey = songId.map { Self.broadcastKey(songId: $0, componentIndex: componentIndex) }
-        persistence.saveHostSession(code: code)
+        persistence.saveHostSession(code: created.code)
         startHeartbeatLoopIfNeeded()
-        eventContinuation.yield(.hostingStarted(code: code))
-        return code
+        eventContinuation.yield(.hostingStarted(code: created.code, sessionId: created.sessionId))
+        return created.code
     }
 
     /// Broadcasts the host's current song + section, deduping a repeat
@@ -76,6 +80,7 @@ extension LiveFollowEngine {
         _ = try? await apiClient.liveFollowLeave(code: code)
         persistence.clearHostSession()
         role = .idle
+        hostSessionId = nil
         lastBroadcastKey = nil
         eventContinuation.yield(.hostingEnded(.userLeft))
     }
@@ -89,6 +94,7 @@ extension LiveFollowEngine {
         loopTask = nil
         persistence.clearHostSession()
         role = .idle
+        hostSessionId = nil
         lastBroadcastKey = nil
         eventContinuation.yield(.hostingEnded(.signedOut))
     }
@@ -134,6 +140,7 @@ extension LiveFollowEngine {
         loopTask = nil
         persistence.clearHostSession()
         role = .idle
+        hostSessionId = nil
         lastBroadcastKey = nil
         eventContinuation.yield(.hostingEnded(reason))
     }

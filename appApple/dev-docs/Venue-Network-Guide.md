@@ -143,6 +143,34 @@ a different story:
 5. **Everything checks out?** Great — go back and pair by QR code (or
    Connect by Address if you already know the TV's address).
 
-If none of this resolves it, the final fallback (a future release) is
-projecting from a server-driven display instead of a direct phone-to-TV
-connection — ask your iHymns contact if this is available for your venue.
+If none of this resolves it, use the **server-driven fallback in §8** instead
+of a direct phone-to-TV connection.
+
+## 8. When the LAN remote can't work: follow the service on the TV instead (#1428)
+
+The LAN remote in §1–§7 is a **direct, same-network** phone→TV connection —
+it's fast (sub-100 ms) and needs no internet, but it depends on the venue
+network letting the two devices reach each other (§2 AP isolation, §3 VPN,
+§6 firewalls can all block it). It's also same-room only.
+
+When that direct path can't be made to work — or you're driving an
+**overflow / multi-site** screen that isn't on the same LAN at all — the TV
+can instead **follow the live Service session over the internet**, the same
+way a congregant's phone follows along:
+
+1. On the projector Apple TV, open the **Live** tab and enter the venue's
+   **join code** (the rotating code shown by *Service Projection* on the web,
+   `/manage/service-projection`).
+2. The TV joins as the venue **projector** and mirrors whatever the service
+   leader is currently showing — song, section, and blackout/logo — polling
+   the server about once a second.
+3. Drive the songs from the web console (*Service Projection* or *Service
+   Lead*) or, once §PR-14's native mirror is in use, from the phone/iPad LAN
+   remote — either way the followed TV stays in sync.
+
+Trade-offs vs. the LAN remote: this path **needs internet** on the TV and has
+**seconds** of latency (not sub-100 ms), and it never carries lyric text over
+the wire — the TV fetches each song under its own account, so content gating
+and any licensed-content unlock apply on the TV exactly as they would in a
+browser. If the internet drops mid-service the projection holds its last
+state and resumes when connectivity returns.

@@ -193,6 +193,11 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         <div id="svc-op-console">
             <div class="svc-op-head">
                 <span class="svc-op-title"><i class="bi bi-music-note-list me-1"></i>Drive songs</span>
+                <!-- #1425 — the numeric session id, for typing into the iHymns
+                     app (TV Remote → Congregant Mirror, PR-14) so the LAN TV
+                     state also mirrors to this Service session. Set on start;
+                     display-only. -->
+                <span id="svc-op-session" class="small text-secondary" title="Enter this number in the iHymns app (TV Remote → Congregant Mirror) to mirror the TV to congregants"></span>
                 <button type="button" id="svc-op-toggle" class="btn btn-sm btn-outline-dark">Hide</button>
             </div>
             <div id="svc-op-body"></div>
@@ -292,6 +297,8 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
                 if (!d || !d.ok) { startErr.textContent = (d && d.error) || 'Could not start the service.'; return; }
                 session = d;
                 document.getElementById('svc-proj-venue').textContent = (v ? v.Name : '');
+                /* #1425 — surface the numeric session id for the app mirror. */
+                document.getElementById('svc-op-session').textContent = 'Session #' + session.sessionId;
                 showCode(d.code);
                 overlay.classList.add('active');
                 startRotate();

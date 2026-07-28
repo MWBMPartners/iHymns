@@ -13,6 +13,7 @@
 | [Songbooks](songbooks.md) | Browse and navigate the available songbooks |
 | [External Links & Works](external-links-and-works.md) | Find songs, songbooks and people elsewhere on the web; understand Works (groupings of the same composition across sources) |
 | [Favorites](favorites.md) | Save and manage your favorite songs |
+| [Live Follow & Live Services](live-follow.md) | Follow a worship leader — or your church's service — live on your own device |
 | [Troubleshooting](troubleshooting.md) | Common issues and how to resolve them |
 | [FAQ](faq.md) | Frequently asked questions |
 

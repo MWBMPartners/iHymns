@@ -4,6 +4,31 @@
 
 ---
 
+## 📌 Continuation note — 2026-07-26
+
+**Live resume point: [`.claude/sessions/2026-07-26-HANDOFF.md`](sessions/2026-07-26-HANDOFF.md).**
+
+All outstanding Apple work now lives on ONE branch —
+**`claude/apple-branches-cleanup-export-7mxhpo`** (pushed, **no PR opened**). It consolidates the
+seven previously-stranded branches: `integration/apple-phase2-batch` (which already contained
+Phase-2 PR-11 / PR-14 / PR-15 / PR-16 in full), `feat/apple-p15-app-intents` (#1415) and
+`docs/session-handoff-cleanup-2026-07-13`. **The merged Swift has not been compiled** — that
+consolidation ran in a Linux container with no toolchain, so `apple.yml` on the PR is its first real
+build. Use the **draft-PR-until-green** procedure in the handoff to avoid the #1526 auto-merge race.
+
+The same branch carries the **public export fix batch** (#1565–#1570, tests #1569). A user-reported
+"ProPresenter export does nothing" turned out to be that **no export format had ever worked on any
+public page** — the wiring lived in a nonce-less inline `<script>` inside a shared-cache SPA
+fragment, which the enforcing CSP silently refuses. That produced **house rule #30** in
+`.claude/CLAUDE.md` plus a CI guard; see the handoff for the full chain and the owner's browser
+verification checklist.
+
+> **Note on pruned handoffs:** some references below point at `.claude/sessions/*-HANDOFF.md` files
+> that were pruned in `254e9744`. They remain in git history — see `.claude/sessions/README.md` for
+> the two commands that list and recover them.
+
+---
+
 ## 🎯 What Is iHymns?
 
 A multiplatform Christian lyrics application providing searchable hymn and worship song lyrics from multiple songbooks, designed to enhance worship.
