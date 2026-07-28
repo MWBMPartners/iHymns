@@ -6,7 +6,7 @@
 #
 # PURPOSE:
 # Downloads pinned versions of CDN-hosted libraries (Bootstrap, Font Awesome,
-# jQuery, Animate.css, Fuse.js, Tone.js, PDF.js) into the vendor/ directory
+# jQuery, Animate.css, Tone.js, PDF.js, Swagger UI) into the vendor/ directory
 # under public_html/. These local copies serve as fallbacks when the CDN is
 # unreachable (e.g., offline PWA usage).
 #
@@ -40,6 +40,7 @@ mkdir -p "$VENDOR_DIR/animate"
 mkdir -p "$VENDOR_DIR/fuse"
 mkdir -p "$VENDOR_DIR/tone"
 mkdir -p "$VENDOR_DIR/pdfjs"
+mkdir -p "$VENDOR_DIR/swagger-ui"
 
 # Helper: download a file, verify it's not empty
 download() {
@@ -136,13 +137,33 @@ download "https://cdn.jsdelivr.net/npm/tone@15.1.22/build/Tone.js" \
 # ---------------------------------------------------------------------------
 # PDF.js 4.9.124
 # ---------------------------------------------------------------------------
-echo "[7/7] PDF.js 4.9.124"
+echo "[7/8] PDF.js 4.9.124"
 download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.min.mjs" \
          "$VENDOR_DIR/pdfjs/pdf.min.mjs" \
          "pdf.min.mjs"
 download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.mjs" \
          "$VENDOR_DIR/pdfjs/pdf.worker.min.mjs" \
          "pdf.worker.min.mjs"
+
+# ---------------------------------------------------------------------------
+# Swagger UI 5.32.11 — /manage/api-docs (#1587)
+#
+# The admin API browser used to load the floating `@5` major tag straight from
+# the CDN with no SRI and no fallback: one jsDelivr refresh could change the
+# code running inside an authenticated admin session, and a CDN outage left a
+# blank pane with only a console message. api-docs.php now pins the exact
+# version with an integrity hash and falls back to these local copies.
+# ---------------------------------------------------------------------------
+echo "[8/8] Swagger UI 5.32.11"
+download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui.css" \
+         "$VENDOR_DIR/swagger-ui/swagger-ui.css" \
+         "swagger-ui.css"
+download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-bundle.js" \
+         "$VENDOR_DIR/swagger-ui/swagger-ui-bundle.js" \
+         "swagger-ui-bundle.js"
+download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standalone-preset.js" \
+         "$VENDOR_DIR/swagger-ui/swagger-ui-standalone-preset.js" \
+         "swagger-ui-standalone-preset.js"
 
 echo ""
 echo "=== Done. Vendor libraries downloaded to: $VENDOR_DIR ==="

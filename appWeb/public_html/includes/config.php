@@ -353,6 +353,37 @@ define('APP_CONFIG', [
             'js_local'   => 'vendor/tone/Tone.min.js',
         ],
 
+        /* Swagger UI 5.32 — renders /api-docs.yaml on /manage/api-docs (#1587)
+         *
+         * ELI5: this is the library that turns our API description file into a
+         * browsable page with a "Try it out" button.
+         *
+         * The page previously loaded the floating `swagger-ui-dist@5` major tag
+         * with no SRI, so jsDelivr could re-point it to a different build on any
+         * 5.x release — inside an authenticated admin session whose Try-it-out
+         * runner is aimed at the live API. Pinned + SRI + local fallback, same
+         * shape as Bootstrap/jQuery above (#354 / #526).
+         *
+         * The hashes below were computed from the published npm tarball
+         * (`swagger-ui-dist-5.32.11.tgz`), which is byte-for-byte what jsDelivr
+         * serves for these exact filenames. If a hash ever fails to match, the
+         * browser refuses the CDN copy and api-docs.php falls through to the
+         * vendored `vendor/swagger-ui/*` files — a degraded source, never a
+         * broken page.
+         * https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity */
+        'swaggerui' => [
+            'version'    => '5.32.11',
+            'css_cdn'    => 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui.css',
+            'css_sri'    => 'sha384-9Q2fpS+xeS4ffJy6CagnwoUl+4ldAYhOs9pgZuEKxypVModhmZFzeMlvVsAjf7uT',
+            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-bundle.js',
+            'js_sri'     => 'sha384-vfl/klfTFrIz5urj0HnhcXLAbzPdRHezizfy+XgFB6GqcKkhlk0lS3bIbyB39NLA',
+            'preset_cdn' => 'https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standalone-preset.js',
+            'preset_sri' => 'sha384-m05NHMTwYzsIxuzXMYDard06UtAxQkr+gZ7tf01TGlpECbjtRVz8HSkSMCBiwMQQ',
+            'css_local'  => 'vendor/swagger-ui/swagger-ui.css',
+            'js_local'   => 'vendor/swagger-ui/swagger-ui-bundle.js',
+            'preset_local' => 'vendor/swagger-ui/swagger-ui-standalone-preset.js',
+        ],
+
         /* PDF.js 4.9 — PDF rendering for sheet music viewer (#91)
          * NOTE: Loaded via dynamic import() — SRI not supported by browsers
          * for ES module imports. Hashes stored for reference only. */

@@ -38,7 +38,7 @@ are those currently pinned in the web app (verify against the source on update).
 | **pdf.js** (`pdfjs-dist`) | 4.9.124 | **Apache-2.0** | Sheet-music PDF viewer |
 | **SortableJS** | 1.15.2 | MIT | Drag-and-drop card/list reorder |
 | **animate.css** | 4.1.1 | **Hippocratic License 2.1** | ⚠️ See note below |
-| **Swagger UI** (`swagger-ui-dist`) | 5.x | Apache-2.0 | API documentation UI |
+| **Swagger UI** (`swagger-ui-dist`) | 5.32.11 | Apache-2.0 | API documentation UI (`/manage/api-docs`) — pinned with SRI + local fallback (#1587) |
 | **jQuery** | 3.7.1 | MIT | Limited legacy use |
 | **protobuf.js** (`protobufjs`) | ^8.5.0 | BSD-3-Clause | Dev dependency (ProPresenter import tooling) |
 

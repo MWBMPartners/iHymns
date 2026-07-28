@@ -190,6 +190,13 @@ RewriteRule ^ index.php [QSA,L]
     # JSON
     AddType application/json .json
 
+    # OpenAPI spec — /api-docs.yaml is served as a plain docroot file to
+    # Swagger UI at /manage/api-docs and to anyone who downloads it (#1587).
+    # Without this Apache falls back to text/plain (or, on some shared hosts,
+    # offers it as a download). application/yaml is the registered type as of
+    # RFC 9512. Swagger UI parses it either way — this is correctness, not a fix.
+    AddType application/yaml .yaml .yml
+
     # Web App Manifest
     AddType application/manifest+json .json
 
