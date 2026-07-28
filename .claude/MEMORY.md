@@ -92,7 +92,10 @@ _Last updated: 2026-07-28._
   silently to `console.error`, and enforced `requireEditor()` while the nav checked `view_api_docs`
   (a curator saw no link but could deep-link in). Pinned 5.32.11 + SRI + vendored fallback.
 - **#1586 documentation overhaul** — every `.md`, the in-app help, the wiki, the `.claude/` files and
-  `api-docs.yaml` re-checked against the code. See the gotcha above.
+  `api-docs.yaml` re-checked against the code. `wiki/Architecture.md` rewritten (it claimed SQLite +
+  SQL Server support); `wiki/API-Reference.md` stopped hand-maintaining ~45 of ~195 endpoints and now
+  points at the OpenAPI spec; OpenAPI gained the 12 undocumented actions + `page=whats-new` and marks
+  the four dormant endpoints as dormant. See the two gotchas above.
 - Also: #1558 (serial `swift test` — cross-suite Keychain contention was the dominant CI failure),
   #1576 (ad-hoc Service Mode sessions born expired), the `migrate-json.php` confirm gate, and the HA
   integrity-audit path fix (that monthly job had failed silently since July — three compounding bugs).
@@ -141,5 +144,14 @@ is also dead for every non-song fragment, and each deploy wipes all downloaded a
   ONE read path, ONE write path (rule #25).
 - Gating caps → `TIER_CAPS` in `includes/access_tier_validation.php` (rule #28). A new cap is ONE
   `'json'` line — never a new column, never a second tier matrix.
+- Export formats — the ONE source is `$EXPORT_MENU_FORMATS` in `includes/partials/export-menu.php`:
+  OpenSong · OpenLyrics/OpenLP · **ProPresenter 6** · **ProPresenter 7+** · VideoPsalm · FreeShow ·
+  Proclaim · ChordPro. **There is no EasyWorship exporter on the public menu** (it exists only in the
+  admin editor's import/export tooling), and ProPresenter is two entries, not one. Planning notes have
+  had this wrong twice.
+- Swagger UI → `/manage/api-docs` (`view_api_docs` entitlement, pinned + SRI + `/vendor/` fallback,
+  #1587). The spec it renders is `appWeb/public_html/api-docs.yaml` — a public docroot file.
 - After every substantive piece of work, run **`.claude/standing-tasks.md`** (issues, milestones,
   wiki, .md docs, and these `.claude/` files).
+- **"HA" in `maintenance-ha-integrity-audit.yml` is Himnario Adventista** (a Spanish songbook), NOT
+  Home Assistant. The workflow cross-checks two scrapers' extracts of it.
