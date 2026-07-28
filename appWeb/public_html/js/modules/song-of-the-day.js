@@ -22,6 +22,7 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
 
 export class SongOfTheDay {
     /**
@@ -36,15 +37,22 @@ export class SongOfTheDay {
     }
 
     /**
-     * Initialise — wire a single iHymns:language-filter-changed listener
+     * Initialise — wire a single EVT_LANGUAGE_FILTER_CHANGED listener
      * (#855) so the SoTD card re-fetches when the user toggles the
      * "Show languages" filter. Bound on document (not the container) so it
      * survives the SPA's home-section re-renders without rebinding.
+     *
+     * #1581 — this used to listen for the capital-H 'iHymns:...' spelling
+     * while songbook-language-filter.js dispatched it too, but DOM event
+     * types are case-sensitive so the two silently never matched: toggling
+     * the language filter never refreshed this card. Both sides now import
+     * the same EVT_LANGUAGE_FILTER_CHANGED constant, so that drift is no
+     * longer possible.
      */
     init() {
         if (this._langFilterBound) return;
         this._langFilterBound = true;
-        document.addEventListener('iHymns:language-filter-changed', () => {
+        document.addEventListener(EVT_LANGUAGE_FILTER_CHANGED, () => {
             this.renderHomeSection();
         });
     }

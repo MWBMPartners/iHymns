@@ -57,6 +57,8 @@ import {
     STORAGE_DISCLAIMER_ACCEPTED,
     STORAGE_AUTO_UPDATE_SONGS,
     loadSongbookRegistry,
+    EVT_REFRESH_REQUESTED,
+    EVT_REFRESH_COMPLETE,
 } from './constants.js';
 
 /**
@@ -400,7 +402,7 @@ class iHymnsApp {
                etc.) before / alongside the route refresh. */
             this.pullToRefresh = new PullToRefresh(this);
             this.pullToRefresh.init();
-            document.addEventListener('ihymns:refresh-requested', async () => {
+            document.addEventListener(EVT_REFRESH_REQUESTED, async () => {
                 try {
                     /* Re-poll auxiliary data first so the bell / footer
                        counts update even if the route refresh below
@@ -415,7 +417,7 @@ class iHymnsApp {
                     /* Always signal completion so the indicator clears
                        even on error. The 5s safety timeout in the
                        module is a last-resort fallback. */
-                    document.dispatchEvent(new Event('ihymns:refresh-complete'));
+                    document.dispatchEvent(new Event(EVT_REFRESH_COMPLETE));
                 }
             });
 

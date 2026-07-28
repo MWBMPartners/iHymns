@@ -24,7 +24,7 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
-import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
+import { STORAGE_SEARCH_LYRICS, songbookLabel, EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED } from '../constants.js';
 
 /** Results fetched per page (and per "Load more" click). */
 const PAGE_SIZE = 50;
@@ -304,7 +304,7 @@ export class Search {
             /* Live search failed (offline / server error). Signal the offline
                indicator (#112) and, for a fresh search, fall back to the
                precached slim index so the user can still find titles. */
-            try { window.dispatchEvent(new Event('ihymns:fetch-failed')); } catch (_e) {}
+            try { window.dispatchEvent(new Event(EVT_FETCH_FAILED)); } catch (_e) {}
             if (!append) {
                 const handled = await this._offlineSearchFallback(query, songbook, container);
                 if (!handled) {
@@ -347,7 +347,7 @@ export class Search {
         const data = await response.json();
         /* A live response means we're online — let the offline indicator
            clear its "you're offline" banner (#112 / WS-I). */
-        try { window.dispatchEvent(new Event('ihymns:fetch-succeeded')); } catch (_e) {}
+        try { window.dispatchEvent(new Event(EVT_FETCH_SUCCEEDED)); } catch (_e) {}
         return {
             results: data.results || [],
             hasMore: !!data.hasMore,

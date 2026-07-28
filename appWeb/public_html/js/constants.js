@@ -56,6 +56,23 @@ export const STORAGE_OFFLINE_INCLUDE_AUDIO = 'ihymns_offline_include_audio';
 /* Dynamic key prefix (appended with song ID) */
 export const STORAGE_TRANSPOSE_PREFIX   = 'ihymns_transpose_';
 
+/* ── Custom DOM event names (#1581) ──────────────────────────────────────
+   ELI5: every custom event the app fires has its name written down once,
+   here, so two files can never disagree about it.
+   Detail: DOM event types are CASE-SENSITIVE, so `ihymns:x` and `iHymns:x`
+   are different events entirely — a casing typo is a silent no-op with no
+   error. That is exactly what broke the Settings language filter → Song of
+   the Day refresh. Canonical prefix is lowercase `ihymns:` (8 of the 10
+   pre-existing names already used it).
+   https://developer.mozilla.org/docs/Web/API/EventTarget/addEventListener */
+export const EVT_AUTH_CHANGED             = 'ihymns:auth-changed';
+export const EVT_REFRESH_REQUESTED        = 'ihymns:refresh-requested';
+export const EVT_REFRESH_COMPLETE         = 'ihymns:refresh-complete';
+export const EVT_FETCH_FAILED             = 'ihymns:fetch-failed';
+export const EVT_FETCH_SUCCEEDED          = 'ihymns:fetch-succeeded';
+export const EVT_LANGUAGE_FILTER_CHANGED  = 'ihymns:language-filter-changed';
+export const EVT_OFFLINE_SETTINGS_CHANGED = 'ihymns:offline-settings-changed';
+
 /* ── Songbook Name Lookup ─────────────────────────────────────────────── */
 
 /**

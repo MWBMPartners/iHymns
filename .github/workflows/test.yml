@@ -130,6 +130,18 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
+      # Step 4b: Node unit tests
+      # Pure-function / static-analysis tests that run directly under `node`
+      # (no browser, no DOM) — Node 22 + npm ci are already set up above
+      # (Steps 2-3). Currently just the #1581 event-name registry guard;
+      # more `tests/test-*.js` scripts land here as they're added.
+      # -----------------------------------------------------------------------
+      - name: Node unit tests
+        run: |
+          echo "Running Node unit tests..."
+          node tests/test-event-names.js
+
+      # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
       #
       # PHP doesn't respect HTML-comment boundaries — it parses every `<?`

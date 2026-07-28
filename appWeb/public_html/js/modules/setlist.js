@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, songbookFullName, SONGBOOK_NAMES } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 
 export class SetList {
     /**
@@ -48,7 +48,7 @@ export class SetList {
 
     /** Initialise — re-render the sync bar whenever auth state flips. */
     init() {
-        document.addEventListener('ihymns:auth-changed', () => {
+        document.addEventListener(EVT_AUTH_CHANGED, () => {
             /* Only re-render if the sync bar is currently in the DOM. */
             if (document.getElementById('setlist-sync-bar')) {
                 this.renderSyncBar();

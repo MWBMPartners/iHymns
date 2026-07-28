@@ -22,6 +22,11 @@
  * cap) is likewise a backend follow-up the Phase-1 code already flagged.
  */
 
+/* #1581 — import the shared event-name constant rather than spelling the
+   auth-changed event's raw string here, so this listener can never drift
+   out of sync with what user-auth.js actually dispatches. */
+import { EVT_AUTH_CHANGED } from '../constants.js';
+
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
 const LF_HOST_KEY     = 'ihymns_lf_host';     // sessionStorage: active host session code
@@ -72,7 +77,7 @@ export class LiveFollow {
         if (this.followCode) { this._showFollowBanner(); this._startPolling(); }
 
         /* If the host signs out, their session can't be authenticated any more — end it. */
-        document.addEventListener('ihymns:auth-changed', () => {
+        document.addEventListener(EVT_AUTH_CHANGED, () => {
             if (this.hostCode && this.app.userAuth && !this.app.userAuth.isLoggedIn()) {
                 this.endHost(true);
             }

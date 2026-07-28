@@ -34,6 +34,13 @@
  * an SPA navigation) without binding duplicate handlers.
  */
 
+/* #1581 — THE bug fix: this module used to dispatch the capital-H spelling
+   of the language-filter-changed event name (a typo — DOM event types are
+   case-sensitive, so this silently never matched song-of-the-day.js's
+   lowercase listener). Importing the shared constant means the two
+   sides can never disagree again. */
+import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+
 const STORAGE_KEY = 'songbook-language-filter';
 
 /**
@@ -214,7 +221,7 @@ function applyFilter(rootEl, subtags) {
        Detail.subtags carries the canonical lowercase array; an empty
        array means "All" / no filter. */
     try {
-        document.dispatchEvent(new CustomEvent('iHymns:language-filter-changed', {
+        document.dispatchEvent(new CustomEvent(EVT_LANGUAGE_FILTER_CHANGED, {
             detail: { subtags: Array.from(set) },
         }));
     } catch (_e) { /* polyfill territory; harmless to skip */ }

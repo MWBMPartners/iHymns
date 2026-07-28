@@ -23,6 +23,7 @@ import {
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
     songbookLabel,
+    EVT_AUTH_CHANGED,
 } from '../constants.js';
 
 export class Router {
@@ -778,7 +779,7 @@ export class Router {
            state so any just-injected markup (Account card, sync bars, etc.)
            lands in the correct logged-in/logged-out state. */
         try {
-            document.dispatchEvent(new CustomEvent('ihymns:auth-changed', {
+            document.dispatchEvent(new CustomEvent(EVT_AUTH_CHANGED, {
                 detail: {
                     loggedIn: !!this.app.userAuth?.isLoggedIn(),
                     user: this.app.userAuth?.getUser() ?? null,

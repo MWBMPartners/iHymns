@@ -1967,13 +1967,16 @@ try {
                 window.iHymnsLanguageOptions = j.languages
                     .filter(function (l) { return l && l.code && l.name; })
                     .map(function (l) { return { code: l.code, name: l.name }; });
-                /* Notify any rendered components that we're ready —
-                   editor.js doesn't currently subscribe, so the
-                   first selectSong() after this resolves picks up
-                   the populated list naturally. */
-                try {
-                    document.dispatchEvent(new CustomEvent('iHymns:languages-loaded'));
-                } catch (_e) {}
+                /* #1581 — an 'iHymns:languages-loaded' notify event used to
+                   fire here. ELI5: it told the page "the language list just
+                   arrived" but nobody was listening, so it did nothing.
+                   Detail: grep across the whole tree confirmed zero
+                   addEventListener sites for it — editor.js reads
+                   window.iHymnsLanguageOptions directly on the next
+                   selectSong() instead, so no signal was ever needed.
+                   Removed rather than migrated into the EVT_* registry,
+                   since a dead dispatch shouldn't be kept alive by giving
+                   it a name. */
             })
             .catch(function () { /* registry unavailable — fallback to identity */ });
     })();

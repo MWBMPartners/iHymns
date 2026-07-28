@@ -9,6 +9,8 @@
  * auto-dismisses "Back online" message when reconnected.
  */
 
+import { EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED } from '../constants.js';
+
 export class OfflineIndicator {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -54,8 +56,8 @@ export class OfflineIndicator {
            actual fetch fails with a network-level error, giving a more
            reliable signal than navigator.onLine for captive-portal /
            dead-network scenarios. */
-        window.addEventListener('ihymns:fetch-failed', () => this.onOffline());
-        window.addEventListener('ihymns:fetch-succeeded', () => this.onOnline());
+        window.addEventListener(EVT_FETCH_FAILED, () => this.onOffline());
+        window.addEventListener(EVT_FETCH_SUCCEEDED, () => this.onOnline());
 
         /* Initial-state probe — see docblock above. */
         this._probeConnectivity();

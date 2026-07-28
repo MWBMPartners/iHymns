@@ -16,9 +16,9 @@
  *     refresh; below threshold snaps back.
  *   - Indicator grows + spinner appears during pull, animates back
  *     to home on release / completion.
- *   - Dispatches `ihymns:refresh-requested`. Each page's controller
+ *   - Dispatches `EVT_REFRESH_REQUESTED`. Each page's controller
  *     listens, re-fetches its data, then dispatches
- *     `ihymns:refresh-complete` (the module clears its UI). A
+ *     `EVT_REFRESH_COMPLETE` (the module clears its UI). A
  *     SAFETY_TIMEOUT_MS clears the spinner if no completion event
  *     arrives — never leaves the user stuck.
  *   - Disabled at /manage/* surfaces (full-page reload PHP).
@@ -29,6 +29,8 @@
  * path covers touch + mouse-drag in a desktop browser tab — useful
  * for development without needing a phone.
  */
+
+import { EVT_REFRESH_REQUESTED, EVT_REFRESH_COMPLETE } from '../constants.js';
 
 const REFRESH_THRESHOLD     = 70;     /* px — pull distance to commit */
 const MAX_PULL              = 130;    /* px — visual cap on indicator translation */
@@ -82,7 +84,7 @@ export class PullToRefresh {
         /* Page handlers signal completion via this event so we know
            when to dismiss the spinner. The 5s safety timeout fires
            if a handler forgets / errors / hangs. */
-        document.addEventListener('ihymns:refresh-complete', this._onRefreshComplete);
+        document.addEventListener(EVT_REFRESH_COMPLETE, this._onRefreshComplete);
     }
 
     _isAdminSurface() {
@@ -176,7 +178,7 @@ export class PullToRefresh {
         this._refreshing = true;
         this._showIndicator(REFRESH_THRESHOLD, true, /* spinning */ true);
 
-        document.dispatchEvent(new CustomEvent('ihymns:refresh-requested'));
+        document.dispatchEvent(new CustomEvent(EVT_REFRESH_REQUESTED));
 
         /* Safety timeout — if no handler completes (or all handlers
            silently fail), un-stuck the UI. */
