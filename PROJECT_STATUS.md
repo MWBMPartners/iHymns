@@ -10,14 +10,14 @@
 | --- | --- | --- |
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
-| 📖 Help Documentation | ✅ Complete | 6 guides in `help/` + in-app help |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1340 — see GitHub for live open/closed counts |
-| 🔧 Song Data | ✅ Active | ~12,370 songs across 30+ songbooks; served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
+| 📖 Help Documentation | ✅ Complete | 8 guides in `help/` + in-app help (21 public topics, 39 admin sections) |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1587+ — see GitHub for live open/closed counts |
+| 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — bulk import (ZIP / VideoPsalm / OpenSong), structure tab, media uploads, per-component language overrides |
-| 🛠 Admin Portal | ✅ Active | 41 admin surfaces under `/manage/*` across 7 nav groups (Dashboard / Songs / Catalogue / Access / People / Operations / Help). People now hosts Service Mode (Venues, Service Projection, Lead a Service); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions) |
-| 🚀 CI/CD Pipeline | ✅ Complete | 5 workflows: deploy, version-bump, changelog, release, test |
-| 🍎 Apple App | 🟡 Scaffold / in progress | Swift 6.3 / SwiftUI — ~14 Swift files; scaffold, not yet feature-complete |
+| 🛠 Admin Portal | ✅ Active | 38 nav-registered admin destinations under `/manage/*`, organised as Dashboard + 6 groups (Songs / Catalogue / Access / People / Operations / Help). People hosts Service Mode (Venues, Service Projection, Lead a Service); Songs hosts the unified Duplicates & Links page (#1215, absorbed the old song-link-suggestions) |
+| 🚀 CI/CD Pipeline | ✅ Complete | 14 workflows: deploy, version-bump, changelog, release, test, lint, apple, apple-deploy, apple-dmg, auto-merge-alpha, build-android, maintenance-ha-integrity-audit, maintenance-issues-sweep, promotion-deploy-bridge |
+| 🍎 Apple App | 🟡 Consolidated, unreleased | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | 🤖 Android App | 🟡 Scaffold / in progress | Kotlin / Jetpack Compose — ~12 Kotlin files; scaffold, not yet feature-complete |
 
 ---
@@ -42,7 +42,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ### Infrastructure ✅
 
-5 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test.
+14 GitHub Actions workflows: SFTP deployment, semver bumping, changelog generation, GitHub Releases, CI lint/test, workflow-YAML lint, Apple CI/deploy/DMG, alpha auto-merge, Android build, and the two monthly maintenance sweeps.
 
 ### 2026-05 catalogue & platform work ✅ (highlights)
 
@@ -64,15 +64,23 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Songbook DisplayAbbr** (#1332) — optional display-only label distinct from the SongId-prefix `Abbreviation`; **Catalogues** are user-labelled "Collections" (#1223, internal name stays `catalogue`); unofficial-songbook badging (#1223).
 - **API gating + enforcement + rate limiting** (#1352 / #1353 / #1354) — content gating is now **server-enforced** (`includes/content_gating.php` strips gated fields from the API by tier cap) on an **extensible one-line capability registry** (`TIER_CAPS` + JSON-backed caps, no schema change); **dormant** until `content_gating_enabled='1'`. The heaviest public reads carry a per-requester (token-or-IP) windowed **rate limit** (`429` + `Retry-After`, fail-open, dormant until migrated). CSRF hardened to a robust same-origin `validateCsrfRequest()` (ends the sporadic stale-token errors on merge/delete/edits); `save_song` moved to the shared v2 editor API core under its X-Requested-With gate.
 
+### 2026-07 highlights ✅
+
+- **Public Export fixed** (#1565–#1570) — the enforcing nonce CSP silently killed the SPA fragment's inline `<script>` wiring, breaking the public Export ▾ menu (all 8 formats, both surfaces) and the Present button for about 7 weeks with no visible failure. Fixed by wiring `export-ui.js` as a real ES module from `router.js`'s `afterPageLoad()`; new CI guard `tests/php/test-fragment-inline-scripts.php` bans executable inline `<script>` in any page/partial fragment going forward.
+- **Live Follow & Service Mode documented** (#1577) — the two features share one DB table but are functionally distinct (any signed-in user vs. venue/org-based); previously-conflated docs made Live Follow look permanently broken. New `help/live-follow.md`, `wiki/Live-Follow-&-Service-Mode.md`, and an Apple HelpView section.
+- **Observability batch** (#1581 / #1582 / #1583) — event names unified behind `js/constants.js` with a CI literal-ban guard; uncaught client errors surface one toast + a throttled, scrubbed beacon into the Activity Log; a `/whats-new` page extracts the top CHANGELOG sections on every deploy.
+- **Deploy media guard** (#1584) — `data/audio/` and `data/music/` excluded from the docroot mirror; every prior deploy had been silently wiping uploaded/downloadable song media.
+- **Apple branch consolidation** — Phase 1 + Phase 2 Apple work (watch relay, tvOS projector, Live Activities, App Intents) merged into the single active branch; CI-compiled, still unreleased.
+
 ---
 
 ## 📌 Next Milestones
 
-### Milestone 4 & 5: Apple App (scaffold / in progress)
+### Milestone 4 & 5: Apple App (consolidated, unreleased)
 
-- Xcode project scaffolded (Swift 6.3 / SwiftUI), universal app (iPhone / iPad / Apple TV) — ~14 Swift files, not yet feature-complete
-- Song data model, browser, search, detail view, favourites
-- Spotlight, share sheet, App Store submission, signing & notarisation
+- Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated
+- Song data model, browser, search, detail view, favourites — shipped
+- Remaining: device matrices, APNs provisioning, App Store submission, signing & notarisation (owner-gated)
 
 ### Milestone 7: Android App (scaffold / in progress)
 
@@ -91,12 +99,12 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ## 📈 Progress Summary
 
-- **Songs**: ~12,370 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others), served **live from MySQL** (DB-direct #1010)
+- **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1340 — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1587+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.990.0 Alpha
-- **CI/CD**: 5 GitHub Actions workflows live
+- **Version**: 0.4000.0 Alpha (authoritative: `includes/infoAppVer.php`)
+- **CI/CD**: 14 GitHub Actions workflows live
 
 ---
 
@@ -113,4 +121,4 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ---
 
-Last updated: 2026-06-24
+Last updated: 2026-07-28

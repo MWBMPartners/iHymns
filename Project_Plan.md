@@ -1,6 +1,6 @@
-> ⚠️ HISTORICAL PLANNING DOC (2026-04). Superseded — see .claude/ProjectBrief.md for current state. The JSON-first / static-hosting framing below predates the MySQL DB-direct architecture.
-
 # 📖 iHymns — Project Plan
+
+> ⚠️ **Architecture note (2026-06, epic #1010):** the JSON-file runtime described in Phase ONE below was replaced by DB-direct MySQL reads. `songs.json` is now a one-time migration input only. Sections marked *(historical)* describe the original plan.
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 > Domain: [iHymns.app](https://ihymns.app)
@@ -212,7 +212,7 @@ iHymns/
 │   │   ├── service-worker.js.php # PWA offline support
 │   │   └── manifest.json       # PWA manifest
 │   ├── data_share/             # 📦 Shared data (songs, setlists)
-│   │   ├── song_data/          # songs.json (runtime copy)
+│   │   ├── song_data/          # songs.json (runtime copy) — (historical; runtime reads are now live MySQL, epic #1010)
 │   │   └── setlist_json/       # Shared setlist JSON files
 │   └── private_html/           # 🔒 PRIVATE (admin tools, song editor)
 │       └── editor/             # Song editor tool
@@ -287,7 +287,7 @@ iHymns/
 
 1. **Separation of Concerns**: Data parsing, UI, and business logic are separate modules
 2. **Platform Independence**: Song data (JSON) is shared across all platforms
-3. **Single Source of Truth**: `.SourceSongData/` text files → parsed to `data/songs.json`
+3. **Single Source of Truth** *(historical — pre-#1010; MySQL is the current source of truth for reads/writes)*: `.SourceSongData/` text files → parsed to `data/songs.json`
 4. **Progressive Enhancement**: Web app works without JS for basic content, enhanced with JS
 5. **Offline First**: PWA caches songs for offline worship use
 
@@ -345,7 +345,7 @@ A built-in song editor accessible to developers/administrators for editing the s
 - 🔢 **CCLI Numbers**: Add/edit CCLI licence numbers for each song
 - 📋 **Bulk operations**: Import/export capabilities
 - ✅ **Validation**: Ensures data integrity before saving
-- 💾 **Direct JSON editing**: Edits the `data/songs.json` file (or per-songbook JSON files)
+- 💾 **Direct JSON editing** *(historical — the editor is MySQL-backed today, via `api2.php`)*: Edits the `data/songs.json` file (or per-songbook JSON files)
 - 🔒 **Access controlled**: Developer/admin access only (not end-user facing)
 
 ### Apple-Specific Features

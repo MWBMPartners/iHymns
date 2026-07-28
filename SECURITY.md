@@ -20,9 +20,10 @@ We will credit reporters who wish to be credited once a fix is released.
 ## Scope
 
 In scope: the web/PWA application under `appWeb/public_html/` (PHP 8 + the
-vanilla-JS PWA), its API (`api.php`, `manage/editor/api.php`), the importers,
-and the build/deploy tooling. The native Apple/Android apps under `appApple/`
-and `appAndroid/` are tracked separately.
+vanilla-JS PWA), its API (`api.php`, `manage/editor/api.php`,
+`manage/editor/api2.php`), the importers, and the build/deploy tooling. The
+native Apple/Android apps under `appApple/` and `appAndroid/` are tracked
+separately.
 
 Out of scope: third-party services and CDNs (report to the upstream vendor),
 denial-of-service via volumetric traffic, and findings that require a
@@ -89,6 +90,16 @@ These are enforced conventions; new code must follow them (see
 - **Secrets** — DB credentials, keys and tokens live outside the web root
   (`appWeb/.auth/`, `appWeb/private_html/`) and are never committed. CI scans for
   committed secrets.
+- **CSP** — the public app sends an enforcing per-request-nonce Content-Security-Policy
+  (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`); SPA fragments must never
+  carry executable inline scripts, since a shared-cache fragment cannot carry a
+  per-request nonce (CI guard `tests/php/test-fragment-inline-scripts.php`).
+- **Client error telemetry** — uncaught browser errors are beaconed
+  (`?action=client_error_report`) to the existing activity log, not a new store.
+  Reports are privacy-scrubbed on both the client and the server (bearer tokens,
+  64-hex-char strings, and query-string secrets are stripped; stack frames are
+  reduced to `pathname:line`), and the beacon is throttled by three independent
+  layers — no new PII surface.
 
 ## Security review cadence
 
