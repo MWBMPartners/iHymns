@@ -3,8 +3,10 @@
 ha-audit-aggregate.py — invoked by `.github/workflows/maintenance-ha-integrity-audit.yml`.
 
 Reads the per-hymn `_integrity-check.md` report the SDAHymnal scraper
-just emitted (under `.SourceSongData/Himnario Adventista [HA]/`),
-categorises each "differs" entry, and writes three files:
+just emitted — the folder is RESOLVED via ha_audit_paths.py (never
+hardcoded here; see that module's doc-block for why a hardcoded guess
+is exactly what broke the 2026-07-14 run) — categorises each "differs"
+entry, and writes three files:
 
   - .importers/audits/<YYYY-MM-DD>-ha-full-audit.md   (committable summary)
   - /tmp/commit-msg.txt                                (commit message)
@@ -22,19 +24,52 @@ Copyright (c) 2026 MWBM Partners Ltd. All rights reserved.
 """
 
 import datetime
+import glob
 import os
 import re
 import sys
 
-REPORT_DIR  = ".SourceSongData/Himnario Adventista [HA]"
+# ha_audit_paths.py lives alongside this script and RESOLVES the real
+# output path from the scraper's own code (SDAHymnals_SDAHymnal.org.py's
+# book_dir_for_site()) rather than us guessing a literal string here — a
+# hardcoded guess in this exact spot ("./SourceSongData/Himnario
+# Adventista [HA]") is what silently drifted out of sync with the
+# scraper's #780 folder-naming change and broke the 2026-07-14 run. See
+# ha_audit_paths.py's module doc-block for the full incident writeup.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ha_audit_paths  # noqa: E402  (must follow the sys.path insert above)
+
+OUTPUT_BASE = ".SourceSongData"
+REPORT_DIR  = ha_audit_paths.sdahymnal_ha_book_dir(OUTPUT_BASE)
 REPORT_PATH = os.path.join(REPORT_DIR, "_integrity-check.md")
 
 
 def main() -> int:
     if not os.path.exists(REPORT_PATH):
+        # Actionable, not just "it's missing": name BOTH the path we
+        # resolved (so a reader can tell this isn't a hardcoded guess —
+        # it came from the scraper's own book_dir_for_site()) and what
+        # actually exists on the runner right now, so a curator doesn't
+        # have to re-run the whole workflow just to see the real layout.
+        existing = sorted(
+            p for p in glob.glob(os.path.join(OUTPUT_BASE, "*")) if os.path.isdir(p)
+        )
         print(
             f"::error::Expected per-hymn report at {REPORT_PATH} but it doesn't "
-            f"exist. Did the scraper write to a different folder?",
+            f"exist.\n"
+            f"That path was resolved from the scraper's own "
+            f"book_dir_for_site('ha', {OUTPUT_BASE!r}) — see "
+            f".github/workflows/scripts/ha_audit_paths.py — so this is NOT a "
+            f"hardcoded-path mismatch (that class of bug was fixed here). The "
+            f"likely cause now is that the SDAHymnal --prefer-source cis scan "
+            f"found ZERO existing hymn files to compare against (so "
+            f"_write_integrity_report() was never called) — check the "
+            f"'Pre-fetch the ChristInSong HA extract' step's log for whether "
+            f"the relocation into this folder actually happened, and whether "
+            f"upstream (himnario.net or the ChristInSong dataset) is rate-"
+            f"limiting or has changed shape.\n"
+            f"Directories that DO exist under {OUTPUT_BASE}/ on this runner: "
+            f"{existing or '(none — .SourceSongData is empty or missing)'}",
             file=sys.stderr,
         )
         return 1
@@ -111,9 +146,13 @@ def main() -> int:
         "",
         "## Per-hymn detail",
         "",
-        "The full per-hymn diff report is at `.SourceSongData/Himnario Adventista [HA]/_integrity-check.md` on the runner — gitignored, so not included here. To regenerate locally, run:",
+        f"The full per-hymn diff report is at `{REPORT_PATH}` on the runner — gitignored, so not included here. To regenerate locally, run:",
         "",
         "```sh",
+        "python3 .importers/scrapers/ChristInSong.app.py \\",
+        "    --hymnal es --output .SourceSongData --delay 1.0",
+        "# then relocate its output to match book_dir_for_site('ha', ...) —",
+        "# see .github/workflows/scripts/ha_audit_paths.py — before running:",
         "python3 .importers/scrapers/SDAHymnals_SDAHymnal.org.py \\",
         "    --site ha --prefer-source cis --output .SourceSongData --delay 1.0",
         "```",

@@ -434,6 +434,58 @@ def compose_subdir(title, abbrev, lang_code):
     return f"{base}_{label}-{lang_code}"
 
 
+def book_dir_for_site(site_key, output_dir):
+    """
+    Resolve the actual on-disk book-specific subdirectory a scrape of
+    `site_key` reads from / writes to under `output_dir`.
+
+    ELI5: every hymnal has its own folder name (e.g. "Himnario Adventista
+    [HA]_Spanish-es"), built from a couple of pieces of config
+    (title/abbreviation/language). This is the ONE place that assembles
+    those pieces into the folder name, so anything that needs to know
+    "where does this hymnal actually live on disk" — the scraper itself,
+    or an external tool like the CI integrity-audit workflow — asks this
+    function instead of re-deriving (and risking drifting out of sync
+    with) the same logic.
+
+    DETAILED — extracted from the top of scrape_site() (previously
+    inlined there only) so a caller OTHER than scrape_site() can resolve
+    the same path without duplicating the "strip legacy '<Title> [<ABBR>]'
+    shape, recompose via compose_subdir() with the site's language" logic.
+    This was the concrete gap behind a documented CI incident: the
+    ha-integrity-audit workflow's aggregator step hardcoded its own guess
+    at this path (".SourceSongData/Himnario Adventista [HA]") instead of
+    asking the scraper, and drifted out of sync with the #780 language-
+    suffix change — the aggregator then couldn't find the report the
+    scraper actually wrote. See
+    .github/workflows/scripts/ha_audit_paths.py, which imports this
+    module and calls this function directly rather than re-guessing.
+
+    Args:
+        site_key:   Key into the SITES dict (e.g. "ha", "sdah").
+        output_dir: Base output directory (matches scrape_site()'s own
+                    output_dir / the CLI's --output).
+
+    Returns:
+        str: The book-specific directory path (not guaranteed to exist
+        yet — scrape_site()/save_hymn() create it on first write).
+    """
+    site = SITES[site_key]
+    # The site["subdir"] value carries the legacy "<Title> [<ABBR>]" shape;
+    # extract title + abbrev from that and compose the new (#780) shape via
+    # compose_subdir() with site["lang"]. Sites with no `lang` set fall
+    # through to the legacy shape automatically (see compose_subdir()).
+    legacy_subdir = site["subdir"]
+    m = re.match(r"^(?P<title>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$", legacy_subdir)
+    if m:
+        title_part = m.group("title").strip()
+        abbr_part  = m.group("abbr")
+        new_subdir = compose_subdir(title_part, abbr_part, site.get("lang", ""))
+    else:
+        new_subdir = legacy_subdir
+    return os.path.join(output_dir, new_subdir)
+
+
 # ---------------------------------------------------------------------------
 # HTML Parser
 # ---------------------------------------------------------------------------
@@ -1602,23 +1654,14 @@ def scrape_site(site_key, start, end, output_dir, delay, force=False, prefer_sou
     base_url = site["base_url"]
     home_url = site["home_url"]
 
-    # Route output into a book-specific subdirectory within the base output dir.
-    # The folder name now embeds the language (#780) — e.g.
+    # Route output into a book-specific subdirectory within the base output
+    # dir. The folder name embeds the language (#780) — e.g.
     #   "./hymns/Seventh-day Adventist Hymnal [SDAH]_English-en/"
-    # The site["subdir"] value carries the legacy "<Title> [<ABBR>]" shape; we
-    # extract title + abbrev from that and compose the new shape via
-    # compose_subdir() with site["lang"]. Sites with no `lang` set fall through
-    # to the legacy shape automatically.
-    legacy_subdir = site["subdir"]
-    # Strip trailing " [<ABBR>]" to get the bare title for the new composition.
-    m = re.match(r"^(?P<title>.+?)\s*\[(?P<abbr>[A-Za-z0-9_\-]+)\]$", legacy_subdir)
-    if m:
-        title_part = m.group("title").strip()
-        abbr_part  = m.group("abbr")
-        new_subdir = compose_subdir(title_part, abbr_part, site.get("lang", ""))
-    else:
-        new_subdir = legacy_subdir
-    book_dir = os.path.join(output_dir, new_subdir)
+    # book_dir_for_site() is the single place that assembles this from the
+    # site config (extracted so external callers, e.g. the CI integrity-
+    # audit workflow, can resolve the same path instead of re-guessing it —
+    # see that function's doc-block for the incident this fixed).
+    book_dir = book_dir_for_site(site_key, output_dir)
 
     # Print a banner with configuration details for this scrape run
     print(f"\n{'='*50}")

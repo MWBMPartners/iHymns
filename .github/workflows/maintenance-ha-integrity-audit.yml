@@ -31,14 +31,27 @@
 # - On manual dispatch from the Actions tab.
 #
 # WHAT IT DOES:
-# 1. Runs `SDAHymnals_SDAHymnal.org.py --site ha --prefer-source cis`
-#    against the existing CIS extracts (committed under
-#    .SourceSongData/ — but those are gitignored, so the workflow
-#    re-fetches them from the ChristInSong scraper as a setup step).
-# 2. Aggregates the per-hymn findings into a categorised summary:
+# 1. Pre-fetches the ChristInSong "es" (Spanish/Himnario Adventista)
+#    extract via ChristInSong.app.py --hymnal es, then relocates its
+#    output folder to the EXACT folder name SDAHymnals_SDAHymnal.org.py
+#    itself will use for --site ha (the two scrapers independently pick
+#    their own folder name for "the same" hymnal, and never agree on one
+#    — see .github/workflows/scripts/ha_audit_paths.py's doc-block for
+#    why this relocation step exists at all).
+# 2. Runs `SDAHymnals_SDAHymnal.org.py --site ha --prefer-source cis`
+#    against the relocated CIS extract (committed CIS extracts under
+#    .SourceSongData/ are gitignored — working data, not source of
+#    truth — so the workflow re-fetches a fresh copy each run).
+# 3. Aggregates the per-hymn findings into a categorised summary:
 #    structural-only, encoding-corruption, OCR-style, title-mismatch.
-# 3. Writes the summary to .importers/audits/<YYYY-MM-DD>-ha-audit.md.
-# 4. Opens a PR against `alpha` with the report.
+#    Resolves WHERE the scraper actually wrote its report via the same
+#    ha_audit_paths.py helper — never a hardcoded path guess. (A
+#    hardcoded guess in this exact spot silently drifted out of sync
+#    with the scraper's own #780 folder-naming change and broke the
+#    2026-07-14 run — this file's job is to make that class of drift
+#    impossible by asking the scraper directly instead of guessing.)
+# 4. Writes the summary to .importers/audits/<YYYY-MM-DD>-ha-full-audit.md.
+# 5. Opens a PR against `alpha` with the report.
 #
 # RATE-LIMIT HANDLING:
 # If the audit returns 0 hymns + 10 consecutive skips, the workflow
@@ -106,20 +119,54 @@ jobs:
         # do its diff. ChristInSong-side rate limits are separate
         # from SDAHymnal-side, so this doesn't eat into the audit
         # budget.
+        #
+        # NOTE: the real ChristInSong.app.py flag is --hymnal (there is
+        # no --site flag on that script at all), and its key for this
+        # hymnal is "es" — the BCP-47 language subtag — not "ha". A
+        # previous version of this step passed "--site ha", which
+        # argparse rejects outright, so the fetch silently failed on
+        # EVERY run (swallowed by the `|| echo` below) and never
+        # populated .SourceSongData/ at all.
+        #
+        # ELI5: this scraper and the SDAHymnal one in the next step each
+        # pick their OWN folder name for "the Spanish HA hymnal" (see
+        # ha_audit_paths.py's doc-block for the full story) — so once the
+        # fetch lands, we ask ha_audit_paths.py what folder EACH scraper
+        # actually uses and rename this one's output to match the other's,
+        # so the audit step below can find it to diff against.
         run: |
+          set -euo pipefail
           mkdir -p ".SourceSongData"
           python3 .importers/scrapers/ChristInSong.app.py \
-              --site ha \
+              --hymnal es \
               --output .SourceSongData \
               --delay 1.0 \
             || echo "::warning::ChristInSong pre-fetch errored — proceeding with whatever landed."
+
+          cis_dir=$(python3 .github/workflows/scripts/ha_audit_paths.py christinsong-es .SourceSongData)
+          sdah_dir=$(python3 .github/workflows/scripts/ha_audit_paths.py sdahymnal-ha .SourceSongData)
+          echo "ChristInSong wrote to : ${cis_dir}"
+          echo "SDAHymnal expects     : ${sdah_dir}"
+
+          if [ -d "$cis_dir" ] && [ "$cis_dir" != "$sdah_dir" ]; then
+            mkdir -p ".SourceSongData"
+            rm -rf "$sdah_dir"
+            mv "$cis_dir" "$sdah_dir"
+            echo "Relocated CIS extract -> ${sdah_dir}"
+          elif [ ! -d "$cis_dir" ]; then
+            echo "::warning::ChristInSong output folder not found at ${cis_dir} — the integrity audit below will have nothing to compare against (every hymn will be new, not identical/differs, and no report will be written)."
+          fi
 
       - name: Run the HA integrity audit
         id: audit
         run: |
           # --prefer-source cis is read-only — no song files written.
-          # Output goes only to .SourceSongData/HA*/_integrity-check.md
-          # which is gitignored.
+          # Output path is resolved by ha_audit_paths.py (never hardcoded
+          # here — see that file's doc-block for why a hardcoded guess is
+          # exactly what broke the 2026-07-14 run) and is gitignored.
+          sdah_dir=$(python3 .github/workflows/scripts/ha_audit_paths.py sdahymnal-ha .SourceSongData)
+          echo "Report will be written under: ${sdah_dir}/_integrity-check.md"
+
           python3 .importers/scrapers/SDAHymnals_SDAHymnal.org.py \
               --site ha \
               --prefer-source cis \
