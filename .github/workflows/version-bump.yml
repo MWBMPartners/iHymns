@@ -7,7 +7,12 @@
 #
 # PURPOSE:
 # Automatically bumps the semantic version number in infoAppVer.php
-# when code is pushed to the `beta` branch.
+# when code is pushed to the `alpha` or `beta` branches.
+#
+# ALPHA WAS ADDED IN #1596. Before that this ran on `beta` only, and since
+# nearly all work targets `alpha` the version stood still for long stretches —
+# the consolidated batch (PR #1585) shipped 98 commits and 228 files under an
+# unchanged 0.4000.0 and had to be bumped by hand (bad5ca4f, PR #1592).
 #
 # BUMP RULES (based on commit message):
 #   - Contains "BREAKING CHANGE" or "!:" -> MAJOR bump (X.0.0)
@@ -23,6 +28,7 @@ name: Version Bump
 on:
   push:
     branches:
+      - alpha
       - beta
     paths:
       - 'appWeb/**'
@@ -38,6 +44,9 @@ concurrency:
 
 permissions:
   contents: write
+  # Needed to dispatch deploy.yml after the bump (#1596). The bump commit
+  # carries [skip ci], so nothing re-triggers a deploy on its own.
+  actions: write
 
 jobs:
   bump:
@@ -192,3 +201,43 @@ jobs:
 
           echo "::error::Failed to push version bump after 5 attempts"
           exit 1
+
+      # -----------------------------------------------------------------------
+      # Step 7: Deploy the bumped version (#1596)
+      #
+      # ELI5: the bump has to actually reach the server, or the site keeps
+      # showing the old number.
+      #
+      # The commit above carries [skip ci], which GitHub honours by skipping
+      # EVERY workflow for that commit — deploy.yml included. That is what we
+      # want for lint / tests / actionlint / changelog (there is no value in
+      # re-running them for a one-line version string), but it means the bump
+      # would otherwise never ship: the repo would say N+1 while the server
+      # served N, permanently one merge behind. That gap is not cosmetic —
+      # infoAppVer.php drives the service-worker cache version (#81) and every
+      # ?v= cache-buster, so a bump that never deploys never invalidates a
+      # stale client cache, which is the main reason to bump at all.
+      #
+      # So we dispatch the deploy explicitly. deploy.yml gained a per-branch
+      # concurrency group with cancel-in-progress: false in #1595, so this
+      # QUEUES behind the merge-triggered deploy rather than running a second
+      # `lftp --delete` mirror against the same docroot at the same time.
+      # #1595 is a hard prerequisite for this step, not a nicety.
+      #
+      # Non-fatal on failure: a missed deploy is recoverable (the next push
+      # carries the version), whereas failing the job here would leave a
+      # successful bump reported as a red run.
+      # https://cli.github.com/manual/gh_workflow_run
+      - name: Deploy the bumped version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          NEW_VERSION="${{ steps.new_version.outputs.version }}"
+          echo "Dispatching deploy.yml for ${BRANCH} at ${NEW_VERSION}"
+
+          if gh workflow run deploy.yml --ref "${BRANCH}"; then
+            echo "Deploy dispatched."
+          else
+            echo "::warning::Could not dispatch deploy.yml — ${BRANCH} is bumped to ${NEW_VERSION} in git but the server still serves the previous version until the next push."
+          fi
