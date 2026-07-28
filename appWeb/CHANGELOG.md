@@ -1,5 +1,30 @@
 # iHymns Web/PWA — Changelog
 
+## [unreleased] — alpha
+
+Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.4000.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
+
+- **Public Export dropdowns fixed — never worked on any public page** (#1565–#1570, tests #1569) — the enforcing nonce CSP silently blocked the inline `<script>` binding every menu item; wiring moved into router-loaded ES modules, plus a root-absolute ProPresenter proto-bundle URL fix and one shared export-menu partial.
+- **What's New page** (#1583) — a deploy-time CHANGELOG excerpt rendered through a new escape-first `includes/markdown_lite.php`, linked from the footer version and the now colour-distinct Alpha/Beta environment badge.
+- **Global JavaScript error surfacing** (#1582) — `js/modules/error-monitor.js` catches uncaught errors/rejections, toasts once, and beacons a throttled, privacy-scrubbed report into `tblActivityLog`.
+- **Unified `ihymns:*` event names in `js/constants.js`** (#1581) — fixes the Settings language filter never refreshing Song of the Day; CI now bans raw event-name literals.
+- **Exclude `data/audio` and `data/music` from the docroot deploy mirror** (#1584) — the delete-mode mirror was wiping uploaded/downloadable media on every deploy.
+- **`migrate-json.php` now requires `confirm=1`** — closes a single-GET path that could TRUNCATE the live song corpus.
+- **Ad-hoc Service Mode sessions no longer start already-expired** (#1576) — floors the occurrence end for the no-schedule-selected path.
+- **Live Follow and Service Mode user documentation** (#1577) — split in-app help topics, a new `help/live-follow.md` guide and wiki page explain that the two features are distinct.
+- **Server-side content gating + extensible tier registry + read rate limiting + robust CSRF** (#1352/#1353/#1354) — the `TIER_CAPS` registry, `contentGatingApply()`, per-endpoint read throttling, and same-origin `validateCsrfRequest()`.
+- **Tier-aware gating on the web + offline path** (#1357) — `song.php` and the offline `bulk_songs` bundle now gate copyrighted lyrics consistently with the API.
+- **Signed-URL sealing of licensed audio** (#1358) — HMAC signed/expiring `/audio/` streaming route, dormant pending `AUDIO_SIGNING_KEY` provisioning.
+- **API key usage dashboard + `catalogue:read` scope + self-serve key requests** — per-key rate limits, a developer quickstart, and a `tblApiKeyRequests` approval queue.
+- **Service Mode "Go Live" fatal fixed** (#1360) — `checkRateLimit()` is now loaded top-level in `api.php` so every caller has it defined.
+- **"Go Live" code reported as wrong on the follower's device** (#1375) — distinguishes a maintenance 503 from a bad code; codes now forgive spacing/punctuation.
+- **NAT-safe Live Follow join-token** (#1377) — per-token rate limiting so a whole congregation on one church-WiFi NAT isn't throttled together.
+- **Live Follow / Service Mode consolidation + security fixes** (#1386) — admin-login brute-force + session-GC login lockout fixes, the home "Join a live service" button now matches both session kinds, a shared freshness window, and a full adversarial security audit (CSV-formula injection, stored XSS, Host-header injection, IDOR).
+- **Service Mode broadcaster front-ends** (#1335) — a shared `ServiceBroadcaster` core drives both the `/manage/service-projection` operator console and the new `/manage/service-lead` leader-device page.
+- **Badge unofficial songbooks + rename "Catalogue" → "Collection" (UI copy only)** (#1223) — a shared `.songbook-unofficial-badge` on the home grid, `/songbooks` list and songbook header; internal identifiers stay `catalogue`.
+- **`DisplayAbbr` — a richer display label distinct from the SongId-prefix `Abbreviation`** (#1332).
+- **Credit People — authority-control identifiers + paste-a-URL auto-extract** (#1367) — GND/FAST/WorldCat/LoC/IdRef/Trove/LibraryThing/Open Library/CiNii added to the registry.
+
 ## [0.880.0] — 2026-06-09
 
 The Song Editor v2 rewrite (#1200) landed on alpha alongside dev-tooling and accuracy improvements.
