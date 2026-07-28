@@ -6,23 +6,23 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-07-26._
+_Last updated: 2026-07-28._
 
 ## Where things stand
 - **Version:** `0.4000.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
   (auto-bumped by `version-bump.yml` on push to **beta**, not alpha; the PWA service-worker cache
-  version auto-syncs off it, #81).
+  version auto-syncs off it, #81). Docs that hardcode a version rot within days — point at the file.
 - **Environments / deploy:** single shared MySQL; `alpha` → `dev.ihymns.app` (auto-merge + SFTP),
   `beta` → `beta.ihymns.app`, `main` → `www.ihymns.app`. Most work targets **`alpha`**.
 - **Reads are LIVE MySQL** — there is NO `songs.json` corpus cache (epic #1010). Scoped reads only
   (`getSongsSlimIndex` / `getSongs($abbr)` / `getSongById`); a DB outage is a themed 503, never stale.
 - **Active branch (2026-07-28):** **`claude/observability-alpha-3k9wqz`** — THE single WIP branch
-  (81 commits ahead of alpha, pushed, no PR). It subsumed
+  (90+ commits ahead of alpha, pushed, no PR). It subsumed
   `claude/apple-branches-cleanup-export-7mxhpo` via merge `753ed895`; that branch's PR #1578 must be
   CLOSED as superseded, not merged. See the handoff for the exact branch-deletion list.
-- **(superseded) `claude/apple-branches-cleanup-export-7mxhpo`** — **~64 commits ahead
-  of alpha, pushed, NO PR opened**. Carries ALL outstanding Apple work (Phase-2 PR-11/14/15/16 +
-  Phase-1.5 App Intents #1415) **plus** the public-export fix batch. See the 2026-07-26 handoff.
+- **Verified counts** (re-derived 2026-07-28 — most docs disagreed with all of these): **142** tables
+  in `schema.sql`; **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
+  **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
 - **Apple programme:** Phase-2 code-complete but **never compiled as a merged whole** — the
   consolidation was done in a Linux container with no Swift toolchain. Audit-B security gate, device
   matrices and APNs provisioning remain outstanding; all hardware/owner-gated.
@@ -71,8 +71,33 @@ _Last updated: 2026-07-26._
   test go red before trusting it.
 - **`git stash` during a branch switch with only UNTRACKED changes saves nothing** → a later
   `git stash pop` pops a STALE stash. Stage explicit pathspecs; avoid blind `git stash pop`.
+- **`CHANGELOG.md`'s top section is USER-VISIBLE.** `deploy.yml` extracts the first three `## `
+  sections into `public_html/data/whats-new.md` on every deploy and `/whats-new` renders it. A
+  malformed or duplicated top header ships straight to testers — a consolidation merge left TWO
+  `## [unreleased]` headers and the What's New page showed *unreleased, unreleased, April* (#1586).
+- **Docs drift silently and compound.** The 2026-07-28 audit found four different version numbers
+  across README / PROJECT_STATUS / ProjectBrief / Home.md, table counts off by 11, workflow counts
+  off by 9, and eleven wiki pages still calling `songs.json` the "single source of truth" more than
+  a month after #1010 removed it. **Never cite a count from another document** — re-derive it from
+  `schema.sql` / `admin-links.php` / `ls .github/workflows/`, or de-version the sentence entirely.
 
-## Recent landings (2026-07-26 — on `claude/apple-branches-cleanup-export-7mxhpo`, NOT yet on alpha)
+## Recent landings (2026-07-28 — on `claude/observability-alpha-3k9wqz`, NOT yet on alpha)
+- **Observability trio** — #1581 (event names live once in `js/constants.js`; `tests/test-event-names.js`
+  bans raw `ihymns:*` literals — the Settings language filter silently never refreshed Song of the
+  Day), #1582 (`js/modules/error-monitor.js` → one toast + a throttled, scrubbed beacon to
+  `client_error_report` → `tblActivityLog` `Action=client.jserror`), #1583 (`/whats-new`).
+- **#1584 deploy media guard** — the docroot mirror runs in delete mode, so every deploy was wiping
+  `/data/audio` and `/data/music`. Owner still needs to check those directories on the servers.
+- **#1587 Swagger UI hardening** — `/manage/api-docs` floated `swagger-ui-dist@5` with no SRI, failed
+  silently to `console.error`, and enforced `requireEditor()` while the nav checked `view_api_docs`
+  (a curator saw no link but could deep-link in). Pinned 5.32.11 + SRI + vendored fallback.
+- **#1586 documentation overhaul** — every `.md`, the in-app help, the wiki, the `.claude/` files and
+  `api-docs.yaml` re-checked against the code. See the gotcha above.
+- Also: #1558 (serial `swift test` — cross-suite Keychain contention was the dominant CI failure),
+  #1576 (ad-hoc Service Mode sessions born expired), the `migrate-json.php` confirm gate, and the HA
+  integrity-audit path fix (that monthly job had failed silently since July — three compounding bugs).
+
+## Earlier landings (2026-07-26 — same branch, arrived via the consolidation merge)
 - **Branch consolidation** — 7 outstanding branches → 1. Four (`pr11`/`pr14`/`pr15`/`pr16`) were
   already fully contained in `integration/apple-phase2-batch`; only App Intents (#1415) and the docs
   branch carried unique commits. Merged from integration's **tip~2** to exclude two stray commits
