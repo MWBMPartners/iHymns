@@ -99,25 +99,68 @@ function applyHeaderToFetch(subtags) {
 
     const origFetch = window.fetch;
     window.fetch = function (input, init) {
-        const csv = window.__iHymnsPreferredLanguages || '';
-        if (csv === '') return origFetch(input, init);
-
-        /* Only attach the header for same-origin requests — never
-           leak the user's language preference to a third-party
-           CDN or analytics endpoint. */
-        let url = '';
+        /* EVERY path below falls back to origFetch. This wrapper sits in
+           front of EVERY fetch() on the site, so a throw in here is not a
+           missing header — it is a failed REQUEST, surfacing wherever that
+           caller happens to catch it. That is exactly what #1593 was: the
+           Song of the Day card blanked because this function threw and its
+           caller's catch wrote innerHTML = ''. */
         try {
-            url = typeof input === 'string' ? input : input.url;
-        } catch (_e) {}
-        const sameOrigin = !url.startsWith('http')
-            || url.startsWith(window.location.origin);
-        if (!sameOrigin) return origFetch(input, init);
+            const csv = window.__iHymnsPreferredLanguages || '';
+            if (csv === '') return origFetch(input, init);
 
-        const next = init ? { ...init } : {};
-        next.headers = new Headers(next.headers || {});
-        next.headers.set('X-Preferred-Languages', csv);
-        return origFetch(input, next);
+            /* Only attach the header for same-origin requests — never
+               leak the user's language preference to a third-party
+               CDN or analytics endpoint. */
+            const url = requestUrlOf(input);
+            const sameOrigin = !url.startsWith('http')
+                || url.startsWith(window.location.origin);
+            if (!sameOrigin) return origFetch(input, init);
+
+            const next = init ? { ...init } : {};
+            next.headers = new Headers(next.headers || {});
+            next.headers.set('X-Preferred-Languages', csv);
+            return origFetch(input, next);
+        } catch (err) {
+            /* Never let a bug in the header logic break the request. */
+            console.warn('[lang-filter] header injection skipped:', err);
+            return origFetch(input, init);
+        }
     };
+}
+
+/**
+ * Resolve the request URL from any shape `fetch()` accepts, ALWAYS
+ * returning a string (#1593).
+ *
+ * ELI5: work out the web address, whatever form it was handed to us in.
+ *
+ * This used to be inline as `typeof input === 'string' ? input : input.url`
+ * — correct for a string, correct for a `Request`, and silently WRONG for a
+ * `URL` object, which exposes `href`, not `url`. That produced `undefined`,
+ * and the next line called `.startsWith` on it and threw a TypeError. The
+ * old `try/catch` did not help: reading a missing property returns undefined
+ * rather than throwing, so the error escaped one line later, outside it.
+ *
+ * It broke every caller that passes a URL object — `song-of-the-day.js`,
+ * `search.js` (including the header autocomplete), `router.js`'s related
+ * songs, `shuffle.js`, `numpad.js`, `compare.js` — but ONLY while a language
+ * filter was active, because the empty-CSV early return skips this code
+ * entirely. That is why it presented as a Song-of-the-Day bug rather than a
+ * sitewide one.
+ *
+ * Exported for unit testing; the URL-object case is the regression test.
+ * https://developer.mozilla.org/en-US/docs/Web/API/fetch
+ */
+export function requestUrlOf(input) {
+    if (typeof input === 'string') return input;
+    if (typeof URL !== 'undefined' && input instanceof URL) return input.href;
+    /* Request, or anything else exposing a string `url`. */
+    if (input && typeof input.url === 'string') return input.url;
+    /* Last resort — stringify rather than throw. An unrecognised value
+       yields '', which the caller treats as same-origin: the safe default
+       is attaching our own header to our own request. */
+    try { return String(input ?? ''); } catch (_e) { return ''; }
 }
 
 /**
@@ -346,15 +389,25 @@ export function bootSongbookLanguageFilter(root) {
        apply). */
     const initial = loadSavedSubtags();
     syncUiFromSubtags(initial);
-    applyFilter(scope, initial);
+    /* Header state BEFORE applyFilter — see the ordering note in commit(). */
     applyHeaderToFetch(initial);
+    applyFilter(scope, initial);
 
     /* Wire change handlers. */
     function commit() {
         const subtags = readSubtagsFromUi();
         saveSubtags(subtags);
-        applyFilter(scope, subtags);
+        /* ORDER IS LOAD-BEARING (#1593): applyHeaderToFetch() must run
+           BEFORE applyFilter(), because applyFilter() dispatches
+           EVT_LANGUAGE_FILTER_CHANGED *synchronously* and listeners refetch
+           immediately. With the old order every event-driven refetch went out
+           carrying the PREVIOUS selection's header — one state behind, every
+           time. Song of the Day survived that only because its explicit
+           `lang=` query param wins server-side (language_filter.php
+           resolution order); a header-only consumer would have silently
+           served stale-filtered data. */
         applyHeaderToFetch(subtags);
+        applyFilter(scope, subtags);
         saveSubtagsToAccount(subtags);
         refreshTrigger(subtags);
     }
@@ -414,8 +467,9 @@ export function bootSongbookLanguageFilter(root) {
                    "across all my devices" view. */
                 saveSubtags(remote);
                 syncUiFromSubtags(remote);
-                applyFilter(scope, remote);
+                /* Header state BEFORE applyFilter — see commit(). */
                 applyHeaderToFetch(remote);
+                applyFilter(scope, remote);
             })
             .catch(() => { /* ignore — local state stands */ });
     }

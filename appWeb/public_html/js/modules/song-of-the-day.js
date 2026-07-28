@@ -113,8 +113,14 @@ export class SongOfTheDay {
             if (!response.ok) throw new Error(`SoTD API: HTTP ${response.status}`);
             data = await response.json();
         } catch (error) {
-            /* Offline / server error — leave the card empty rather than
-               showing a broken state on the home page. */
+            /* Offline / server error. Previously this blanked the container
+               with no console output at all, which made #1593 invisible: a
+               TypeError thrown inside the language-filter's fetch wrapper
+               landed here and the card simply ceased to exist — no error, no
+               toast, nothing for the error monitor to see (it was CAUGHT, so
+               #1582's handler never fired). A caught error still deserves a
+               trace. */
+            console.warn('[song-of-the-day] could not load:', error);
             if (seq === this._renderSeq) container.innerHTML = '';
             return;
         }
@@ -124,7 +130,19 @@ export class SongOfTheDay {
 
         const song = data && data.song;
         if (!song || !song.id) {
-            container.innerHTML = '';
+            /* No match is a legitimate answer, not a failure — most often
+               "you filtered to a language with no eligible songs today".
+               Say so, rather than vanishing: an absent card is
+               indistinguishable from a crash, which is what made #1593 read
+               as broken rather than as empty. */
+            const activeSubtags = this.getActiveSubtags();
+            container.innerHTML = activeSubtags.length
+                ? `<div class="alert alert-secondary d-flex align-items-center gap-2 mb-4" role="status">
+                       <i class="fa-solid fa-circle-info" aria-hidden="true"></i>
+                       <span>No Song of the Day matches your language filter today. Widen the
+                       <strong>Languages</strong> filter to see one.</span>
+                   </div>`
+                : '';
             return;
         }
 

@@ -153,6 +153,7 @@ jobs:
           node tests/test-error-monitor.js
           node tests/test-propresenter-export.js
           node tests/test-export-ui.js
+          node tests/test-lang-filter-fetch-url.js
 
       # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
