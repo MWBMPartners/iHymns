@@ -14214,7 +14214,6 @@ if ($action !== null) {
             /* Legacy share-directory + SQLite presence checks. Defined
                constants come from config.php; treat absence as "not
                configured" rather than a 500. */
-            $songsJsonPath = defined('APP_DATA_FILE')          ? APP_DATA_FILE          : '';
             $shareDirPath  = defined('APP_SETLIST_SHARE_DIR')  ? APP_SETLIST_SHARE_DIR  : '';
             $sqliteDbPath  = defined('APP_ROOT')
                 ? dirname(APP_ROOT) . DIRECTORY_SEPARATOR . 'data_share' . DIRECTORY_SEPARATOR . 'SQLite'
@@ -14993,6 +14992,18 @@ if ($action !== null) {
             $deact->close();
             if ($oldRow) {
                 liveActivitySessionPush($db, (int)$oldRow['Id'], 'end');
+                /* #1621 — a superseded session must not keep holding its join
+                   codes' slots in the global uq_ActiveCode index. Retire them
+                   (a Status transition to 'expired'; the rows are KEPT — see
+                   serviceMode_retireSessionCodes()) as the symmetric partner of
+                   the same call in service_session_end below. Without it,
+                   restarting a service silently burns a code every time.
+                   Anything this misses — the theoretical case where the
+                   supersede UPDATE deactivated more than the one session
+                   captured above — is picked up by the opportunistic expiry
+                   retirement inside serviceMode_mintCode() within one rotation
+                   window. */
+                serviceMode_retireSessionCodes($db, (int)$oldRow['Id'], $channel);
             }
 
             /* Insert the session (SessionKind=service; SessionCode is the spine's
@@ -15097,6 +15108,18 @@ if ($action !== null) {
                     /* Revoke all presence → immediate gate revocation. */
                     $e2 = $db->prepare('UPDATE tblServicePresence SET IsActive = 0 WHERE SessionId = ?');
                     $e2->bind_param('i', $sessionId); $e2->execute(); $e2->close();
+                    /* #1621 — retire this session's join codes IN THE SAME
+                       TRANSACTION, so a half-ended session can never strand a
+                       live code. Before this, ending a service left its
+                       'current' (+ 'previous') rows at a LIVE Status forever:
+                       harmless while uq_Session_Code was session-scoped, but
+                       with the global uq_ActiveCode slot it means every ended
+                       service permanently holds a code and the unique index
+                       grows with cumulative history rather than with concurrent
+                       services. Status transition only — the rows are KEPT for
+                       audit ('expired' records WHY the code died: the service
+                       ended, as opposed to 'superseded' = it rotated). */
+                    serviceMode_retireSessionCodes($db, $sessionId, $channel);
                     $db->commit();
                 } catch (\Throwable $e) { $db->rollback(); throw $e; }
                 logActivity('service.session.end', 'organisation', (string)$orgId, ['session_id' => $sessionId]);
@@ -15306,12 +15329,25 @@ if ($action !== null) {
 
             $db = getDbMysqli();
             $channel = serviceMode_channel();
-            $sess = serviceMode_resolveJoin($db, $code, $venueId, $channel);
+            /* #1621 — $joinFailReason distinguishes 'code_not_active' from
+               'ambiguous_code' for the SERVER-SIDE breadcrumb only; the
+               user-facing message below is deliberately identical for both. */
+            $joinFailReason = null;
+            $sess = serviceMode_resolveJoin($db, $code, $venueId, $channel, $joinFailReason);
             if (!$sess) {
-                /* Opaque — don't distinguish wrong/expired/unknown (anti-probe).
-                   §3.2 breadcrumb: OrgId is unresolved, never the code. */
-                logActivity('service.presence.join', 'organisation', '', ['reason' => 'code_not_active', 'channel' => $channel], 'failure');
-                sendJson(['ok' => false, 'error' => 'That code isn’t active. Check the screen and try again.'], 404);
+                /* Opaque — don't distinguish wrong/expired/unknown/ambiguous
+                   (anti-probe; telling a prober "that code resolves twice" is
+                   itself a signal). §3.2 breadcrumb: OrgId is unresolved, never
+                   the code.
+                   #1621 — the wording is the ROTATING-CODE mental model: the
+                   venue screen shows a new code every ~30s, so "expired, look at
+                   the screen" is both the truthful answer in the overwhelmingly
+                   common case AND the right instruction in every other one,
+                   including the ambiguity refusal (where guessing a winner could
+                   have handed the congregant another organisation's service —
+                   and, via serviceMode_presenceCcliNumber(), its CCLI unlock). */
+                logActivity('service.presence.join', 'organisation', '', ['reason' => $joinFailReason ?? 'code_not_active', 'channel' => $channel], 'failure');
+                sendJson(['ok' => false, 'error' => 'That code has expired. Check the screen for the new code.'], 404);
                 break;
             }
             $sessionId = (int)$sess['Id'];

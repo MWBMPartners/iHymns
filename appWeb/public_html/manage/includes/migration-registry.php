@@ -2255,6 +2255,35 @@ return [
             || !_migProbe_tableExists($db, 'tblServicePresence')
             || !_migProbe_tableExists($db, 'tblServicePollCounters'),
     ],
+    'service-code-uniqueness' => [
+        'script' => 'migrate-service-code-uniqueness.php',
+        'card' => [
+            'title'  => 'Globally-unique service join codes (#1621)',
+            'body'   => 'Makes a LIVE Service-Mode join code unique across the whole install, enforced'
+                      . ' by the database. Adds <code>tblLiveFollowJoinCodes.ActiveCode</code> — a STORED'
+                      . ' generated column mirroring <code>Code</code> only while'
+                      . ' <code>Status</code> is <code>current</code>/<code>previous</code> — under'
+                      . ' <code>UNIQUE KEY uq_ActiveCode</code> (MySQL has no filtered index; multiple'
+                      . ' NULLs are distinct, so retired rows coexist freely). The original'
+                      . ' <code>uq_Session_Code</code> was <em>session</em>-scoped, so two concurrent'
+                      . ' services could hold the same code and a typed join was resolved by'
+                      . ' freshest-heartbeat — silently joining a congregant to another organisation’s'
+                      . ' service, and with it that org’s CCLI unlock. Also documents the new'
+                      . ' <code>expired</code> status value, adds <code>idx_Live_Expiry</code> for the'
+                      . ' expiry-retirement pass, and retires (status only — <strong>never deletes</strong>)'
+                      . ' any pre-existing expired or duplicated live codes so the UNIQUE key can land.'
+                      . ' Runs after Service Mode sessions. Idempotent — safe to re-run.',
+            'button' => 'Run Service Join-Code Uniqueness Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the generated column,
+           its UNIQUE key AND the retirement index have all landed, so a partial
+           apply (e.g. the column added but the ALTER interrupted before the key)
+           never shows the card green. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLiveFollowJoinCodes', 'ActiveCode')
+            || !_migProbe_indexExists($db, 'tblLiveFollowJoinCodes', 'uq_ActiveCode')
+            || !_migProbe_indexExists($db, 'tblLiveFollowJoinCodes', 'idx_Live_Expiry'),
+    ],
 
     'song-link-origin' => [
         'script' => 'migrate-song-link-origin.php',

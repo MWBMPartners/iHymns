@@ -109,7 +109,14 @@ export class ServiceFollow {
                     await this.app.liveFollow._doJoin(code);
                     return;
                 }
-                this.app.showToast((r.data && r.data.error) || 'That code isn’t active right now.', 'danger');
+                /* Fallback wording matches the server's single join-failure
+                   message (#1621). The server always sends `error` on this
+                   path, so this only renders if that ever changes — but a
+                   congregant seeing two different explanations for the same
+                   refusal, depending on which layer answered, is exactly the
+                   kind of inconsistency nobody notices until they are standing
+                   in a service trying to join. */
+                this.app.showToast((r.data && r.data.error) || 'That code has expired. Check the screen for the new code.', 'danger');
                 return;
             }
             this.token = r.data.presenceToken;

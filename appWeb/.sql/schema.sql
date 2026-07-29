@@ -3173,16 +3173,19 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowJoinCodes (
     SessionId   INT UNSIGNED  NOT NULL COMMENT 'FK tblLiveFollowSessions',
     Code        VARCHAR(12)   NOT NULL COMMENT 'Crockford base32 rotating join code (current/previous live)',
     Generation  INT UNSIGNED  NOT NULL DEFAULT 0 COMMENT 'Monotonic per-session rotation counter',
-    Status      VARCHAR(20)   NOT NULL DEFAULT 'current' COMMENT 'current | previous | superseded — app-validated, VARCHAR not ENUM (rule #20)',
+    Status      VARCHAR(20)   NOT NULL DEFAULT 'current' COMMENT 'current | previous | superseded | expired — app-validated, VARCHAR not ENUM (rule #20). superseded = rotated out by the next code; expired = the session ended or ExpiresAt passed. Retired rows are KEPT, never deleted (#1621)',
+    ActiveCode  VARCHAR(12)   GENERATED ALWAYS AS (CASE WHEN Status IN ('current','previous') THEN Code ELSE NULL END) STORED COMMENT 'Partial-unique idiom (#1621): mirrors Code while the row is LIVE, else NULL, so uq_ActiveCode makes live codes GLOBALLY unique while retired rows coexist (multiple NULLs are distinct). MySQL has no filtered index, and a generated column must be deterministic (UTC_TIMESTAMP is rejected), so liveness is expressed by Status alone. POSITIVE status list, so any future retired state is excluded automatically',
     IssuedAt    DATETIME      NOT NULL,
     ExpiresAt   DATETIME      NOT NULL COMMENT 'Rotation horizon + grace (UTC); join rejects past this',
     CreatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_Session_Code (SessionId, Code),
+    UNIQUE KEY uq_ActiveCode (ActiveCode),
     INDEX idx_Session_Status (SessionId, Status),
+    INDEX idx_Live_Expiry (Status, ExpiresAt),
     INDEX idx_Expiry (ExpiresAt),
     CONSTRAINT fk_JoinCode_Session FOREIGN KEY (SessionId) REFERENCES tblLiveFollowSessions(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Rotating venue join codes for Service Mode (#1335). Session-scoped uniqueness; current+previous window so a just-before-rotation scan still validates.';
+  COMMENT='Rotating venue join codes for Service Mode (#1335). LIVE codes are GLOBALLY unique via the ActiveCode generated column (#1621); current+previous window so a just-before-rotation scan still validates. Retired rows are kept for audit, never deleted.';
 
 CREATE TABLE IF NOT EXISTS tblServicePresence (
     Id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
