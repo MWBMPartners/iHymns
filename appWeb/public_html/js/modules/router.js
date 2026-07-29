@@ -797,6 +797,28 @@ export class Router {
                 .catch(err => console.error('[Router] device-link init failed:', err));
         }
 
+        /* ELI5: hook up the Request-a-Song form (fetch submit, offline
+           queueing, deep-link prefill) once its fragment is on the page.
+           Detail: this logic lived as a `<script type="module">` inside
+           includes/pages/request-a-song.php and never executed for anyone —
+           the document's enforcing nonce CSP (#117) refuses nonce-less
+           inline scripts, the fragment is a separate HTTP response that
+           never sees the nonce, and `request` is in api.php's
+           $_cacheablePages so it can't carry a per-request nonce at all
+           (rule #6). `_executeInlineScripts()` re-creates the node with its
+           attributes verbatim, so the copy has no nonce either and is
+           refused SILENTLY — every submit was quietly taken by the #711
+           no-JS `<form action>` fallback instead. Same fix as home-page.js
+           / export-ui.js: a real ES module imported here (#1572).
+           `params` carries the forwarded `songbook` / `number` deep-link
+           prefill; the module prefers the fragment's own data-prefill-*
+           attributes and uses these only as the stale-cache fallback. */
+        if (page === 'request') {
+            import('./request-a-song.js')
+                .then(m => m.initRequestASong(params))
+                .catch(err => console.error('[Router] request-a-song init failed:', err));
+        }
+
         /* After the new page HTML is in the DOM, broadcast the current auth
            state so any just-injected markup (Account card, sync bars, etc.)
            lands in the correct logged-in/logged-out state. */

@@ -12,8 +12,22 @@
  * those through to /api?page=request, so they arrive in $_GET on
  * this partial — we echo them straight into the input value
  * attributes so prefill works the moment the HTML reaches the
- * browser, without depending on the inline-module rehydration
- * that proved racy in #666 (SW caches + module-import timing).
+ * browser, without depending on client-side rehydration that proved
+ * racy in #666 (SW caches + module-import timing). The same resolved
+ * values are ALSO mirrored onto the section as `data-prefill-*` so
+ * js/modules/request-a-song.js has a DOM-first source that can never
+ * disagree with what was baked into the inputs.
+ *
+ * Behaviour is wired by js/modules/request-a-song.js, imported by the
+ * SPA router's afterPageLoad() — NOT by a <script> in this file. An
+ * inline script here is CSP-dead: the document's enforcing nonce CSP
+ * (#117) refuses nonce-less inline scripts, this fragment is a
+ * separate HTTP response that never sees the document's nonce, and
+ * `request` is in api.php's $_cacheablePages so the same bytes are
+ * replayed to everyone (rule #6). That silently killed this form's
+ * JS path entirely until #1572 — every submit was quietly taken by
+ * the no-JS fallback below. CI guard:
+ * tests/php/test-fragment-inline-scripts.php (#1565 / #1569).
  */
 
 declare(strict_types=1);
@@ -69,7 +83,7 @@ if ($_prefillNumber !== '') {
    submits via the no-JS fallback path (action= attribute on <form>),
    the API endpoint redirects back here with ?submitted=1&id=N (success)
    or ?error=… (failure). We render the banner server-side so the user
-   gets feedback whether or not the inline <script type="module"> ran.
+   gets feedback whether or not js/modules/request-a-song.js loaded.
    The JS path keeps using its own fetch() flow + the d-none banners
    below — both surfaces work independently. */
 $_serverSubmitted = isset($_GET['submitted']) && $_GET['submitted'] === '1';
@@ -80,7 +94,17 @@ if ($_serverError !== '') {
 }
 
 ?>
-<section class="page-request-a-song" aria-label="Request a song">
+<!-- data-prefill-* mirrors the resolved values baked into the inputs below,
+     giving js/modules/request-a-song.js a DOM-first input source in the same
+     shape the router already trusts elsewhere (.page-song[data-song-id],
+     .page-songbook[data-songbook-abbr]). The module prefers these over the
+     route params / query string precisely because `songbook` here is the
+     RESOLVED full name (#683), not the raw abbreviation in the URL. Absent
+     on a stale service-worker copy of this fragment — which is exactly the
+     case the module's param/query-string fallbacks cover (#666). -->
+<section class="page-request-a-song" aria-label="Request a song"
+         data-prefill-songbook="<?= htmlspecialchars($_prefillSongbook, ENT_QUOTES, 'UTF-8') ?>"
+         data-prefill-number="<?= htmlspecialchars($_prefillNumber, ENT_QUOTES, 'UTF-8') ?>">
 
     <h1 class="h4 mb-3">
         <i class="fa-solid fa-lightbulb me-2" aria-hidden="true"></i>
@@ -122,14 +146,17 @@ if ($_serverError !== '') {
     <div id="request-error" class="alert alert-danger d-none" role="alert"></div>
 
     <!-- The action="…" + method="POST" attributes are the no-JS fallback
-         path (#711). The inline <script type="module"> below intercepts
-         the submit event and uses fetch() instead, so the JS path is
-         what runs in normal browsers. If the module fails to load (CSP,
-         network, syntax error, SW cache miss) the form still works:
-         browser POSTs the form-encoded body straight to the API, the
-         endpoint detects Content-Type=application/x-www-form-urlencoded
-         and redirects back here with ?submitted=1&id=… for the
-         server-rendered success banner above. -->
+         path (#711). js/modules/request-a-song.js (imported by the SPA
+         router's afterPageLoad(), #1572) intercepts the submit event and
+         uses fetch() instead, so the JS path is what runs in normal
+         browsers. If that module fails to load (network, syntax error, SW
+         cache miss) the form still works: the browser POSTs the
+         form-encoded body straight to the API, the endpoint detects
+         Content-Type=application/x-www-form-urlencoded and redirects back
+         here with ?submitted=1&id=… for the server-rendered success banner
+         above. That fallback is why the CSP-dead inline script this page
+         used to carry went unnoticed for so long — the form never appeared
+         broken, it just silently full-page-reloaded on every submit. -->
     <form id="request-form" action="/api?action=song_request_submit" method="POST" novalidate>
         <div class="row g-3">
             <div class="col-md-8">
@@ -169,154 +196,5 @@ if ($_serverError !== '') {
             <a href="/" data-navigate="home" class="btn btn-outline-secondary">Cancel</a>
         </div>
     </form>
-
-    <?php
-        /* Cache-buster for the offline-queue module import below.
-           filemtime() returns false if the file is missing/unreadable;
-           in that case render `?v=false` would still parse but break
-           cache-busting — fall back to the app version stamp instead
-           so a deploy still busts the cache. (#526) */
-        /* dirname(__DIR__, 2) from includes/pages/ IS public_html — the extra
-           /public_html doubled it, so filemtime() always failed and silently fell
-           back to the version stamp, defeating per-file cache-busting (#1196). */
-        $_offlineQueuePath = dirname(__DIR__, 2) . '/js/modules/offline-queue.js';
-        $_offlineQueueVer  = @filemtime($_offlineQueuePath);
-        if ($_offlineQueueVer === false) {
-            $_offlineQueueVer = $app['Application']['Version']['Number'] ?? '0';
-            error_log('[request-a-song] filemtime fallback for offline-queue.js — file missing or unreadable at ' . $_offlineQueuePath);
-        }
-    ?>
-    <script type="module">
-    /* Offline queue wiring (#337). The queue module is lazy-loaded so
-       a network hiccup during module fetch doesn't break the page —
-       if the import fails we fall back to plain online-only submission. */
-    import { offlineQueue } from '/js/modules/offline-queue.js?v=<?= urlencode((string)$_offlineQueueVer) ?>';
-
-    const form = document.getElementById('request-form');
-    if (form) {
-        const okEl     = document.getElementById('request-success');
-        const queuedEl = document.getElementById('request-queued');
-        const errEl    = document.getElementById('request-error');
-        const btn      = document.getElementById('request-submit-btn');
-        const countEl  = document.getElementById('request-queued-count');
-
-        /* Prefill fallback (#660, #666). The PHP partial above already
-           bakes ?songbook= and ?number= into the input value="" attrs,
-           so by the time this script runs the fields are already
-           populated. This block is a defence-in-depth fallback for
-           edge cases where the partial was served from a cache that
-           predates the server-side bake — fill in fields that are
-           still empty, but never overwrite a value the user (or the
-           server) has already set. */
-        const qp = new URLSearchParams(window.location.search);
-        const prefillSongbook = (qp.get('songbook') || '').trim().slice(0, 100);
-        const prefillNumber   = (qp.get('number')   || '').trim().slice(0, 500);
-        if (prefillSongbook && !form.elements['songbook'].value) {
-            form.elements['songbook'].value = prefillSongbook;
-        }
-        if (prefillNumber && !form.elements['title'].value) {
-            form.elements['title'].value = prefillNumber;
-        }
-
-        const hideAll = () => {
-            okEl.classList.add('d-none');
-            queuedEl.classList.add('d-none');
-            errEl.classList.add('d-none');
-        };
-
-        /* Single send function — reused by live submit AND by the
-           drain handler once connectivity returns. Returns the
-           fetch Response so the caller can inspect status. */
-        const send = async (payload) => {
-            const res = await fetch('/api?action=song_request_submit', {
-                method:  'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
-                body:    JSON.stringify(payload),
-            });
-            const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data.ok) {
-                throw new Error(data.error || 'Request failed.');
-            }
-            return data;
-        };
-
-        /* Drain handler used by bindAutoDrain. Returns truthy so the
-           queue deletes the row on success, throws to keep it for retry. */
-        const drainSend = async (payload) => {
-            await send(payload);
-            return true;
-        };
-
-        form.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            hideAll();
-            btn.disabled = true;
-
-            const payload = {
-                title:    form.elements['title'].value.trim(),
-                songbook: form.elements['songbook'].value.trim(),
-                details:  form.elements['details'].value.trim(),
-                email:    form.elements['email'].value.trim(),
-                website:  form.elements['website'].value, /* honeypot */
-            };
-
-            /* Offline → enqueue directly, don't even try the network.
-               The `navigator.onLine` signal is advisory (some browsers
-               lie), so we also catch fetch TypeErrors below as a
-               secondary offline signal. */
-            if (!navigator.onLine) {
-                try {
-                    const id = await offlineQueue.enqueue('song-requests', payload);
-                    countEl.textContent = `Reference: offline-#${id}`;
-                    queuedEl.classList.remove('d-none');
-                    form.reset();
-                } catch (err) {
-                    errEl.textContent = 'Could not save your request offline. Please try again when connected.';
-                    errEl.classList.remove('d-none');
-                }
-                btn.disabled = false;
-                return;
-            }
-
-            try {
-                const data = await send(payload);
-                okEl.querySelector('#request-tracking-id').textContent =
-                    data.trackingId ? `Reference: #${data.trackingId}` : '';
-                okEl.classList.remove('d-none');
-                form.reset();
-            } catch (err) {
-                /* TypeError from fetch usually means the request never
-                   left the device (DNS fail, offline between the
-                   navigator.onLine check and the socket). Queue it. */
-                if (err instanceof TypeError) {
-                    try {
-                        const id = await offlineQueue.enqueue('song-requests', payload);
-                        countEl.textContent = `Reference: offline-#${id}`;
-                        queuedEl.classList.remove('d-none');
-                        form.reset();
-                    } catch (_qerr) {
-                        errEl.textContent = 'Could not reach the server and could not save offline.';
-                        errEl.classList.remove('d-none');
-                    }
-                } else {
-                    errEl.textContent = err.message || 'Could not submit — please try again later.';
-                    errEl.classList.remove('d-none');
-                }
-            } finally {
-                btn.disabled = false;
-            }
-        });
-
-        /* Replay any queued requests from a prior offline visit. The
-           queue module handles the online + SW sync triggers; we just
-           tell it what to do with each payload. */
-        offlineQueue.bindAutoDrain('song-requests', drainSend, (r) => {
-            if (r && r.sent > 0) {
-                countEl.textContent = `Flushed ${r.sent} offline request${r.sent === 1 ? '' : 's'}.`;
-                queuedEl.classList.remove('d-none');
-            }
-        });
-    }
-    </script>
 
 </section>
