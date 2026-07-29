@@ -210,6 +210,30 @@ jobs:
           fi
 
       # -----------------------------------------------------------------------
+      # Step 5a2: EVERY PHP suite (#1631 item 5, second instance)
+      #
+      # The named steps below run specific suites and give granular CI output,
+      # which is worth keeping. THIS step is the completeness guarantee: it
+      # globs tests/php/*.php, so a suite cannot exist without being run.
+      #
+      # It was added because eight files were on disk and named in NO step —
+      # including test-auth-rate-limit.php (48 assertions on login brute-force
+      # protection) and test-service-mode-occurrence.php (79 on venue-local ->
+      # UTC conversion). All eight passed. They were never failing and never
+      # skipped, simply never invoked, which is the worst state a test can be
+      # in: a failing test is a signal, an unrun one is a false sense of
+      # coverage.
+      #
+      # This is the same disease tools/run-node-tests.js was written to cure on
+      # the node side; the PHP list had it too and nobody checked. A glob has no
+      # "forgot to wire up the new file" failure mode.
+      # -----------------------------------------------------------------------
+      - name: All PHP test suites
+        run: |
+          echo "Running every tests/php/*.php suite..."
+          php tools/run-php-tests.php
+
+      # -----------------------------------------------------------------------
       # Step 5b: Migration registry sanity
       # Asserts (1) every entry in $migrationOrder has a matching
       # $migrationProbes entry, and (2) no probe is hardcoded to

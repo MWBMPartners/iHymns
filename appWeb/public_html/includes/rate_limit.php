@@ -34,6 +34,37 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 }
 
 /**
+ * Resolve the bucket key a rate-limit check/record pair must share.
+ *
+ * ELI5: "which counter does this request belong in? — the signed-in user's
+ * own counter if we know who they are, otherwise their IP address."
+ *
+ * WHY THIS IS A SHARED FUNCTION AND NOT AN INLINE EXPRESSION (#1636).
+ * checkRateLimit() derives this key internally from ($ip, $userId), but
+ * recordRateLimitHit() takes an ALREADY-RESOLVED key. Every call site
+ * therefore had to re-derive the same string by hand, e.g.
+ *
+ *     checkRateLimit('live_follow_create', $liveIp, 20, 3600, true, $userId);
+ *     recordRateLimitHit('live_follow_create', 'user:' . $userId);
+ *
+ * Two hand-written copies of one rule is exactly the shape that rots: get the
+ * derivation subtly wrong (say `'user:' . $userId` where $userId can be NULL,
+ * as it can on service_broadcast's delegated control-token path) and the
+ * WRITER files rows under `user:` while the READER counts rows under the IP —
+ * a counter that silently never trips. That is the same class of failure as
+ * #1636 itself, just one layer down, so the derivation now lives in ONE place
+ * that both halves of the contract call.
+ *
+ * @param string   $ip     Client IP address (the anonymous fallback key).
+ * @param int|null $userId Authenticated user ID, or null/0 when anonymous.
+ * @return string The bucket key — 'user:<id>' when identified, else the IP.
+ */
+function rateLimitKey(string $ip, ?int $userId = null): string
+{
+    return $userId !== null && $userId > 0 ? 'user:' . $userId : $ip;
+}
+
+/**
  * Check whether a request is within the rate limit for a given action.
  *
  * Uses tblLoginAttempts as the counter table (the `Username` column is
@@ -42,6 +73,14 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
  * with `user:<id>` so a single user can't side-step the limit by
  * cycling addresses, and a per-user signed-in budget can be set
  * larger than the per-IP unauthenticated one.
+ *
+ * TWO-PART CONTRACT (#1636). This function only ever READS the counter.
+ * Nothing is capped unless a matching recordRateLimitHit() WRITES to the same
+ * (action, key) bucket — a check without its paired record is a cap that can
+ * never be reached, which is precisely the bug #1636 found on thirteen
+ * actions. tests/php/test-rate-limit-pairing.php now fails the build on an
+ * unpaired action name. Derive the shared key with rateLimitKey() rather than
+ * re-deriving 'user:' . $id by hand.
  *
  * Sliding-window — counts rows whose AttemptedAt is within the last
  * `windowSeconds` seconds, so the cap glides rather than reset on a
@@ -77,8 +116,10 @@ function checkRateLimit(
     ?int $userId = null
 ): bool {
     /* Per-user buckets are keyed off `user:<id>` in the IpAddress
-       column. Cannot rate limit without either a user or an IP. */
-    $key = $userId !== null && $userId > 0 ? 'user:' . $userId : $ip;
+       column. Cannot rate limit without either a user or an IP.
+       Shared with every recordRateLimitHit() caller via rateLimitKey()
+       so the reader and the writer can never disagree (#1636). */
+    $key = rateLimitKey($ip, $userId);
     if ($key === '') {
         return true;
     }
@@ -130,8 +171,15 @@ function checkRateLimit(
  * Inserts a row into tblLoginAttempts with the action as the Username field.
  * This allows checkRateLimit() to count the attempt in future checks.
  *
+ * The $ip argument is the ALREADY-RESOLVED bucket key, not necessarily a raw
+ * address — pass rateLimitKey($ip, $userId) so it matches whatever key the
+ * paired checkRateLimit() will read (#1636). Note that checkRateLimit()
+ * counts rows WITHOUT regard to $success, so a caller that wants to budget
+ * only failures (auth_login_acct, service_join) simply records nothing on the
+ * success path; $success is an audit signal, not a filter.
+ *
  * @param string $action  Action identifier (stored in Username column)
- * @param string $ip      Client IP address
+ * @param string $ip      Resolved bucket key (IP address or 'user:<id>' etc.)
  * @param bool   $success Whether the action succeeded (default: true)
  */
 function recordRateLimitHit(string $action, string $ip, bool $success = true): void

@@ -528,6 +528,12 @@ if ($page !== null) {
            visitor (no per-user data), so it's cacheable on the same terms
            as help/terms/privacy. */
         'whats-new',
+        /* #1637 — /tag/<slug> theme page: the same song list for the same
+           slug regardless of who's looking (no per-user data, matching the
+           songbook/writer/person/work shape it was modelled on — rule #6).
+           The query string carries the slug so /api?page=tag&slug=grace and
+           &slug=worship hash to distinct ETags below. */
+        'tag',
     ];
     $_shouldCachePage = in_array($page, $_cacheablePages, true);
     if ($_shouldCachePage) {
@@ -636,6 +642,20 @@ if ($page !== null) {
                 break;
             }
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'work.php';
+            break;
+
+        case 'tag':
+            /* #1637 — /tag/<slug> theme page listing every song carrying a
+               tblSongTags row (the home page's "Browse by theme" chips,
+               js/modules/home-page.js renderThemeChip(), linked here for
+               the first time). Empty/unknown slug renders the page's own
+               themed "no songs for this theme" state rather than a hard
+               error here — mirrors tune/iswc immediately below, which took
+               the same approach for the same reason (the friendly message
+               needs to distinguish "no slug" from "slug doesn't exist",
+               which only the page template has enough context to word). */
+            $tagSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'tag.php';
             break;
 
         case 'tune':
@@ -753,18 +773,22 @@ if ($action !== null) {
                 break;
             }
 
+            /* Language filter (#736), pushed into the SQL itself (#1639) via
+               applyLanguageFilterSql() — same helper + call shape SongData's
+               getSongsIndex() already uses (SongData.php:1695). The old code
+               fetched limit+1 raw rows FIRST and filtered by language AFTER,
+               so any page where the filter thinned that fixed-size window to
+               <= limit reported hasMore=false while real matches sat further
+               down, unreachable. Filtering inside searchSongs()'s FULLTEXT/
+               LIKE queries means the LIMIT/OFFSET window is drawn from the
+               already-filtered set, so the over-fetch-by-one below reports
+               hasMore correctly again. Untagged songs still always pass
+               (applyLanguageFilterSql's own IS NULL/'' branch). */
+            $_langSubtags = resolvePreferredLanguagesForRequest(getAuthenticatedUser());
+
             /* Over-fetch by one so we can report hasMore for "load more"
                pagination without a separate COUNT round-trip. */
-            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics);
-
-            /* Language filter (#736). Apply the active preferred-subtag
-               set in-memory so search results respect the user's
-               saved preference / current dropdown selection. Untagged
-               songs always pass. */
-            $_langPred = makeLanguageFilterPredicate(
-                resolvePreferredLanguagesForRequest(getAuthenticatedUser())
-            );
-            $results = array_values(array_filter($results, $_langPred));
+            $results = $songData->searchSongs($query, $bookId, $limit + 1, $offset, $includeLyrics, $_langSubtags);
 
             $hasMore = count($results) > $limit;
             if ($hasMore) {
@@ -2258,6 +2282,56 @@ if ($action !== null) {
                 break;
             }
 
+            /* SECURITY (#1635) — an email address may not be claimed by a
+               second account. This is what BLOCKS THE PLANT: without it,
+               anyone could register `victim@example.com` with a password they
+               choose, and every later email-based lookup (magic-link login,
+               setlist invite, org membership) has to cope with two rows for
+               one address. Refusing at the door is far stronger than teaching
+               each reader to disambiguate.
+
+               EMPTY EMAIL MUST NOT COLLIDE. tblUsers.Email is
+               `NOT NULL DEFAULT ''` (schema.sql) and the whole passwordless /
+               no-email population shares '', so an unconditional check would
+               reject every registration after the first one that omitted an
+               address. Only a NON-EMPTY address is tested — the `!== ''` guard
+               is load-bearing, not defensive noise.
+
+               MySQL's `=` on a non-binary string ignores trailing spaces, so
+               a ' ' identifier would compare equal to ''. $regEmail is trimmed
+               and FILTER_VALIDATE_EMAIL'd above, so it cannot be blank here;
+               the guard is against a future edit relaxing that.
+
+               ACCEPTED TRADE-OFF: this is an account-existence oracle — a
+               prober learns whether an address is registered. That is
+               unavoidable for any "email already in use" check, it is exactly
+               what the `Username already taken.` 409 immediately above already
+               discloses, and the endpoint is IP-rate-limited to 20/hour. The
+               alternative (a generic failure) makes a legitimate user who
+               forgot they have an account unable to work out why.
+
+               RESIDUAL: two simultaneous registrations of the same address can
+               still both pass this read before either INSERT (TOCTOU) — the
+               same window the username check has, except Username is backed by
+               a UNIQUE that catches the loser. The definitive fix is a
+               partial-unique index on Email (generated-column idiom, see
+               .sql/migrate-service-code-uniqueness.php); it needs a live
+               duplicate audit first and is tracked as follow-up to #1635.
+               The residual is low-value to an attacker: racing yourself only
+               produces the AMBIGUOUS state, which now REFUSES the magic link
+               rather than granting it — a nuisance, not a takeover. */
+            if ($regEmail !== '') {
+                $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? LIMIT 1');
+                $stmt->bind_param('s', $regEmail);
+                $stmt->execute();
+                $emailTaken = $stmt->get_result()->fetch_row() !== null;
+                $stmt->close();
+                if ($emailTaken) {
+                    sendJson(['error' => 'That email address is already registered.'], 409);
+                    break;
+                }
+            }
+
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
             $displayTrimmed = mb_substr($displayName, 0, 100);
             /* Email column is NOT NULL DEFAULT ''; insert an explicit
@@ -3302,27 +3376,47 @@ if ($action !== null) {
                 break;
             }
 
+            /* THE ONE 200 BODY (#1635). Every non-error outcome of this
+               endpoint answers with this exact array: address unknown,
+               address registered-but-unverified, address ambiguous (a
+               duplicate exists), address rate-limited, or a link genuinely
+               sent. Built once, here, so the branches below CANNOT drift
+               apart — the same single-source-of-truth discipline #1028 gave
+               auth_forgot_password via apiForgotPasswordGenericResponse().
+               Before this, a refusal and a real send returned visibly
+               different wording, which would have turned #1635's new
+               "unverified / ambiguous" refusals into an account-existence
+               oracle: an attacker could probe which addresses are registered
+               (and which carry a duplicate they themselves planted).
+               The wording stays non-committal but keeps the expiry hint, so a
+               legitimate user is told what to expect.
+               RESIDUAL, accepted: a genuinely-deliverable address still pays
+               for an SMTP round-trip, so the RESPONSE TIME differs from a
+               refusal even though the response body does not. Closing that
+               needs an async send queue, which is out of scope here.
+               https://cwe.mitre.org/data/definitions/204.html */
+            $emailLoginGenericBody = [
+                'ok'      => true,
+                'message' => 'If an account exists with that email, a login code has been sent. It expires in 10 minutes.',
+            ];
+
             $clientIp = $_SERVER['REMOTE_ADDR'] ?? '';
             $result = generateEmailLoginToken($requestEmail, $clientIp);
 
             if ($result === null) {
-                /* Rate limited or no-such-account — still return 200 to
-                   prevent enumeration. The audit row records the
-                   rate-limit reason WITHOUT leaking which case it
-                   actually was; the resolver inside
-                   generateEmailLoginToken() already differentiates
-                   in its own log row. (#535) */
+                /* Rate limited, no such account, unverified, or ambiguous —
+                   still return 200 to prevent enumeration. This audit row
+                   deliberately records only the COARSE reason; the resolver
+                   inside generateEmailLoginToken() differentiates the account
+                   cases in its own log row (#1635), server-side only. (#535) */
                 logActivity(
                     'auth.login_email_request',
                     '',
                     '',
-                    ['email' => $requestEmail, 'reason' => 'rate_limited_or_no_account'],
+                    ['email' => $requestEmail, 'reason' => 'rate_limited_or_unresolvable'],
                     'failure'
                 );
-                sendJson([
-                    'ok'      => true,
-                    'message' => 'If an account exists with that email, a login code has been sent.',
-                ]);
+                sendJson($emailLoginGenericBody);
                 break;
             }
 
@@ -3371,10 +3465,8 @@ if ($action !== null) {
                 break;
             }
 
-            sendJson([
-                'ok'      => true,
-                'message' => 'A login code has been sent to your email address. It expires in 10 minutes.',
-            ]);
+            /* Same body as every refusal above — see $emailLoginGenericBody. */
+            sendJson($emailLoginGenericBody);
             break;
 
         /* -----------------------------------------------------------------
@@ -4168,7 +4260,14 @@ if ($action !== null) {
             }
             $userId = (int)$authUser['Id'];
 
-            checkRateLimit('device_signout', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+            /* #1636 — the check READS the counter; only the paired record
+               WRITES it. Without the second call the 30/hour cap counted an
+               always-empty bucket and could never trip. Bucket resolves to
+               'user:<id>' (authenticated above), so it is per-user, not
+               per-IP. */
+            $signoutIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('device_signout', $signoutIp, 30, 3600, true, $userId);
+            recordRateLimitHit('device_signout', rateLimitKey($signoutIp, $userId));
 
             $deviceId = is_string($body['id'] ?? null) ? strtolower(trim($body['id'])) : '';
             if (!preg_match('/^[a-f0-9]{' . API_TOKEN_DEVICE_ID_LENGTH . '}$/', $deviceId)) {
@@ -4259,7 +4358,10 @@ if ($action !== null) {
                 break;
             }
 
-            checkRateLimit('apns_register', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+            /* #1636 — paired writer; see device_signout above. Per-user. */
+            $apnsRegIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('apns_register', $apnsRegIp, 30, 3600, true, $userId);
+            recordRateLimitHit('apns_register', rateLimitKey($apnsRegIp, $userId));
 
             $pushTokenHex = is_string($body['pushToken'] ?? null) ? strtolower(trim($body['pushToken'])) : '';
             if (!preg_match('/^[a-f0-9]{32,200}$/', $pushTokenHex) || strlen($pushTokenHex) % 2 !== 0) {
@@ -4388,7 +4490,10 @@ if ($action !== null) {
                 break;
             }
 
-            checkRateLimit('apns_unregister', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+            /* #1636 — paired writer; see device_signout above. Per-user. */
+            $apnsUnregIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('apns_unregister', $apnsUnregIp, 30, 3600, true, $userId);
+            recordRateLimitHit('apns_unregister', rateLimitKey($apnsUnregIp, $userId));
 
             $pushTokenHex = is_string($body['pushToken'] ?? null) ? strtolower(trim($body['pushToken'])) : '';
             if (!preg_match('/^[a-f0-9]{32,200}$/', $pushTokenHex) || strlen($pushTokenHex) % 2 !== 0) {
@@ -6129,7 +6234,14 @@ if ($action !== null) {
                point of the flow) so this is necessarily per-IP — a
                legitimate limited-input client mints exactly once per
                pairing attempt, so a generous cap never trips real usage. */
-            checkRateLimit('auth_device_code_request', $_SERVER['REMOTE_ADDR'] ?? '', 20, 3600, true, null);
+            /* #1636 — paired writer. Deliberately per-IP (see above: no
+               identity exists yet), and this is the ONE bucket in the device-
+               code family where that is unavoidable. It caps MINTS, not
+               polls, and a real limited-input client mints once per pairing,
+               so 20/hour leaves a shared church media room ample room. */
+            $devCodeReqIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('auth_device_code_request', $devCodeReqIp, 20, 3600, true, null);
+            recordRateLimitHit('auth_device_code_request', $devCodeReqIp);
 
             $channel = serviceMode_channel();
             [$deviceCode, $userCode] = deviceCode_mint($db, $channel);
@@ -6174,7 +6286,16 @@ if ($action !== null) {
                — several limited-input devices can legitimately share one
                IP (e.g. a church media room), and this must not throttle
                device B because device A is polling. */
-            checkRateLimit('auth_device_code_poll', 'devcode:' . substr($hash, 0, 24), 120, 60, true, null);
+            /* #1636 — paired writer, using the SAME per-device-code key the
+               check reads (hence the local, rather than re-deriving the
+               substr twice). Rule #26 holds: the bucket is per device code,
+               never per IP, so one polling device cannot throttle another
+               behind the same church NAT. Row volume is self-limiting — once
+               the cap is reached the check exits before the record — and
+               bounded anyway by the pairing code's TTL. */
+            $devCodePollKey = 'devcode:' . substr($hash, 0, 24);
+            checkRateLimit('auth_device_code_poll', $devCodePollKey, 120, 60, true, null);
+            recordRateLimitHit('auth_device_code_poll', $devCodePollKey);
 
             $channel  = serviceMode_channel();
             $interval = AUTH_DEVICE_CODE_POLL_INTERVAL_SECONDS;
@@ -6304,8 +6425,16 @@ if ($action !== null) {
 
             $userId = (int)$authUser['Id'];
             /* Brute-force guard (shared budget with approve/deny below) —
-               keyed per authenticated user, never per-IP (rule #26). */
-            checkRateLimit('auth_device_code_link', $_SERVER['REMOTE_ADDR'] ?? '', AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+               keyed per authenticated user, never per-IP (rule #26).
+               #1636 — the paired writer that makes the guard real. This
+               endpoint is the user_code lookup, so EVERY attempt (hit or
+               miss) consumes budget: a prober learns something from a hit,
+               and only counting misses would let them walk the space by
+               alternating. 10 attempts / 10 minutes is far above any human
+               typing a code off a TV screen. */
+            $devLinkIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('auth_device_code_link', $devLinkIp, AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+            recordRateLimitHit('auth_device_code_link', rateLimitKey($devLinkIp, $userId));
 
             $userCode = deviceCode_normaliseUserCode($_GET['user_code'] ?? '');
             if ($userCode === '') { sendJson(['ok' => false, 'error' => 'invalid_code'], 400); break; }
@@ -6369,8 +6498,16 @@ if ($action !== null) {
             }
 
             /* Brute-force guard on the user_code — a wrong guess still
-               consumes budget, keyed per authenticated user (rule #26). */
-            checkRateLimit('auth_device_code_link', $_SERVER['REMOTE_ADDR'] ?? '', AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+               consumes budget, keyed per authenticated user (rule #26).
+               #1636 — "still consumes budget" was aspirational: nothing ever
+               wrote to this bucket, so approve/deny could be replayed
+               without limit and the RFC 8628 pairing-code space was bounded
+               only by the code's TTL. The record below is what makes the
+               comment true. Same shared bucket as the lookup above, so a
+               prober cannot get a fresh budget by switching endpoints. */
+            $devLinkIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('auth_device_code_link', $devLinkIp, AUTH_DEVICE_CODE_LINK_ATTEMPT_MAX, AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS, true, $userId);
+            recordRateLimitHit('auth_device_code_link', rateLimitKey($devLinkIp, $userId));
 
             $userCode = deviceCode_normaliseUserCode($body['user_code'] ?? '');
             if ($userCode === '') { sendJson(['ok' => false, 'error' => 'invalid_code'], 400); break; }
@@ -9665,9 +9802,32 @@ if ($action !== null) {
                 $own->close();
                 if (!$owns) { sendJson(['error' => 'Setlist not found.'], 404); break; }
 
-                /* Resolve collaborator by email */
-                $usr = $db->prepare('SELECT Id, Username FROM tblUsers WHERE Email = ? LIMIT 1');
-                $usr->bind_param('s', $collabEml);
+                /* Resolve collaborator by email.
+                   #1635 (SECURITY) — was `WHERE Email = ? LIMIT 1` with no
+                   ORDER BY, so with duplicate addresses MySQL was free to hand
+                   back EITHER row: the invite (and read/write access to the
+                   owner's setlist) could land on an account that merely CLAIMS
+                   the address rather than the one that owns it. Resolve through
+                   the shared verified + unambiguous resolver instead — one
+                   verified match or nothing.
+                   The failure MESSAGE is unchanged and identical for every
+                   reason (absent / unverified / duplicated), both to keep this
+                   from becoming an oracle and because the advice is right in
+                   all three cases: signing in via the email link is exactly
+                   what marks an address verified. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                $collabReason = null;
+                $collabId = resolveVerifiedAccountByEmail($db, $collabEml, $collabReason);
+                if ($collabId === null) {
+                    /* Server-side only — never in the response. */
+                    logActivity('setlist.collab_invite', 'setlist', $setlistId,
+                        ['reason' => $collabReason], 'failure');
+                    sendJson(['error' => 'No user with that email yet — ask them to sign in first.'], 404);
+                    break;
+                }
+                /* Username is still wanted for the audit row + the response. */
+                $usr = $db->prepare('SELECT Id, Username FROM tblUsers WHERE Id = ?');
+                $usr->bind_param('i', $collabId);
                 $usr->execute();
                 $collab = $usr->get_result()->fetch_assoc();
                 $usr->close();
@@ -9675,7 +9835,6 @@ if ($action !== null) {
                     sendJson(['error' => 'No user with that email yet — ask them to sign in first.'], 404);
                     break;
                 }
-                $collabId = (int)$collab['Id'];
                 if ($collabId === $authUserId) {
                     sendJson(['error' => 'You cannot invite yourself.'], 400);
                     break;
@@ -9692,8 +9851,10 @@ if ($action !== null) {
 
                 /* Record the invite into the rate-limit counter so the
                    per-user/hour cap can actually trip. Bucket key
-                   matches the checkRateLimit() call above. */
-                recordRateLimitHit('setlist_collab_invite', 'user:' . (int)$authUser['Id']);
+                   matches the checkRateLimit() call above — derived by the
+                   shared rateLimitKey() rather than hand-written, so the
+                   reader and the writer cannot drift apart (#1636). */
+                recordRateLimitHit('setlist_collab_invite', rateLimitKey($clientIp, (int)$authUser['Id']));
 
                 /* Audit (#535) — collaborator id + permission lets
                    admins see who invited whom on what setlist. */
@@ -12874,18 +13035,40 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare(
-                    'SELECT Id FROM tblUsers WHERE Username = ? OR Email = ? LIMIT 1'
-                );
-                $stmt->bind_param('ss', $identifier, $identifier);
+                /* #1635 (SECURITY) — was a single
+                       WHERE Username = ? OR Email = ? LIMIT 1
+                   with no ORDER BY. Username is UNIQUE so that leg is always
+                   unambiguous, but the Email leg is not: with duplicate
+                   addresses MySQL could return either row, so org membership
+                   (and whatever the org's licences unlock) could be granted to
+                   an account that merely CLAIMS the address. Split the two legs
+                   so each is resolved by its own rule:
+                     1. Username — exact, UNIQUE, unchanged semantics.
+                     2. Email — through the shared verified + unambiguous
+                        resolver, which refuses rather than picks.
+                   Username is tried FIRST so an identifier that is somebody's
+                   username keeps resolving exactly as it did before. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
+                $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? LIMIT 1');
+                $stmt->bind_param('s', $identifier);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
-                if (!$row) {
-                    sendJson(['error' => "User '{$identifier}' not found."], 404);
-                    break;
+
+                $targetUserId = $row ? (int)$row['Id'] : null;
+                if ($targetUserId === null) {
+                    $memberReason = null;
+                    $targetUserId = resolveVerifiedAccountByEmail($db, $identifier, $memberReason);
+                    if ($targetUserId === null) {
+                        /* One message for every reason (not found / unverified /
+                           duplicated) — the distinction is logged server-side
+                           only, and the 404 wording is unchanged. */
+                        logActivity('api.org_admin.member_add', 'organisation', (string)$orgId,
+                            ['identifier' => $identifier, 'reason' => $memberReason], 'failure');
+                        sendJson(['error' => "User '{$identifier}' not found."], 404);
+                        break;
+                    }
                 }
-                $targetUserId = (int)$row['Id'];
 
                 $stmt = $db->prepare(
                     'INSERT INTO tblOrganisationMembers (UserId, OrgId, Role)
@@ -14509,7 +14692,7 @@ if ($action !== null) {
 
             /* 20 new sessions / hour / user is plenty for a worship leader. */
             checkRateLimit('live_follow_create', $liveIp, 20, 3600, true, $userId);
-            recordRateLimitHit('live_follow_create', 'user:' . $userId);
+            recordRateLimitHit('live_follow_create', rateLimitKey($liveIp, $userId));
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -14623,7 +14806,7 @@ if ($action !== null) {
 
             /* Generous: a fast operator + heartbeats stay well under 600/min. */
             checkRateLimit('live_follow_update', $liveIp, 600, 60, true, $userId);
-            recordRateLimitHit('live_follow_update', 'user:' . $userId);
+            recordRateLimitHit('live_follow_update', rateLimitKey($liveIp, $userId));
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -14913,7 +15096,7 @@ if ($action !== null) {
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
             checkRateLimit('service_session_start', $svcIp, 30, 3600, true, $userId);
-            recordRateLimitHit('service_session_start', 'user:' . $userId);
+            recordRateLimitHit('service_session_start', rateLimitKey($svcIp, $userId));
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -15058,7 +15241,12 @@ if ($action !== null) {
             $userId = (int)$authUser['Id'];
             $role   = (string)($authUser['Role'] ?? '');
             $svcIp  = $_SERVER['REMOTE_ADDR'] ?? '';
+            /* #1636 — paired writer. $userId is always set (authenticated
+               above), so rateLimitKey() resolves to 'user:<id>': this is a
+               PER-OPERATOR budget, not per-IP, and two leaders sharing the
+               church wifi cannot throttle each other. */
             checkRateLimit('service_operator', $svcIp, 600, 60, true, $userId);
+            recordRateLimitHit('service_operator', rateLimitKey($svcIp, $userId));
 
             $sessionId = $isRotate || $isEnd
                 ? (int)((json_decode(file_get_contents('php://input'), true) ?: [])['sessionId'] ?? 0)
@@ -15201,7 +15389,17 @@ if ($action !== null) {
                credentials at all. Generously sized (mirrors service_join's
                own anonymous-safe per-IP cap) so it never bites a real
                operator or delegated device. */
-            checkRateLimit('service_broadcast_probe', $_SERVER['REMOTE_ADDR'] ?? '', 300, 60, true, null);
+            /* #1636 — paired writer. Per-IP is CORRECT here and not a rule
+               #26 violation: this bucket exists precisely to cap the
+               ANONYMOUS, pre-auth session lookups an unidentified caller can
+               trigger, so there is no user and no presence token to key on
+               yet. It is a broadcaster-side endpoint (operators/leader
+               devices), never a congregant path, and 300/min is far above
+               any real broadcaster — a congregation following along hits
+               service_poll, which is keyed per presence token. */
+            $svcProbeIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_broadcast_probe', $svcProbeIp, 300, 60, true, null);
+            recordRateLimitHit('service_broadcast_probe', $svcProbeIp);
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -15254,7 +15452,20 @@ if ($action !== null) {
                 }
             }
 
-            checkRateLimit('service_broadcast', $_SERVER['REMOTE_ADDR'] ?? '', 600, 60, true, $userId);
+            /* #1636 — paired writer. NOTE $userId is genuinely NULLABLE here:
+               the #1408 delegated control-token path authorises a device that
+               never signed in, so rateLimitKey() falls back to the IP for
+               those callers and resolves to 'user:<id>' for a bearer
+               operator. That fallback is exactly why the key must come from
+               the shared helper — hand-writing `'user:' . $userId` would file
+               rows under the literal key 'user:' while the check counted the
+               IP bucket, re-creating #1636's never-trips bug on the very
+               endpoint being fixed. Broadcasts are operator actions (a handful
+               per service), so 600/min never bites a real leader even when the
+               whole team shares one IP. */
+            $svcBroadcastIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_broadcast', $svcBroadcastIp, 600, 60, true, $userId);
+            recordRateLimitHit('service_broadcast', rateLimitKey($svcBroadcastIp, $userId));
 
             if (!$canOperate) {
                 logActivity('service.broadcast.song', 'organisation', (string)$orgId, ['session_id' => $sessionId, 'reason' => 'not_authorised'], 'failure');
@@ -15313,8 +15524,43 @@ if ($action !== null) {
             $svcIp = $_SERVER['REMOTE_ADDR'] ?? '';
             /* Generous per-IP cap — a whole congregation joins at once behind one
                church-wifi IP, so this is high; the real throttle is the per-device
-               presence row + the rotating code's air-gap. */
-            checkRateLimit('service_join', $svcIp, 300, 60, false, null);
+               presence row + the rotating code's air-gap.
+
+               #1636 — THIS IS THE ANTI-PROBE CONTROL ON JOIN-CODE GUESSING, and
+               it was doubly dead: nothing ever recorded a hit (so the counter was
+               permanently 0) AND the verdict was discarded (autoRespond=false,
+               return value unused), so it could not have refused anything even
+               with a working counter. #1621 hardened the codes themselves on the
+               assumption this throttle existed.
+
+               KEY DECISION (rule #26 — presence limiting is per token, NEVER per
+               IP). This one bucket CANNOT be keyed on a presence token: the token
+               is MINTED BY THIS ENDPOINT, so a joining congregant has none yet.
+               The only other client-supplied handle is presenceDeviceId, which the
+               client mints itself — a code-guesser would simply roll a new one per
+               request, so keying on it would give an anti-probe control of exactly
+               zero value. Per-IP is therefore the only workable key here.
+
+               What keeps that from locking out a NAT-shared congregation — the
+               precise failure rule #26 forbids — is that ONLY FAILED JOINS are
+               recorded (see the resolve-failure branch below). checkRateLimit()
+               counts rows regardless of their Success flag, so recording nothing on
+               the success path means a congregant who types the CORRECT code never
+               consumes a single unit of budget, no matter how many of them share
+               one church IP. The cap is thus, in effect, 300 FAILED joins per
+               minute per IP: unreachable by legitimate use, while a brute-forcer
+               (who produces nothing but failures) is throttled immediately.
+               This mirrors auth_login_acct, which likewise records only in its
+               shared unknown-user/wrong-password branch.
+
+               Verdict is now USED rather than discarded — hence autoRespond stays
+               false, so the refusal can carry the §3.2 breadcrumb this file
+               requires instead of exiting silently inside the helper. */
+            if (!checkRateLimit('service_join', $svcIp, 300, 60, false, null)) {
+                logActivity('service.presence.join', 'organisation', '', ['reason' => 'rate_limited'], 'failure');
+                sendJson(['ok' => false, 'error' => 'Too many join attempts from this network. Please wait a moment and try again.'], 429);
+                break;
+            }
 
             $body = json_decode(file_get_contents('php://input'), true);
             if (!is_array($body)) { $body = []; }
@@ -15346,6 +15592,16 @@ if ($action !== null) {
                    including the ambiguity refusal (where guessing a winner could
                    have handed the congregant another organisation's service —
                    and, via serviceMode_presenceCcliNumber(), its CCLI unlock). */
+                /* #1636 — the ONLY place service_join spends rate-limit budget.
+                   A failed join is either a brute-force guess or a congregant
+                   who was too slow for the ~30s code rotation; both are cheap
+                   to absorb at 300/min, and a SUCCESSFUL join never records,
+                   so an entire NAT-shared congregation joining correctly can
+                   never exhaust the bucket (rule #26). Success=false marks the
+                   row as a failure for audit; checkRateLimit() ignores the flag
+                   and counts rows, which is what makes "budget only failures"
+                   work at all. */
+                recordRateLimitHit('service_join', $svcIp, false);
                 logActivity('service.presence.join', 'organisation', '', ['reason' => $joinFailReason ?? 'code_not_active', 'channel' => $channel], 'failure');
                 sendJson(['ok' => false, 'error' => 'That code has expired. Check the screen for the new code.'], 404);
                 break;
@@ -15433,7 +15689,29 @@ if ($action !== null) {
                congregation is one IP). */
             $pollRole = serviceMode_presenceRole($db, $token);
             $pollMax  = ($pollRole === 'projector') ? 90 : 40;
-            checkRateLimit('service_poll', 'tok:' . substr(hash('sha256', $token), 0, 24), $pollMax, 60, false, null);
+            /* #1636 — was doubly dead (never recorded AND the verdict
+               discarded via autoRespond=false + unused return). Now enforced.
+               The key is UNCHANGED and already rule-#26 correct: 'tok:<hash>'
+               is the PRESENCE TOKEN, so every congregant device has its own
+               budget and a NAT-shared congregation is never throttled as one
+               caller. autoRespond=true emits the standard 429; service-follow.js
+               polls on a 2500ms setInterval behind a re-entrancy guard (24/min
+               against a 40/min cap) and treats a 429 as a transient tick — it
+               checks `d.active === false` explicitly, so the 429 body cannot be
+               mistaken for "the service ended".
+               VOLUME NOTE: checkRateLimit() writes one tblLoginAttempts row per
+               request (the hazard api.php's health-probe comment documents).
+               Rows here are self-limiting — once the cap trips, the check exits
+               before the record — so the ceiling is $pollMax rows/min/device,
+               retained 30 days by .sql/cleanup.php. Migrating high-frequency
+               pollers onto the windowed tblReadRateLimit counter is the right
+               long-term shape, but enforceReadRateLimit() resolves its own key
+               from the bearer/cookie and congregants are ANONYMOUS, so it would
+               silently fall back to per-IP — the exact rule #26 violation. It
+               needs an explicit-key parameter first; tracked as follow-up. */
+            $svcPollKey = 'tok:' . substr(hash('sha256', $token), 0, 24);
+            checkRateLimit('service_poll', $svcPollKey, $pollMax, 60, true, null);
+            recordRateLimitHit('service_poll', $svcPollKey);
 
             $channel = serviceMode_channel();
             /* Unified freshness window (was 120s — aligned to Live Follow's 180s,
@@ -15542,7 +15820,12 @@ if ($action !== null) {
                 sendJson(['error' => 'Session control tokens are not available yet.'], 503); break;
             }
 
-            checkRateLimit('service_control_token_mint', $_SERVER['REMOTE_ADDR'] ?? '', 30, 3600, true, $userId);
+            /* #1636 — paired writer. Authenticated above, so the bucket is
+               'user:<id>': a per-operator cap on minting delegated broadcast
+               credentials, unaffected by how many leaders share an IP. */
+            $svcMintIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_control_token_mint', $svcMintIp, 30, 3600, true, $userId);
+            recordRateLimitHit('service_control_token_mint', rateLimitKey($svcMintIp, $userId));
 
             $sessionId = (int)($body['sessionId'] ?? 0);
             if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }
@@ -15605,7 +15888,13 @@ if ($action !== null) {
                 sendJson(['error' => 'Session control tokens are not available yet.'], 503); break;
             }
 
-            checkRateLimit('service_control_token_revoke', $_SERVER['REMOTE_ADDR'] ?? '', 60, 3600, true, $userId);
+            /* #1636 — paired writer; per-operator, as for the mint above. The
+               cap is deliberately the more generous of the pair: revoking is
+               the SAFE direction, and a leader must never be blocked from
+               killing a delegated device mid-service. */
+            $svcRevokeIp = $_SERVER['REMOTE_ADDR'] ?? '';
+            checkRateLimit('service_control_token_revoke', $svcRevokeIp, 60, 3600, true, $userId);
+            recordRateLimitHit('service_control_token_revoke', rateLimitKey($svcRevokeIp, $userId));
 
             $sessionId = (int)($body['sessionId'] ?? 0);
             if ($sessionId <= 0) { sendJson(['error' => 'Missing session.'], 400); break; }

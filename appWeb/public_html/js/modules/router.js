@@ -308,6 +308,14 @@ export class Router {
                    /works/<slug> accepted as a forgiving alias matching
                    the people / person convention. */
                 return { page: 'work', params: { slug: segments[1] || '' } };
+            case 'tag':
+                /* #1637 — /tag/<slug> lists every song carrying the named
+                   theme (js/modules/home-page.js's "Browse by theme" chips,
+                   renderThemeChip(), already emit this href/data-navigate
+                   pair — this route was the missing piece). Empty / unknown
+                   slug renders the page's own "no songs for this theme"
+                   state (includes/pages/tag.php), same as work/tune/iswc. */
+                return { page: 'tag', params: { slug: segments[1] || '' } };
             case 'tune':
                 /* #940 — /tune/<slug> lists every song that uses the
                    named tune. Slugified upstream (lowercase + hyphen-
