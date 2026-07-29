@@ -22,6 +22,7 @@ import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
 import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
+import { announce } from '../utils/announce.js';
 
 export class SetList {
     /**
@@ -1601,17 +1602,12 @@ export class SetList {
      * @private
      */
     _announce(message) {
-        let region = document.getElementById('playlist-live-region');
-        if (!region) {
-            region = document.createElement('div');
-            region.id = 'playlist-live-region';
-            region.className = 'visually-hidden';
-            region.setAttribute('aria-live', 'polite');
-            region.setAttribute('aria-atomic', 'true');
-            document.body.appendChild(region);
-        }
-        region.textContent = '';
-        requestAnimationFrame(() => { region.textContent = message; });
+        /* Delegates to the shared announcer (#1645). This method WAS the
+           implementation — it was extracted to js/utils/announce.js once the
+           router needed the same thing, per the modularity rule. Kept as a
+           one-line delegate rather than rewriting ~15 call sites: a smaller
+           diff, and the private name still reads correctly at each of them. */
+        announce(message);
     }
 
     /**

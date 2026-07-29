@@ -14,6 +14,7 @@
  */
 
 import { toTitleCase } from '../utils/text.js';
+import { announce } from '../utils/announce.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
@@ -222,6 +223,28 @@ export class Router {
            rather than the stale nav link they activated. preventScroll so this
            doesn't fight the scroll-restore below; #main-content has tabindex="-1". */
         document.getElementById('main-content')?.focus({ preventScroll: true });
+
+        /* a11y (WCAG 4.1.3): say WHAT the user has landed on (#1645).
+         *
+         * ELI5: tell the screen reader the name of the page we just moved to —
+         * one short line, not the whole page.
+         *
+         * Detail: <main> used to be a live region, so every navigation read the
+         * entire injected fragment aloud, including all the lyrics, while
+         * competing with the focus announcement above. Removing that left a
+         * real gap — an SPA route change is invisible to assistive tech — and
+         * this fills it with the announcement that was actually wanted.
+         *
+         * Ordering is deliberate: focus FIRST, then announce. The focus move
+         * triggers its own announcement of the newly-focused region, and a
+         * polite live region queues behind whatever is already being spoken
+         * rather than interrupting it — so the user hears the landing, then the
+         * page name. Announcing first would put the two in the opposite,
+         * less useful order. No extra deferral is needed: announce() already
+         * defers its own write by a frame (that empty-then-fill is what makes
+         * the mutation observable at all), which is comfortably after focus. */
+        const heading = document.querySelector('#page-content h1');
+        announce((heading?.textContent || '').trim() || toTitleCase(String(page || 'page')));
 
         /* Scroll handling. On popstate-back / forward to a previously-
            seen path, restore the saved scroll position with a smooth

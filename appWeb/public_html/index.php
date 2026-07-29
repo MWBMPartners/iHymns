@@ -1293,11 +1293,27 @@ if (!empty($breadcrumbItems)) {
          MAIN CONTENT AREA — Dynamic content loaded via AJAX.
          Padding accounts for fixed header and footer.
          ================================================================ -->
+    <!-- ⚠️ DO NOT re-add aria-live / aria-atomic here (#1645).
+         It looks like an accessibility feature and is the opposite of one.
+
+         Every page fragment is injected INSIDE this element, so marking it a
+         live region queued the entire new page — breadcrumb, toolbar and every
+         lyric line — for announcement on every navigation. aria-live is for
+         status messages: short, specific, "your changes were saved". Announcing
+         a whole page announces nothing useful, loudly.
+
+         It also collided with the focus move router.js performs onto this same
+         element, giving screen-reader users two competing streams of speech to
+         silence on every single navigation.
+
+         The replacement is js/utils/announce.js — one small dedicated region
+         that says WHAT CHANGED ("Amazing Grace") in one line. router.js calls
+         it after the focus move. tabindex="-1" stays: it is what makes that
+         focus move possible, and it is the correct SPA route-change mechanism.
+         Guarded by tests/test-live-region.js. -->
     <main id="main-content"
           class="main-content flex-grow-1"
           role="main"
-          aria-live="polite"
-          aria-atomic="false"
           tabindex="-1">
 
         <!-- Loading spinner — shown during initial load and transitions -->
