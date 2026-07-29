@@ -247,12 +247,22 @@ if (!function_exists('userSyncNow')) {
      * ELI5: ask the database what time IT thinks it is, and hand that to the
      * client to quote back at us.
      *
-     * It MUST be the database's clock, not PHP's time(). The row timestamps
-     * this value is compared against are written by MySQL (DEFAULT
-     * CURRENT_TIMESTAMP / ON UPDATE CURRENT_TIMESTAMP), so any skew between the
-     * PHP host and the DB host — or any difference in configured time zone —
-     * would shift the watermark relative to the data and make guard (3) either
-     * over-delete or under-delete. One clock, one frame of reference.
+     * It MUST be the database's clock, not PHP's time(). Most of the row
+     * timestamps this value is compared against are written by MySQL itself, so
+     * any skew between the PHP host and the DB host — or any difference in
+     * configured time zone — would shift the watermark relative to the data and
+     * make guard (3) either over-delete or under-delete. One clock, one frame
+     * of reference.
+     *
+     * "Most", not "all" — see the caveat below. tblUserSetlists.UpdatedAt is the
+     * exception, and it is worth being precise about WHY, because the column
+     * declaration alone is misleading: schema.sql declares it
+     * `ON UPDATE CURRENT_TIMESTAMP`, which reads like MySQL owns it. It does
+     * not. The setlists upsert supplies an explicit value for that column (and
+     * repeats it via `UpdatedAt = VALUES(UpdatedAt)` in the duplicate-key
+     * branch), and an explicitly-supplied value suppresses ON UPDATE entirely.
+     * So the declaration never fires for this write path. Do not "simplify" the
+     * caveat below on the strength of reading the schema.
      *
      * Cut to 19 chars to match the format userSyncParseSince() accepts.
      *
