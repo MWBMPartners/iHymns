@@ -1175,14 +1175,38 @@ body:has(.navbar-admin) .modal-content.bg-dark {
     color: var(--text-primary);
     background-color: rgba(99, 102, 241, 0.06);
 }
-.admin-sort-th:focus-visible {
-    outline: 2px solid var(--accent-solid);
-    outline-offset: -2px;
-}
 .admin-sort-th .sort-arrow {
     color: var(--accent-solid);
     font-size: 0.75rem;
     line-height: 1;
+}
+
+/* The clickable control is a real <button> INSIDE the <th> (#1646 item 2), not
+   the <th> re-roled to one — re-roling replaced the implicit `columnheader`
+   and broke the header↔cell association screen readers depend on.
+   ELI5: it has to LOOK like the header text it replaced, not like a button.
+   Detail: the button must inherit the header's typography and fill the cell so
+   the click target is unchanged, otherwise this accessibility fix reads as a
+   visual regression. `text-align: inherit` matters — <th> defaults to centre in
+   some UA sheets while <button> defaults to centre regardless, and the admin
+   tables left-align. The focus ring moves here from .admin-sort-th because the
+   button is now what receives focus. */
+.admin-sort-th .admin-sort-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    width: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: pointer;
+}
+.admin-sort-th .admin-sort-btn:focus-visible {
+    outline: 2px solid var(--accent-solid);
+    outline-offset: -2px;
 }
 
 /* ----------------------------------------------------------------------------
