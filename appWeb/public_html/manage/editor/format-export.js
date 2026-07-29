@@ -647,11 +647,12 @@
      * CHARACTER OFFSET: song_importers.php's own doc-block on
      * _bulkImport_chordProSplitLine() says outright that "the app's chord
      * model is a chord line per lyric line, not a positioned overlay" —
-     * chords are captured IN ORDER, never at a column. (schema.sql's
-     * `tblSongChords`, commented "Array of {position, chord} objects", and
-     * js/utils/transpose.js's matching {position,chord} helper, are both
-     * dead code — zero references anywhere outside schema.sql / that one
-     * unused utility. Nothing that actually runs ever reads or writes a
+     * chords are captured IN ORDER, never at a column. (The only two places
+     * that ever modelled a {position, chord} pair were schema.sql's
+     * `tblSongChords` — commented "Array of {position, chord} objects" — and
+     * js/utils/transpose.js. Both were dead code with zero runtime callers;
+     * the utility was deleted in #1612 and the table is queued for a drop
+     * migration in #1613. Nothing that actually runs ever reads or writes a
      * chord's character position — #1081 [ProPresenter chart export]
      * inherits this same gap and will need the same alignment call.)
      *

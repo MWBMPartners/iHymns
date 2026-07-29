@@ -364,6 +364,16 @@ jointly with #1201.
 > (3 ground-truth maps → migration + verification + adversarial designs → synthesis).
 > **No P4 code is written.** This is the implementation contract once approved. Risk IDs
 > (R1–R12) and gate IDs (G1–G13) below come from the adversarial pass and are load-bearing.
+>
+> ⚠️ **As-built correction (#1615 / #1618, 2026-07-29):** the shipped
+> `verify-lyrics-cutover.php` implements **nine** gates, not thirteen — G1, G2, G3, G5,
+> G6, G7, G8, G9, G10. Of the four absent IDs: **G11** is implemented but lives in
+> `migrate-retire-component-lines-json.php` Stage 0(b) (a gate spanning the drop cannot
+> live in a single verifier run); **G13** is subsumed by G2, which already compares
+> `ChordsJson`; **G4′** landed only half — G8 covers SortOrder contiguity, but the
+> `ArrangementJson` ordinal-validity half is unimplemented; **G12** (live Id-stability
+> smoke) is unimplemented. The table below is the DESIGN, not the as-built. G4′-ordinals
+> and G12 are tracked in **#1618**.
 
 ### 11.0 Recommendation & scope
 
@@ -414,7 +424,8 @@ gate. Each commit atomic + revertable.
     291,634 rows; unmapped stays NULL, rule #20) **+ slug-at-write in the projector/write path**
     (a backfill alone rots on the next save). Data-only, no DDL. **Closes #1138 typing.**
   - **C3** verification tooling: `appWeb/.sql/verify-lyrics-cutover.php` (modes
-    `--phase=pre|soak|pre-drop|post-drop`, runs G1–G13, writes the `tblAppSettings`
+    `--phase=pre|soak|pre-drop|post-drop`, runs the nine as-built gates — see the
+    correction note in §11's preamble, NOT G1–G13 — writes the `tblAppSettings`
     `lyrics_cutover_gate` sentinel), `tools/export-fidelity-snapshot.php` (hashes all 26
     `songbook_export` payloads + a committed ~380-song sample across the export surfaces — this
     sample IS the wire-shape + serializer contract), and a **CI grep test** failing on any raw

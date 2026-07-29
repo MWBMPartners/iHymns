@@ -45,8 +45,31 @@ declare(strict_types=1);
  * the dashboard defines IHYMNS_SETUP_DASHBOARD and passes the phase via ?phase=.
  * In web mode we echo (HTML-escaped) and `return` from the included script
  * instead of writing STDOUT/STDERR + exit() — STDOUT/STDERR are undefined under
- * PHP-FPM (fatal) and exit() would truncate the dashboard. The 10 gates below
- * are IDENTICAL in both modes; only this wrapper differs. */
+ * PHP-FPM (fatal) and exit() would truncate the dashboard. The NINE gates below
+ * are IDENTICAL in both modes; only this wrapper differs.
+ *
+ * The nine are G1, G2, G3, G5, G6, G7, G8, G9, G10 — the numbering has holes,
+ * and the holes are NOT all benign. The design pass (.claude/
+ * lyrics-normalisation-strategy.md §11, table at L516-524) specifies thirteen.
+ * Where the other four actually went, verified rather than assumed (#1615):
+ *
+ *   G11 (corpus fingerprint frozen across the drop) — IMPLEMENTED, but split
+ *        across two files by design: this script WRITES the fingerprint (incl.
+ *        corpusSha256) into the sentinel; migrate-retire-component-lines-json.php
+ *        Stage 0(b) re-checks it still matches live counts at drop time. A
+ *        single-process gate here could not span the drop, so this is correct.
+ *   G13 (byte/semantic parity on all projected cols incl. ChordsJson) —
+ *        SUBSUMED by G2, whose comparison already covers ChordsJson.
+ *   G4′ (ArrangementJson arrays index valid ordinals 0..n-1; SortOrder stays
+ *        contiguous) — only HALF landed. G8 covers SortOrder contiguity. The
+ *        ArrangementJson ordinal-validity half is NOT implemented anywhere.
+ *   G12 (live Id-stability smoke: 3 sentinel songs, double re-projection,
+ *        identical Id sets) — NOT implemented. It is a live operational check,
+ *        not something a batch verifier can assert.
+ *
+ * So an all-green run here is NOT the full thirteen-gate proof the design doc
+ * describes. G4′-ordinals and G12 are tracked as a gap in #1618. Do NOT
+ * renumber the survivors — design-doc citations must keep resolving. */
 $LCV_WEB = (PHP_SAPI !== 'cli') && defined('IHYMNS_SETUP_DASHBOARD');
 
 /* Direct web hits (no dashboard context) stay blocked. */

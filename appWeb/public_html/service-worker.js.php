@@ -425,7 +425,6 @@ const PRECACHE_ASSETS = [
     '/js/utils/components.js',
     '/js/utils/text.js',
     '/js/utils/song-existence.js',
-    '/js/utils/transpose.js',
     '/js/modules/router.js',
     '/js/modules/transitions.js',
     '/js/modules/settings.js',
