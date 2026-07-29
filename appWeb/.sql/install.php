@@ -381,7 +381,8 @@ if ($errors > 0) {
 output("Database installation complete.");
 output("");
 output("Next steps:");
-output("  1. Import song data:  php appWeb/.sql/migrate-json.php");
+output("  1. Import song data:  Song Editor bulk importers, or restore.php from a real backup");
+output("                        (#1614 — the legacy migrate-json.php bootstrap importer was retired)");
 output("  2. Set up admin:      Visit /manage/setup in your browser");
 
 $mysqli->close();
