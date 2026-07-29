@@ -15,6 +15,20 @@
  */
 
 import { apiFetch } from '../utils/api-client.js';
+import { announce } from '../utils/announce.js';
+
+/* sessionStorage key carrying a pending section scroll across a FULL page load
+   (the non-SPA fallback path). Not in constants.js: that file is the registry
+   for DOM EVENT names (rule #31 / tests/test-event-names.js), and this is a
+   storage key local to this module. */
+const SF_PENDING_SCROLL = 'ihymns_sf_pending_scroll';
+
+/* How long to wait for the song fragment to render before giving up on the
+   section scroll (#1665). Generous on purpose — the failure mode of waiting
+   too long is a late scroll, while the failure mode of giving up too early is
+   the congregant stranded at the top of the song, which is the bug being
+   fixed. */
+const SF_SCROLL_TIMEOUT_MS = 5000;
 
 const SF_POLL_MS      = 2500;                       // follower poll cadence
 const SF_PRESENCE_KEY = 'ihymns_sf_presence';       // sessionStorage: {token, rev}
@@ -52,6 +66,34 @@ export class ServiceFollow {
                 }
             }
         } catch (_e) { /* ignore */ }
+
+        /* Consume a section scroll carried across a FULL page load (#1665).
+         *
+         * ELI5: if the last page sent us here to look at verse 3, go to verse 3.
+         *
+         * This is the READ side of the sessionStorage handoff in _applyState's
+         * non-SPA branch, and it is the half that was missing before: the old
+         * code assigned `_pendingScroll` in three places and read it in none,
+         * so a full-page-load navigation silently dropped the section every
+         * time. Writing a key nothing consumes is the same bug wearing a
+         * different hat, so the two halves belong in the same change.
+         *
+         * Removed BEFORE use, not after: if the scroll throws, the stale key
+         * must not re-fire on the next navigation in this tab. */
+        try {
+            const pending = sessionStorage.getItem(SF_PENDING_SCROLL);
+            if (pending !== null && pending !== '') {
+                sessionStorage.removeItem(SF_PENDING_SCROLL);
+                const idx = parseInt(pending, 10);
+                /* The document has just loaded, so the fragment may still be
+                   arriving — reuse the same wait-for-render path the SPA branch
+                   uses rather than assuming it is present. */
+                if (Number.isInteger(idx) && idx >= 0) {
+                    this._pendingScroll = idx;
+                    this._scrollWhenReady(idx);
+                }
+            }
+        } catch (_e) { /* private mode — land at the top, as before */ }
     }
 
     /** Durable anonymous device id (NOT a login) — minted once, kept in localStorage. */
@@ -191,24 +233,98 @@ export class ServiceFollow {
         const page = document.querySelector('.page-song');
         const current = page ? (page.dataset.songId || '').trim() : '';
         if (current && current.toUpperCase() === String(songId).toUpperCase()) {
+            /* Same song, new section — the leader moved to the bridge. */
             if (idx !== null) { this._scrollToComponent(idx); }
             return;
         }
         this._pendingScroll = idx;
         if (this.app.router && typeof this.app.router.navigate === 'function') {
             this.app.router.navigate('/song/' + encodeURIComponent(songId));
-            if (idx !== null) { setTimeout(() => { this._scrollToComponent(idx); this._pendingScroll = null; }, 600); }
+            /* Wait for the song fragment to actually LAND before scrolling
+               (#1665). This used to be setTimeout(…, 600) — a fixed delay
+               racing an async render.
+               ELI5: we now wait until the words are on the screen instead of
+               guessing how long that takes.
+               Detail: _scrollToComponent queries '.page-song .lyric-component'
+               and silently does nothing when it matches nothing (no element,
+               no scroll, no error). If the fragment had not rendered within
+               600 ms — slow phone, congregation wifi, cold cache, long song —
+               the congregant simply stayed at the top of the song with no
+               indication anything had failed. 600 ms is comfortable on a warm
+               desktop, which is exactly why this survived: it is unreproducible
+               on the developer's machine and intermittent everywhere else. */
+            if (idx !== null) { this._scrollWhenReady(idx); }
         } else {
+            /* Full page load: the scroll target cannot survive in memory, so
+               hand it to the next document via sessionStorage (#1665). This is
+               what _pendingScroll was evidently designed for — it was assigned
+               in three places and READ in none, so the intent existed and the
+               mechanism never did. */
+            try {
+                sessionStorage.setItem(SF_PENDING_SCROLL, String(idx === null ? '' : idx));
+            } catch (_e) { /* private mode — degrade to landing at the top */ }
             window.location.href = '/song/' + encodeURIComponent(songId);
         }
+    }
+
+    /**
+     * Scroll to a component once it exists, rather than after a guessed delay.
+     *
+     * Polls on animation frames up to a ceiling instead of using a
+     * MutationObserver: the router replaces the whole fragment in one go, so
+     * there is no partial-render state to miss, and a bounded poll cannot leak
+     * an observer if the navigation is abandoned mid-flight (a real case here —
+     * the leader can broadcast a different song while the first is still
+     * loading).
+     *
+     * @param {number} index  Component ordinal to scroll to.
+     */
+    _scrollWhenReady(index) {
+        const deadline = SF_SCROLL_TIMEOUT_MS;
+        let waited = 0;
+        const step = () => {
+            /* A newer broadcast supersedes this one — stop chasing the old
+               target rather than yanking the congregant back to it. */
+            if (this._pendingScroll !== index) { return; }
+            const comps = document.querySelectorAll('.page-song .lyric-component');
+            if (comps.length > index) {
+                this._scrollToComponent(index);
+                this._pendingScroll = null;
+                return;
+            }
+            waited += 16;
+            if (waited < deadline) { requestAnimationFrame(step); }
+            else { this._pendingScroll = null; }   /* give up quietly; the song still shows */
+        };
+        requestAnimationFrame(step);
     }
 
     _scrollToComponent(index) {
         const comps = document.querySelectorAll('.page-song .lyric-component');
         const el = comps && comps.length > index ? comps[index] : null;
-        if (el && typeof el.scrollIntoView === 'function') {
-            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
+        if (!el || typeof el.scrollIntoView !== 'function') { return; }
+
+        /* Honour reduced motion (#1646 item 3).
+           ELI5: if the user asked the site not to animate, don't animate.
+           Detail: `scroll-behavior: auto !important` in the reduced-motion CSS
+           does NOT override a behavior passed as a scrollIntoView OPTION — the
+           argument wins. So this path animated regardless of the preference,
+           and worse, it is REMOTELY triggered: a congregant with a vestibular
+           disorder got animated scrolling they had explicitly opted out of,
+           at a moment they did not initiate. router.js:264 already checks
+           body.reduce-motion for exactly this reason; this now matches it. */
+        el.scrollIntoView({
+            behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+            block: 'start',
+        });
+
+        /* Announce the section change (#1646 item 3, WCAG 4.1.3).
+           A blind congregant following a live service previously heard NOTHING
+           when the leader moved to the bridge — they fell silently out of sync
+           mid-service with no way to tell it had happened. A scroll is a purely
+           visual event; this is the non-visual equivalent. */
+        const label = (el.querySelector('.lyric-label')?.textContent || '').trim();
+        announce(label ? `Now at ${label}` : `Now at section ${index + 1}`);
     }
 
     _showBanner() {
