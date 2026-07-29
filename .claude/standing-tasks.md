@@ -29,6 +29,34 @@ never mass-rewrite comments across the whole tree in one unreviewed sweep.
 ### 2. GitHub Issues — the point of truth
 - Every user-reported bug / feature / decision has a tracking issue **before** the
   commit that addresses it (so the timeline reads sensibly).
+
+#### 2a. EVERY identified task gets an issue — including ones found mid-investigation
+
+**File the issue at the moment of discovery, not at the end of the work.** If an
+investigation turns up five things worth doing, that is five issues, not one
+paragraph in a report and a hope that somebody remembers.
+
+- **Findings from an audit/analysis become issues immediately** — one per
+  actionable item, each with the `file:line` evidence that established it. A
+  finding recorded only in a session report, a handoff, or a chat reply is
+  effectively lost: the next session reads the tracker, not the transcript.
+- **Group related findings under an Epic** (a parent issue that states the goal
+  and the ordering constraint), with one child issue per unit of work. The Epic
+  carries the "why now" and the sequencing; the children carry the doing.
+  Worked example: **#1601** (make the v2 editor the default) with children
+  **#1606–#1610**, each a single verified parity gap.
+- **Work already done without an issue → file it retrospectively.** State plainly
+  that it is retrospective and name the commit. #1602 is the pattern: the finding
+  (three importer suites were never referenced by CI at all) mattered more than
+  the fix, and would otherwise have survived only in a commit message.
+- **A verification task is still a task.** "Confirm X replaces Y and does not
+  re-materialise the corpus" is a legitimate issue (#1610) — the answer might be
+  "already fine, close it", and knowing that is worth the issue.
+- **Do not file an issue per symptom when one cause explains them all**, and do
+  not file for a rename. Verify first: of 34 apparent v1→v2 API differences, 19
+  were renames and 8 collapsed into one generic handler, leaving 6 real gaps.
+  Filing 34 issues would have been worse than filing none.
+- Unactioned suggestions and owner decisions → `for consideration`.
 - Update issues to reflect reality: comment what landed (with the **commit SHA**),
   tick checklists, close completed issues **with evidence**, reopen ones that
   regressed, and split/relabel as scope changes.
