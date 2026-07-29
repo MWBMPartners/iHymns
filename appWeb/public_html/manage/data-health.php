@@ -192,25 +192,40 @@ if ($songDataJsonFallback !== false) {
         'anchor' => '#songs-json-fallback',
     ];
 }
-if ($shareFileCount > 0 || count($unimportedShareIds) > 0) {
+/* A blocker must be something DISCONNECTING CANNOT FIX (#1650).
+ *
+ * ELI5: don't refuse to tidy the room on the grounds that the room is untidy.
+ *
+ * These two gates used to test mere FILE EXISTENCE — and the disconnect action
+ * renames exactly those files (see the `disconnect_fallbacks` handler above,
+ * which renames $songsJsonPath, $shareDirPath and $sqliteDbPath). So the button
+ * could only enable once the files were already gone, at which point it had
+ * nothing left to do: unreachable by construction. The panel contradicted
+ * itself too, printing "Safe to disconnect" beside the very item it listed as
+ * a blocker.
+ *
+ * The real question is whether the DATA still exists only on disk. That is what
+ * $unimportedShareIds measures — and it was already computed. The old condition
+ * simply OR'd it with `$shareFileCount > 0`, which made the meaningful half
+ * unreachable as well.
+ */
+if (count($unimportedShareIds) > 0) {
     $disconnectBlockers[] = [
         'reason' => sprintf(
-            '%d share JSON file(s) on disk%s',
-            $shareFileCount,
-            count($unimportedShareIds) > 0
-                ? ' (' . count($unimportedShareIds) . ' not yet imported)'
-                : ''
+            '%d of %d share JSON file(s) not yet imported into MySQL — disconnecting now '
+            . 'would orphan those share URLs',
+            count($unimportedShareIds),
+            $shareFileCount
         ),
         'anchor' => '#shared-setlist-json',
     ];
 }
-if ($sqliteExists) {
-    $disconnectBlockers[] = [
-        'reason' => 'Legacy SQLite database still on disk (' . basename($sqliteDbPath) . ', '
-                    . number_format((int)$sqliteSize) . ' bytes)',
-        'anchor' => '#legacy-sqlite',
-    ];
-}
+/* No blocker for the SQLite file merely existing, deliberately. It is read ONLY
+   by migrate-users.php during the one-off user migration — no runtime path
+   opens it — so its presence proves nothing about whether the data landed. The
+   meaningful check is "did the users actually arrive", which is the tblUsers
+   blocker below and fires on its own. Gating on the file was both circular (the
+   action renames it) and redundant. */
 if (($tableCounts['tblSongs'] ?? 0) === 0) {
     $disconnectBlockers[] = [
         'reason' => 'tblSongs is empty — MySQL has no song data to fall back to',
