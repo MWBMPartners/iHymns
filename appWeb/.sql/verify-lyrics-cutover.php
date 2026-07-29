@@ -24,6 +24,14 @@ declare(strict_types=1);
  *   --emit-samples   print up to 20 example divergences per failing gate
  *   --json           machine-readable summary on stdout (NDJSON failures to stderr)
  *
+ * The WEB path always emits samples (there is no flag to turn them off). It used to
+ * hardcode $emitSamples = false, which made a RED run undiagnosable on the ONE
+ * environment this script actually runs in: DreamHost is web-only, so the operator
+ * got "[FAIL] G1 … (1 fail)" and no way to learn WHICH song — the samples were
+ * collected and then discarded unprinted, and the NDJSON stream that carries the
+ * same detail is fwrite(STDERR) which is undefined under PHP-FPM. Both diagnostic
+ * channels were switched off precisely where they were needed (#1654).
+ *
  * On an ALL-GREEN run it writes the sentinel row tblAppSettings['lyrics_cutover_gate']
  * = {phase, ranAt, result:'green', fingerprint:{songs,components,lines,corpusSha256}}.
  * The drop migration REFUSES to run unless that sentinel says phase=pre-drop/green and
@@ -161,14 +169,23 @@ if (!function_exists('logActivity')) {
     }
 }
 
-/* ---- args ---- (CLI: getopt; web: ?phase= only — the smoke/sample flags are CLI-only) */
+/* ---- args ---- (CLI: getopt; web: ?phase= + optional ?limit= only) */
 if ($LCV_WEB) {
     $phase       = (string)($_GET['phase'] ?? 'pre');
     /* Optional smoke limit (capped): a fast first-N-songs dry-run so the operator
        can confirm the web path works before the slow full-corpus run. limit>0 NEVER
        writes the sentinel (see the report tail), so a smoke run can't arm the drop. */
     $limit       = isset($_GET['limit']) ? max(0, min(5000, (int)$_GET['limit'])) : 0;
-    $emitSamples = false;
+    /* ALWAYS ON, and deliberately not a flag (#1654).
+       ELI5: if the check fails, it has to tell you which song — otherwise "it failed"
+       is all you ever get, and you cannot fix it.
+       Detail: this is the operator's ONLY path (DreamHost is web-only; the header's
+       CLI invocations are for CI and the local rehearsal). gfail() already caps
+       retained samples at 20 PER GATE, so the cost is bounded no matter how badly
+       the corpus fails — it is the printing that was missing, not the collecting.
+       Output is HTML-escaped by out() and the page is Global-Admin-only, so lyric
+       excerpts in a G2 cpDiff are no wider an exposure than the song editor. */
+    $emitSamples = true;
     $asJson      = false;
 } else {
     $opt         = getopt('', ['phase:', 'limit:', 'emit-samples', 'json']);
@@ -298,11 +315,19 @@ $gates = [];   // id => ['desc'=>, 'pass'=>bool, 'fails'=>int, 'samples'=>[]]
 function gate(string $id, string $desc): void { global $gates; $gates[$id] = ['desc' => $desc, 'pass' => true, 'fails' => 0, 'samples' => []]; }
 function gfail(string $id, array $detail): void
 {
-    global $gates, $failuresNdjson;
+    global $gates, $failuresNdjson, $LCV_WEB;
     $gates[$id]['pass'] = false;
     $gates[$id]['fails']++;
     if (count($gates[$id]['samples']) < 20) { $gates[$id]['samples'][] = $detail; }
-    $failuresNdjson[] = json_encode(['gate' => $id] + $detail, JSON_UNESCAPED_UNICODE);
+    /* NDJSON is the CLI's failure stream (fwrite(STDERR) at the report tail, guarded
+       by !$LCV_WEB because STDERR is undefined under PHP-FPM). Accumulating it on the
+       web therefore builds an array that is only ever discarded — and it is the ONE
+       unbounded structure here (samples cap at 20, this does not). A corpus-wide G2
+       failure would add ~292k json_encode'd entries for no reader, in a codebase that
+       has already OOM'd once on whole-corpus memory (#929). (#1654) */
+    if (!$LCV_WEB) {
+        $failuresNdjson[] = json_encode(['gate' => $id] + $detail, JSON_UNESCAPED_UNICODE);
+    }
 }
 
 out("== #1235 P4 lyrics-cutover gate — phase={$phase} ==");
