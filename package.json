@@ -1,7 +1,7 @@
 {
   "name": "ihymns",
   "version": "1.0.0-alpha.1",
-  "description": "iHymns — A multiplatform Christian lyrics application for worship enhancement",
+  "description": "iHymns \u2014 A multiplatform Christian lyrics application for worship enhancement",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build:web:production": "node tools/build-web.js --target production",
     "build:web:beta": "node tools/build-web.js --target beta",
     "build:web:dev": "node tools/build-web.js --target dev",
+    "build:proto": "node tools/build-proto-bundle.js",
     "dev": "php -S localhost:8000 -t appWeb/public_html",
     "preview": "php -S localhost:8080 -t dist/web",
     "lint:js": "eslint appWeb/public_html/js/",
