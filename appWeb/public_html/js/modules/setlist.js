@@ -749,7 +749,7 @@ export class SetList {
                           data-comp-idx="${idx}"
                           title="${escapeHtml(label)} — click to add"
                           style="background-color:${color};color:${textColor};cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                          aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</button>`;
+                          aria-label="Add ${escapeHtml(tag)}, ${escapeHtml(label)}, to arrangement">${escapeHtml(tag)}</button>`;
         }).join(' ');
 
         const modal = document.createElement('div');
@@ -886,13 +886,27 @@ export class SetList {
                 const textColor = typeTextColor(comp.type);
                 const isFirst = pos === 0;
                 const isLast = pos === workingArr.length - 1;
+                /* The accessible name LEADS with the visible tag ("V1"), then the
+                   spoken-out label ("Verse 1"), then the position.
+                   ELI5: what you see written on the chip has to be part of what a
+                   screen reader calls it, or someone who talks to their computer
+                   can't ask for it by name.
+                   Detail: WCAG 2.5.3 Label in Name (Level A) requires the
+                   accessible name to CONTAIN the visible text. shortTag() renders
+                   "V1" while fullLabel() renders "Verse 1", so an aria-label of
+                   "Verse 1, position 2 of 5" does not contain "V1" — a speech-input
+                   user saying "click V1" would match nothing. Leading with the tag
+                   satisfies 2.5.3 and still gives assistive tech the unabbreviated
+                   label. The icon-only move/remove buttons alongside have no visible
+                   text, so 2.5.3 does not apply to them.
+                   https://www.w3.org/WAI/WCAG21/Understanding/label-in-name.html */
                 return `<div class="d-inline-flex align-items-center gap-1 arrangement-strip-item" data-pos="${pos}">
                             <button type="button" class="badge rounded-pill arrangement-strip-chip border-0"
                                     data-pos="${pos}" data-comp-idx="${idx}"
                                     draggable="true"
                                     title="${escapeHtml(label)} — position ${pos + 1} of ${workingArr.length}"
                                     style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                                    aria-label="${escapeHtml(label)}, position ${pos + 1} of ${workingArr.length}">${escapeHtml(tag)}</button>
+                                    aria-label="${escapeHtml(tag)}, ${escapeHtml(label)}, position ${pos + 1} of ${workingArr.length}">${escapeHtml(tag)}</button>
                             <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 arrangement-chip-move-left"
                                     data-pos="${pos}" ${isFirst ? 'disabled' : ''}
                                     aria-label="Move ${escapeHtml(label)} earlier">
