@@ -715,7 +715,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click a row to open that song in the editor; the Revisions modal there shows the diff and lets you Restore.</li>
+                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the History modal already open, showing the diff and a Restore button.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
