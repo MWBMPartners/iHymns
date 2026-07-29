@@ -1750,9 +1750,27 @@ class SongData
      * open via getSongById(). songbookName is the LIVE tblSongbooks.Name
      * (WS-E #1013). Canonical order mirrors getSongsIndex/getSongs.
      *
+     * OPTIONAL SONGBOOK SCOPE (#1037). Pass an abbreviation to return only
+     * that book's rows.
+     *
+     * ELI5: ask for one songbook instead of all of them when that's all you need.
+     *
+     * The songbook listing page needs ONE book, and without this it pulled all
+     * ~14,500 rows and filtered them in PHP — better than the full hydration it
+     * replaced, but still four times the necessary rows and a whole-table scan
+     * on the second-biggest public page, on shared hosting. The three other
+     * callers (the PWA's songs_index, and both editor sidebars) genuinely want
+     * the whole catalogue and pass nothing, so this is purely additive.
+     *
+     * Ordering is UNCHANGED — the ORDER BY below is identical either way, which
+     * is what lets a scoped call keep the exact per-book order callers already
+     * rely on rather than re-deriving it.
+     *
+     * @param string|null $songbookAbbr Restrict to one tblSongbooks.Abbreviation;
+     *                                  null (default) returns every song.
      * @return array<int,array<string,mixed>>
      */
-    public function getSongsSlimIndex(): array
+    public function getSongsSlimIndex(?string $songbookAbbr = null): array
     {
         if (!$this->db) {
             throw new \RuntimeException('getSongsSlimIndex requires a live database connection.');
@@ -1766,14 +1784,30 @@ class SongData
                        s.Language AS language,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
                 FROM tblSongs s
-                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                ORDER BY s.SongbookAbbr ASC,
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr";
+
+        /* Scoped variant (#1037). The abbreviation is BOUND, never interpolated
+           (rule #5) — it reaches here from a URL segment. */
+        $scoped = ($songbookAbbr !== null && $songbookAbbr !== '');
+        if ($scoped) {
+            $sql .= " WHERE s.SongbookAbbr = ?";
+        }
+
+        $sql .= " ORDER BY s.SongbookAbbr ASC,
                          CASE WHEN sb.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
                          s.Number ASC,
                          LOWER(s.Title) ASC";
 
-        $res  = $this->db->query($sql);
         $rows = [];
+        if ($scoped) {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('s', $songbookAbbr);
+            $stmt->execute();
+            $res = $stmt->get_result();
+        } else {
+            $res = $this->db->query($sql);
+        }
+
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_assoc()) {
                 $row['number']        = normaliseSongNumber($row['number']);
@@ -1782,6 +1816,9 @@ class SongData
                 $rows[] = $row;
             }
             $res->free();
+        }
+        if ($scoped) {
+            $stmt->close();
         }
         return $rows;
     }

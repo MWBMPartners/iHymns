@@ -55,16 +55,17 @@ if ($book === null) {
    getSongsSlimIndex() is the sanctioned scoped replacement (rule #17):
    ONE lightweight query, no lyrics, no components, no credits — the same
    method the Song Editor sidebar uses to list the whole catalogue
-   without downloading the corpus. It returns every song pre-sorted
-   exactly the way getSongs()/getSongsIndex() sort (SongbookAbbr, then
-   numbered-official-first, then Number, then Title), so filtering it
-   down to this book in PHP preserves the correct per-book order without
-   re-implementing that ORDER BY here. */
+   without downloading the corpus.
+
+   Called with the songbook abbreviation so the SCOPE happens in SQL
+   (#1037). It previously fetched every song in the catalogue and filtered
+   in PHP: correct, and still far cheaper than the full hydration it
+   replaced, but ~14,500 rows pulled to render one book of ~3,500 — four
+   times the rows and a whole-table scan, on the second-biggest public
+   page, on shared hosting. The ORDER BY inside the method is identical
+   either way, so the per-book order is unchanged. */
 $bookAbbr = strtoupper(trim((string)$book['id']));
-$songs = array_values(array_filter(
-    $songData->getSongsSlimIndex(),
-    static fn(array $s): bool => strtoupper(trim((string)($s['songbook'] ?? ''))) === $bookAbbr
-));
+$songs = $songData->getSongsSlimIndex($bookAbbr);
 
 /* `verified` (the lyrics-verified checkmark) and `writers` (the byline
    under the title) are NOT in the slim index — it's deliberately

@@ -146,11 +146,13 @@ final class FakeSongData
 {
     public int $getSongsCalls = 0;
     public int $getSongsSlimIndexCalls = 0;
+    /** Every abbreviation the page asked the slim index to scope to (#1037). */
+    public array $slimIndexScopes = [];
 
     public function __construct(
         private array $book,
         private array $legacySongs,   // shape the OLD getSongs($bookId) returned
-        private array $slimIndex      // shape the NEW getSongsSlimIndex() returns (WHOLE corpus)
+        private array $slimIndex      // WHOLE-corpus rows; the real method scopes in SQL
     ) {}
 
     public function getSongbook(string $id): ?array
@@ -165,11 +167,27 @@ final class FakeSongData
         return $this->legacySongs;
     }
 
-    /** The sanctioned scoped replacement (CLAUDE.md rule #17). */
-    public function getSongsSlimIndex(): array
+    /**
+     * The sanctioned scoped replacement (CLAUDE.md rule #17).
+     *
+     * Models the REAL method's `WHERE s.SongbookAbbr = ?` (#1037). The page
+     * used to pull the whole corpus and filter in PHP; the scope now happens
+     * in SQL, so this fake applies it too — otherwise the fixture's
+     * cross-book distractor would be handed to the page and the leak guard
+     * below would be testing PHP filtering that no longer exists.
+     */
+    public function getSongsSlimIndex(?string $songbookAbbr = null): array
     {
         $this->getSongsSlimIndexCalls++;
-        return $this->slimIndex;
+        $this->slimIndexScopes[] = $songbookAbbr;
+        if ($songbookAbbr === null || $songbookAbbr === '') {
+            return $this->slimIndex;
+        }
+        $want = strtoupper(trim($songbookAbbr));
+        return array_values(array_filter(
+            $this->slimIndex,
+            static fn(array $r): bool => strtoupper(trim((string)($r['songbook'] ?? ''))) === $want
+        ));
     }
 }
 
@@ -351,6 +369,15 @@ ok('the distractor\'s title never appears in the TB render', stripos($html, 'dis
 
 ok('SongData::getSongs() — the full lyric + credit hydration call — is NEVER made for the listing', $fakeSongData->getSongsCalls === 0);
 ok('SongData::getSongsSlimIndex() is called exactly once (not once per row)', $fakeSongData->getSongsSlimIndexCalls === 1);
+/* #1037 — the scope moved from a PHP array_filter into the SQL WHERE, so the
+   load-bearing assertion is now that the page asks for the RIGHT book. Without
+   this, a page that passed null (or the wrong abbreviation) would still render
+   correctly against a whole-corpus fixture and the leak guard above would pass
+   for the wrong reason. */
+ok(
+    'the slim index is asked to scope to THIS songbook (bound abbreviation, not an unscoped whole-corpus call)',
+    $fakeSongData->slimIndexScopes === ['TB']
+);
 ok(
     'the supplementary Verified/writers query is prepared exactly once for the whole page (not once per row, not N+1)',
     $GLOBALS['__ihymnsTestDb']->prepareCalls === 1
