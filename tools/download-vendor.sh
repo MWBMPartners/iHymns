@@ -6,9 +6,9 @@
 #
 # PURPOSE:
 # Downloads pinned versions of CDN-hosted libraries (Bootstrap, Font Awesome,
-# jQuery, Animate.css, Tone.js, PDF.js, Swagger UI) into the vendor/ directory
-# under public_html/. These local copies serve as fallbacks when the CDN is
-# unreachable (e.g., offline PWA usage).
+# jQuery, Animate.css, Tone.js, PDF.js, Swagger UI, QR Code Generator) into
+# the vendor/ directory under public_html/. These local copies serve as
+# fallbacks when the CDN is unreachable (e.g., offline PWA usage).
 #
 # USAGE:
 #   ./tools/download-vendor.sh          # Run from the repo root
@@ -41,6 +41,7 @@ mkdir -p "$VENDOR_DIR/fuse"
 mkdir -p "$VENDOR_DIR/tone"
 mkdir -p "$VENDOR_DIR/pdfjs"
 mkdir -p "$VENDOR_DIR/swagger-ui"
+mkdir -p "$VENDOR_DIR/qrcode-generator"
 
 # Helper: download a file, verify it's not empty
 download() {
@@ -154,7 +155,7 @@ download "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.9.124/build/pdf.worker.min.m
 # blank pane with only a console message. api-docs.php now pins the exact
 # version with an integrity hash and falls back to these local copies.
 # ---------------------------------------------------------------------------
-echo "[8/8] Swagger UI 5.32.11"
+echo "[8/9] Swagger UI 5.32.11"
 download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui.css" \
          "$VENDOR_DIR/swagger-ui/swagger-ui.css" \
          "swagger-ui.css"
@@ -164,6 +165,20 @@ download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-bundle
 download "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.32.11/swagger-ui-standalone-preset.js" \
          "$VENDOR_DIR/swagger-ui/swagger-ui-standalone-preset.js" \
          "swagger-ui-standalone-preset.js"
+
+# ---------------------------------------------------------------------------
+# QR Code Generator 2.0.4 — congregant join QR on /manage/service-projection
+# (#1339 buildable half; pinned per the #1587 pattern)
+#
+# kazuhikoarase/qrcode-generator (MIT), loaded via dynamic import() of the ES
+# module build. Browsers don't support the `integrity` attribute on dynamic
+# import(), so this local copy is the fallback service-projection.php's own
+# JS falls through to when the CDN import fails — never a blank QR box.
+# ---------------------------------------------------------------------------
+echo "[9/9] QR Code Generator 2.0.4"
+download "https://cdn.jsdelivr.net/npm/qrcode-generator@2.0.4/dist/qrcode.mjs" \
+         "$VENDOR_DIR/qrcode-generator/qrcode.mjs" \
+         "qrcode.mjs"
 
 echo ""
 echo "=== Done. Vendor libraries downloaded to: $VENDOR_DIR ==="
