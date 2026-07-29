@@ -202,6 +202,6 @@ _migSongLangBF_out(sprintf(
 ));
 
 if ($totalUpdated > 0) {
-    _migSongLangBF_out('[note] You should regenerate the songs cache after this:');
-    _migSongLangBF_out('       /manage/data-health → "Regenerate songs.json cache"');
+    _migSongLangBF_out('[note] Nothing to regenerate — song reads are DB-direct (WS-J #1020),');
+    _migSongLangBF_out('       so the public PWA picks up the new tags on its next fetch.');
 }

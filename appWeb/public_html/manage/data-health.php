@@ -124,7 +124,19 @@ foreach (HEALTH_TABLES as $tbl) {
     }
 }
 
-/* Is SongData on the JSON fallback? Instantiating it runs the probe. */
+/* Is SongData on the JSON fallback? Instantiating it runs the probe.
+   #1631 item 6: on THIS codebase isJsonFallback() is structurally
+   inert — jsonMode is set false once in SongData.php and never
+   reassigned (WS-J #1020 removed the fallback entirely; see
+   SongData.php:118,143,208-210), so this can only ever come back
+   `false` or `null` (probe threw / class missing), never `true`.
+   Kept anyway, deliberately: this page is what an operator reaches
+   for when a docroot looks broken, and (a) a docroot can be running
+   an older SongData.php than the one in this working copy — a
+   pre-WS-J-#1020 install genuinely could still be on the fallback —
+   and (b) the "legacy file on disk" check just below is a distinct
+   concern (the old songs.json may still physically exist even though
+   nothing reads it) that this card is the one place surfacing. */
 $songDataJsonFallback = null;
 try {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
@@ -291,9 +303,14 @@ $csrf = csrfToken();
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-3"><i class="bi bi-file-earmark-code me-2"></i><code>songs.json</code> fallback</h2>
             <p class="mb-2 small text-secondary">
-                <code>SongData</code> prefers MySQL. It only reads
-                <code>data_share/song_data/songs.json</code> if the DB query
-                fails to return any songs.
+                Retired (WS-J #1020): <code>SongData</code> is MySQL-only now — a
+                DB outage is a clean 503, never stale JSON. The probe below is a
+                residual check, kept in case this docroot is ever running an
+                older, pre-#1020 <code>SongData.php</code>; the "legacy file on
+                disk" line further down is the separate, still-useful check for
+                whether the old <code>data_share/song_data/songs.json</code> file
+                is still physically present even though nothing on this build
+                reads it.
             </p>
             <?php if ($songDataJsonFallback === true): ?>
                 <?= health_badge('red', 'SongData is currently using the JSON fallback') ?>

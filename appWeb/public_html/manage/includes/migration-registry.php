@@ -401,8 +401,9 @@ return [
                       . ' (multi-language books like Misc), and a song already carrying a more'
                       . ' specific tag whose primary matches (<code>en-GB</code> inside an'
                       . ' <code>en</code> songbook) is preserved. Re-runnable.'
-                      . ' Run <code>/manage/data-health → Regenerate songs.json cache</code>'
-                      . ' afterwards so the public PWA picks up the new tags.',
+                      . ' Nothing to regenerate afterwards — song reads are DB-direct'
+                      . ' (WS-J #1020), so the public PWA picks up the new tags on its'
+                      . ' next fetch.',
             'button' => 'Run Song Language Backfill',
         ],
         'probe' => static function (\mysqli $db): bool {
