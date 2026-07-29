@@ -378,7 +378,11 @@ That's it — there is **no schema change** and **no per-surface edit**. The adm
 
 ### 18.4 Enforcement — `contentGatingApply()` (dormant)
 
-`contentGatingApply($song, $userId, $platform)` in `includes/content_gating.php` (#1353) is the server-side enforcement point for the public / native read API. It strips the fields a tier may not see/use from a built `song_detail` / `song_data` / `random` payload immediately before emit; the `bulk_audio` offline manifest is entity-gated the same way. Three LOCKED rules (do not relax):
+`contentGatingApply($song, $userId, $platform)` in `includes/content_gating.php` (#1353) is the server-side enforcement point for the public / native read API. It strips the fields a tier may not see/use from a built `song_detail` / `song_data` / `random` payload immediately before emit, and (since #1388) from every song in `songbook_export`.
+
+**Payload gating is not asset gating.** `contentGatingApply()` decides what a *response body* may contain. It cannot protect a URL-addressable file: `/song-media/<id>` is bookmarkable, shareable and guessable by id, and stays fetchable long after the row disappeared from someone's payload. That is what **`contentGatingMediaAllowed($kind, $userId, $presenceToken)`** is for — the same registry-backed decision, applied to a single `tblSongMedia` row, gating the bytes in `song-media.php` and the `bulk_audio` offline manifest. The kind→cap mapping is deliberately mirrored between the two so a cap can never hide the button while leaving the file open (or vice versa).
+
+Both fail open, both are exact no-ops while `content_gating_enabled='0'`, and both resolve caps only through `checkTierAccess()` — never a local matrix. Three LOCKED rules (do not relax):
 
 - **(A) Master switch — dormant by default.** Every public function returns byte-identical data unless `getAppSetting('content_gating_enabled','0') === '1'`. Shipping this changes NOTHING on any live env until an operator flips the flag. Any change here MUST stay a verified no-op when the flag is `'0'`.
 - **(B) Caps come from the registry.** No hardcoded tier→field matrix in this module — per-cap decisions go through `checkTierAccess()` (§18.3), so a new one-line json cap is enforced automatically.

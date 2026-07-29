@@ -320,6 +320,19 @@ export class UserAuth {
         }
 
         this.clearCredentials();
+
+        /* #1388 — ask the service worker to drop the per-user caches.
+           clearCredentials() only touches localStorage; the Cache Storage
+           buckets belong to the SW and are keyed by URL alone, so without this
+           the next user of a shared device can still be served fragments
+           fetched under the previous session. Best-effort and non-blocking:
+           no controller (first load, SW unsupported, hard-refresh) simply
+           means there is no cache to clear. */
+        try {
+            navigator.serviceWorker?.controller?.postMessage({ type: 'CLEAR_USER_CACHES' });
+        } catch {
+            /* Non-critical — never let cache cleanup break sign-out. */
+        }
     }
 
     /**

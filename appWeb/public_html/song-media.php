@@ -62,6 +62,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_access.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongMediaStorage.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
@@ -171,15 +172,51 @@ if (!$row) {
     exit;
 }
 
-/* Gate via the parent song's access rules. checkContentAccess returns
-   ['allowed' => bool, 'reason' => string]; deny → 403 with a brief
-   plaintext reason so a curator inspecting Network can see why. */
-$userId = _songMedia_resolveUserId();
-$gate   = checkContentAccess('song', (string)$row['SongId'], $userId, 'PWA');
+/* --- Access gates (#853 entity gate + #1388 tier gate) ---------------------
+
+   TWO INDEPENDENT GATES, both must pass:
+
+     1. ENTITY  — does a tblContentRestrictions rule cover this song?
+     2. TIER    — does the caller's access tier permit this media KIND?
+
+   They answer different questions and neither implies the other. A song with
+   no restriction row still holds premium audio; a `public`-tier visitor still
+   has to clear the entity gate.
+
+   Service-Mode presence (#1335 / rule #26): a congregant following a live
+   service carries an opaque presence token in a same-origin cookie. It feeds
+   BOTH gates — checkContentAccess() injects the 'ccli' entitlement from it, and
+   the tier gate ORs it into the audio decision. Before #1388 this endpoint
+   passed the 4-arg form and so DENIED a present congregant the very media that
+   song.php and contentGatingApply() deliberately grant them. Shape-validated
+   here (43 url-safe base64 chars) exactly as api.php:857/974 do, so a junk
+   cookie never reaches a query. */
+$userId   = _songMedia_resolveUserId();
+$presence = null;
+if (isset($_COOKIE['ihymns_sf_presence_token'])
+    && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+    $presence = (string)$_COOKIE['ihymns_sf_presence_token'];
+}
+
+/* Gate 1 — entity. Returns ['allowed' => bool, 'reason' => string]; deny → 403
+   with a brief plaintext reason so a curator inspecting Network can see why. */
+$gate = checkContentAccess('song', (string)$row['SongId'], $userId, 'PWA', $presence);
 if (!$gate['allowed']) {
     http_response_code(403);
     header('Content-Type: text/plain; charset=UTF-8');
     echo 'Access restricted: ' . ($gate['reason'] ?: 'gated content.');
+    exit;
+}
+
+/* Gate 2 — tier cap for this media kind. A no-op returning true whenever
+   content_gating_enabled='0' (rule #28A), so this is byte-identical to the
+   pre-#1388 endpoint until an operator flips the master switch. The reason
+   string is deliberately generic — it must not disclose which tier would be
+   sufficient, since that is an unauthenticated response. */
+if (!contentGatingMediaAllowed((string)$row['Kind'], $userId, $presence)) {
+    http_response_code(403);
+    header('Content-Type: text/plain; charset=UTF-8');
+    echo 'Access restricted: gated content.';
     exit;
 }
 

@@ -305,3 +305,87 @@ function contentGatingApply(array $song, ?int $userId, string $platform = 'PWA',
         return $song;
     }
 }
+
+/**
+ * Is this ONE media row's kind playable/downloadable on the caller's tier? (#1388)
+ *
+ * ELI5: `contentGatingApply()` decides which media links a song page is allowed
+ * to SHOW. This answers the same question for someone who already has the link
+ * and is asking for the bytes.
+ *
+ * WHY IT EXISTS. Stripping a media row from the `song_detail` payload hides the
+ * affordance; it does not protect the file. `/song-media/<id>` is a plain URL —
+ * bookmarkable, shareable, guessable by id, and still served long after the row
+ * vanished from someone's payload. Before this, that endpoint applied only the
+ * ENTITY gate (`checkContentAccess`) and no tier cap at all, so the instant
+ * gating went live a `public`-tier visitor could still stream premium audio by
+ * hitting the URL directly. The affordance gate and the bytes gate have to agree.
+ *
+ * DELIBERATELY THE SAME DECISION, NOT A COPY OF IT (modularity rule / rule #28B).
+ * The kind→cap mapping and the presence OR-grant below mirror the media-filter
+ * block inside contentGatingApply() because they must never diverge — a cap that
+ * hides the button but not the file, or vice versa, is worse than neither. Caps
+ * are resolved through the shared registry-backed `checkTierAccess()`; there is
+ * no local tier matrix here (rule #28B).
+ *
+ * FAIL-OPEN, like every other path in this file (rule #28C): gating off, an
+ * unknown kind, a missing helper, or any throw ⇒ true. The 3 docroots share one
+ * MySQL and migrations are web-run, so an un-migrated read must degrade to the
+ * pre-gating behaviour, never to a broken media endpoint.
+ *
+ * @param string  $kind          tblSongMedia.Kind — audio | midi | sheet-music | musicxml
+ * @param ?int    $userId        Resolved user, or null for anonymous
+ * @param ?string $presenceToken Service-Mode presence token (#1335), or null
+ * @return bool   true ⇒ serve the bytes
+ */
+function contentGatingMediaAllowed(string $kind, ?int $userId, ?string $presenceToken = null): bool
+{
+    /* (A) Master switch off ⇒ byte-identical to pre-#1388 behaviour. */
+    if (!contentGatingEnabled()) {
+        return true;
+    }
+
+    try {
+        /* Same effective-tier resolution as contentGatingApply(). */
+        $tier = ($userId === null) ? 'public' : resolveEffectiveTier($userId);
+        if ($tier === '') { $tier = 'public'; }
+        $hasCcli = contentGating_userHasCcli($userId);
+
+        /* Presence unlock (rule #26) — rides the org's LIVE ccli licence for the
+           duration of the service. Covers AUDIO only, exactly as in the payload
+           path: a CCLI licence covers accompaniment playback, not MIDI/PDF
+           redistribution. Any failure ⇒ no unlock (the safe direction). */
+        $presenceCcli = false;
+        if ($presenceToken !== null && $presenceToken !== '') {
+            try {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'service_mode.php';
+                if (function_exists('serviceMode_presenceCcliNumber') && function_exists('serviceMode_channel')) {
+                    $presenceCcli = (serviceMode_presenceCcliNumber(
+                        getDbMysqli(),
+                        $presenceToken,
+                        serviceMode_channel()
+                    ) !== null);
+                }
+            } catch (\Throwable $_e) {
+                $presenceCcli = false;
+            }
+        }
+
+        $can = static function (string $action) use ($tier, $hasCcli): bool {
+            $r = checkTierAccess($tier, $action, $hasCcli);
+            return !empty($r['allowed']);
+        };
+
+        switch ($kind) {
+            case 'audio':       return $can('play_audio') || $presenceCcli;
+            case 'midi':        return $can('download_midi');
+            case 'sheet-music': return $can('download_pdf');
+            case 'musicxml':    return $can('download_pdf');  /* notation download = PDF family */
+            default:            return true;                  /* unknown kind — leave it */
+        }
+    } catch (\Throwable $_e) {
+        /* Fail open + log, matching contentGatingApply()'s (C) branch. */
+        error_log('[content_gating] media gate failed: ' . $_e->getMessage());
+        return true;
+    }
+}

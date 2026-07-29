@@ -1117,16 +1117,48 @@ function validateCsrfRequest(?string $token = null): bool
         return false;
     }
 
-    /* If Origin / Referer is present it MUST match this host; absent is allowed. */
-    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    /* If Origin / Referer is present it MUST match this host. */
+    $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $sawHost = false;
     foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
         if (!empty($_SERVER[$hdr])) {
             $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
             if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
                 return false;
             }
+            $sawHost = true;
         }
     }
+
+    /* (c) #1388 — BOTH absent is no longer enough on its own.
+     *
+     * ELI5: the custom header proves a browser didn't send this from another
+     * site. It does NOT prove the request came from a browser at all. We now
+     * also want to see where it came from.
+     *
+     * Detail: X-Requested-With alone rests entirely on the browser's inability
+     * to set a custom header cross-origin without a CORS preflight this server
+     * never grants. That is sound for browsers, but any non-browser client can
+     * set it freely, and it leaves no positive evidence of origin. Per the Fetch
+     * spec, browsers send `Origin` on EVERY request whose method is not GET or
+     * HEAD — so a genuine same-origin POST from a real browser always carries
+     * one, whatever the Referrer-Policy. Absent BOTH headers therefore means
+     * "not a browser POST", and we fall back to requiring a valid session token
+     * (checked as (a) above, which already failed if we reached here).
+     * https://fetch.spec.whatwg.org/#origin-header
+     *
+     * Logged, not silent. This tightens the exact path #1590 built to stop the
+     * sporadic editor "CSRF error", so if it ever rejects a legitimate caller
+     * the operator gets a line naming the endpoint instead of a mystery. */
+    if (!$sawHost) {
+        error_log(sprintf(
+            '[csrf] rejected %s %s — X-Requested-With present but no Origin/Referer and no valid token',
+            (string)($_SERVER['REQUEST_METHOD'] ?? '?'),
+            (string)($_SERVER['REQUEST_URI'] ?? '?')
+        ));
+        return false;
+    }
+
     return true;
 }
 
@@ -1666,8 +1698,23 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
         }
         $countStmt->close();
 
-        /* First user gets global_admin, others get user */
-        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+        /* First user gets global_admin, others get user.
+
+           FOR UPDATE (#1388). This runs inside the #1011 transaction, but a
+           plain COUNT takes no locks — under REPEATABLE READ two concurrent
+           genesis logins can BOTH read 0 and both insert a global_admin. The
+           window is small and only exists on a virgin install, but the payoff
+           is the highest privilege in the system, and a fresh deploy where two
+           people click their magic links together is exactly when it opens.
+
+           ELI5: "nobody's here yet, so I'm the boss" — asked by two people at
+           once, both hear yes. FOR UPDATE makes the second one wait.
+
+           FOR UPDATE takes a lock the concurrent transaction must wait for, so
+           the loser re-reads 1 and gets 'user'. On an empty table InnoDB takes
+           a gap lock, which is what makes the zero-row case serialise at all.
+           https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html */
+        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers FOR UPDATE');
         $stmt->execute();
         $row = $stmt->get_result()->fetch_row();
         $stmt->close();

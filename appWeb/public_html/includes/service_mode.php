@@ -479,12 +479,29 @@ function serviceMode_pollIntervalMs(string $role): int
  *
  * Presence/session freshness compares UTC (those rows are UTC); the org licence
  * expiry uses NOW() to match the existing licence layer (licences.php).
+ *
+ * SESSION LIVENESS (#1388). `s.IsActive = 1` alone is NOT proof the service is
+ * still running — it is a flag an operator sets on start and clears on a clean
+ * `service_session_end`. A browser tab closed mid-service, a laptop lid shut, a
+ * dead battery: all leave `IsActive = 1` set forever, and with it a standing
+ * CCLI unlock for every congregant who ever joined, until their presence row's
+ * own ExpiresAt (the occurrence end) catches up.
+ *
+ * ELI5: "the projector said it started" is not the same as "the projector is
+ * still there". We check it has said something recently, too.
+ *
+ * So this ALSO requires a heartbeat inside LIVE_SESSION_FRESHNESS_SECONDS, the
+ * same predicate serviceMode_resolveJoin() already applies when MINTING presence
+ * (see :356). Gate-on-read and gate-on-write must agree — a token that could not
+ * be minted right now must not keep unlocking content right now.
  */
 function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
 {
     if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $presenceToken)) {
         return null;
     }
+    /* Same trusted int constant, same interpolation pattern as resolveJoin(). */
+    $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
     try {
         $stmt = $db->prepare(
             "SELECT o.LicenceNumber
@@ -496,6 +513,7 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                 AND p.ExpiresAt > UTC_TIMESTAMP()
                 AND p.Channel = ?
                 AND s.IsActive = 1
+                AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
                 AND o.LicenceType = 'ccli'
                 AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
               LIMIT 1"

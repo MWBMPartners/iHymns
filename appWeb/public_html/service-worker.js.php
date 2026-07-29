@@ -1228,6 +1228,44 @@ self.addEventListener('message', (event) => {
     }
 
     /*
+     * Purge per-user cached content on logout (#1388).
+     *
+     * ELI5: when you sign out on a shared device, the pages you looked at
+     * shouldn't still be sitting in the browser's offline box for the next
+     * person.
+     *
+     * Detail: RECENT_CACHE and PAGES_CACHE are keyed by URL ALONE — they carry
+     * no notion of who fetched the entry. `UserAuth.logout()` clears the token
+     * and the credential store, but the Cache Storage API is invisible to it
+     * (a service worker owns those buckets, and a page cannot reach into them
+     * on the SW's behalf). So before this, a signed-out or next user on the
+     * same device could still be served a cached fragment fetched under the
+     * previous session — and once content gating is enabled (#1590), that
+     * fragment may hold lyrics their own tier is not entitled to.
+     *
+     * Deliberately NOT cleared: CACHE_VERSION (the app shell — identical for
+     * everyone, expensive to refetch) and MEDIA_CACHE / SAVED_CACHE (songs the
+     * user DELIBERATELY saved for offline use; wiping those on logout would
+     * silently destroy a deliberate download, and they are re-gated on next
+     * fetch anyway).
+     *
+     * Fire-and-forget: logout must never block on cache eviction.
+     * https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage/delete
+     */
+    if (event.data.type === 'CLEAR_USER_CACHES') {
+        event.waitUntil((async () => {
+            for (const name of [RECENT_CACHE, PAGES_CACHE]) {
+                try {
+                    await caches.delete(name);
+                } catch (err) {
+                    console.warn('[SW] CLEAR_USER_CACHES failed for', name, err);
+                }
+            }
+            console.log('[SW] Per-user caches cleared on logout');
+        })());
+    }
+
+    /*
      * Download songs for offline use via bulk API (#359 rewrite).
      *
      * Instead of fetching each song individually (3,612 requests!),

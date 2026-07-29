@@ -1062,6 +1062,38 @@ if ($action !== null) {
                     $exAllow = checkBulkAccess('song', $exIds, $exUid, $exPlat, 'export');
                     $sbSongs = array_values(array_filter($sbSongs, static fn($s) => $exAllow[$exKey($s)] ?? true));
                 }
+
+                /* #1388 — TIER gate, on top of the entity gate above.
+                   checkBulkAccess() answers "is this SONG restricted?"; it says
+                   nothing about the caller's tier. Without this, songbook_export
+                   was the widest lyric leak in the API the moment gating went
+                   live: song_detail carefully strips a copyrighted lyric body for
+                   a public-tier reader, and then the SAME reader pulls the entire
+                   songbook here — every surviving song with full `components` —
+                   in one request. A per-song gate that the bulk endpoint beside
+                   it doesn't honour is not a gate.
+
+                   contentGatingApply() is the same registry-backed resolver the
+                   single-song path uses (rule #28B — never a second matrix), and
+                   fail-opens per song, so a malformed row degrades to unchanged
+                   rather than emptying the export. The presence token rides along
+                   for the Service-Mode CCLI unlock (rule #26), read from the same
+                   cookie and shape-validated exactly as :857/:974 do. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                if (function_exists('contentGatingApply')) {
+                    $exAuth2 = $exAuth ?? getAuthenticatedUser();
+                    $exUid2  = $exAuth2 ? (int)$exAuth2['Id'] : null;
+                    $exPlat2 = $exPlat ?? trim((string)($_GET['platform'] ?? 'PWA'));
+                    $exPres  = null;
+                    if (isset($_COOKIE['ihymns_sf_presence_token'])
+                        && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+                        $exPres = (string)$_COOKIE['ihymns_sf_presence_token'];
+                    }
+                    $sbSongs = array_map(
+                        static fn(array $s): array => contentGatingApply($s, $exUid2, $exPlat2, $exPres),
+                        $sbSongs
+                    );
+                }
             }
             sendJson(['songs' => $sbSongs, 'songbook' => $sbSongbook]);
             break;
@@ -1713,6 +1745,26 @@ if ($action !== null) {
                         ));
                     }
 
+                    /* #1388 — TIER gate. checkBulkAccess() above is entity-only;
+                       the offline audio manifest was handing every surviving
+                       track to any tier. play_audio is a per-REQUESTER cap, so
+                       this resolves once and empties the manifest wholesale
+                       rather than per entry. The presence token rides along for
+                       the Service-Mode unlock (rule #26), same cookie + shape
+                       validation as :857/:974. Fail-open on a throw, consistent
+                       with content_gating.php (rule #28C). */
+                    require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
+                    if ($manifest && function_exists('contentGatingMediaAllowed')) {
+                        $audioPres = null;
+                        if (isset($_COOKIE['ihymns_sf_presence_token'])
+                            && preg_match('/^[A-Za-z0-9_\-]{43}$/', (string)$_COOKIE['ihymns_sf_presence_token'])) {
+                            $audioPres = (string)$_COOKIE['ihymns_sf_presence_token'];
+                        }
+                        if (!contentGatingMediaAllowed('audio', $audioUid, $audioPres)) {
+                            $manifest = [];
+                        }
+                    }
+
                     /* #1358 — SEAL surviving audio URLs. When signing is ALSO on
                        (audioSigningEnabled = gating + audio_signing_enabled + key),
                        rewrite each entry from the static literal /data/audio/<id>.mp3
@@ -2114,7 +2166,11 @@ if ($action !== null) {
             $stmt->close();
             $regMode = (string)($row[0] ?? '') ?: 'open';
 
-            /* Check if any users exist (first user always allowed for initial setup) */
+            /* Check if any users exist (first user always allowed for initial
+               setup). This read decides REGISTRATION MODE only — it is not the
+               genesis-role decision, which is taken under FOR UPDATE inside a
+               transaction further down (#1388). Do not merge the two: this one
+               runs before input validation and holds no lock. */
             $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
             $stmt->execute();
             $row = $stmt->get_result()->fetch_row();
@@ -2202,24 +2258,53 @@ if ($action !== null) {
                 break;
             }
 
-            /* Auto-assign 'global_admin' to the very first registered user;
-             * all subsequent public registrations get 'user' role */
-            $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_row();
-            $stmt->close();
-            $role = ((int)($row[0] ?? 0) === 0) ? 'global_admin' : 'user';
-
             $hash = password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
             $displayTrimmed = mb_substr($displayName, 0, 100);
             /* Email column is NOT NULL DEFAULT ''; insert an explicit
                empty string when the optional email was omitted. (#898) */
             $emailToStore = $regEmail;
-            $stmt = $db->prepare('INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?, ?)');
-            $stmt->bind_param('sssss', $username, $emailToStore, $hash, $displayTrimmed, $role);
-            $stmt->execute();
-            $userId = (int)$db->insert_id;
-            $stmt->close();
+
+            /* Auto-assign 'global_admin' to the very first registered user; all
+               subsequent public registrations get 'user'.
+
+               TRANSACTION + FOR UPDATE (#1388). The count and the INSERT must be
+               atomic. Previously they were two bare statements, so two
+               registrations racing on a virgin install could BOTH read 0 and
+               both be created as global_admin — an unauthenticated path to the
+               highest privilege in the system. The window only exists before the
+               first user exists, which is precisely when a fresh deploy's URL is
+               being shared around.
+
+               ELI5: "am I the first person here?" has to be asked and answered
+               without anyone else slipping in between.
+
+               $userCount above is NOT reusable for this: it was read earlier,
+               unlocked, and only decides whether admin_only registration mode
+               applies. FOR UPDATE gap-locks the empty table so the loser of the
+               race blocks, re-reads 1, and gets 'user'.
+               https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html */
+            $db->begin_transaction();
+            try {
+                $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers FOR UPDATE');
+                $stmt->execute();
+                $row = $stmt->get_result()->fetch_row();
+                $stmt->close();
+                $role = ((int)($row[0] ?? 0) === 0) ? 'global_admin' : 'user';
+
+                $stmt = $db->prepare('INSERT INTO tblUsers (Username, Email, PasswordHash, DisplayName, Role) VALUES (?, ?, ?, ?, ?)');
+                $stmt->bind_param('sssss', $username, $emailToStore, $hash, $displayTrimmed, $role);
+                $stmt->execute();
+                $userId = (int)$db->insert_id;
+                $stmt->close();
+                $db->commit();
+            } catch (\Throwable $regEx) {
+                $db->rollback();
+                /* mysqli is STRICT — a duplicate username that slipped past the
+                   check above arrives here as a thrown exception, not false. */
+                error_log('[auth_register] user insert failed: ' . $regEx->getMessage());
+                sendJson(['error' => 'Registration failed. Please try again.'], 500);
+                break;
+            }
 
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
