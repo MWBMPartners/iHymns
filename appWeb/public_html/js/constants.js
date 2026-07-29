@@ -40,6 +40,13 @@ export const STORAGE_DISPLAY            = 'ihymns_display';
    it was a raw literal in three separate modules before #1031, which is the
    same drift class as the raw event names #1581 banned. */
 export const STORAGE_LANGUAGE_FILTER    = 'songbook-language-filter';
+/* Playlist context for setlist playback (#1533).
+   sessionStorage, NOT localStorage — deliberately. "I am currently working
+   through this setlist" is a property of THIS TAB's browsing session, not a
+   durable preference. localStorage would silently resurrect a service from
+   last Sunday the next time the user opened a song, and would leak the
+   context between tabs where someone is comparing two lists. */
+export const STORAGE_PLAYLIST_CONTEXT   = 'ihymns_playlist_context';
 
 /* Status & consent */
 export const STORAGE_ANALYTICS_CONSENT  = 'ihymns_analytics_consent';

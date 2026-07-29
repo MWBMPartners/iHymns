@@ -187,7 +187,13 @@ try {
                                 <td><?= htmlspecialchars($r['Username'] ?? '—') ?></td>
                                 <td class="text-end">
                                     <a class="btn btn-sm btn-outline-info"
-                                       href="/manage/editor/?open=<?= urlencode($r['SongId']) ?>&tab=history"
+<?php /* #1623 — `song`, NOT `open`. The editor reads `?song=` (editor.js's
+         #407 contract, also used by duplicate-songs.php and the public song
+         page). This link said `open=`, which the editor has no handler for,
+         so it was SILENTLY IGNORED: the editor loaded fine and simply never
+         selected anything. `tab=history` is now honoured too, which is what
+         the title attribute below has always promised. */ ?>
+                                       href="/manage/editor/?song=<?= urlencode($r['SongId']) ?>&tab=history"
                                        title="Open this song in the editor — the History modal will show every revision in full">
                                         Open in editor
                                     </a>

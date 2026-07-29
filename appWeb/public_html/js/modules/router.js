@@ -597,6 +597,14 @@ export class Router {
            applies. */
         this.app.readingProgress.initOnAnyPage();
 
+        /* #1533 — the set-list playback bar is FIXED and lives on <body>, so
+           unlike the old in-flow alert it does NOT disappear when the page
+           content is swapped. Sync it on EVERY navigation, not just song ones:
+           renderSongNavigation() removes the bar when the new page has no
+           .page-song, which is what stops it stranding over the home screen.
+           Must run before the early `return`s in the song branch below. */
+        this.app.setList?.renderSongNavigation();
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             /* #1343 — a merged/deleted/renamed permalink renders a redirect marker

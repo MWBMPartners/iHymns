@@ -6184,10 +6184,25 @@ function init() {
         try {
             var qs   = new URLSearchParams(window.location.search);
             var hash = String(window.location.hash || '').replace(/^#/, '');
-            var sid  = qs.get('song');
+            /* `open` is an ALIAS for `song` (#1623). /manage/revisions linked
+               with ?open= for its whole life while this only read ?song=, so
+               "Open in editor" silently did nothing — the editor loaded, the
+               list populated, and no song was ever selected. revisions.php now
+               emits ?song=, but the alias stays so a bookmarked or pasted
+               ?open= link works instead of failing the same invisible way. */
+            var sid  = qs.get('song') || qs.get('open');
             if (sid && Array.isArray(songData.songs)
                 && songData.songs.some(function (s) { return s.id === sid; })) {
                 selectSong(sid);
+                /* ?tab=history opens the revision history straight away —
+                   what the Revisions Audit button's tooltip has always
+                   claimed ("the History modal will show every revision in
+                   full") but nothing implemented. Deferred a tick so
+                   selectSong()'s own render finishes first; openHistoryModal
+                   reads DOM the selection populates. */
+                if (qs.get('tab') === 'history') {
+                    setTimeout(function () { openHistoryModal(sid); }, 0);
+                }
                 return;
             }
             var prefillBook = qs.get('songbook');
