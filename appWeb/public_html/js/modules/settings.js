@@ -21,9 +21,21 @@ import {
     STORAGE_ANALYTICS_CONSENT,
     STORAGE_SEARCH_HISTORY,
     STORAGE_CVD_MODE,
+    STORAGE_OFFLINE_INCLUDE_AUDIO,
+    CACHE_SONGS_SAVED,
+    CACHE_SONGS_RECENT,
     EVT_AUTH_CHANGED,
+    EVT_OFFLINE_SETTINGS_CHANGED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+/* Offline-download behaviour is owned by offline-ui.js (CLAUDE.md rule #7) —
+   Settings drives it, it does not re-implement it (#1597). */
+import {
+    requestPersistentStorage,
+    getStorageEstimate,
+    formatBytes,
+    queueAudioCacheForSongbooks,
+} from './offline-ui.js';
 
 /**
  * Strict whitelist of localStorage keys that sync to the user's
@@ -712,7 +724,26 @@ export class Settings {
         if (audioOfflineToggle) {
             audioOfflineToggle.checked = !!this.get('includeAudioOffline');
             audioOfflineToggle.addEventListener('change', () => {
-                this.set('includeAudioOffline', audioOfflineToggle.checked);
+                const enabled = audioOfflineToggle.checked;
+                this.set('includeAudioOffline', enabled);
+                /* Mirror into the CANONICAL key from constants.js (#1597 RC7).
+                   `set()` derives `ihymns_includeAudioOffline` from its prefix,
+                   but offline-ui.js reads `ihymns_offline_include_audio` — the
+                   two have never agreed, so this preference did nothing for
+                   tile downloads. Writing both keeps every reader honest and
+                   costs one localStorage write. */
+                try {
+                    localStorage.setItem(STORAGE_OFFLINE_INCLUDE_AUDIO, enabled ? '1' : '0');
+                } catch { /* private mode — the derived key above still applies */ }
+                /* THE MISSING DISPATCHER (#1597 RC7). offline-ui.js has had a
+                   listener for this event since #453 and nothing ever fired
+                   it, so a toggle made mid-session was invisible to the
+                   already-wired download buttons. Same silent-no-op class as
+                   #1565 and #1581: no error, no toast, just nothing happening.
+                   https://developer.mozilla.org/en-US/docs/Web/API/CustomEvent */
+                window.dispatchEvent(new CustomEvent(EVT_OFFLINE_SETTINGS_CHANGED, {
+                    detail: { includeAudio: enabled },
+                }));
             });
         }
 
@@ -1053,6 +1084,10 @@ export class Settings {
         if (progressWrap) progressWrap.classList.remove('d-none');
 
         try {
+            /* #1597 RC6 — request persistence + report free space before we
+               start writing tens of megabytes. */
+            await this._prepareStorageForDownload(statusEl);
+
             const songs = await this.getSongsData();
 
             if (songs.length === 0) {
@@ -1084,7 +1119,7 @@ export class Settings {
                jobs in parallel with the lyric pre-cache. The SW handles them
                independently — completion is reported via CACHE_AUDIO_PROGRESS. */
             if (this.get('includeAudioOffline')) {
-                this._queueAudioCacheForSongbooks(songbooks);
+                queueAudioCacheForSongbooks(songbooks);
             }
 
         } catch (error) {
@@ -1116,6 +1151,8 @@ export class Settings {
         if (progressWrap) progressWrap.classList.remove('d-none');
 
         try {
+            await this._prepareStorageForDownload(statusEl);   /* #1597 RC6 */
+
             const songs = await this.getSongsData();
             const songbookSongs = songs.filter(s => s.songbook === songbookId);
 
@@ -1138,7 +1175,7 @@ export class Settings {
             });
 
             if (this.get('includeAudioOffline')) {
-                this._queueAudioCacheForSongbooks([songbookId]);
+                queueAudioCacheForSongbooks([songbookId]);
             }
 
         } catch (error) {
@@ -1158,13 +1195,47 @@ export class Settings {
      */
     _handleDownloadProgress(data) {
         this._downloadState = {
-            active: (data.completed + data.failed) < data.total,
+            active: !Settings.downloadIsComplete(data),
             completed: data.completed,
             failed: data.failed,
             total: data.total,
         };
         /* Try to update the settings page UI (may not exist) */
         this.updateDownloadProgress(data);
+    }
+
+    /**
+     * Is this the TERMINAL progress message for a download? (#1597 RC5)
+     *
+     * ELI5: decides when the progress bar is allowed to stop spinning.
+     *
+     * WHY THIS EXISTS
+     * ---------------
+     * The song path used to complete only on `completed + failed >= total`,
+     * and those numbers are counted in DIFFERENT UNITS: the service worker
+     * increments `failed` once per BOOK when a songbook fetch fails, while
+     * `total` is a count of SONGS. One failed book therefore left the sum
+     * permanently short of the total and the bar spun forever, with no error
+     * shown — the user had no way to tell a stuck download from a slow one.
+     *
+     * The SW's own `done` flag is the authoritative signal: it is set on the
+     * final report of every terminating path (success, partial failure, and
+     * the caches.open() catch). The audio path has honoured it since #401;
+     * this makes the song path agree. The arithmetic is kept as a fallback for
+     * a SW that predates the flag (an old worker can still be driving the page
+     * until the user accepts the update prompt).
+     *
+     * @param {{completed:number, failed:number, total:number, done?:boolean, error?:string}} data
+     * @returns {boolean}
+     */
+    static downloadIsComplete(data) {
+        if (!data) return false;
+        if (data.done === true) return true;
+        /* An `error` means the SW gave up; nothing further is coming. */
+        if (data.error) return true;
+        const total = Number(data.total) || 0;
+        if (total <= 0) return true;   /* nothing to do, never "in progress" */
+        return (Number(data.completed) || 0) + (Number(data.failed) || 0) >= total;
     }
 
     /**
@@ -1201,7 +1272,14 @@ export class Settings {
         const progressBar = document.getElementById('download-songs-bar');
 
         const { completed, failed, total } = data;
-        const percent = Math.round(((completed + failed) / total) * 100);
+        const done = Settings.downloadIsComplete(data);
+        /* Guard the divide: `total` is 0 on the "nothing to download" path and
+           the bar would otherwise be set to `NaN%`, which browsers drop —
+           leaving a stuck-looking empty bar. Clamp so a `failed`-per-book
+           overshoot can't render 130%. */
+        const percent = total > 0
+            ? Math.min(100, Math.round(((completed + failed) / total) * 100))
+            : (done ? 100 : 0);
 
         const statusMsg = data.status || `Downloading ${completed + failed} / ${total} songs...`;
         if (statusEl) statusEl.textContent = statusMsg;
@@ -1211,8 +1289,9 @@ export class Settings {
             progressBar.setAttribute('aria-valuenow', String(percent));
         }
 
-        /* Download complete */
-        if (completed + failed >= total) {
+        /* Download complete — see Settings.downloadIsComplete() for why this is
+           no longer plain arithmetic (#1597 RC5). */
+        if (done) {
             this._downloadState.active = false;
 
             if (btn) {
@@ -1221,12 +1300,20 @@ export class Settings {
             }
             if (progressBar) {
                 progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
-                progressBar.classList.add(failed > 0 ? 'bg-warning' : 'bg-success');
+                progressBar.classList.add((data.error || failed > 0) ? 'bg-warning' : 'bg-success');
             }
             if (statusEl) {
-                statusEl.textContent = failed > 0
-                    ? `Done — ${completed} saved, ${failed} failed`
-                    : `All ${completed} songs saved for offline use`;
+                /* An `error` is the SW telling us it gave up entirely (storage
+                   quota, private mode, Safari ITP) — say so rather than
+                   claiming "All 0 songs saved", which is the kind of cheerful
+                   lie this whole issue is about (#1597 RC5). */
+                if (data.error) {
+                    statusEl.textContent = `Download stopped — ${data.error}`;
+                } else {
+                    statusEl.textContent = failed > 0
+                        ? `Done — ${completed} saved, ${failed} failed`
+                        : `All ${completed} songs saved for offline use`;
+                }
             }
             /* Re-enable all songbook buttons */
             document.querySelectorAll('.btn-download-songbook').forEach(b => {
@@ -1234,10 +1321,12 @@ export class Settings {
                 b.innerHTML = '<i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>';
             });
             this.app.showToast(
-                failed > 0
-                    ? `Downloaded ${completed} songs (${failed} failed)`
-                    : `All ${completed} songs downloaded for offline use`,
-                failed > 0 ? 'warning' : 'success'
+                data.error
+                    ? `Download stopped — ${data.error}`
+                    : (failed > 0
+                        ? `Downloaded ${completed} songs (${failed} failed)`
+                        : `All ${completed} songs downloaded for offline use`),
+                (data.error || failed > 0) ? 'warning' : 'success'
             );
             this.updateCacheStatus();
             this.updateSongbookCacheStatus();
@@ -1251,9 +1340,19 @@ export class Settings {
         if (!('caches' in window)) return;
 
         try {
-            const cache = await caches.open('ihymns-recent-songs');
-            const keys = await cache.keys();
-            const cachedUrls = new Set(keys.map(k => new URL(k.url).searchParams.get('id')));
+            /* BOTH song buckets (#1597 RC1). Deliberate downloads live in the
+               untrimmed `ihymns-saved-songs`; reading only the recency bucket
+               here would report a completed songbook as "0 / 3517" the moment
+               the split shipped. Opening a cache that does not exist yet is
+               harmless — caches.open() creates it empty. */
+            const cachedUrls = new Set();
+            for (const name of [CACHE_SONGS_SAVED, CACHE_SONGS_RECENT]) {
+                const cache = await caches.open(name);
+                for (const k of await cache.keys()) {
+                    const id = new URL(k.url).searchParams.get('id');
+                    if (id) cachedUrls.add(id);   /* null = the migration sentinel */
+                }
+            }
             const songs = await this.getSongsData();
 
             /* Group songs by songbook */
@@ -1338,28 +1437,55 @@ export class Settings {
     }
 
     /**
-     * Fetch the bulk_audio manifest for each songbook and dispatch
-     * one CACHE_AUDIO_URLS message per songbook to the SW (#401).
-     * Failures are logged but do not block the lyric download.
-     * @param {string[]} songbooks
+     * Prepare storage for a DELIBERATE download (#1597 RC6).
+     *
+     * ELI5: before downloading a lot, ask the browser not to throw it away,
+     * then tell the user how much room they have.
+     *
+     * Two things the app never did before this issue: it never called
+     * `navigator.storage.persist()` at all (so Safari could evict a whole
+     * songbook after 7 idle days), and it never called the `getStorageEstimate()`
+     * helper that had sat unused in offline-ui.js since #354 — so a user with
+     * 40 MB free got no warning, just a download that failed part-way.
+     *
+     * Purely advisory: it reports, it never blocks. A browser without
+     * StorageManager returns `supported: false` and we say nothing rather than
+     * inventing a scary message.
+     *
+     * @param {HTMLElement|null} statusEl Where to write the advisory line
+     * @returns {Promise<void>}
      */
-    async _queueAudioCacheForSongbooks(songbooks) {
-        if (!navigator.serviceWorker?.controller) return;
-        for (const songbook of songbooks) {
-            try {
-                const r = await fetch(`/api?action=bulk_audio&songbook=${encodeURIComponent(songbook)}`);
-                if (!r.ok) continue;
-                const data = await r.json();
-                const urls = (data.audio || []).map(a => a.url).filter(Boolean);
-                if (urls.length === 0) continue;
-                navigator.serviceWorker.controller.postMessage({
-                    type: 'CACHE_AUDIO_URLS',
-                    urls,
-                    songbook,
-                });
-            } catch (err) {
-                console.warn(`[Settings] Audio manifest fetch failed for ${songbook}:`, err.message);
+    async _prepareStorageForDownload(statusEl) {
+        try {
+            const [persistence, estimate] = await Promise.all([
+                requestPersistentStorage(),
+                getStorageEstimate(),
+            ]);
+
+            if (persistence.supported && !persistence.persisted) {
+                /* Not fatal — most engines only grant this to installed /
+                   high-engagement origins. Logged so a support conversation
+                   can tell "evicted" apart from "never saved". */
+                console.info('[Settings] Persistent storage not granted; downloads remain evictable');
             }
+
+            if (!estimate.supported || estimate.quota <= 0) return;
+
+            if (statusEl) {
+                statusEl.textContent = `Preparing download — ${formatBytes(estimate.freeBytes)} free`;
+            }
+            /* 50 MB free / 5 % of quota is the baseline the getStorageEstimate()
+               doc-block recommends for the offline-songbook flows. */
+            if (estimate.freeBytes < 50 * 1024 * 1024 || estimate.freeRatio < 0.05) {
+                this.app.showToast(
+                    `Only ${formatBytes(estimate.freeBytes)} of storage left — the download may not finish.`,
+                    'warning',
+                    6000
+                );
+            }
+        } catch (err) {
+            /* Never let a storage-advisory failure stop a download. */
+            console.warn('[Settings] Storage pre-flight skipped:', err && err.message);
         }
     }
 
@@ -1424,18 +1550,24 @@ export class Settings {
         btn.disabled = true;
         btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1" aria-hidden="true"></i> Saving...';
 
-        /* Use CACHE_SONG message — same protocol the router already uses */
+        /* Deliberate intent → ask for persistent storage first (#1597 RC6). */
+        requestPersistentStorage().catch(() => { /* best effort */ });
+
+        /* Use CACHE_SONG message — same protocol the router already uses, but
+           with `saved: true` so the SW files it in the untrimmed bucket
+           instead of the recency bucket the next song view would trim
+           (#1597 RC1). */
         const apiUrl = `/api?page=song&id=${encodeURIComponent(songId)}`;
         navigator.serviceWorker.controller.postMessage({
             type: 'CACHE_SONG',
             url: apiUrl,
+            saved: true,
         });
 
         /* Brief delay then check if cached (SW caches asynchronously) */
         setTimeout(async () => {
             try {
-                const cache = await caches.open('ihymns-recent-songs');
-                const match = await cache.match(apiUrl);
+                const match = await caches.match(apiUrl);
                 if (match) {
                     btn.classList.remove('btn-outline-secondary');
                     btn.classList.add('btn-success');
@@ -1460,9 +1592,13 @@ export class Settings {
     async checkSongCacheStatus(songId, btn) {
         if (!('caches' in window)) return;
         try {
-            const cache = await caches.open('ihymns-recent-songs');
             const apiUrl = `/api?page=song&id=${encodeURIComponent(songId)}`;
-            const match = await cache.match(apiUrl);
+            /* `caches.match()` with no cacheName searches EVERY bucket, so this
+               finds the song whether it was deliberately downloaded
+               (`ihymns-saved-songs`) or merely viewed (`ihymns-recent-songs`)
+               — #1597 RC1.
+               https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage/match */
+            const match = await caches.match(apiUrl);
             if (match) {
                 btn.classList.remove('btn-outline-secondary');
                 btn.classList.add('btn-success');
