@@ -128,11 +128,16 @@ export class Favorites {
            unions any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(() => {
+        this._syncTimer = setTimeout(async () => {
             const all = this.getAll();
             if (this._loadError) return; /* corrupt cache — never replace (review #2) */
             const favs = all.map(f => ({ id: f.id, tags: f.tags || [] }));
-            this.app.userAuth.syncFavorites(favs, 'replace');
+            /* #1649 — absorb rather than discard: the server may have kept
+               favourites this push didn't mention (another device's newer
+               additions, or the tail beyond the cap). The absorb helper merges
+               them back and advances the sync watermark. */
+            const res = await this.app.userAuth.syncFavorites(favs, 'replace');
+            this.app.userAuth._absorbFavoritesSync(res);
         }, 1500);
     }
 

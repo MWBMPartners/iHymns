@@ -60,6 +60,16 @@ export const STORAGE_RECENT_SONGBOOKS = 'ihymns_recent_songbooks';
 export const STORAGE_AUTH_TOKEN         = 'ihymns_auth_token';
 export const STORAGE_AUTH_USER          = 'ihymns_auth_user';
 
+/* Sync watermarks (#1649) — the DB-clock reading returned by the last
+   SUCCESSFULLY-ABSORBED sync response, echoed back to the server as `since`
+   on the next sync. The server refuses to delete rows written after it, which
+   is what stops a stale device wiping another device's newer additions.
+   Written ONLY by _absorbSetlistSync() / _absorbFavoritesSync() in
+   user-auth.js — advancing one of these without also absorbing the returned
+   list would mark unseen rows as "seen" and delete them a cycle later. */
+export const STORAGE_SETLISTS_SYNCED_AT  = 'ihymns_setlists_synced_at';
+export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
+
 /* Accessibility — Colour Vision Deficiency mode (#319) */
 export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
 

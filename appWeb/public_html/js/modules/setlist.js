@@ -123,10 +123,17 @@ export class SetList {
            any edits made meanwhile and then flushes this. */
         if (!this._syncReady) return;
         clearTimeout(this._syncTimer);
-        this._syncTimer = setTimeout(() => {
+        this._syncTimer = setTimeout(async () => {
             const all = this.getAll();
             if (this._loadError) return; /* corrupt cache — never replace (review #2) */
-            this.app.userAuth.syncSetlists(all, 'replace');
+            /* #1649 — absorb the response instead of discarding it. The server
+               may have kept rows this push didn't mention (another device's
+               newer additions, or the whole tail if we exceeded the cap), and
+               the absorb helper both merges them back in and advances the sync
+               watermark. Dropping the result on the floor left the local cache
+               permanently behind the server. */
+            const res = await this.app.userAuth.syncSetlists(all, 'replace');
+            this.app.userAuth._absorbSetlistSync(res);
         }, 1500);
     }
 
@@ -1639,7 +1646,21 @@ export class SetList {
            freshly-created or freshly-edited setlist could otherwise be shared as a
            snapshot. Best-effort: a sync failure just falls back to snapshot-only. */
         if (this.app?.userAuth?.isLoggedIn?.()) {
-            try { await this.app.userAuth.syncSetlists(this.getAll(), 'replace'); } catch (_e) {}
+            /* #1649 — this path used to send a HARDCODED 'replace', bypassing
+               the _syncReady gate that every other caller respects. Sharing a
+               setlist before the first-login reconcile had hydrated the cache
+               therefore pushed a possibly-empty local list as authoritative
+               truth and wiped the account's server-side setlists. Gate it: only
+               claim authority once a reconcile has actually run; otherwise
+               MERGE, which still creates the row the share link needs but can
+               never delete anything. */
+            try {
+                const res = await this.app.userAuth.syncSetlists(
+                    this.getAll(),
+                    this._syncReady ? 'replace' : 'merge'
+                );
+                this.app.userAuth._absorbSetlistSync(res);
+            } catch (_e) {}
         }
 
         const shareUrl = await this.generateShareLink(listId);
