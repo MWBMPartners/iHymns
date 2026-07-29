@@ -10350,7 +10350,42 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
-                /* Rate-limit: reject if this IP has ≥5 submissions in the last 24 h. */
+                /* Honour the documented kill-switch (#1641 item 2).
+                 *
+                 * ELI5: if an operator has turned song requests off, this is
+                 * where the web form has to stop accepting them.
+                 *
+                 * Detail: schema.sql seeds `song_requests_enabled` ("Allow users
+                 * to submit song requests") and `max_song_requests_per_day`, and
+                 * this handler — the ONLY path the web uses — read neither. Both
+                 * were honoured solely by the older `song_request` endpoint,
+                 * whose sole caller is the Apple app. So an operator who set
+                 * song_requests_enabled='0' stopped requests for iOS while
+                 * /request carried on accepting them. A documented control that
+                 * did not control, which is worse than no control: it invites a
+                 * false belief that submissions have stopped.
+                 *
+                 * Default '1' keeps today's behaviour on any install where the
+                 * row is absent — this must not become a way to accidentally
+                 * disable a working feature. */
+                if (getAppSetting('song_requests_enabled', '1') !== '1') {
+                    $respondErr('Song requests are currently closed. Please try again later.', 403);
+                    break;
+                }
+
+                /* Rate-limit: reject if this IP is at or over the configured
+                 * daily cap. The limit was hardcoded to 5 while
+                 * max_song_requests_per_day sat in tblAppSettings unread, so
+                 * raising or lowering it did nothing on the web.
+                 *
+                 * Clamped to a sane floor/ceiling: a malformed or hostile
+                 * setting ('0', '-1', 'abc', '999999') must not either lock
+                 * every user out or disable the limit entirely. max(1, …) keeps
+                 * the control meaningful; the ceiling bounds abuse. */
+                $dailyCap = (int) getAppSetting('max_song_requests_per_day', '5');
+                if ($dailyCap < 1)    { $dailyCap = 1; }
+                if ($dailyCap > 1000) { $dailyCap = 1000; }
+
                 $stmt = $db->prepare(
                     'SELECT COUNT(*) FROM tblSongRequests WHERE IpAddress = ? AND CreatedAt > (NOW() - INTERVAL 1 DAY)'
                 );
@@ -10358,7 +10393,7 @@ if ($action !== null) {
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
-                if ((int)($row[0] ?? 0) >= 5) {
+                if ((int)($row[0] ?? 0) >= $dailyCap) {
                     $respondErr('You have submitted several requests recently. Please try again tomorrow.', 429);
                     break;
                 }

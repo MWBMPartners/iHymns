@@ -71,6 +71,40 @@ export const ENTITLEMENTS = {
      * usage return. */
     view_ccli_report:     ['admin', 'global_admin'],
 
+    /* Catalogue + curation surfaces (#1641 item 3).
+     *
+     * These thirteen existed only in the PHP map. Nothing in JS asked for them
+     * yet, so the drift was LATENT — userHasEntitlement() returns false for an
+     * unknown key, so the first client-side affordance gated on one of them
+     * would simply never render, with no error and nothing in the console.
+     * Same silent-no-op class as #1581's event names: the code looks complete
+     * and the failure is an absence.
+     *
+     * Role lists copied verbatim from includes/entitlements.php — this map is a
+     * MIRROR, not a second opinion. tests/test-entitlement-parity.js now fails
+     * the build if the two diverge in either direction, so the mirror cannot
+     * silently rot again. */
+    manage_tags:                ['admin', 'global_admin'],
+    manage_works:               ['admin', 'global_admin'],
+    manage_languages:           ['admin', 'global_admin'],
+    manage_external_link_types: ['admin', 'global_admin'],
+    manage_duplicate_songs:     ['admin', 'global_admin'],
+
+    /* Operations + diagnostics */
+    view_activity_log:          ['admin', 'global_admin'],
+    view_diagnostics:           ['global_admin'],
+    manage_configuration:       ['global_admin'],
+    manage_notifications:       ['global_admin'],
+
+    /* API access (#1590 Phase D — self-serve requests, global admins approve) */
+    view_api_docs:              ['editor', 'admin', 'global_admin'],
+    request_api_keys:           ['admin', 'global_admin'],
+    manage_api_keys:            ['global_admin'],
+
+    /* Org self-service — deliberately open to plain users: someone must be able
+       to administer their OWN organisation without holding a site-wide role. */
+    manage_own_organisation:    ['user', 'editor', 'admin', 'global_admin'],
+
     /* Meta */
     manage_entitlements:  ['global_admin'],
 };
