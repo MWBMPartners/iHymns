@@ -1528,19 +1528,10 @@ CREATE TABLE IF NOT EXISTS tblSongKeys (
 
 
 -- ----------------------------------------------------------------------------
--- tblSongChords (#299)
--- Chord notation per component.
+-- tblSongChords (#299) — DROPPED (#1613). Zero PHP/JS references; chord notation now
+-- lives per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). See
+-- appWeb/.sql/migrate-drop-song-chords.php for the (self-guarded, confirm-gated) drop.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblSongChords (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    ComponentId     INT UNSIGNED    NOT NULL COMMENT 'FK to tblSongComponents.Id',
-    ChordsJson      JSON            NOT NULL COMMENT 'Array of {position, chord} objects per line',
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_Chords_Component
-        FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
