@@ -22,7 +22,11 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
-import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+/* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
+   on every same-origin request, replacing the old global fetch monkey-patch
+   this module's `lang=` param used to depend on being installed elsewhere. */
+import { apiFetch } from '../utils/api-client.js';
 
 export class SongOfTheDay {
     /**
@@ -69,13 +73,13 @@ export class SongOfTheDay {
     /**
      * Read the active language-filter subtag set the same way the
      * songbook-language-filter module does — single source of truth is
-     * localStorage['songbook-language-filter'] (a JSON array of lowercase
+     * localStorage[STORAGE_LANGUAGE_FILTER] (a JSON array of lowercase
      * primary subtags). Returns [] when "All" is selected (no filter),
      * and likewise on parse errors.
      */
     getActiveSubtags() {
         try {
-            const raw = localStorage.getItem('songbook-language-filter');
+            const raw = localStorage.getItem(STORAGE_LANGUAGE_FILTER);
             if (!raw) return [];
             const parsed = JSON.parse(raw);
             if (!Array.isArray(parsed)) return [];
@@ -107,9 +111,7 @@ export class SongOfTheDay {
             const subtags = this.getActiveSubtags();
             if (subtags.length) url.searchParams.set('lang', subtags.join(','));
 
-            const response = await fetch(url, {
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            });
+            const response = await apiFetch(url);
             if (!response.ok) throw new Error(`SoTD API: HTTP ${response.status}`);
             data = await response.json();
         } catch (error) {

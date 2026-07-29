@@ -28,6 +28,9 @@ import {
     EVT_OFFLINE_SETTINGS_CHANGED,
 } from '../constants.js';
 import { escapeHtml } from '../utils/html.js';
+/* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
+   on every same-origin request, replacing the old global fetch monkey-patch. */
+import { apiFetch } from '../utils/api-client.js';
 /* Offline-download behaviour is owned by offline-ui.js (CLAUDE.md rule #7) —
    Settings drives it, it does not re-implement it (#1597). */
 import {
@@ -196,11 +199,10 @@ export class Settings {
     async _pushSyncedSettings() {
         if (!this._isSyncEnabled()) return;
         try {
-            await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+            await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-Requested-With': 'XMLHttpRequest',
                     ...this.app.userAuth.authHeaders(),
                 },
                 body: JSON.stringify({ settings: this._collectSyncableSettings() }),
@@ -216,9 +218,8 @@ export class Settings {
         if (!this.app.userAuth?.isLoggedIn?.()) return;
         let payload;
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=user_settings`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_settings`, {
                 headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
                     ...this.app.userAuth.authHeaders(),
                 },
             });
@@ -1056,7 +1057,7 @@ export class Settings {
      */
     async getSongsData() {
         if (this._songsDataCache) return this._songsDataCache;
-        const response = await fetch(this.app.config.dataUrl);
+        const response = await apiFetch(this.app.config.dataUrl);
         if (!response.ok) throw new Error('Failed to fetch song index');
         const data = await response.json();
         this._songsDataCache = data.songs || [];
@@ -1765,11 +1766,10 @@ export class Settings {
                     msg.classList.remove('d-none');
                 };
                 try {
-                    const res = await fetch(`${this.app.config.apiUrl}?action=auth_update_avatar_service`, {
+                    const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_update_avatar_service`, {
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-Requested-With': 'XMLHttpRequest',
                             ...auth.authHeaders(),
                         },
                         body: JSON.stringify({ avatar_service: value === '' ? null : value }),

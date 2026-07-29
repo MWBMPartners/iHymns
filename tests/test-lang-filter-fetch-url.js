@@ -27,11 +27,17 @@
  * suite — see "the old implementation must fail" — so the guard cannot rot
  * into a test that passes no matter what.
  *
- * @see appWeb/public_html/js/modules/songbook-language-filter.js  requestUrlOf()
+ * #1031 — requestUrlOf() moved from songbook-language-filter.js (which no
+ * longer needs it, now that the fetch monkey-patch it served is deleted)
+ * into js/utils/api-client.js, the shared client that now attaches
+ * X-Preferred-Languages on every request. Same function, same guarantees —
+ * only the import path changed.
+ *
+ * @see appWeb/public_html/js/utils/api-client.js  requestUrlOf()
  * @see https://developer.mozilla.org/en-US/docs/Web/API/fetch
  */
 
-import { requestUrlOf } from '../appWeb/public_html/js/modules/songbook-language-filter.js';
+import { requestUrlOf } from '../appWeb/public_html/js/utils/api-client.js';
 
 let passed = 0;
 let failed = 0;

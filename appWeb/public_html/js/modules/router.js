@@ -16,6 +16,11 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
+/* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
+   on every same-origin request, replacing the old global fetch monkey-patch.
+   Page loads (loadPage) and the song/related/translation fetches below are
+   exactly the requests that need the language filter applied. */
+import { apiFetch } from '../utils/api-client.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -446,10 +451,9 @@ export class Router {
             this.app.transitions.startLoading();
 
             /* Fetch the page content from the API */
-            const response = await fetch(url, {
+            const response = await apiFetch(url, {
                 signal: this.abortController.signal,
                 headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'text/html',
                 }
             });
@@ -714,7 +718,7 @@ export class Router {
                     if (songbook) this.trackRecentSongbook(songbook);
 
                     /* Record song view on server for history/popular tracking (#287) */
-                    fetch(`${this.apiUrl}?action=song_view`, {
+                    apiFetch(`${this.apiUrl}?action=song_view`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ song_id: songId })
@@ -1150,7 +1154,7 @@ export class Router {
         if (!container || !itemsEl) return;
 
         try {
-            const resp = await fetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
+            const resp = await apiFetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
             if (!resp.ok) return;
             const data = await resp.json();
 
@@ -1200,7 +1204,7 @@ export class Router {
             url.searchParams.set('action', 'related_songs');
             url.searchParams.set('id', currentSongId);
             url.searchParams.set('limit', '5');
-            const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const response = await apiFetch(url);
             if (!response.ok) return; /* offline / error — non-critical, skip */
             const data = await response.json();
             const related = (data.related || []).slice(0, 5);

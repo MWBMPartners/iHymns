@@ -230,7 +230,9 @@ export async function apiFetch(input, init = {}) {
            "online" on a captive-portal Wi-Fi that answers nothing. The
            offline indicator listens for this (#1031 gives it sitewide reach;
            previously only search.js dispatched it). */
-        dispatch(EVT_FETCH_FAILED, { url, error: String(err) });
+        safely(() => window.dispatchEvent(new CustomEvent(EVT_FETCH_FAILED, {
+            detail: { url, error: String(err) },
+        })));
         throw err;
     }
 
@@ -240,15 +242,19 @@ export async function apiFetch(input, init = {}) {
        flip the offline indicator: the server is plainly reachable. Surfaced as
        its own signal so a caller can show the real reason. */
     if (response.status === 503) {
-        dispatch(EVT_FETCH_FAILED, {
-            url,
-            maintenance: true,
-            retryAfter: Number(response.headers.get('Retry-After')) || null,
-        });
+        safely(() => window.dispatchEvent(new CustomEvent(EVT_FETCH_FAILED, {
+            detail: {
+                url,
+                maintenance: true,
+                retryAfter: Number(response.headers.get('Retry-After')) || null,
+            },
+        })));
         return response;
     }
 
-    dispatch(EVT_FETCH_SUCCEEDED, { url, status: response.status });
+    safely(() => window.dispatchEvent(new CustomEvent(EVT_FETCH_SUCCEEDED, {
+        detail: { url, status: response.status },
+    })));
     return response;
 }
 
@@ -285,16 +291,22 @@ export async function apiFetchJson(input, init = {}) {
 }
 
 /**
- * Dispatch a window event, never letting a listener's throw reach the caller.
+ * Run a dispatch without letting a listener's throw reach the caller.
  *
- * @param {string} name Event name — always from constants.js (#1581).
- * @param {Object} detail
+ * A listener blowing up must never turn a successful request into a failed
+ * one — that is the #1593 lesson applied to the event side.
+ *
+ * WHY THE CALLERS INLINE `dispatchEvent(new CustomEvent(EVT_…))` rather than
+ * passing the name in here: `tests/test-event-names.js` proves every event
+ * name has a real dispatcher AND a real listener, and it does so by matching
+ * `dispatchEvent(new CustomEvent(<CONST>` textually (#1581). A helper taking
+ * the name as a parameter hides the constant from that scanner, and the guard
+ * correctly failed when this module tried it. Keeping the literal pattern at
+ * each call site is the small price of a guard that actually verifies
+ * something — do not "tidy" these back into a name-taking helper.
+ *
+ * @param {() => void} fn
  */
-function dispatch(name, detail) {
-    try {
-        window.dispatchEvent(new CustomEvent(name, { detail }));
-    } catch (_e) {
-        /* A listener throwing must not turn a successful request into a
-           failed one. */
-    }
+function safely(fn) {
+    try { fn(); } catch (_e) { /* listener threw — not our problem */ }
 }

@@ -53,6 +53,7 @@ import { Analytics } from './modules/analytics.js';
 import { Notifications } from './modules/notifications.js';
 import { bootErrorMonitor } from './modules/error-monitor.js';
 import { escapeHtml } from './utils/html.js';
+import { setAuthHeaderProvider } from './utils/api-client.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_DISCLAIMER_ACCEPTED,
@@ -277,6 +278,13 @@ class iHymnsApp {
 
             /* User authentication for cross-device sync */
             this.userAuth = new UserAuth(this);
+            /* #1031 — wire api-client.js's auth-header provider now that
+               userAuth exists. Injected rather than imported directly by
+               api-client.js, which would create user-auth → api-client →
+               user-auth import cycle (bundlers resolve those in load order,
+               i.e. sometimes `undefined` at call time, non-deterministically —
+               see api-client.js's own doc-comment on authHeaderProvider). */
+            setAuthHeaderProvider(() => this.userAuth.authHeaders());
             this.userAuth.initUserMenu();
             /* Background Sync for setlists + favourites (#338). Safe to
                call even if not signed in; the drain handlers short-
