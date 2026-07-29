@@ -2071,7 +2071,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             $akaList = array_map(static fn(array $a): string => (string)$a['Name'], $p['aliases'] ?? []);
                             $akaAttr = implode(' · ', $akaList);
                         ?>
-                            <tr data-roles="<?= htmlspecialchars($rolesCsv) ?>"
+                            <tr id="cp-person-<?= (int)$p['Id'] ?>"
+                                data-roles="<?= htmlspecialchars($rolesCsv) ?>"
                                 data-registry-only="<?= $isRegistryOnly ? '1' : '0' ?>"
                                 data-haystack="<?= htmlspecialchars($haystack) ?>"
                                 data-aka="<?= htmlspecialchars($akaAttr) ?>"
@@ -3027,6 +3028,55 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             if (deathIn && deathIdIn) {
                 window.iHymnsPlaceSearch.attach(deathIn, { hiddenIdInput: deathIdIn });
             }
+        })();
+    </script>
+
+    <script>
+        /* Honour a bare ?id= deep-link (#1641 item 1).
+         *
+         * ELI5: the public person page has an "Edit this person" button. It
+         * used to dump you on the full list with nothing selected. Now it takes
+         * you to that person's row.
+         *
+         * Detail: includes/pages/person.php:450 links to
+         * /manage/credit-people?id=<Id>, but this page read $_GET['id'] ONLY
+         * inside the action=view_songs AJAX branch — a bare ?id= was ignored by
+         * the server and by every script here. The admin landed on the whole
+         * list, unscrolled, with nothing highlighted, and no indication that
+         * the link had meant something.
+         *
+         * Identical shape to #1623 (a page emitting ?open= while the editor
+         * read ?song=). Two instances of one class is why #1672 proposes a
+         * standing check over every internal admin deep-link rather than
+         * fixing them one at a time — this fix closes the instance, not the
+         * class.
+         *
+         * Handled client-side rather than server-side deliberately: the row may
+         * be filtered out of view by the page's own role/classification
+         * filters, and only the client knows the current filter state. Scrolling
+         * also has to happen after layout, which the server cannot do. */
+        (function () {
+            const wanted = new URLSearchParams(window.location.search).get('id');
+            if (!wanted || !/^\d+$/.test(wanted)) { return; }
+
+            const row = document.getElementById('cp-person-' + wanted);
+            /* Silently doing nothing is what this fix exists to remove, so say
+               something when the id does not resolve — a deleted or merged
+               person is exactly when an admin needs to know why the deep-link
+               did not land. */
+            if (!row) {
+                console.warn('[credit-people] ?id=' + wanted + ' matched no row on this page.');
+                return;
+            }
+
+            row.scrollIntoView({
+                /* Respect the reduced-motion preference, as router.js:264 does
+                   — an option passed here is NOT overridden by the
+                   scroll-behavior CSS (#1646 item 3). */
+                behavior: document.body.classList.contains('reduce-motion') ? 'auto' : 'smooth',
+                block: 'center',
+            });
+            row.classList.add('table-active');
         })();
     </script>
 
