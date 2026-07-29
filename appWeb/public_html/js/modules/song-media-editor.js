@@ -34,6 +34,8 @@
  *   - POST /manage/editor/api?action=song_media_delete
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const API_BASE = '/manage/editor/api';
 
 const KIND_META = {
@@ -136,7 +138,7 @@ export function bootSongMediaEditor(root) {
         if (inflight) inflight.abort();
         inflight = new AbortController();
         const url = `${API_BASE}?action=song_media_list&song_id=${encodeURIComponent(songId)}`;
-        const res = await fetch(url, {
+        const res = await apiFetch(url, {
             credentials: 'same-origin',
             signal: inflight.signal,
         });
@@ -152,7 +154,7 @@ export function bootSongMediaEditor(root) {
         fd.append('kind', kind);
         fd.append('annotation', annotation || '');
         fd.append('file', file);
-        const res = await fetch(`${API_BASE}?action=song_media_upload`, {
+        const res = await apiFetch(`${API_BASE}?action=song_media_upload`, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
@@ -169,7 +171,7 @@ export function bootSongMediaEditor(root) {
         const fd = new FormData();
         fd.append('media_id', String(mediaId));
         fd.append('annotation', annotation || '');
-        const res = await fetch(`${API_BASE}?action=song_media_update`, {
+        const res = await apiFetch(`${API_BASE}?action=song_media_update`, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
@@ -185,7 +187,7 @@ export function bootSongMediaEditor(root) {
     async function apiDelete(mediaId) {
         const fd = new FormData();
         fd.append('media_id', String(mediaId));
-        const res = await fetch(`${API_BASE}?action=song_media_delete`, {
+        const res = await apiFetch(`${API_BASE}?action=song_media_delete`, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',
@@ -203,7 +205,7 @@ export function bootSongMediaEditor(root) {
         fd.append('song_id', songId);
         fd.append('kind', kind);
         ids.forEach(id => fd.append('ids[]', String(id)));
-        const res = await fetch(`${API_BASE}?action=song_media_reorder`, {
+        const res = await apiFetch(`${API_BASE}?action=song_media_reorder`, {
             method: 'POST',
             headers: { 'X-Requested-With': 'XMLHttpRequest' },
             credentials: 'same-origin',

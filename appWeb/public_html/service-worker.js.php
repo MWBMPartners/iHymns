@@ -112,21 +112,303 @@ $swCacheKey = $swCommitStamp !== ''
  * ========================================================================= */
 
 /**
- * Cache version — derived from the application version AND the deploy-time
- * commit date in infoAppVer.php. The commit date component means every
- * deploy (not just every semver bump) produces a new cache key, so clients
- * pick up fresh module scripts instead of being pinned to the bundle their
- * SW first installed. Old caches are purged on activation (#81).
+ * Cache LAYOUT revision (#1597).
+ *
+ * ELI5: a number we bump ourselves whenever we change which boxes the app
+ * keeps things in — separate from the app's own version number.
+ *
+ * Detail: `$swCacheKey` tracks infoAppVer.php (semver × commit date) and is
+ * owned by the deploy pipeline. This constant is owned by THIS file and is
+ * bumped whenever the SHAPE of the cache changes (a bucket is added, renamed,
+ * or its contents start meaning something different), so a layout change
+ * invalidates the versioned buckets even inside one deploy. Bumped 1 → 2 for
+ * the #1597 split of deliberate downloads out of the recency bucket.
  */
-const CACHE_VERSION = 'ihymns-v<?= $swCacheKey ?>';
+const SW_CACHE_REVISION = '2';
 
 /**
- * Songs cache (#105).
- * Separate bucket so it survives app version cache purges.
- * Stores recently viewed songs and bulk-downloaded songs for offline use.
+ * Cache version — derived from the application version AND the deploy-time
+ * commit date in infoAppVer.php, plus the layout revision above. The commit
+ * date component means every deploy (not just every semver bump) produces a
+ * new cache key, so clients pick up fresh module scripts instead of being
+ * pinned to the bundle their SW first installed. Old caches are purged on
+ * activation (#81).
+ */
+const CACHE_VERSION = 'ihymns-v<?= $swCacheKey ?>-r' + SW_CACHE_REVISION;
+
+/**
+ * Page-fragment cache (#1597 RC3).
+ *
+ * ELI5: the actual pages — the home screen, the songbook list, a songbook —
+ * so you can still move around the app with no signal, not just re-open a
+ * song you already had.
+ *
+ * Detail: before #1597 the SW offline-fell-back ONLY `page=song`, so home /
+ * songbooks / songbook / search all 503'd into the red "Failed to load page"
+ * card. Even a perfect download was unbrowsable — the only way back to a saved
+ * song was history or a bookmark.
+ *
+ * These fragments are all in api.php's `$_cacheablePages` list, i.e. they are
+ * already shared-cache-safe: no per-user data, no per-request nonce (CLAUDE.md
+ * rules #6 and #30). The bucket name carries the deploy key so ACTIVATE purges
+ * it on every deploy — page markup must never outlive the JS that hydrates it.
+ * Contrast RECENT_CACHE / SAVED_CACHE, which deliberately survive deploys
+ * because they hold the user's content, not our markup.
+ */
+const PAGES_CACHE = 'ihymns-pages-v<?= $swCacheKey ?>-r' + SW_CACHE_REVISION;
+
+/**
+ * Cap on the page-fragment bucket. `page=search&q=…` is one entry PER QUERY,
+ * so without a cap a chatty user grows this without bound inside one deploy
+ * window. The trim is confined to this bucket precisely so it can never reach
+ * the app shell in CACHE_VERSION (evicting `/js/app.js` to make room for a
+ * search result would be a spectacular own goal) — and `swPagesKeysToTrim()`
+ * pins the two entry points a user needs in order to browse offline at all.
+ */
+const PAGES_CACHE_LIMIT = 120;
+
+/**
+ * Which `/api?page=…` fragments are worth keeping for offline navigation.
+ * Deliberately small: these are the four routes that make a download
+ * BROWSABLE. Everything else is either per-user (settings, favourites) or a
+ * long tail nobody reaches without a network anyway.
+ */
+const OFFLINE_PAGE_FRAGMENTS = ['home', 'songbooks', 'songbook', 'search'];
+
+/**
+ * Recently-viewed songs cache (#105).
+ *
+ * ELI5: the last couple of thousand songs you happened to look at. The app
+ * tidies this up on its own — oldest out first.
+ *
+ * Detail: written by the `CACHE_SONG` message router.js posts on EVERY song
+ * view. Capped, and trimmed oldest-first on each write. Separate bucket from
+ * CACHE_VERSION so it survives app version purges.
  */
 const RECENT_CACHE = 'ihymns-recent-songs';
 const RECENT_CACHE_LIMIT = 2000;
+
+/**
+ * Deliberately-downloaded songs cache (#1597 RC1) — THE fix at the heart of
+ * this issue.
+ *
+ * ELI5: the songs you actually asked to download. They live in their own box
+ * that the automatic tidy-up is never allowed to open.
+ *
+ * Detail: before #1597 bulk downloads and incidental views shared ONE bucket
+ * and ONE 2000-entry budget. Download Mission Praise (3,517 songs), then open
+ * a single song — the `CACHE_SONG` handler's trim ran and deleted ~1,500
+ * entries of the download the UI had just reported as complete. The user found
+ * out on a plane.
+ *
+ * Bulk-saved and recently-viewed are DIFFERENT INTENTS and must not share a
+ * cap: a recency cache is a convenience the app may reclaim at will, whereas a
+ * download is a promise. So deliberate saves land here and NOTHING in the SW
+ * trims this bucket — it shrinks only when the user explicitly asks, via
+ * `EVICT_SONGBOOK`, or when the browser evicts the whole origin (which
+ * `navigator.storage.persist()` in offline-ui.js now argues against, RC6).
+ *
+ * Intent is carried on the message: `{ type: 'CACHE_SONG', url, saved: true }`
+ * from the Download buttons, and no flag at all from router.js's automatic
+ * view-caching — so the DEFAULT stays "recency", and router.js needs no change.
+ */
+const SAVED_CACHE = 'ihymns-saved-songs';
+
+/**
+ * Audio + sheet-music cache (#401).
+ *
+ * ELI5: the box the actual music files go in.
+ *
+ * Detail: the name is UNCHANGED from the pre-#1597 tree on purpose. Renaming
+ * it would make the very commit that fixes "every deploy wipes your audio"
+ * wipe everyone's audio one final time. It was never in the activate keep-list
+ * (#1597 RC2), so every SW activation — i.e. every deploy, and the version now
+ * bumps on every alpha push (#1596) — deleted the lot while the UI still
+ * showed the songbook as saved.
+ */
+const MEDIA_CACHE = 'iHymns-media-v1';
+
+/**
+ * One-time migration marker for the #1597 RECENT → SAVED split.
+ * Parked inside SAVED_CACHE so it is naturally scoped to the bucket it
+ * describes. Deliberately shaped as a path with NO `id` query parameter, so
+ * every consumer that reads a songbook out of a cache key
+ * (`swSongbookFromSongCacheUrl`) resolves it to null and skips it — it is
+ * never evicted, never counted towards a songbook's size, and never mistaken
+ * for a song.
+ */
+const SAVED_SPLIT_SENTINEL = '/__ihymns_sw__/saved-split-v1';
+
+/* =========================================================================
+ * CACHE POLICY HELPERS (#1597)
+ *
+ * Every one of these is PURE — same input, same output, no I/O, no globals
+ * beyond `self.location.origin`. That is deliberate: the cache policy is what
+ * silently destroyed users' downloads for months, and a pure function is a
+ * function `tests/test-offline-cache-policy.js` can call directly. That suite
+ * strips the PHP head off this file and evaluates the REAL body, so the test
+ * exercises the shipped decision logic rather than a paraphrase of it.
+ * ========================================================================= */
+
+/**
+ * Every cache bucket that must SURVIVE an activate.
+ *
+ * ELI5: the list of boxes the spring-clean is not allowed to throw away.
+ *
+ * Detail: the pre-#1597 activate handler inlined this as
+ * `name !== CACHE_VERSION && name !== RECENT_CACHE`, which silently omitted
+ * the audio bucket — so every deploy deleted every downloaded MP3 (RC2).
+ * Naming the list in one place means a future bucket is added HERE, once,
+ * rather than being forgotten in a boolean chain.
+ *
+ * @returns {string[]}
+ */
+function swKeptCacheNames() {
+    return [CACHE_VERSION, PAGES_CACHE, RECENT_CACHE, SAVED_CACHE, MEDIA_CACHE];
+}
+
+/**
+ * Should this cache bucket survive activation?
+ * @param {string} name Cache bucket name from caches.keys()
+ * @returns {boolean}
+ */
+function swIsCacheKept(name) {
+    return swKeptCacheNames().indexOf(name) !== -1;
+}
+
+/**
+ * Which bucket does a song page belong in?
+ *
+ * @param {boolean} [saved] True when the user DELIBERATELY asked to keep this
+ *   song (a Download button). Absent/false = incidental view from router.js,
+ *   which is the default precisely so router.js needs no change (#1597 RC1).
+ * @returns {string} Cache bucket name
+ */
+function swSongCacheName(saved) {
+    return saved === true ? SAVED_CACHE : RECENT_CACHE;
+}
+
+/**
+ * The oldest keys to delete so a bucket fits its cap.
+ *
+ * ELI5: when the box is too full, take the things that went in first back out.
+ *
+ * Detail: Cache.keys() resolves in INSERTION order, so `slice(0, excess)` is
+ * oldest-first. Callers must only ever hand this the keys of the RECENCY
+ * bucket — SAVED_CACHE is never trimmed, which is the whole point of RC1.
+ * https://developer.mozilla.org/en-US/docs/Web/API/Cache/keys
+ *
+ * @param {Array<Request|{url:string}>} keys
+ * @param {number} limit
+ * @returns {Array} The subset to delete (empty when under the cap)
+ */
+function swKeysToTrim(keys, limit) {
+    const excess = keys.length - limit;
+    return excess > 0 ? keys.slice(0, excess) : [];
+}
+
+/**
+ * The page fragments to delete so the fragment bucket fits its cap.
+ *
+ * Same oldest-first rule as swKeysToTrim(), except `page=home` and
+ * `page=songbooks` are PINNED: they are the two entry points a user needs in
+ * order to browse offline at all, and evicting them to make room for the 121st
+ * search result would re-create RC3 by the back door.
+ *
+ * @param {Array<Request|{url:string}>} keys
+ * @param {number} limit
+ * @returns {Array} The subset to delete
+ */
+function swPagesKeysToTrim(keys, limit) {
+    const excess = keys.length - limit;
+    if (excess <= 0) return [];
+    const pinned = ['home', 'songbooks'];
+    return keys
+        .filter(k => pinned.indexOf(swOfflinePageFragment(k && k.url ? k.url : k)) === -1)
+        .slice(0, excess);
+}
+
+/**
+ * Is this URL an `/api?page=…` fragment worth keeping for offline navigation?
+ *
+ * @param {string} rawUrl Absolute or root-relative URL
+ * @returns {string|null} The page name, or null when it isn't one
+ */
+function swOfflinePageFragment(rawUrl) {
+    try {
+        const u = new URL(rawUrl, self.location.origin);
+        if (!u.pathname.startsWith('/api')) return null;
+        const page = u.searchParams.get('page');
+        return OFFLINE_PAGE_FRAGMENTS.indexOf(page) !== -1 ? page : null;
+    } catch {
+        /* A caller can hand us anything the Cache API stored; never throw
+           from inside an activate/message handler over a malformed key. */
+        return null;
+    }
+}
+
+/**
+ * Songbook abbreviation for a cached SONG PAGE key (`/api?page=song&id=MP-1008`).
+ * @param {string} rawUrl
+ * @returns {string|null} Upper-cased abbreviation, or null
+ */
+function swSongbookFromSongCacheUrl(rawUrl) {
+    try {
+        const id = new URL(rawUrl, self.location.origin).searchParams.get('id') || '';
+        const dash = id.indexOf('-');
+        return dash > 0 ? id.slice(0, dash).toUpperCase() : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Songbook abbreviation for a cached MEDIA key (#1597 RC4).
+ *
+ * ELI5: works out which songbook an audio file belongs to by reading its
+ * filename, because that is where the answer actually is.
+ *
+ * Detail: the pre-#1597 code matched `/data/audio/<book>/…` SUBDIRECTORIES —
+ * a layout this app has never used. `api.php`'s `bulk_audio` emits the FLAT
+ * `/data/audio/<SongId>.mp3` (api.php:1517), sheet music is the flat
+ * `/data/music/<SongId>.pdf` (sheet-music.js:20), and the gated route is the
+ * flat `/audio/<SongId>.mp3?exp=…&sig=…` (#1358). So the directory regex
+ * matched NOTHING: "Remove from offline" silently removed no audio at all and
+ * the reported size was wrong, both while reporting success.
+ *
+ * The songbook is recovered from the SongId prefix instead, which CLAUDE.md
+ * rule #27 guarantees is `<letters>-<digits>`. The optional directory group is
+ * kept so a hypothetical nested layout still resolves.
+ *
+ * @param {string} rawUrl
+ * @returns {string|null} Upper-cased abbreviation, or null
+ */
+function swSongbookFromMediaUrl(rawUrl) {
+    let pathname;
+    try {
+        pathname = new URL(rawUrl, self.location.origin).pathname;
+    } catch {
+        return null;
+    }
+    /* /data/audio/… | /data/music/… | /audio/… , an OPTIONAL <dir>/, then
+       <basename>.<ext>. The query string is already gone — URL.pathname
+       excludes it — so a signed ?exp=…&sig=… URL matches like any other. */
+    const m = pathname.match(/^\/(?:data\/audio|data\/music|audio)\/(?:([^/]+)\/)?([^/]+)\.[A-Za-z0-9]+$/);
+    if (!m) return null;
+    /* Legacy nested layout: the directory IS the songbook. */
+    if (m[1]) return m[1].toUpperCase();
+    /* Flat layout: derive it from the SongId prefix. rawurlencode() leaves an
+       alphanumeric-plus-dash SongId untouched, but decode defensively so an
+       escaped key still resolves. */
+    let base = m[2];
+    try { base = decodeURIComponent(base); } catch { /* keep the raw form */ }
+    const dash = base.indexOf('-');
+    if (dash <= 0) return null;
+    /* Only <letters>-<digits> is a SongId (rule #27); anything else is some
+       other file that happens to contain a dash. */
+    if (!/^[A-Za-z0-9]+-\d+$/.test(base)) return null;
+    return base.slice(0, dash).toUpperCase();
+}
 
 /**
  * Assets to pre-cache during service worker installation.
@@ -143,7 +425,6 @@ const PRECACHE_ASSETS = [
     '/js/utils/components.js',
     '/js/utils/text.js',
     '/js/utils/song-existence.js',
-    '/js/utils/transpose.js',
     '/js/modules/router.js',
     '/js/modules/transitions.js',
     '/js/modules/settings.js',
@@ -326,7 +607,35 @@ self.addEventListener('install', (event) => {
                     )
                 );
 
-                return Promise.all([localPromise, cdnPromise, vendorPromise, bestEffortPromise]);
+                /*
+                 * Page fragments (#1597 RC3) — best effort, into their own
+                 * versioned bucket.
+                 *
+                 * ELI5: grab the home screen and the songbook list up front so
+                 * a freshly-installed app still works if you go offline before
+                 * you have browsed anywhere.
+                 *
+                 * Detail: without this, a user who installs the PWA, downloads
+                 * a songbook from Settings and then boards a plane has never
+                 * fetched `/api?page=home` — so the shell loads and the first
+                 * fragment request 503s. Failures here must not block install,
+                 * same reasoning as the slim index above.
+                 */
+                const pagesPromise = caches.open(PAGES_CACHE).then(pagesCache =>
+                    Promise.allSettled(
+                        ['/api?page=home', '/api?page=songbooks'].map(path =>
+                            fetch(path)
+                                .then(resp => {
+                                    if (resp.ok) return pagesCache.put(path, resp);
+                                })
+                                .catch(() => console.warn('[SW] Page precache skipped:', path))
+                        )
+                    )
+                ).catch(() => { /* storage unavailable — nothing to do */ });
+
+                return Promise.all([
+                    localPromise, cdnPromise, vendorPromise, bestEffortPromise, pagesPromise,
+                ]);
             })
             .then(() => {
                 /*
@@ -363,16 +672,70 @@ self.addEventListener('install', (event) => {
  * ACTIVATE EVENT — Clean up old caches
  * ========================================================================= */
 
+/**
+ * One-time rescue of downloads made BEFORE the #1597 RECENT/SAVED split.
+ *
+ * ELI5: songs you downloaded with the old app are sitting in the box that gets
+ * tidied up. Move them into the safe box, once, so the fix doesn't arrive too
+ * late to help you.
+ *
+ * Detail: pre-#1597, bulk downloads went into RECENT_CACHE alongside
+ * incidental views, so simply shipping the split would leave every existing
+ * download still exposed to the trim until the user happened to re-download.
+ * We can tell the two apart exactly: the bulk handler has always stamped its
+ * synthesised responses with `X-Bulk-Cached: true`, and the Cache API stores
+ * response headers verbatim. Anything carrying that header was a deliberate
+ * download; anything without it was a view.
+ *
+ * Guarded by a sentinel so the scan (up to RECENT_CACHE_LIMIT `match()` calls)
+ * runs ONCE per device rather than on every deploy. Fully best-effort — a
+ * failure here must never stop the SW activating.
+ * https://developer.mozilla.org/en-US/docs/Web/API/Cache/put
+ *
+ * @returns {Promise<number>} How many entries were promoted
+ */
+async function swMigrateLegacyBulkDownloads() {
+    let moved = 0;
+    try {
+        const saved = await caches.open(SAVED_CACHE);
+        if (await saved.match(SAVED_SPLIT_SENTINEL)) return 0;
+
+        const recent = await caches.open(RECENT_CACHE);
+        for (const req of await recent.keys()) {
+            const resp = await recent.match(req);
+            if (!resp || resp.headers.get('X-Bulk-Cached') !== 'true') continue;
+            await saved.put(req, resp.clone());
+            await recent.delete(req);
+            moved++;
+        }
+
+        await saved.put(SAVED_SPLIT_SENTINEL, new Response('', {
+            status: 200,
+            headers: { 'Content-Type': 'text/plain' },
+        }));
+        if (moved > 0) {
+            console.log('[SW] Promoted', moved, 'legacy bulk-downloaded songs to', SAVED_CACHE);
+        }
+    } catch (error) {
+        console.warn('[SW] Legacy download migration skipped:', error && error.message);
+    }
+    return moved;
+}
+
 self.addEventListener('activate', (event) => {
     console.log('[SW] Activating service worker:', CACHE_VERSION);
 
     event.waitUntil(
         caches.keys()
             .then(cacheNames => {
-                /* Delete any caches that don't match the current version */
+                /* Delete every bucket that isn't on the keep-list (#1597 RC2).
+                   The keep-list lives in swKeptCacheNames() rather than being
+                   inlined here, because when it WAS inlined it quietly omitted
+                   the audio bucket and every deploy wiped users' downloaded
+                   MP3s while the UI still showed the songbook as saved. */
                 return Promise.all(
                     cacheNames
-                        .filter(name => name !== CACHE_VERSION && name !== RECENT_CACHE)
+                        .filter(name => !swIsCacheKept(name))
                         .map(name => {
                             console.log('[SW] Deleting old cache:', name);
                             return caches.delete(name);
@@ -380,9 +743,12 @@ self.addEventListener('activate', (event) => {
                 );
             })
             .then(() => {
-                /* Take control of all open tabs immediately */
+                /* Take control of all open tabs immediately. Done BEFORE the
+                   migration below so control transfer is never delayed by a
+                   one-time scan of up to 2000 cache entries. */
                 return self.clients.claim();
             })
+            .then(() => swMigrateLegacyBulkDownloads())
     );
 });
 
@@ -440,10 +806,14 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    /* --- API requests: network-first with cache for song pages (#105, #131) --- */
+    /* --- API requests: network-first with cache for song pages (#105, #131)
+           and for the navigable page fragments (#1597 RC3) --- */
     if (url.pathname.startsWith('/api')) {
         const isSongPage = url.searchParams.get('page') === 'song';
         const songId = url.searchParams.get('id');
+        /* Non-null for home / songbooks / songbook / search — the fragments
+           that make an offline download actually browsable. */
+        const offlinePage = swOfflinePageFragment(event.request.url);
         /* `cache: 'no-store'` bypasses the browser HTTP cache so the
          * SW's network-first guarantee actually delivers a fresh
          * server response — see networkFirstWithCache() for the full
@@ -453,10 +823,34 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(
             fetch(event.request, { cache: 'no-store' })
                 .then(async (response) => {
-                    /* Cache song page API responses for offline access */
+                    /* Page fragments (#1597 RC3) — refresh the versioned
+                       fragment bucket on every online fetch, then keep it
+                       under its cap. Nothing here can reach the app shell in
+                       CACHE_VERSION or the user's songs in SAVED_CACHE. */
+                    if (offlinePage && response.ok) {
+                        try {
+                            const pages = await caches.open(PAGES_CACHE);
+                            await pages.put(event.request, response.clone());
+                            const doomed = swPagesKeysToTrim(await pages.keys(), PAGES_CACHE_LIMIT);
+                            await Promise.all(doomed.map(k => pages.delete(k)));
+                        } catch (error) {
+                            /* Storage full / private mode — the page still
+                               renders; only the offline copy is lost. */
+                            console.warn('[SW] Page fragment cache skipped:', error && error.message);
+                        }
+                    }
+
+                    /* Cache song page API responses for offline access.
+                       #1597 RC1 — a song the user DELIBERATELY downloaded
+                       lives in SAVED_CACHE, so update detection has to look
+                       there first; otherwise a saved song would silently stop
+                       receiving updates and would also get a duplicate copy
+                       written into the recency bucket. */
                     if (isSongPage && response.ok) {
-                        const cache = await caches.open(RECENT_CACHE);
-                        const existing = await cache.match(event.request);
+                        const saved = await caches.open(SAVED_CACHE);
+                        const inSaved = await saved.match(event.request);
+                        const cache = inSaved ? saved : await caches.open(RECENT_CACHE);
+                        const existing = inSaved || await cache.match(event.request);
 
                         if (existing) {
                             /* Compare content to detect updates (#131) */
@@ -495,8 +889,18 @@ self.addEventListener('fetch', (event) => {
                     return response;
                 })
                 .catch(() => {
-                    /* Offline: try recently viewed cache for song pages */
-                    if (isSongPage) {
+                    /* Offline: serve the cached copy for anything we cache.
+                       `caches.match()` with no `cacheName` searches EVERY
+                       bucket, so this finds a song in SAVED_CACHE or
+                       RECENT_CACHE and a fragment in PAGES_CACHE without the
+                       SW having to guess which one it landed in.
+                       https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage/match
+
+                       #1597 RC3 — `offlinePage` is what stops home / songbooks
+                       / songbook / search falling through to the 503 below and
+                       rendering the red "Failed to load page" card, which is
+                       what made even a complete download unbrowsable. */
+                    if (isSongPage || offlinePage) {
                         return caches.match(event.request).then(cached => {
                             if (cached) return cached;
                             return new Response(
@@ -587,7 +991,7 @@ self.addEventListener('fetch', (event) => {
             || url.pathname.startsWith('/data/music/')
             || url.pathname.startsWith('/audio/'))) {
         event.respondWith(
-            caches.open('iHymns-media-v1').then(async (cache) => {
+            caches.open(MEDIA_CACHE).then(async (cache) => {
                 const hit = await cache.match(event.request);
                 if (hit) return hit;
                 try {
@@ -824,6 +1228,44 @@ self.addEventListener('message', (event) => {
     }
 
     /*
+     * Purge per-user cached content on logout (#1388).
+     *
+     * ELI5: when you sign out on a shared device, the pages you looked at
+     * shouldn't still be sitting in the browser's offline box for the next
+     * person.
+     *
+     * Detail: RECENT_CACHE and PAGES_CACHE are keyed by URL ALONE — they carry
+     * no notion of who fetched the entry. `UserAuth.logout()` clears the token
+     * and the credential store, but the Cache Storage API is invisible to it
+     * (a service worker owns those buckets, and a page cannot reach into them
+     * on the SW's behalf). So before this, a signed-out or next user on the
+     * same device could still be served a cached fragment fetched under the
+     * previous session — and once content gating is enabled (#1590), that
+     * fragment may hold lyrics their own tier is not entitled to.
+     *
+     * Deliberately NOT cleared: CACHE_VERSION (the app shell — identical for
+     * everyone, expensive to refetch) and MEDIA_CACHE / SAVED_CACHE (songs the
+     * user DELIBERATELY saved for offline use; wiping those on logout would
+     * silently destroy a deliberate download, and they are re-gated on next
+     * fetch anyway).
+     *
+     * Fire-and-forget: logout must never block on cache eviction.
+     * https://developer.mozilla.org/en-US/docs/Web/API/CacheStorage/delete
+     */
+    if (event.data.type === 'CLEAR_USER_CACHES') {
+        event.waitUntil((async () => {
+            for (const name of [RECENT_CACHE, PAGES_CACHE]) {
+                try {
+                    await caches.delete(name);
+                } catch (err) {
+                    console.warn('[SW] CLEAR_USER_CACHES failed for', name, err);
+                }
+            }
+            console.log('[SW] Per-user caches cleared on logout');
+        })());
+    }
+
+    /*
      * Download songs for offline use via bulk API (#359 rewrite).
      *
      * Instead of fetching each song individually (3,612 requests!),
@@ -859,7 +1301,12 @@ self.addEventListener('message', (event) => {
             const total = totalSongs;
 
             try {
-                const cache = await caches.open(RECENT_CACHE);
+                /* #1597 RC1 — a bulk download is the definition of a
+                   deliberate save, so it goes into SAVED_CACHE, which nothing
+                   in this SW ever trims. Before the split it went into the
+                   capped recency bucket and the next single song view deleted
+                   the overflow. */
+                const cache = await caches.open(SAVED_CACHE);
 
                 for (const songbook of songbooks) {
                     notifyClients({
@@ -901,6 +1348,28 @@ self.addEventListener('message', (event) => {
                                 failed++;
                             }
                         }
+
+                        /* Drop this songbook's entries from the recency bucket
+                           now that SAVED_CACHE holds a fresh copy of the whole
+                           book (#1597 RC1).
+                           WHY IT MATTERS: `caches.match()` searches buckets in
+                           CREATION order and returns the FIRST hit, and
+                           RECENT_CACHE predates SAVED_CACHE on any upgraded
+                           device — so a leftover recency copy would SHADOW the
+                           download the user just made and serve them staler
+                           HTML offline. One keys() scan per songbook rather
+                           than a delete() per song. */
+                        try {
+                            const recent = await caches.open(RECENT_CACHE);
+                            const book = songbook.toUpperCase();
+                            for (const req of await recent.keys()) {
+                                if (swSongbookFromSongCacheUrl(req.url) === book) {
+                                    await recent.delete(req);
+                                }
+                            }
+                        } catch (e) {
+                            /* Non-fatal: worst case a duplicate lingers. */
+                        }
                     } catch (e) {
                         /* Network error for this songbook — surface it so
                            the UI moves on rather than hanging silently. */
@@ -925,6 +1394,12 @@ self.addEventListener('message', (event) => {
                     type: 'CACHE_ALL_SONGS_PROGRESS',
                     completed, failed, total,
                     error: (e && e.message) ? e.message : 'Cache unavailable',
+                    /* #1597 RC5 — `done` is what releases the client's
+                       progress bar. Without it this branch left the bar
+                       spinning at whatever percentage it had reached, forever,
+                       because settings.js only completed on
+                       completed + failed >= total. */
+                    done: true,
                 });
                 return;
             }
@@ -942,7 +1417,9 @@ self.addEventListener('message', (event) => {
     async function _downloadSongsLegacy(songIds) {
         const total = songIds.length;
         let completed = 0, failed = 0;
-        const cache = await caches.open(RECENT_CACHE);
+        /* Deliberate download → the untrimmed bucket, same as the bulk path
+           above (#1597 RC1). */
+        const cache = await caches.open(SAVED_CACHE);
         const BATCH = 20;
         for (let i = 0; i < songIds.length; i += BATCH) {
             const batch = songIds.slice(i, i + BATCH);
@@ -955,7 +1432,9 @@ self.addEventListener('message', (event) => {
             }));
             notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
         }
-        notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total });
+        /* Terminal message carries `done` so the client releases its progress
+           bar even if some songs failed (#1597 RC5). */
+        notifyClients({ type: 'CACHE_ALL_SONGS_PROGRESS', completed, failed, total, done: true });
     }
 
     /* Set auto-update preference (#132) */
@@ -971,8 +1450,16 @@ self.addEventListener('message', (event) => {
             if (cacheUrl.origin !== self.location.origin) return;
         } catch { return; }
 
-        caches.open(RECENT_CACHE).then(async (cache) => {
+        (async () => {
             try {
+                /* Refresh the copy IN PLACE — a song the user downloaded must
+                   stay in SAVED_CACHE after an update, or accepting an update
+                   would quietly demote it back into the trimmable recency
+                   bucket and re-create #1597 RC1 one song at a time. */
+                const saved = await caches.open(SAVED_CACHE);
+                const cache = (await saved.match(event.data.url))
+                    ? saved
+                    : await caches.open(RECENT_CACHE);
                 const response = await fetch(event.data.url);
                 if (response.ok) {
                     await cache.put(event.data.url, response);
@@ -985,10 +1472,10 @@ self.addEventListener('message', (event) => {
             } catch (error) {
                 console.warn('[SW] Failed to update cached song:', error.message);
             }
-        });
+        })();
     }
 
-    /* Pre-cache a batch of audio URLs into iHymns-media-v1 (#401).
+    /* Pre-cache a batch of audio URLs into MEDIA_CACHE (#401).
      * Settings page sends this when the "Include audio in offline
      * downloads" toggle is on — once per songbook covered by the
      * current download, after CACHE_ALL_SONGS has been dispatched.
@@ -998,7 +1485,7 @@ self.addEventListener('message', (event) => {
         const urls = event.data.urls;
         const songbook = event.data.songbook || '';
 
-        caches.open('iHymns-media-v1').then(async (cache) => {
+        caches.open(MEDIA_CACHE).then(async (cache) => {
             let completed = 0, failed = 0;
             const total = urls.length;
             const BATCH = 6;
@@ -1028,36 +1515,39 @@ self.addEventListener('message', (event) => {
         });
     }
 
-    /* Evict every cached entry belonging to one songbook (#401).
-     * Removes matching entries from RECENT_CACHE (song HTML pages
-     * whose id starts with <songbook>-) and iHymns-media-v1 (audio +
-     * sheet music under /data/audio/<songbook>/ and /data/music/<songbook>/).
+    /* Evict every cached entry belonging to one songbook (#401, #1597 RC4).
+     * Removes matching entries from BOTH song buckets (RECENT_CACHE and
+     * SAVED_CACHE — a "Remove from offline" that left the deliberate download
+     * behind would be a lie) and from MEDIA_CACHE.
+     *
+     * #1597 RC4 — the media sweep previously matched
+     * `/data/audio/<songbook>/` SUBDIRECTORIES, a layout this app has never
+     * emitted; the real URLs are flat `/data/audio/<SongId>.mp3`. So it
+     * matched nothing, removed nothing, and reported success. Both sweeps now
+     * go through the shared `swSongbookFrom*Url()` helpers, which are what
+     * `tests/test-offline-cache-policy.js` pins.
      * Message: { type: 'EVICT_SONGBOOK', songbook: 'XX' }
      */
     if (event.data.type === 'EVICT_SONGBOOK' && typeof event.data.songbook === 'string') {
         const songbook = event.data.songbook;
         if (!/^[A-Za-z0-9_-]{1,16}$/.test(songbook)) return;
-        const prefix = songbook.toUpperCase() + '-';
+        const book = songbook.toUpperCase();
         (async () => {
             let removed = 0;
-            try {
-                const recent = await caches.open(RECENT_CACHE);
-                const keys = await recent.keys();
-                for (const req of keys) {
-                    const id = new URL(req.url).searchParams.get('id') || '';
-                    if (id.toUpperCase().startsWith(prefix)) {
-                        if (await recent.delete(req)) removed++;
+            for (const cacheName of [RECENT_CACHE, SAVED_CACHE]) {
+                try {
+                    const songs = await caches.open(cacheName);
+                    for (const req of await songs.keys()) {
+                        if (swSongbookFromSongCacheUrl(req.url) === book) {
+                            if (await songs.delete(req)) removed++;
+                        }
                     }
-                }
-            } catch {}
+                } catch {}
+            }
             try {
-                const media = await caches.open('iHymns-media-v1');
-                const keys = await media.keys();
-                const lcSongbook = songbook.toLowerCase();
-                for (const req of keys) {
-                    const path = new URL(req.url).pathname.toLowerCase();
-                    if (path.includes(`/data/audio/${lcSongbook}/`)
-                        || path.includes(`/data/music/${lcSongbook}/`)) {
+                const media = await caches.open(MEDIA_CACHE);
+                for (const req of await media.keys()) {
+                    if (swSongbookFromMediaUrl(req.url) === book) {
                         if (await media.delete(req)) removed++;
                     }
                 }
@@ -1079,24 +1569,28 @@ self.addEventListener('message', (event) => {
             const addFor = (songbook, bytes) => {
                 sizes[songbook] = (sizes[songbook] || 0) + bytes;
             };
+            /* Both song buckets — a download in SAVED_CACHE is exactly the
+               thing the user wants a size for (#1597 RC1). */
+            for (const cacheName of [RECENT_CACHE, SAVED_CACHE]) {
+                try {
+                    const songs = await caches.open(cacheName);
+                    for (const req of await songs.keys()) {
+                        const songbook = swSongbookFromSongCacheUrl(req.url);
+                        if (!songbook) continue;   /* incl. the migration sentinel */
+                        const resp = await songs.match(req);
+                        const len = Number(resp?.headers.get('content-length')) || 4096;
+                        addFor(songbook, len);
+                    }
+                } catch {}
+            }
             try {
-                const recent = await caches.open(RECENT_CACHE);
-                for (const req of await recent.keys()) {
-                    const id = new URL(req.url).searchParams.get('id') || '';
-                    const dash = id.indexOf('-');
-                    if (dash <= 0) continue;
-                    const songbook = id.slice(0, dash).toUpperCase();
-                    const resp = await recent.match(req);
-                    const len = Number(resp?.headers.get('content-length')) || 4096;
-                    addFor(songbook, len);
-                }
-            } catch {}
-            try {
-                const media = await caches.open('iHymns-media-v1');
+                /* #1597 RC4 — the flat `/data/audio/<SongId>.mp3` shape the
+                   app actually emits. The old subdirectory regex matched no
+                   real URL, so every songbook's audio counted as 0 bytes. */
+                const media = await caches.open(MEDIA_CACHE);
                 for (const req of await media.keys()) {
-                    const m = new URL(req.url).pathname.match(/^\/data\/(?:audio|music)\/([^\/]+)\//i);
-                    if (!m) continue;
-                    const songbook = m[1].toUpperCase();
+                    const songbook = swSongbookFromMediaUrl(req.url);
+                    if (!songbook) continue;
                     const resp = await media.match(req);
                     const len = Number(resp?.headers.get('content-length')) || 262144;
                     addFor(songbook, len);
@@ -1106,7 +1600,20 @@ self.addEventListener('message', (event) => {
         })();
     }
 
-    /* Proactively cache a recently viewed song page (#105) */
+    /* Cache a song page (#105, #1597 RC1).
+     *
+     * TWO CALLERS, TWO INTENTS:
+     *   - router.js posts this on EVERY song view with no `saved` flag. That
+     *     is a recency hint: it lands in the capped RECENT_CACHE and the trim
+     *     below applies.
+     *   - the Download buttons (offline-ui.js, settings.js) post
+     *     `saved: true`. That is a promise: it lands in SAVED_CACHE, which
+     *     NOTHING here trims.
+     *
+     * Conflating the two is what made a 3,517-song download evaporate the
+     * moment its owner opened a single song. The flag defaults to falsy, so
+     * router.js keeps its existing behaviour unchanged.
+     */
     if (event.data.type === 'CACHE_SONG' && event.data.url) {
         /* Validate URL origin to prevent cache poisoning */
         try {
@@ -1114,18 +1621,31 @@ self.addEventListener('message', (event) => {
             if (cacheUrl.origin !== self.location.origin) return;
         } catch { return; }
 
-        caches.open(RECENT_CACHE).then(async (cache) => {
+        const isDeliberate = event.data.saved === true;
+        const targetName = swSongCacheName(isDeliberate);
+
+        caches.open(targetName).then(async (cache) => {
             try {
                 const response = await fetch(event.data.url);
-                if (response.ok) {
-                    await cache.put(event.data.url, response);
-                    /* Evict oldest entries if over limit */
-                    const keys = await cache.keys();
-                    if (keys.length > RECENT_CACHE_LIMIT) {
-                        const toDelete = keys.slice(0, keys.length - RECENT_CACHE_LIMIT);
-                        await Promise.all(toDelete.map(k => cache.delete(k)));
-                    }
+                if (!response.ok) return;
+                await cache.put(event.data.url, response);
+
+                if (isDeliberate) {
+                    /* Drop any recency duplicate so the untrimmed copy is the
+                       one `caches.match()` finds. See the bulk path above for
+                       why creation order makes this matter. */
+                    try {
+                        const recent = await caches.open(RECENT_CACHE);
+                        await recent.delete(event.data.url);
+                    } catch { /* non-fatal */ }
+                    /* NO TRIM. This bucket shrinks only on an explicit
+                       EVICT_SONGBOOK from the user. */
+                    return;
                 }
+
+                /* Recency bucket only: evict the oldest entries over the cap. */
+                const doomed = swKeysToTrim(await cache.keys(), RECENT_CACHE_LIMIT);
+                await Promise.all(doomed.map(k => cache.delete(k)));
             } catch (error) {
                 console.warn('[SW] Failed to cache song:', event.data.url, error.message);
             }

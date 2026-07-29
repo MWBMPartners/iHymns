@@ -142,8 +142,21 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
 
-    <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch. -->
-    <script src="/js/modules/place-search.js"></script>
+    <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
+         #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
+         (editor/index.php, organisations.php, songbooks.php, credit-people.php, venues.php,
+         works.php all do). This one script tag was the odd one out with no `?v=` at all —
+         a real staleness vector: an admin with this file already cached would silently keep
+         running a stale place-search.js across deploys instead of picking up the fix. -->
+    <script src="/js/modules/place-search.js?v=<?= filemtime(dirname(__DIR__, 2) . '/js/modules/place-search.js') ?>"></script>
+
+    <!-- #1594 part 2 — shared combobox keyboard + ARIA helper (window.iHymnsComboboxA11y),
+         consumed by editor/v2/tags-tab.js's Tab-add-tag typeahead. This page has no
+         head-libs.php (bespoke <head>, see editor/index.php's identical note), so it's
+         loaded explicitly here rather than relying solely on tags-tab.js's own
+         side-effect `import` (belt-and-braces: keeps the global available even if a
+         future consumer on this page wants it before that module executes). -->
+    <script src="/js/modules/combobox-a11y.js?v=<?= filemtime(dirname(__DIR__, 2) . '/js/modules/combobox-a11y.js') ?>"></script>
 
     <!-- Export serializers (reused by export.js). propresenter-export.js first (format-export reuses its ZIP writer).
          #1567 — protobuf.min.js loaded FIRST: propresenter-export.js's ProPresenter

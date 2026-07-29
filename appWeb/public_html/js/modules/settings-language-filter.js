@@ -15,9 +15,13 @@
 
 /* #1581 — shared event-name constant; see songbook-language-filter.js for
    the case-sensitivity bug this registry exists to prevent. */
-import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+/* #1031 — shared localStorage-key constant; see constants.js's own note on
+   STORAGE_LANGUAGE_FILTER for why this raw key name predates the ihymns_
+   prefix convention and must not be renamed. */
+import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
-const STORAGE_KEY = 'songbook-language-filter';
+const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
 function loadSavedSubtags() {
     try {
@@ -41,7 +45,7 @@ function saveToAccount(subtags) {
     let token = null;
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (!token) return Promise.resolve();
-    return fetch('/api?action=user_preferred_languages_save', {
+    return apiFetch('/api?action=user_preferred_languages_save', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -68,7 +72,7 @@ function saveToAccount(subtags) {
 async function buildPicker(host) {
     let available = [];
     try {
-        const resp = await fetch('/api?action=catalogue_language_subtags');
+        const resp = await apiFetch('/api?action=catalogue_language_subtags');
         if (resp.ok) {
             const j = await resp.json();
             available = Array.isArray(j.subtags) ? j.subtags.slice() : [];
@@ -120,7 +124,10 @@ async function buildPicker(host) {
     function commit() {
         const subtags = readUi();
         saveSubtags(subtags);
-        window.__iHymnsPreferredLanguages = subtags.join(',');
+        /* No `window.__iHymnsPreferredLanguages` write here any more (#1031).
+           That global existed only to feed the old window.fetch override; the
+           shared client reads STORAGE_LANGUAGE_FILTER from localStorage on
+           every request, so saveSubtags() above IS the publication step. */
         saveToAccount(subtags);
         /* Notify other modules on the page that the filter changed
            so the songbook grid (if visible) re-applies. */

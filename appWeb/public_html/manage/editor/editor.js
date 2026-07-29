@@ -2735,20 +2735,39 @@ function bindTagSearchInput() {
     input._tagsWired = true;
 
     var debounceTimer = null;
+    /* #1594 part 2 — activeIdx now DOES something (previously declared,
+       reset on every render, but never read: arrow keys were dead). -1 =
+       nothing highlighted, which is the state right after a fresh search
+       resolves — deliberately NOT auto-highlighting row 0, so that
+       pressing Enter without ever touching an arrow key keeps doing
+       exactly what it always did (create/add the typed text verbatim,
+       see the Enter fallback at the bottom of the keydown listener). */
     var activeIdx = -1;
     var currentSuggestions = [];
+    var currentQuery = '';
+
+    function isPanelOpen() { return !panel.classList.contains('d-none'); }
+    function panelOptionEls() { return Array.prototype.slice.call(panel.querySelectorAll('.list-group-item')); }
 
     function closePanel() {
         panel.classList.add('d-none');
         panel.innerHTML = '';
         activeIdx = -1;
         currentSuggestions = [];
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({ input: input, panel: panel, items: [], activeIndex: -1, idPrefix: 'song-tag-suggestions', expanded: false });
+        }
     }
 
-    function renderSuggestions(suggestions, q) {
+    /* Re-paint `currentSuggestions` (+ the "create new tag" row, when
+       applicable) at the CURRENT `activeIdx`. This is the `render`
+       callback handleComboboxKeydown calls on every arrow/Home/End
+       press — it must NOT reset activeIdx, unlike setSuggestions()
+       below which is only called for a genuinely NEW result set. */
+    function renderPanel() {
         panel.innerHTML = '';
-        currentSuggestions = suggestions;
-        activeIdx = -1;
+        var q = currentQuery;
+        var suggestions = currentSuggestions;
 
         /* "Create new tag" affordance when the query doesn't exactly
            match an existing name. */
@@ -2794,13 +2813,31 @@ function bindTagSearchInput() {
         });
 
         panel.classList.toggle('d-none', panel.children.length === 0);
+
+        var items = panelOptionEls();
+        items.forEach(function (el, i) { el.classList.toggle('active', i === activeIdx); });
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({
+                input: input, panel: panel, items: items,
+                activeIndex: activeIdx, idPrefix: 'song-tag-suggestions',
+            });
+        }
+    }
+
+    /* NEW result set — reset the highlight (see the activeIdx
+       declaration comment above for why that's -1, not 0). */
+    function setSuggestions(suggestions, q) {
+        currentSuggestions = suggestions;
+        currentQuery = q;
+        activeIdx = -1;
+        renderPanel();
     }
 
     function fetchSuggestions(q) {
         fetch(EDITOR_API_URL + '?action=tag_search&q=' + encodeURIComponent(q || ''))
             .then(function (r) { return r.json(); })
             .then(function (data) {
-                renderSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [], q);
+                setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [], q);
             })
             .catch(function (err) {
                 console.error('[tags] search failed', err);
@@ -2818,17 +2855,41 @@ function bindTagSearchInput() {
         if (!input.value) fetchSuggestions('');
     });
 
+    /* #1594 part 2 — was Enter-as-create + Escape only; no arrow
+       navigation of suggestions at all (activeIdx existed but nothing
+       ever read it). The shared helper owns Arrow/Home/End/Tab/Escape
+       (and Enter, but ONLY when a row is highlighted); when it reports
+       the key unhandled — the panel is closed, or Enter with nothing
+       highlighted — the pre-existing "create/add the typed text
+       verbatim" fallback below still runs exactly as before. */
     input.addEventListener('keydown', function (e) {
+        var handled = false;
+        if (window.iHymnsComboboxA11y) {
+            handled = window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                isOpen: isPanelOpen,
+                getItems: panelOptionEls,
+                getActiveIndex: function () { return activeIdx; },
+                setActiveIndex: function (i) { activeIdx = i; },
+                render: renderPanel,
+                /* Reuse the row's own click listener (both the "create
+                   new tag" row and a real suggestion row already have
+                   one) rather than a second copy of that logic — see
+                   combobox-a11y.js's doc-comment for why every migrated
+                   call site does this. */
+                onCommit: function (i, el) { el.click(); },
+                onClose: closePanel,
+            });
+        }
+        if (handled) return;
         if (e.key === 'Enter') {
             e.preventDefault();
-            /* Plain Enter on a non-empty input creates/adds the tag. */
+            /* Plain Enter with nothing highlighted creates/adds the
+               typed text — unchanged from the pre-migration behaviour. */
             var q = input.value.trim();
             if (!q) return;
             var song = findSongById(currentSongId);
             if (song) addSongTag(song, q);
             input.value = '';
-            closePanel();
-        } else if (e.key === 'Escape') {
             closePanel();
         }
     });
@@ -2900,6 +2961,10 @@ function renderTranslations(song) {
             song.translations.splice(i, 1);
             markModified(song.id);
             renderTranslations(song);
+            /* #1626 — removal is staged too: the save now diffs song.translations
+               against the stored rows and DELETEs the ones that went away. Say so,
+               matching the add path, so staged-vs-saved is never ambiguous. */
+            showToast('Translation link removed. Click Save to persist.', 'info');
         });
 
         container.appendChild(row);
@@ -2969,14 +3034,46 @@ function initTranslationControls() {
             return;
         }
 
+        var targetLang = targetSong.language || 'en';
+
+        /* #1626 — mirror the table's `uq_Translation (SourceSongId, TargetLanguage)`
+           UNIQUE key in the UI: the DB can hold at most ONE translation of this song
+           per language. The duplicate check above is keyed on songId, so without this
+           a curator could stage two different songs under the same language and only
+           one would survive the save — a fresh silent-loss bug of exactly the kind
+           #1626 fixed. Replace in place and SAY SO, so what is on screen is always
+           what will persist.
+           @see appWeb/.sql/schema.sql — tblSongTranslations */
+        var sameLangIdx = song.translations.findIndex(function (t) {
+            return String(t.language || '').toLowerCase() === targetLang.toLowerCase();
+        });
+        if (sameLangIdx !== -1) {
+            var replacedId = song.translations[sameLangIdx].songId;
+            song.translations[sameLangIdx] = { songId: targetId, language: targetLang };
+            markModified(song.id);
+            renderTranslations(song);
+            input.value = '';
+            showToast(
+                'Replaced the ' + targetLang + ' translation link (was ' + replacedId +
+                '). Click Save to persist.',
+                'warning'
+            );
+            return;
+        }
+
         song.translations.push({
             songId: targetId,
-            language: targetSong.language || 'en'
+            language: targetLang
         });
         markModified(song.id);
         renderTranslations(song);
         input.value = '';
-        showToast('Translation link added.', 'success');
+        /* #1626 — the link is STAGED in memory here; editorSaveSongCore() is what
+           actually writes tblSongTranslations. The old wording ("Translation link
+           added.") read as a completed write, which is precisely how the missing
+           persistence went unnoticed. Matches the house phrasing used by the bulk
+           move / delete toasts elsewhere in this file. */
+        showToast('Translation link staged. Click Save to persist.', 'success');
     });
 }
 
@@ -3603,6 +3700,14 @@ function createCreditNameRow(parts, onChange, onRemove, creditKind) {
     return row;
 }
 
+/* #1594 part 2 — module-scoped counter shared by BOTH credit-popover
+   flavours below (attachStructuredCreditAutocomplete and the legacy
+   attachCreditAutocomplete) so every popover instance on the page — a
+   song can show several Writer/Composer/Arranger rows at once, each
+   with its own popover — gets a globally-unique ARIA id prefix.
+   Mirrors place-search.js's own `instanceSeq`. */
+var creditAutocompleteInstanceSeq = 0;
+
 /* Live-search popover for the structured Credit row. Mirrors
    attachCreditAutocomplete (the legacy single-input one) but:
      - Listens on TWO inputs (first + surname).
@@ -3623,10 +3728,38 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
     row.appendChild(popover);
 
     var debounceTimer = null;
+    /* #1594 part 2 — shared highlight state for BOTH wired inputs
+       (first + surname) below; they drive the same popover, so the
+       keyboard highlight has to be one shared value, not one per input. */
+    var currentSuggestions = [];
+    var activeIndex = -1;
+    /* Unique id prefix — a chip row can be one of several on the page
+       (Writers list, Composers list, each with its own popover), so a
+       hardcoded prefix would collide aria-activedescendant between rows;
+       mirrors place-search.js's own instanceSeq pattern. */
+    var idPrefix = 'credit-structured-' + (++creditAutocompleteInstanceSeq);
+
+    function isOpen() { return !popover.classList.contains('d-none'); }
+    function optionEls() { return Array.prototype.slice.call(popover.querySelectorAll('.list-group-item-action')); }
+
+    /* Both firstEl and surnameEl feed this ONE shared popover, so both
+       get the same ARIA wiring applied every render — whichever of the
+       two is actually focused is the one a screen reader cares about,
+       and applying to both is harmless (an unfocused element's
+       aria-activedescendant is simply not read by assistive tech). */
+    function applyAriaToBoth(items, idx, expanded) {
+        if (!window.iHymnsComboboxA11y) return;
+        [firstEl, surnameEl].forEach(function (el) {
+            window.iHymnsComboboxA11y.applyComboboxAria({ input: el, panel: popover, items: items, activeIndex: idx, idPrefix: idPrefix, expanded: expanded });
+        });
+    }
 
     function close() {
         popover.classList.add('d-none');
         popover.innerHTML = '';
+        currentSuggestions = [];
+        activeIndex = -1;
+        applyAriaToBoth([], -1, false);
     }
 
     function applyPick(s) {
@@ -3655,13 +3788,20 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
         onChange({ first: parts.first, surname: parts.surname, suffix: parts.suffix });
     }
 
-    function render(suggestions) {
+    /* Re-paint `currentSuggestions` at the CURRENT `activeIndex` — the
+       `render` callback handleComboboxKeydown calls after every
+       arrow/Home/End press, so unlike setSuggestions() below it must
+       NOT reset the highlight (place-search.js's renderPanel() is the
+       same full-rebuild-per-keypress pattern). */
+    function renderPanel() {
         popover.innerHTML = '';
+        var suggestions = currentSuggestions;
         if (!suggestions.length) { close(); return; }
-        suggestions.forEach(function (s) {
+        suggestions.forEach(function (s, i) {
             var item = document.createElement('button');
             item.type = 'button';
             item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            item.classList.toggle('active', i === activeIndex);
             var kindsBadge = (s.kinds && s.kinds.length)
                 ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
                 : '';
@@ -3678,6 +3818,15 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
             popover.appendChild(item);
         });
         popover.classList.remove('d-none');
+        applyAriaToBoth(optionEls(), activeIndex, true);
+    }
+
+    /* NEW result set — reset the highlight to the first row, mirroring
+       place-search.js's runSearch(). */
+    function setSuggestions(suggestions) {
+        currentSuggestions = suggestions;
+        activeIndex = suggestions.length ? 0 : -1;
+        renderPanel();
     }
 
     function fetchSuggestions(q) {
@@ -3694,7 +3843,7 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
                 return r.json();
             })
             .then(function (data) {
-                render(Array.isArray(data.suggestions) ? data.suggestions : []);
+                setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
             })
             .catch(function (err) {
                 console.warn('[editor] credit_search failed:', err && err.message);
@@ -3709,8 +3858,25 @@ function attachStructuredCreditAutocomplete(row, parts, firstEl, surnameEl, kind
             if (q.length < 1) { close(); return; }
             debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
         });
+        /* #1594 part 2 — was Escape-only. */
         inputEl.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape') close();
+            if (!window.iHymnsComboboxA11y) {
+                if (e.key === 'Escape') close();
+                return;
+            }
+            window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                isOpen: isOpen,
+                getItems: optionEls,
+                getActiveIndex: function () { return activeIndex; },
+                setActiveIndex: function (i) { activeIndex = i; },
+                render: renderPanel,
+                /* Reuse the row's own click listener rather than a
+                   second copy of applyPick()'s logic — see
+                   combobox-a11y.js's doc-comment for why every migrated
+                   call site does this. */
+                onCommit: function (i, el) { el.click(); },
+                onClose: close,
+            });
         });
     }
     wire(firstEl);
@@ -3798,19 +3964,41 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
     row.appendChild(popover);
 
     var debounceTimer = null;
+    var currentSuggestions = [];
+    var activeIndex = -1;
+    /* Unique id prefix — see attachStructuredCreditAutocomplete's own
+       comment above for why (several credit chip rows can be on screen
+       at once, each with its own popover). Shares the same counter as
+       that function's popovers so ids never collide between the two
+       flavours either. */
+    var idPrefix = 'credit-legacy-' + (++creditAutocompleteInstanceSeq);
+
+    function isOpen() { return !popover.classList.contains('d-none'); }
+    function optionEls() { return Array.prototype.slice.call(popover.querySelectorAll('.list-group-item-action')); }
 
     function close() {
         popover.classList.add('d-none');
         popover.innerHTML = '';
+        currentSuggestions = [];
+        activeIndex = -1;
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({ input: input, panel: popover, items: [], activeIndex: -1, idPrefix: idPrefix, expanded: false });
+        }
     }
 
-    function render(suggestions) {
+    /* Re-paint `currentSuggestions` at the CURRENT `activeIndex` — see
+       attachStructuredCreditAutocomplete's renderPanel() above for why
+       this must not reset the highlight (it's the `render` callback
+       handleComboboxKeydown calls on every arrow/Home/End press). */
+    function renderPanel() {
         popover.innerHTML = '';
+        var suggestions = currentSuggestions;
         if (!suggestions.length) { close(); return; }
-        suggestions.forEach(function (s) {
+        suggestions.forEach(function (s, i) {
             var item = document.createElement('button');
             item.type = 'button';
             item.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center py-1';
+            item.classList.toggle('active', i === activeIndex);
             var kindsBadge = (s.kinds && s.kinds.length)
                 ? '<small class="text-muted">' + escapeHtmlSafe(s.kinds.join(' · ')) + '</small>'
                 : '';
@@ -3833,6 +4021,19 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
             popover.appendChild(item);
         });
         popover.classList.remove('d-none');
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({
+                input: input, panel: popover, items: optionEls(),
+                activeIndex: activeIndex, idPrefix: idPrefix,
+            });
+        }
+    }
+
+    /* NEW result set — reset the highlight to the first row. */
+    function setSuggestions(suggestions) {
+        currentSuggestions = suggestions;
+        activeIndex = suggestions.length ? 0 : -1;
+        renderPanel();
     }
 
     function fetchSuggestions(q) {
@@ -3853,7 +4054,7 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
                 return r.json();
             })
             .then(function (data) {
-                render(Array.isArray(data.suggestions) ? data.suggestions : []);
+                setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
             })
             .catch(function (err) {
                 console.warn('[editor] credit_search failed:', err && err.message);
@@ -3868,8 +4069,24 @@ function attachCreditAutocomplete(input, row, kind, onChange) {
         debounceTimer = setTimeout(function () { fetchSuggestions(q); }, 180);
     });
 
+    /* #1594 part 2 — was Escape-only. */
     input.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape') close();
+        if (!window.iHymnsComboboxA11y) {
+            if (e.key === 'Escape') close();
+            return;
+        }
+        window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+            isOpen: isOpen,
+            getItems: optionEls,
+            getActiveIndex: function () { return activeIndex; },
+            setActiveIndex: function (i) { activeIndex = i; },
+            render: renderPanel,
+            /* Reuse the row's own click listener rather than a second
+               copy of the pick logic — see combobox-a11y.js's
+               doc-comment for why every migrated call site does this. */
+            onCommit: function (i, el) { el.click(); },
+            onClose: close,
+        });
     });
 
     /* Dismiss on click outside this specific row. We register a
@@ -4903,6 +5120,17 @@ function autoSaveSongsPerSong(ids) {
             }).then(function (res) {
                 return res.json().then(function (data) {
                     if (res.ok && data.ok) {
+                        /* #1626 — the save succeeded, but one or more staged
+                           translation links could not be stored (unknown language
+                           tag, target song since deleted). The server returns these
+                           ONLY when there is something to say. Surface them: the bug
+                           this restored was a link that vanished without a word, so a
+                           link we knowingly drop must never be silent either. */
+                        if (Array.isArray(data.translationWarnings) && data.translationWarnings.length) {
+                            data.translationWarnings.forEach(function (w) {
+                                showToast(String(w), 'warning');
+                            });
+                        }
                         /* #1380 — the server may have promoted a client draft id
                            (song-XXXX) to a canonical <Abbr>-NNNN id on this first
                            save. Relabel the in-memory copy so subsequent saves /
@@ -6003,10 +6231,25 @@ function init() {
         try {
             var qs   = new URLSearchParams(window.location.search);
             var hash = String(window.location.hash || '').replace(/^#/, '');
-            var sid  = qs.get('song');
+            /* `open` is an ALIAS for `song` (#1623). /manage/revisions linked
+               with ?open= for its whole life while this only read ?song=, so
+               "Open in editor" silently did nothing — the editor loaded, the
+               list populated, and no song was ever selected. revisions.php now
+               emits ?song=, but the alias stays so a bookmarked or pasted
+               ?open= link works instead of failing the same invisible way. */
+            var sid  = qs.get('song') || qs.get('open');
             if (sid && Array.isArray(songData.songs)
                 && songData.songs.some(function (s) { return s.id === sid; })) {
                 selectSong(sid);
+                /* ?tab=history opens the revision history straight away —
+                   what the Revisions Audit button's tooltip has always
+                   claimed ("the History modal will show every revision in
+                   full") but nothing implemented. Deferred a tick so
+                   selectSong()'s own render finishes first; openHistoryModal
+                   reads DOM the selection populates. */
+                if (qs.get('tab') === 'history') {
+                    setTimeout(function () { openHistoryModal(sid); }, 0);
+                }
                 return;
             }
             var prefillBook = qs.get('songbook');

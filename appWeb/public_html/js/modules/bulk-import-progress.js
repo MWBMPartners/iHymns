@@ -35,6 +35,8 @@
  * any in-flight polling timer.
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const STORAGE_KEY     = 'ihymns:bulk-import-active-job';
 const POLL_INTERVAL_MS = 1500;
 const POLL_BACKOFF_MS  = 5000; // after an error, slow down rather than spam
@@ -426,7 +428,7 @@ function pollOnce() {
     isPollingNow = true;
     const url = activeJob.pollUrl
         || ('/manage/editor/api?action=bulk_import_status&job_id=' + activeJob.jobId);
-    fetch(url, { credentials: 'same-origin' })
+    apiFetch(url, { credentials: 'same-origin' })
         .then(r => r.json().then(data => ({ ok: r.ok, data })))
         .then(out => {
             isPollingNow = false;

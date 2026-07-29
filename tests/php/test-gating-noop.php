@@ -20,6 +20,8 @@ declare(strict_types=1);
  *   (3) audioSigningEnabled()                             === false   (triple-dormant)
  *   (4) audioSignedUrlFor('CP-1')                         === null    (off → legacy URL)
  *   (5) audioSignatureValid(...) is false when the key is undefined  (fail-closed)
+ *  (10) contentGatingMediaAllowed(kind, null[, token])  === true    (#1388 media gate
+ *       off no-op, pinned per kind — it gates /song-media/<id> bytes + bulk_audio)
  *
  * Engaged-case (no DB): the strip DECISION is driven by checkTierAccess(), which
  * for the 'public' tier denies view_copyrighted / play_audio / download_pdf via
@@ -87,6 +89,22 @@ if ($gatingOn) {
 
     /* (4) Off ⇒ no signed URL (caller falls back to the legacy literal). */
     check('(4) audioSignedUrlFor(CP-1) === null when off', audioSignedUrlFor('CP-1') === null);
+
+    /* (10) #1388 — the media-bytes gate obeys the SAME master switch.
+       contentGatingMediaAllowed() gates /song-media/<id> and the bulk_audio
+       manifest. Off, it must allow EVERY kind for EVERY caller — including an
+       anonymous one with no presence token, which is the strictest possible
+       input and therefore the one most likely to regress to a deny. A false
+       here would 403 media on all three docroots the moment this ships, so it
+       is pinned per kind rather than as a single spot-check. */
+    foreach (['audio', 'midi', 'sheet-music', 'musicxml'] as $kind) {
+        check("(10) contentGatingMediaAllowed('{$kind}', null) === true when off",
+            contentGatingMediaAllowed($kind, null) === true);
+    }
+    check('(10) contentGatingMediaAllowed with a presence token === true when off',
+        contentGatingMediaAllowed('audio', null, 'sometoken') === true);
+    check('(10) contentGatingMediaAllowed for an unknown kind === true when off',
+        contentGatingMediaAllowed('something-new', null) === true);
 }
 
 /* (5) Verify is fail-closed when the key is undefined (independent of the flag). */

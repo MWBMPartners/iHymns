@@ -105,7 +105,7 @@ if (!$mysqli) {
 
 foreach (['tblSongs', 'tblSongbooks'] as $required) {
     if (!_migAltTitles_tableExists($mysqli, $required)) {
-        _migAltTitles_out("ERROR: {$required} not found. Run install.php / migrate-json.php first.");
+        _migAltTitles_out("ERROR: {$required} not found. Run install.php first.");
         return;
     }
 }

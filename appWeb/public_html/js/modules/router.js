@@ -16,6 +16,11 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
+/* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
+   on every same-origin request, replacing the old global fetch monkey-patch.
+   Page loads (loadPage) and the song/related/translation fetches below are
+   exactly the requests that need the language filter applied. */
+import { apiFetch } from '../utils/api-client.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -303,6 +308,14 @@ export class Router {
                    /works/<slug> accepted as a forgiving alias matching
                    the people / person convention. */
                 return { page: 'work', params: { slug: segments[1] || '' } };
+            case 'tag':
+                /* #1637 — /tag/<slug> lists every song carrying the named
+                   theme (js/modules/home-page.js's "Browse by theme" chips,
+                   renderThemeChip(), already emit this href/data-navigate
+                   pair — this route was the missing piece). Empty / unknown
+                   slug renders the page's own "no songs for this theme"
+                   state (includes/pages/tag.php), same as work/tune/iswc. */
+                return { page: 'tag', params: { slug: segments[1] || '' } };
             case 'tune':
                 /* #940 — /tune/<slug> lists every song that uses the
                    named tune. Slugified upstream (lowercase + hyphen-
@@ -446,10 +459,9 @@ export class Router {
             this.app.transitions.startLoading();
 
             /* Fetch the page content from the API */
-            const response = await fetch(url, {
+            const response = await apiFetch(url, {
                 signal: this.abortController.signal,
                 headers: {
-                    'X-Requested-With': 'XMLHttpRequest',
                     'Accept': 'text/html',
                 }
             });
@@ -468,16 +480,36 @@ export class Router {
                to the legacy pageOut → swap → pageIn flow. */
             await this.app.transitions.runViewTransition(() => {
                 content.innerHTML = html;
-                /* Browsers intentionally do NOT run <script> tags
-                   inserted via innerHTML, so any inline JS in the
-                   injected page template (e.g. home.php's Popular
-                   Songs / Browse by Theme / Recently Viewed fetches)
-                   silently no-ops. Replace each script node with a
-                   freshly-created one so the browser parses and runs
-                   it as if it had been in the original document.
-                   Preserves type, src, async/defer and other
-                   attributes. */
-                this._executeInlineScripts(content);
+                /* NO script re-execution here, deliberately (#1619).
+                 *
+                 * ELI5: page fragments are not allowed to carry code, so
+                 * there is nothing here to run.
+                 *
+                 * This used to call `_executeInlineScripts()`, which re-created
+                 * each injected <script> so the browser would run it (innerHTML
+                 * parses script tags but never executes them). That helper was
+                 * removed because it could not do its job and was actively
+                 * harmful:
+                 *
+                 *   - It copied attributes VERBATIM, so the re-created node had
+                 *     no CSP nonce. index.php sends an ENFORCING nonce CSP
+                 *     (#117), and fragments are separate, often shared-cache
+                 *     HTTP responses that can never carry a per-request nonce
+                 *     (rule #6). The browser refused every such script with a
+                 *     console-only violation — no exception, no toast. That
+                 *     silent half-execution killed the entire public Export
+                 *     feature for ~7 weeks (#1565).
+                 *   - It had nothing left to run: the only <script> in any
+                 *     fragment is an inert `application/ld+json` block in
+                 *     person.php, which needs parsing, not executing.
+                 *   - tests/php/test-fragment-inline-scripts.php now fails the
+                 *     build on any executable inline script in a fragment, and
+                 *     its allowlist is empty (#1572).
+                 *
+                 * Fragment behaviour is wired from afterPageLoad() as real ES
+                 * modules instead — see the home-page.js pattern (rule #30).
+                 * Do not reinstate this by injecting a nonce into fragments or
+                 * relaxing the CSP; both trade a working CSP for convenience. */
             }, content);
 
             /* Complete loading bar after the transition is done. */
@@ -497,33 +529,6 @@ export class Router {
                     Failed to load page. Please check your connection and try again.
                 </div>`;
             this.app.transitions.pageIn(content);
-        }
-    }
-
-    /**
-     * Re-create every <script> descendant of `root` so the browser actually
-     * executes it. `innerHTML` parses script tags but skips their execution
-     * by design — any JS in an injected page template would otherwise no-op
-     * silently. Re-created nodes preserve the original attributes (src,
-     * type, async, defer, nomodule, integrity, crossorigin) and replace
-     * the original in-place so document order is kept for side-effectful
-     * scripts that depend on it.
-     *
-     * @param {HTMLElement} root Container whose script descendants to run
-     * @private
-     */
-    _executeInlineScripts(root) {
-        if (!root) return;
-        const scripts = root.querySelectorAll('script');
-        for (const oldScript of scripts) {
-            const newScript = document.createElement('script');
-            for (const attr of oldScript.attributes) {
-                newScript.setAttribute(attr.name, attr.value);
-            }
-            if (!oldScript.src) {
-                newScript.textContent = oldScript.textContent;
-            }
-            oldScript.replaceWith(newScript);
         }
     }
 
@@ -593,6 +598,14 @@ export class Router {
            applies. */
         this.app.readingProgress.initOnAnyPage();
 
+        /* #1533 — the set-list playback bar is FIXED and lives on <body>, so
+           unlike the old in-flow alert it does NOT disappear when the page
+           content is swapped. Sync it on EVERY navigation, not just song ones:
+           renderSongNavigation() removes the bar when the new page has no
+           .page-song, which is what stops it stranding over the home screen.
+           Must run before the early `return`s in the song branch below. */
+        this.app.setList?.renderSongNavigation();
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             /* #1343 — a merged/deleted/renamed permalink renders a redirect marker
@@ -639,6 +652,14 @@ export class Router {
             import('./present-mode.js')
                 .then(m => m.initPresentMode())
                 .catch(err => console.error('[Router] present-mode init failed:', err));
+            /* #1089/#1100 P1 — per-line translation "Show translation" toggle.
+               Same CSP/shared-cache-fragment reasoning as Export/Present above:
+               song.php only emits the button (and the hidden translation rows
+               it controls) when the song actually has approved per-line
+               translations, so this is a cheap no-op on every other song. */
+            import('./song-translations.js')
+                .then(m => m.initLineTranslations())
+                .catch(err => console.error('[Router] song-translations init failed:', err));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant
@@ -706,7 +727,7 @@ export class Router {
                     if (songbook) this.trackRecentSongbook(songbook);
 
                     /* Record song view on server for history/popular tracking (#287) */
-                    fetch(`${this.apiUrl}?action=song_view`, {
+                    apiFetch(`${this.apiUrl}?action=song_view`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ song_id: songId })
@@ -795,6 +816,31 @@ export class Router {
             import('./device-link.js')
                 .then(m => m.bootDeviceLinkPage())
                 .catch(err => console.error('[Router] device-link init failed:', err));
+        }
+
+        /* ELI5: hook up the Request-a-Song form (fetch submit, offline
+           queueing, deep-link prefill) once its fragment is on the page.
+           Detail: this logic lived as a `<script type="module">` inside
+           includes/pages/request-a-song.php and never executed for anyone —
+           the document's enforcing nonce CSP (#117) refuses nonce-less
+           inline scripts, the fragment is a separate HTTP response that
+           never sees the nonce, and `request` is in api.php's
+           $_cacheablePages so it can't carry a per-request nonce at all
+           (rule #6). The router's old `_executeInlineScripts()` re-created
+           the node with its attributes verbatim, so the copy had no nonce
+           either and was refused SILENTLY — every submit was quietly taken
+           by the #711 no-JS `<form action>` fallback instead. That helper
+           has since been removed entirely (#1619), so a fragment script now
+           simply never runs rather than half-running. Same fix as
+           home-page.js / export-ui.js: a real ES module imported here
+           (#1572).
+           `params` carries the forwarded `songbook` / `number` deep-link
+           prefill; the module prefers the fragment's own data-prefill-*
+           attributes and uses these only as the stale-cache fallback. */
+        if (page === 'request') {
+            import('./request-a-song.js')
+                .then(m => m.initRequestASong(params))
+                .catch(err => console.error('[Router] request-a-song init failed:', err));
         }
 
         /* After the new page HTML is in the DOM, broadcast the current auth
@@ -888,7 +934,7 @@ export class Router {
      */
     async _verifyMagicLinkToken(token) {
         try {
-            const res = await fetch(`${this.apiUrl}?action=auth_email_login_verify`, {
+            const res = await apiFetch(`${this.apiUrl}?action=auth_email_login_verify`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1120,7 +1166,7 @@ export class Router {
         if (!container || !itemsEl) return;
 
         try {
-            const resp = await fetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
+            const resp = await apiFetch(`${this.apiUrl}?action=song_translations&id=${encodeURIComponent(songId)}`);
             if (!resp.ok) return;
             const data = await resp.json();
 
@@ -1170,7 +1216,7 @@ export class Router {
             url.searchParams.set('action', 'related_songs');
             url.searchParams.set('id', currentSongId);
             url.searchParams.set('limit', '5');
-            const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const response = await apiFetch(url);
             if (!response.ok) return; /* offline / error — non-critical, skip */
             const data = await response.json();
             const related = (data.related || []).slice(0, 5);

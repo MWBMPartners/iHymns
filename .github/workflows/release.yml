@@ -9,7 +9,6 @@
 # Automatically creates a GitHub Release when a version tag (v*) is pushed.
 # - Extracts the release notes from CHANGELOG.md for the tagged version
 # - Marks tags containing "-beta" or "-rc" as pre-releases
-# - Attaches data/songs.json as a release asset
 # =============================================================================
 
 name: Release
@@ -116,8 +115,10 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 5: Create the GitHub Release
-      # Uses the gh CLI to create the release with extracted notes
-      # Attaches data/songs.json as a release asset if it exists
+      # Uses the gh CLI to create the release with extracted notes.
+      # #1630 — this used to also attach data/songs.json as a release asset,
+      # republishing the stale corpus publicly on every tag. Removed with
+      # the file itself (#1617); MySQL is the only source of truth now.
       # -----------------------------------------------------------------------
       - name: Create GitHub Release
         env:
@@ -137,15 +138,6 @@ jobs:
           # Mark as pre-release if applicable
           if [ "$PRERELEASE" = "true" ]; then
             GH_ARGS+=("--prerelease")
-          fi
-
-          # Attach songs.json as a release asset if it exists
-          SONGS_FILE="data/songs.json"
-          if [ -f "$SONGS_FILE" ]; then
-            GH_ARGS+=("$SONGS_FILE")
-            echo "Attaching $SONGS_FILE as release asset."
-          else
-            echo "::warning::$SONGS_FILE not found. Skipping asset attachment."
           fi
 
           echo "Creating release: gh ${GH_ARGS[*]}"

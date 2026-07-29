@@ -51,6 +51,33 @@ on:
       - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
+# Serialise deploys PER BRANCH (#1595).
+#
+# ELI5: only one upload to a given site at a time — the next one waits its turn.
+#
+# The deploy step runs `lftp ... mirror --reverse --delete`. Two concurrent
+# delete-mode mirrors against the same docroot can interleave destructively:
+# run A enumerates the remote, run B uploads a file, then A's --delete pass —
+# working from its now-stale listing — removes it. The symptom is a file that
+# silently "didn't deploy", with both runs reporting success.
+#
+# Alpha is where this is most likely, because it auto-merges: two PRs going
+# green minutes apart is routine and the mirror takes longer than that. #1596
+# makes it certain rather than likely, by dispatching a second deploy after
+# each version bump.
+#
+# `cancel-in-progress: false` is LOAD-BEARING and is the opposite of the right
+# setting for apple.yml. Cancelling a superseded *build* is free; cancelling a
+# half-finished --delete *mirror* can leave the docroot with files deleted and
+# their replacements never uploaded. Deploys must QUEUE, never cancel.
+#
+# Grouped by ref_name, not globally: alpha / beta / main target different hosts
+# and have no reason to block one another.
+# https://docs.github.com/actions/using-jobs/using-concurrency
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
@@ -221,40 +248,85 @@ jobs:
           echo "${{ steps.target.outputs.channel }}" > appWeb/public_html/.env-channel
           echo "Injected .env-channel: ${{ steps.target.outputs.channel }}"
 
-      # -- Extract What's New excerpt from CHANGELOG.md (#1583) --
+      # -- Extract What's New excerpt from CHANGELOG.md (#1583, reshaped #1589) --
+      #
+      # ELI5: copy the newest handful of changelog bullets — a few from each
+      # of the last few releases — into a small file the website shows on its
+      # "What's New" page.
+      #
       # includes/pages/whats-new.php reads appWeb/public_html/data/whats-new.md
       # (via markdown_lite.php's escape-first renderer) and falls back to a
       # themed "no data yet" card when the file is absent — so this step is
       # deliberately best-effort: a missing CHANGELOG.md (or an empty extract)
       # must never fail the deploy, it just means visitors see the fallback
-      # card until the next deploy that does have one. Takes the first 3
-      # top-level `## ` sections (an awk state machine — `^## ` only matches
-      # a TWO-hash heading, since a `### ` sub-heading's 3rd character is `#`
-      # not a space, so those are never miscounted as a new top-level
-      # section) and hard-caps the result at 48 KB (`head -c`) so one
-      # unusually long changelog entry can never bloat the deployed
-      # fragment.
+      # card until the next deploy that does have one.
       #
-      # H1 (adversarial-review finding): `head -c` cuts on a BYTE boundary,
-      # which can land mid-way through a multi-byte UTF-8 character —
-      # CHANGELOG.md's real first-3-sections excerpt is already well over
-      # this cap, so this is not a hypothetical, it happens on ordinary
-      # deploys. `iconv -f UTF-8 -t UTF-8 -c` re-validates the cut output
-      # and drops (`-c`) any incomplete trailing sequence the byte-cap
-      # left behind, so the file this step writes is always well-formed
-      # UTF-8 — belt-and-braces on top of markdown_lite.php's own
-      # ENT_SUBSTITUTE fix (H1's other half) and whats-new.php's
-      # empty-render fallback, not a replacement for either: this step
-      # still can't know where CHANGELOG.md's sentence boundaries are, so
-      # it stays a best-effort content trim, not a markdown-aware one.
+      # #1589 — WHY THIS IS ENTRY-BASED AND NO LONGER SECTION-BASED.
+      # The original implementation took the first THREE top-level `## `
+      # sections and hard-capped the result at 48 KB. That silently stopped
+      # working once the changelog grew: `## [unreleased] — alpha` alone
+      # reached 70,627 bytes, so the 48 KB byte-cap landed *inside section
+      # one* — testers saw a single giant blob, truncated mid-sentence, that
+      # never reached a second release at all. A section-count budget cannot
+      # bound output size, because a section has no bounded size.
+      #
+      # So the unit of extraction is now the ENTRY (a top-level `- ` bullet
+      # plus its indented continuation lines), with three independent caps:
+      #
+      #   PER_SECTION  — at most N entries per release heading. This is the
+      #                  cap that GUARANTEES more than one release appears,
+      #                  however lopsided the changelog is. Without it a
+      #                  single fat section eats the whole budget again.
+      #   MAX_SECTIONS — at most N release headings, counted on headings
+      #                  actually EMITTED (an empty `## [unreleased] — alpha`,
+      #                  which is exactly what version-bump.yml's rollover
+      #                  leaves behind, must not burn a slot).
+      #   MAX_BYTES    — the same 48 KB budget, but now enforced BEFORE an
+      #                  entry is written rather than by cutting bytes after
+      #                  the fact, so output always ends on an entry boundary.
+      #
+      # `^## ` only matches a TWO-hash heading — a `### ` sub-heading's 3rd
+      # character is `#`, not a space — so sub-headings are never miscounted
+      # as a new release, same as before. A heading is buffered and printed
+      # LAZILY, only when one of its entries is actually emitted, so a
+      # release with nothing under it never leaves an orphan heading on the
+      # page. The one deliberate escape hatch: the very first entry is
+      # emitted even if it alone exceeds MAX_BYTES (`total > 0 &&`), because
+      # an over-cap excerpt that `head -c` then trims is strictly better than
+      # an empty file and the fallback card.
+      #
+      # LC_ALL=C is load-bearing, not decoration: awk's length() counts
+      # CHARACTERS in a UTF-8 locale and BYTES in the C locale, and the
+      # budget being enforced is a byte budget (whats-new.md is full of
+      # em-dashes and emoji). Ubuntu runners ship mawk as /usr/bin/awk, which
+      # is byte-based anyway, but pinning the locale means the arithmetic is
+      # identical under gawk too — and under the local test harness.
+      # https://www.gnu.org/software/gawk/manual/html_node/String-Functions.html
+      #
+      # H1 (adversarial-review finding, still applies): `head -c` cuts on a
+      # BYTE boundary, which can land mid-way through a multi-byte UTF-8
+      # character. It is now a BACKSTOP rather than the primary trim — the
+      # awk budget above should mean it never fires — but it is kept because
+      # the escape hatch and any future changelog shape can still overshoot.
+      # `iconv -f UTF-8 -t UTF-8 -c` re-validates the cut output and drops
+      # (`-c`) any incomplete trailing sequence the byte-cap left behind, so
+      # the file this step writes is always well-formed UTF-8 — belt-and-
+      # braces on top of markdown_lite.php's own ENT_SUBSTITUTE fix (H1's
+      # other half) and whats-new.php's empty-render fallback, not a
+      # replacement for either. ENT_SUBSTITUTE depends on never being handed
+      # invalid UTF-8, so this pipe stage must not be removed.
       # iconv exits non-zero specifically when the LAST bytes of its input
       # are an incomplete sequence (exactly the case a byte-cap produces)
       # even though it still writes the trimmed-clean output — `|| true`
       # keeps that expected, already-handled condition from failing the
       # deploy step, consistent with "must never fail the deploy" above;
-      # stderr is left unsuppressed so the (harmless, expected-on-most-
-      # deploys) warning is still visible in the run log for debugging.
+      # stderr is left unsuppressed so the (harmless) warning is still
+      # visible in the run log for debugging.
       # https://www.gnu.org/software/libiconv/documentation/libiconv/iconv.1.html
+      #
+      # Covered by tests/test-whats-new-extraction.js, which lifts THIS awk
+      # program out of THIS file and runs it against the real CHANGELOG.md —
+      # so the test cannot drift from the deployed logic by copying it.
       - name: Extract What's New from CHANGELOG.md
         if: steps.changes.outputs.has_changes == 'true'
         run: |
@@ -262,17 +334,60 @@ jobs:
           WHATS_NEW_DIR="${SOURCE_DIR}data"
           WHATS_NEW_FILE="${WHATS_NEW_DIR}/whats-new.md"
           WHATS_NEW_MAX_BYTES=49152
+          WHATS_NEW_MAX_SECTIONS=5
+          WHATS_NEW_PER_SECTION=10
+          WHATS_NEW_MAX_ENTRIES=50
 
           if [[ ! -f "CHANGELOG.md" ]]; then
             echo "CHANGELOG.md not found — skipping What's New extraction (whats-new.php renders its fallback card)"
           else
             mkdir -p "$WHATS_NEW_DIR"
-            awk '
-              /^## / { section++; if (section > 3) exit }
-              section >= 1 { print }
+            LC_ALL=C awk \
+              -v MAX_BYTES="$WHATS_NEW_MAX_BYTES" \
+              -v MAX_SECTIONS="$WHATS_NEW_MAX_SECTIONS" \
+              -v PER_SECTION="$WHATS_NEW_PER_SECTION" \
+              -v MAX_ENTRIES="$WHATS_NEW_MAX_ENTRIES" '
+              # Emit the buffered entry (and, lazily, its heading) if every
+              # budget still allows it. Locals are declared as extra params —
+              # the portable awk idiom for function-scoped variables.
+              function flush(   h, need) {
+                if (pending == "") return
+                # Trailing blank lines belong to the gap BEFORE the next
+                # entry/heading, not to this entry: collapse them so the
+                # byte accounting matches what is actually printed.
+                sub(/\n+$/, "\n", pending)
+                pendingBytes = length(pending)
+                # Per-section and overall entry caps: drop, but keep reading —
+                # a later section is still allowed to contribute.
+                if (total >= MAX_ENTRIES || secEntries >= PER_SECTION) { pending = ""; return }
+                # Heading cap counts headings EMITTED, so an empty section
+                # (e.g. a freshly rolled-over `## [unreleased] — alpha`)
+                # costs nothing. Nothing older can qualify: stop.
+                if (!headingEmitted && heading != "" && emitted >= MAX_SECTIONS) { pending = ""; exit }
+                h = (headingEmitted || heading == "") ? "" : ((bytes > 0 ? "\n" : "") heading)
+                need = length(h) + pendingBytes
+                # Byte budget, checked BEFORE writing so the file always ends
+                # on an entry boundary. `total > 0` is the escape hatch: never
+                # emit an empty file just because entry #1 is oversized.
+                if (total > 0 && bytes + need > MAX_BYTES) { pending = ""; exit }
+                if (h != "") { printf "%s", h; bytes += length(h); headingEmitted = 1; emitted++ }
+                printf "%s", pending
+                bytes += pendingBytes
+                total++; secEntries++
+                pending = ""
+              }
+              # A release heading. Buffered, not printed — see flush().
+              /^## / { flush(); heading = $0 "\n\n"; headingEmitted = 0; secEntries = 0; next }
+              # A top-level entry starts here; the previous one is complete.
+              /^- /  { flush(); pending = $0 "\n"; next }
+              # Anything else (indented sub-bullets, wrapped prose, blank
+              # lines) is a continuation of the entry in hand. Lines before
+              # the first entry are dropped, as in the original.
+                     { if (pending != "") pending = pending $0 "\n" }
+              END    { flush() }
             ' "CHANGELOG.md" | head -c "$WHATS_NEW_MAX_BYTES" \
               | iconv -f UTF-8 -t UTF-8 -c > "$WHATS_NEW_FILE" || true
-            echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes -> $WHATS_NEW_FILE"
+            echo "Extracted What's New excerpt: $(wc -c < "$WHATS_NEW_FILE") bytes, $(grep -c '^## ' "$WHATS_NEW_FILE" || true) releases, $(grep -c '^- ' "$WHATS_NEW_FILE" || true) entries -> $WHATS_NEW_FILE"
           fi
 
       # -- Populate vendor/ for PWA offline-fallback (#354 / #526) --

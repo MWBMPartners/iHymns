@@ -2,7 +2,7 @@
 
 > **A multiplatform Christian lyrics application for worship enhancement**
 
-[![Version: 0.4000.0 Alpha](https://img.shields.io/badge/Version-0.4000.0%20Alpha-orange.svg)](#environments)
+[![Version: 0.4001.0 Alpha](https://img.shields.io/badge/Version-0.4001.0%20Alpha-orange.svg)](#environments)
 [![License: Proprietary](https://img.shields.io/badge/License-Proprietary-red.svg)](LICENSING.md)
 [![Security Policy](https://img.shields.io/badge/Security-Policy-brightgreen.svg)](SECURITY.md)
 [![Platform: Web](https://img.shields.io/badge/Platform-Web%20PWA-blue.svg)](#platforms)
@@ -23,7 +23,7 @@
 
 | Platform | Technology | Status |
 | --- | --- | --- |
-| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.4000.0) |
+| Web PWA | HTML5, CSS3, Bootstrap 5.3, vanilla JS, PHP 8.1+, MySQL 5.7+ / MariaDB 10.3+ | **Alpha** (v0.4001.0) |
 | Apple Universal (iOS / iPadOS / macOS / tvOS / watchOS / visionOS) | Swift 6.3, SwiftUI, one SwiftPM package (`iHymnsKit`) shared across four thin app shells | Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated |
 | Android / Fire OS | Kotlin, Jetpack Compose | Scaffold / in progress |
 
@@ -47,7 +47,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 ### Worship tools
 
 - **Favourites** — save songs with custom tags for quick access.
-- **Setlists** — create, arrange, and share worship setlists with custom component arrangements.
+- **Setlists** — create, arrange, and share worship setlists with custom component arrangements. **Playback mode** (#1533) — tap any song in an own or shared setlist to arm a floating prev/next nav bar with keyboard navigation, working identically for shared lists.
 - **Setlist scheduling & collaboration** — schedule setlists for a date / time with an "Up next" overview; invite collaborators with view / edit permissions (#398).
 - **Presentation mode** — fullscreen lyrics display with configurable auto-scroll.
 - **Practice / memorisation mode** — Full / Dimmed / Hidden cycle with tap-to-reveal (#402).
@@ -119,7 +119,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
 - **Extensible content gating** — server-side enforcement strips gated fields (lyric body, media) from the API by the requester's tier cap (#1353); the capability set is an extensible registry (`TIER_CAPS`, #1352) — a new gateable feature is **one line plus a migration card**, no schema change. Entirely dormant (a verified no-op) until `content_gating_enabled='1'`.
-- **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page.
+- **Songs and song-media respect `checkContentAccess()`** — the gated `/song-media/<id>` endpoint enforces the same restriction rules as the public song page, and (#1388) additionally applies a tier-cap gate to the media bytes themselves — not just the affordance — mirrored across `/song-media/<id>`, the offline `bulk_audio` manifest, and `songbook_export`. Still entirely dormant until `content_gating_enabled='1'`.
 
 ### Community
 

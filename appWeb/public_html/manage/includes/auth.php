@@ -1117,16 +1117,48 @@ function validateCsrfRequest(?string $token = null): bool
         return false;
     }
 
-    /* If Origin / Referer is present it MUST match this host; absent is allowed. */
-    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    /* If Origin / Referer is present it MUST match this host. */
+    $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $sawHost = false;
     foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
         if (!empty($_SERVER[$hdr])) {
             $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
             if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
                 return false;
             }
+            $sawHost = true;
         }
     }
+
+    /* (c) #1388 — BOTH absent is no longer enough on its own.
+     *
+     * ELI5: the custom header proves a browser didn't send this from another
+     * site. It does NOT prove the request came from a browser at all. We now
+     * also want to see where it came from.
+     *
+     * Detail: X-Requested-With alone rests entirely on the browser's inability
+     * to set a custom header cross-origin without a CORS preflight this server
+     * never grants. That is sound for browsers, but any non-browser client can
+     * set it freely, and it leaves no positive evidence of origin. Per the Fetch
+     * spec, browsers send `Origin` on EVERY request whose method is not GET or
+     * HEAD — so a genuine same-origin POST from a real browser always carries
+     * one, whatever the Referrer-Policy. Absent BOTH headers therefore means
+     * "not a browser POST", and we fall back to requiring a valid session token
+     * (checked as (a) above, which already failed if we reached here).
+     * https://fetch.spec.whatwg.org/#origin-header
+     *
+     * Logged, not silent. This tightens the exact path #1590 built to stop the
+     * sporadic editor "CSRF error", so if it ever rejects a legitimate caller
+     * the operator gets a line naming the endpoint instead of a mystery. */
+    if (!$sawHost) {
+        error_log(sprintf(
+            '[csrf] rejected %s %s — X-Requested-With present but no Origin/Referer and no valid token',
+            (string)($_SERVER['REQUEST_METHOD'] ?? '?'),
+            (string)($_SERVER['REQUEST_URI'] ?? '?')
+        ));
+        return false;
+    }
+
     return true;
 }
 
@@ -1409,6 +1441,76 @@ function getUserById(int $userId): ?array
  * ========================================================================= */
 
 /**
+ * Resolve an email address to EXACTLY ONE active, email-VERIFIED account.
+ *
+ * ELI5: "whose account is this address? — and only answer if there is exactly
+ * one answer and that person has actually proved the address is theirs."
+ *
+ * SECURITY — THE ACCOUNT-TAKEOVER KILL (#1635). tblUsers.Email has no UNIQUE
+ * constraint (it is `NOT NULL DEFAULT ''`, and every passwordless/no-email row
+ * shares ''), so an attacker can register an account carrying the VICTIM's
+ * address with a password the attacker knows. Any lookup that picks a winner
+ * from several matches — or that accepts an `EmailVerified = 0` row — will
+ * eventually hand the victim's session, invitation or membership to that
+ * planted account. Both refusals are therefore load-bearing:
+ *
+ *   - EXACTLY ONE match. Zero is "unknown"; two or more is UNRESOLVABLE, and
+ *     guessing (the old `ORDER BY Id ASC LIMIT 1`, which deterministically
+ *     preferred the OLDEST row, i.e. the attacker's) is the bug.
+ *   - That one match must be EmailVerified = 1. Only the mailbox owner can
+ *     flip that bit, so an unverified claim on someone else's address is
+ *     worth nothing.
+ *
+ * This is deliberately the SAME rule the Sign-in-with-Apple auto-link already
+ * applies (api.php::_authAppleMapAccountTxn() step (c), #1402) — that path was
+ * hardened first and this one was not, which is what #1635 found. Keep the two
+ * in step; do not invent a third rule.
+ *
+ * IsActive = 1 is part of the MATCH SET, not a post-filter, and that choice is
+ * deliberate: a deactivated row cannot be logged into anyway, and excluding it
+ * gives an admin a one-click remediation for a planted duplicate (deactivate
+ * the impostor and the victim's address resolves cleanly again) instead of
+ * requiring a row deletion.
+ *
+ * Case handling: tblUsers is `COLLATE=utf8mb4_unicode_ci` and Email carries no
+ * column-level override, so `Email = ?` is already case-INSENSITIVE — which is
+ * itself security-relevant (a `Victim@Example.com` plant must collide with
+ * `victim@example.com`, not slip past as a distinct address). Comparing with
+ * `Email = ?` rather than `LOWER(Email) = ?` keeps idx_Email usable.
+ *
+ * @param \mysqli     $db     Shared connection (rule #5 — never open one here).
+ * @param string      $email  Address to resolve; normalised internally.
+ * @param string|null $reason OUT — why null was returned, for SERVER-SIDE logs
+ *                            only: 'invalid_email' | 'no_match' | 'ambiguous'
+ *                            | 'unverified'. NEVER surface this to a caller:
+ *                            the distinction is exactly what an attacker wants.
+ * @return int|null The user's Id, or null (see $reason).
+ */
+function resolveVerifiedAccountByEmail(\mysqli $db, string $email, ?string &$reason = null): ?int
+{
+    $reason = null;
+    $email  = mb_strtolower(trim($email));
+    if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        $reason = 'invalid_email';
+        return null;
+    }
+
+    /* No LIMIT and no ORDER BY on purpose — we need the COUNT of matches to
+       detect ambiguity. A LIMIT 1 here would silently re-create the bug. */
+    $stmt = $db->prepare('SELECT Id, EmailVerified FROM tblUsers WHERE Email = ? AND IsActive = 1');
+    $stmt->bind_param('s', $email);
+    $stmt->execute();
+    $matches = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+
+    if (count($matches) === 0) { $reason = 'no_match';  return null; }
+    if (count($matches) > 1)   { $reason = 'ambiguous'; return null; }
+    if ((int)$matches[0]['EmailVerified'] !== 1) { $reason = 'unverified'; return null; }
+
+    return (int)$matches[0]['Id'];
+}
+
+/**
  * Generate an email login token and 6-digit code for a given email address.
  *
  * If the email matches an existing user, the token is linked to that user.
@@ -1417,7 +1519,10 @@ function getUserById(int $userId): ?array
  * @param string $email    The email address to send the login link/code to
  * @param string $clientIp The requesting IP address (for rate limiting)
  * @return array{token: string, code: string, userId: int|null, isNewUser: bool}|null
- *               Null if rate-limited or email is invalid
+ *               Null if rate-limited, email is invalid, or the address cannot
+ *               be resolved to a single verified account (#1635). The caller
+ *               MUST answer all of those identically — see api.php's
+ *               `auth_email_login_request` case.
  */
 function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
 {
@@ -1441,16 +1546,43 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
         return null; /* Rate limited */
     }
 
-    /* Check if user already exists with this email.
-       #1093 BUG-4 — Email has no UNIQUE (passwordless rows share ''), so a stable
-       tiebreak is required: ORDER BY Id ASC LIMIT 1 makes the same email always
-       resolve to the OLDEST account rather than a non-deterministic first match. */
-    $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1 ORDER BY Id ASC LIMIT 1');
-    $stmt->bind_param('s', $email);
-    $stmt->execute();
-    $existingUser = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    $userId = $existingUser ? (int)$existingUser['Id'] : null;
+    /* Check if a user already exists with this email.
+       #1635 (SECURITY) — this used to be
+           SELECT Id FROM tblUsers WHERE Email = ? AND IsActive = 1
+           ORDER BY Id ASC LIMIT 1
+       whose #1093 BUG-4 rationale was only that the tiebreak be STABLE. Stable
+       is not the same as safe: with no UNIQUE on Email, `ORDER BY Id ASC`
+       deterministically prefers the OLDEST row — so an attacker who registers
+       the victim's address BEFORE the victim always wins the tiebreak, and the
+       consume path below (_completeEmailLoginTxn) then stamps EmailVerified = 1
+       on the attacker's row. The victim sees a completely normal login into an
+       account whose password the attacker knows.
+       The fix is to stop tiebreaking at all: resolve through the shared
+       verified + unambiguous resolver, and REFUSE rather than pick. */
+    $resolveReason = null;
+    $userId = resolveVerifiedAccountByEmail($db, $email, $resolveReason);
+
+    if ($userId === null && $resolveReason !== 'no_match') {
+        /* 'ambiguous' | 'unverified' | 'invalid_email' → refuse to mint a
+           token at all. Returning null puts us on the caller's existing
+           "rate limited or no such account" branch, which answers with the
+           SAME non-committal 200 as every other outcome — the refusal must not
+           become an oracle telling an attacker "that address is registered but
+           unverified" or "that address has a duplicate". The distinction is
+           recorded HERE, server-side only. (This is the log row api.php's
+           `auth_email_login_request` comment has always claimed the resolver
+           writes; before #1635 it did not exist.) */
+        logActivity(
+            'auth.login_email_request',
+            '',
+            '',
+            ['email' => $email, 'reason' => $resolveReason],
+            'failure'
+        );
+        return null;
+    }
+    /* 'no_match' keeps the pre-existing first-login behaviour: $userId stays
+       null and verification creates a brand-new account for the address. */
 
     /* Generate token (48-char hex raw, sha256-hashed on disk) and
        code (6-digit numeric, plaintext on disk).
@@ -1666,8 +1798,23 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
         }
         $countStmt->close();
 
-        /* First user gets global_admin, others get user */
-        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers');
+        /* First user gets global_admin, others get user.
+
+           FOR UPDATE (#1388). This runs inside the #1011 transaction, but a
+           plain COUNT takes no locks — under REPEATABLE READ two concurrent
+           genesis logins can BOTH read 0 and both insert a global_admin. The
+           window is small and only exists on a virgin install, but the payoff
+           is the highest privilege in the system, and a fresh deploy where two
+           people click their magic links together is exactly when it opens.
+
+           ELI5: "nobody's here yet, so I'm the boss" — asked by two people at
+           once, both hear yes. FOR UPDATE makes the second one wait.
+
+           FOR UPDATE takes a lock the concurrent transaction must wait for, so
+           the loser re-reads 1 and gets 'user'. On an empty table InnoDB takes
+           a gap lock, which is what makes the zero-row case serialise at all.
+           https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html */
+        $stmt = $db->prepare('SELECT COUNT(*) FROM tblUsers FOR UPDATE');
         $stmt->execute();
         $row = $stmt->get_result()->fetch_row();
         $stmt->close();

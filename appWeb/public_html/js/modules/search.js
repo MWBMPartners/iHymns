@@ -24,7 +24,19 @@
  */
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
-import { STORAGE_SEARCH_LYRICS, songbookLabel, EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED } from '../constants.js';
+import { STORAGE_SEARCH_LYRICS, songbookLabel } from '../constants.js';
+/* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
+   on every same-origin request and dispatches EVT_FETCH_FAILED/SUCCEEDED
+   itself, replacing the old global fetch monkey-patch. */
+import { apiFetch } from '../utils/api-client.js';
+/* #1594 part 2 — ARIA-only pass (imported for its side effect only —
+   see combobox-a11y.js's own doc-comment). The header autocomplete
+   below already has working Arrow/Enter/Escape key handling and
+   scrollIntoView — LOWEST risk of the #1594 part-2 call sites, so this
+   file's keydown logic is untouched; only role=combobox/listbox/option,
+   aria-selected and aria-activedescendant are added on top of the
+   existing class-only ('.active') highlight. */
+import './combobox-a11y.js';
 
 /** Results fetched per page (and per "Load more" click). */
 const PAGE_SIZE = 50;
@@ -301,10 +313,13 @@ export class Search {
             }
         } catch (error) {
             console.error('[Search] Error:', error);
-            /* Live search failed (offline / server error). Signal the offline
-               indicator (#112) and, for a fresh search, fall back to the
-               precached slim index so the user can still find titles. */
-            try { window.dispatchEvent(new Event(EVT_FETCH_FAILED)); } catch (_e) {}
+            /* Live search failed (offline / server error). apiFetch already
+               dispatched EVT_FETCH_FAILED for the offline indicator (#112) —
+               this used to do it by hand because search.js was the ONLY module
+               signalling connectivity; since #1031 every request does, so a
+               second dispatch here would just fire the listener twice.
+               Fall back to the precached slim index so the user can still find
+               titles. */
             if (!append) {
                 const handled = await this._offlineSearchFallback(query, songbook, container);
                 if (!handled) {
@@ -340,14 +355,12 @@ export class Search {
         url.searchParams.set('lyrics', this.lyricsSearchEnabled ? '1' : '0');
         if (songbook) url.searchParams.set('songbook', songbook);
 
-        const response = await fetch(url, {
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
+        const response = await apiFetch(url);
         if (!response.ok) throw new Error(`Search API: HTTP ${response.status}`);
         const data = await response.json();
-        /* A live response means we're online — let the offline indicator
-           clear its "you're offline" banner (#112 / WS-I). */
-        try { window.dispatchEvent(new Event(EVT_FETCH_SUCCEEDED)); } catch (_e) {}
+        /* EVT_FETCH_SUCCEEDED is dispatched by apiFetch (#1031), which clears
+           the offline indicator's banner (#112 / WS-I) for EVERY request now,
+           not just search's. */
         return {
             results: data.results || [],
             hasMore: !!data.hasMore,
@@ -370,7 +383,7 @@ export class Search {
     async _getSlimIndex() {
         if (this._slimIndex) return this._slimIndex;
         const url = new URL(this.app.config.dataUrl, window.location.origin);
-        const response = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const response = await apiFetch(url);
         if (!response.ok) throw new Error(`Slim index: HTTP ${response.status}`);
         const data = await response.json();
         this._slimIndex = data.songs || [];
@@ -526,9 +539,7 @@ export class Search {
             const url = new URL(this.app.config.apiUrl, window.location.origin);
             url.searchParams.set('action', 'suggest');
             url.searchParams.set('q', query);
-            const response = await fetch(url, {
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            });
+            const response = await apiFetch(url);
             if (!response.ok) throw new Error(`Suggest API: HTTP ${response.status}`);
             const data = await response.json();
             suggestions = data.suggestions || [];
@@ -588,6 +599,19 @@ export class Search {
                 }
             });
         });
+
+        /* #1594 part 2 — the template above already marks index 0 'active'
+           via the class (the pre-existing highlight mechanism, untouched);
+           this layers the ARIA half on top so that highlight is actually
+           visible to assistive tech, not just sighted mouse/keyboard
+           users. */
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({
+                input, panel: dropdown,
+                items: Array.from(dropdown.querySelectorAll('.search-autocomplete-item')),
+                activeIndex: 0, idPrefix: (input.id || 'search') + '-autocomplete',
+            });
+        }
     }
 
     /**
@@ -599,6 +623,14 @@ export class Search {
         const parent = input.closest('.input-group') || input.parentElement;
         const dropdown = parent?.querySelector('.search-autocomplete');
         if (dropdown) dropdown.remove();
+        /* #1594 part 2 — the dropdown these attributes referenced no
+           longer exists; leaving them would point aria-controls /
+           aria-activedescendant at stale/removed ids (mirrors
+           place-search.js's own explicit teardown). */
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({ input, panel: null, items: [], activeIndex: -1, idPrefix: (input.id || 'search') + '-autocomplete', expanded: false });
+        }
+        input.removeAttribute('aria-controls');
     }
 
     /**
@@ -637,6 +669,17 @@ export class Search {
             items.forEach(item => item.classList.remove('active'));
             items[idx]?.classList.add('active');
             items[idx]?.scrollIntoView({ block: 'nearest' });
+            /* #1594 part 2 — the pre-existing class-only highlight above is
+               untouched; this layers aria-selected + aria-activedescendant
+               on top so the SAME highlight move is announced to assistive
+               tech (it previously moved a CSS class a screen reader has no
+               way to observe). */
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input, panel: dropdown, items: Array.from(items),
+                    activeIndex: idx, idPrefix: (input.id || 'search') + '-autocomplete',
+                });
+            }
             return true;
         }
 

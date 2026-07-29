@@ -9,8 +9,21 @@
  *
  * PURPOSE:
  * Parses raw song text files from .SourceSongData/ into a structured JSON
- * database file (data/songs.json). This is the single source of truth for
- * all song data used across Web, Apple, and Android platforms.
+ * file matching the interchange shape in tests/fixtures/songs.schema.json.
+ *
+ * #1617 — this is now a LOCAL BUILD ARTEFACT ONLY, not a tracked source of
+ * truth. Live reads are DB-direct MySQL everywhere (WS-J #1020, CLAUDE.md
+ * rule #17); the tracked data/songs.json this used to write was stale by
+ * ~4x against the live catalogue and runtime-unused. OUTPUT_FILE below
+ * writes under tmp/ (gitignored) so a fresh run can never again produce a
+ * file that gets committed by accident.
+ *
+ * The .SourceSongData/ text-file layout this script consumes now imports
+ * straight into MySQL via the editor's bulk ZIP importer instead (#664) —
+ * that is the supported path for getting new/updated song text into the
+ * live database. Whether this script itself is worth keeping at all (vs.
+ * relying solely on the ZIP importer) is an open question pending an
+ * owner decision on #1617; it is NOT deleted here.
  *
  * USAGE:
  *   node tools/parse-songs.js
@@ -18,7 +31,7 @@
  *   npm run parse-songs
  *
  * INPUT:  .SourceSongData/<Songbook Name> [<Abbreviation>]/<song files>
- * OUTPUT: data/songs.json
+ * OUTPUT: tmp/songs.json (local build artefact — gitignored, not the DB)
  */
 
 /* =========================================================================
@@ -51,8 +64,10 @@ const PROJECT_ROOT = path.resolve(__dirname, '..');
 /* SOURCE_DIR is the directory containing all raw song text files */
 const SOURCE_DIR = path.join(PROJECT_ROOT, '.SourceSongData');
 
-/* OUTPUT_FILE is where the parsed JSON database will be written */
-const OUTPUT_FILE = path.join(PROJECT_ROOT, 'data', 'songs.json');
+/* OUTPUT_FILE is where the parsed JSON database will be written. Lives
+   under tmp/ (gitignored) rather than data/ — #1617: a stale parsed
+   corpus must never be committable again. Local build artefact only. */
+const OUTPUT_FILE = path.join(PROJECT_ROOT, 'tmp', 'songs.json');
 
 /**
  * SONGBOOK_CONFIG maps each songbook folder name to its metadata.

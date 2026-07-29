@@ -21,6 +21,7 @@
  *   e.g., /data/audio/CP-0001.mid
  */
 import { escapeHtml } from '../utils/html.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class Audio {
     /**
@@ -280,7 +281,7 @@ export class Audio {
     async fetchMidi(songId) {
         const url = this.app.config.audioBasePath + songId + '.mid';
         try {
-            const response = await fetch(url);
+            const response = await apiFetch(url);
             if (!response.ok) return null;
             return await response.arrayBuffer();
         } catch {

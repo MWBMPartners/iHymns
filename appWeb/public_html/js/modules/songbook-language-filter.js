@@ -6,12 +6,29 @@
  *
  *   1. A pure client-side hide/show pass over the songbook tiles
  *      currently rendered on the surrounding page.
- *   2. The X-Preferred-Languages request header on every fetch
- *      (set globally so subsequent SPA navigations + native-API
- *      consumers all see the same filter state).
+ *   2. The X-Preferred-Languages request header on every fetch — see
+ *      "#1031 — X-Preferred-Languages header" below for who attaches it.
  *   3. The /api?action=user_preferred_languages_save endpoint when
  *      the user is signed in, so the choice persists to the
  *      account and syncs across devices.
+ *
+ * #1031 — X-Preferred-Languages header:
+ *   This module no longer attaches the header itself. Every same-origin
+ *   request now gets it from `js/utils/api-client.js`'s `apiFetch()`,
+ *   which reads STORAGE_LANGUAGE_FILTER fresh from localStorage on every
+ *   call (see that module's own doc-comment for the full design). Before
+ *   #1031 this module MONKEY-PATCHED `window.fetch` globally to add the
+ *   header — a cross-cutting concern attached by side effect, which only
+ *   applied if something had booted this module first (the router only
+ *   imports it on home/songbooks/settings) and put a single bug in front
+ *   of every fetch on the site. #1593 was exactly that: the patch read
+ *   `input.url` on a `URL` object (which exposes `href`), got
+ *   `undefined`, called `.startsWith` on it and threw — breaking ten
+ *   unrelated call sites and presenting as "Song of the Day disappears
+ *   when I pick two languages". `saveSubtags()` below still writes
+ *   STORAGE_LANGUAGE_FILTER, which is now the ONLY thing api-client.js
+ *   needs to see the new preference — no separate "header state" to
+ *   prime or keep in sync.
  *
  * Filter rules (per spec):
  *   - "All" checked → no filter; every tile + every song visible.
@@ -23,7 +40,7 @@
  *     "multi-lingual / not specified".
  *
  * Persistence:
- *   - localStorage key 'songbook-language-filter' for the
+ *   - localStorage key STORAGE_LANGUAGE_FILTER (constants.js) for the
  *     anonymous case (and as a fast-restore on every page load
  *     before the auth check resolves).
  *   - Account preference via /api?action=user_preferred_languages_save
@@ -50,9 +67,13 @@
    coincidence. See tests/test-event-names.js, which bans a raw quoted
    event-name literal outside constants.js — that's also why this note
    describes the two spellings in prose instead of quoting them. */
-import { EVT_LANGUAGE_FILTER_CHANGED } from '../constants.js';
+/* #1031 — shared localStorage-key constant; see constants.js's own note on
+   STORAGE_LANGUAGE_FILTER for why this raw key name predates the ihymns_
+   prefix convention and must not be renamed. */
+import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
-const STORAGE_KEY = 'songbook-language-filter';
+const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
 /**
  * Read the saved preferred-language subtag list from localStorage.
@@ -82,45 +103,6 @@ function saveSubtags(subtags) {
 }
 
 /**
- * Tell the global fetch wrapper to send X-Preferred-Languages on
- * every request. Falls back to a per-fetch override using a
- * Symbol-keyed property on window so anything that uses native
- * fetch picks up the header without the SPA having to touch every
- * call site.
- */
-function applyHeaderToFetch(subtags) {
-    /* The SPA's fetch wrapper (if any) reads window.__iHymnsPreferredLanguages
-       and prepends it as a request header. If no wrapper exists,
-       we monkey-patch fetch globally to add the header — once. */
-    window.__iHymnsPreferredLanguages = subtags.join(',');
-
-    if (window.__iHymnsLangFilterFetchPatched) return;
-    window.__iHymnsLangFilterFetchPatched = true;
-
-    const origFetch = window.fetch;
-    window.fetch = function (input, init) {
-        const csv = window.__iHymnsPreferredLanguages || '';
-        if (csv === '') return origFetch(input, init);
-
-        /* Only attach the header for same-origin requests — never
-           leak the user's language preference to a third-party
-           CDN or analytics endpoint. */
-        let url = '';
-        try {
-            url = typeof input === 'string' ? input : input.url;
-        } catch (_e) {}
-        const sameOrigin = !url.startsWith('http')
-            || url.startsWith(window.location.origin);
-        if (!sameOrigin) return origFetch(input, init);
-
-        const next = init ? { ...init } : {};
-        next.headers = new Headers(next.headers || {});
-        next.headers.set('X-Preferred-Languages', csv);
-        return origFetch(input, next);
-    };
-}
-
-/**
  * For signed-in users, persist the chosen subtag list to the
  * account so it syncs across devices. Best-effort: a network
  * failure or 401 (token expired) silently falls back to
@@ -133,7 +115,7 @@ function saveSubtagsToAccount(subtags) {
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (!token) return;
 
-    fetch('/api?action=user_preferred_languages_save', {
+    apiFetch('/api?action=user_preferred_languages_save', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -247,13 +229,12 @@ function applyFilter(rootEl, subtags) {
 export function bootSongbookLanguageFilter(root) {
     const scope = root || document;
     const wrapper = scope.querySelector('[data-songbook-language-filter]');
+    /* #1031 — no "restore the saved list to the global header" branch here
+       any more: there is no separate header state to prime. api-client.js's
+       apiFetch() reads STORAGE_LANGUAGE_FILTER straight from localStorage on
+       every request, so a page without this filter's markup still sends the
+       right header purely because saveSubtags() already wrote it there. */
     if (!wrapper || wrapper.dataset.songbookFilterBooted === '1') {
-        /* Even when the wrapper isn't on this page, restore the
-           saved subtag list to the global header so cross-page
-           navigations still apply the filter to song listings
-           rendered by the SPA after this point. */
-        const savedHeaderOnly = loadSavedSubtags();
-        applyHeaderToFetch(savedHeaderOnly);
         return;
     }
     wrapper.dataset.songbookFilterBooted = '1';
@@ -347,14 +328,22 @@ export function bootSongbookLanguageFilter(root) {
     const initial = loadSavedSubtags();
     syncUiFromSubtags(initial);
     applyFilter(scope, initial);
-    applyHeaderToFetch(initial);
 
     /* Wire change handlers. */
     function commit() {
         const subtags = readSubtagsFromUi();
+        /* #1031 — saveSubtags() (localStorage) BEFORE applyFilter() is still
+           load-bearing, same reason #1593 called out for the old header-state
+           priming: applyFilter() dispatches EVT_LANGUAGE_FILTER_CHANGED
+           *synchronously* and listeners (Song of the Day) refetch
+           immediately, so whatever apiFetch() would read from
+           STORAGE_LANGUAGE_FILTER at that moment must already be the NEW
+           selection. Now there's only ONE thing to get in the right order
+           (the localStorage write) instead of two (a JS header-state variable
+           AND localStorage) — api-client.js reads STORAGE_LANGUAGE_FILTER
+           fresh on every request, so there's no separate state left to prime. */
         saveSubtags(subtags);
         applyFilter(scope, subtags);
-        applyHeaderToFetch(subtags);
         saveSubtagsToAccount(subtags);
         refreshTrigger(subtags);
     }
@@ -403,7 +392,7 @@ export function bootSongbookLanguageFilter(root) {
     let token = null;
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (token) {
-        fetch('/api?action=user_preferred_languages', {
+        apiFetch('/api?action=user_preferred_languages', {
             headers: { 'Authorization': 'Bearer ' + token, 'X-Requested-With': 'XMLHttpRequest' },
         })
             .then(r => r.ok ? r.json() : null)
@@ -415,7 +404,6 @@ export function bootSongbookLanguageFilter(root) {
                 saveSubtags(remote);
                 syncUiFromSubtags(remote);
                 applyFilter(scope, remote);
-                applyHeaderToFetch(remote);
             })
             .catch(() => { /* ignore — local state stands */ });
     }

@@ -1750,9 +1750,27 @@ class SongData
      * open via getSongById(). songbookName is the LIVE tblSongbooks.Name
      * (WS-E #1013). Canonical order mirrors getSongsIndex/getSongs.
      *
+     * OPTIONAL SONGBOOK SCOPE (#1037). Pass an abbreviation to return only
+     * that book's rows.
+     *
+     * ELI5: ask for one songbook instead of all of them when that's all you need.
+     *
+     * The songbook listing page needs ONE book, and without this it pulled all
+     * ~14,500 rows and filtered them in PHP — better than the full hydration it
+     * replaced, but still four times the necessary rows and a whole-table scan
+     * on the second-biggest public page, on shared hosting. The three other
+     * callers (the PWA's songs_index, and both editor sidebars) genuinely want
+     * the whole catalogue and pass nothing, so this is purely additive.
+     *
+     * Ordering is UNCHANGED — the ORDER BY below is identical either way, which
+     * is what lets a scoped call keep the exact per-book order callers already
+     * rely on rather than re-deriving it.
+     *
+     * @param string|null $songbookAbbr Restrict to one tblSongbooks.Abbreviation;
+     *                                  null (default) returns every song.
      * @return array<int,array<string,mixed>>
      */
-    public function getSongsSlimIndex(): array
+    public function getSongsSlimIndex(?string $songbookAbbr = null): array
     {
         if (!$this->db) {
             throw new \RuntimeException('getSongsSlimIndex requires a live database connection.');
@@ -1766,14 +1784,30 @@ class SongData
                        s.Language AS language,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
                 FROM tblSongs s
-                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                ORDER BY s.SongbookAbbr ASC,
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr";
+
+        /* Scoped variant (#1037). The abbreviation is BOUND, never interpolated
+           (rule #5) — it reaches here from a URL segment. */
+        $scoped = ($songbookAbbr !== null && $songbookAbbr !== '');
+        if ($scoped) {
+            $sql .= " WHERE s.SongbookAbbr = ?";
+        }
+
+        $sql .= " ORDER BY s.SongbookAbbr ASC,
                          CASE WHEN sb.IsOfficial = 1 AND s.Number IS NOT NULL THEN 0 ELSE 1 END ASC,
                          s.Number ASC,
                          LOWER(s.Title) ASC";
 
-        $res  = $this->db->query($sql);
         $rows = [];
+        if ($scoped) {
+            $stmt = $this->db->prepare($sql);
+            $stmt->bind_param('s', $songbookAbbr);
+            $stmt->execute();
+            $res = $stmt->get_result();
+        } else {
+            $res = $this->db->query($sql);
+        }
+
         if ($res instanceof \mysqli_result) {
             while ($row = $res->fetch_assoc()) {
                 $row['number']        = normaliseSongNumber($row['number']);
@@ -1782,6 +1816,9 @@ class SongData
                 $rows[] = $row;
             }
             $res->free();
+        }
+        if ($scoped) {
+            $stmt->close();
         }
         return $rows;
     }
@@ -2309,16 +2346,34 @@ class SongData
      * Uses MySQL FULLTEXT search on title and lyrics_text for relevance-ranked
      * results, with a fallback to LIKE for short queries.
      *
-     * @param string      $query         Search query string
-     * @param string|null $songbookId    Limit search to a specific songbook
-     * @param int         $limit         Maximum results to return (0 = no limit)
-     * @param int         $offset        Pagination offset into the result set
-     * @param bool        $includeLyrics Search (and snippet) song bodies too,
-     *                                   not just titles — mirrors the public
-     *                                   "search within lyrics" toggle
+     * @param string       $query         Search query string
+     * @param string|null  $songbookId    Limit search to a specific songbook
+     * @param int          $limit         Maximum results to return (0 = no limit)
+     * @param int          $offset        Pagination offset into the result set
+     * @param bool         $includeLyrics Search (and snippet) song bodies too,
+     *                                    not just titles — mirrors the public
+     *                                    "search within lyrics" toggle
+     * @param list<string> $langSubtags   Preferred-language subtags ([] = no
+     *                                    filter), pushed into the FULLTEXT/LIKE
+     *                                    SQL via applyLanguageFilterSql() so
+     *                                    LIMIT/OFFSET paginate over the already-
+     *                                    filtered set (#1639 — filtering AFTER a
+     *                                    fixed-size fetch under-reports how many
+     *                                    matches remain, breaking `hasMore`).
+     *                                    Only the two paginated passes below
+     *                                    (FULLTEXT + LIKE) honour this; the
+     *                                    zero-result last-resort fallbacks
+     *                                    (writer/composer, SOUNDEX) and the
+     *                                    page-1-only curated merge (alt-title,
+     *                                    scripture-tag) don't carry an offset
+     *                                    and stay unfiltered, same as before
+     *                                    this fix — an intentionally narrow,
+     *                                    documented trade-off (mirrors the
+     *                                    api.php popular_songs/song_history
+     *                                    comments), not an oversight.
      * @return array Matching song objects
      */
-    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true): array
+    public function searchSongs(string $query, ?string $songbookId = null, int $limit = 50, int $offset = 0, bool $includeLyrics = true, array $langSubtags = []): array
     {
         $query = trim($query);
         if ($query === '') {
@@ -2375,7 +2430,7 @@ class SongData
         /* Very short queries (< 3 chars) sit below InnoDB's FULLTEXT
            minimum token length, so a LIKE scan is the only option. */
         if (mb_strlen($query) < 3 || empty($tokens)) {
-            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics);
+            $results = $this->_searchByLike($query, $songbookId, $limit, $offset, $includeLyrics, $langSubtags);
         } else {
             /* D2 hybrid — step 1: relevance-ranked FULLTEXT with each
                term prefix-matched AND required (+term*). Catches partial
@@ -2390,14 +2445,14 @@ class SongData
                     $primary = '(' . $primary . ') (' . $expExpr . ')';
                 }
             }
-            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset);
+            $results = $this->_runFulltextSearch($primary, $matchCols, $songbookId, $limit, $offset, $langSubtags);
 
             /* D2 hybrid — step 2: if requiring every term found nothing,
                broaden to ANY term (drop the +) so a single mistyped
                token doesn't sink the whole query. */
             if (empty($results)) {
                 $loose   = self::_booleanPrefixExpr($tokens, false);
-                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset);
+                $results = $this->_runFulltextSearch($loose, $matchCols, $songbookId, $limit, $offset, $langSubtags);
             }
         }
 
@@ -2474,7 +2529,7 @@ class SongData
      * songbookName comes from the LIVE tblSongbooks JOIN, not the
      * denormalised tblSongs.SongbookName (WS-E #1013).
      */
-    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset): array
+    private function _runFulltextSearch(string $ftQuery, string $matchCols, ?string $songbookId, int $limit, int $offset, array $langSubtags = []): array
     {
         if (trim($ftQuery) === '') {
             return [];
@@ -2490,8 +2545,17 @@ class SongData
             $types   .= 's';
         }
 
+        /* #1639 — push the preferred-language filter into the WHERE clause
+           (same helper + binding shape as getSongsIndex(), the established
+           pattern) rather than trimming rows out of the LIMIT/OFFSET window
+           after the fact — that's what made `hasMore` lie. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_filter.php';
+        [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
+        $params = array_merge($params, $langParams);
+        $types .= $langTypes;
+
         $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
-        $whereClause = implode(' AND ', $where);
+        $whereClause = implode(' AND ', $where) . $langWhere;
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,
@@ -2527,7 +2591,7 @@ class SongData
      * FULLTEXT minimum token length. Returns lightweight rows; credits
      * are bulk-attached by the caller.
      */
-    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics): array
+    private function _searchByLike(string $query, ?string $songbookId, int $limit, int $offset, bool $includeLyrics, array $langSubtags = []): array
     {
         $like = '%' . $query . '%';
 
@@ -2547,8 +2611,16 @@ class SongData
             $types   .= 's';
         }
 
+        /* #1639 — same SQL-level language filter as _runFulltextSearch()
+           above, so the sub-3-char / LIKE-fallback pass paginates over the
+           already-filtered set too. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'language_filter.php';
+        [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
+        $params = array_merge($params, $langParams);
+        $types .= $langTypes;
+
         $limitClause = $limit > 0 ? 'LIMIT ? OFFSET ?' : '';
-        $whereClause = implode(' AND ', $where);
+        $whereClause = implode(' AND ', $where) . $langWhere;
 
         $sql = "SELECT s.SongId AS id, s.Number AS number, s.Title AS title,
                        s.SongbookAbbr AS songbook, sb.Name AS songbookName,

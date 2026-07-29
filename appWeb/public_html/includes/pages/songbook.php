@@ -18,9 +18,8 @@ declare(strict_types=1);
 /* #1328 — hide the abbreviation badge when it just repeats the title. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
-/* Fetch songbook and its songs */
+/* Fetch songbook. */
 $book = $songData->getSongbook($bookId);
-$songs = $songData->getSongs($bookId);
 
 /* Handle invalid songbook ID — themed error card (unified renderer). */
 if ($book === null) {
@@ -40,6 +39,68 @@ if ($book === null) {
            . htmlspecialchars($bookId) . '</strong></div>';
     }
     return;
+}
+
+/* #1037 — song list: SLIM projection instead of getSongs()'s full lyric +
+   credit hydration. getSongs($bookId) used to assemble every song's
+   verses/chorus lines (via the tblLyricLines mirror, includes/lyric_lines_read.php)
+   PLUS six credit collections (writers/composers/arrangers/adaptors/
+   translators/artists) PLUS tags PLUS external links — all of it thrown
+   away except id/number/title/verified/writers/hasAudio/hasSheetMusic
+   below. For Mission Praise (~3,517 songs) that meant assembling the
+   WHOLE hymnal's lyric text on every uncached view of a page that only
+   ever renders titles — one of the two biggest public pages doing this
+   on shared hosting (CLAUDE.md rule #17 / the #929 OOM class).
+
+   getSongsSlimIndex() is the sanctioned scoped replacement (rule #17):
+   ONE lightweight query, no lyrics, no components, no credits — the same
+   method the Song Editor sidebar uses to list the whole catalogue
+   without downloading the corpus.
+
+   Called with the songbook abbreviation so the SCOPE happens in SQL
+   (#1037). It previously fetched every song in the catalogue and filtered
+   in PHP: correct, and still far cheaper than the full hydration it
+   replaced, but ~14,500 rows pulled to render one book of ~3,500 — four
+   times the rows and a whole-table scan, on the second-biggest public
+   page, on shared hosting. The ORDER BY inside the method is identical
+   either way, so the per-book order is unchanged. */
+$bookAbbr = strtoupper(trim((string)$book['id']));
+$songs = $songData->getSongsSlimIndex($bookAbbr);
+
+/* `verified` (the lyrics-verified checkmark) and `writers` (the byline
+   under the title) are NOT in the slim index — it's deliberately
+   lyric/credit-free — but both render per row below. Rather than fall
+   back to getSongs()'s full hydration (defeats the whole point of this
+   change) or fetch them one song at a time (N+1 is not an improvement
+   over N² — CLAUDE.md rule #17), pull both in ONE additional query
+   scoped to this songbook only (never per row), keyed by SongId.
+   tblSongWriters is one-to-many, so the LEFT JOIN fans out one row per
+   writer (or a single NULL-writer row for a song with none) — collapsed
+   back into per-song shapes in the loop below. */
+$verifiedMap = [];
+$writersMap  = [];
+if (!empty($songs)) {
+    $creditsDb = getDbMysqli();
+    $creditsStmt = $creditsDb->prepare(
+        'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
+           FROM tblSongs s
+           LEFT JOIN tblSongWriters w ON w.SongId = s.SongId
+          WHERE s.SongbookAbbr = ?
+          ORDER BY s.SongId, w.Id'
+    );
+    $creditsStmt->bind_param('s', $bookAbbr);
+    $creditsStmt->execute();
+    $creditsResult = $creditsStmt->get_result();
+    while ($creditsRow = $creditsResult->fetch_assoc()) {
+        $creditSongId = (string)$creditsRow['songId'];
+        if (!array_key_exists($creditSongId, $verifiedMap)) {
+            $verifiedMap[$creditSongId] = (bool)$creditsRow['verified'];
+        }
+        if ($creditsRow['writerName'] !== null && $creditsRow['writerName'] !== '') {
+            $writersMap[$creditSongId][] = (string)$creditsRow['writerName'];
+        }
+    }
+    $creditsStmt->close();
 }
 
 ?>
@@ -266,10 +327,10 @@ if ($book === null) {
                 ?></span>
                 <!-- Song info -->
                 <div class="song-info flex-grow-1">
-                    <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>
-                    <?php if (!empty($song['writers'])): ?>
+                    <span class="song-title"><?= htmlspecialchars(toTitleCase($song['title'])) ?><?php if (!empty($verifiedMap[$song['id']])): ?><span class="verified-badge" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></span>
+                    <?php if (!empty($writersMap[$song['id']])): ?>
                         <small class="song-writers text-muted d-block">
-                            <?= htmlspecialchars(implode(', ', $song['writers'])) ?>
+                            <?= htmlspecialchars(implode(', ', $writersMap[$song['id']])) ?>
                         </small>
                     <?php endif; ?>
                 </div>

@@ -979,8 +979,17 @@ if ($hasSchema) {
             });
         }
 
-        /* === Song typeahead === */
+        /* === Song typeahead ===
+           #1594 part 2 — was previously mouse-only (no keydown handler at
+           all: arrows, Home/End, Enter and Tab all did nothing but move
+           the text cursor / blur the field). Now a full ARIA 1.2 combobox
+           via the shared window.iHymnsComboboxA11y helper (loaded
+           globally by manage/includes/head-libs.php) — see that module's
+           doc-comment and appWeb/public_html/js/modules/place-search.js
+           (the reference implementation) for the pattern this follows. */
         let searchAbortController = null;
+        let suggestionItems = []; // last-fetched raw {songId,title,songbook,number}[], indexed to match the rendered rows
+        let suggestActiveIndex = -1;
         async function runSongSearch(q) {
             try {
                 if (searchAbortController) searchAbortController.abort();
@@ -990,11 +999,51 @@ if ($hasSchema) {
                 if (!res.ok) return;
                 const data = await res.json();
                 const items = (data && data.suggestions) || [];
-                renderSuggestions(items);
+                /* NEW result set — reset the highlight to the first row
+                   (matches place-search.js's runSearch()). Arrow-key
+                   re-renders below call renderSuggestionRows() directly
+                   instead, which does NOT touch suggestActiveIndex, so
+                   navigating the SAME list doesn't keep snapping back
+                   to row 0. */
+                suggestionItems = items;
+                suggestActiveIndex = items.length ? 0 : -1;
+                renderSuggestionRows();
             } catch (e) { /* aborted */ }
         }
-        function renderSuggestions(items) {
-            if (!items.length) { sugBox.style.display = 'none'; sugBox.innerHTML = ''; return; }
+        function isSuggestPanelOpen() { return sugBox.style.display !== 'none' && sugBox.style.display !== ''; }
+        function suggestOptionEls() { return Array.from(sugBox.querySelectorAll('a[data-payload]')); }
+        function pickSuggestion(payload) {
+            /* skip if already in the list */
+            if (tbody.querySelector('tr[data-song-id="' + (payload.songId || '').replace(/"/g, '\\"') + '"]')) {
+                sugBox.style.display = 'none';
+                search.value = '';
+                return;
+            }
+            tbody.insertAdjacentHTML('beforeend', memberRowHtml({
+                songId: payload.songId, title: payload.title,
+                songbook: payload.songbook, number: payload.number,
+                sortOrder: tbody.children.length * 10,
+                isCanonical: false, note: '',
+            }));
+            rebindRemoveButtons();
+            sugBox.style.display = 'none';
+            search.value = '';
+        }
+        /* Re-paint `suggestionItems` at the CURRENT `suggestActiveIndex` —
+           does NOT reset the highlight, unlike runSongSearch() above.
+           This is the `render` callback handleComboboxKeydown calls on
+           every arrow/Home/End press (see place-search.js's renderPanel()
+           for the same full-rebuild-per-keypress pattern). */
+        function renderSuggestionRows() {
+            const items = suggestionItems;
+            if (!items.length) {
+                sugBox.style.display = 'none';
+                sugBox.innerHTML = '';
+                if (window.iHymnsComboboxA11y) {
+                    window.iHymnsComboboxA11y.applyComboboxAria({ input: search, panel: sugBox, items: [], activeIndex: -1, idPrefix: 'edit-work-add-suggestions', expanded: false });
+                }
+                return;
+            }
             sugBox.style.display = '';
             sugBox.innerHTML = items.map(it => {
                 const label = (it.songbook || '') + (it.number ? (' #' + it.number) : '') + ' — ' + (it.title || it.songId);
@@ -1005,28 +1054,22 @@ if ($hasSchema) {
                 return '<a href="#" class="list-group-item list-group-item-action small" data-payload=\'' + escapeHtml(json) + '\'>' +
                     escapeHtml(label) + '</a>';
             }).join('');
-            sugBox.querySelectorAll('a[data-payload]').forEach(a => {
+            const optionEls = suggestOptionEls();
+            optionEls.forEach((a, i) => {
+                a.classList.toggle('active', i === suggestActiveIndex);
                 a.onclick = (ev) => {
                     ev.preventDefault();
                     let payload;
                     try { payload = JSON.parse(a.getAttribute('data-payload')); } catch (_e) { return; }
-                    /* skip if already in the list */
-                    if (tbody.querySelector('tr[data-song-id="' + (payload.songId || '').replace(/"/g, '\\"') + '"]')) {
-                        sugBox.style.display = 'none';
-                        search.value = '';
-                        return;
-                    }
-                    tbody.insertAdjacentHTML('beforeend', memberRowHtml({
-                        songId: payload.songId, title: payload.title,
-                        songbook: payload.songbook, number: payload.number,
-                        sortOrder: tbody.children.length * 10,
-                        isCanonical: false, note: '',
-                    }));
-                    rebindRemoveButtons();
-                    sugBox.style.display = 'none';
-                    search.value = '';
+                    pickSuggestion(payload);
                 };
             });
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input: search, panel: sugBox, items: optionEls,
+                    activeIndex: suggestActiveIndex, idPrefix: 'edit-work-add-suggestions',
+                });
+            }
         }
         if (search) {
             let t = null;
@@ -1034,6 +1077,22 @@ if ($hasSchema) {
                 clearTimeout(t);
                 const q = search.value.trim();
                 t = setTimeout(() => runSongSearch(q), 180);
+            });
+            search.addEventListener('keydown', (e) => {
+                if (!window.iHymnsComboboxA11y) return;
+                window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                    isOpen: isSuggestPanelOpen,
+                    getItems: suggestOptionEls,
+                    getActiveIndex: () => suggestActiveIndex,
+                    setActiveIndex: (i) => { suggestActiveIndex = i; },
+                    render: renderSuggestionRows,
+                    /* Reuse the row's own click handler rather than a second
+                       copy of pickSuggestion's payload-parsing — see the
+                       shared module's doc-comment on why every migrated
+                       call site does this. */
+                    onCommit: (i, el) => el.click(),
+                    onClose: () => { sugBox.style.display = 'none'; },
+                });
             });
             document.addEventListener('click', (e) => {
                 if (!sugBox.contains(e.target) && e.target !== search) {

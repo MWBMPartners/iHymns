@@ -14,9 +14,52 @@ declare(strict_types=1);
  *    session created on alpha/beta is NEVER joinable/gating on production.
  *    Every join/poll/gate/prune query MUST filter on it (the prod-stale class
  *    of bug). serviceMode_channel() is the single source.
- *  - CODES are Crockford base32 (no ambiguous glyphs), session-scoped unique,
- *    rotated on a current+previous+grace window so a just-before-rotation scan
- *    still validates.
+ *  - CODES are Crockford base32 (no ambiguous glyphs), rotated on a
+ *    current+previous+grace window so a just-before-rotation scan still
+ *    validates, and — since #1621 — GLOBALLY UNIQUE while live, enforced by the
+ *    database (`tblLiveFollowJoinCodes.ActiveCode`, a STORED generated column
+ *    that mirrors `Code` only while `Status IN ('current','previous')`, under
+ *    `UNIQUE KEY uq_ActiveCode`). The original `uq_Session_Code` was
+ *    SESSION-scoped, so it only ever stopped a session colliding with ITSELF;
+ *    two different organisations' concurrent services could hold the same code
+ *    and a congregant would be silently routed to whichever had the freshest
+ *    heartbeat — and, with it, that org's CCLI unlock (Phase 3 below). The
+ *    generated column makes that collision impossible to store; resolveJoin()
+ *    additionally REFUSES rather than guesses (defence in depth).
+ *  - A LIVE code holds its slot in `uq_ActiveCode` purely by Status, because a
+ *    generated column must be DETERMINISTIC — `UTC_TIMESTAMP()` is rejected
+ *    (ER_GENERATED_COLUMN_FUNCTION_IS_NOT_ALLOWED), so expiry CANNOT be part of
+ *    the expression. A row can therefore be un-joinable (past `ExpiresAt`) yet
+ *    still occupying the namespace. Codes are consequently RETIRED (a Status
+ *    transition — see below) on session end/supersede and, for the shut-laptop
+ *    case, by the opportunistic serviceMode_retireExpiredCodes() below.
+ *  - CODE-SPACE OCCUPANCY is bounded by CONCURRENT services, not by cumulative
+ *    history — BECAUSE codes are released. That is the whole point of the
+ *    retirement above, and the two facts must be read together: a code stops
+ *    occupying the namespace the moment it leaves 'current'/'previous', and a
+ *    session holds at most 2 live codes at a time (the current+previous
+ *    window), so
+ *          live codes ≈ 2 × services running AT ONCE.
+ *    The alphabet is 30 characters (22 letters + 8 digits, ambiguous glyphs
+ *    removed) at length 6 → 30^6 ≈ 7.29e8. Even at an implausible 100,000
+ *    concurrent services worldwide that is ~200,000 live codes = 0.03%
+ *    occupancy, so a mint collides ~0.03% of the time and all 6 retries failing
+ *    is ~1e-21; occupancy only reaches 10% at roughly 36 MILLION concurrent
+ *    services. So "lots of churches adopt this" is genuinely safe — but ONLY
+ *    while codes are released. Skip the retirement and occupancy tracks
+ *    cumulative sessions forever, and this entire argument collapses.
+ *  - LENGTH HEADROOM, if real pressure ever arrives: `Code` (and the `ActiveCode`
+ *    generated column mirroring it) is VARCHAR(12) while codes are 6 chars, and
+ *    serviceMode_generateCode() takes the length as a parameter. Going to 7
+ *    chars (2.2e10) or 8 (6.6e11) is a ONE-LINE change with NO migration. Do not
+ *    make the length dynamic or negotiate it per session; the answer to scale
+ *    pressure is "raise $len", not "redesign this".
+ *  - RETIREMENT IS A FLAG, NEVER A DELETE. No code path in this project removes
+ *    a tblLiveFollowJoinCodes row; retiring one only moves `Status` out of the
+ *    live set, which nulls `ActiveCode` and releases the UNIQUE slot while the
+ *    row (and the `Code` it carried) stays for audit/history. There is no
+ *    privacy or retention driver here that would justify destroying it. If you
+ *    are about to add a "tidy up old join codes" DELETE: don't.
  *  - The service-occurrence END is a LOCAL time in the venue's IANA tz; it is
  *    resolved to a UTC instant (DST-aware) and capped at a hard ceiling so a
  *    relayed code can never unlock for an all-day window.
@@ -45,6 +88,92 @@ const SERVICE_MODE_HARD_CEILING_HOURS = 4;
 const LIVE_SESSION_FRESHNESS_SECONDS  = 180;
 /** Crockford-ish base32 — no I/L/O/U/0/1 (matches live_follow_create). */
 const SERVICE_MODE_CODE_ALPHABET      = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
+
+/**
+ * #1621 — the join-code Status vocabulary. VARCHAR app-validated against these
+ * maps, never an ENUM (rule #20 — 'expired' was added here as a one-line PHP
+ * change precisely because the column is a VARCHAR; as an ENUM it would have
+ * been an ALTER, i.e. the second migration rule #20 forbids).
+ *
+ *   'current'    — the code on the venue screen right now.
+ *   'previous'   — the immediately-prior code, still honoured through the
+ *                  rotation grace window so a scan started a second before a
+ *                  rotate still validates.
+ *   'superseded' — replaced by the NEXT code in normal rotation.
+ *   'expired'    — retired because the SESSION ENDED (cleanly or by being
+ *                  superseded at start), or because ExpiresAt passed with
+ *                  nothing to supersede it (the shut-laptop case).
+ *
+ * ELI5: 'superseded' means "a newer code took over"; 'expired' means "the
+ * service this belonged to is over". Both are dead; recording WHICH kind of
+ * dead is the whole point — otherwise "why did this code stop working?" can
+ * only be inferred, never read off the row.
+ *
+ * ONLY the LIVE values are mirrored into the `ActiveCode` generated column (a
+ * POSITIVE list, deliberately), so any future retired-state value is
+ * automatically excluded from the unique slot without touching the column
+ * expression. `tblLiveFollowJoinCodes.ActiveCode` therefore carries the SAME
+ * list in SQL — the one place this map cannot reach, since a generated column
+ * is evaluated by MySQL. Changing SERVICE_MODE_CODE_LIVE_STATUSES means
+ * changing that expression too, which is a migration; changing anything in the
+ * RETIRED half is a PHP-only edit.
+ *
+ * Retiring a code is ALWAYS a Status transition. Nothing deletes these rows.
+ */
+const SERVICE_MODE_CODE_STATUSES      = ['current', 'previous', 'superseded', 'expired'];
+const SERVICE_MODE_CODE_LIVE_STATUSES = ['current', 'previous'];
+
+/**
+ * #1621 — how far PAST `ExpiresAt` a live-but-dead code is left alone before the
+ * opportunistic retirement below claims it. A code is already un-joinable the
+ * instant `ExpiresAt` passes (every join/poll predicate compares it), so waiting
+ * costs nothing behaviourally; the delay only buys clearance from clock skew
+ * between app + DB hosts and from a rotate that is mid-flight. One full TTL is
+ * generous and still releases the slot inside ~2.5 minutes.
+ */
+const SERVICE_MODE_CODE_RETIRE_GRACE_SECONDS = SERVICE_MODE_CODE_TTL_SECONDS;
+
+/**
+ * #1621 — hard cap on how many rows ONE opportunistic retirement pass may touch.
+ * The pass piggy-backs on serviceMode_mintCode(), which runs every ~30 s per
+ * live session, so it must never be able to turn a routine code rotate into a
+ * long-running write. The realistic backlog is tiny (normal rotation already
+ * retires everything except the LAST current+previous pair of each session, so
+ * the leak is ~2 rows per session that ever ran), and a pass that hits the cap
+ * simply finishes the job on the next rotate.
+ */
+const SERVICE_MODE_CODE_RETIRE_LIMIT = 500;
+
+/**
+ * #1621 — render SERVICE_MODE_CODE_LIVE_STATUSES as a SQL `IN (…)` value list,
+ * so the "which statuses are live?" answer exists ONCE in PHP instead of being
+ * re-typed into every predicate (CLAUDE.md red flag: "a hard-coded list … that
+ * already exists in a central map").
+ *
+ * SAFETY: this is one of the two interpolations rule #5 explicitly permits —
+ * hardcoded constants from PHP source, never a request value. There is nothing
+ * to bind: the list is a compile-time constant and can never contain user
+ * input. The two guards below make that structural rather than a matter of
+ * trust — each value must be a member of the declared vocabulary AND a plain
+ * lowercase word — so a careless future edit fails loudly here instead of
+ * quietly becoming SQL.
+ */
+function serviceMode_codeLiveStatusSql(): string
+{
+    static $sql = null;
+    if ($sql !== null) {
+        return $sql;
+    }
+    $parts = [];
+    foreach (SERVICE_MODE_CODE_LIVE_STATUSES as $status) {
+        if (!in_array($status, SERVICE_MODE_CODE_STATUSES, true) || !preg_match('/^[a-z]{1,20}$/', $status)) {
+            throw new \RuntimeException('Invalid join-code status literal: ' . var_export($status, true));
+        }
+        $parts[] = "'" . $status . "'";
+    }
+    $sql = implode(', ', $parts);
+    return $sql;
+}
 
 /**
  * #1576 — floor applied to an AD-HOC service occurrence only (never to an
@@ -279,16 +408,161 @@ function serviceMode_occurrenceEndUtc(string $occurrenceDate, string $startTime,
 }
 
 /**
+ * #1621 — retire (NOT delete) every LIVE join code belonging to ONE session,
+ * because that session has ended or been superseded. Returns the row count.
+ *
+ * ELI5: when a service finishes, the code on the screen has to stop working AND
+ * hand its code back to the pool so another service can be given it later. This
+ * flips those rows to "expired" — the rows themselves are kept, so you can still
+ * look up later which code a past service used.
+ *
+ * DETAILED — before #1621 nothing did this: `service_session_end` cleared
+ * `IsActive` on the session and revoked presence, but left the session's
+ * `current` (+ `previous`) code rows sitting at a LIVE Status forever. That was
+ * merely untidy while `uq_Session_Code` was session-scoped; with the global
+ * `uq_ActiveCode` slot it means every ended service permanently holds a code,
+ * and the unique index grows without bound. (To be clear about proportion: the
+ * code space is 30^6 ≈ 7.3e8, so this was never an exhaustion risk — it is a
+ * correctness + index-growth fix, and a future reader should not imagine the
+ * sky was falling.)
+ *
+ * CHANNEL-FILTERED (rule #26) via a correlated EXISTS on the session's own
+ * `Channel`: a request served by the alpha docroot must never write rows
+ * belonging to a production session, even though the three docroots share ONE
+ * MySQL. The EXISTS resolves by PRIMARY KEY (`s.Id = c.SessionId`), so the
+ * filter costs one index lookup per candidate row. Selecting from a DIFFERENT
+ * table while correlating on the updated table's column is allowed — the
+ * ER_UPDATE_TABLE_USED restriction is on selecting FROM the table being updated.
+ *
+ * @param int    $sessionId The session whose codes are being retired.
+ * @param string $channel   serviceMode_channel() of the CURRENT request.
+ * @return int              Rows retired (0 is normal — e.g. a re-ended session).
+ * @throws \mysqli_sql_exception The caller decides whether to roll back.
+ */
+function serviceMode_retireSessionCodes(\mysqli $db, int $sessionId, string $channel): int
+{
+    $live = serviceMode_codeLiveStatusSql();   /* constant-derived, see the helper */
+    $stmt = $db->prepare(
+        "UPDATE tblLiveFollowJoinCodes AS c
+            SET c.Status = 'expired'
+          WHERE c.SessionId = ?
+            AND c.Status IN ({$live})
+            AND EXISTS (
+                  SELECT 1 FROM tblLiveFollowSessions s
+                   WHERE s.Id = c.SessionId AND s.Channel = ?
+                )"
+    );
+    $stmt->bind_param('is', $sessionId, $channel);
+    $stmt->execute();
+    $retired = $stmt->affected_rows;
+    $stmt->close();
+    return max(0, $retired);
+}
+
+/**
+ * #1621 — retire (NOT delete) live codes whose `ExpiresAt` has passed, for the
+ * sessions that never end cleanly: a shut laptop, a flat battery, a closed tab.
+ *
+ * ELI5: some services just stop — nobody presses "End". Their code is already
+ * refused at the door (every join checks the expiry time), but the database
+ * still thinks that code is "taken". This hands those codes back.
+ *
+ * WHY IT LIVES HERE, PIGGY-BACKED ON A MINT, rather than in a cron job: this
+ * project runs on shared hosting and has no scheduler wired to the web app —
+ * `appWeb/.sql/cleanup.php` is a CLI maintenance script an operator runs, not a
+ * guaranteed heartbeat, and inventing a new cron dependency for ~2 rows per
+ * ended service would be the heavier answer. serviceMode_mintCode() already
+ * runs every ~30 s for every live session and already ages the rotation window,
+ * so it is the natural place: while ANY service is running anywhere on this
+ * channel, retirement keeps up on its own; when none is, there is nothing to
+ * retire. Bounded by SERVICE_MODE_CODE_RETIRE_LIMIT so one rotate can never
+ * become a full-table write.
+ *
+ * WHY IT IS NOT INSIDE THE MINT TRANSACTION: this statement touches rows owned
+ * by OTHER sessions. Run inside serviceMode_mintCode()'s transaction it would
+ * hold locks on those rows until commit, and two sessions rotating at the same
+ * instant could each hold the row the other wants — a deadlock on a hot path.
+ * It is therefore issued BEFORE `begin_transaction()`, as its own autocommit
+ * statement, so its locks are released immediately.
+ *
+ * The `Status IN ('current','previous')` leading predicate is what makes this
+ * cheap: `idx_Live_Expiry (Status, ExpiresAt)` turns it into two small index
+ * ranges over exactly the live-and-expired rows, instead of walking every
+ * long-retired row in `idx_Expiry` order. Deliberately no ORDER BY — the cap is
+ * a safety valve, not a fairness policy, and any row missed by one pass is
+ * picked up by the next.
+ *
+ * CHANNEL-FILTERED (rule #26), same correlated-EXISTS shape and same reasoning
+ * as serviceMode_retireSessionCodes(). Consequence worth stating: alpha's dead
+ * codes are retired by alpha traffic, production's by production traffic — an
+ * env with no traffic holds its handful of slots until it next serves a request.
+ * That is the correct trade; a cross-channel write from a request handler is the
+ * leak class rule #26 exists to prevent.
+ *
+ * @param string $channel serviceMode_channel() of the CURRENT request.
+ * @return int            Rows retired.
+ * @throws \mysqli_sql_exception Callers treat this as best-effort — see mintCode().
+ */
+function serviceMode_retireExpiredCodes(\mysqli $db, string $channel): int
+{
+    /* Trusted int constants, interpolated (not bound) — same pattern + rationale
+       as the $freshness interpolation in resolveJoin() below. MySQL allows LIMIT
+       on a SINGLE-table UPDATE only, which is why the channel filter is a
+       correlated EXISTS rather than a JOIN. */
+    $grace = (int) SERVICE_MODE_CODE_RETIRE_GRACE_SECONDS;
+    $cap   = (int) SERVICE_MODE_CODE_RETIRE_LIMIT;
+    $live  = serviceMode_codeLiveStatusSql();
+    $stmt  = $db->prepare(
+        "UPDATE tblLiveFollowJoinCodes AS c
+            SET c.Status = 'expired'
+          WHERE c.Status IN ({$live})
+            AND c.ExpiresAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$grace} SECOND)
+            AND EXISTS (
+                  SELECT 1 FROM tblLiveFollowSessions s
+                   WHERE s.Id = c.SessionId AND s.Channel = ?
+                )
+          LIMIT {$cap}"
+    );
+    $stmt->bind_param('s', $channel);
+    $stmt->execute();
+    $retired = $stmt->affected_rows;
+    $stmt->close();
+    return max(0, $retired);
+}
+
+/**
  * Transactionally mint the next rotating join code for a session:
  * previous → superseded, current → previous, insert a fresh 'current'. Returns
  * the new code. Locks the session's code rows (FOR UPDATE) so two near-
  * simultaneous rotates (projection setInterval + a reload) can't race to two
- * 'current' rows. Retries on the session-scoped (SessionId, Code) collision.
+ * 'current' rows.
+ *
+ * #1621 — the retry-on-1062 loop now guards something real. It used to be able
+ * to catch ONLY `uq_Session_Code`, i.e. a session colliding with its own past
+ * code, which was never the risk worth handling; the dangerous collision — two
+ * concurrent services on the same code — was not constrained at all. With
+ * `uq_ActiveCode` in place a genuine cross-session clash raises 1062 here and is
+ * simply regenerated. 6 attempts remains far more than enough: with a 30^6 ≈
+ * 7.3e8 space, even an implausible 10,000 simultaneously-live codes give a
+ * ~1.4e-5 chance per attempt, so all six failing is ~1e-29. The
+ * RuntimeException below is a should-never-happen guard, not a design margin.
  *
  * @throws \mysqli_sql_exception|\RuntimeException on a real failure (caller rolls the request).
  */
 function serviceMode_mintCode(\mysqli $db, int $sessionId): string
 {
+    /* #1621 — opportunistic expiry retirement, BEFORE the transaction opens so
+       it never holds another session's row locks across our commit (see
+       serviceMode_retireExpiredCodes()). Best-effort by design: a rotate is the
+       operator's live screen refresh, and it must not fail because a housekeeping
+       UPDATE did (e.g. lock-wait timeout under load, or the pre-#1621 schema on
+       an un-migrated install where `idx_Live_Expiry` doesn't exist yet). */
+    try {
+        serviceMode_retireExpiredCodes($db, serviceMode_channel());
+    } catch (\Throwable $_e) {
+        error_log('[service_mode/retireExpiredCodes] ' . $_e->getMessage());
+    }
+
     $db->begin_transaction();
     try {
         /* Lock this session's code rows + read the high-water generation. */
@@ -308,7 +582,10 @@ function serviceMode_mintCode(\mysqli $db, int $sessionId): string
         $prev->execute();
         $prev->close();
 
-        /* Insert a fresh current; retry on the (SessionId, Code) UNIQUE. */
+        /* Insert a fresh current; retry on ANY 1062 — that is now both the
+           session-scoped uq_Session_Code AND, since #1621, the global
+           uq_ActiveCode (a genuine cross-session clash). Either way the fix is
+           the same: pick another code and try again. */
         $ttl  = SERVICE_MODE_CODE_TTL_SECONDS;
         $code = '';
         $ins  = $db->prepare(
@@ -340,26 +617,60 @@ function serviceMode_mintCode(\mysqli $db, int $sessionId): string
 /**
  * Resolve a submitted join code to its LIVE service session, within a channel.
  * A 'current' or 'previous' code whose ExpiresAt is still in the future and
- * whose session is active + fresh (LastHeartbeatAt within 90s) resolves.
+ * whose session is active + fresh (LastHeartbeatAt within
+ * LIVE_SESSION_FRESHNESS_SECONDS) resolves.
  *
  * $venueId is OPTIONAL: a congregant typing a code off the screen doesn't know
- * the venue, so pass 0 to resolve by code + channel alone (codes are 6 Crockford
- * chars ≈ 1e9 space, so a code maps to ≤1 active session in practice; the
- * freshest wins on the rare clash). A QR deep-link can pass venueId for an exact
- * scope. Returns the session row (assoc) or null; opaque messaging is the
- * caller's job.
+ * the venue, so pass 0 to resolve by code + channel alone. A QR deep-link can
+ * pass a venueId for an exact scope.
+ *
+ * #1621 — AMBIGUITY IS REFUSED, NEVER GUESSED (defence in depth behind the
+ * `uq_ActiveCode` global unique index that now makes it unstorable).
+ *
+ * ELI5: if a typed code somehow pointed at two different churches' services at
+ * once, this used to quietly pick the one that had checked in most recently.
+ * That could drop a congregant into a stranger's service. Now it refuses, and
+ * the congregant is told to look at the screen for the current code — which is
+ * exactly what they should do anyway, and costs them one rotation window.
+ *
+ * DETAILED — the old code-alone path was `ORDER BY s.LastHeartbeatAt DESC LIMIT
+ * 1`: freshest-heartbeat wins. Two concurrent services holding the same code was
+ * possible because `uq_Session_Code` is SESSION-scoped, and the consequence was
+ * not merely a wrong song list — a presence token minted against the wrong org
+ * carries that org's Phase-3 CCLI unlock (serviceMode_presenceCcliNumber()). So
+ * the failure mode of guessing is a silent cross-organisation licence grant,
+ * while the failure mode of refusing is a retry. We fail in the direction that
+ * cannot leak. The query therefore reads LIMIT 2 and returns null if the two
+ * rows are different sessions.
+ *
+ * The VENUE-SCOPED path is deliberately untouched: with a venueId supplied the
+ * scope is already exact, and the LIMIT 2 / rows[0] shape returns precisely what
+ * `LIMIT 1` returned before. (Two rows for the SAME session cannot occur — that
+ * would need two live rows sharing one Code within one session, which
+ * `uq_Session_Code` forbids — so the session-id comparison below is belt-and-
+ * braces, not the load-bearing part.)
+ *
+ * @param string|null $failReason OUT: 'code_not_active' or 'ambiguous_code' when
+ *                                null is returned, for the caller's server-side
+ *                                breadcrumb ONLY. The user-facing message MUST
+ *                                stay identical for both — distinguishing them
+ *                                would tell a prober "this code exists twice".
+ * @return array|null The session row (assoc), or null; opaque messaging is the
+ *                    caller's job.
  */
-function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string $channel): ?array
+function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string $channel, ?string &$failReason = null): ?array
 {
+    $failReason = null;
     /* Unified freshness window (was 90s — aligned to Live Follow's 180s, #1386).
        Trusted int constant, interpolated (not a bound value). */
     $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
+    $live      = serviceMode_codeLiveStatusSql();
     $stmt = $db->prepare(
         "SELECT s.Id, s.OrgId, s.VenueId, s.ScheduleId, s.OccurrenceDate, s.Channel
            FROM tblLiveFollowJoinCodes c
            JOIN tblLiveFollowSessions s ON s.Id = c.SessionId
           WHERE c.Code = ?
-            AND c.Status IN ('current', 'previous')
+            AND c.Status IN ({$live})
             AND c.ExpiresAt > UTC_TIMESTAMP()
             AND (? = 0 OR s.VenueId = ?)
             AND s.Channel = ?
@@ -367,13 +678,28 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
             AND s.IsActive = 1
             AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
           ORDER BY s.LastHeartbeatAt DESC
-          LIMIT 1"
+          LIMIT 2"
     );
     $stmt->bind_param('siis', $code, $venueId, $venueId, $channel);
     $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
+    $res  = $stmt->get_result();
+    $rows = [];
+    while ($r = $res->fetch_assoc()) {
+        $rows[] = $r;
+    }
     $stmt->close();
-    return $row ?: null;
+
+    if (!$rows) {
+        $failReason = 'code_not_active';
+        return null;
+    }
+    /* Code-alone (typed) path only — a venue-scoped QR deep-link cannot be
+       ambiguous, so it keeps its exact pre-#1621 behaviour. */
+    if ($venueId === 0 && count($rows) > 1 && (int)$rows[0]['Id'] !== (int)$rows[1]['Id']) {
+        $failReason = 'ambiguous_code';
+        return null;
+    }
+    return $rows[0];
 }
 
 /**
@@ -479,12 +805,29 @@ function serviceMode_pollIntervalMs(string $role): int
  *
  * Presence/session freshness compares UTC (those rows are UTC); the org licence
  * expiry uses NOW() to match the existing licence layer (licences.php).
+ *
+ * SESSION LIVENESS (#1388). `s.IsActive = 1` alone is NOT proof the service is
+ * still running — it is a flag an operator sets on start and clears on a clean
+ * `service_session_end`. A browser tab closed mid-service, a laptop lid shut, a
+ * dead battery: all leave `IsActive = 1` set forever, and with it a standing
+ * CCLI unlock for every congregant who ever joined, until their presence row's
+ * own ExpiresAt (the occurrence end) catches up.
+ *
+ * ELI5: "the projector said it started" is not the same as "the projector is
+ * still there". We check it has said something recently, too.
+ *
+ * So this ALSO requires a heartbeat inside LIVE_SESSION_FRESHNESS_SECONDS, the
+ * same predicate serviceMode_resolveJoin() already applies when MINTING presence
+ * (see :356). Gate-on-read and gate-on-write must agree — a token that could not
+ * be minted right now must not keep unlocking content right now.
  */
 function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
 {
     if (!preg_match('/^[A-Za-z0-9_\-]{43}$/', $presenceToken)) {
         return null;
     }
+    /* Same trusted int constant, same interpolation pattern as resolveJoin(). */
+    $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
     try {
         $stmt = $db->prepare(
             "SELECT o.LicenceNumber
@@ -496,6 +839,7 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                 AND p.ExpiresAt > UTC_TIMESTAMP()
                 AND p.Channel = ?
                 AND s.IsActive = 1
+                AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
                 AND o.LicenceType = 'ccli'
                 AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
               LIMIT 1"

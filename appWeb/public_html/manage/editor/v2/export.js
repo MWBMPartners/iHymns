@@ -18,7 +18,7 @@ const EDITOR_API_URL = '/manage/editor/api.php';   // legacy GET endpoints (Easy
 /* v2 store slices -> the flat song object the legacy serializers expect:
    {title, number, songbook, songbookName, language, copyright, ccli, tuneName,
     writers:[name], composers:[name], arrangers:[name], artists:[name],
-    components:[{type, number, lines[]}]}. */
+    components:[{type, number, lines[], chords[]|null}]}. */
 function buildExportSong(store) {
     const s = store.get('song') || {};
     const credits = store.get('credits') || {};
@@ -26,7 +26,23 @@ function buildExportSong(store) {
         .map((c) => c.name).filter(Boolean);
     const components = (store.get('components') || []).slice()
         .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
-        .map((c) => ({ type: c.type, number: c.number, lines: Array.isArray(c.lines) ? c.lines : [] }));
+        /* `chords` is carried through because ChordPro's inline [chord] markers
+           are built from it (#1080). Without it the v2 editor's own
+           "Export ▸ ChordPro" silently produced a LYRICS-ONLY file while the
+           public song-page export produced a correct chord sheet — the menu
+           worked, a file downloaded, and the entire point of the format was
+           missing. That is the same looks-alive-but-isn't class as #1565.
+
+           The store holds `chords` as null or an array parallel to `lines`
+           (structure-tab.js:44), which is exactly the shape
+           format-export.js's buildChordPro() expects, so it passes straight
+           through with the same defensive Array.isArray guard as `lines`. */
+        .map((c) => ({
+            type:   c.type,
+            number: c.number,
+            lines:  Array.isArray(c.lines)  ? c.lines  : [],
+            chords: Array.isArray(c.chords) ? c.chords : null,
+        }));
     return {
         id:           s.SongId || s.id || '',
         title:        s.Title || '',

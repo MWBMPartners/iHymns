@@ -19,8 +19,19 @@ declare(strict_types=1);
 /* #1328 — hide the songbook abbreviation badge when it just repeats the name. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'songbook_display.php';
 
-/* Fetch the full song data */
-$song = $songData->getSongById($songId);
+/* Fetch the full song data — UNLESS a caller already injected one.
+   #1598 — the bulk_songs loop in api.php sets $song (= $bulkSong, already
+   fetched via ONE getSongs($songbook) call for the whole book) before
+   requiring this file. Before this fix that injection was silently
+   discarded: this line ran unconditionally and re-fetched every song via
+   getSongById(), one extra query per song for no reason (the O(2N) half
+   of #1598 — the O(N²) half is the prev/next block near the bottom of
+   this file). isset() treats an injected null as "not set", but no known
+   caller ever does that (api.php's normal page=song route never predefines
+   $song at all), so the single-song path is byte-for-byte unaffected. */
+if (!isset($song) || !is_array($song)) {
+    $song = $songData->getSongById($songId);
+}
 
 /* Handle song not found. */
 if ($song === null) {
@@ -392,12 +403,96 @@ try {
     $songLinks = [];
 }
 
+/* ===================================================================
+ * Per-line translations (#1089 / #1100 P1) — the PUBLIC READER.
+ *
+ * #1089's write layer has been complete since it landed — curators can
+ * enter per-line translations today via includes/line_enrichment.php +
+ * manage/editor/api2.php's line_translation_upsert, called from
+ * editor.js. What was missing was a render site: zero of
+ * includes/pages/song.php or any js/modules/*.js ever read
+ * tblLyricLineTranslations, so curated work was invisible — untested and
+ * unused. This is a deliberately modest first cut: an optional
+ * interlinear "Show translation" toggle (translation line beneath its
+ * source line). The full bilingual SIDE-BY-SIDE reader is #1100 and is
+ * explicitly NOT this — distinct toggles, distinct feature.
+ *
+ * Reuses the SAME scoped reader the song_detail API's `?include=translations`
+ * already serves — SongData::getSongDetailExtras() (SongData.php:2226) reads
+ * ONE song's approved rows (Status='approved') from tblLyricLineTranslations,
+ * keyed by tblLyricLineTranslations.LineId = tblLyricLines.Id (rule #21).
+ * Never a second reader (rule #25) — this file reads NOTHING from
+ * tblLyricLineTranslations directly.
+ *
+ * Gated on lyricLinesMirrorPresent(): translations anchor on
+ * tblLyricLines.Id, and $component['lineIds'] (below, in the render loop)
+ * is populated ONLY when the mirror is present (SongData::_getComponents()
+ * gates on the identical column-probe, rule #25) — without the mirror there
+ * is no stable line identity to match a translation row against, so
+ * fetching would either silently match nothing (a translation exists but
+ * never renders) or, worse, look correct while actually being unreachable.
+ * Skipping the query entirely on an un-migrated install is both cheaper
+ * and more honest.
+ *
+ * Only the PRIMARY (`isPrimary=1`) 'translation'-kind row per line is
+ * shown — Apple-Music-TTML-style 'transliteration' (romanization) rows are
+ * #1100's bilingual-reader scope, not this cut. A line with primary
+ * translations in two languages renders both beneath it (grouped by
+ * tblLyricLineTranslations.Id, not deduped to one).
+ *
+ * No substring/offset slicing happens here — each row's `text` is rendered
+ * whole, never sliced (rule #21's mb_substr/code-point requirement governs
+ * annotation SPANS, a distinct, unbuilt feature; there is nothing to slice
+ * for a whole-line translation).
+ *
+ * $lineTranslationsByLineId: (int) tblLyricLines.Id => list of
+ *   ['language' => BCP-47/free-text tag, 'text' => translated line].
+ * Left empty (mirror absent / no approved translations / a DB hiccup) —
+ * the render loop below and the toolbar button both check
+ * $hasLineTranslations and render NOTHING when empty: no toggle, no dead
+ * control (rule from the task spec).
+ * =================================================================== */
+$lineTranslationsByLineId = [];
+try {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+    if (!isset($translationsDb)) {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+        $translationsDb = getDbMysqli();
+    }
+    if (lyricLinesMirrorPresent($translationsDb)) {
+        $lineExtraSongId = (string)($song['id'] ?? $songId);
+        if ($lineExtraSongId !== '') {
+            $lineExtras = $songData->getSongDetailExtras($lineExtraSongId, ['translations']);
+            foreach (($lineExtras['translations'] ?? []) as $tr) {
+                if (($tr['kind'] ?? '') !== 'translation' || empty($tr['isPrimary'])) {
+                    continue;   /* romanizations + demoted non-primary rows — #1100 scope */
+                }
+                $lid = (int)($tr['lineId'] ?? 0);
+                $txt = (string)($tr['text'] ?? '');
+                if ($lid <= 0 || trim($txt) === '') {
+                    continue;
+                }
+                $lineTranslationsByLineId[$lid][] = [
+                    'language' => (string)($tr['targetLanguage'] ?? ''),
+                    'text'     => $txt,
+                ];
+            }
+        }
+    }
+} catch (\Throwable $_e) {
+    /* Missing table / DB hiccup on an un-migrated install — hide the
+       feature rather than block the page (same convention as the
+       translations picker + songLinks blocks above). */
+    $lineTranslationsByLineId = [];
+}
+$hasLineTranslations = !empty($lineTranslationsByLineId);
+
 ?>
 
 <!-- ================================================================
      SONG PAGE — Full lyrics and metadata
      ================================================================ -->
-<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?>>
+<article class="page-song" aria-label="<?= htmlspecialchars($songTitle) ?>" data-song-id="<?= htmlspecialchars($song['id']) ?>"<?php if ($songPublicId !== ''): ?> data-song-public-id="<?= htmlspecialchars($songPublicId) ?>"<?php endif; ?><?php if ($songCanonical !== ''): ?> data-song-canonical="<?= htmlspecialchars($songCanonical, ENT_QUOTES) ?>"<?php endif; ?> data-songbook="<?= htmlspecialchars($songbook) ?>"<?php if ($songbookColour !== ''): ?> data-songbook-color="<?= htmlspecialchars($songbookColour) ?>"<?php endif; ?><?php if ($songNumber !== null): ?> data-song-number="<?= (int)$songNumber ?>"<?php endif; ?><?php if (!empty($song['capo'])): ?> data-capo="<?= (int)$song['capo'] ?>"<?php endif; ?><?php if (!empty($song['key'])): ?> data-key="<?= htmlspecialchars($song['key']) ?>"<?php endif; ?><?php if ($hasLineTranslations): ?> data-has-line-translations="1"<?php endif; ?>>
 
     <!-- Breadcrumb navigation with schema.org markup (#151) -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -910,6 +1005,27 @@ try {
                     <i class="fa-solid fa-guitar me-1" aria-hidden="true"></i>Chords
                 </button>
 
+                <?php /* Per-line translation toggle (#1089 / #1100 P1). Rendered ONLY
+                         when $hasLineTranslations is true (computed above from the
+                         scoped tblLyricLineTranslations read) — the fragment is a
+                         shared-cache response (rule #6) so this decision is baked the
+                         SAME for every visitor of this song, never per-user; the
+                         show/hide STATE itself is purely client-side (song-translations.js,
+                         wired from router.js's afterPageLoad(), toggles `.d-none` on the
+                         `.lyric-line-translation` rows already in the DOM — no re-fetch,
+                         no per-user server render). A song with none of these rows never
+                         gets the button at all, so there is no dead control to click. */ ?>
+                <?php if ($hasLineTranslations): ?>
+                <button type="button" class="btn btn-sm btn-outline-secondary song-toolbar-btn"
+                        id="btn-toggle-line-translations"
+                        data-line-translations-toggle="1"
+                        aria-pressed="false"
+                        title="Show/hide the per-line translation">
+                    <i class="fa-solid fa-closed-captioning me-1" aria-hidden="true"></i>
+                    <span data-line-translations-label="1">Show translation</span>
+                </button>
+                <?php endif; ?>
+
                 <!-- Edit in Song Editor (#407). Hidden by default; revealed
                      by JS when the signed-in user has the `edit_songs`
                      entitlement (editor / admin / global_admin). -->
@@ -971,6 +1087,13 @@ try {
                 $type   = $component['type'] ?? 'verse';
                 $number = $component['number'] ?? null;
                 $lines  = $component['lines'] ?? [];
+                /* #1089/#1100 P1 — parallel array to $lines, present only when
+                   the tblLyricLines mirror is live (rule #25's lineIds
+                   contract, see lyricLinesAssembleFromRows() in
+                   includes/lyric_lines_read.php). Used below purely to look
+                   up $lineTranslationsByLineId by position — never persisted,
+                   never re-derived by slicing anything. */
+                $lineIds = $component['lineIds'] ?? [];
                 /* #858 — per-component language override. NULL / empty
                    means "inherit from the song"; an explicit value
                    sets lang="…" on this <div> so screen readers /
@@ -1029,8 +1152,22 @@ try {
                 </div>
                 <!-- Lyrics lines -->
                 <div class="lyric-lines">
-                    <?php foreach ($lines as $line): ?>
+                    <?php foreach ($lines as $lineIdx => $line): ?>
+                        <?php
+                            /* #1089/#1100 P1 — interlinear translation(s) for this line,
+                               if any. $lineId is 0 (no match) on an un-migrated install
+                               ($lineIds empty) or for any line the mirror has no stable
+                               Id for; $hasLineTranslations already gates the toggle
+                               button itself, so this is just "does THIS line have one". */
+                            $lineId = (int)($lineIds[$lineIdx] ?? 0);
+                            $lineTr = ($lineId > 0) ? ($lineTranslationsByLineId[$lineId] ?? []) : [];
+                        ?>
                         <p class="lyric-line mb-1"><?= htmlspecialchars($line) ?></p>
+                        <?php foreach ($lineTr as $lt): ?>
+                            <p class="lyric-line-translation small text-muted fst-italic mb-1 d-none"
+                               data-line-translation-for="<?= $lineId ?>"
+                               <?php if ($lt['language'] !== ''): ?>lang="<?= htmlspecialchars($lt['language']) ?>"<?php endif; ?>><?= htmlspecialchars($lt['text']) ?></p>
+                        <?php endforeach; ?>
                     <?php endforeach; ?>
                 </div>
             </div>
@@ -1466,15 +1603,35 @@ try {
 
     <!-- Previous/Next navigation -->
     <?php
-        /* Find previous and next songs in the same songbook */
-        $bookSongs = $songData->getSongs($songbook);
-        $prevSong = null;
-        $nextSong = null;
-        foreach ($bookSongs as $i => $s) {
-            if ($s['id'] === $song['id']) {
-                $prevSong = $bookSongs[$i - 1] ?? null;
-                $nextSong = $bookSongs[$i + 1] ?? null;
-                break;
+        /* Find previous and next songs in the same songbook — UNLESS a caller
+           already injected the answer.
+           #1598 — this used to run unconditionally, calling getSongs($songbook)
+           — a FULL songbook hydration (every song's components + lyric
+           assembly) — JUST to find this one song's neighbours. The bulk_songs
+           loop in api.php calls this file once per song in the book, so for a
+           3,517-song songbook that was ~3,517 whole-book re-hydrations in one
+           request: the O(N²) at the heart of #1598 (it times out / OOMs on
+           exactly the large books a "download songbook" user cares about).
+           api.php already has the WHOLE book in memory (it fetched it once,
+           the same array this loop would have re-fetched) and can resolve
+           prev/next for every song from that one array in O(1) per song, so
+           it injects the answer via $prevSong / $nextSong + a
+           $songNavInjected sentinel before requiring this file.
+           $songNavInjected is a dedicated boolean sentinel rather than
+           isset($prevSong) — isset() is false for an explicitly-injected
+           null (the legitimate "no prev/next song" case for the first/last
+           song in a book), which would otherwise make this block silently
+           redo the expensive getSongs() call anyway on exactly that edge. */
+        if (empty($songNavInjected)) {
+            $bookSongs = $songData->getSongs($songbook);
+            $prevSong = null;
+            $nextSong = null;
+            foreach ($bookSongs as $i => $s) {
+                if ($s['id'] === $song['id']) {
+                    $prevSong = $bookSongs[$i - 1] ?? null;
+                    $nextSong = $bookSongs[$i + 1] ?? null;
+                    break;
+                }
             }
         }
     ?>

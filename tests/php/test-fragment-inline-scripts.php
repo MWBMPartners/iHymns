@@ -103,18 +103,25 @@ function stripCommentsPreservingLines(string $src): string
 /**
  * Count-exact allowlist of already-known, tracked, temporary exceptions.
  *
- * Keyed by basename (pages/ and partials/ do not currently share a
- * filename, so this is unambiguous). Every entry names the tracking issue
- * and the reason the tag is safe to leave in place a little longer — see
- * the file-level doc-block, point 3, for the two-directional check this
- * enables (regression vs. stale entry).
+ * ELI5: this list is EMPTY, and that is the whole point — every fragment in
+ * the tree is now clean, so the guard is absolute: ANY inline `<script>` in
+ * `includes/pages/*.php` or `includes/partials/*.php` fails the build.
+ *
+ * Detail: the last entry here was `request-a-song.php` (#1572 — the
+ * offline-queue submit module). It was extracted to
+ * `js/modules/request-a-song.js` and wired from `router.js`'s
+ * `afterPageLoad()` (the home-page.js / export-ui.js pattern), so the entry
+ * was deleted and the list self-cleaned to nothing. Keep it that way: the
+ * correct response to a new violation is to move the logic into a real ES
+ * module, NOT to re-open this list. If an exception ever genuinely is
+ * unavoidable, an entry is keyed by basename (pages/ and partials/ do not
+ * currently share a filename, so that is unambiguous) and MUST name a
+ * tracking issue — see the file-level doc-block, point 3, for the
+ * two-directional check that then applies (regression vs. stale entry).
+ *
+ * @var array<string, array{count:int, why:string}>
  */
-$allow = [
-    'request-a-song.php' => [
-        'count' => 1,
-        'why'   => '#1572 — offline-queue inline module; CSP-dead but the page has a no-JS <form action> fallback (#711). DELETE this entry when #1572 closes.',
-    ],
-];
+$allow = [];
 
 const GUARD_INLINE_SCRIPT_PATTERN = '/<script\b([^>]*)>/i';
 const GUARD_ALLOWED_SRC_PATTERN   = '/\bsrc\s*=/i';

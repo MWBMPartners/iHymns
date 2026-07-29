@@ -35,7 +35,7 @@ import { LiveFollow } from './modules/live-follow.js';
 import { ServiceFollow } from './modules/service-follow.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
-import { Request } from './modules/request.js';
+import { SongRequest } from './modules/request.js';  /* #1620 — not `Request`: that name shadows the Fetch-API global */
 import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
@@ -53,6 +53,7 @@ import { Analytics } from './modules/analytics.js';
 import { Notifications } from './modules/notifications.js';
 import { bootErrorMonitor } from './modules/error-monitor.js';
 import { escapeHtml } from './utils/html.js';
+import { setAuthHeaderProvider, apiFetch } from './utils/api-client.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_DISCLAIMER_ACCEPTED,
@@ -132,7 +133,7 @@ class iHymnsApp {
         /** @type {Shortcuts} Keyboard shortcuts help overlay (#104) */
         this.shortcuts = null;
 
-        /** @type {Request} Missing song request form (#107) */
+        /** @type {SongRequest} Missing song request form (#107) */
         this.request = null;
 
         /** @type {Transpose} Transpose / capo indicator (#101) */
@@ -277,6 +278,13 @@ class iHymnsApp {
 
             /* User authentication for cross-device sync */
             this.userAuth = new UserAuth(this);
+            /* #1031 — wire api-client.js's auth-header provider now that
+               userAuth exists. Injected rather than imported directly by
+               api-client.js, which would create user-auth → api-client →
+               user-auth import cycle (bundlers resolve those in load order,
+               i.e. sometimes `undefined` at call time, non-deterministically —
+               see api-client.js's own doc-comment on authHeaderProvider). */
+            setAuthHeaderProvider(() => this.userAuth.authHeaders());
             this.userAuth.initUserMenu();
             /* Background Sync for setlists + favourites (#338). Safe to
                call even if not signed in; the drain handlers short-
@@ -333,7 +341,7 @@ class iHymnsApp {
             this.shortcuts.init();
 
             /* Missing song request form (#107) */
-            this.request = new Request(this);
+            this.request = new SongRequest(this);
             this.request.init();
 
             /* Transpose / capo indicator (#101) */
@@ -631,7 +639,7 @@ class iHymnsApp {
             if (btn) { btn.disabled = true; }
             if (fb) { fb.className = 'small text-muted'; fb.textContent = 'Sending…'; }
             try {
-                const res = await fetch('/api?action=song_correction_submit', {
+                const res = await apiFetch('/api?action=song_correction_submit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                     body: JSON.stringify({

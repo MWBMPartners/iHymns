@@ -17,6 +17,7 @@ import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
 import { songsExist } from '../utils/song-existence.js';
 import { STORAGE_HISTORY, STORAGE_HISTORY_BACKFILLED, songbookLabel } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class History {
     /**
@@ -132,7 +133,7 @@ export class History {
                (logged in) so the flag can't leak across an auth boundary and
                suppress a legitimate cross-device pull on a later login. */
             this._clearedLocally = true;
-            fetch(`${this.app.config.apiUrl}?action=song_history_clear`, {
+            apiFetch(`${this.app.config.apiUrl}?action=song_history_clear`, {
                 method: 'POST',
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
@@ -159,7 +160,7 @@ export class History {
     async _fetchServerHistory() {
         if (!this.app?.userAuth?.isLoggedIn?.()) return null;
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=song_history`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=song_history`, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.app.userAuth.authHeaders(),
@@ -215,7 +216,7 @@ export class History {
                 return;
             }
             try {
-                const res = await fetch(`${this.app.config.apiUrl}?action=song_history_backfill`, {
+                const res = await apiFetch(`${this.app.config.apiUrl}?action=song_history_backfill`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

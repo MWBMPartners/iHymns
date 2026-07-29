@@ -188,8 +188,20 @@ check('constants.js exports at least one EVT_* name (sanity check on the scanner
 /* One-sided-by-design names. Per #1581: a listener with no dispatcher
    yet is legitimate future work; a dispatcher with no listener never
    is (nobody would ever observe it, which is itself a bug smell), so
-   this allowlist only ever means "listener exists, dispatcher pending". */
-const ONE_SIDED_ALLOWLIST = new Set(['EVT_OFFLINE_SETTINGS_CHANGED']);
+   this allowlist only ever means "listener exists, dispatcher pending".
+   The set is COUNT-EXACT and self-cleaning: once a dispatcher appears,
+   the entry must be removed or this suite fails. That is deliberate —
+   an allowlist nobody is forced to prune silently becomes a list of
+   permanently-broken things.
+
+   NOW EMPTY (#1597). `EVT_OFFLINE_SETTINGS_CHANGED` sat here through
+   the whole #1581 sweep because it was correctly classified — the
+   Settings "include audio offline" toggle had a listener
+   (`offline-ui.js`) and no dispatcher, so the preference was inert for
+   tile downloads. The guard had not MISSED that dead wire; it had
+   recorded it and was waiting. #1597 wired the dispatcher, so the entry
+   self-cleaned exactly as designed. Keep this set empty if you can. */
+const ONE_SIDED_ALLOWLIST = new Set([]);
 
 /* Concatenate every non-constants.js file into one haystack per name
    check — the dispatch/listen call and the EVT_* identifier always sit

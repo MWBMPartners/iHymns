@@ -615,17 +615,170 @@
     }
 
     /* ====================================================================
-     *  ChordPro (.cho) — #1264  (lyrics-only v1)
+     *  ChordPro (.cho) — #1264 (lyrics-only v1, PR #1277) + #1080/#1081
+     *  inline [chord] markers (this change)
      * ====================================================================
      * ChordPro is the lingua franca chord-chart text format and the only
      * format WorshipTools Presenter/Planning imports under six extensions
      * (.chord/.cho/.crd/.chopro/.pro/.txt) — also read by OnSong, SongBeamer
-     * and Planning Center. This v1 emits the header directives WorshipTools
+     * and Planning Center. Emits the header directives WorshipTools
      * documents plus section labels as {comment:} (the section directive
-     * WorshipTools confirms), with LYRICS ONLY. Inline [chord] markers are a
-     * follow-on once per-line chords are surfaced on the export read path
-     * (#299 / #1094) — they aren't in the export song-shape yet. A songbook
-     * exports as a zip of .cho files. */
+     * WorshipTools confirms), with inline [chord] markers interleaved into
+     * the lyric text whenever the song carries per-line chords (#1080). A
+     * songbook exports as a zip of .cho files.
+     *
+     * SAFETY PROPERTY: a song with NO chords anywhere produces output
+     * BYTE-IDENTICAL to the pre-#1080 lyrics-only exporter (PR #1277) — see
+     * chordProSongHasChords() below, the single gate deciding whether a
+     * song enters the chord-aware path at all. tests/test-chordpro-export.js
+     * pins the pre-#1080 output for exactly this reason.
+     *
+     * DATA SHAPE (read off the live read/write paths, not assumed):
+     * `song.components[i].chords`, when present, is an array PARALLEL to
+     * `.lines[]` — one cell per lyric line. Each cell is `null` (that line
+     * carries no chords), an array of chord-symbol strings in left-to-right
+     * order (what `_saveSongCleanChords()` in
+     * manage/editor/save_song_core.php and `lyricLinesAssembleFromRows()`
+     * in includes/lyric_lines_read.php both produce from
+     * `json_decode(tblLyricLines.ChordsJson[i])`), or — only ever
+     * transiently, inside the live v1 editor textarea before its next save
+     * — a single space-separated string ("G C Am", the dual shape
+     * componentChordsToText() in editor.js documents). THERE IS NO STORED
+     * CHARACTER OFFSET: song_importers.php's own doc-block on
+     * _bulkImport_chordProSplitLine() says outright that "the app's chord
+     * model is a chord line per lyric line, not a positioned overlay" —
+     * chords are captured IN ORDER, never at a column. (The only two places
+     * that ever modelled a {position, chord} pair were schema.sql's
+     * `tblSongChords` — commented "Array of {position, chord} objects" — and
+     * js/utils/transpose.js. Both were dead code with zero runtime callers;
+     * the utility was deleted in #1612 and the table is queued for a drop
+     * migration in #1613. Nothing that actually runs ever reads or writes a
+     * chord's character position — #1081 [ProPresenter chart export]
+     * inherits this same gap and will need the same alignment call.)
+     *
+     * ALIGNMENT DECISION: with no stored offset, the only data-faithful
+     * anchor is the chord's ARRAY INDEX against the line's WORD index —
+     * chord token i renders immediately before the line's i-th
+     * whitespace-delimited word (0-based). That mirrors the left-to-right
+     * intent a curator expresses typing "G    C    Am" into the editor's
+     * chord textarea above a lyric line (#1094) — the Nth token belongs
+     * over the Nth word. buildChordProLine() below never indexes into the
+     * line BY CHARACTER — it only ever splits on whitespace RUNS (always
+     * standalone UTF-16 code units, never inside a surrogate pair or a
+     * combining-mark cluster) and re-joins whole word substrings, so the
+     * interleave is code-point-safe by construction; the catalogue's ~20
+     * non-English songbooks need no special-casing (see the astral-plane +
+     * diacritic assertions in the test file for proof).
+     *
+     * OUT-OF-RANGE CHORDS (more chord tokens than words in a line —
+     * malformed data, or a genuine trailing "hit" after the last syllable):
+     * CLAMPED, never dropped, never thrown — the overflow renders as
+     * `[chord]` markers appended right after the last word (or, for a
+     * chord-only / lyric-less line, at the very start) so the chord stays
+     * visible on the chart instead of vanishing.
+     *
+     * ESCAPING: ChordPro's own reference implementation (chordpro.org /
+     * github.com/ChordPro/chordpro) has NO backslash escape for a literal
+     * `[` or `]` in lyric text — the only mechanism it offers is the
+     * `parser.altbrackets` CONFIG option, which substitutes two characters
+     * of the AUTHOR's choosing for brackets and requires the READING
+     * application to be pre-configured to convert them back after chord
+     * parsing (docs/content/ChordPro-Configuration-Parser.md; the
+     * reference parser's own Song.pm decompose() comment calls this "the
+     * exceptional case" and its docs say "Use wisely. Better still, do not
+     * use this."). An export can't assume the destination app has that
+     * configured, so once a song enters the chord-aware path, every literal
+     * `[`/`]` — in lyric text AND in a chord symbol, however unlikely — is
+     * neutralised to `(`/`)` (chordProBracketSafe()) so no compliant
+     * ChordPro reader ever misreads it as a chord delimiter. This ONLY
+     * fires when the song has chords; a chordless song keeps the
+     * pre-#1080 no-escaping behaviour (the byte-identical safety property
+     * above), which is also why brackets in header directive VALUES
+     * (`{title: ...}` etc.) are left untouched — directive lines are never
+     * scanned for `[chord]` syntax, only lyric-body lines are. */
+
+    /* chordProChordTokens(cell) — ELI5: turn one stored line-chords value
+     * into a plain ordered list of chord names, dropping anything blank.
+     * DETAIL: `cell` is whatever a line's chords round-trip as (see the
+     * DATA SHAPE note above) — null, an array, or (pre-save only) a raw
+     * string — so every caller gets one shape back regardless of which. */
+    function chordProChordTokens(cell) {
+        if (cell == null) { return []; }
+        if (Array.isArray(cell)) {
+            return cell
+                .map(function (c) { return (c == null) ? '' : String(c).trim(); })
+                .filter(function (c) { return c !== ''; });
+        }
+        var s = String(cell).trim();
+        return s ? s.split(/\s+/) : [];
+    }
+
+    /* chordProSongHasChords(song) — ELI5: does this song have any chords
+     * typed in anywhere? DETAIL: the one gate buildChordPro() checks before
+     * touching a single line. False → every line renders exactly as the
+     * pre-#1080 exporter did (no escaping, no markers) — the byte-identical
+     * safety property the tests pin. True → the WHOLE document (every
+     * component, even one with no chords of its own) goes through the
+     * bracket-safe + interleave path, because a ChordPro reader parses
+     * `[…]` per line regardless of which component it's in — a stray
+     * literal bracket three lines from the nearest chord is just as
+     * corrupting as one right next to it. */
+    function chordProSongHasChords(song) {
+        return (song.components || []).some(function (comp) {
+            return Array.isArray(comp.chords) && comp.chords.some(function (cell) {
+                return chordProChordTokens(cell).length > 0;
+            });
+        });
+    }
+
+    /* chordProBracketSafe(s) — neutralise ChordPro's own delimiters (see
+     * the ESCAPING note above — the format itself has no backslash escape
+     * for this) so a literal bracket in source text can never be mistaken
+     * for a chord marker by a compliant reader. */
+    function chordProBracketSafe(s) {
+        return String(s == null ? '' : s).replace(/\[/g, '(').replace(/\]/g, ')');
+    }
+
+    /* buildChordProLine(lineText, chordCell, chordAware) — render one lyric
+     * line, optionally with inline [chord] markers.
+     *   lineText   the raw lyric line (may be null/undefined/empty).
+     *   chordCell  this line's stored chords (see the DATA SHAPE note) or
+     *              null/undefined when the line has none.
+     *   chordAware chordProSongHasChords(song) for the whole export (song-
+     *              wide, not per-line — see that function for why).
+     * ALGORITHM: split on whitespace RUNS only — never by character index,
+     * which is what keeps the interleave code-point-safe (see the
+     * ALIGNMENT DECISION note above) — then walk the words in order,
+     * prefixing word i with `[token i]` for as long as both lists still
+     * have entries. Any chord tokens left over once the words run out are
+     * appended, in order, at the very end (the CLAMP behaviour for
+     * out-of-range / chord-only lines documented above). */
+    function buildChordProLine(lineText, chordCell, chordAware) {
+        var raw = (lineText == null) ? '' : String(lineText);
+        var text = chordAware ? chordProBracketSafe(raw) : raw;
+        var tokens = chordAware ? chordProChordTokens(chordCell) : [];
+        if (!tokens.length) { return text; }
+        tokens = tokens.map(chordProBracketSafe);
+
+        var parts = text.split(/(\s+)/);   /* alternating word / whitespace-run, code-point-safe */
+        var wordIndex = 0;
+        var out = '';
+        for (var i = 0; i < parts.length; i++) {
+            var part = parts[i];
+            if (part === '') { continue; }
+            if (/^\s+$/.test(part)) { out += part; continue; }
+            if (wordIndex < tokens.length) { out += '[' + tokens[wordIndex] + ']'; }
+            out += part;
+            wordIndex++;
+        }
+        /* Overflow: more chords than words in this line (or no words at
+           all) — clamp by appending the rest rather than silently dropping
+           a chord (#1080). */
+        for (; wordIndex < tokens.length; wordIndex++) {
+            out += '[' + tokens[wordIndex] + ']';
+        }
+        return out;
+    }
 
     function cpDirective(name, value) {
         /* A ChordPro directive value cannot contain a brace or newline, so
@@ -645,12 +798,15 @@
         if (song.capo)           { out += cpDirective('capo', song.capo); }
         if (song.ccli)           { out += cpDirective('ccli', song.ccli); }
         if (song.copyright)      { out += cpDirective('copyright', song.copyright); }
+        var chordAware = chordProSongHasChords(song);
         (song.components || []).forEach(function (comp) {
             /* Section label as a {comment:} (e.g. "Verse 1", "Chorus") —
                reuses the Proclaim label map so labelling stays consistent. */
             out += '\n' + cpDirective('comment', pcLabel(comp));
-            (comp.lines || []).forEach(function (line) {
-                out += String(line == null ? '' : line) + '\n';
+            var chords = Array.isArray(comp.chords) ? comp.chords : null;
+            (comp.lines || []).forEach(function (line, i) {
+                var cell = (chords && i < chords.length) ? chords[i] : null;
+                out += buildChordProLine(line, cell, chordAware) + '\n';
             });
         });
         return out;

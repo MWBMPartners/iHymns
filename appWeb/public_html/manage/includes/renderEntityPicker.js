@@ -187,33 +187,80 @@
         syncHiddenFromPanel(panel, hiddenInput);
     }
 
+    /* #1594 part 2 — module-scoped counter so every wireComboboxInput()
+       instance gets a globally-unique id prefix for its popover rows.
+       Mirrors place-search.js's own `instanceSeq` (see that file's
+       comment): a form can have more than one live-search combobox on
+       screen (restrictions.php's rule builder mounts one per picker
+       group), so a hardcoded prefix would collide `aria-activedescendant`
+       between them. */
+    var comboboxInstanceSeq = 0;
+
     function wireComboboxInput(input, panel, hiddenInput) {
         var popover = input.nextElementSibling;
         var source  = input.dataset.pickerSource;
         var debounce = null;
+        var idPrefix = 'rx-picker-' + (++comboboxInstanceSeq);
 
         if (!popover || !popover.classList.contains('rx-picker-popover')) return;
 
-        function close() { popover.classList.add('d-none'); popover.innerHTML = ''; }
+        /* Current suggestion set + keyboard highlight — kept in this
+           closure exactly like the hidden/canonical state above it
+           already was; the a11y helper (window.iHymnsComboboxA11y,
+           loaded globally by manage/includes/head-libs.php ahead of
+           this file) only reads/writes them through the accessors
+           passed to handleComboboxKeydown below, same ownership split
+           as every other #1594 part-2 call site. */
+        var currentItems = [];
+        var activeIndex = -1;
 
-        function renderItems(items) {
+        function isOpen() { return !popover.classList.contains('d-none'); }
+        function optionEls() { return Array.prototype.slice.call(popover.querySelectorAll('.list-group-item-action')); }
+
+        function close() {
+            popover.classList.add('d-none');
             popover.innerHTML = '';
-            if (!items.length) { close(); return; }
-            items.forEach(function (it) {
+            currentItems = [];
+            activeIndex = -1;
+            if (global.iHymnsComboboxA11y) {
+                global.iHymnsComboboxA11y.applyComboboxAria({ input: input, panel: popover, items: [], activeIndex: -1, idPrefix: idPrefix, expanded: false });
+            }
+        }
+
+        function pick(it) {
+            input.value = it.label;
+            input.dataset.canonical = String(it.id);
+            hiddenInput.value = String(it.id);
+            close();
+        }
+
+        /* Re-paint `currentItems` at the CURRENT `activeIndex` — used both
+           for a fresh suggestion set (activeIndex reset to 0 first, see
+           fetchSuggestions' .then()) AND as the `render` callback
+           handleComboboxKeydown calls after every arrow/Home/End press
+           (which must NOT reset activeIndex — see place-search.js's
+           renderPanel() for the same full-rebuild-per-keypress pattern
+           this mirrors). */
+        function renderItems() {
+            popover.innerHTML = '';
+            if (!currentItems.length) { close(); return; }
+            currentItems.forEach(function (it, i) {
                 var row = document.createElement('button');
                 row.type = 'button';
                 row.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+                row.classList.toggle('active', i === activeIndex);
                 row.innerHTML = '<span>' + escapeHtml(it.label) + '</span>' +
                     (it.hint ? '<small class="text-muted">' + escapeHtml(it.hint) + '</small>' : '');
-                row.addEventListener('click', function () {
-                    input.value = it.label;
-                    input.dataset.canonical = String(it.id);
-                    hiddenInput.value = String(it.id);
-                    close();
-                });
+                row.addEventListener('click', function () { pick(it); });
                 popover.appendChild(row);
             });
             popover.classList.remove('d-none');
+            if (global.iHymnsComboboxA11y) {
+                global.iHymnsComboboxA11y.applyComboboxAria({
+                    input: input, panel: popover, items: optionEls(),
+                    activeIndex: activeIndex, idPrefix: idPrefix,
+                });
+            }
         }
 
         function fetchSuggestions(q) {
@@ -221,7 +268,11 @@
             if (!cfg) return;
             fetch(cfg.url(q), { credentials: 'same-origin' })
                 .then(function (r) { return r.json(); })
-                .then(function (data) { renderItems(cfg.extract(data)); })
+                .then(function (data) {
+                    currentItems = cfg.extract(data);
+                    activeIndex = currentItems.length ? 0 : -1;
+                    renderItems();
+                })
                 .catch(close);
         }
 
@@ -246,8 +297,32 @@
             debounce = setTimeout(function () { fetchSuggestions(q); }, 200);
         });
 
+        /* #1594 part 2 — was Escape-only (no arrows, no Home/End, no Tab
+           commit, no ARIA at all). Delegates the key logic + activedescendant
+           bookkeeping to the shared helper; this closure still owns what
+           "commit" means (pick()) and what "close" means, same as every
+           other migrated call site. */
         input.addEventListener('keydown', function (e) {
-            if (e.key === 'Escape') close();
+            if (!global.iHymnsComboboxA11y) {
+                /* Helper failed to load (e.g. a page that forgets
+                   head-libs.php) — fall back to the pre-migration
+                   Escape-only behaviour rather than leaving the input
+                   dead. */
+                if (e.key === 'Escape') close();
+                return;
+            }
+            global.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                isOpen: isOpen,
+                getItems: optionEls,
+                getActiveIndex: function () { return activeIndex; },
+                setActiveIndex: function (i) { activeIndex = i; },
+                render: renderItems,
+                /* Reuse the row's own click listener rather than a second
+                   copy of pick()'s logic — see combobox-a11y.js's
+                   doc-comment for why every migrated call site does this. */
+                onCommit: function (i, el) { el.click(); },
+                onClose: close,
+            });
         });
     }
 

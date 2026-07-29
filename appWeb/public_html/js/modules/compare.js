@@ -7,9 +7,22 @@
  * Allows side-by-side comparison of two songs. Users pick a second
  * song via a search modal; both songs are displayed in a split view.
  * Responsive: side-by-side on desktop, tabbed on mobile.
+ *
+ * #1594 part 2 — the song-picker modal's result list is now keyboard-
+ * navigable (ArrowUp/Down/Home/End/Tab-commits + ARIA: role=combobox/
+ * listbox/option, aria-selected, aria-activedescendant) via the shared
+ * window.iHymnsComboboxA11y helper (imported for its side effect only —
+ * see combobox-a11y.js's own doc-comment). Previously mouse-only.
+ * Escape is wired WITHOUT stopPropagation (`stopEscapePropagation:
+ * false` below) — unlike every other #1594 part-2 call site, this
+ * widget lives directly inside a Bootstrap modal with no separate
+ * popover to dismiss first, so Escape must still bubble up to
+ * Bootstrap's own modal-close handler exactly as it always has.
  */
 import { escapeHtml } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
+import { apiFetch } from '../utils/api-client.js';
+import './combobox-a11y.js';
 
 export class Compare {
     /**
@@ -77,6 +90,29 @@ export class Compare {
         let debounce = null;
         const input = modal.querySelector('#compare-search-input');
         const results = modal.querySelector('#compare-search-results');
+        /* #1594 part 2 — keyboard-highlight state. Reset to -1 whenever a
+           NEW result set lands (see the fetch .then() below); a highlight
+           MOVE (arrow keys) only ever re-paints the EXISTING buttons —
+           see highlightResult() — it never re-fetches or rebuilds them. */
+        let activeIndex = -1;
+
+        function resultButtons() { return Array.from(results.querySelectorAll('.compare-pick')); }
+
+        /* Re-paint the CURRENT result buttons at the CURRENT activeIndex.
+           This is the `render` callback handleComboboxKeydown calls after
+           every arrow/Home/End press — cheap here (just class/ARIA
+           toggles on already-rendered buttons, no DOM rebuild needed,
+           unlike most of the other #1594 part-2 call sites) since the
+           button set itself doesn't change until the next search resolves. */
+        function highlightResults() {
+            const items = resultButtons();
+            items.forEach((btn, i) => btn.classList.toggle('active', i === activeIndex));
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input, panel: results, items, activeIndex, idPrefix: 'compare-search',
+                });
+            }
+        }
 
         input?.addEventListener('input', () => {
             clearTimeout(debounce);
@@ -89,12 +125,16 @@ export class Compare {
                 url.searchParams.set('q', q);
 
                 try {
-                    const resp = await fetch(url);
+                    const resp = await apiFetch(url);
                     const data = await resp.json();
                     const songs = (data.results || []).filter(s => s.id !== firstSongId).slice(0, 10);
 
                     if (songs.length === 0) {
                         results.innerHTML = '<p class="text-muted text-center py-3 small">No results</p>';
+                        activeIndex = -1;
+                        if (window.iHymnsComboboxA11y) {
+                            window.iHymnsComboboxA11y.applyComboboxAria({ input, panel: results, items: [], activeIndex: -1, idPrefix: 'compare-search', expanded: false });
+                        }
                         return;
                     }
 
@@ -112,10 +152,37 @@ export class Compare {
                             this.loadComparison(firstSongId, btn.dataset.songId);
                         });
                     });
+                    /* NEW result set — reset the highlight, mirroring
+                       place-search.js's runSearch(). */
+                    activeIndex = -1;
+                    highlightResults();
                 } catch {
                     results.innerHTML = '<p class="text-danger text-center py-3 small">Search failed</p>';
+                    activeIndex = -1;
                 }
             }, 300);
+        });
+
+        /* #1594 part 2 — was mouse-only (no keydown handler at all). */
+        input?.addEventListener('keydown', (e) => {
+            if (!window.iHymnsComboboxA11y) return;
+            window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                isOpen: () => resultButtons().length > 0,
+                getItems: resultButtons,
+                getActiveIndex: () => activeIndex,
+                setActiveIndex: (i) => { activeIndex = i; },
+                render: highlightResults,
+                /* Reuse the row's own click listener rather than a second
+                   copy of loadComparison()'s call — see
+                   combobox-a11y.js's doc-comment for why every migrated
+                   call site does this. */
+                onCommit: (i, el) => el.click(),
+                onClose: () => { activeIndex = -1; highlightResults(); },
+                /* This widget lives directly inside a Bootstrap modal —
+                   see the module doc-comment above for why Escape must
+                   still bubble to Bootstrap's own modal-close handler. */
+                stopEscapePropagation: false,
+            });
         });
 
         modal.addEventListener('hidden.bs.modal', () => modal.remove());
@@ -130,8 +197,8 @@ export class Compare {
         /* Fetch both songs in parallel */
         const apiBase = this.app.config.apiUrl;
         const [respA, respB] = await Promise.all([
-            fetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdA)}`),
-            fetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdB)}`),
+            apiFetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdA)}`),
+            apiFetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdB)}`),
         ]);
 
         if (!respA.ok || !respB.ok) {

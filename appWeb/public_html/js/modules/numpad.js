@@ -11,6 +11,7 @@
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
 import { STORAGE_DEFAULT_SONGBOOK, STORAGE_NUMPAD_LIVE_SEARCH } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class Numpad {
     constructor(app) {
@@ -235,7 +236,7 @@ export class Numpad {
                 url.searchParams.set('songbook', songbook);
                 url.searchParams.set('number', number);
 
-                const response = await fetch(url);
+                const response = await apiFetch(url);
                 const data = await response.json();
 
                 if (data.results && data.results.length > 0) {
@@ -298,7 +299,7 @@ export class Numpad {
         try {
             const url = new URL(this.app.config.apiUrl, window.location.origin);
             url.searchParams.set('action', 'songbooks');
-            const response = await fetch(url);
+            const response = await apiFetch(url);
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const data = await response.json();
 

@@ -401,8 +401,9 @@ return [
                       . ' (multi-language books like Misc), and a song already carrying a more'
                       . ' specific tag whose primary matches (<code>en-GB</code> inside an'
                       . ' <code>en</code> songbook) is preserved. Re-runnable.'
-                      . ' Run <code>/manage/data-health → Regenerate songs.json cache</code>'
-                      . ' afterwards so the public PWA picks up the new tags.',
+                      . ' Nothing to regenerate afterwards — song reads are DB-direct'
+                      . ' (WS-J #1020), so the public PWA picks up the new tags on its'
+                      . ' next fetch.',
             'button' => 'Run Song Language Backfill',
         ],
         'probe' => static function (\mysqli $db): bool {
@@ -2255,6 +2256,35 @@ return [
             || !_migProbe_tableExists($db, 'tblServicePresence')
             || !_migProbe_tableExists($db, 'tblServicePollCounters'),
     ],
+    'service-code-uniqueness' => [
+        'script' => 'migrate-service-code-uniqueness.php',
+        'card' => [
+            'title'  => 'Globally-unique service join codes (#1621)',
+            'body'   => 'Makes a LIVE Service-Mode join code unique across the whole install, enforced'
+                      . ' by the database. Adds <code>tblLiveFollowJoinCodes.ActiveCode</code> — a STORED'
+                      . ' generated column mirroring <code>Code</code> only while'
+                      . ' <code>Status</code> is <code>current</code>/<code>previous</code> — under'
+                      . ' <code>UNIQUE KEY uq_ActiveCode</code> (MySQL has no filtered index; multiple'
+                      . ' NULLs are distinct, so retired rows coexist freely). The original'
+                      . ' <code>uq_Session_Code</code> was <em>session</em>-scoped, so two concurrent'
+                      . ' services could hold the same code and a typed join was resolved by'
+                      . ' freshest-heartbeat — silently joining a congregant to another organisation’s'
+                      . ' service, and with it that org’s CCLI unlock. Also documents the new'
+                      . ' <code>expired</code> status value, adds <code>idx_Live_Expiry</code> for the'
+                      . ' expiry-retirement pass, and retires (status only — <strong>never deletes</strong>)'
+                      . ' any pre-existing expired or duplicated live codes so the UNIQUE key can land.'
+                      . ' Runs after Service Mode sessions. Idempotent — safe to re-run.',
+            'button' => 'Run Service Join-Code Uniqueness Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the generated column,
+           its UNIQUE key AND the retirement index have all landed, so a partial
+           apply (e.g. the column added but the ALTER interrupted before the key)
+           never shows the card green. */
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblLiveFollowJoinCodes', 'ActiveCode')
+            || !_migProbe_indexExists($db, 'tblLiveFollowJoinCodes', 'uq_ActiveCode')
+            || !_migProbe_indexExists($db, 'tblLiveFollowJoinCodes', 'idx_Live_Expiry'),
+    ],
 
     'song-link-origin' => [
         'script' => 'migrate-song-link-origin.php',
@@ -2619,5 +2649,39 @@ return [
             || !_migProbe_tableExists($db, 'tblAuthDeviceCodes')
             || !_migProbe_tableExists($db, 'tblSessionControlTokens')
             || !_migProbe_tableExists($db, 'tblApnsTokens'),
+    ],
+
+    /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
+       tblSongChords (#299) has zero PHP/JS references — chord notation now lives
+       per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only
+       two places that ever modelled a positioned-chord pair were this table and the now-
+       deleted js/utils/transpose.js (#1612); both were dead code with no callers.
+       Registered manual + confirm=1-gated (mirrors drop-legacy-tables.php / the #1235 P4/C6
+       JSON-column drop) so a routine "Apply all pending" can never trigger it. The real
+       safety is in the script itself: it REFUSES to drop unless the live table is
+       verifiably EMPTY, independent of confirm — this codebase's zero-reference analysis
+       can't see the live DB, so a non-zero row count on some install is a hard stop rather
+       than silent data loss. */
+    'drop-song-chords' => [
+        'script' => 'migrate-drop-song-chords.php',
+        /* #1613 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and from the pending counter; the single run
+           still requires confirm=1. setup-database.php honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '⚠ Drop unused tblSongChords (#1613)',
+            'body'   => 'DESTRUCTIVE — drops <code>tblSongChords</code> (#299), which has zero'
+                      . ' PHP/JS references; chord notation now lives per-line on'
+                      . ' <code>tblLyricLines.ChordsJson</code>. REFUSES to drop unless the live'
+                      . ' table is verifiably EMPTY (checked independent of confirmation), so an'
+                      . ' unexpected row on this install is a hard stop rather than silent data'
+                      . ' loss. Idempotent — once the table is gone the migration is a no-op.',
+            'button' => 'Drop tblSongChords (gated)',
+        ],
+        /* Pending while the table STILL EXISTS (inverse of the ADD migrations above,
+           mirrors drop-songbook-name's polarity): a DROP is "applied" once the table is
+           gone, so the probe self-clears after a successful run. Detects real completion —
+           never a hardcoded static-true. */
+        'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblSongChords'),
     ],
 ];

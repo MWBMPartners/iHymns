@@ -16,7 +16,12 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-28 (v0.4000.0) — added the "Sharing & exporting
+ * Last updated: 2026-07-29 (v0.4001.0) — added a "Playing through a
+ * setlist" topic under Setlists & Sharing (#1533): tap any song in a
+ * setlist, your own or a shared one, to start a bottom playback bar
+ * with Prev/Next, position, next-song title, arrow-key navigation, and
+ * an exit control.
+ * Previous update 2026-07-28 (v0.4000.0) added the "Sharing & exporting
  * songs" topic (#1586), which had zero coverage despite the public
  * Export ▾ menu shipping on both the song and songbook pages; also
  * pointed "Getting Started" at the footer's What's New link (#1583).
@@ -316,7 +321,20 @@ declare(strict_types=1);
                         on a read-only copy with the same songs and order. You stay the owner; if you reorder
                         or add songs, the next time they open the link they see the updated version.
                     </p>
-                    <h3 class="h6">Schedule a setlist for a date</h3>
+                    <h3 class="h6">Playing through a setlist</h3>
+                    <p>
+                        Tap any song in a setlist — your own, or one someone has shared with you — to
+                        start working through it in order. A bar appears at the bottom of the screen
+                        with <strong>Prev</strong> / <strong>Next</strong> buttons, your position (e.g.
+                        &ldquo;3 of 12&rdquo;), and the title of the next song. The <kbd>&larr;</kbd> and
+                        <kbd>&rarr;</kbd> arrow keys move you between songs too.
+                    </p>
+                    <p class="small text-muted mb-0">
+                        Tap the <i class="fa-solid fa-xmark" aria-hidden="true"></i> on the bar to stop.
+                        Your place is remembered if you reload the page — handy if the browser stumbles
+                        mid-service — but starts over once you close the tab or app.
+                    </p>
+                    <h3 class="h6 mt-3">Schedule a setlist for a date</h3>
                     <p>
                         On a setlist's detail view, tap <strong>Schedule</strong> to attach a date and time. The
                         setlist appears in the <strong>Upcoming</strong> list on your home page until that date

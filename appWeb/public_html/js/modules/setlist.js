@@ -20,7 +20,8 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class SetList {
     /**
@@ -54,6 +55,20 @@ export class SetList {
                 this.renderSyncBar();
             }
         });
+
+        /* #1533 — ← / → move through the active set list. Bound once here,
+           not per bar render, so repeated song navigation cannot leak
+           listeners. */
+        this._bindPlaylistKeys();
+
+        /* Restore activeSetListId from a persisted OWN-list context after a
+           reload, so custom arrangements keep applying. getNavigation() reads
+           the context directly and needs no restoration; this is only for
+           applyCustomArrangement()'s benefit. */
+        const ctx = this.getPlaylistContext();
+        if (ctx && ctx.source === 'own' && ctx.sourceId) {
+            this.activeSetListId = ctx.sourceId;
+        }
     }
 
     /* =====================================================================
@@ -523,8 +538,23 @@ export class SetList {
 
         /* Activate for navigation */
         container.querySelector('#setlist-activate-btn')?.addEventListener('click', () => {
-            this.activeSetListId = listId;
+            this._armFromOwnList(list);
             this.app.showToast(`Set list "${list.name}" activated. Navigate songs with the set list controls.`, 'success', 3000);
+        });
+
+        /* #1533 — ARM ON TAP. Previously the only way into playback was the
+           "Use" button, which most people never pressed: tapping a song from
+           the list you are looking at is the obvious gesture, and it did
+           nothing. Delegated so it survives the drag-reorder re-renders. */
+        container.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('.setlist-song-item a[data-navigate="song"]')
+                : null;
+            if (!link) return;
+            this._armFromOwnList(list);
+            /* Deliberately NOT preventDefault — the router's own delegated
+               handler still performs the navigation. We only arm the context
+               first, so the bar is correct on arrival. */
         });
 
         /* Move up/down buttons */
@@ -626,7 +656,7 @@ export class SetList {
     async fetchSongData(songId) {
         try {
             const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-            const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const res = await apiFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
             if (!res.ok) return null;
             const json = await res.json();
             return json.song || null;
@@ -1145,6 +1175,35 @@ export class SetList {
      * @returns {{ prev: object|null, next: object|null, position: number, total: number }|null}
      */
     getNavigation(songId) {
+        /* PLAYLIST CONTEXT FIRST (#1533). The context is the general case: it
+           carries its own song order, so it serves a SHARED setlist too. That
+           matters because a shared list is not in getAll() — before #1533,
+           getById() returned null for one and shared lists could not be
+           navigated at all, however you arrived at them. */
+        const ctx = this.getPlaylistContext();
+        if (ctx) {
+            const i = ctx.songIds.indexOf(songId);
+            if (i >= 0) {
+                const at = (n) => (ctx.songIds[n]
+                    ? { id: ctx.songIds[n], title: ctx.titles?.[ctx.songIds[n]] || null }
+                    : null);
+                return {
+                    prev: i > 0 ? at(i - 1) : null,
+                    next: i < ctx.songIds.length - 1 ? at(i + 1) : null,
+                    position: i + 1,
+                    total: ctx.songIds.length,
+                    listName: ctx.name,
+                };
+            }
+            /* In a playlist, but this song is not part of it — the user
+               navigated away (a search, a related-song link). Fall through:
+               no bar, and the context stays armed so Back resumes it. */
+        }
+
+        /* FALLBACK — the pre-#1533 "Use this set list" path. Kept so an
+           already-activated list keeps working for anyone mid-session when
+           this ships, and because activeSetListId also drives
+           applyCustomArrangement(). */
         if (!this.activeSetListId) return null;
 
         const list = this.getById(this.activeSetListId);
@@ -1163,10 +1222,104 @@ export class SetList {
     }
 
     /**
+     * Read the active playlist context, or null.
+     *
+     * ELI5: "which list am I working through, and in what order?"
+     *
+     * Read from sessionStorage on every call rather than cached in a field.
+     * The SPA survives a reload as a fresh module instance, so an in-memory
+     * field is exactly what used to lose the active list mid-service — that
+     * is the #1533 complaint. sessionStorage is the source of truth; a bad
+     * or hand-edited value resolves to null rather than throwing.
+     *
+     * @returns {{songIds: string[], titles: Object, name: string, source: string, sourceId: string}|null}
+     */
+    getPlaylistContext() {
+        try {
+            const raw = sessionStorage.getItem(STORAGE_PLAYLIST_CONTEXT);
+            if (!raw) return null;
+            const ctx = JSON.parse(raw);
+            if (!ctx || !Array.isArray(ctx.songIds) || ctx.songIds.length === 0) return null;
+            /* Defensive: ids must be strings — a malformed entry would make
+               indexOf() silently never match, which reads as "playback just
+               doesn't work" with no error. */
+            ctx.songIds = ctx.songIds.filter(id => typeof id === 'string' && id !== '');
+            return ctx.songIds.length ? ctx : null;
+        } catch (_e) {
+            return null;
+        }
+    }
+
+    /**
+     * Arm playlist playback for a list of songs.
+     *
+     * @param {Object} ctx
+     * @param {string[]} ctx.songIds  Song ids IN ORDER
+     * @param {Object}  [ctx.titles]  Optional id → title map, for the "next up" label
+     * @param {string}  ctx.name      List name, shown in the bar
+     * @param {string}  ctx.source    'own' | 'shared'
+     * @param {string}  [ctx.sourceId] Setlist id (own) or share id (shared)
+     */
+    setPlaylistContext(ctx) {
+        try {
+            sessionStorage.setItem(STORAGE_PLAYLIST_CONTEXT, JSON.stringify(ctx));
+        } catch (_e) {
+            /* Private mode / quota — playback degrades to not persisting
+               across a reload, which is the pre-#1533 behaviour. Not fatal. */
+        }
+        /* Keep activeSetListId in step for OWN lists so custom arrangements
+           still apply (applyCustomArrangement reads it). A shared list has no
+           local record, so it stays null — and applyCustomArrangement
+           correctly does nothing. */
+        if (ctx.source === 'own' && ctx.sourceId) {
+            this.activeSetListId = ctx.sourceId;
+        }
+    }
+
+    /**
+     * Arm playback from one of the user's OWN setlists.
+     * @param {Object} list A setlist record from getAll()/getById()
+     * @private
+     */
+    _armFromOwnList(list) {
+        if (!list || !Array.isArray(list.songs) || list.songs.length === 0) return;
+        const titles = {};
+        for (const s of list.songs) {
+            if (s && s.id) titles[s.id] = s.title || '';
+        }
+        this.setPlaylistContext({
+            songIds:  list.songs.map(s => s.id).filter(Boolean),
+            titles,
+            name:     list.name,
+            source:   'own',
+            sourceId: list.id,
+        });
+    }
+
+    /** Leave playlist mode. */
+    clearPlaylistContext() {
+        try {
+            sessionStorage.removeItem(STORAGE_PLAYLIST_CONTEXT);
+        } catch (_e) { /* nothing to do */ }
+        this.activeSetListId = null;
+        document.getElementById('setlist-song-nav')?.remove();
+        document.body.classList.remove('has-playlist-bar');
+    }
+
+    /**
      * Render set list navigation bar on a song page (if active).
      * Called by router after song page loads.
      */
     renderSongNavigation() {
+        /* CLEAR FIRST, UNCONDITIONALLY. Since #1533 the bar is fixed-position
+           on <body>, so it survives an SPA content swap that would have
+           removed an in-flow element. Every early return below must therefore
+           happen AFTER the teardown, or the bar strands over whatever page
+           the user went to next. The router calls this on every navigation
+           precisely so this teardown runs. */
+        document.getElementById('setlist-song-nav')?.remove();
+        document.body.classList.remove('has-playlist-bar');
+
         const songPage = document.querySelector('.page-song');
         if (!songPage) return;
 
@@ -1176,53 +1329,137 @@ export class SetList {
         const nav = this.getNavigation(songId);
         if (!nav) return;
 
-        /* Remove existing set list nav if present */
-        document.getElementById('setlist-song-nav')?.remove();
-
         const navEl = document.createElement('div');
         navEl.id = 'setlist-song-nav';
-        navEl.className = 'alert alert-primary d-flex align-items-center justify-content-between mb-3';
+        navEl.className = 'playlist-bar';
         navEl.setAttribute('role', 'navigation');
-        navEl.setAttribute('aria-label', 'Set list navigation');
+        navEl.setAttribute('aria-label', `Set list navigation — ${nav.listName}`);
+
+        /* "Next up" title when we know it. The shared-list path fills titles in
+           asynchronously, so absence is normal, not an error — fall back to the
+           plain word rather than rendering "Next up: undefined". */
+        const nextLabel = nav.next?.title
+            ? `Next: ${toTitleCase(nav.next.title)}`
+            : 'Next';
+
+        const btn = (song, dir, label) => (song
+            ? `<a href="/song/${escapeHtml(song.id)}" data-navigate="song"
+                  class="btn btn-sm btn-primary playlist-bar-btn"
+                  data-playlist-nav="${dir}"
+                  aria-label="${dir === 'prev' ? 'Previous' : 'Next'} song in set list">
+                 ${dir === 'prev' ? '<i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>' : ''}
+                 <span class="playlist-bar-btn-label">${escapeHtml(label)}</span>
+                 ${dir === 'next' ? '<i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>' : ''}
+               </a>`
+            /* Disabled at the ends. A <button disabled> (not a styled <a>) so
+               it is genuinely un-focusable and screen readers announce the
+               state — an <a> without href is skipped by some ATs entirely. */
+            : `<button type="button" class="btn btn-sm btn-outline-secondary playlist-bar-btn" disabled
+                       aria-label="${dir === 'prev' ? 'No previous song' : 'No next song'} — ${dir === 'prev' ? 'start' : 'end'} of set list">
+                 ${dir === 'prev' ? '<i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>' : ''}
+                 <span class="playlist-bar-btn-label">${escapeHtml(label)}</span>
+                 ${dir === 'next' ? '<i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>' : ''}
+               </button>`);
 
         navEl.innerHTML = `
-            <div>
-                ${nav.prev
-                    ? `<a href="/song/${escapeHtml(nav.prev.id)}" data-navigate="song"
-                         class="btn btn-sm btn-outline-primary">
-                         <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i> Prev
-                       </a>`
-                    : `<button class="btn btn-sm btn-outline-secondary" disabled>
-                         <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i> Prev
-                       </button>`
-                }
+            ${btn(nav.prev, 'prev', 'Prev')}
+            <div class="playlist-bar-meta">
+                <span class="playlist-bar-name">
+                    <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>${escapeHtml(nav.listName)}
+                </span>
+                <span class="playlist-bar-pos">${nav.position} of ${nav.total}</span>
             </div>
-            <small class="text-center">
-                <i class="fa-solid fa-list-ol me-1" aria-hidden="true"></i>
-                ${escapeHtml(nav.listName)} — ${nav.position}/${nav.total}
-            </small>
-            <div>
-                ${nav.next
-                    ? `<a href="/song/${escapeHtml(nav.next.id)}" data-navigate="song"
-                         class="btn btn-sm btn-outline-primary">
-                         Next <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
-                       </a>`
-                    : `<button class="btn btn-sm btn-outline-secondary" disabled>
-                         Next <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
-                       </button>`
-                }
-            </div>`;
+            ${btn(nav.next, 'next', nextLabel)}
+            <button type="button" class="btn btn-sm btn-link playlist-bar-exit"
+                    aria-label="Leave set list playback">
+                <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+            </button>`;
 
-        /* Insert at the top of the song page (after breadcrumb) */
-        const breadcrumb = songPage.querySelector('nav[aria-label="Breadcrumb"]');
-        if (breadcrumb) {
-            breadcrumb.after(navEl);
-        } else {
-            songPage.prepend(navEl);
-        }
+        document.body.appendChild(navEl);
+        /* Lets the page reserve room so the bar never covers the last lyric
+           line — a fixed bar with no matching padding is the classic way to
+           make the final verse unreadable. */
+        document.body.classList.add('has-playlist-bar');
+
+        navEl.querySelector('.playlist-bar-exit')?.addEventListener('click', () => {
+            this.clearPlaylistContext();
+            this.app.showToast('Left set list playback.', 'info', 2000);
+        });
+
+        this._announce(`${toTitleCase(document.querySelector('.page-song h1')?.textContent?.trim() || 'Song')}. `
+            + `${nav.position} of ${nav.total} in ${nav.listName}.`);
 
         /* Apply custom arrangement if this song has one in the active setlist */
         this.applyCustomArrangement(songId);
+    }
+
+    /**
+     * Announce the current song to assistive technology.
+     *
+     * ELI5: tells a screen reader what just loaded, because tapping Next
+     * changes the page under you without moving focus anywhere obvious.
+     *
+     * The SPA swaps content without a document load, so nothing announces the
+     * new song by default — a sighted user sees it instantly and a screen
+     * reader user gets silence. A polite live region says it without
+     * interrupting whatever is being read.
+     *
+     * The region is created ONCE and reused: a live region added to the DOM
+     * with its text already in place is frequently NOT announced, because the
+     * AT only reports MUTATIONS to a region it was already observing. Hence
+     * the deliberate empty-then-fill on the next frame.
+     * https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-live
+     *
+     * @param {string} message
+     * @private
+     */
+    _announce(message) {
+        let region = document.getElementById('playlist-live-region');
+        if (!region) {
+            region = document.createElement('div');
+            region.id = 'playlist-live-region';
+            region.className = 'visually-hidden';
+            region.setAttribute('aria-live', 'polite');
+            region.setAttribute('aria-atomic', 'true');
+            document.body.appendChild(region);
+        }
+        region.textContent = '';
+        requestAnimationFrame(() => { region.textContent = message; });
+    }
+
+    /**
+     * Bind ← / → to previous / next song while playlist mode is active.
+     *
+     * Bound ONCE, at construction, and it checks for the bar at keypress time
+     * rather than being bound/unbound as the bar appears — a listener added
+     * per render is a listener leaked per render.
+     *
+     * @private
+     */
+    _bindPlaylistKeys() {
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+            /* Never steal arrows from text entry, or from a component that has
+               its own arrow semantics (the comboboxes from #1594, sliders,
+               anything with a roving tabindex). */
+            const t = e.target;
+            if (t instanceof HTMLElement && (
+                t.isContentEditable
+                || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName)
+                || t.closest('[role="combobox"], [role="listbox"], [role="slider"], [role="tablist"]')
+            )) return;
+            /* Modifier combos belong to the browser (back/forward, word jump). */
+            if (e.altKey || e.ctrlKey || e.metaKey) return;
+
+            const bar = document.getElementById('setlist-song-nav');
+            if (!bar) return;
+            const link = bar.querySelector(
+                `a[data-playlist-nav="${e.key === 'ArrowLeft' ? 'prev' : 'next'}"]`
+            );
+            if (!link) return;      /* disabled end of list — do nothing */
+            e.preventDefault();
+            link.click();
+        });
     }
 
     /**
@@ -1344,7 +1581,7 @@ export class SetList {
         }
 
         try {
-            const response = await fetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+            const response = await apiFetch(`${this.app.config.apiUrl}?action=setlist_share`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1480,7 +1717,7 @@ export class SetList {
     async fetchSharedSetlist(shareId) {
         try {
             const url = `${this.app.config.apiUrl}?action=setlist_get&id=${encodeURIComponent(shareId)}`;
-            const response = await fetch(url, {
+            const response = await apiFetch(url, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     /* #1535 — send the bearer token when signed in so the server
@@ -1536,7 +1773,7 @@ export class SetList {
             sharedData.songIds.map(async (songId) => {
                 try {
                     const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return null;
@@ -1674,6 +1911,40 @@ export class SetList {
         /* Enrich song items with metadata from the API */
         this.enrichSharedSongItems(sharedData.songIds);
 
+        /* #1533 — ARM ON TAP for a SHARED list. This is the case that could
+           not work at all before: a shared list has no local record, so
+           getById() returns null and the old getNavigation() bailed. The
+           context carries its own order, so it needs no local record.
+
+           Titles start empty and are filled by enrichSharedSongItems() above,
+           which resolves them asynchronously. We re-read them at click time
+           rather than at render time so "Next: <title>" is populated if
+           enrichment has landed, and degrades to a plain "Next" if not. */
+        songsContainer?.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('.shared-song-item a[data-navigate="song"]')
+                : null;
+            if (!link) return;
+
+            const titles = {};
+            songsContainer.querySelectorAll('.shared-song-item').forEach((item) => {
+                const id = item.dataset.songId;
+                const t  = item.querySelector('.shared-song-title')?.textContent?.trim();
+                /* Pre-enrichment the anchor still shows the raw id — storing
+                   that would render "Next: CP-1008", which is worse than the
+                   plain word. */
+                if (id && t && t !== id) titles[id] = t;
+            });
+
+            this.setPlaylistContext({
+                songIds:  sharedData.songIds,
+                titles,
+                name:     sharedData.name,
+                source:   'shared',
+                sourceId: String(sharedData.shareId || sharedData.id || ''),
+            });
+        });
+
         /* Bind import buttons — skipped entirely for the owner (#1535); their
            buttons are hidden above, so there's nothing to import into itself. */
         if (!viewerIsOwner) {
@@ -1703,7 +1974,7 @@ export class SetList {
             songIds.map(async (songId) => {
                 try {
                     const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return;
@@ -1818,7 +2089,7 @@ export class SetList {
         /* Remove any previous render so we don't stack. */
         document.getElementById('setlist-upcoming-card')?.remove();
 
-        fetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
+        apiFetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => {
                 const upcoming = data.upcoming || [];
@@ -1874,7 +2145,7 @@ export class SetList {
 
         /* Visibility tracks the authenticated-user check via the API's
            401 on setlist_schedule_current. If we get 401, hide card. */
-        fetch(`/api?action=setlist_schedule_current&setlistId=${encodeURIComponent(listId)}`, {
+        apiFetch(`/api?action=setlist_schedule_current&setlistId=${encodeURIComponent(listId)}`, {
             credentials: 'same-origin',
         })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -1916,7 +2187,7 @@ export class SetList {
                 if (resultEl) resultEl.innerHTML = '<span class="text-warning">Pick a date first.</span>';
                 return;
             }
-            fetch('/api?action=setlist_schedule_set', {
+            apiFetch('/api?action=setlist_schedule_set', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
@@ -1945,7 +2216,7 @@ export class SetList {
             clearBtn.textContent = 'Clear';
             newSave.parentNode.appendChild(clearBtn);
             clearBtn.addEventListener('click', () => {
-                fetch('/api?action=setlist_schedule_clear', {
+                apiFetch('/api?action=setlist_schedule_clear', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                     credentials: 'same-origin',
@@ -1993,7 +2264,7 @@ export class SetList {
         container.appendChild(section);
 
         const refresh = () => {
-            fetch(`/api?action=setlist_collab_list&setlistId=${encodeURIComponent(listId)}`, {
+            apiFetch(`/api?action=setlist_collab_list&setlistId=${encodeURIComponent(listId)}`, {
                 credentials: 'same-origin',
             })
                 .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -2019,7 +2290,7 @@ export class SetList {
                     `).join('');
                     list.querySelectorAll('.btn-remove-collab').forEach(btn => {
                         btn.addEventListener('click', () => {
-                            fetch('/api?action=setlist_collab_remove', {
+                            apiFetch('/api?action=setlist_collab_remove', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                                 credentials: 'same-origin',
@@ -2046,7 +2317,7 @@ export class SetList {
             );
             if (!email) return;
             const permission = (prompt('Permission: "view" or "edit"?', 'edit') || 'edit').trim().toLowerCase();
-            fetch('/api?action=setlist_collab_invite', {
+            apiFetch('/api?action=setlist_collab_invite', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
@@ -2103,7 +2374,7 @@ export class SetList {
             list.songs.map(async (song) => {
                 try {
                     const url = `${this.app.config.apiUrl}?page=song&id=${encodeURIComponent(song.id)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return null;

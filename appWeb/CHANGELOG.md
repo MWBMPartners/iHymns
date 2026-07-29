@@ -2,8 +2,13 @@
 
 ## [unreleased] — alpha
 
-Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.4000.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
+Outline of the web/PWA-relevant work landed since 0.880.0 (through 0.4001.0); see the root `CHANGELOG.md` for full narrative detail and the Apple/cross-platform items.
 
+- **Setlist playback mode** (#1533) — tap a song in an own or shared setlist to arm a `sessionStorage` playlist context; fixed floating nav bar with prev/next, position, keyboard arrows and an aria-live announcement. Fixes the underlying bug that a shared setlist could never be navigated at all.
+- **Revisions Audit "Open in editor" fixed** (#1623) — the link used `?open=` but the editor reads `?song=`; also wires `?tab=history`.
+- **Shared API client + fetch monkey-patch deleted** (#1031) — new `js/utils/api-client.js` (`apiFetch`/`apiFetchJson`); the site-wide `window.fetch` override is gone. Fixes an anonymous user's language filter being silently ignored on a cold load of `/search`.
+- **Eight pre-gating security fixes** (#1388) — `contentGatingMediaAllowed()` gates media bytes (`/song-media/<id>`, `bulk_audio`); `songbook_export` now applies `contentGatingApply()` per song; Service-Mode presence requires a heartbeat freshness check; first-admin registration TOCTOU closed; logout clears per-user service-worker caches; `validateCsrfRequest()` tightened. All dormant while `content_gating_enabled='0'`.
+- **Dead `js/utils/transpose.js` deleted; lyrics-cutover gate count corrected** (#1612, #1615, #1618) — the verifier implements nine gates, not the ten/thirteen its own comments claimed.
 - **Public Export dropdowns fixed — never worked on any public page** (#1565–#1570, tests #1569) — the enforcing nonce CSP silently blocked the inline `<script>` binding every menu item; wiring moved into router-loaded ES modules, plus a root-absolute ProPresenter proto-bundle URL fix and one shared export-menu partial.
 - **What's New page** (#1583) — a deploy-time CHANGELOG excerpt rendered through a new escape-first `includes/markdown_lite.php`, linked from the footer version and the now colour-distinct Alpha/Beta environment badge.
 - **Global JavaScript error surfacing** (#1582) — `js/modules/error-monitor.js` catches uncaught errors/rejections, toasts once, and beacons a throttled, privacy-scrubbed report into `tblActivityLog`.

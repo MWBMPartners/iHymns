@@ -6,20 +6,34 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-07-28._
+_Last updated: 2026-07-29._
 
 ## Where things stand
-- **Version:** `0.4000.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
-  (auto-bumped by `version-bump.yml` on push to **beta**, not alpha; the PWA service-worker cache
-  version auto-syncs off it, #81). Docs that hardcode a version rot within days — point at the file.
+- **Version:** `0.4001.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
+  (the PWA service-worker cache version + every `?v=` cache-buster auto-sync off it, #81). Docs that
+  hardcode a version rot within days — point at the file.
+  ⚠️ **`version-bump.yml` fires ONLY on a push to `beta`** — an `alpha` merge never bumps. That is
+  how 98 commits shipped under one version string; the bump had to be done by hand (`bad5ca4f`,
+  PR #1592) using the workflow's own arithmetic (`MINOR+1`, `PATCH=0`) so the two don't drift.
+  **Expect to repeat this after any large alpha batch.**
+- **`beta` is frozen at v0.1254.1** (~2026-06-25, PR #1369) and predates the entire Live Follow fix
+  train (#1375/#1377/#1386/#1405). The promotion PR #1580 was **closed unmerged** — alpha and beta
+  have **unrelated histories**, so it needs a tree-replacement, not a merge. Before any future
+  promotion, set `APPLE_DEPLOY_ENABLED=false`: `apple-deploy.yml` has failed 5/5 runs (#1579), and
+  fixing it would re-arm a TestFlight **external** upload on every beta push.
 - **Environments / deploy:** single shared MySQL; `alpha` → `dev.ihymns.app` (auto-merge + SFTP),
   `beta` → `beta.ihymns.app`, `main` → `www.ihymns.app`. Most work targets **`alpha`**.
 - **Reads are LIVE MySQL** — there is NO `songs.json` corpus cache (epic #1010). Scoped reads only
   (`getSongsSlimIndex` / `getSongs($abbr)` / `getSongById`); a DB outage is a themed 503, never stale.
-- **Active branch (2026-07-28):** **`claude/observability-alpha-3k9wqz`** — THE single WIP branch
-  (90+ commits ahead of alpha, pushed, no PR). It subsumed
-  `claude/apple-branches-cleanup-export-7mxhpo` via merge `753ed895`; that branch's PR #1578 must be
-  CLOSED as superseded, not merged. See the handoff for the exact branch-deletion list.
+- **The consolidation LANDED (2026-07-28):** PR #1585 merged to alpha as squash **`887bcd2f`** (98
+  commits, 228 files); the version bump followed in **`bad5ca4f`** (PR #1592). Both `claude/*`
+  branches are deleted — the remote is just `alpha`, `beta`, `main`, `archive/alpha`.
+- **Active branch:** **`claude/sotd-language-filter-typeahead-a11y`** — its two founding bugs,
+  #1593 (Song of the Day vanishes with >1 language selected) and #1594 (location typeahead was
+  mouse-only), both landed early and it has since carried a long tail of further work, most recently
+  **wave 2**: #1388 (pre-gating hardening), #1031 (deleted the `window.fetch` monkey-patch), #1533
+  (setlist playback) + #1623 (Revisions Audit link fix), #1619/#1620 (cleanup). See "Recent landings"
+  below — do not assume the branch name still describes its current scope.
 - **Verified counts** (re-derived 2026-07-28 — most docs disagreed with all of these): **142** tables
   in `schema.sql`; **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
   **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
@@ -81,7 +95,39 @@ _Last updated: 2026-07-28._
   a month after #1010 removed it. **Never cite a count from another document** — re-derive it from
   `schema.sql` / `admin-links.php` / `ls .github/workflows/`, or de-version the sentence entirely.
 
-## Recent landings (2026-07-28 — on `claude/observability-alpha-3k9wqz`, NOT yet on alpha)
+## Recent landings (2026-07-29 — wave 2, on `claude/sotd-language-filter-typeahead-a11y`, NOT yet on alpha)
+- **#1388 pre-gating hardening** — eight gaps closed before `content_gating_enabled` can ever flip to
+  `'1'`; every change is a verified no-op today. The load-bearing one: **payload gating is not asset
+  gating**. `contentGatingApply()` strips gated fields from JSON payloads (now including
+  `songbook_export`, previously entity-gated only — the widest lyric leak in the API); the new sibling
+  `contentGatingMediaAllowed($kind, $userId, $presenceToken)` gates the media BYTES for
+  `song-media.php` and the `bulk_audio` manifest, resolving through the same `TIER_CAPS` registry
+  (rule #28). Also: first-admin registration TOCTOU closed (`SELECT ... FOR UPDATE`), logout now
+  clears user-scoped Cache Storage, `validateCsrfRequest()` tightened (rejects `X-Requested-With`
+  alone when both `Origin` and `Referer` are absent), Service Mode's CCLI unlock now requires a live
+  heartbeat not just `IsActive`.
+- **#1031 the `window.fetch` monkey-patch is DELETED** — `js/utils/api-client.js` (`apiFetch`/
+  `apiFetchJson`) is the new shared client; nothing overrides global `fetch` anymore (rule #31). Fixes
+  the root cause under #1593: the patch only installed on `home`/`songbooks`/`settings`, so an
+  anonymous cold load of `/search` silently sent no language filter at all.
+- **#1533 setlist playback** — tap any song in a setlist (yours or shared) to arm a fixed bottom bar
+  (Prev/Next, "N of M", next-song title, arrow keys, exit). The real bug it fixed: `getNavigation()`
+  looked lists up by id in `getAll()`, so a SHARED setlist (no local record) could never be navigated
+  at all. Replaced with a playlist *context* (`sessionStorage`) carrying its own song order. **Trap**:
+  the bar is `position: fixed` on `<body>`, which does NOT get removed on an SPA content swap —
+  `renderSongNavigation()` must tear down unconditionally before any early return, and the router
+  calls it on every navigation, not just song pages (rule #32).
+- **#1623 Revisions Audit "Open in editor"** — linked `?open=<id>`, the editor only ever read
+  `?song=`; silently selected nothing. Fixed + kept `open` as a back-compat alias; also wired
+  `?tab=history` to auto-open the diff modal.
+- **#1619/#1620 cleanup** — deleted `router.js`'s now-dead `_executeInlineScripts()` shim (nothing
+  left to execute once #1572 emptied the fragment allowlist); renamed `request.js`'s exported
+  `Request` class to `SongRequest` so it stops shadowing the Fetch API's global `Request` (the file
+  keeps its name — it's in the service-worker precache list).
+- **Documentation sweep now underway** for this wave — in-app help (`includes/pages/help.php`,
+  `manage/help.php`), the Wiki, and these `.claude/` files.
+
+## Recent landings (2026-07-28 — originated on `claude/observability-alpha-3k9wqz`, now MERGED to alpha via the consolidation squash `887bcd2f` — see "Where things stand" above)
 - **Observability trio** — #1581 (event names live once in `js/constants.js`; `tests/test-event-names.js`
   bans raw `ihymns:*` literals — the Settings language filter silently never refreshed Song of the
   Day), #1582 (`js/modules/error-monitor.js` → one toast + a throttled, scrubbed beacon to
@@ -127,10 +173,18 @@ _Last updated: 2026-07-28._
 - ⛔ Un-applied Service Mode migration ⇒ **Go Live 500s for plain Live Follow too** (its INSERT names
   `Channel`). Confirm the two cards on `/manage/setup-database` before debugging anything else (#1339).
 
-## Offline download is broken in 7 ways (not yet fixed — see the handoff)
-Worst: the SW caps `RECENT_CACHE` at 2000 and trims on **every song view**, so bulk downloads silently
-self-destruct (14k-song download → 12,001 entries deleted on the next song opened). Offline navigation
-is also dead for every non-song fragment, and each deploy wipes all downloaded audio.
+## Offline download's 7 defects — FIXED (#1597, 2026-07-29, on this branch, not yet on alpha)
+All "looks alive, isn't" bugs. Worst (RC1): bulk-downloaded and recently-viewed songs shared one
+2000-entry `RECENT_CACHE` budget that trimmed oldest-first on **every song view**, so downloading a
+3,517-song book and opening one song deleted ~1,500 entries. Now separate budgets; downloads are
+exempt from the recency trim. Also fixed: the deploy keep-list never retained `iHymns-media-v1` (every
+deploy wiped downloaded audio — worse once #1596 made alpha bump its SW version on every push);
+offline navigation fell back for `page=song` only (home/songbooks/songbook/search 503'd); eviction +
+size reporting used the wrong URL shape (`/data/audio/<book>/…` vs the real flat
+`/data/audio/<SongId>.mp3`); the song progress bar could hang forever; `navigator.storage.persist()`
+was never called; the Settings "include audio offline" toggle event had zero dispatchers. Verified in
+Node against the trim/keep-list logic; the real download → deploy → still-there round trip needs a
+browser and remains owner-verified.
 
 ## Key pointers
 - Export: `js/modules/export-ui.js` (wiring, router-driven) · `manage/editor/format-export.js`
@@ -153,6 +207,16 @@ is also dead for every non-song fragment, and each deploy wipes all downloaded a
   had this wrong twice.
 - Swagger UI → `/manage/api-docs` (`view_api_docs` entitlement, pinned + SRI + `/vendor/` fallback,
   #1587). The spec it renders is `appWeb/public_html/api-docs.yaml` — a public docroot file.
+- Same-origin requests → `apiFetch()`/`apiFetchJson()` in `js/utils/api-client.js` (rule #31, #1031).
+  No `window.fetch` override exists anywhere in the app now; the service worker is the one deliberate
+  holdout (different global scope, not user-scoped).
+- Setlist playback state → `SetList.getPlaylistContext()`/`setPlaylistContext()`, `sessionStorage` key
+  `STORAGE_PLAYLIST_CONTEXT` (rule #32, #1533). Carries its own song order so it serves a SHARED
+  setlist identically to an owned one — `activeSetListId` is only the pre-#1533 fallback now, kept
+  alive for `applyCustomArrangement()`.
+- Content gating: `contentGatingApply()` gates JSON payloads, `contentGatingMediaAllowed()` gates
+  media bytes — same registry, two enforcement points (rule #28, #1388). Both are verified no-ops
+  while `content_gating_enabled='0'`.
 - After every substantive piece of work, run **`.claude/standing-tasks.md`** (issues, milestones,
   wiki, .md docs, and these `.claude/` files).
 - **"HA" in `maintenance-ha-integrity-audit.yml` is Himnario Adventista** (a Spanish songbook), NOT

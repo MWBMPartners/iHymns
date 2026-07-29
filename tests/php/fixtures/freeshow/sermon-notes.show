@@ -1,0 +1,20 @@
+{
+  "name": "Sunday Sermon Notes",
+  "category": "notes",
+  "meta": {
+    "title": "Sunday Sermon Notes"
+  },
+  "slides": {
+    "n1": {
+      "group": "Point 1",
+      "items": [
+        { "type": "text", "lines": [
+          { "text": [{ "value": "Faith without works is dead" }] }
+        ]}
+      ]
+    }
+  },
+  "layouts": {
+    "default": { "name": "Default", "slides": [{ "id": "n1" }] }
+  }
+}

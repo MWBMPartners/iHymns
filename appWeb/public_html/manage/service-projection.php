@@ -18,9 +18,19 @@ declare(strict_types=1);
  * to global_admin/admin or an org-admin/owner (userIsOrgAdminOf).
  *
  * Reuses the shared admin chrome for the SETUP view; projection mode is a
- * full-bleed, high-contrast overlay. The rotating QR is a planned drop-in
- * (no QR lib is bundled yet) — for now the large typeable code + join URL are
- * shown, which is the accessible fallback we'd keep beside a QR anyway.
+ * full-bleed, high-contrast overlay. Beside the large rotating join code it
+ * now also renders a scannable QR of the join URL (#1339, the "buildable
+ * half" — see renderQr() below), via the vendored `qrcode-generator`
+ * library (kazuhikoarase, MIT; pinned + SRI-recorded per rule #1587 —
+ * APP_CONFIG['libraries']['qrcodegen'] in includes/config.php). The QR is
+ * an ACCELERATOR, not a replacement: the typed code stays the primary,
+ * always-visible fallback for a congregant without a working camera (or a
+ * screen reader — the QR carries no information the code text doesn't
+ * already, so it's marked aria-hidden), and any QR generation failure
+ * degrades to a plain-text notice beside the still-working code — never a
+ * blank box. NOT covered here: the live multi-device SCAN verification
+ * (the other half of #1339) — that needs real phones and has never once
+ * been run; do not treat this file as proof it works on real hardware.
  *
  * Broadcaster (#1335): once a session is live, a dockable OPERATOR CONSOLE
  * (the shared js/modules/service-broadcast.js — same core the leader-device
@@ -121,7 +131,25 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         .svc-proj-instr { font-size: 3.6vmin; opacity: .9; margin-bottom: 3vmin; }
         .svc-proj-code { font-size: 22vmin; font-weight: 800; letter-spacing: .08em; line-height: 1;
             font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; }
+        /* Code + QR sit side by side on a wide projector, stack on a narrow
+           preview — flex-wrap does the responsive work for free. The QR
+           always gets its own solid-white card: the overlay's dark
+           background (#0b1020, fixed regardless of the admin's own
+           data-bs-theme — this is a projection surface, not admin chrome)
+           would otherwise sit directly behind the QR's transparent SVG
+           corners and starve it of the light quiet-zone real scanners
+           expect around the dark modules. */
+        .svc-proj-join { display: flex; align-items: center; justify-content: center;
+            gap: 4vmin; flex-wrap: wrap; }
+        #svc-proj-qr-wrap { flex: 0 0 auto; width: 26vmin; height: 26vmin; min-width: 160px; min-height: 160px;
+            background: #fff; border-radius: 1.2vmin; padding: 1.6vmin; box-shadow: 0 6px 22px rgba(0,0,0,.4);
+            display: flex; align-items: center; justify-content: center; }
+        #svc-proj-qr-wrap.d-none { display: none; }
+        #svc-proj-qr { width: 100%; height: 100%; }
+        #svc-proj-qr svg { display: block; width: 100%; height: 100%; }
         .svc-proj-url { font-size: 4vmin; margin-top: 4vmin; opacity: .85; }
+        .svc-proj-qr-fallback { font-size: 2.6vmin; opacity: .85; margin-top: 1.5vmin; max-width: 70ch; }
+        .svc-proj-qr-fallback.d-none { display: none; }
         .svc-proj-foot { position: absolute; bottom: 3vmin; font-size: 2.4vmin; opacity: .6; }
         #svc-end-btn { position: absolute; top: 3vmin; right: 3vmin; }
         /* Operator console — docked bottom-left of the projection overlay so the
@@ -183,9 +211,20 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
     <div id="svc-projection" role="dialog" aria-label="Service join code">
         <button type="button" id="svc-end-btn" class="btn btn-outline-light btn-sm"><i class="bi bi-x-lg me-1"></i>End service</button>
         <div class="svc-proj-venue" id="svc-proj-venue"></div>
-        <div class="svc-proj-instr">In iHymns, tap <strong>Join service</strong> and enter:</div>
-        <div class="svc-proj-code" id="svc-proj-code">······</div>
+        <div class="svc-proj-instr">Scan the QR, or in iHymns tap <strong>Join service</strong> and enter:</div>
+        <div class="svc-proj-join">
+            <!-- aria-hidden: purely a visual accelerator for a phone camera —
+                 the typed code alongside it (and read via svc-proj-code below)
+                 already conveys everything a screen reader needs (#1339). -->
+            <div id="svc-proj-qr-wrap" class="d-none" aria-hidden="true">
+                <div id="svc-proj-qr"></div>
+            </div>
+            <div class="svc-proj-code" id="svc-proj-code">······</div>
+        </div>
         <div class="svc-proj-url" id="svc-proj-url"></div>
+        <!-- Shown only when QR generation fails (both CDN + vendored copy) —
+             the typed code above keeps working on its own either way. -->
+        <div id="svc-proj-qr-fallback" class="svc-proj-qr-fallback d-none" role="status"></div>
         <div class="svc-proj-foot">The code changes regularly — the latest one always works.</div>
 
         <!-- Operator console (#1335): drive the congregation's current song from
@@ -219,6 +258,10 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
         const VENUES = <?= json_encode($venues, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const DOW = <?= json_encode($DOW, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const JOIN_BASE = <?= json_encode($joinBase, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
+        /* Pinned CDN URL + SRI (reference-only, see includes/config.php) + local
+           vendored fallback path for the QR renderer (#1339, rule #1587). Same
+           registry index.php/api-docs.php read for Bootstrap/jQuery/Swagger UI. */
+        const QR_LIB = <?= json_encode(APP_CONFIG['libraries']['qrcodegen'] ?? null, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         const ROTATE_MS = 30000;
         let session = null, rotateTimer = null, broadcaster = null;
 
@@ -274,9 +317,98 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
             return fetch('/api?action=' + action + (opts.query || ''), init).then(function (r) { return r.json().catch(function () { return {}; }); });
         }
 
+        /* ---- QR join code (#1339 "buildable half") -------------------------
+           Renders a scannable QR of the join URL beside the typed code — an
+           ACCELERATOR, never a replacement (rule from the issue brief): the
+           typed code is the authoritative, always-visible, screen-reader
+           fallback whether or not the QR ever renders.
+
+           Library: the vendored `qrcode-generator` (kazuhikoarase, MIT — see
+           includes/config.php's QR_LIB entry for the full pinning rationale),
+           loaded via dynamic import() from the pinned CDN URL with a fallback
+           to the local vendored copy — the SAME pattern sheet-music.js
+           already uses for PDF.js, because browsers don't support the
+           `integrity` attribute on dynamic import() the way they do for
+           `<script src>`. qrModulePromise memoises a SUCCESSFUL load; a
+           failure clears it so the next code rotation (30s later) retries
+           rather than staying broken for the rest of the service. */
+        const qrWrap = document.getElementById('svc-proj-qr-wrap');
+        const qrBox = document.getElementById('svc-proj-qr');
+        const qrFallback = document.getElementById('svc-proj-qr-fallback');
+        let qrModulePromise = null;
+
+        function loadQrModule() {
+            if (qrModulePromise) return qrModulePromise;
+            const attempt = (async function () {
+                if (!QR_LIB || !QR_LIB.js_cdn || !QR_LIB.js_local) {
+                    throw new Error('QR library not registered in APP_CONFIG.');
+                }
+                let mod;
+                try {
+                    mod = await import(/* webpackIgnore: true */ QR_LIB.js_cdn);
+                } catch (cdnErr) {
+                    console.warn('[service-projection] QR CDN import failed, trying local vendor copy:', cdnErr);
+                    mod = await import('/' + QR_LIB.js_local);
+                }
+                const factory = mod && (mod.default || mod.qrcode);
+                if (typeof factory !== 'function') { throw new Error('Unexpected QR module shape.'); }
+                return factory;
+            })();
+            attempt.catch(function () { qrModulePromise = null; });
+            qrModulePromise = attempt;
+            return attempt;
+        }
+
+        /* The real join route (js/modules/service-follow.js's joinService() +
+           the anonymous POST-only `service_join` action in api.php) has no
+           URL-based auto-join today — a congregant always lands on the home
+           page and types the code into the "Join a live service" prompt.
+           Scanning this URL still saves the trip to find the site + the
+           button: it opens straight to the app (same origin this session is
+           bound to, so the #1268/rule-#26 Channel wall is automatic), where
+           the code is displayed prominently either way. The `svc_code` query
+           param is otherwise inert today (the home route ignores unknown
+           query strings) but forward-compatible with a future auto-fill —
+           see the doc-comment on serviceMode_resolveJoin()'s "QR deep-link"
+           remark in includes/service_mode.php. */
+        function joinUrlFor(code) {
+            return JOIN_BASE + '/?svc_code=' + encodeURIComponent(code);
+        }
+
+        async function renderQr(code) {
+            if (!qrBox || !qrWrap || !qrFallback || !code) return;
+            try {
+                const qrcodeFactory = await loadQrModule();
+                /* 0 = auto-pick the smallest version that fits the URL; 'M'
+                   (~15% recovery) trades some error-correction headroom for
+                   larger, more camera-friendly modules at a fixed box size —
+                   this is a short static URL, not a noisy environment, so 'H'
+                   would only shrink modules for no real robustness gain. */
+                const qr = qrcodeFactory(0, 'M');
+                qr.addData(joinUrlFor(code), 'Byte');
+                qr.make();
+                qrBox.innerHTML = qr.createSvgTag({ scalable: true, alt: 'QR code to join the service' });
+                qrWrap.classList.remove('d-none');
+                qrFallback.classList.add('d-none');
+                qrFallback.textContent = '';
+            } catch (e) {
+                /* Never a blank box — hide the (possibly half-drawn) QR card
+                   and say so in plain text next to the still-working typed
+                   code. console.error so /manage/*'s error monitor (#1599)
+                   can surface this in the activity log even though nobody's
+                   watching the projector's console. */
+                console.error('[service-projection] QR generation failed:', e);
+                qrBox.innerHTML = '';
+                qrWrap.classList.add('d-none');
+                qrFallback.classList.remove('d-none');
+                qrFallback.textContent = 'QR code unavailable right now — use the code above.';
+            }
+        }
+
         function showCode(code) {
             document.getElementById('svc-proj-code').textContent = code || '······';
             document.getElementById('svc-proj-url').textContent = JOIN_BASE.replace(/^https?:\/\//, '') + '  ·  Join service';
+            renderQr(code);
         }
         function startRotate() {
             if (rotateTimer) clearInterval(rotateTimer);

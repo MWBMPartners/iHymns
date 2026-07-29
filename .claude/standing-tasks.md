@@ -29,12 +29,108 @@ never mass-rewrite comments across the whole tree in one unreviewed sweep.
 ### 2. GitHub Issues — the point of truth
 - Every user-reported bug / feature / decision has a tracking issue **before** the
   commit that addresses it (so the timeline reads sensibly).
+
+#### 2a. EVERY identified task gets an issue — including ones found mid-investigation
+
+**File the issue at the moment of discovery, not at the end of the work.** If an
+investigation turns up five things worth doing, that is five issues, not one
+paragraph in a report and a hope that somebody remembers.
+
+- **Findings from an audit/analysis become issues immediately** — one per
+  actionable item, each with the `file:line` evidence that established it. A
+  finding recorded only in a session report, a handoff, or a chat reply is
+  effectively lost: the next session reads the tracker, not the transcript.
+- **Group related findings under an Epic** (a parent issue that states the goal
+  and the ordering constraint), with one child issue per unit of work. The Epic
+  carries the "why now" and the sequencing; the children carry the doing.
+  Worked example: **#1601** (make the v2 editor the default) with children
+  **#1606–#1610**, each a single verified parity gap.
+- **Work already done without an issue → file it retrospectively.** State plainly
+  that it is retrospective and name the commit. #1602 is the pattern: the finding
+  (three importer suites were never referenced by CI at all) mattered more than
+  the fix, and would otherwise have survived only in a commit message.
+- **A verification task is still a task.** "Confirm X replaces Y and does not
+  re-materialise the corpus" is a legitimate issue (#1610) — the answer might be
+  "already fine, close it", and knowing that is worth the issue.
+- **Do not file an issue per symptom when one cause explains them all**, and do
+  not file for a rename. Verify first: of 34 apparent v1→v2 API differences, 19
+  were renames and 8 collapsed into one generic handler, leaving 6 real gaps.
+  Filing 34 issues would have been worse than filing none.
+- Unactioned suggestions and owner decisions → `for consideration`.
 - Update issues to reflect reality: comment what landed (with the **commit SHA**),
   tick checklists, close completed issues **with evidence**, reopen ones that
   regressed, and split/relabel as scope changes.
 - Unactioned suggestions → `for consideration`-labelled issues (global rule).
 - Keep schema/state issues accurate at all times so state is reconstructable if
   local work is lost.
+
+#### 2b. A "codebase sweep" is TWO different jobs — do not confuse them
+
+The owner has asked several times for a "full codebase sweep", and each time real
+bugs survived it. The reason is not effort; it is that two different questions
+were being conflated, and only one was ever being asked.
+
+| | **Issue-verification sweep** | **Behaviour audit** |
+|---|---|---|
+| Asks | "Are our filed issues still accurate?" | "Does the code do what it claims?" |
+| Bounded by | What someone already noticed | Nothing |
+| Method | Read issue → check code | Trace behaviour end to end |
+| Finds | Stale issues, fixed-but-open, wrong descriptions | Unfiled bugs |
+| **Cannot** find | **Anything nobody has filed** | — |
+
+**An issue sweep structurally cannot find an unfiled bug.** If the only sweep run
+is issue-verification, the tracker gets tidier and the software does not get
+better. Both are needed; say which one is being run.
+
+#### The failure signature these audits exist to catch
+
+Every bug that survived the sweeps shares one shape: **the code looks complete.**
+
+- The editor's Translations panel (#1626) had a UI, fully-implemented endpoints,
+  and a success toast — and **wrote nothing**. Grep saw a healthy feature.
+- Join codes (#1621) had a `UNIQUE` key that looked right and enforced something
+  narrower than the feature assumed.
+- `/manage/revisions` (#1623) emitted `?open=`; the editor read `?song=`. Silently
+  ignored — the page loaded and nothing happened.
+- `npm run dev` (#1631) recreated the exact legacy file `/manage/data-health`
+  exists to help you remove.
+
+None is visible to a grep, because none of them *look* wrong. They are **silent
+no-ops**: the surrounding feature still works, so it fails only on use.
+
+#### The five lenses
+
+Run these as separate passes with separate agents — each is a different question,
+and one agent asked to "find bugs" defaults to whichever lens it thought of first.
+
+1. **Write-path integrity.** For every action that claims to persist something:
+   does an INSERT/UPDATE actually execute, is the success message shown *before*
+   the write is confirmed, is the data read back, is any submitted field silently
+   dropped? *(finds #1626)*
+2. **Orphan detection.** Endpoints with zero callers; UI posting to nothing;
+   tables with no writer or no reader; settings written but never read; events
+   dispatched but never heard. *(finds #1626, #1609)*
+3. **Constraint vs intent.** For each table: does the UNIQUE/FK/NOT NULL actually
+   enforce what the feature believes? Is uniqueness enforced only in PHP where a
+   race defeats it? *(finds #1621)*
+4. **Cross-surface consistency.** Every internal link — does the target read the
+   params the source emits? Do PWA/Apple/Android agree? Do public and admin apply
+   the same access rules? *(finds #1623, #1388)*
+5. **Unreachable / self-defeating code.** Guards that can never be true; code
+   after an unconditional exit; one part of the system undoing what another
+   exists to achieve. *(finds #1631)*
+
+#### Rules for running one
+
+- **Evidence or it didn't happen.** Every finding carries `file:line`, or is
+  explicitly labelled unconfirmed with what would settle it.
+- **Exclude what this branch already fixed** — give the agent
+  `git log --oneline origin/alpha..HEAD`. Re-reporting known fixes wastes the run
+  and buries the new findings.
+- **Ban style findings.** Formatting and naming crowd out the real ones.
+- **Rank by user impact**: silent data loss → silent no-op → dead weight.
+- **A short honest list beats a long padded one.** "This lens found nothing" is a
+  useful result; a padded list is not.
 
 ### 3. GitHub Milestones + Project board
 - Assign new issues to the right Milestone; move closed ones out of "in progress".

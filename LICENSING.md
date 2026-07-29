@@ -39,8 +39,10 @@ are those currently pinned in the web app (verify against the source on update).
 | **SortableJS** | 1.15.2 | MIT | Drag-and-drop card/list reorder |
 | **animate.css** | 4.1.1 | **Hippocratic License 2.1** | ⚠️ See note below |
 | **Swagger UI** (`swagger-ui-dist`) | 5.32.11 | Apache-2.0 | API documentation UI (`/manage/api-docs`) — pinned with SRI + local fallback (#1587) |
+| **qrcode-generator** | 2.0.4 | MIT — © Kazuhiko Arase | Congregant join QR on `/manage/service-projection` (#1339) — loaded via dynamic `import()`, local vendored fallback; SRI hash recorded for audit (browsers don't enforce `integrity` on module imports, #1587) |
 | **jQuery** | 3.7.1 | MIT | Limited legacy use |
 | **protobuf.js** (`protobufjs`) | ^8.5.0 | BSD-3-Clause | Dev dependency (ProPresenter import tooling) |
+| **jsdom** | ^30.0.1 | MIT | Dev dependency (DOM-backed unit tests, #1594) — **never shipped**; test-time only |
 
 > ⚠️ **animate.css 4.x licence note.** animate.css moved from MIT to the
 > **Hippocratic License 2.1** in v4 — an *ethical-source* licence with use

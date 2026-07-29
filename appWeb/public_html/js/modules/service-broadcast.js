@@ -29,11 +29,33 @@
  *
  * Docs: MDN fetch — https://developer.mozilla.org/docs/Web/API/Fetch_API
  *       Bootstrap 5 utilities — https://getbootstrap.com/docs/5.3/
+ *
+ * #1594 part 2 — the song picker below is now keyboard-navigable
+ * (ArrowUp/Down/Home/End + ARIA: role=combobox/listbox/option,
+ * aria-selected, aria-activedescendant) via the shared
+ * window.iHymnsComboboxA11y helper (imported for its side effect only —
+ * see combobox-a11y.js's own doc-comment). CONSERVATIVE BY DESIGN — this
+ * drives a LIVE congregation display, so unlike every other #1594 part-2
+ * call site this one deliberately does NOT adopt Tab-commit: tabbing out
+ * of the search box still just moves focus, exactly as before, rather
+ * than risking an accidental broadcast to a live room from an unintended
+ * Tab press. Enter's pre-existing behaviour is also fully preserved when
+ * no arrow key has been touched (broadcasts the first rendered result,
+ * same as before this migration) — Enter only commits a DIFFERENT
+ * (arrow-highlighted) result when the operator explicitly navigated to
+ * one.
  */
+import './combobox-a11y.js';
 
 /* Max search rows rendered at once — keeps the picker snappy on a ~14k-row index
    without a virtual list (the operator types to narrow long before this bites). */
 const SB_MAX_RESULTS = 40;
+
+/* #1594 part 2 — id prefix for the shared a11y helper. A module-scope
+   counter (rather than a hardcoded string) in case a future page ever
+   mounts more than one ServiceBroadcaster at once — mirrors
+   place-search.js's own instanceSeq pattern. */
+let sbInstanceSeq = 0;
 
 export class ServiceBroadcaster {
     /**
@@ -58,6 +80,14 @@ export class ServiceBroadcaster {
         this._lastKey     = '';     // "songId|idx" de-dupe — don't re-POST an unchanged state
         this._els         = {};     // cached DOM handles
         this._destroyed   = false;
+
+        /* #1594 part 2 — picker keyboard-highlight state (-1 = none).
+           NOT auto-highlighted on render/open — see the module doc-comment
+           above for why: Enter with nothing explicitly arrowed-to must
+           keep broadcasting the first result exactly as it did before
+           this migration. */
+        this._pickerActiveIndex = -1;
+        this._idPrefix = 'sb-picker-' + (++sbInstanceSeq);
     }
 
     /** Load the song index + paint the console. Safe to await; failures degrade gracefully. */
@@ -211,10 +241,42 @@ export class ServiceBroadcaster {
         let debounce = null;
         search.addEventListener('input', () => {
             if (debounce) { clearTimeout(debounce); }
+            /* A NEW query invalidates any previous highlight — the row it
+               pointed at may not even be in the new result set. */
+            this._pickerActiveIndex = -1;
             debounce = setTimeout(() => this._renderResults(search.value), 120);
         });
+        /* #1594 part 2 — ArrowUp/Down/Home/End now navigate the result
+           list (previously dead keys) via the shared helper; Escape
+           closes the picker. Deliberately NO Tab-commit here — see the
+           module doc-comment for why this one call site stays
+           conservative. Enter's behaviour is layered, not replaced: the
+           shared handler only claims Enter when a row is highlighted
+           (handled === true below); otherwise the ORIGINAL
+           "broadcast the first rendered result" fallback still runs,
+           byte-for-byte the same code path as before this migration. */
         search.addEventListener('keydown', (e) => {
-            /* Enter on a single result broadcasts it — fast keyboard-only flow. */
+            let handled = false;
+            if (window.iHymnsComboboxA11y) {
+                handled = window.iHymnsComboboxA11y.handleComboboxKeydown(e, {
+                    isOpen: () => !picker.hidden,
+                    getItems: () => Array.from(results.querySelectorAll('[data-song-id]')),
+                    getActiveIndex: () => this._pickerActiveIndex,
+                    setActiveIndex: (i) => { this._pickerActiveIndex = i; },
+                    render: () => this._renderResults(search.value),
+                    /* Reuse the row's own click listener rather than a
+                       second copy of selectSong()'s call — see
+                       combobox-a11y.js's doc-comment for why every
+                       migrated call site does this. */
+                    onCommit: (i, el) => el.click(),
+                    onClose: () => this._closePicker(),
+                    commitOnTab: false,
+                });
+            }
+            if (handled) { return; }
+            /* Pre-existing fallback, unchanged: Enter with nothing
+               explicitly arrow-highlighted broadcasts the first
+               rendered result — fast keyboard-only flow. */
             if (e.key === 'Enter') {
                 const first = results.querySelector('[data-song-id]');
                 if (first) { e.preventDefault(); this.selectSong(first.getAttribute('data-song-id')); }
@@ -241,15 +303,29 @@ export class ServiceBroadcaster {
         const p = this._els.picker;
         if (!p) { return; }
         p.hidden = !p.hidden;
+        this._pickerActiveIndex = -1; // fresh open (or close) — no stale highlight carried over
         if (!p.hidden) {
             this._renderResults(this._els.search.value);
             this._els.search.focus();
         }
     }
-    _closePicker() { if (this._els.picker) { this._els.picker.hidden = true; } }
+    _closePicker() {
+        if (this._els.picker) { this._els.picker.hidden = true; }
+        this._pickerActiveIndex = -1;
+    }
 
+    /* Re-paints the result list at the CURRENT `this._pickerActiveIndex`
+       — this is BOTH the normal "new query" render path AND the `render`
+       callback handleComboboxKeydown calls after every arrow/Home/End
+       press (see place-search.js's renderPanel() for the same
+       full-rebuild-per-keypress pattern this mirrors). Callers that are
+       starting a genuinely NEW result set reset `_pickerActiveIndex`
+       themselves first (search input / _togglePicker above) — this
+       function only ever reads it, never resets it, so an arrow-key
+       re-render doesn't stomp the very highlight it's trying to move. */
     _renderResults(query) {
         const list = this._els.results;
+        const search = this._els.search;
         if (!list) { return; }
         list.innerHTML = '';
         const q = (query || '').trim().toLowerCase();
@@ -266,12 +342,18 @@ export class ServiceBroadcaster {
             li.className = 'list-group-item text-secondary small';
             li.textContent = this.index.length ? 'No matching songs.' : 'Song list unavailable.';
             list.appendChild(li);
+            /* No selectable options — nothing valid for aria-activedescendant
+               to point at (mirrors place-search.js's renderHint() case). */
+            if (window.iHymnsComboboxA11y && search) {
+                window.iHymnsComboboxA11y.applyComboboxAria({ input: search, panel: list, items: [], activeIndex: -1, idPrefix: this._idPrefix, expanded: false });
+            }
             return;
         }
-        matches.forEach((s) => {
+        matches.forEach((s, i) => {
             const li = document.createElement('button');
             li.type = 'button';
             li.className = 'list-group-item list-group-item-action d-flex justify-content-between align-items-center';
+            li.classList.toggle('active', i === this._pickerActiveIndex);
             li.setAttribute('data-song-id', String(s.id));
             const left = document.createElement('span');
             left.className = 'text-truncate';
@@ -284,6 +366,13 @@ export class ServiceBroadcaster {
             li.addEventListener('click', () => this.selectSong(String(s.id)));
             list.appendChild(li);
         });
+        if (window.iHymnsComboboxA11y && search) {
+            window.iHymnsComboboxA11y.applyComboboxAria({
+                input: search, panel: list,
+                items: Array.from(list.querySelectorAll('[data-song-id]')),
+                activeIndex: this._pickerActiveIndex, idPrefix: this._idPrefix,
+            });
+        }
     }
 
     _renderNowPlaying() {

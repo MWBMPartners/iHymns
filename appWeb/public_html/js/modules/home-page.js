@@ -25,6 +25,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml } from '../utils/html.js';
 import { SONGBOOK_NAMES, STORAGE_HISTORY, STORAGE_AUTH_TOKEN } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 /**
  * Entry point — call after the home page HTML has been injected into
@@ -64,7 +65,7 @@ async function loadPopularSongs() {
 
     let songs = [];
     try {
-        const res  = await fetch('/api?action=popular_songs&period=month&limit=10');
+        const res  = await apiFetch('/api?action=popular_songs&period=month&limit=10');
         const data = await res.json();
         songs = Array.isArray(data.songs) ? data.songs : [];
     } catch {
@@ -205,7 +206,7 @@ async function loadRecentlyViewed() {
     if (!section || !el) return;
 
     try {
-        const res  = await fetch('/api?action=song_history&limit=8', {
+        const res  = await apiFetch('/api?action=song_history&limit=8', {
             headers: { 'Authorization': 'Bearer ' + token },
         });
         const data = await res.json();
@@ -267,7 +268,7 @@ async function loadTags() {
 
     let tags = [];
     try {
-        const res  = await fetch('/api?action=popular_tags&limit=' + POPULAR_TAGS_LIMIT);
+        const res  = await apiFetch('/api?action=popular_tags&limit=' + POPULAR_TAGS_LIMIT);
         const data = await res.json();
         tags = Array.isArray(data.tags) ? data.tags : [];
     } catch {
@@ -298,7 +299,7 @@ async function loadTags() {
             moreBtn.disabled = true;
             let all = [];
             try {
-                const res  = await fetch('/api?action=tags');
+                const res  = await apiFetch('/api?action=tags');
                 const data = await res.json();
                 all = Array.isArray(data.tags) ? data.tags : [];
             } catch {

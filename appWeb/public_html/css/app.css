@@ -3655,3 +3655,114 @@ body.reduce-motion .theme-chip:focus-visible {
     padding: 0 0.4rem;
     line-height: 1.4;
 }
+
+/* =========================================================================
+ * Set-list playback bar (#1533)
+ *
+ * ELI5: the little player that sits at the bottom of the screen while you
+ * work through a set list, with Prev / Next and where you are in the list.
+ *
+ * A FIXED BAR, not an in-flow alert. The previous version was an alert
+ * injected after the breadcrumb: it scrolled away the moment you started
+ * reading, which is precisely when a musician mid-service needs "Next".
+ * Fixed keeps it reachable without hunting.
+ *
+ * Bottom rather than top: it is thumb-reachable one-handed on a phone
+ * (a music stand or a hand holding a hymnal is usually occupying the other),
+ * and it does not compete with the header or the reading-progress bar.
+ * ========================================================================= */
+.playlist-bar {
+    position: fixed;
+    left: 50%;
+    transform: translateX(-50%);
+    /* Clear the footer nav AND the device's home indicator. Reuses the same
+       variables as .scroll-to-top-btn so the two never overlap. */
+    bottom: calc(var(--footer-total-height, 88px) + env(safe-area-inset-bottom, 0px) + 12px);
+    z-index: 1035;                 /* above content, below modals (1055) */
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    max-width: min(680px, calc(100vw - 1.5rem));
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--bs-border-color, rgba(127, 127, 127, 0.35));
+    border-radius: 999px;
+    background-color: var(--bs-body-bg, #fff);
+    /* Theme-aware by using Bootstrap's own tokens rather than a hardcoded
+       colour — the app supports light, dark, high-contrast and CVD modes. */
+    box-shadow: 0 0.5rem 1.5rem rgba(0, 0, 0, 0.18);
+}
+
+.playlist-bar-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-width: 0;                  /* lets the name truncate instead of pushing the buttons off */
+    line-height: 1.2;
+    text-align: center;
+}
+
+.playlist-bar-name {
+    max-width: 22ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.playlist-bar-pos {
+    font-size: 0.72rem;
+    color: var(--bs-secondary-color, #6c757d);
+    font-variant-numeric: tabular-nums;  /* "9 of 12" doesn't jitter on change */
+}
+
+.playlist-bar-btn {
+    flex-shrink: 0;
+    border-radius: 999px;
+    white-space: nowrap;
+}
+
+/* The "Next: <title>" label is the first thing to go when space is tight —
+   the chevron still says which way it goes. */
+.playlist-bar-btn-label {
+    display: inline-block;
+    max-width: 12ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: bottom;
+}
+
+.playlist-bar-exit {
+    flex-shrink: 0;
+    padding: 0 0.35rem;
+    color: var(--bs-secondary-color, #6c757d);
+    text-decoration: none;
+}
+
+/* Reserve room so the bar never covers the final lyric line. Set on <body>
+   by the module while the bar exists, and removed with it. */
+body.has-playlist-bar .main-content {
+    padding-bottom: calc(var(--footer-total-height, 88px) + env(safe-area-inset-bottom, 0px) + 84px);
+}
+
+@media (max-width: 420px) {
+    /* On the narrowest phones drop the next-song title entirely rather than
+       let the bar wrap into two lines or overflow the viewport. */
+    .playlist-bar-btn-label {
+        max-width: 6ch;
+    }
+    .playlist-bar-name {
+        max-width: 14ch;
+    }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .playlist-bar {
+        animation: playlist-bar-in 160ms ease-out;
+    }
+}
+
+@keyframes playlist-bar-in {
+    from { opacity: 0; transform: translateX(-50%) translateY(0.5rem); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}

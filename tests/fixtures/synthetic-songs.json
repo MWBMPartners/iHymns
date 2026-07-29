@@ -1,0 +1,227 @@
+{
+  "meta": {
+    "generatedAt": "2026-01-01T00:00:00.000Z",
+    "generatorVersion": "1.0.0",
+    "totalSongs": 5,
+    "totalSongbooks": 2
+  },
+  "songbooks": [
+    { "id": "TF", "name": "Testing Fixture Hymnal", "songCount": 3 },
+    { "id": "SX", "name": "Sample Xample Songs", "songCount": 2 }
+  ],
+  "songs": [
+    {
+      "id": "TF-0001",
+      "number": 1,
+      "title": "Rivers of Wonder",
+      "songbook": "TF",
+      "songbookName": "Testing Fixture Hymnal",
+      "language": "en",
+      "writers": ["A. Fictional Author"],
+      "composers": ["A. Fictional Author"],
+      "copyright": "",
+      "ccli": "",
+      "verified": true,
+      "lyricsPublicDomain": true,
+      "musicPublicDomain": true,
+      "hasAudio": false,
+      "hasSheetMusic": false,
+      "components": [
+        {
+          "type": "verse",
+          "number": 1,
+          "lines": [
+            "Made-up river, made-up shore,",
+            "invented tide forevermore,",
+            "this line exists for tests alone,",
+            "no borrowed words, no verse we've known."
+          ]
+        },
+        {
+          "type": "verse",
+          "number": 2,
+          "lines": [
+            "A placeholder hill, a placeholder sky,",
+            "synthetic clouds go drifting by,",
+            "every word here built to check",
+            "that parsers hold and schemas peck."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TF-0002",
+      "number": 2,
+      "title": "Song for Silent Fields",
+      "songbook": "TF",
+      "songbookName": "Testing Fixture Hymnal",
+      "language": "en",
+      "writers": ["B. Testcase Smith"],
+      "composers": [],
+      "copyright": "Copyright (c) 2026 Fixture Publishing (not a real entity)",
+      "ccli": "0000001",
+      "verified": false,
+      "lyricsPublicDomain": false,
+      "musicPublicDomain": false,
+      "hasAudio": true,
+      "hasSheetMusic": false,
+      "components": [
+        {
+          "type": "verse",
+          "number": 1,
+          "lines": [
+            "Fields of fixture, rows of sample,",
+            "gathered here for this example,",
+            "nothing sung was ever real,",
+            "only strings a test can feel."
+          ]
+        },
+        {
+          "type": "chorus",
+          "number": null,
+          "lines": [
+            "Sing, oh sing, this fabricated line,",
+            "written only to compile and shine,",
+            "no copyright to trouble anyone,",
+            "a chorus born beneath a fixture sun."
+          ]
+        },
+        {
+          "type": "verse",
+          "number": 2,
+          "lines": [
+            "Second verse of second nature,",
+            "built to test the data structure,",
+            "titles, numbers, lines that scan,",
+            "assembled by no earthly hand."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "TF-0003",
+      "number": 3,
+      "title": "The Quiet Harbor",
+      "songbook": "TF",
+      "songbookName": "Testing Fixture Hymnal",
+      "language": "en-GB",
+      "writers": [],
+      "composers": ["C. Placeholder Jones"],
+      "copyright": "",
+      "ccli": "",
+      "verified": true,
+      "lyricsPublicDomain": true,
+      "musicPublicDomain": false,
+      "hasAudio": false,
+      "hasSheetMusic": true,
+      "components": [
+        {
+          "type": "verse",
+          "number": 1,
+          "lines": [
+            "Harbor built of test-suite stone,",
+            "waters mapped but never known,",
+            "a lighthouse made of fixture light",
+            "guiding nothing through the night."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SX-0001",
+      "number": 1,
+      "title": "Evergreen Anthem",
+      "songbook": "SX",
+      "songbookName": "Sample Xample Songs",
+      "language": "en",
+      "writers": ["D. Mockdata Lee"],
+      "composers": ["D. Mockdata Lee"],
+      "copyright": "",
+      "ccli": "",
+      "verified": true,
+      "lyricsPublicDomain": true,
+      "musicPublicDomain": true,
+      "hasAudio": true,
+      "hasSheetMusic": true,
+      "components": [
+        {
+          "type": "intro",
+          "number": null,
+          "lines": ["(instrumental placeholder — no lyrics by design)"]
+        },
+        {
+          "type": "verse",
+          "number": 1,
+          "lines": [
+            "Evergreen only in a manifest sense,",
+            "a tree of tokens, no real content dense,",
+            "planted here to prove the loader's reach,",
+            "an anthem with nothing true to teach."
+          ]
+        },
+        {
+          "type": "outro",
+          "number": null,
+          "lines": ["(fade — end of synthetic sample)"]
+        }
+      ]
+    },
+    {
+      "id": "SX-0002",
+      "number": 2,
+      "title": "Lanterns in the Dusk",
+      "songbook": "SX",
+      "songbookName": "Sample Xample Songs",
+      "language": "en",
+      "writers": ["E. Stubtext Okafor", "F. Dummydata Reyes"],
+      "composers": ["E. Stubtext Okafor"],
+      "copyright": "Copyright (c) 2026 Fixture Publishing (not a real entity)",
+      "ccli": "0000002",
+      "verified": false,
+      "lyricsPublicDomain": false,
+      "musicPublicDomain": false,
+      "hasAudio": false,
+      "hasSheetMusic": false,
+      "components": [
+        {
+          "type": "verse",
+          "number": 1,
+          "lines": [
+            "Lanterns strung from fabricated eaves,",
+            "light that no real dusk believes,",
+            "swaying on an invented breeze,",
+            "held aloft by testing trees."
+          ]
+        },
+        {
+          "type": "pre-chorus",
+          "number": null,
+          "lines": [
+            "Closer now, the fixture glows,",
+            "closer still, the pattern grows."
+          ]
+        },
+        {
+          "type": "chorus",
+          "number": null,
+          "lines": [
+            "Carry on, you invented flame,",
+            "burning bright without a claim,",
+            "on any hymn that came before,",
+            "just a chorus, nothing more."
+          ]
+        },
+        {
+          "type": "bridge",
+          "number": null,
+          "lines": [
+            "Bridge of placeholder timber,",
+            "crossing streams of sample data,",
+            "nothing here will ever wither,",
+            "since none of it was ever data-later."
+          ]
+        }
+      ]
+    }
+  ]
+}

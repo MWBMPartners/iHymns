@@ -16,9 +16,12 @@ declare(strict_types=1);
  *   Navigate to: /manage/setup-database.php
  *   Actions:
  *     ?action=install   — Create database tables from schema.sql
- *     ?action=migrate   — Import song data from songs.json
  *     ?action=users     — Migrate users/setlists from SQLite/JSON
  *     ?action=cleanup   — Clean up expired tokens
+ *
+ *   (#1614 — the legacy songs.json bootstrap importer's ?action=migrate was retired;
+ *   a fresh install now uses Install Tables (schema.sql) → "Apply all pending" registry
+ *   cards → content via the editor's bulk importers, or restore.php from a real backup.)
  *
  *   POST action=save-credentials — Write .auth/db_credentials.php from form
  *
@@ -708,7 +711,6 @@ $actionSuccess = false;
 $friendlyTitles = [
     /* Top-level operations */
     'install'                          => 'Install Tables',
-    'migrate'                          => 'Migrate Song Data',
     'users'                            => 'Migrate Users & Setlists',
     'cleanup'                          => 'Cleanup Expired Tokens',
     'backup'                           => 'Backup Database',
@@ -932,7 +934,6 @@ function _migProbe_triggerExists(\mysqli $db, string $trigger): bool
    Migration entries are appended below from the structured registry. */
 $scriptMap = [
     'install'     => 'install.php',
-    'migrate'     => 'migrate-json.php',
     'users'       => 'migrate-users.php',
     'cleanup'     => 'cleanup.php',
     'backup'      => 'backup.php',
@@ -2552,38 +2553,20 @@ if ($hasCredentials && defined('DB_HOST')) {
                     </div>
                 </div>
             </div>
-            <div class="col-md-6">
-                <div class="card bg-dark border-danger h-100">
-                    <div class="card-body">
-                        <h5 class="card-title">2. Migrate Song Data</h5>
-                        <p class="card-text text-secondary small">
-                            <!-- Loud warning: this is the LEGACY pre-#1010 bootstrap
-                                 importer. Since the DB-direct rewrite (rule #17), MySQL is
-                                 the ONLY source of truth for songs; data/songs.json is a
-                                 stale historical snapshot, not a live source. Running this
-                                 against a database with any post-#1010 curator edits
-                                 DESTROYS them. Only ever intended for bootstrapping a
-                                 brand-new, empty install. -->
-                            <strong class="text-danger">⚠ Legacy bootstrap only.</strong>
-                            TRUNCATEs songs/songbooks/writers/composers/components and
-                            re-imports everything from the repo's <code>data/songs.json</code>
-                            — a snapshot that is now months stale. This will destroy any
-                            curator edits made since (song reads are DB-direct, not JSON —
-                            see rule #17). Only use this to bootstrap a brand-new, empty
-                            install; never on a database with live data.
-                        </p>
-                        <a href="?action=migrate&amp;confirm=1" class="btn btn-danger btn-sm <?= $hasCredentials ? '' : 'disabled' ?>"
-                           data-type-to-confirm="migrate"
-                           onclick="return confirm('This is a DESTRUCTIVE, irreversible legacy bootstrap import. It will TRUNCATE and REPLACE all song data with a stale JSON snapshot. Only proceed on a brand-new, empty install. Continue?')">
-                            Run Song Migration
-                        </a>
-                    </div>
-                </div>
-            </div>
+            <!-- #1614 — the "Migrate Song Data" card (?action=migrate, migrate-json.php)
+                 was retired here. It was the LEGACY pre-#1010 songs.json bootstrap
+                 importer, already dead twice over: it aborts once
+                 tblSongComponents.LinesJson is gone (the #1235 P4/C6 retired-era guard),
+                 AND schema.sql now ships the thin tblSongComponents with none of the four
+                 JSON payload columns, so a fresh install trips that guard immediately —
+                 its only stated purpose (bootstrapping a new install) was no longer
+                 achievable. A fresh install now uses: Install Tables (schema.sql) below →
+                 "Apply all pending" on the registry migration cards → content via the
+                 Song Editor's bulk importers, or restore.php from a real backup. -->
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
-                        <h5 class="card-title">3. Migrate Users &amp; Setlists</h5>
+                        <h5 class="card-title">2. Migrate Users &amp; Setlists</h5>
                         <p class="card-text text-secondary small">
                             Import users and setlists from the legacy SQLite database
                             and shared setlist JSON files. Skips existing users.
@@ -2781,7 +2764,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
-                        <h5 class="card-title">4. Cleanup Expired Tokens</h5>
+                        <h5 class="card-title">3. Cleanup Expired Tokens</h5>
                         <p class="card-text text-secondary small">
                             Delete expired API tokens, email login codes, password reset
                             tokens, and old login attempts (30+ days).
@@ -2843,7 +2826,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-secondary h-100">
                     <div class="card-body">
-                        <h5 class="card-title">5. Backup Database</h5>
+                        <h5 class="card-title">4. Backup Database</h5>
                         <p class="card-text text-secondary small">
                             Create a compressed SQL dump of all tables and data.
                             Keeps the last 7 backups; older ones are auto-deleted.
@@ -2954,7 +2937,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-danger h-100">
                     <div class="card-body">
-                        <h5 class="card-title">6. Restore from Backup</h5>
+                        <h5 class="card-title">5. Restore from Backup</h5>
                         <p class="card-text text-secondary small">
                             Replace every table in the database with data from a previous backup.
                             <strong>Destructive — consider running a fresh Backup first.</strong>
@@ -3074,7 +3057,7 @@ if ($hasCredentials && defined('DB_HOST')) {
             <div class="col-md-6">
                 <div class="card bg-dark border-danger h-100">
                     <div class="card-body">
-                        <h5 class="card-title">7. Drop Legacy Tables</h5>
+                        <h5 class="card-title">6. Drop Legacy Tables</h5>
                         <p class="card-text text-secondary small">
                             Drop any tables in the database that are <strong>not</strong>
                             part of the current <code>schema.sql</code>. Useful after

@@ -11,7 +11,7 @@
 | 📋 Project Plan | ✅ Complete | See [Project_Plan.md](Project_Plan.md) |
 | 🗂 Project Structure | ✅ Complete | Directories, .gitignore, deployment structure |
 | 📖 Help Documentation | ✅ Complete | 8 guides in `help/` + in-app help (21 public topics, 39 admin sections) |
-| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1587+ — see GitHub for live open/closed counts |
+| 🎫 GitHub Issues | 🟢 Active | Highest issue now #1624+ — see GitHub for live open/closed counts |
 | 🔧 Song Data | ✅ Active | ~14,000 songs across 30+ songbooks (live count in `tblSongs` — query the DB, don't trust this file); served **live from MySQL** (DB-direct #1010; the static cache was decommissioned #1020) |
 | 🌐 Web PWA | ✅ Core + Enhanced | Search (Fuse.js), songbooks, lyrics, favourites, themes (Light/Dark/High-contrast/CVD/System #956), deep linking, WCAG 2.1 AA, offline support |
 | 🛠 Song Editor | ✅ Complete | `appWeb/public_html/manage/editor/` — bulk import (ZIP / VideoPsalm / OpenSong), structure tab, media uploads, per-component language overrides |
@@ -71,6 +71,10 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 - **Observability batch** (#1581 / #1582 / #1583) — event names unified behind `js/constants.js` with a CI literal-ban guard; uncaught client errors surface one toast + a throttled, scrubbed beacon into the Activity Log; a `/whats-new` page extracts the top CHANGELOG sections on every deploy.
 - **Deploy media guard** (#1584) — `data/audio/` and `data/music/` excluded from the docroot mirror; every prior deploy had been silently wiping uploaded/downloadable song media.
 - **Apple branch consolidation** — Phase 1 + Phase 2 Apple work (watch relay, tvOS projector, Live Activities, App Intents) merged into the single active branch; CI-compiled, still unreleased.
+- **Eight pre-gating security fixes** (#1388) — media-byte gating (`contentGatingMediaAllowed()`) for `/song-media/<id>` and the `bulk_audio` manifest; `songbook_export` now strips gated fields per song via `contentGatingApply()`; Service-Mode presence CCLI unlock requires a live heartbeat, not just `IsActive`; first-admin registration race closed with a transaction + row lock on both registration paths; logout clears per-user service-worker caches; `validateCsrfRequest()` no longer accepts `X-Requested-With` alone with no `Origin`/`Referer` at all. Everything is a verified no-op while `content_gating_enabled='0'`.
+- **Shared API client, fetch monkey-patch deleted** (#1031) — new `js/utils/api-client.js` (`apiFetch`/`apiFetchJson`) replaces the site-wide `window.fetch` override that `songbook-language-filter.js` installed; fixes an anonymous user's saved language filter being silently ignored on a cold `/search` load.
+- **Setlist playback mode** (#1533) — tap a song in an own or shared setlist to arm a floating prev/next nav bar with keyboard navigation and an aria-live announcement; fixes shared setlists being unnavigable. Alongside a Revisions Audit "Open in editor" link fix (#1623).
+- **Dead code + doc-accuracy cleanup** (#1612, #1615, #1618) — removed the unused `js/utils/transpose.js` (and its stale service-worker precache entry); corrected the lyrics-cutover verifier's gate-count claim from "10/13" to the actual nine implemented gates, tracking the real gap as #1618.
 
 ---
 
@@ -101,9 +105,9 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1587+ — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1624+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
-- **Version**: 0.4000.0 Alpha (authoritative: `includes/infoAppVer.php`)
+- **Version**: 0.4001.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
 
 ---
@@ -121,4 +125,4 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ---
 
-Last updated: 2026-07-28
+Last updated: 2026-07-29

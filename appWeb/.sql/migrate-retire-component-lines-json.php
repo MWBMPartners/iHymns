@@ -31,8 +31,12 @@ declare(strict_types=1);
  * leaving every column in place — a clean no-op skip, exit 0, so a stray Apply-all run is
  * harmless):
  *   (a) the C3 verifier sentinel tblAppSettings['lyrics_cutover_gate'] says
- *       phase='pre-drop', result='green', written < 24h ago (that run IS the full G1–G13
- *       byte-parity proof, incl. ChordsJson — see appWeb/.sql/verify-lyrics-cutover.php);
+ *       phase='pre-drop', result='green', written < 24h ago. That run is the
+ *       NINE-gate byte-parity proof — G1, G2, G3, G5, G6, G7, G8, G9, G10, incl.
+ *       ChordsJson (G2 subsumes the design doc's G13). It is NOT the "G1–G13"
+ *       this comment used to claim: G11 is enforced below in (b) rather than by
+ *       the verifier, while G4′-ordinals and G12 are genuinely unimplemented
+ *       (#1618). See appWeb/.sql/verify-lyrics-cutover.php's header. Fixed #1615;
  *   (b) the sentinel's fingerprint counts {songs,components,lines} STILL match the live
  *       corpus (nothing drifted since the gate ran — the freeze should guarantee this);
  *   (c) an INDEPENDENT live structural re-check: every song's mirrored line count equals

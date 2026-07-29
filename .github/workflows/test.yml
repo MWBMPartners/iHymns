@@ -9,7 +9,7 @@
 # Runs linting and validation checks on every push and pull request.
 # - ESLint for JavaScript files
 # - PHP syntax checking (php -l) for PHP files
-# - JSON validation for data/songs.json and manifest.json
+# - JSON validation for manifest.json
 # - HTMLHint for HTML files
 #
 # Only runs when relevant files are changed (JS, CSS, PHP, HTML).
@@ -133,26 +133,21 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 4b: Node unit tests
-      # Pure-function / static-analysis tests that run directly under `node`
-      # (no browser, no DOM) — Node 22 + npm ci are already set up above
-      # (Steps 2-3). Currently:
-      #   * #1581 — the event-name registry guard (bans raw `ihymns:*` string
-      #     literals outside js/constants.js, so a casing typo can never again
-      #     silently split a dispatcher from its listener).
-      #   * #1582 — the global error-monitor's throttle / scrub / re-entrancy
-      #     guards (stubs a minimal window/navigator/sessionStorage).
-      #   * #1569 — the ProPresenter 7+ exporter round-trip and the export-ui
-      #     wiring smoke test; protobufjs comes from devDependencies (Step 3).
-      # More `tests/test-*.js` scripts land here as they are added — keep this
-      # ONE step rather than growing a step per feature.
+      # Pure-function / static-analysis / jsdom tests that run directly
+      # under `node` (no browser) — Node 22 + npm ci are already set up
+      # above (Steps 2-3).
+      #
+      # HISTORY (#1631 item 5): this step used to hardcode a fixed list of
+      # test files, and `npm test` hardcoded a DIFFERENT single file — the
+      # two lists were disjoint, so "tests pass locally" and "tests pass in
+      # CI" verified different things, and neither list grew automatically
+      # as tests/*.js gained new files (15 of them went unrun by either,
+      # by the time that was noticed). `tools/run-node-tests.js` is now the
+      # ONE list — it globs every tests/*.js file — and both `npm test`
+      # (local) and this step call it, so they can never drift apart again.
       # -----------------------------------------------------------------------
       - name: Node unit tests
-        run: |
-          echo "Running Node unit tests..."
-          node tests/test-event-names.js
-          node tests/test-error-monitor.js
-          node tests/test-propresenter-export.js
-          node tests/test-export-ui.js
+        run: npm test
 
       # -----------------------------------------------------------------------
       # Step 5a: Detect literal PHP open tags inside HTML comments / backticks
@@ -213,6 +208,30 @@ jobs:
           else
             echo "All PHP files passed syntax check."
           fi
+
+      # -----------------------------------------------------------------------
+      # Step 5a2: EVERY PHP suite (#1631 item 5, second instance)
+      #
+      # The named steps below run specific suites and give granular CI output,
+      # which is worth keeping. THIS step is the completeness guarantee: it
+      # globs tests/php/*.php, so a suite cannot exist without being run.
+      #
+      # It was added because eight files were on disk and named in NO step —
+      # including test-auth-rate-limit.php (48 assertions on login brute-force
+      # protection) and test-service-mode-occurrence.php (79 on venue-local ->
+      # UTC conversion). All eight passed. They were never failing and never
+      # skipped, simply never invoked, which is the worst state a test can be
+      # in: a failing test is a signal, an unrun one is a false sense of
+      # coverage.
+      #
+      # This is the same disease tools/run-node-tests.js was written to cure on
+      # the node side; the PHP list had it too and nobody checked. A glob has no
+      # "forgot to wire up the new file" failure mode.
+      # -----------------------------------------------------------------------
+      - name: All PHP test suites
+        run: |
+          echo "Running every tests/php/*.php suite..."
+          php tools/run-php-tests.php
 
       # -----------------------------------------------------------------------
       # Step 5b: Migration registry sanity
@@ -307,6 +326,27 @@ jobs:
         run: |
           echo "Running ChordPro importer test..."
           php tests/php/test-chordpro-parser.php
+
+      # The OpenSong / VideoPsalm / FreeShow importer suites (#1575, #1538).
+      #
+      # ELI5: actually run the importer tests, so they can't quietly rot again.
+      #
+      # These were NEVER wired into CI, which is the real reason three of them
+      # sat permanently red long enough to be documented as "standing known
+      # failures". They failed for a MECHANICAL reason — each scraped source
+      # text for a code block that had since moved — so the importers had zero
+      # effective regression coverage while appearing to have three suites.
+      #
+      # A permanently-red suite is worse than an absent one: it trains everyone
+      # to ignore red. An UNRUN suite is worse still, because nothing even
+      # reports the red. Repairing them without wiring them in would have left
+      # the same hole open.
+      - name: Worship-format importers (OpenSong / VideoPsalm / FreeShow)
+        run: |
+          echo "Running worship-format importer tests..."
+          php tests/php/test-opensong-parser.php
+          php tests/php/test-videopsalm-parser.php
+          php tests/php/test-freeshow-parser.php
 
       - name: Per-action content-gating matcher (#1120)
         run: |
@@ -554,7 +594,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
-      # Validates: data/songs.json, manifest.json (in both beta and production)
+      # Validates: manifest.json
       # -----------------------------------------------------------------------
       - name: Validate JSON files
         run: |
@@ -563,8 +603,6 @@ jobs:
 
           # List of JSON files to validate
           JSON_FILES=(
-            "data/songs.json"
-            "appWeb/public_html/manifest.json"
             "appWeb/public_html/manifest.json"
           )
 

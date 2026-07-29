@@ -460,7 +460,7 @@ Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migra
 | Workflow | Purpose |
 | --- | --- |
 | `deploy.yml` | SFTP deploy on push to `alpha` / `beta` / `main`, incl. the What's New extraction (#1583) and media excludes (#1584) |
-| `version-bump.yml` | Auto-bumps `infoAppVer.php` on push to `beta` from conventional commits |
+| `version-bump.yml` | Auto-bumps `infoAppVer.php` from conventional commits on push to `alpha` **or** `beta` (#1595/#1596 — previously beta-only); on `alpha` it also closes the `CHANGELOG.md` `## [unreleased] — alpha` section into the new version heading (#1589). The commit message it bumps from is passed to the bump script as an **environment variable**, never interpolated into a `run:` shell body (#1622 — a commit message is attacker-controllable text, and `${{ }}`-into-`run:` pastes it into the script before the shell parses anything) |
 | `changelog.yml` | Regenerates the four `CHANGELOG.md` files from conventional commits on push to `main`/`beta` |
 | `release.yml` | Creates a GitHub Release + extracts notes when a `v*` tag is pushed |
 | `test.yml` | ESLint, PHP syntax (`php -l`), JSON validation, and HTMLHint on JS/CSS/PHP/HTML changes |
@@ -1021,17 +1021,56 @@ flag is on: a restricted song's audio is dropped from the manifest via
 `checkBulkAccess('song', …, 'display')` (the entity model, mirroring the gated
 `song-media.php` route the manifest sidesteps). NO-OP + fail-open when the flag is off.
 
+**TIER-gated too, since #1388.** `checkBulkAccess()` above only answers "is this song
+restricted?" — it says nothing about the caller's tier. `contentGatingMediaAllowed('audio',
+$userId, $presenceToken)` (below) is resolved once per request (`play_audio` is a
+per-requester cap, not per-song) and, when denied, empties the manifest wholesale rather
+than filtering per entry. When `audioSigningEnabled()` is also on (#1358), surviving URLs
+are additionally rewritten from the static `/data/audio/<id>.mp3` literal to a short-lived
+signed `/audio/<id>.mp3?exp=…&sig=…`.
+
+### `contentGatingMediaAllowed()` — gating the BYTES, not just the payload (#1388)
+
+`contentGatingApply()` above decides which media **links** a `song_detail`/`songbook_export`
+payload is allowed to show. Stripping a link from a payload hides the affordance; it does
+**not** protect the file — `/song-media/<id>` is a plain URL, bookmarkable, shareable, and
+guessable by id, still served long after the row vanished from someone's response. Before
+#1388, `song-media.php` applied only the **entity** gate (`checkContentAccess`) and no tier
+cap at all — so the instant gating went live, a `public`-tier visitor could still stream
+premium audio by hitting the URL directly.
+
+`contentGatingMediaAllowed($kind, $userId, $presenceToken)` closes that gap. It is a
+**second gate**, applied AFTER the existing entity gate in `song-media.php` (403 on denial,
+generic reason text — it must never disclose which tier would suffice), and mirrors
+`contentGatingApply()`'s kind→cap mapping deliberately rather than re-deriving it (rule
+#28B — a cap that hides the button but not the file, or vice versa, is worse than neither):
+
+| Kind | Cap |
+| --- | --- |
+| `audio` | `play_audio` (OR a live Service-Mode presence CCLI unlock, rule #26) |
+| `midi` | `download_midi` |
+| `sheet-music` / `musicxml` | `download_pdf` |
+
+Same three locked rules as `contentGatingApply()` (master switch / registry-driven /
+fail-open-and-log). Consumed by `song-media.php` (the byte-serving route) and the
+`bulk_audio` manifest above; `songbook_export` (api.php) uses `contentGatingApply()`
+directly, the same resolver `song_detail` uses, so a public-tier requester pulling a whole
+songbook in one call is stripped per-song exactly like a single-song read — previously that
+endpoint carried an entity gate only and was the widest lyric leak in the API once gating
+went live.
+
 ### ⚠ Known follow-ups (not yet sealed)
 
-- **`song.php` is entity-model-only.** The server-rendered `/song` page enforces access
-  via the **entity** content-restriction model, not the tier-cap field-strip that
-  `contentGatingApply()` applies to the API payloads. The two enforcement surfaces aren't
-  yet unified.
 - **The static `/data/audio/<SongId>.mp3` file is directly fetchable.** Gating the
-  `bulk_audio` manifest stops a restricted song's audio being **pre-cached**, but the
-  static MP3 itself is still served directly by Apache. Sealing it needs the signed-URL /
-  move-behind-`song-media.php` work (tracked separately) — and that must not break the
-  browser `<audio>` element.
+  `bulk_audio` manifest stops a restricted song's audio being **pre-cached**, and #1358's
+  signed `/audio/<id>.mp3` route exists, but the static MP3 itself is still served directly
+  by Apache until an operator uncomments the `.htaccess` deny block **per environment,
+  after verification** (see the block's own comments) — still true as of #1388, which did
+  not touch this.
+
+`song.php`'s tier + entity enforcement (previously listed here as a gap) was closed by
+#1357 — see "Tier-aware gating on the web + offline path" in the root `CHANGELOG.md`; the
+web page and the API now compose the same two axes.
 
 ---
 
@@ -1106,9 +1145,19 @@ New in `appWeb/public_html/manage/includes/auth.php`. It accepts the request whe
 - **(b)** it is a genuine **same-origin AJAX** request: the custom header
   `X-Requested-With` is present (a browser **cannot** set it on a cross-origin request
   without a CORS preflight this server never grants), **AND** any present `Origin` / `Referer`
-  host matches this site (an explicit cross-origin host is rejected; an **absent**
-  Origin/Referer is allowed, since the custom header already proves same-origin and some
-  privacy setups strip Referer).
+  host matches this site (an explicit cross-origin host is rejected).
+
+**Tightened in #1388:** `X-Requested-With` alone is **no longer** sufficient when
+**both** `Origin` and `Referer` are absent. The header proves a browser didn't send the
+request cross-origin; it does not prove the request came from a browser at all — any
+non-browser client can set it freely, and on its own it carries no positive evidence of
+origin. Per the Fetch spec, a real browser sends `Origin` on **every** request whose
+method is not GET/HEAD, whatever the page's `Referrer-Policy`, so absent-both means "not
+a browser POST" and the request now falls back to requiring a valid session token (path
+(a) above, already failed if execution reaches this check). The rejection is **logged**
+(method + URI), not silent — this tightens the exact path #1590 built to stop the
+sporadic editor "CSRF error", so a false rejection surfaces as one clear log line instead
+of a mystery.
 
 Either signal alone is an OWASP-recognised CSRF mitigation; together they're robust and —
 crucially — **never go stale**. State-changing AJAX endpoints call this instead of
@@ -1213,6 +1262,87 @@ The most restrictive rule wins when multiple systems overlap.
 - **Event-name unification (#1581)** — custom DOM event names live once in `js/constants.js` (the `EVT_*` exports, e.g. `EVT_AUTH_CHANGED = 'ihymns:auth-changed'`). `tests/test-event-names.js` bans raw `ihymns:*` / `iHymns:*` string literals anywhere else in `appWeb/public_html/js/**/*.js` (a small allow-list aside) and cross-checks that every exported constant has both a dispatcher and a listener — this is the guard against the class of bug where a differently-cased spelling silently creates two unrelated events with no error.
 - **Client error surfacing (#1582)** — `js/modules/error-monitor.js` catches uncaught errors and unhandled promise rejections. Each one shows a single generic toast and, independently, is scrubbed and beaconed (`POST /api?action=client_error_report`) to `tblActivityLog` (`EntityType='client'`, `Action=client.jserror`) for review at `/manage/activity-log`. Both the toast and the beacon are throttled (the beacon has three independent layers: a per-fingerprint cooldown, a hard cap of 10 beacons per page load, and a minimum gap once past 3 beacons); the server (`includes/client_error_report.php`) re-scrubs every payload rather than trusting the client.
 - **What's New page (#1583)** — the deploy workflow extracts the top three `## ` sections of `CHANGELOG.md` into `public_html/data/whats-new.md`, rendered by `/whats-new` through the escape-first `includes/markdown_lite.php`. No database involved; it is a shared-cache fragment (same excerpt for every visitor) reached from the footer version number and the environment-badge dropdown.
+
+---
+
+## 🔌 Shared API Client — `apiFetch()` (#1031)
+
+**Use `apiFetch()` / `apiFetchJson()` from `js/utils/api-client.js` for every request a
+page module makes. Never call bare `fetch()` for an app request, and never reinstall a
+global `window.fetch` override — that pattern is gone and must not come back.**
+
+### Why not a `window.fetch` monkey-patch
+
+`songbook-language-filter.js` used to attach `X-Preferred-Languages` by **replacing**
+`window.fetch` globally. That shipped two failure modes this codebase actually hit:
+
+1. **It sits in front of every request on the site**, so a bug in the header logic isn't
+   a missing header — it's a **failed request**, surfacing wherever the caller happens to
+   catch it. #1593: the patch read `input.url` on a `URL` object (which exposes `href`,
+   not `url`), got `undefined`, called `.startsWith()` on it and threw — ten unrelated
+   call sites broke, presenting to a user as "Song of the Day disappears when I pick two
+   languages."
+2. **It only applies if something installed it.** The patch was installed by
+   `bootSongbookLanguageFilter()`, which the router imports only on home/songbooks/settings.
+   A cold load of `/search` never installed it, `search.js` sent no `lang=` param, and an
+   **anonymous** user's saved language filter was silently ignored — not previously
+   reported, found while scoping #1031.
+
+Both are the same species of bug: a cross-cutting concern attached by side effect rather
+than by structure. `apiFetch()` reads the preference on every call instead, so it cannot be
+half-installed.
+
+### API
+
+- **`apiFetch(input, init)`** — signature-compatible with `fetch()`, plus one extra option:
+  `{ auth: true }` requests the injected `Authorization`/cookie headers. Migrating a call
+  site is usually just renaming `fetch` → `apiFetch`. Attaches `X-Requested-With` (the
+  same-origin signal `validateCsrfRequest()` / rule #29 wants), `X-Preferred-Languages`
+  (read fresh from `localStorage` on every call, never cached at install time), and — when
+  `auth: true` — the caller's auth headers via an injected provider, all **same-origin
+  only**, and **never clobbering a header the caller already set**.
+- **`apiFetchJson(input, init)`** — `apiFetch()` + `.json()`, with the #1566 SPA-catch-all
+  trap handled: this app's `.htaccess` answers any unmatched path with **200 + the HTML
+  shell**, so a wrong URL doesn't 404 — `response.ok` passes and `.json()` throws a
+  baffling `SyntaxError`. `apiFetchJson()` detects the non-JSON content type and raises a
+  clear error naming the URL instead.
+- **`setAuthHeaderProvider(fn)`** — registered once at boot (`app.js`) with
+  `() => this.userAuth.authHeaders()`. Auth headers arrive by **injection**, not by
+  importing `user-auth.js` directly, because `user-auth.js` → `api-client.js` →
+  `user-auth.js` is a cycle bundlers resolve in load order — i.e. sometimes `undefined` at
+  call time, non-deterministically.
+- **`requestUrlOf(input)`** — resolves the request URL from any of `fetch()`'s three
+  accepted shapes (`string | URL | Request`), always returning a string. This is the #1593
+  fix, now the one place that logic lives.
+
+### What it deliberately does NOT do
+
+It does not wrap `window.fetch`. Anything still calling bare `fetch()` keeps working
+exactly as before — this is additive, never a global override — but new/touched call sites
+should use `apiFetch()` so the language filter and CSRF header actually apply. The service
+worker (`service-worker.js.php`) deliberately keeps native `fetch`: it runs in a different
+global scope, has no `localStorage`, and its requests are not user-scoped.
+
+### Connectivity signalling
+
+`apiFetch()` dispatches `EVT_FETCH_FAILED` / `EVT_FETCH_SUCCEEDED` (from `js/constants.js`,
+#1581) on every request — a network-level throw (DNS/offline/CORS block) fires
+`EVT_FETCH_FAILED`, and a `503` response (this app's documented maintenance/DB-outage
+state, WS-K #1021) fires it too but tagged `maintenance: true` rather than being treated as
+a network failure, since the server plainly answered. The offline indicator now has
+sitewide reach for free; previously only `search.js` dispatched these by hand, and that
+hand-rolled pair was deleted in the same migration to avoid a double-fire.
+
+### Two files deliberately NOT migrated (verified, not assumed)
+
+- **`place-search.js`** — loaded as a classic `<script src>` on seven admin pages with zero
+  `import`/`export` statements; a static `import` would break it outright, and a dynamic
+  `import()` broke `test-place-search-keyboard.js` under jsdom. It also turned out
+  `places-api.php` never reads `X-Preferred-Languages`, so the premise for migrating it —
+  language-sensitivity — was simply wrong.
+- **`service-broadcast.js`** — has no direct `fetch()` calls; its network access goes
+  through an injected `apiCall()` closure defined inside `<script type="module">` blocks in
+  two PHP files.
 
 ---
 

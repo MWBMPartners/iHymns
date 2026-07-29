@@ -119,7 +119,7 @@ if (!$mysqli) {
 
 foreach (['tblSongs'] as $required) {
     if (!_migWorks_tableExists($mysqli, $required)) {
-        _migWorks_out("ERROR: {$required} not found. Run install.php / migrate-json.php first.");
+        _migWorks_out("ERROR: {$required} not found. Run install.php first.");
         return;
     }
 }

@@ -47,7 +47,12 @@ These are enforced conventions; new code must follow them (see
   helper client-side; no `innerHTML = userInput`.
 - **Authentication** — Bearer token (`tblApiTokens`, SHA-256-hashed) with a
   `SameSite=Lax`, `HttpOnly`, `Secure` cookie fallback (`ihymns_auth`). The
-  `manage/*` admin area adopts the API-token session.
+  `manage/*` admin area adopts the API-token session. **First-admin
+  registration is race-safe** (#1388) — both registration paths (password and
+  magic-link) count existing users and insert the first account as
+  `global_admin` inside one transaction with `SELECT … FOR UPDATE`, closing a
+  TOCTOU where two registrations racing on a virgin install could otherwise
+  both read zero users and both become the top-privilege account.
 - **Authorization** — role hierarchy (`user` < `editor` < `admin` <
   `global_admin`) plus a fine-grained **entitlement** system
   (`includes/entitlements.php`, `userHasEntitlement()`); sensitive routes call
@@ -58,7 +63,12 @@ These are enforced conventions; new code must follow them (see
   present OR the request is provably same-origin — it requires the
   `X-Requested-With` header (which a browser cannot set cross-origin without a
   CORS preflight the app never grants) AND any present `Origin`/`Referer` host
-  must match `HTTP_HOST`. Because it does not rely on a token that can go stale in
+  must match `HTTP_HOST`. **Tightened in #1388**: `X-Requested-With` alone no
+  longer passes when both `Origin` and `Referer` are absent — a real browser
+  sends `Origin` on every non-GET/HEAD request per the Fetch spec, so absent-both
+  means "not a browser POST" and the check now falls back to requiring a valid
+  session token; the rejection is logged (method + URI) rather than silent.
+  Because it does not rely on a token that can go stale in
   a long-lived tab, it closes the intermittent-failure gap while keeping the
   cross-origin door shut. It gates duplicate-songs merge/delete, places-api, and
   a single top-level POST guard over all legacy `/manage/editor/api.php` writes.
@@ -67,9 +77,20 @@ These are enforced conventions; new code must follow them (see
   `tblContentRestrictions` + access tiers + organisation licences (never queried
   ad-hoc from a page). **Server-side enforcement** of access tiers
   (`includes/content_gating.php`, #1353) strips gated fields (lyric body, media)
-  from the API payload by the requester's tier capability, with caps resolved
-  from the live `tblAccessTiers` row via an extensible registry (`TIER_CAPS`,
-  #1352). It is **fail-open and STRICT-safe** (an un-migrated/edge env returns
+  from the `song_detail`/`song_data`/`random` API payload by the requester's tier
+  capability, with caps resolved from the live `tblAccessTiers` row via an
+  extensible registry (`TIER_CAPS`, #1352); as of **#1388** the same strip also
+  applies per-song to `songbook_export` (previously entity-gated only — the
+  widest lyric leak in the API once gating goes live), and a **second gate**,
+  `contentGatingMediaAllowed()`, protects the media **bytes** themselves —
+  `/song-media/<id>` (403 on denial) and the offline `bulk_audio` manifest —
+  since stripping a media link from a payload hides the affordance but does not
+  protect the file, which stays a bookmarkable, guessable-by-id URL. Service-Mode's
+  presence-token CCLI unlock now also requires a **live heartbeat** within the
+  freshness window, not just an operator-set `IsActive` flag (#1388) — an
+  operator's device going offline without a clean session end previously left a
+  standing content unlock live for every congregant who had ever joined. It is
+  **fail-open and STRICT-safe** (an un-migrated/edge env returns
   data unchanged rather than throwing) and **entirely dormant** — a verified
   no-op — unless `tblAppSettings.content_gating_enabled='1'`.
 - **Read rate limiting** — the heaviest sessionless public reads (`song_detail`,
@@ -90,6 +111,20 @@ These are enforced conventions; new code must follow them (see
 - **Secrets** — DB credentials, keys and tokens live outside the web root
   (`appWeb/.auth/`, `appWeb/private_html/`) and are never committed. CI scans for
   committed secrets.
+- **CI/CD workflow hardening** — GitHub Actions `run:` steps never interpolate
+  attacker-controllable text (e.g. a commit message) via `${{ }}` directly into
+  the shell script body, since that pastes the raw text into the script before
+  the shell parses anything — a crafted commit message can break out of the
+  intended token and run arbitrary commands on a runner holding
+  `contents: write` (#1622). Such values are passed through an environment
+  variable instead, which the process receives verbatim and the shell never
+  re-parses. Workflow YAML itself is linted by `actionlint` in CI.
+- **Session hygiene on shared devices** — logging out clears the per-user
+  Cache Storage buckets the service worker owns and keys by URL alone (#1388),
+  so a subsequent user of a shared/kiosk device isn't served page fragments
+  fetched under the previous session. Deliberately spares the offline-download
+  and media caches, which represent a deliberate save-for-offline choice by
+  the user, not session state.
 - **CSP** — the public app sends an enforcing per-request-nonce Content-Security-Policy
   (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`); SPA fragments must never
   carry executable inline scripts, since a shared-cache fragment cannot carry a

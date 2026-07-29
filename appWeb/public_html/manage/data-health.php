@@ -124,7 +124,19 @@ foreach (HEALTH_TABLES as $tbl) {
     }
 }
 
-/* Is SongData on the JSON fallback? Instantiating it runs the probe. */
+/* Is SongData on the JSON fallback? Instantiating it runs the probe.
+   #1631 item 6: on THIS codebase isJsonFallback() is structurally
+   inert — jsonMode is set false once in SongData.php and never
+   reassigned (WS-J #1020 removed the fallback entirely; see
+   SongData.php:118,143,208-210), so this can only ever come back
+   `false` or `null` (probe threw / class missing), never `true`.
+   Kept anyway, deliberately: this page is what an operator reaches
+   for when a docroot looks broken, and (a) a docroot can be running
+   an older SongData.php than the one in this working copy — a
+   pre-WS-J-#1020 install genuinely could still be on the fallback —
+   and (b) the "legacy file on disk" check just below is a distinct
+   concern (the old songs.json may still physically exist even though
+   nothing reads it) that this card is the one place surfacing. */
 $songDataJsonFallback = null;
 try {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
@@ -180,25 +192,40 @@ if ($songDataJsonFallback !== false) {
         'anchor' => '#songs-json-fallback',
     ];
 }
-if ($shareFileCount > 0 || count($unimportedShareIds) > 0) {
+/* A blocker must be something DISCONNECTING CANNOT FIX (#1650).
+ *
+ * ELI5: don't refuse to tidy the room on the grounds that the room is untidy.
+ *
+ * These two gates used to test mere FILE EXISTENCE — and the disconnect action
+ * renames exactly those files (see the `disconnect_fallbacks` handler above,
+ * which renames $songsJsonPath, $shareDirPath and $sqliteDbPath). So the button
+ * could only enable once the files were already gone, at which point it had
+ * nothing left to do: unreachable by construction. The panel contradicted
+ * itself too, printing "Safe to disconnect" beside the very item it listed as
+ * a blocker.
+ *
+ * The real question is whether the DATA still exists only on disk. That is what
+ * $unimportedShareIds measures — and it was already computed. The old condition
+ * simply OR'd it with `$shareFileCount > 0`, which made the meaningful half
+ * unreachable as well.
+ */
+if (count($unimportedShareIds) > 0) {
     $disconnectBlockers[] = [
         'reason' => sprintf(
-            '%d share JSON file(s) on disk%s',
-            $shareFileCount,
-            count($unimportedShareIds) > 0
-                ? ' (' . count($unimportedShareIds) . ' not yet imported)'
-                : ''
+            '%d of %d share JSON file(s) not yet imported into MySQL — disconnecting now '
+            . 'would orphan those share URLs',
+            count($unimportedShareIds),
+            $shareFileCount
         ),
         'anchor' => '#shared-setlist-json',
     ];
 }
-if ($sqliteExists) {
-    $disconnectBlockers[] = [
-        'reason' => 'Legacy SQLite database still on disk (' . basename($sqliteDbPath) . ', '
-                    . number_format((int)$sqliteSize) . ' bytes)',
-        'anchor' => '#legacy-sqlite',
-    ];
-}
+/* No blocker for the SQLite file merely existing, deliberately. It is read ONLY
+   by migrate-users.php during the one-off user migration — no runtime path
+   opens it — so its presence proves nothing about whether the data landed. The
+   meaningful check is "did the users actually arrive", which is the tblUsers
+   blocker below and fires on its own. Gating on the file was both circular (the
+   action renames it) and redundant. */
 if (($tableCounts['tblSongs'] ?? 0) === 0) {
     $disconnectBlockers[] = [
         'reason' => 'tblSongs is empty — MySQL has no song data to fall back to',
@@ -291,16 +318,22 @@ $csrf = csrfToken();
         <div class="card-admin p-3 mb-3">
             <h2 class="h6 mb-3"><i class="bi bi-file-earmark-code me-2"></i><code>songs.json</code> fallback</h2>
             <p class="mb-2 small text-secondary">
-                <code>SongData</code> prefers MySQL. It only reads
-                <code>data_share/song_data/songs.json</code> if the DB query
-                fails to return any songs.
+                Retired (WS-J #1020): <code>SongData</code> is MySQL-only now — a
+                DB outage is a clean 503, never stale JSON. The probe below is a
+                residual check, kept in case this docroot is ever running an
+                older, pre-#1020 <code>SongData.php</code>; the "legacy file on
+                disk" line further down is the separate, still-useful check for
+                whether the old <code>data_share/song_data/songs.json</code> file
+                is still physically present even though nothing on this build
+                reads it.
             </p>
             <?php if ($songDataJsonFallback === true): ?>
                 <?= health_badge('red', 'SongData is currently using the JSON fallback') ?>
                 <p class="small text-secondary mt-2 mb-0">
                     This usually means the MySQL song data is missing or
-                    unreachable. Run <a href="/manage/setup-database?action=install">Install</a> /
-                    <a href="/manage/setup-database?action=migrate">Migrate Songs</a>.
+                    unreachable. Run <a href="/manage/setup-database?action=install">Install</a>,
+                    then apply pending migrations and import content via the
+                    editor's bulk importers (#1614).
                 </p>
             <?php elseif ($songDataJsonFallback === false): ?>
                 <?= health_badge('green', 'MySQL is authoritative for songs') ?>

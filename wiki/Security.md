@@ -94,7 +94,27 @@ Uncaught browser errors surface one generic toast to the user and are beaconed �
 
 ## Content Tier Gating
 
-Content access is enforced server-side using the content tier system. This prevents unauthorised access to premium features (audio, MIDI, PDF) regardless of client-side state.
+> ⚠️ **DORMANT ON ALL THREE ENVIRONMENTS.** Everything in this section is a
+> verified no-op while `tblAppSettings.content_gating_enabled = '0'`, which is
+> the current live value on `dev`, `beta` and `www`. The code is written, tested
+> and ready; it is not switched on. **Do not cite this section as evidence that
+> premium content is currently protected — it is not.** See #1590 for the
+> enablement programme and #1616 for the runbook.
+
+When enabled, content access is enforced server-side using the content tier system, preventing access to premium features (audio, MIDI, PDF) regardless of client-side state.
+
+**Capabilities live in one registry, not a hardcoded matrix.** `TIER_CAPS` in `includes/access_tier_validation.php` is the single source of truth; adding a gateable feature is one line there plus its migration card, never a new column and never a per-tier map. The legacy matrix inside `checkTierAccess()` survives only as the un-migrated/unknown-tier fallback.
+
+**Payload gating is not asset gating** (#1388). Two distinct functions, deliberately kept in lockstep:
+
+| Function | Protects |
+|---|---|
+| `contentGatingApply()` | Response **bodies** — strips lyric bodies, translations, annotations and media entries from `song_detail` / `song_data` / `random` / `songbook_export` |
+| `contentGatingMediaAllowed()` | **Bytes** — `/song-media/<id>` and the `bulk_audio` offline manifest |
+
+Stripping a media row from a payload hides an affordance; it does not protect the file. A URL-addressable asset is bookmarkable, shareable and guessable by id, so it needs its own gate — and both must resolve through the same registry so a cap cannot hide the button while leaving the file open.
+
+Both fail **open** by design: the three docroots share one MySQL and migrations are web-run rather than auto-applied, so an un-migrated read degrades to the pre-gating behaviour rather than to a broken endpoint.
 
 ### Tier Resolution Logic
 

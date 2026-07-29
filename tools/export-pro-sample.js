@@ -8,10 +8,22 @@
  * without firing up the editor UI.
  *
  * Usage:
- *   node tools/export-pro-sample.js                    # first song
- *   node tools/export-pro-sample.js --id CP-0001       # by song id
- *   node tools/export-pro-sample.js --songbook MP --limit 5
+ *   node tools/export-pro-sample.js                    # first fixture song
+ *   node tools/export-pro-sample.js --id TF-0001       # by song id
+ *   node tools/export-pro-sample.js --songbook TF --limit 5
  *   node tools/export-pro-sample.js --all --zip out.zip
+ *   node tools/export-pro-sample.js --json path/to/bundle.json --all
+ *
+ * By default this reads the small synthetic fixture at
+ * tests/fixtures/synthetic-songs.json (#1617 — the real ~14k-song corpus
+ * is live MySQL only, never a whole-corpus file; see CLAUDE.md rule #17).
+ * Pass --json to point at a real export instead — e.g. one songbook's
+ * bundle pulled from the editor's own
+ * `?action=songbook_export&abbr=<ABBR>` endpoint (manage/editor/api.php),
+ * which is scoped to a single songbook, never the whole catalogue.
+ * --json accepts either that per-songbook shape (`{songs, songbook}`) or
+ * the multi-songbook interchange shape (`{meta, songbooks, songs}`) that
+ * the fixture and tools/parse-songs.js both use.
  *
  * Output is written to ./tmp/propresenter-samples/ by default.
  *
@@ -29,12 +41,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const SCRIPT_PATH = path.join(
-    PROJECT_ROOT, 'appWeb', 'private_html', 'editor', 'propresenter-export.js'
+    PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'propresenter-export.js'
 );
 const BUNDLE_PATH = path.join(
-    PROJECT_ROOT, 'appWeb', 'private_html', 'editor', 'protos', 'proto-bundle.json'
+    PROJECT_ROOT, 'appWeb', 'public_html', 'manage', 'editor', 'protos', 'proto-bundle.json'
 );
-const SONGS_PATH = path.join(PROJECT_ROOT, 'data', 'songs.json');
+const DEFAULT_SONGS_PATH = path.join(PROJECT_ROOT, 'tests', 'fixtures', 'synthetic-songs.json');
 
 /* Parse command-line flags. Tiny in-house parser to avoid pulling in
    yargs/minimist for what is effectively a debug utility. */
@@ -69,6 +81,7 @@ function parseArgs(argv) {
         else if (a === '--lines-per-slide') out.linesPerSlide = parseInt(argv[++i], 10) || 0;
         else if (a === '--pre') out.pre = argv[++i] || 'lyrics';
         else if (a === '--out') out.out = argv[++i];
+        else if (a === '--json') out.json = argv[++i];
         else if (a === '--help' || a === '-h') out.help = true;
     }
     return out;
@@ -78,7 +91,7 @@ function help() {
     console.log(`Usage: node tools/export-pro-sample.js [options]
 
   --id <song-id>          Export the song with this id.
-  --songbook <abbr>       Limit to one songbook (CP, MP, JP, SDAH, CH).
+  --songbook <abbr>       Limit to one songbook.
   --all                   Export every song (or every match).
   --limit <n>             Cap the export count (default 1).
   --zip [filename]        Bundle the exports into a ZIP.
@@ -86,16 +99,45 @@ function help() {
   --lines-per-slide <n>   Chunk components into N-line slides (0 = off).
   --pre <mode>            Pre-slide ordering: lyrics | title | title-blank.
   --out <directory>       Output directory (default ./tmp/propresenter-samples).
+  --json <path>           Song data source (default: tests/fixtures/synthetic-songs.json).
+                          Accepts either the editor's ?action=songbook_export
+                          shape ({songs, songbook}) or the multi-songbook
+                          interchange shape ({meta, songbooks, songs}).
   -h, --help              Show this message.
 `);
+}
+
+/**
+ * Normalise either supported JSON shape into {songs, songbooks}.
+ *
+ *  - Interchange shape (tests/fixtures/synthetic-songs.json,
+ *    tools/parse-songs.js output): { meta, songbooks: [...], songs: [...] }
+ *  - Editor per-songbook export shape (manage/editor/api.php
+ *    ?action=songbook_export&abbr=…): { songs: [...], songbook: {...} }
+ *    — ONE songbook object, not an array, and no meta. Wrapping it in a
+ *    single-element array keeps the rest of this script (padding map,
+ *    bundle-filename lookup) shape-agnostic.
+ */
+function normaliseSongData(raw) {
+    if (Array.isArray(raw.songbooks)) {
+        return { songs: raw.songs || [], songbooks: raw.songbooks };
+    }
+    if (raw.songbook && typeof raw.songbook === 'object') {
+        return { songs: raw.songs || [], songbooks: [raw.songbook] };
+    }
+    return { songs: raw.songs || [], songbooks: [] };
 }
 
 async function main() {
     const args = parseArgs(process.argv);
     if (args.help) { help(); return; }
 
-    if (!fs.existsSync(SONGS_PATH)) {
-        console.error(`songs.json not found at ${SONGS_PATH}`);
+    const songsPath = args.json
+        ? path.resolve(process.cwd(), args.json)
+        : DEFAULT_SONGS_PATH;
+
+    if (!fs.existsSync(songsPath)) {
+        console.error(`Song data source not found at ${songsPath}`);
         process.exit(1);
     }
     if (!fs.existsSync(BUNDLE_PATH)) {
@@ -103,7 +145,7 @@ async function main() {
         process.exit(1);
     }
 
-    const songData = JSON.parse(fs.readFileSync(SONGS_PATH, 'utf8'));
+    const songData = normaliseSongData(JSON.parse(fs.readFileSync(songsPath, 'utf8')));
     const bundle = JSON.parse(fs.readFileSync(BUNDLE_PATH, 'utf8'));
 
     /* Filter songs per CLI args. */

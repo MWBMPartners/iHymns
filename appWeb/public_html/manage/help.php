@@ -715,7 +715,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click a row to open that song in the editor; the Revisions modal there shows the diff and lets you Restore.</li>
+                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the History modal already open, showing the diff and a Restore button.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
@@ -1419,7 +1419,6 @@ foreach ($sections as $s) {
                     <ol>
                         <li><strong>Credentials</strong> &mdash; fill in host, port, database name, username, password, table prefix. Click <strong>Test connection</strong>; only save once it goes green.</li>
                         <li><strong>Install schema</strong> &mdash; creates every table from <code>schema.sql</code>. Idempotent &mdash; re-running is safe.</li>
-                        <li><strong>Migrate songs JSON</strong> &mdash; one-time import of <code>data/songs.json</code> into the database.</li>
                         <li><strong>Migrate users / setlists</strong> &mdash; one-time import from the legacy SQLite + JSON setlist share dir.</li>
                         <li>Run remaining migrations (Account Sync, Songbook Metadata, Credit Fields, Credit People, User Features Catch-up, Activity Log Expand) <em>in the order they appear on the dashboard</em>. Each is idempotent.</li>
                     </ol>

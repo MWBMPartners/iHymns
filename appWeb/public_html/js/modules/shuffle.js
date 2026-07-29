@@ -10,6 +10,7 @@
  */
 import { escapeHtml } from '../utils/html.js';
 import { STORAGE_DEFAULT_SONGBOOK } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class Shuffle {
     constructor(app) {
@@ -47,7 +48,7 @@ export class Shuffle {
             try {
                 const url = new URL(this.app.config.apiUrl, window.location.origin);
                 url.searchParams.set('action', 'songbooks');
-                const response = await fetch(url);
+                const response = await apiFetch(url);
                 const data = await response.json();
 
                 if (data.songbooks) {
@@ -114,7 +115,7 @@ export class Shuffle {
                 url.searchParams.set('songbook', songbookId);
             }
 
-            const response = await fetch(url);
+            const response = await apiFetch(url);
             const data = await response.json();
 
             if (data.song?.id) {
