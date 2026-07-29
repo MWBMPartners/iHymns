@@ -2961,6 +2961,10 @@ function renderTranslations(song) {
             song.translations.splice(i, 1);
             markModified(song.id);
             renderTranslations(song);
+            /* #1626 — removal is staged too: the save now diffs song.translations
+               against the stored rows and DELETEs the ones that went away. Say so,
+               matching the add path, so staged-vs-saved is never ambiguous. */
+            showToast('Translation link removed. Click Save to persist.', 'info');
         });
 
         container.appendChild(row);
@@ -3030,14 +3034,46 @@ function initTranslationControls() {
             return;
         }
 
+        var targetLang = targetSong.language || 'en';
+
+        /* #1626 — mirror the table's `uq_Translation (SourceSongId, TargetLanguage)`
+           UNIQUE key in the UI: the DB can hold at most ONE translation of this song
+           per language. The duplicate check above is keyed on songId, so without this
+           a curator could stage two different songs under the same language and only
+           one would survive the save — a fresh silent-loss bug of exactly the kind
+           #1626 fixed. Replace in place and SAY SO, so what is on screen is always
+           what will persist.
+           @see appWeb/.sql/schema.sql — tblSongTranslations */
+        var sameLangIdx = song.translations.findIndex(function (t) {
+            return String(t.language || '').toLowerCase() === targetLang.toLowerCase();
+        });
+        if (sameLangIdx !== -1) {
+            var replacedId = song.translations[sameLangIdx].songId;
+            song.translations[sameLangIdx] = { songId: targetId, language: targetLang };
+            markModified(song.id);
+            renderTranslations(song);
+            input.value = '';
+            showToast(
+                'Replaced the ' + targetLang + ' translation link (was ' + replacedId +
+                '). Click Save to persist.',
+                'warning'
+            );
+            return;
+        }
+
         song.translations.push({
             songId: targetId,
-            language: targetSong.language || 'en'
+            language: targetLang
         });
         markModified(song.id);
         renderTranslations(song);
         input.value = '';
-        showToast('Translation link added.', 'success');
+        /* #1626 — the link is STAGED in memory here; editorSaveSongCore() is what
+           actually writes tblSongTranslations. The old wording ("Translation link
+           added.") read as a completed write, which is precisely how the missing
+           persistence went unnoticed. Matches the house phrasing used by the bulk
+           move / delete toasts elsewhere in this file. */
+        showToast('Translation link staged. Click Save to persist.', 'success');
     });
 }
 
@@ -5084,6 +5120,17 @@ function autoSaveSongsPerSong(ids) {
             }).then(function (res) {
                 return res.json().then(function (data) {
                     if (res.ok && data.ok) {
+                        /* #1626 — the save succeeded, but one or more staged
+                           translation links could not be stored (unknown language
+                           tag, target song since deleted). The server returns these
+                           ONLY when there is something to say. Surface them: the bug
+                           this restored was a link that vanished without a word, so a
+                           link we knowingly drop must never be silent either. */
+                        if (Array.isArray(data.translationWarnings) && data.translationWarnings.length) {
+                            data.translationWarnings.forEach(function (w) {
+                                showToast(String(w), 'warning');
+                            });
+                        }
                         /* #1380 — the server may have promoted a client draft id
                            (song-XXXX) to a canonical <Abbr>-NNNN id on this first
                            save. Relabel the in-memory copy so subsequent saves /
