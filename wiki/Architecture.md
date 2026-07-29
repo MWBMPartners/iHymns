@@ -53,7 +53,7 @@ The PWA is a single-page application served from `index.php`. All URLs are rewri
 
 Page content itself is fetched separately: `router.js` requests an HTML **fragment** from `api.php?page=...`, which is a distinct HTTP response the document's per-request CSP nonce cannot travel with. Several fragments (`page=home`, `page=song`, `page=songbook`, …) are additionally served from a **shared HTTP cache** across all visitors, so they can never carry anything per-request at all — no per-user personalisation, no nonce.
 
-This has one hard consequence: **a fragment can never carry an executable inline `<script>`.** The enforcing nonce CSP silently refuses any script node without a matching nonce, and because `router.js` re-creates injected `<script>` tags verbatim, the failure is a console-only violation with no visible error — the page looks fine until a user clicks the broken feature. A CI guard (`tests/php/test-fragment-inline-scripts.php`) fails the build on any executable inline script under `includes/pages/` or `includes/partials/`.
+This has one hard consequence: **a fragment can never carry an executable inline `<script>`.** The enforcing nonce CSP silently refuses any script node without a matching nonce — the page looks fine until a user clicks the broken feature. `router.js` no longer even tries to re-execute injected `<script>` tags (the `_executeInlineScripts()` shim that used to re-create them, nonce-less, was removed once nothing needed it); a fragment script today simply never runs. A CI guard (`tests/php/test-fragment-inline-scripts.php`) fails the build on any executable inline script under `includes/pages/` or `includes/partials/` — its allowlist is currently empty.
 
 The correct pattern — used by `js/modules/home-page.js` — is a real ES module, imported by the router's `afterPageLoad(page, params)` hook once the fragment has landed in the DOM, with its inputs read `data-*`-attribute-first from the fragment markup (e.g. `.page-song[data-song-id]`) and the route parameter only as a fallback.
 
@@ -95,6 +95,8 @@ iHymnsApp
 ```
 
 Event names dispatched/listened for across modules are centralised once in `js/constants.js` — a raw `ihymns:*` string literal anywhere else is a CI-banned regression (`tests/test-event-names.js`).
+
+**Same-origin requests go through `js/utils/api-client.js`** (`apiFetch()` / `apiFetchJson()`), not bare `fetch()`. There is **no global `window.fetch` override anywhere in the app** — an earlier `songbook-language-filter.js` patch that replaced `window.fetch` to attach an `X-Preferred-Languages` header was deleted, because a global patch (a) turns a header bug into a failed request for every unrelated caller, and (b) only applies on pages that happened to install it, silently doing nothing everywhere else. The client instead reads the language preference on every call, an auth-header provider is injected at boot (`setAuthHeaderProvider()` in `app.js`, avoiding an import cycle with `user-auth.js`), and it treats a `503` (maintenance/DB-outage) as its own signal rather than a network failure. The service worker keeps native `fetch` deliberately — different global scope, no `localStorage`, not user-scoped.
 
 ### PHP Server Architecture
 
@@ -184,6 +186,6 @@ See [[Database & Migrations]] for the full schema breakdown.
 - Content Security Policy with per-request nonces; enforcing (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`) — see the SPA fragment constraint above.
 - `validateCsrfRequest()` — same-origin AJAX check (`X-Requested-With` + `Origin`/`Referer` host match) for state-changing endpoints, replacing the older baked-session-token-only check for long-lived admin pages.
 - Role + entitlement gates (`requireAdmin()`, `userHasEntitlement()`) on every admin surface.
-- A registry-driven content-access-tier / gating system (`TIER_CAPS` in `includes/access_tier_validation.php`) — entirely dormant unless explicitly enabled, and never a hardcoded per-tier matrix.
+- A registry-driven content-access-tier / gating system (`TIER_CAPS` in `includes/access_tier_validation.php`) — entirely dormant unless explicitly enabled, and never a hardcoded per-tier matrix. Enforcement splits in two: `contentGatingApply()` (`includes/content_gating.php`) strips gated fields from JSON *payloads* (`song_detail`, `song_data`, `random`, `songbook_export`); its sibling `contentGatingMediaAllowed($kind, $userId, $presenceToken)` answers the same question for one media row and gates the *bytes* — `song-media.php` and the `bulk_audio` offline manifest. A payload gate alone hides the affordance but leaves a URL-addressable file bookmarkable, so every gated asset needs both checks resolving through the same registry.
 
 See [[Security]] for full details.

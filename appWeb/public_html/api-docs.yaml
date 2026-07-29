@@ -2,7 +2,7 @@ openapi: 3.0.3
 
 info:
   title: iHymns API
-  version: "0.4000.0"
+  version: "0.4001.0"
   description: |
     The iHymns API provides programmatic access to the iHymns hymn and song
     database. It powers the iHymns Progressive Web App (PWA), enabling song
@@ -34,15 +34,24 @@ info:
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
     One non-action route exists: the gated media stream `GET /song-media/<id>`
-    (#853, `<id>` = `tblSongMedia.Id`). Access is evaluated via
-    `checkContentAccess('song', <parent SongId>, …)`; an anonymous request
-    degrades gracefully (gating applies as anonymous, never a hard `401`).
-    Supports HTTP `Range` / `206 Partial Content` for seekable audio. Kinds:
-    `audio` (streamed inline), `sheet-music` (PDF), `midi`, `musicxml` (the
-    last three served as downloads). **Not yet a documented path below**
-    (#1472 — the `Media` tag was removed from the tag list as
-    declared-but-unused; this paragraph is its only documentation until a
-    path is added).
+    (#853, `<id>` = `tblSongMedia.Id`). Access is evaluated via **two gates**,
+    both `403` on denial: (1) the entity gate, `checkContentAccess('song',
+    <parent SongId>, …)` — an anonymous request degrades gracefully (gating
+    applies as anonymous, never a hard `401`); and (2) as of **#1388**, a
+    tier-capability gate, `contentGatingMediaAllowed($kind, $userId,
+    $presenceToken)`, which stops a caller whose tier lacks the matching cap
+    (`play_audio` / `download_midi` / `download_pdf`) from fetching the bytes
+    directly even if the link were never shown to them. The tier gate's `403`
+    body is deliberately generic ("Access restricted: gated content.") so it
+    never discloses which tier would be sufficient. Both gates are **no-ops**
+    while `content_gating_enabled='0'` (the default on every live env today),
+    so this route is byte-identical to its pre-#1388 behaviour until an
+    operator flips the flag. Supports HTTP `Range` / `206 Partial Content` for
+    seekable audio. Kinds: `audio` (streamed inline), `sheet-music` (PDF),
+    `midi`, `musicxml` (the last three served as downloads). **Not yet a
+    documented path below** (#1472 — the `Media` tag was removed from the tag
+    list as declared-but-unused; this paragraph is its only documentation
+    until a path is added).
 
     ## Authentication
 
@@ -238,6 +247,11 @@ tags:
     description: Bulk-fetch endpoints used by the service worker for offline caching
   - name: Discovery
     description: Tags, suggestions, related songs, popular songs
+  - name: System
+    description: |
+      Unauthenticated operational endpoints intended for infrastructure
+      (uptime monitors, load balancers) — distinct from the authenticated,
+      curator-facing **Admin — Diagnostics** surface below.
   - name: Push
     description: Push-notification subscription endpoints
   - name: Notifications
@@ -796,6 +810,22 @@ paths:
         silently dropped from the `songs` list rather than erroring. With
         the flag off (the default) every song in the songbook is
         returned unfiltered.
+
+        **Tier gating (#1388), also dormant by default, layered on top of the
+        export gate above.** When `content_gating_enabled` is on, each
+        surviving song is additionally passed through `contentGatingApply()`
+        — the SAME registry-backed resolver `song_detail` uses — which strips
+        fields the caller's tier may not view (lyric body / `components`,
+        per-line and whole-song translations/annotations, gated media links)
+        rather than removing the song from the response. This closed the
+        widest lyric leak the API had: before #1388 this endpoint carried only
+        the entity (restriction-row) gate above, so a single request handed
+        back every surviving song's full lyric body regardless of the
+        caller's tier — the same content `song_detail` carefully strips for
+        that caller one song at a time. Fails open per song on any error, so
+        a malformed row degrades to unchanged rather than emptying the export.
+        Never returns `403` for a tier denial — the response stays `200` with
+        the affected song's gated fields removed/emptied.
       parameters:
         - name: action
           in: query
@@ -5181,6 +5211,18 @@ paths:
         Used by the service worker to pre-cache audio into `iHymns-media-v1`
         when the user enables "Include audio in offline downloads" in
         Settings.
+
+        **Gating, dormant by default.** When `content_gating_enabled` is on,
+        the manifest is filtered twice: an entity gate (`checkBulkAccess`)
+        drops individual restricted songs, and — since **#1388** — a TIER gate
+        (`contentGatingMediaAllowed('audio', …)`) resolves the caller's
+        `play_audio` capability ONCE per request (it is a per-requester cap,
+        not a per-song one) and, if denied, empties the `audio` array
+        entirely rather than filtering per entry. Never returns `403` for a
+        tier denial — the response stays `200` with `count: 0`. When audio
+        signing is separately enabled (#1358, also dormant), surviving URLs
+        are rewritten from the static `/data/audio/<id>.mp3` literal to a
+        short-lived signed `/audio/<id>.mp3?exp=…&sig=…`.
       parameters:
         - name: action
           in: query
@@ -5930,6 +5972,88 @@ paths:
                         setlistId:  { type: string }
                         permission: { type: string, enum: [view, edit] }
                         name:       { type: string, nullable: true }
+
+  # ===========================================================================
+  # SYSTEM
+  # ===========================================================================
+
+  /api.php?action=health:
+    get:
+      operationId: health
+      tags: [System]
+      summary: Unauthenticated liveness probe (#1022)
+      description: |
+        Answers "can this node actually serve?" for an uptime monitor or load
+        balancer. Answered ABOVE the normal action dispatch — there is
+        deliberately no `case 'health':` in the switch — because
+        `new SongData()` opens the MySQL connection in its constructor, and
+        this app's mysqli runs under `MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT`
+        (`includes/db_mysql.php`), so a failed connect THROWS rather than
+        returning falsy. A DB-down probe answered inside the normal dispatch
+        would therefore land in the global exception handler instead, which
+        on Alpha/Beta discloses the exception message/class/file:line — the
+        exact disclosure an unauthenticated endpoint must never make.
+
+        Runs `SELECT 1` — the cheapest round-trip that proves the connection
+        is usable end-to-end (connect + prepare/execute + read a row back) —
+        and returns `200 {"status":"ok"}` on success or `503
+        {"status":"unavailable"}` on any failure (connection error,
+        unexpected result, or the app's own maintenance-mode intercept, which
+        is NOT bypassed here). Deliberately returns no app version, no
+        environment name, no hostname, no schema/table names, no row counts,
+        no query timings and no exception text — a two-value enum is the
+        entire signal, and `SELECT 1` touches no table so the probe can't be
+        turned into a data or schema oracle. Rate-limited to 60/min per
+        requester (`enforceReadRateLimit('health', 60)`, fail-open) so it
+        can't be used as a free "make the origin touch MySQL" amplifier.
+        Responses carry `Cache-Control: no-store` so an intermediary can never
+        serve a stale "ok" from a node that has since died.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [health] }
+      responses:
+        "200":
+          description: The node is healthy — the database answered `SELECT 1`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok] }
+              example:
+                status: ok
+        "503":
+          description: |
+            Unhealthy — the database connection failed, answered unexpectedly,
+            or the environment is in admin-triggered maintenance mode. A
+            `Retry-After` header is included when the failure looks transient
+            (connection/availability class) rather than a hard application
+            error.
+          headers:
+            Retry-After:
+              description: Present only for a transient (likely-recoverable) failure.
+              schema: { type: integer, example: 30 }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [unavailable] }
+              example:
+                status: unavailable
+        "405":
+          description: Method not allowed — only `GET` and `HEAD` are accepted.
+          headers:
+            Allow:
+              schema: { type: string, example: "GET, HEAD" }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [unavailable] }
 
   # ===========================================================================
   # PUSH NOTIFICATIONS

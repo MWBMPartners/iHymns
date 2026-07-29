@@ -35,6 +35,9 @@
 - **Share setlists** — generate shareable links with optional arrangements
 - **Import shared setlists** — import from shared links
 - **Cross-device sync** — merge local and server setlists when logged in
+- **Playback / navigation mode** (#1533) — tap any song in a setlist (own or shared) to arm a fixed
+  bottom bar: Prev/Next, position ("3 of 12"), next song's title, arrow-key navigation, exit control.
+  Survives a page reload (`sessionStorage`), ends on tab close. See [[Setlists & Arrangements]].
 
 ### Live Follow & Service Mode
 - **Host broadcast** — any signed-in user taps **Go Live** on a song to broadcast the songs they open to anyone who joins with their code (Live Follow, #1268)

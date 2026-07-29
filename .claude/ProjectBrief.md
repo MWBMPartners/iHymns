@@ -4,10 +4,11 @@
 
 ---
 
-## 📌 Continuation note — 2026-07-28
+## 📌 Continuation note — 2026-07-29
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
-(the 2026-07-26 handoff it supersedes is still the reference for the export root-cause chain).
+(dated 07-28 but still being appended to as this branch's work continues; the 2026-07-26 handoff it
+supersedes is still the reference for the export root-cause chain).
 
 **The big consolidation has LANDED.** PR #1585 merged to `alpha` as squash **`887bcd2f`** — 98
 commits, 228 files — carrying the whole nine-branch consolidation (Apple Phase-2 PR-11/14/15/16,
@@ -26,19 +27,52 @@ fires **only on a push to `beta`**, so an `alpha` merge NEVER bumps — that is 
 under one version string and the bump had to be done by hand. Expect to repeat that after any large
 alpha batch. Any version number written into a doc rots; prefer pointing at the footer or that file.
 
-**Current WIP branch: `claude/sotd-language-filter-typeahead-a11y`** (off `bad5ca4f`) — two
-owner-reported bugs: **#1593** Song of the Day vanishes when more than one language is selected
-(works at 0 and at 1, disappears at 2), and **#1594** the location typeahead is mouse-only.
+**Current WIP branch: `claude/sotd-language-filter-typeahead-a11y`** (off `bad5ca4f`) has grown well
+past its two founding bugs. Both landed early: **#1593** Song of the Day vanishing at 2+ languages
+(the fetch-patch read `input.url` on a `URL` object, got `undefined`, threw across ten unrelated
+call sites) and **#1594** the location typeahead being mouse-only (grew into consolidating all nine
+typeaheads onto one shared keyboard + ARIA combobox helper). Since then the branch has carried a long
+tail of further fixes — perf (#1598 `bulk_songs`, #1037 songbook slim-index listing), #1080 ChordPro
+inline `[chord]` markers, #1089/#1100 per-line translation toggle, #1339 Service Mode congregant join
+QR, #1572 CSP (extracted `request-a-song`'s inline module — the fragment allowlist is now **empty**),
+#1028/#1027/#1022 auth hardening, #1589 What's New fix, #1597 offline bulk-download self-destruct
+fix, and #1612/#1615/#1618 (corrected the lyrics-cutover verifier's gate count to **nine** gates —
+G1, G2, G3, G5, G6, G7, G8, G9, G10 — not ten or thirteen).
+
+**Wave 2 (2026-07-29, this session):** **#1388** closed eight pre-gating leaks ahead of ever flipping
+`content_gating_enabled` — the load-bearing one is the **payload-vs-asset gating** distinction:
+`contentGatingApply()` (`includes/content_gating.php`) strips gated fields from JSON *payloads*
+(now including `songbook_export`), while the new sibling `contentGatingMediaAllowed($kind, $userId,
+$presenceToken)` gates the media *bytes* themselves (`song-media.php`, the `bulk_audio` manifest) —
+plus a first-admin registration TOCTOU fix and a logout cache-clearing gap. **#1031** deleted the
+sitewide `window.fetch` monkey-patch (`songbook-language-filter.js`) in favour of the shared
+`apiFetch()`/`apiFetchJson()` client in `js/utils/api-client.js` — same-origin request concerns are
+now attached by structure (every call site asks) rather than by a global override that only applied
+where something happened to install it (an anonymous cold load of `/search` never got the language
+filter at all). **#1533** setlist playback — tap any song, your own list or a shared one, to arm a
+fixed bottom bar (Prev/Next, "N of M", next-song title, arrow keys, exit); shared setlists can be
+navigated for the first time, fixed by replacing the by-id list lookup with a playlist *context*
+carrying its own song order. **#1623** fixed Revisions Audit's "Open in editor" link (linked
+`?open=`, the editor only read `?song=`) and wired `?tab=history` to auto-open the diff modal.
+**#1619/#1620** followed up: deleted the now-dead `_executeInlineScripts()` router shim (nothing left
+to execute) and renamed `js/modules/request.js`'s exported `Request` class to `SongRequest` so it
+stops shadowing the Fetch API's global `Request` (the file itself keeps its name — it's in the
+service-worker precache list). **Now underway:** the documentation sweep (in-app help, Wiki,
+`.claude/` context docs) for this wave.
 
 The 2026-07-26 caveat is **discharged**: the merged Swift compiled green on CI (`apple.yml` `build`,
 run 30365569513) before #1585 merged. The **draft-PR-until-green** procedure is still the standing
 practice for any PR touching `appApple/` — `apple.yml` is not a required check (#1526), so a ready
 PR auto-merges on the ~45-second web lint, roughly 25 minutes before the Apple build reports.
 
-Two house rules came out of the export work and are now load-bearing: **rule #30** (an SPA fragment
-can never carry an executable inline `<script>` — the enforcing nonce CSP refuses it *silently*,
-which is how the entire public Export feature stayed dead for ~7 weeks) and the `fetch()`
-relative-URL red flag. Both have CI guards.
+House rules now load-bearing from this stretch of work: **rule #30** (an SPA fragment can never carry
+an executable inline `<script>` — the enforcing nonce CSP refuses it *silently*, which is how the
+entire public Export feature stayed dead for ~7 weeks; its `_executeInlineScripts()` mechanism is
+gone as of #1619), **rule #31** (same-origin requests use `apiFetch`/`apiFetchJson`, never a
+`window.fetch` override, #1031), **rule #32** (a fixed-position `<body>` UI element must tear itself
+down on every SPA navigation before any early return, #1533), and the `fetch()` relative-URL red
+flag. All have CI guards except #32, which is pinned by `tests/test-setlist-playback.js`'s structural
+assertions instead.
 
 > **Note on pruned handoffs:** some references below point at `.claude/sessions/*-HANDOFF.md` files
 > that were pruned in `254e9744`. They remain in git history — see `.claude/sessions/README.md` for
