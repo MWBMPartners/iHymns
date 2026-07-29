@@ -243,6 +243,47 @@ if ($hits) {
     echo "PASS: no probe interpolates a superglobal into SQL\n";
 }
 
+/* ----------------------------------------------------------------------
+ * Assertion 8 — every entry's `script` exists on disk (#1642).
+ *
+ * ELI5: the dashboard lists a migration by naming a file. Check the file
+ * is actually there.
+ *
+ * WHY THIS EXISTS. The owner hit "Apply all pending migrations" on dev and
+ * got `Script not found: migrate-apple-phase2-live-schema.php` — and because
+ * "Apply all" stops on the FIRST hard failure, that one missing file blocked
+ * EVERY migration from being applied through the dashboard. Not one card
+ * failing: the whole mechanism.
+ *
+ * That particular case was a DEPLOY gap (the file is in git, it just never
+ * reached the docroot), which no CI check can see from here. But the sibling
+ * case is entirely catchable and was equally unguarded: a registry entry
+ * naming a script that was renamed, moved, or never written. Same operator
+ * symptom, same total blockage, and a `git grep` away from being impossible.
+ *
+ * The registry had 125 entries and nothing verified that any of the named
+ * files existed.
+ * ---------------------------------------------------------------------- */
+$sqlDir  = dirname(__DIR__, 2) . '/appWeb/.sql/';
+$missing = [];
+foreach ($MIGRATIONS as $slug => $entry) {
+    $script = is_array($entry) ? (string)($entry['script'] ?? '') : '';
+    if ($script === '') {
+        continue;   /* Assertion 1 already reports a missing `script` facet. */
+    }
+    if (!is_file($sqlDir . $script)) {
+        $missing[] = "  - '$slug' names '$script', which does not exist in appWeb/.sql/";
+    }
+}
+if ($missing) {
+    $failures++;
+    fwrite(STDERR, "FAIL: " . count($missing) . " registry entr(ies) name a script that is not on disk.\n");
+    fwrite(STDERR, "      'Apply all' stops on the first hard failure, so ONE of these blocks every migration:\n");
+    foreach ($missing as $m) fwrite(STDERR, "$m\n");
+} else {
+    echo 'PASS: every registry entry\'s script exists in appWeb/.sql/ (' . count($MIGRATIONS) . " entries)\n";
+}
+
 if ($failures > 0) {
     fwrite(STDERR, "\n$failures assertion(s) failed.\n");
     exit(1);
