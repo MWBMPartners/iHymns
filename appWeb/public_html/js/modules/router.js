@@ -639,6 +639,14 @@ export class Router {
             import('./present-mode.js')
                 .then(m => m.initPresentMode())
                 .catch(err => console.error('[Router] present-mode init failed:', err));
+            /* #1089/#1100 P1 — per-line translation "Show translation" toggle.
+               Same CSP/shared-cache-fragment reasoning as Export/Present above:
+               song.php only emits the button (and the hidden translation rows
+               it controls) when the song actually has approved per-line
+               translations, so this is a cheap no-op on every other song. */
+            import('./song-translations.js')
+                .then(m => m.initLineTranslations())
+                .catch(err => console.error('[Router] song-translations init failed:', err));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant

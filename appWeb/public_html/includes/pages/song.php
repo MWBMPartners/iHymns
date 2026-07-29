@@ -1018,11 +1018,11 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                 <?php if ($hasLineTranslations): ?>
                 <button type="button" class="btn btn-sm btn-outline-secondary song-toolbar-btn"
                         id="btn-toggle-line-translations"
-                        data-line-translations-toggle
+                        data-line-translations-toggle="1"
                         aria-pressed="false"
                         title="Show/hide the per-line translation">
                     <i class="fa-solid fa-closed-captioning me-1" aria-hidden="true"></i>
-                    <span data-line-translations-label>Show translation</span>
+                    <span data-line-translations-label="1">Show translation</span>
                 </button>
                 <?php endif; ?>
 
