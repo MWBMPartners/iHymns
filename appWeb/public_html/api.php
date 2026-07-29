@@ -206,6 +206,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    LastSeenAt bump onto its already-throttled UPDATE. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'api_tokens.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
+/* #1649 — shared merge/replace sync guards (userSyncCap / userSyncParseSince /
+   userSyncDeletableIds / userSyncNow). The three user-store sync handlers below
+   (user_setlists_sync, favorites_sync, custom_tags_sync) all capped the incoming
+   payload and then deleted every server row absent from the CAPPED list, so an
+   over-cap user silently lost the tail of their collection. One helper, three
+   call sites — never a per-handler copy of the decision. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so curators reading /manage/activity-log see every server-side
@@ -2863,15 +2870,24 @@ if ($action !== null) {
 
         /* -----------------------------------------------------------------
          * Sync setlists: merge local setlists with server-side storage.
-         * Accepts the full array of local setlists and merges intelligently:
+         * Accepts the full array of local setlists and reconciles:
          *   - New setlists (by ID) are inserted
-         *   - Existing setlists are updated if local version is newer
-         *   - Server-only setlists are preserved and returned
+         *   - Existing setlists are OVERWRITTEN by the payload (the upsert's
+         *     ON DUPLICATE KEY UPDATE is unconditional — there is no
+         *     "local version is newer" comparison; the previous wording of
+         *     this comment claimed one and was simply false, #1649)
+         *   - Server-only setlists are preserved in 'merge' mode, and in
+         *     'replace' mode are deleted ONLY when userSyncDeletableIds()
+         *     says it is safe (see includes/user_sync.php)
          *
          * POST body (JSON):
-         *   { "setlists": [{ id, name, createdAt, songs: [...] }, ...] }
+         *   { "setlists": [{ id, name, createdAt, songs: [...] }, ...],
+         *     "mode": "merge"|"replace",
+         *     "since": "YYYY-MM-DD HH:MM:SS"   // optional watermark (#1649)
+         *   }
          *
-         * Returns: { "setlists": [...merged result...] }
+         * Returns: { "setlists": [...], "syncedAt": "...",
+         *            "truncated": bool, "cap": 50 }
          * Requires: Authorization: Bearer <token>
          * ----------------------------------------------------------------- */
         case 'user_setlists_sync':
@@ -2894,8 +2910,13 @@ if ($action !== null) {
                 break;
             }
 
-            /* Cap at 50 setlists per user */
-            $localLists = array_slice($body['setlists'], 0, 50);
+            /* Cap at 50 setlists per user. userSyncCap() reports whether the
+               cap actually BIT, computed from the pre-slice count (#1649) — a
+               truncated payload is not an authoritative list, so the delete
+               pass below must know. */
+            $capped     = userSyncCap($body['setlists'], 50);
+            $localLists = $capped['items'];
+            $truncated  = $capped['truncated'];
 
             /* Sync mode (WS-F #1018):
              *   'merge'   — union local + server, never delete (the safe
@@ -2908,6 +2929,14 @@ if ($action !== null) {
              *               device propagates to the others. */
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649): the DB clock reading this client was
+               handed by its last successful sync. Rows written after it are
+               another device's work the client has never seen, so a 'replace'
+               may not delete them. Absent / malformed → null → exactly the
+               legacy absence-only behaviour (which is what the native apps,
+               who never send this field, keep getting). */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
@@ -2917,10 +2946,13 @@ if ($action !== null) {
             $stmt->execute();
             $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
-            $serverMap = [];
-            foreach ($serverRows as $row) {
-                $serverMap[$row['SetlistId']] = $row;
-            }
+            /* #1649 — ids the client actually sent, collected as we upsert.
+               The loop used to unset() each one out of a $serverMap and treat
+               the leftovers as deletions; that conflated "the client didn't
+               send it" with "the client deleted it", which is exactly the
+               distinction the truncation + watermark guards restore. The map
+               itself is gone — $serverRows is read directly below. */
+            $payloadIds = [];
 
             $now = gmdate('c');
 
@@ -2975,25 +3007,51 @@ if ($action !== null) {
                     $userId, $setlistId, $name, $songsJson, $createdAt, $now);
                 $upsert->execute();
 
-                /* Remove from server map so we know which are server-only */
-                unset($serverMap[$setlistId]);
+                /* Record what the client sent; the deletion decision is made
+                   once, after the loop, by the shared helper (#1649). */
+                $payloadIds[] = $setlistId;
             }
             $upsert->close();
 
-            /* Authoritative replace (WS-F #1018): anything still left in
-               $serverMap was on the server but NOT in the client's payload,
-               i.e. the user deleted it. Drop those rows so the deletion
-               propagates. In 'merge' mode they're preserved (server-only
-               wins), which is what the first-login backfill wants. */
-            if ($syncMode === 'replace' && count($serverMap) > 0) {
+            /* Authoritative replace (WS-F #1018, guarded #1649): server rows
+               absent from the payload MAY represent a user deletion — but only
+               if the payload was complete (not truncated by the cap) and the
+               row predates the client's `since` watermark. userSyncDeletableIds()
+               owns that decision for all three sync handlers; see
+               includes/user_sync.php for why each refusal exists. In 'merge'
+               mode it returns [] unconditionally (server-only wins), which is
+               what the first-login backfill wants. */
+            $deletableIds = userSyncDeletableIds(
+                array_map(
+                    static fn(array $r): array => ['id' => $r['SetlistId'], 'ts' => (string)$r['UpdatedAt']],
+                    $serverRows
+                ),
+                $payloadIds,
+                $syncMode,
+                $truncated,
+                $since
+            );
+            $deleted = 0;
+            if (count($deletableIds) > 0) {
                 $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
                 $delId = '';
                 $del->bind_param('is', $userId, $delId);
-                foreach (array_keys($serverMap) as $delId) {
+                foreach ($deletableIds as $delId) {
                     $del->execute();
+                    $deleted += $del->affected_rows;
                 }
                 $del->close();
             }
+
+            /* Mint the watermark IMMEDIATELY before the final re-read (#1649).
+               Taken from the DB's own clock (userSyncNow) so it shares a frame
+               of reference with the row timestamps it will later be compared
+               against. Minting it before the read — not after — means any row
+               written by another device between the two is NEWER than the
+               watermark, so the next 'replace' from this client keeps it
+               rather than deleting it. Erring toward keeping is the whole
+               point of the guard. */
+            $syncedAt = userSyncNow($db);
 
             /* Fetch the merged result (all setlists for this user) */
             $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
@@ -3012,7 +3070,32 @@ if ($action !== null) {
                 ];
             }, $mergedRows);
 
-            sendJson(['setlists' => $mergedSetlists]);
+            /* Audit (#1649) — setlists had no sync log at all, unlike
+               favourites. A truncated or deleting sync is exactly the event a
+               curator needs to see when a user reports "my set lists vanished",
+               so mirror what favorites.sync already records. Only logged when
+               something actually happened, to keep routine no-op reconciles out
+               of the table. */
+            if ($deleted > 0 || $truncated) {
+                logActivity('setlists.sync', 'user', (string)$userId, [
+                    'mode'      => $syncMode,
+                    'truncated' => $truncated,
+                    'deleted'   => $deleted,
+                    'total'     => count($mergedSetlists),
+                ]);
+            }
+
+            sendJson([
+                'setlists'  => $mergedSetlists,
+                /* #1649 — the client stores this and sends it back as `since`
+                   on its next sync. Clients that ignore it keep the legacy
+                   absence-only behaviour. */
+                'syncedAt'  => $syncedAt,
+                /* Lets the client warn the user that their tail is device-only
+                   rather than silently pretending everything synced. */
+                'truncated' => $truncated,
+                'cap'       => 50,
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -4590,8 +4673,19 @@ if ($action !== null) {
                back-compat with any client that omits the field. */
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649) — see includes/user_sync.php. Absent /
+               malformed → null → legacy absence-only deletion. */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
+
+            /* Cap at 500 favourites, recording whether the cap BIT (#1649).
+               Computed from the pre-slice count, because a truncated payload is
+               not an authoritative statement of what the user still has — the
+               delete pass below must refuse to act on it. */
+            $capped    = userSyncCap($body['favorites'], 500);
+            $truncated = $capped['truncated'];
 
             /* Accept BOTH payload shapes (WS-G #1019):
                  - legacy : ["CP-0001", "MP-0042", ...]
@@ -4601,7 +4695,7 @@ if ($action !== null) {
                server tags untouched); an object with a tags array sets them
                (including [] to clear). Last write per id wins. */
             $localFavs = [];
-            foreach (array_slice($body['favorites'], 0, 500) as $entry) {
+            foreach ($capped['items'] as $entry) {
                 if (is_string($entry)) {
                     $sid  = trim($entry);
                     $tags = null;
@@ -4627,34 +4721,50 @@ if ($action !== null) {
             }
 
             /* Existing server favourites — id + tags (for the replace diff and
-               the MERGE-mode tag union below). */
-            $stmt = $db->prepare('SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ?');
+               the MERGE-mode tag union below). CreatedAt joins the SELECT for
+               #1649's watermark guard: tblUserFavorites has no UpdatedAt, so
+               CreatedAt is the only age signal this table carries, and it is
+               written by the DB itself (DEFAULT CURRENT_TIMESTAMP) so it shares
+               userSyncNow()'s clock exactly. */
+            $stmt = $db->prepare('SELECT SongId, Tags, CreatedAt FROM tblUserFavorites WHERE UserId = ?');
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
-            $serverFavs = array_column($serverRows, 'SongId');
+            /* ($serverFavs — the flat SongId list — is gone: its only consumer
+               was the old array_diff() delete pass, now userSyncDeletableIds().) */
             $serverTagMap = [];
             foreach ($serverRows as $r) {
                 $decoded = $r['Tags'] !== null ? json_decode($r['Tags'], true) : [];
                 $serverTagMap[$r['SongId']] = is_array($decoded) ? $decoded : [];
             }
 
-            /* Authoritative replace: delete server favourites the client no
-               longer has. In merge mode nothing is deleted. */
+            /* Authoritative replace, guarded (#1649): delete server favourites
+               the client no longer has — but ONLY when the payload was complete
+               (not clipped by the 500 cap) and the row predates the client's
+               `since` watermark. The shared helper owns that decision for all
+               three sync handlers; in merge mode it returns [] and nothing is
+               deleted. */
+            $deletableIds = userSyncDeletableIds(
+                array_map(
+                    static fn(array $r): array => ['id' => $r['SongId'], 'ts' => (string)$r['CreatedAt']],
+                    $serverRows
+                ),
+                array_keys($localFavs),
+                $syncMode,
+                $truncated,
+                $since
+            );
             $deleted = 0;
-            if ($syncMode === 'replace') {
-                $toDelete = array_diff($serverFavs, array_keys($localFavs));
-                if (count($toDelete) > 0) {
-                    $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
-                    $delId = '';
-                    $del->bind_param('is', $userId, $delId);
-                    foreach ($toDelete as $delId) {
-                        $del->execute();
-                        $deleted += $del->affected_rows;
-                    }
-                    $del->close();
+            if (count($deletableIds) > 0) {
+                $del = $db->prepare('DELETE FROM tblUserFavorites WHERE UserId = ? AND SongId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletableIds as $delId) {
+                    $del->execute();
+                    $deleted += $del->affected_rows;
                 }
+                $del->close();
             }
 
             /* Upsert each payload favourite. Tags are only overwritten when
@@ -4704,6 +4814,12 @@ if ($action !== null) {
             }
             $upsert->close();
 
+            /* Mint the watermark immediately before the final re-read (#1649)
+               so anything another device writes during the gap reads as NEWER
+               than it, and this client's next 'replace' keeps rather than
+               deletes it. */
+            $syncedAt = userSyncNow($db);
+
             /* Return the stored list as {id, tags} objects. */
             $stmt = $db->prepare(
                 'SELECT SongId, Tags FROM tblUserFavorites WHERE UserId = ? ORDER BY CreatedAt DESC'
@@ -4718,17 +4834,26 @@ if ($action !== null) {
             }, $finalRows);
 
             /* Audit (#535) — one row per sync, since the sync is the
-               meaningful user action. */
-            if ($newlyAdded > 0 || $deleted > 0) {
+               meaningful user action. `truncated` added by #1649: an over-cap
+               sync is the single most useful thing to see in the log when a
+               user reports missing favourites. */
+            if ($newlyAdded > 0 || $deleted > 0 || $truncated) {
                 logActivity('favorites.sync', 'user', (string)$userId, [
                     'mode'        => $syncMode,
                     'newly_added' => $newlyAdded,
                     'deleted'     => $deleted,
+                    'truncated'   => $truncated,
                     'total'       => count($finalFavs),
                 ]);
             }
 
-            sendJson(['favorites' => $finalFavs]);
+            sendJson([
+                'favorites' => $finalFavs,
+                /* #1649 — client stores this and returns it as `since`. */
+                'syncedAt'  => $syncedAt,
+                'truncated' => $truncated,
+                'cap'       => 500,
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -4813,9 +4938,16 @@ if ($action !== null) {
         /* -----------------------------------------------------------------
          * Sync custom tags. Same merge/replace contract as favorites_sync.
          *
-         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace" }
-         * Returns: { "tags": [...stored...] }
+         * POST body (JSON): { "tags": ["Easter", ...], "mode": "replace",
+         *                     "since": "YYYY-MM-DD HH:MM:SS" }
+         * Returns: { "tags": [...stored...], "syncedAt": "...",
+         *            "truncated": bool, "cap": 200 }
          * Requires: Authorization: Bearer <token>
+         *
+         * The web client only ever sends 'merge' here today (custom tags are
+         * add-only — there is no removal UI), but 'replace' is part of the
+         * published API contract and any client may send it, so it carries the
+         * same #1649 truncation + watermark guards as the other two handlers.
          * ----------------------------------------------------------------- */
         case 'custom_tags_sync':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -4839,11 +4971,17 @@ if ($action !== null) {
 
             $syncMode = (($body['mode'] ?? 'merge') === 'replace') ? 'replace' : 'merge';
 
+            /* Optional watermark (#1649) — see includes/user_sync.php. */
+            $since = userSyncParseSince($body['since'] ?? null);
+
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
             /* Sanitise: trim, cap length at 50, drop empties, de-dupe,
-               cap the pool at 200 tags. */
+               cap the pool at 200 tags. The 200-cap is applied to the DEDUPED
+               list, so `truncated` correctly reports whether the user really
+               owns more than 200 DISTINCT tags rather than counting duplicate
+               spellings against them (#1649). */
             $localTags = [];
             foreach ($body['tags'] as $t) {
                 if (!is_string($t)) continue;
@@ -4851,23 +4989,42 @@ if ($action !== null) {
                 if ($t === '') continue;
                 $localTags[$t] = true;
             }
-            $localTags = array_slice(array_keys($localTags), 0, 200);
+            $capped    = userSyncCap(array_keys($localTags), 200);
+            $localTags = $capped['items'];
+            $truncated = $capped['truncated'];
 
-            /* Replace: delete tags the client no longer has. */
+            /* Replace: delete tags the client no longer has — subject to the
+               shared #1649 guards (a truncated payload deletes nothing; a tag
+               created after the client's `since` watermark is another device's
+               and is kept). The SELECT stays inside the replace branch so merge
+               mode still costs no extra query. */
             $deleted = 0;
             if ($syncMode === 'replace') {
-                $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ?');
+                /* CreatedAt joins the SELECT for the watermark guard — it is
+                   the only age signal tblUserCustomTags carries, and the DB
+                   writes it (DEFAULT CURRENT_TIMESTAMP) so it shares
+                   userSyncNow()'s clock exactly. */
+                $stmt = $db->prepare('SELECT Tag, CreatedAt FROM tblUserCustomTags WHERE UserId = ?');
                 $stmt->bind_param('i', $userId);
                 $stmt->execute();
-                $serverTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
+                $serverTagRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
 
-                $toDelete = array_diff($serverTags, $localTags);
-                if (count($toDelete) > 0) {
+                $deletableTags = userSyncDeletableIds(
+                    array_map(
+                        static fn(array $r): array => ['id' => $r['Tag'], 'ts' => (string)$r['CreatedAt']],
+                        $serverTagRows
+                    ),
+                    $localTags,
+                    $syncMode,
+                    $truncated,
+                    $since
+                );
+                if (count($deletableTags) > 0) {
                     $del = $db->prepare('DELETE FROM tblUserCustomTags WHERE UserId = ? AND Tag = ?');
                     $delTag = '';
                     $del->bind_param('is', $userId, $delTag);
-                    foreach ($toDelete as $delTag) {
+                    foreach ($deletableTags as $delTag) {
                         $del->execute();
                         $deleted += $del->affected_rows;
                     }
@@ -4885,6 +5042,9 @@ if ($action !== null) {
             }
             $insert->close();
 
+            /* Mint the watermark immediately before the final re-read (#1649). */
+            $syncedAt = userSyncNow($db);
+
             /* Return the stored list. */
             $stmt = $db->prepare('SELECT Tag FROM tblUserCustomTags WHERE UserId = ? ORDER BY Tag ASC');
             $stmt->bind_param('i', $userId);
@@ -4892,7 +5052,25 @@ if ($action !== null) {
             $finalTags = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Tag');
             $stmt->close();
 
-            sendJson(['tags' => $finalTags]);
+            /* Audit (#1649) — this handler had no logging at all, unlike
+               favorites.sync. A deleting or truncated tag sync is precisely
+               what a curator needs to see when a user reports lost tags. */
+            if ($deleted > 0 || $truncated) {
+                logActivity('custom_tags.sync', 'user', (string)$userId, [
+                    'mode'      => $syncMode,
+                    'truncated' => $truncated,
+                    'deleted'   => $deleted,
+                    'total'     => count($finalTags),
+                ]);
+            }
+
+            sendJson([
+                'tags'      => $finalTags,
+                /* #1649 — client stores this and returns it as `since`. */
+                'syncedAt'  => $syncedAt,
+                'truncated' => $truncated,
+                'cap'       => 200,
+            ]);
             break;
 
         /* =================================================================
