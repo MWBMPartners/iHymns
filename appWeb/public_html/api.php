@@ -1582,18 +1582,51 @@ if ($action !== null) {
             }
 
             $rendered = [];
-            /* getSongs() already returns every field song.php reads from
+            /* #1598 — this comment used to claim the loop below "already
+               avoids getSongById() per song" and left it at that. That claim
+               was TRUE of this loop in isolation but FALSE of what actually
+               happened, because song.php itself undid it on both counts:
+                 1. song.php:23 unconditionally re-fetched $song via
+                    getSongById(), clobbering the $bulkSong this loop
+                    injected — one getSongById() call per song, same as if
+                    this loop had never bothered.
+                 2. song.php's prev/next block called getSongs($songbook)
+                    — a FULL songbook re-hydration (components + lyric
+                    assembly for every song) — again, PER SONG.
+               So the actual cost was ~2N whole-book-equivalent hydrations,
+               not the O(N) this comment promised — for Mission Praise
+               (3,517 songs) that's ~3,517 extra full-book re-hydrations in
+               one request, which is why "download songbook" timed out /
+               OOM'd on exactly the large books a user wants offline. A
+               comment asserting the efficient behaviour was worse than no
+               comment — it stopped the next reader from checking.
+               Both are now fixed for real, ADDITIVELY, by injecting the
+               data song.php already needs instead of asking it to look
+               anything up:
+                 - $song = $bulkSong — song.php's isset($song) guard now
+                   actually uses this instead of re-fetching (#1598 fix 1);
+                 - $prevSong / $nextSong + $songNavInjected — computed ONCE
+                   from an id→index map over $bulkSongs (already fetched by
+                   the ONE getSongs() call above) instead of once per song
+                   from a full getSongs($songbook) re-hydration (#1598 fix 2).
+               getSongs() already returns every field song.php reads from
                $song at bulk-cache time (id, title, number, songbook,
                songbookName, copyright, ccli, verified, has*, writers,
                composers, components). The only fields it leaves off —
                arrangement / capo / key — are optional and rendered with
                `!empty($song[...])`, so a missing value degrades
-               gracefully. Skipping getSongById() inside this loop drops
-               the per-songbook work from O(2N) to O(N) and eliminates
-               the 800+ extra queries per Church Hymnal bulk fetch. */
+               gracefully. Net result: ONE getSongs() call for the whole
+               request (down from 1 + N), and ZERO getSongById() calls
+               (down from N) — O(N) total, not O(N²). */
+            $bulkIdIndex = array_flip(array_column($bulkSongs, 'id'));
             foreach ($bulkSongs as $bulkSong) {
                 $songId = $bulkSong['id'];
                 $song = $bulkSong;
+
+                $songNavInjected = true;
+                $bulkIdx  = $bulkIdIndex[$songId] ?? null;
+                $prevSong = ($bulkIdx !== null) ? ($bulkSongs[$bulkIdx - 1] ?? null) : null;
+                $nextSong = ($bulkIdx !== null) ? ($bulkSongs[$bulkIdx + 1] ?? null) : null;
 
                 ob_start();
                 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'song.php';
