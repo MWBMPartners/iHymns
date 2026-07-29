@@ -17,11 +17,11 @@
     "lint:html": "htmlhint appWeb/public_html/**/*.html",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
     "format": "prettier --write appWeb/public_html/",
-    "test": "node tests/test-song-fixture-shape.js",
+    "test": "node tools/run-node-tests.js",
     "test:php": "find appWeb -name '*.php' -exec php -l {} \\;",
     "test:js": "find appWeb -name '*.js' -not -path '*/node_modules/*' -exec node --check {} \\;",
     "test:export": "node tests/test-propresenter-export.js && node tests/test-export-ui.js",
-    "test:all": "npm test && npm run test:php && npm run test:js && npm run test:export"
+    "test:all": "npm test && npm run test:php && npm run test:js"
   },
   "repository": {
     "type": "git",
