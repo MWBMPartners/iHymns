@@ -1,0 +1,42 @@
+{
+  "name": "How Great Thou Art",
+  "category": "song",
+  "meta": {
+    "title": "How Great Thou Art",
+    "author": "Stuart K. Hine",
+    "CCLI": "14181"
+  },
+  "slides": {
+    "v1": {
+      "group": "Verse 1",
+      "globalGroup": "verse",
+      "items": [
+        { "type": "text", "lines": [
+          { "text": [{ "value": "O Lord my God, when I in awesome wonder" }] }
+        ]}
+      ]
+    },
+    "media1": {
+      "group": "Background image",
+      "items": [
+        { "type": "media", "src": "background.jpg" },
+        { "type": "timer", "duration": 30 }
+      ]
+    },
+    "c1": {
+      "group": "Chorus",
+      "globalGroup": "chorus",
+      "items": [
+        { "type": "text", "lines": [
+          { "text": [{ "value": "Then sings my soul, my Saviour God, to Thee" }] }
+        ]}
+      ]
+    }
+  },
+  "layouts": {
+    "default": {
+      "name": "Default",
+      "slides": [{ "id": "v1" }, { "id": "media1" }, { "id": "c1" }]
+    }
+  }
+}

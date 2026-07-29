@@ -1,0 +1,79 @@
+{
+  "name": "Be Thou My Vision",
+  "category": "song",
+  "settings": { "template": "default" },
+  "meta": {
+    "title": "Be Thou My Vision",
+    "author": "Mary E. Byrne & Eleanor H. Hull",
+    "copyright": "Public Domain",
+    "CCLI": "30639",
+    "key": "D",
+    "BPM": "72",
+    "tune": "Slane"
+  },
+  "slides": {
+    "v1": {
+      "group": "Verse 1",
+      "color": null,
+      "globalGroup": "verse",
+      "items": [
+        {
+          "type": "text",
+          "lines": [
+            { "text": [{ "value": "Be Thou my vision, O Lord of my heart" }] },
+            { "text": [{ "value": "Naught be all else to me, save that Thou art" }] }
+          ]
+        }
+      ]
+    },
+    "c1": {
+      "group": "Chorus",
+      "color": null,
+      "globalGroup": "chorus",
+      "items": [
+        {
+          "type": "text",
+          "lines": [
+            { "text": [{ "value": "High King of heaven, my victory won" }] },
+            { "text": [{ "value": "May I reach heaven's joys, O bright heaven's Sun" }] }
+          ]
+        }
+      ]
+    },
+    "c2": {
+      "group": "Chorus (cont.)",
+      "color": null,
+      "globalGroup": "chorus",
+      "items": [
+        {
+          "type": "text",
+          "lines": [
+            { "text": [{ "value": "Heart of my own heart, whatever befall" }] }
+          ]
+        }
+      ]
+    },
+    "v2": {
+      "group": "Verse 2",
+      "color": null,
+      "globalGroup": "verse",
+      "items": [
+        {
+          "type": "text",
+          "lines": [
+            { "text": [{ "value": "Be Thou my wisdom, and Thou my true word" }] },
+            { "text": [{ "value": "I ever with Thee and Thou with me, Lord" }] }
+          ]
+        }
+      ]
+    }
+  },
+  "layouts": {
+    "default": {
+      "name": "Default",
+      "slides": [{ "id": "v1" }, { "id": "c1" }, { "id": "c2" }, { "id": "v2" }]
+    }
+  },
+  "media": {},
+  "timestamps": {}
+}

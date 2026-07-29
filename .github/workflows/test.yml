@@ -310,6 +310,27 @@ jobs:
           echo "Running ChordPro importer test..."
           php tests/php/test-chordpro-parser.php
 
+      # The OpenSong / VideoPsalm / FreeShow importer suites (#1575, #1538).
+      #
+      # ELI5: actually run the importer tests, so they can't quietly rot again.
+      #
+      # These were NEVER wired into CI, which is the real reason three of them
+      # sat permanently red long enough to be documented as "standing known
+      # failures". They failed for a MECHANICAL reason — each scraped source
+      # text for a code block that had since moved — so the importers had zero
+      # effective regression coverage while appearing to have three suites.
+      #
+      # A permanently-red suite is worse than an absent one: it trains everyone
+      # to ignore red. An UNRUN suite is worse still, because nothing even
+      # reports the red. Repairing them without wiring them in would have left
+      # the same hole open.
+      - name: Worship-format importers (OpenSong / VideoPsalm / FreeShow)
+        run: |
+          echo "Running worship-format importer tests..."
+          php tests/php/test-opensong-parser.php
+          php tests/php/test-videopsalm-parser.php
+          php tests/php/test-freeshow-parser.php
+
       - name: Per-action content-gating matcher (#1120)
         run: |
           echo "Running content-access action-matcher test..."
