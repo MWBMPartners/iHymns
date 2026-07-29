@@ -25,6 +25,14 @@
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
 import { STORAGE_SEARCH_LYRICS, songbookLabel, EVT_FETCH_FAILED, EVT_FETCH_SUCCEEDED } from '../constants.js';
+/* #1594 part 2 — ARIA-only pass (imported for its side effect only —
+   see combobox-a11y.js's own doc-comment). The header autocomplete
+   below already has working Arrow/Enter/Escape key handling and
+   scrollIntoView — LOWEST risk of the #1594 part-2 call sites, so this
+   file's keydown logic is untouched; only role=combobox/listbox/option,
+   aria-selected and aria-activedescendant are added on top of the
+   existing class-only ('.active') highlight. */
+import './combobox-a11y.js';
 
 /** Results fetched per page (and per "Load more" click). */
 const PAGE_SIZE = 50;
@@ -588,6 +596,19 @@ export class Search {
                 }
             });
         });
+
+        /* #1594 part 2 — the template above already marks index 0 'active'
+           via the class (the pre-existing highlight mechanism, untouched);
+           this layers the ARIA half on top so that highlight is actually
+           visible to assistive tech, not just sighted mouse/keyboard
+           users. */
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({
+                input, panel: dropdown,
+                items: Array.from(dropdown.querySelectorAll('.search-autocomplete-item')),
+                activeIndex: 0, idPrefix: (input.id || 'search') + '-autocomplete',
+            });
+        }
     }
 
     /**
@@ -599,6 +620,14 @@ export class Search {
         const parent = input.closest('.input-group') || input.parentElement;
         const dropdown = parent?.querySelector('.search-autocomplete');
         if (dropdown) dropdown.remove();
+        /* #1594 part 2 — the dropdown these attributes referenced no
+           longer exists; leaving them would point aria-controls /
+           aria-activedescendant at stale/removed ids (mirrors
+           place-search.js's own explicit teardown). */
+        if (window.iHymnsComboboxA11y) {
+            window.iHymnsComboboxA11y.applyComboboxAria({ input, panel: null, items: [], activeIndex: -1, idPrefix: (input.id || 'search') + '-autocomplete', expanded: false });
+        }
+        input.removeAttribute('aria-controls');
     }
 
     /**
@@ -637,6 +666,17 @@ export class Search {
             items.forEach(item => item.classList.remove('active'));
             items[idx]?.classList.add('active');
             items[idx]?.scrollIntoView({ block: 'nearest' });
+            /* #1594 part 2 — the pre-existing class-only highlight above is
+               untouched; this layers aria-selected + aria-activedescendant
+               on top so the SAME highlight move is announced to assistive
+               tech (it previously moved a CSS class a screen reader has no
+               way to observe). */
+            if (window.iHymnsComboboxA11y) {
+                window.iHymnsComboboxA11y.applyComboboxAria({
+                    input, panel: dropdown, items: Array.from(items),
+                    activeIndex: idx, idPrefix: (input.id || 'search') + '-autocomplete',
+                });
+            }
             return true;
         }
 

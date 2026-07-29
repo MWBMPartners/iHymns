@@ -1645,6 +1645,14 @@ try {
          iHymnsPlaceSearch global exists when editor.js's
          attachPlaceSearch() helper runs. -->
     <script src="/js/modules/place-search.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/place-search.js') ?>"></script>
+    <!-- #1594 part 2 — shared combobox keyboard + ARIA helper
+         (window.iHymnsComboboxA11y), consumed by the tag-search and
+         credit-person popovers below in editor.js. Must load before
+         editor.js for the same reason as place-search.js above: this
+         page has no head-libs.php (bespoke <head>), so every classic
+         global editor.js depends on is loaded explicitly, in order,
+         right here. -->
+    <script src="/js/modules/combobox-a11y.js?v=<?= filemtime($_editorPublicRoot . '/js/modules/combobox-a11y.js') ?>"></script>
     <script>
         window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;
         /* #1235 P3 / #1088 — CSRF token for the v2 API (api2.php) that the per-line
