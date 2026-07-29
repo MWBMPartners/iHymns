@@ -192,6 +192,38 @@ const _BULK_IMPORT_MAX_ENTRY_UNCOMPRESSED = 5 * 1024 * 1024;       // 5 MiB
 const _BULK_IMPORT_MAX_TOTAL_UNCOMPRESSED = 500 * 1024 * 1024;     // 500 MiB
 
 /**
+ * Byte ceiling for ONE iHymns-interchange JSON upload (#1633).
+ *
+ * ELI5: a JSON file balloons when PHP turns it into arrays, so we refuse
+ * files past a size we have actually measured to be safe.
+ *
+ * Detail — `json_decode()` is NOT a streaming parser: it materialises the
+ * ENTIRE document as a PHP array graph before returning, and PHP's zval /
+ * hashtable overhead makes that graph several times the file's byte size.
+ * Measured on a synthetic 14,000-song / 4-verse corpus (the realistic upper
+ * bound for this catalogue) the decoded graph peaked at **5.5×** the file:
+ *
+ *     20.36 MiB file  ->  112.36 MiB peak  (5.52x)
+ *
+ * `import_file` already caps every upload at 25 MiB, but 25 MiB × 5.5 ≈ 140 MiB
+ * — precisely the figure that OOM'd the old whole-corpus materialiser in #929,
+ * and this repo pins no `memory_limit` anywhere, so a 128M shared-hosting
+ * default must be assumed. 8 MiB × 5.5 ≈ 45 MiB decoded (plus the mapped song
+ * dicts, which _bulkImport_parseIHymnsJson frees the source for as it goes —
+ * see there) lands comfortably inside 128M with room for the rest of the
+ * request. At the measured density 8 MiB is roughly 5,000 songs.
+ *
+ * This is an HONEST cap, not a claim of streaming: past this size the importer
+ * REFUSES the file and tells the operator to split it or use the ZIP path
+ * (which walks entries one at a time and genuinely is bounded). If a true
+ * streaming JSON reader ever lands, this constant is the one thing to revisit.
+ *
+ * @see https://www.php.net/manual/en/function.json-decode.php
+ * @see https://www.php.net/manual/en/ini.core.php#ini.memory-limit
+ */
+const _BULK_IMPORT_IHYMNS_MAX_BYTES = 8 * 1024 * 1024;             // 8 MiB
+
+/**
  * Section-marker → component-type map. Anything not in the map (e.g.
  * non-English refrain labels like "Coro", "Ciindululo", "Pripev") is
  * treated as a refrain section — refrain labels are language-specific
@@ -3852,5 +3884,505 @@ function _bulkImport_resolvePptxSongbook(\mysqli $db, string $name): array
     }
     $state = _bulkImport_upsertSongbook($db, 'PPTX', 'PowerPoint Import', null);
     return ['PPTX', 'PowerPoint Import', $state];
+}
+
+/* ===========================================================================
+ *  iHymns interchange JSON import (#1633)  —  .json
+ * ---------------------------------------------------------------------------
+ * The owner asked for a JSON importer that writes STRAIGHT TO THE DATABASE
+ * "in the same way as the ZIP importing" — i.e. additive / merge, never a
+ * truncate. This is deliberately NOT a revival of the retired
+ * `migrate-json.php` (#1614), which TRUNCATEd five tables before loading;
+ * everything below goes through the SAME `_bulkImport_upsertSongbook()` +
+ * `_bulkImport_saveSong()` pair every other importer uses, inheriting their
+ * INSERT-only "existing rows are sacred" contract for free (rule #25: lyrics
+ * reach the DB only via `lyricLinesWriteComponents()`, which `saveSong` calls).
+ *
+ * FORMAT: the iHymns song interchange shape formally specified by
+ * `tests/fixtures/songs.schema.json` — the same document the editor's
+ * `songbook_export` emits, so an export from one install imports into another.
+ * Top level is `{ meta, songbooks[], songs[] }`.
+ *
+ * WHY IT LIVES HERE AND NOT BEHIND A NEW ENDPOINT: `import_file` in
+ * `manage/editor/api2.php` already owns "one uploaded file → parse → shared
+ * saver", with format auto-detection and the summary shape the progress UI
+ * reads. A parallel endpoint would have forked all three (CLAUDE.md modularity
+ * rule). It is one more `_bulkImport_process*` alongside VideoPsalm/OpenLP/…
+ *
+ * ⚠️ THE `.json` COLLISION: the `.json` EXTENSION WAS ALREADY CLAIMED by
+ * VideoPsalm in `import_file`'s auto-detect map, so extension alone cannot
+ * route these two apart. `_bulkImport_looksLikeIHymnsJson()` below is the
+ * disambiguator, and it is deliberately CONSERVATIVE — an ambiguous file falls
+ * through to VideoPsalm, because breaking a working VideoPsalm import is far
+ * worse than making an operator pick "iHymns interchange" from the dropdown.
+ * This mirrors `_bulkImport_looksLikeOpenLyrics()`, which already content-sniffs
+ * OpenLyrics vs OpenSong inside the shared `.xml` extension.
+ * =========================================================================== */
+
+/**
+ * Component types the interchange schema enumerates, as a set for O(1) lookup.
+ *
+ * ELI5: the only section labels a song is allowed to use.
+ *
+ * Detail — mirrors the `component.type` enum in `tests/fixtures/songs.schema.json`
+ * verbatim. `tblSongComponents.Type` is a `VARCHAR(20)` (not an ENUM — rule #20),
+ * so the DB would happily store any string; validating here instead means a
+ * typo'd type is a loud parse error naming the song rather than a silently
+ * unrenderable component nobody notices until a service. 'refrain' is kept
+ * distinct from 'chorus' because both are real stored values (they render
+ * identically — `.lyric-chorus,.lyric-refrain { font-style: italic }`, #1337).
+ */
+const _BULK_IMPORT_IHYMNS_COMPONENT_TYPES = [
+    'verse' => true, 'chorus' => true, 'refrain' => true, 'bridge' => true,
+    'pre-chorus' => true, 'tag' => true, 'coda' => true, 'intro' => true,
+    'outro' => true, 'interlude' => true, 'vamp' => true, 'ad-lib' => true,
+];
+
+/**
+ * Cheap content sniff: is this JSON body an iHymns interchange document? (#1633)
+ *
+ * ELI5: peek at the text for the three labels only our own format uses, and
+ * bail out the moment we see VideoPsalm's tell-tale label instead.
+ *
+ * Detail — this runs on the RAW STRING and never calls `json_decode()`, so it
+ * costs no memory beyond the body the caller already holds (PHP's `strpos` is
+ * memchr-backed; scanning 20 MiB is microseconds). That matters because the
+ * sniff happens BEFORE the size cap has a parser to enforce it — a decode here
+ * would be the very memory blow-up `_BULK_IMPORT_IHYMNS_MAX_BYTES` exists to
+ * prevent, and we would then decode a second time in the parser.
+ *
+ * The test is deliberately asymmetric, i.e. biased AGAINST claiming the file:
+ *
+ *   - ALL THREE of the iHymns top-level keys (`"meta"`, `"songbooks"`, `"songs"`)
+ *     must appear as JSON keys — the regex requires the quotes and the colon, so
+ *     the word "songs" occurring inside a lyric line cannot trigger it.
+ *   - AND VideoPsalm's own top-level `"Songs"` key must be ABSENT. JSON keys are
+ *     case-sensitive and VideoPsalm capitalises (`{"Text": …, "Songs": […]}`),
+ *     so this single check makes a false positive on a VideoPsalm export
+ *     structurally impossible — which is the regression that would matter.
+ *
+ * The whole body is scanned, not a head slice: JSON object keys have no
+ * guaranteed order, so a document that happens to put `songs` first would push
+ * `meta` and `songbooks` past any fixed-size window.
+ *
+ * A `true` here is a ROUTING hint, not a validation verdict —
+ * `_bulkImport_parseIHymnsJson()` still does the authoritative structural check
+ * and reports a real error if the shape is wrong.
+ */
+function _bulkImport_looksLikeIHymnsJson(string $body): bool
+{
+    /* VideoPsalm's discriminator wins outright — never steal one of its files. */
+    if (preg_match('/"Songs"\s*:/', $body) === 1) {
+        return false;
+    }
+    return preg_match('/"meta"\s*:/', $body) === 1
+        && preg_match('/"songbooks"\s*:/', $body) === 1
+        && preg_match('/"songs"\s*:/', $body) === 1;
+}
+
+/**
+ * Parse an iHymns interchange JSON document into the shared importer shapes (#1633).
+ *
+ * ELI5: read the file, check every field the format says must be there, and hand
+ * back plain lists of songbooks and songs ready to save.
+ *
+ * Detail — PURE (no DB, no I/O), which is what makes it unit-testable without
+ * MySQL (`tests/php/test-ihymns-json-import.php`). Returns the same
+ * `[$songbooks, $songs, $err]` triple as `_bulkImport_parseVideoPsalmSongbook()`
+ * so the process wrapper below reads like its siblings.
+ *
+ * VALIDATION IS ALL-OR-NOTHING AND UP FRONT — a deliberate divergence from the
+ * VideoPsalm parser, which collects per-song errors and imports the survivors.
+ * #1633 asks for "a structural error should say what is wrong, not produce a
+ * partial import", and that is the right call for THIS format specifically: an
+ * interchange document is machine-generated, so a song missing a required field
+ * means the FILE is broken, not that one hymn is unusual. Because every check
+ * runs before the caller opens a transaction, the failure is genuinely atomic —
+ * nothing is half-written. Errors name the offending index AND song id so a
+ * 5,000-song file is still debuggable.
+ *
+ * Unknown/extra properties are IGNORED rather than rejected (forward
+ * compatibility): a newer exporter may add fields this build has never heard of,
+ * and an old importer refusing a superset would make every schema addition a
+ * breaking change. Note the schema itself says `additionalProperties: false`;
+ * we are deliberately more lenient than the schema on INPUT, which is the
+ * robustness principle applied in the direction that cannot lose data.
+ *
+ * @param string      $body          Raw JSON document (UTF-8, BOM tolerated).
+ * @param string|null $filenameHint  Original upload name — used only in messages.
+ * @return array{0: list<array{abbrev:string,name:string,language:?string}>|null,
+ *               1: list<array<string,mixed>>|null,
+ *               2: string|null}     [$songbooks, $songs, $error]
+ */
+function _bulkImport_parseIHymnsJson(string $body, ?string $filenameHint = null): array
+{
+    $fail = static fn(string $msg): array => [null, null, $msg];
+
+    /* (0) SIZE GATE — must precede json_decode(), which is the allocation.
+           See _BULK_IMPORT_IHYMNS_MAX_BYTES for the measurement behind 8 MiB. */
+    $bytes = strlen($body);
+    if ($bytes > _BULK_IMPORT_IHYMNS_MAX_BYTES) {
+        return $fail(sprintf(
+            'File is too large for the JSON importer (%.1f MB; limit %.0f MB). ' .
+            'json_decode() must hold the whole document in memory at once, so this ' .
+            'limit is a hard memory bound, not a policy. Split the file by songbook, ' .
+            'or use the ZIP import which streams entry by entry.',
+            $bytes / 1048576,
+            _BULK_IMPORT_IHYMNS_MAX_BYTES / 1048576
+        ));
+    }
+
+    /* Strip a UTF-8 BOM — Windows editors add one and json_decode() rejects it.
+       Same guard as the VideoPsalm parser. */
+    $body = (string)preg_replace('/^\xEF\xBB\xBF/', '', $body);
+
+    $data = json_decode($body, true);
+    if (!is_array($data)) {
+        return $fail('invalid JSON: ' . json_last_error_msg());
+    }
+
+    /* (1) TOP LEVEL — `meta`, `songbooks`, `songs` are all required. Naming every
+           missing key at once beats making the operator re-upload three times. */
+    $missing = [];
+    foreach (['meta', 'songbooks', 'songs'] as $k) {
+        if (!array_key_exists($k, $data)) { $missing[] = $k; }
+    }
+    if ($missing) {
+        return $fail('not an iHymns interchange document — missing required top-level key(s): '
+            . implode(', ', $missing));
+    }
+    if (!is_array($data['meta']))      { return $fail('"meta" must be an object'); }
+    if (!is_array($data['songbooks'])) { return $fail('"songbooks" must be an array'); }
+    if (!is_array($data['songs']))     { return $fail('"songs" must be an array'); }
+
+    /* (2) META — required by the schema. Its VALUES are advisory (totalSongs is a
+           generator convenience, not a contract we enforce against the real count,
+           which would reject a legitimately hand-trimmed file), but their PRESENCE
+           is what distinguishes a real export from a hand-rolled fragment. */
+    foreach (['generatedAt', 'generatorVersion', 'totalSongs', 'totalSongbooks'] as $k) {
+        if (!array_key_exists($k, $data['meta'])) {
+            return $fail('"meta" is missing required key "' . $k . '"');
+        }
+    }
+
+    /* (3) SONGBOOKS. `id` IS the SongId prefix (rule #27: tblSongbooks.Abbreviation,
+           alphanumeric and at most 10 chars — never loosened, it keys every SongId
+           and every URL). The schema's own pattern is narrower (`^[A-Z][A-Za-z]*$`);
+           we validate against the DB constraint instead so a legitimate existing
+           book with a digit in its abbreviation is not refused on import. */
+    $songbooks   = [];
+    $declaredIds = [];      // id => name, for the cross-check in (4)
+    foreach (array_values($data['songbooks']) as $i => $sb) {
+        $tag = 'songbooks[' . $i . ']';
+        if (!is_array($sb)) { return $fail($tag . ' is not an object'); }
+        foreach (['id', 'name', 'songCount'] as $k) {
+            if (!array_key_exists($k, $sb)) { return $fail($tag . ' is missing required key "' . $k . '"'); }
+        }
+        $abbr = trim((string)$sb['id']);
+        $name = trim((string)$sb['name']);
+        if (preg_match('/^[A-Za-z0-9]{1,10}$/', $abbr) !== 1) {
+            return $fail($tag . ' has an invalid songbook id "' . $abbr
+                . '" — must be 1-10 letters/digits (it becomes the SongId prefix)');
+        }
+        if ($name === '') { return $fail($tag . ' ("' . $abbr . '") has an empty name'); }
+        if (isset($declaredIds[$abbr])) { return $fail($tag . ' repeats songbook id "' . $abbr . '"'); }
+        $declaredIds[$abbr] = $name;
+
+        /* `language` is not in the interchange schema for a songbook, but
+           _bulkImport_upsertSongbook() accepts one and a future exporter may add
+           it — read it tolerantly, validate it, and pass null when absent. */
+        $lang = isset($sb['language']) ? _ietfBcp47Validate((string)$sb['language']) : null;
+        $songbooks[] = [
+            'abbrev'   => $abbr,
+            'name'     => $name,
+            'language' => is_string($lang) ? $lang : null,
+        ];
+    }
+
+    /* (4) SONGS. Mapped one at a time; each source entry is FREED as soon as its
+           dict exists (see the unset() at the bottom of the loop) so we never hold
+           the decoded document AND the mapped output simultaneously — that would
+           double the peak the size cap in (0) was sized against. */
+    $required = [
+        'id', 'number', 'title', 'songbook', 'songbookName', 'language',
+        'writers', 'composers', 'copyright', 'ccli', 'verified',
+        'lyricsPublicDomain', 'musicPublicDomain', 'hasAudio',
+        'hasSheetMusic', 'components',
+    ];
+    $songs   = [];
+    $seenIds = [];
+    $keys    = array_keys($data['songs']);
+    foreach ($keys as $k) {
+        $raw = $data['songs'][$k];
+        $tag = 'songs[' . $k . ']';
+        if (!is_array($raw)) { return $fail($tag . ' is not an object'); }
+
+        foreach ($required as $rk) {
+            if (!array_key_exists($rk, $raw)) {
+                $who = isset($raw['id']) ? ' ("' . (string)$raw['id'] . '")' : '';
+                return $fail($tag . $who . ' is missing required key "' . $rk . '"');
+            }
+        }
+
+        $songId = trim((string)$raw['id']);
+        $title  = trim((string)$raw['title']);
+        $abbr   = trim((string)$raw['songbook']);
+
+        if ($title === '') { return $fail($tag . ' ("' . $songId . '") has an empty title'); }
+        /* SongId shape is `<letters/digits>-<digits>` — the exact form the PWA
+           router's normalizeSongId(), the OG-image route and the song_view API
+           validators parse (rule #27). A malformed id here would produce a song
+           that is unreachable by URL, so it is fatal rather than repaired. */
+        if (preg_match('/^([A-Za-z0-9]{1,10})-(\d+)$/', $songId, $m) !== 1) {
+            return $fail($tag . ' has an invalid song id "' . $songId
+                . '" — expected <SONGBOOK>-<NUMBER>, e.g. "MP-1008"');
+        }
+        if ($m[1] !== $abbr) {
+            return $fail($tag . ' ("' . $songId . '") has id prefix "' . $m[1]
+                . '" but songbook "' . $abbr . '" — they must match');
+        }
+        if (!isset($declaredIds[$abbr])) {
+            return $fail($tag . ' ("' . $songId . '") references songbook "' . $abbr
+                . '", which is not declared in "songbooks"');
+        }
+        if (isset($seenIds[$songId])) {
+            return $fail($tag . ' repeats song id "' . $songId . '" (already seen in this file)');
+        }
+        $seenIds[$songId] = true;
+
+        $number = (int)$raw['number'];
+        if ($number < 1) {
+            return $fail($tag . ' ("' . $songId . '") has number "' . (string)$raw['number']
+                . '" — must be a positive integer');
+        }
+
+        /* Language: soft-validated. A malformed tag falls back to 'en' rather than
+           killing the file, matching _bulkImport_saveSong()'s own tolerance — the
+           tag is cosmetic-ish metadata, not structure, and BCP 47 has enough exotic
+           legal forms that being fatal here would reject valid data. */
+        $langOk   = _ietfBcp47Validate((string)$raw['language']);
+        $language = is_string($langOk) ? $langOk : 'en';
+
+        if (!is_array($raw['components']) || $raw['components'] === []) {
+            return $fail($tag . ' ("' . $songId . '") has no components — at least one is required');
+        }
+
+        $components = [];
+        foreach (array_values($raw['components']) as $ci => $comp) {
+            $ctag = $tag . ' ("' . $songId . '") component[' . $ci . ']';
+            if (!is_array($comp)) { return $fail($ctag . ' is not an object'); }
+            foreach (['type', 'number', 'lines'] as $rk) {
+                if (!array_key_exists($rk, $comp)) {
+                    return $fail($ctag . ' is missing required key "' . $rk . '"');
+                }
+            }
+            $ctype = strtolower(trim((string)$comp['type']));
+            if (!isset(_BULK_IMPORT_IHYMNS_COMPONENT_TYPES[$ctype])) {
+                return $fail($ctag . ' has unknown type "' . $ctype . '" — expected one of: '
+                    . implode(', ', array_keys(_BULK_IMPORT_IHYMNS_COMPONENT_TYPES)));
+            }
+            if (!is_array($comp['lines']) || $comp['lines'] === []) {
+                return $fail($ctag . ' has no lines — at least one is required');
+            }
+            $lines = [];
+            foreach (array_values($comp['lines']) as $li => $line) {
+                if (!is_string($line)) { return $fail($ctag . ' line[' . $li . '] is not a string'); }
+                $lines[] = $line;
+            }
+
+            /* `number` is nullable in the schema (a lone chorus has none). The
+               shared writer folds a non-positive number to NULL via max(0, …),
+               so 0 is the canonical "unnumbered" carrier here. */
+            $cnum = ($comp['number'] === null) ? 0 : (int)$comp['number'];
+            if ($cnum < 0) { $cnum = 0; }
+
+            $mapped = [
+                'type'   => $ctype,
+                'number' => $cnum,
+                'lines'  => $lines,
+            ];
+
+            /* Per-line language overrides (#1235 P3). The interchange calls the
+               parallel array `lineLanguages`; the shared writer's component key is
+               `languages`, and lineEnrichmentBuildLanguagesJson() validates + pads
+               each entry, so a short or partly-invalid array is safe to hand over
+               verbatim. Absent → omitted, so every line inherits the song language. */
+            if (isset($comp['lineLanguages']) && is_array($comp['lineLanguages'])) {
+                $mapped['languages'] = array_values($comp['lineLanguages']);
+            }
+
+            /* NB `lineIds` is deliberately DROPPED. Those are tblLyricLines.Id
+               values from the EXPORTING install's database; they are meaningless
+               here and honouring them would collide with this install's own PKs.
+               The importer inserts fresh lines and lets MySQL mint the ids. */
+
+            $components[] = $mapped;
+        }
+
+        /* Song dict in the exact shape _bulkImport_saveSong() consumes — the same
+           key set _bulkImport_assembleSong() produces for OpenLyrics/PP6, so this
+           format needs no special case anywhere downstream.
+           ⚠️ KNOWN LIMITATION (not introduced here): saveSong currently hardcodes
+           copyright / ccli / verified / the public-domain + media flags to empty
+           on INSERT and does not write writers/composers at all, so the richer
+           metadata carried below is parsed, validated and then dropped by the
+           shared saver. Every other importer already loses it the same way; fixing
+           it belongs in saveSong (one change, all formats), not in a fork here. */
+        $songDict = [
+            'id'                 => $songId,
+            'title'              => $title,
+            'number'             => $number,
+            'songbook'           => $abbr,
+            'songbookName'       => trim((string)$raw['songbookName']) !== ''
+                                        ? trim((string)$raw['songbookName'])
+                                        : $declaredIds[$abbr],
+            'language'           => $language,
+            'ccli'               => trim((string)$raw['ccli']),
+            'iswc'               => '',
+            'tuneName'           => '',
+            'copyright'          => trim((string)$raw['copyright']),
+            'verified'           => !empty($raw['verified']) ? 1 : 0,
+            'lyricsPublicDomain' => !empty($raw['lyricsPublicDomain']) ? 1 : 0,
+            'musicPublicDomain'  => !empty($raw['musicPublicDomain']) ? 1 : 0,
+            'hasAudio'           => !empty($raw['hasAudio']) ? 1 : 0,
+            'hasSheetMusic'      => !empty($raw['hasSheetMusic']) ? 1 : 0,
+            'writers'            => array_values(array_filter(
+                                        array_map('strval', (array)$raw['writers']),
+                                        static fn(string $w): bool => trim($w) !== ''
+                                    )),
+            'composers'          => array_values(array_filter(
+                                        array_map('strval', (array)$raw['composers']),
+                                        static fn(string $w): bool => trim($w) !== ''
+                                    )),
+            'arrangers'          => [],
+            'adaptors'           => [],
+            'translators'        => [],
+            'components'         => $components,
+        ];
+
+        /* `arrangement` is optional; saveSong sanitises it against the component
+           count via _sanitiseArrangement() and stores NULL on anything malformed,
+           so passing it through raw is safe. */
+        if (isset($raw['arrangement']) && is_array($raw['arrangement'])) {
+            $songDict['arrangement'] = $raw['arrangement'];
+        }
+        $songs[] = $songDict;
+
+        /* NB `translations` (links to OTHER song records, tblSongTranslations) is
+           NOT imported: the referenced song may not exist yet, or at all, in this
+           database, and the shared saver has no translation-link write path.
+           Tracked separately rather than half-implemented here. */
+
+        /* Free the source entry now that its dict exists — see (4)'s preamble.
+           Without this the decoded document and the mapped output coexist and the
+           peak is ~2x what the size cap was measured against. */
+        unset($data['songs'][$k], $raw, $songDict, $components);
+    }
+
+    unset($data);   // release the (now songless) decoded document before returning
+
+    if ($songs === []) {
+        return $fail('the document contains no songs' . ($filenameHint !== null ? ' (' . $filenameHint . ')' : ''));
+    }
+
+    return [$songbooks, $songs, null];
+}
+
+/**
+ * Synchronous single-file iHymns interchange import (#1633).
+ *
+ * ELI5: create any songbooks the file mentions that we do not have yet, then
+ * save each song, counting what was new, what was already there, and what broke.
+ *
+ * Detail — the process wrapper, mirroring `_bulkImport_processVideoPsalm()`
+ * exactly: same summary keys (the progress UI in `manage/editor/import2.php`
+ * reads them positionally by name), same INSERT-only semantics, same
+ * SongCount refresh restricted to songbooks THIS run created.
+ *
+ * IDEMPOTENCY comes free from `_bulkImport_saveSong()`, which pre-flights
+ * `SELECT 1 FROM tblSongs WHERE SongId = ?` and returns 'skipped' on a hit —
+ * so re-uploading the same file is a no-op that reports every song as
+ * "already in DB", and an interrupted import can simply be re-run. Combined
+ * with `_bulkImport_upsertSongbook()`'s never-overwrite rule (#664), the whole
+ * path is additive/merge, which is what #1633 asked for.
+ *
+ * @param string      $body          Raw JSON document.
+ * @param string|null $filenameHint  Original upload filename (messages only).
+ * @return array  The shared bulk-import summary shape.
+ */
+function _bulkImport_processIHymnsJson(string $body, ?string $filenameHint = null): array
+{
+    [$songbooks, $parsedSongs, $err] = _bulkImport_parseIHymnsJson($body, $filenameHint);
+    if ($songbooks === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $err ?: 'iHymns JSON parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['ihymns' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $db = getDbMysqli();
+
+    /* Songbooks first — a song's FK-ish SongbookAbbr must resolve, and the parser
+       has already guaranteed every song references a declared book. */
+    $songbooksCreated  = [];
+    $songbooksExisting = [];
+    foreach ($songbooks as $sb) {
+        $abbr  = (string)$sb['abbrev'];
+        $state = _bulkImport_upsertSongbook($db, $abbr, (string)$sb['name'], $sb['language'] ?? null);
+        if ($state === 'created') { $songbooksCreated[] = $abbr; }
+        else                      { $songbooksExisting[] = $abbr; }
+    }
+
+    $label   = $filenameHint ?? 'ihymns';
+    $errors  = [];
+    $created = 0;
+    $skipped = 0;
+    $failed  = 0;
+    foreach ($parsedSongs as $song) {
+        [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+        if ($action === 'create') {
+            $created++;
+        } elseif ($action === 'skipped') {
+            $skipped++;
+        } else {
+            $errors[] = [
+                'entry' => $label . ': ' . ($song['id'] ?? '?'),
+                'error' => 'save failed: ' . $saveErr,
+            ];
+            $failed++;
+        }
+    }
+
+    /* Refresh SongCount only for songbooks created in THIS run — the same
+       no-overwrite contract as the ZIP + VideoPsalm paths (#664): an existing
+       book's count may have been curated by hand and is not ours to restate. */
+    foreach ($songbooksCreated as $abbr) {
+        $cnt = $db->prepare(
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $created,
+        'songs_skipped_existing' => $skipped,
+        'songs_failed'           => $failed,
+        'parsed_by_format'       => ['ihymns' => $created + $skipped],
+        'errors'                 => $errors,
+    ];
 }
 

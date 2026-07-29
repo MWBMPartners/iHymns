@@ -1685,6 +1685,12 @@ try {
         $tmpPath  = (string)$_FILES['file']['tmp_name'];
         $origName = (string)($_FILES['file']['name'] ?? 'upload');
         $ext      = strtolower(pathinfo($origName, PATHINFO_EXTENSION));
+
+        /* Body-format uploads are read ONCE into $content. Pre-seeded to null so the
+           `.json` content sniff below can fill it and the import re-use it rather
+           than reading a 25 MB upload off disk twice (#1633). */
+        $content = null;
+
         if ($format === 'auto' || $format === '') {
             $format = match ($ext) {
                 'json'  => 'videopsalm',
@@ -1697,19 +1703,41 @@ try {
                 'cho', 'chopro', 'crd', 'chord', 'pro' => 'chordpro',   // #1264 ChordPro
                 default => '',
             };
+
+            /* ELI5: two different formats both use ".json", so peek inside to tell
+               which one this is.
+               #1633 — the extension map above cannot separate them: VideoPsalm
+               claimed `.json` first, and the iHymns interchange format
+               (tests/fixtures/songs.schema.json) uses the same extension. Sniffing
+               the CONTENT is the established answer here — `'xml' => 'openlp'` on
+               the line above relies on _bulkImport_looksLikeOpenLyrics() downstream
+               for exactly the same reason.
+               The sniff is CONSERVATIVE BY DESIGN and only ever REDIRECTS AWAY from
+               videopsalm when the body is unambiguously ours (all three iHymns
+               top-level keys present AND VideoPsalm's "Songs" key absent), so no
+               existing VideoPsalm import can be re-routed by this. Anything
+               ambiguous stays on the old path and the operator can still pick
+               "iHymns interchange (.json)" explicitly from the format dropdown. */
+            if ($format === 'videopsalm') {
+                $probe = file_get_contents($tmpPath);
+                if ($probe === false) { ed2_respond(['ok' => false, 'error' => 'Could not read the uploaded file.'], 500); }
+                if (_bulkImport_looksLikeIHymnsJson($probe)) { $format = 'ihymns'; }
+                $content = $probe;      // reused below — do not re-read the upload
+            }
         }
 
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
         _bulkImport_dedupeMode($dedupe);
 
-        $bodyFormats = ['videopsalm', 'openlp', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
+        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
-                $content = file_get_contents($tmpPath);
+                if ($content === null) { $content = file_get_contents($tmpPath); }
                 if ($content === false) { throw new \RuntimeException('Could not read the uploaded file.'); }
                 $summary = match ($format) {
                     'videopsalm' => _bulkImport_processVideoPsalm($content, $origName),
+                    'ihymns'     => _bulkImport_processIHymnsJson($content, $origName),  // #1633
                     'openlp'     => _bulkImport_processOpenLp($content, $origName),
                     'pro6'       => _bulkImport_processPro6($content, $origName),
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),

@@ -35,6 +35,10 @@ $csrf = csrfToken();
 /* Single-file format key => friendly label. ZIP is handled separately (async). */
 $formats = [
     'auto'        => 'Auto-detect from file',
+    /* #1633 — .json is shared by two formats. Auto-detect content-sniffs them
+       apart (conservatively, favouring VideoPsalm), but both stay explicitly
+       pickable so an operator can override a sniff that guessed wrong. */
+    'ihymns'      => 'iHymns interchange (.json)',
     'videopsalm'  => 'VideoPsalm (.json)',
     'openlp'      => 'OpenLP / OpenLyrics (.xml)',
     'pro6'        => 'ProPresenter 6 (.pro6)',
