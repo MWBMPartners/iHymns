@@ -9,7 +9,7 @@
 # Runs linting and validation checks on every push and pull request.
 # - ESLint for JavaScript files
 # - PHP syntax checking (php -l) for PHP files
-# - JSON validation for data/songs.json and manifest.json
+# - JSON validation for manifest.json
 # - HTMLHint for HTML files
 #
 # Only runs when relevant files are changed (JS, CSS, PHP, HTML).
@@ -578,7 +578,7 @@ jobs:
       # -----------------------------------------------------------------------
       # Step 6: Validate JSON files
       # Checks that critical JSON files are valid using Node.js
-      # Validates: data/songs.json, manifest.json (in both beta and production)
+      # Validates: manifest.json
       # -----------------------------------------------------------------------
       - name: Validate JSON files
         run: |
@@ -587,8 +587,6 @@ jobs:
 
           # List of JSON files to validate
           JSON_FILES=(
-            "data/songs.json"
-            "appWeb/public_html/manifest.json"
             "appWeb/public_html/manifest.json"
           )
 

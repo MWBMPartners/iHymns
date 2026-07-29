@@ -299,8 +299,9 @@ $csrf = csrfToken();
                 <?= health_badge('red', 'SongData is currently using the JSON fallback') ?>
                 <p class="small text-secondary mt-2 mb-0">
                     This usually means the MySQL song data is missing or
-                    unreachable. Run <a href="/manage/setup-database?action=install">Install</a> /
-                    <a href="/manage/setup-database?action=migrate">Migrate Songs</a>.
+                    unreachable. Run <a href="/manage/setup-database?action=install">Install</a>,
+                    then apply pending migrations and import content via the
+                    editor's bulk importers (#1614).
                 </p>
             <?php elseif ($songDataJsonFallback === false): ?>
                 <?= health_badge('green', 'MySQL is authoritative for songs') ?>

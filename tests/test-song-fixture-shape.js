@@ -1,15 +1,34 @@
 /**
- * iHymns — Song Parser Unit Tests
+ * iHymns — Song Interchange Format Shape Tests
  *
  * Copyright © 2026 MWBM Partners Ltd. All rights reserved.
  * This software is proprietary.
  *
  * PURPOSE:
- * Unit tests for the song data parser (tools/parse-songs.js) and
- * validation of the generated songs.json output.
+ * Structural validation of the iHymns song interchange format (formerly
+ * "songs.json") against a small SYNTHETIC fixture, plus a couple of
+ * unrelated sanity checks on repo-root JSON files.
+ *
+ * HISTORY (#1617):
+ * This file used to be tests/test-song-parser.js and asserted on the real
+ * ~3,600-song data/songs.json corpus (frozen 2026-04-13, ~4x stale versus
+ * the live MySQL catalogue and never regenerated in CI — CI has no
+ * database and never ran this file). It never actually invoked the parser
+ * (tools/parse-songs.js) either, despite the name — it only re-validated
+ * whatever songs.json happened to be checked out. Both the corpus-specific
+ * regression assertions (checks pinned to real hymns like "CH-0003") and
+ * the corpus file itself were retired when data/songs.json was removed —
+ * MySQL is the live source of truth (WS-J #1020, CLAUDE.md rule #17) and
+ * copying real hymn lyrics into a public-repo test fixture would itself be
+ * a copyright problem.
+ *
+ * What survives here is everything that was never corpus-dependent: the
+ * *shape* tests, now run against tests/fixtures/synthetic-songs.json (5
+ * invented songs, no real titles or lyrics) instead of the real corpus,
+ * plus the manifest.json / package.json validity checks below.
  *
  * USAGE:
- *   node tests/test-song-parser.js
+ *   node tests/test-song-fixture-shape.js
  *   npm test
  */
 
@@ -25,7 +44,7 @@ import assert from 'node:assert/strict';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const SONGS_JSON = path.join(PROJECT_ROOT, 'data', 'songs.json');
+const FIXTURE_JSON = path.join(__dirname, 'fixtures', 'synthetic-songs.json');
 
 /* Track test results */
 let passed = 0;
@@ -50,25 +69,25 @@ function test(name, fn) {
 }
 
 /* =========================================================================
- * LOAD SONG DATA
+ * LOAD FIXTURE DATA
  * ========================================================================= */
 
 console.log('');
-console.log('🧪 iHymns — Song Parser Unit Tests');
+console.log('🧪 iHymns — Song Interchange Format Shape Tests');
 console.log('══════════════════════════════════════════════════');
 
-/* Verify songs.json exists */
-test('songs.json file exists', () => {
-    assert.ok(fs.existsSync(SONGS_JSON), 'data/songs.json does not exist');
+/* Verify the fixture exists */
+test('synthetic-songs.json fixture exists', () => {
+    assert.ok(fs.existsSync(FIXTURE_JSON), 'tests/fixtures/synthetic-songs.json does not exist');
 });
 
 /* Parse the JSON */
-const rawJson = fs.readFileSync(SONGS_JSON, 'utf-8');
+const rawJson = fs.readFileSync(FIXTURE_JSON, 'utf-8');
 let songData;
 
-test('songs.json is valid JSON', () => {
+test('synthetic-songs.json is valid JSON', () => {
     songData = JSON.parse(rawJson);
-    assert.ok(songData, 'Failed to parse songs.json');
+    assert.ok(songData, 'Failed to parse synthetic-songs.json');
 });
 
 /* =========================================================================
@@ -87,12 +106,12 @@ test('has meta object', () => {
 
 test('has songbooks array', () => {
     assert.ok(Array.isArray(songData.songbooks), 'songbooks should be an array');
-    assert.equal(songData.songbooks.length, 6, 'Should have 6 songbooks');
+    assert.ok(songData.songbooks.length > 0, 'Should have at least one songbook');
 });
 
 test('has songs array', () => {
     assert.ok(Array.isArray(songData.songs), 'songs should be an array');
-    assert.ok(songData.songs.length > 3000, `Should have > 3000 songs, got ${songData.songs.length}`);
+    assert.ok(songData.songs.length > 0, 'Should have at least one song');
 });
 
 test('meta.totalSongs matches songs array length', () => {
@@ -109,24 +128,6 @@ test('meta.totalSongbooks matches songbooks array length', () => {
 
 console.log('');
 console.log('📚 Songbook Tests');
-
-const expectedSongbooks = [
-    { id: 'CP', name: 'Carol Praise' },
-    { id: 'JP', name: 'Junior Praise' },
-    { id: 'MP', name: 'Mission Praise' },
-    { id: 'SDAH', name: 'Seventh-day Adventist Hymnal' },
-    { id: 'CH', name: 'The Church Hymnal' },
-    { id: 'Misc', name: 'Miscellaneous' }
-];
-
-for (const expected of expectedSongbooks) {
-    test(`songbook ${expected.id} exists with correct name`, () => {
-        const sb = songData.songbooks.find(s => s.id === expected.id);
-        assert.ok(sb, `Songbook ${expected.id} not found`);
-        assert.equal(sb.name, expected.name);
-        assert.ok(sb.songCount >= 0, `${expected.id} songCount should be >= 0`);
-    });
-}
 
 test('songbook song counts match actual songs', () => {
     for (const sb of songData.songbooks) {
@@ -215,7 +216,7 @@ console.log('');
 console.log('🎼 Component Tests');
 
 const validComponentTypes = ['verse', 'chorus', 'refrain', 'bridge',
-    'pre-chorus', 'tag', 'coda', 'intro', 'outro', 'interlude'];
+    'pre-chorus', 'tag', 'coda', 'intro', 'outro', 'interlude', 'vamp', 'ad-lib'];
 
 test('all components have valid type', () => {
     for (const song of songData.songs) {
@@ -243,112 +244,8 @@ test('songs with components have at least one line', () => {
             if (totalLines > 0) songsWithContent++;
         }
     }
-    assert.ok(songsWithContent > 3500, `Expected > 3500 songs with lyrics, got ${songsWithContent}`);
-});
-
-/* =========================================================================
- * SPECIFIC SONG TESTS (known songs for regression testing)
- * ========================================================================= */
-
-console.log('');
-console.log('🔍 Regression Tests (Known Songs)');
-
-test('CH-0003 "Come, Thou Almighty King" parsed correctly', () => {
-    const song = songData.songs.find(s => s.id === 'CH-0003');
-    assert.ok(song, 'CH-0003 not found');
-    assert.equal(song.title, 'Come, Thou Almighty King');
-    assert.equal(song.number, 3);
-    assert.equal(song.songbook, 'CH');
-    assert.equal(song.components.length, 3);
-    assert.equal(song.components[0].type, 'verse');
-    assert.equal(song.components[0].number, 1);
-    assert.ok(song.components[0].lines.length >= 4);
-});
-
-/* ELI5: this hymn's "Refrain" comes out labelled "chorus", on purpose.
- *
- * Detail — this assertion used to look for a component of type 'refrain' and
- * had been red ever since #265. `tools/parse-songs.js` recognises "Refrain" as
- * a section label (isComponentLabel → COMPONENT_LABELS includes 'refrain'), but
- * the caller then collapses it:
- *
- *     const normalisedType = componentType === 'refrain' ? 'chorus' : componentType;
- *
- * so 'refrain' can never reach the output. The corpus bears this out — across
- * all 3,612 songs the ONLY component types present are `verse` and `chorus`.
- * The parser is behaving as designed; the EXPECTATION went stale when #265
- * landed and was never updated, which left `npm test` permanently red. #1575.
- *
- * The check is therefore re-pointed at what #265 actually promises — the hymn's
- * repeated section survives parsing and is typed `chorus` — rather than being
- * deleted. Deleting it would drop the coverage; weakening it to `verse ||
- * chorus || refrain` would make it unable to fail. */
-test('CH-0563 "Softly and Tenderly" refrain is normalised to a chorus (#265)', () => {
-    const song = songData.songs.find(s => s.id === 'CH-0563');
-    assert.ok(song, 'CH-0563 not found');
-    assert.equal(song.title, 'Softly and Tenderly');
-    assert.equal(song.songbook, 'CH');
-
-    /* The repeated "Come home, come home…" section must be present and typed
-       `chorus` — the post-#265 spelling of what the source file labels
-       "Refrain". */
-    const chorus = song.components.find(c => c.type === 'chorus');
-    assert.ok(chorus, 'Should have a chorus component (the normalised refrain)');
-    assert.ok(chorus.lines.length >= 3,
-        `Chorus should carry its lyrics, got ${chorus.lines.length} line(s)`);
-
-    /* And the verses either side of it still parse, so the chorus label did not
-       swallow the surrounding text. */
-    const verses = song.components.filter(c => c.type === 'verse');
-    assert.ok(verses.length >= 3, `Expected >= 3 verses, got ${verses.length}`);
-});
-
-/* Corpus-wide guard for the same rule. The single-song check above only proves
-   #265 held for ONE hymn; this proves it held for every one of them, so a
-   revert of the normalisation (or a new code path that emits a raw 'refrain')
-   turns the suite red immediately instead of silently splitting the vocabulary
-   in two. `validComponentTypes` above still lists 'refrain' deliberately — it
-   is an accepted INPUT label, just never an output type. */
-test('no component survives parsing as "refrain" — all are normalised (#265)', () => {
-    const offenders = [];
-    for (const song of songData.songs) {
-        for (const comp of song.components) {
-            if (comp.type === 'refrain') offenders.push(song.id);
-        }
-    }
-    assert.equal(offenders.length, 0,
-        `Expected 0 'refrain' components, found ${offenders.length} ` +
-        `(e.g. ${offenders.slice(0, 5).join(', ')})`);
-
-    /* Guard the other direction too: if the normalisation were "fixed" by
-       dropping refrain sections instead of retyping them, the chorus count
-       would collapse to zero and the assertion above would still pass. */
-    const choruses = songData.songs
-        .reduce((n, s) => n + s.components.filter(c => c.type === 'chorus').length, 0);
-    assert.ok(choruses > 0, 'Expected the corpus to contain chorus components');
-});
-
-test('MP-0050 "Be Still" has writer credits', () => {
-    const song = songData.songs.find(s => s.id === 'MP-0050');
-    assert.ok(song, 'MP-0050 not found');
-    assert.ok(song.writers.length > 0, 'Should have writers');
-    assert.ok(song.writers[0].includes('David'), 'Writer should be David J Evans');
-    assert.ok(song.hasAudio, 'Should have audio');
-});
-
-test('SDAH-0001 "Praise to the Lord" parsed without quotes', () => {
-    const song = songData.songs.find(s => s.id === 'SDAH-0001');
-    assert.ok(song, 'SDAH-0001 not found');
-    assert.equal(song.title, 'Praise to the Lord');
-    assert.ok(song.components.length >= 3, 'Should have at least 3 verses');
-});
-
-test('CP-0001 has audio and sheet music flags', () => {
-    const song = songData.songs.find(s => s.id === 'CP-0001');
-    assert.ok(song, 'CP-0001 not found');
-    assert.ok(song.hasAudio, 'Should have audio');
-    assert.ok(song.hasSheetMusic, 'Should have sheet music');
-    assert.ok(song.writers.length > 0, 'Should have writers');
+    assert.equal(songsWithContent, songData.songs.length,
+        `Expected every fixture song to carry lyrics, got ${songsWithContent}/${songData.songs.length}`);
 });
 
 /* =========================================================================
