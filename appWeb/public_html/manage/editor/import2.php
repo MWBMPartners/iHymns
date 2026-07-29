@@ -54,6 +54,11 @@ $formats = [
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="/css/app.css">
     <link rel="stylesheet" href="/css/admin.css">
+    <!-- Accessibility modes (#1643). This shell includes admin-theme-init.php
+         below, so it DOES stamp data-ihymns-contrast / data-ihymns-cvd on <html>
+         — without this link it stamps an intent it then ships no CSS to honour.
+         Must stay after admin.css so the high-contrast !important rules win. -->
+    <link rel="stylesheet" href="/css/accessibility.css">
     <?php
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }

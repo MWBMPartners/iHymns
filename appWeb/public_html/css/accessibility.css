@@ -95,6 +95,139 @@
     filter: contrast(1.2) !important;
 }
 
+/* -------------------------------------------------------------------------
+ * HIGH CONTRAST — ADMIN SURFACE (#1643)
+ *
+ * ELI5: the rules above cover the things the public site is made of. The admin
+ * pages are made of different things, so they needed their own list.
+ *
+ * Detail: this file was written against the public site and every selector
+ * above is either a bare element or a Bootstrap class the public shell uses.
+ * Linking it into /manage (which #1643 does) is necessary but NOT sufficient,
+ * because the admin surface is dominated by components with no rule here at
+ * all — a survey of manage/*.php found tables in 49 files, .form-control in 36,
+ * .alert in 41, and the entire left navigation is .admin-sidebar, not .navbar.
+ * Without the block below, "High contrast" on an admin page would restyle the
+ * top bar and buttons and leave every data table, every form and the whole
+ * sidebar at admin.css's dark-grey palette — a visibly half-applied mode, which
+ * is arguably worse than one that plainly does nothing.
+ *
+ * Bootstrap tables paint via --bs-table-* rather than --bs-body-*, so the
+ * variable overrides at the top of this file do NOT reach them; they need to be
+ * set explicitly. https://getbootstrap.com/docs/5.3/content/tables/#variables
+ * ------------------------------------------------------------------------- */
+
+/* Left navigation. admin.css:282 owns .admin-sidebar; the top bar is a real
+   .navbar and is already covered by the shared rule above. */
+[data-ihymns-contrast="high"] .admin-sidebar,
+[data-ihymns-contrast="high"] .sidebar-header,
+[data-ihymns-contrast="high"] .sidebar-footer {
+    background: #000 !important;
+    border-color: #fff !important;
+    color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .admin-sidebar-link,
+[data-ihymns-contrast="high"] .admin-sidebar-group-toggle,
+[data-ihymns-contrast="high"] .admin-sidebar-group-label {
+    color: #fff !important;
+}
+
+/* Current page must be distinguishable by more than colour — WCAG 1.4.1. */
+[data-ihymns-contrast="high"] .admin-sidebar-link.active {
+    background: #ffff00 !important;
+    color: #000 !important;
+    font-weight: 700 !important;
+}
+
+[data-ihymns-contrast="high"] .admin-sidebar-link:hover,
+[data-ihymns-contrast="high"] .admin-sidebar-link:focus,
+[data-ihymns-contrast="high"] .admin-sidebar-group-toggle:hover,
+[data-ihymns-contrast="high"] .admin-sidebar-group-toggle:focus {
+    background: #fff !important;
+    color: #000 !important;
+}
+
+/* Data tables — the bulk of every admin list page. */
+[data-ihymns-contrast="high"] .table {
+    --bs-table-bg: #000 !important;
+    --bs-table-color: #fff !important;
+    --bs-table-border-color: #fff !important;
+    --bs-table-striped-bg: #1a1a1a !important;
+    --bs-table-striped-color: #fff !important;
+    --bs-table-hover-bg: #333 !important;
+    --bs-table-hover-color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .table > :not(caption) > * > * {
+    border-color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .table > thead {
+    border-bottom: 2px solid #fff !important;
+}
+
+/* Forms. admin.css:764 paints these from --surface-elevated / --card-border,
+   neither of which the variable block above redefines. */
+[data-ihymns-contrast="high"] .form-control,
+[data-ihymns-contrast="high"] .form-select,
+[data-ihymns-contrast="high"] .input-group-text {
+    background: #000 !important;
+    color: #fff !important;
+    border: 2px solid #fff !important;
+}
+
+[data-ihymns-contrast="high"] .form-control::placeholder {
+    color: #ccc !important;
+    opacity: 1 !important;   /* Firefox dims placeholders by default */
+}
+
+[data-ihymns-contrast="high"] .form-check-input {
+    border: 2px solid #fff !important;
+    background-color: #000 !important;
+}
+
+[data-ihymns-contrast="high"] .form-check-input:checked {
+    background-color: #ffff00 !important;
+    border-color: #ffff00 !important;
+}
+
+/* Alerts carry meaning by colour alone in Bootstrap's default palette, so in
+   high contrast they get a uniform treatment plus a border; the text inside
+   still says which kind it is. */
+[data-ihymns-contrast="high"] .alert {
+    background: #000 !important;
+    color: #fff !important;
+    border: 2px solid #fff !important;
+}
+
+[data-ihymns-contrast="high"] .list-group-item {
+    background: #000 !important;
+    color: #fff !important;
+    border-color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .dropdown-item {
+    color: #fff !important;
+}
+
+[data-ihymns-contrast="high"] .dropdown-item:hover,
+[data-ihymns-contrast="high"] .dropdown-item:focus {
+    background: #fff !important;
+    color: #000 !important;
+}
+
+[data-ihymns-contrast="high"] .modal-header,
+[data-ihymns-contrast="high"] .modal-footer {
+    border-color: #fff !important;
+}
+
+/* Bootstrap's close button is a background-image glyph tinted for light mode;
+   invert it so it stays visible on pure black. */
+[data-ihymns-contrast="high"] .btn-close {
+    filter: invert(1) grayscale(100%) brightness(200%) !important;
+}
+
 /* =========================================================================
  * COLOUR BLIND MODES (CVD — Colour Vision Deficiency)
  *
@@ -142,12 +275,44 @@
  * when any CVD mode is active, ensuring songbooks remain distinguishable.
  * ========================================================================= */
 
-[data-ihymns-cvd] .songbook-badge-CP { border-left: 4px solid #6366f1 !important; border-style: solid !important; }
-[data-ihymns-cvd] .songbook-badge-JP { border-left: 4px dashed #ec4899 !important; }
-[data-ihymns-cvd] .songbook-badge-MP { border-left: 4px dotted #14b8a6 !important; }
-[data-ihymns-cvd] .songbook-badge-SDAH { border-left: 4px double #f59e0b !important; }
-[data-ihymns-cvd] .songbook-badge-CH { border-left: 4px groove #ef4444 !important; }
-[data-ihymns-cvd] .songbook-badge-Misc { border-left: 4px ridge #8b5cf6 !important; }
+/* ⚠️ These rules used to be written as `.songbook-badge-CP`, `.songbook-badge-JP`
+   and so on — a class form that is emitted NOWHERE in the codebase. The one
+   place a songbook badge is rendered (includes/pages/settings.php, the offline
+   downloads list) emits:
+
+       <span class="badge songbook-badge" data-songbook="MP">
+
+   so every one of the six selectors matched zero elements. The entire CVD
+   songbook-distinction aid — described in the comment above as "the robust,
+   contrast-safe aid" and the deliberate replacement for the page-wide filters
+   that were removed — was dead on arrival (#1643).
+
+   Same signature as #1565 / #1581: nothing is malformed, the rationale is
+   sound, the patterns are well chosen, and it selects nothing. CSS fails
+   silently — an unmatched selector is not an error — so there was no symptom
+   to notice beyond "CVD mode looks the same", which is what a user would
+   expect to be unable to judge.
+
+   Now keyed off the attribute that is actually emitted. The generic rule comes
+   first so ANY songbook gets a non-colour cue, including unofficial books and
+   whatever the catalogue grows next (#1223) — the previous hardcoded six left
+   everything else with colour only, which was the secondary half of the bug.
+   The named patterns then differentiate the common books.
+
+   An unbounded catalogue cannot get a UNIQUE border-style per book from static
+   CSS (there are ~5 usable styles). Distinguishing every songbook would need
+   the pattern to be data-driven; that is a follow-up, not this fix. */
+
+[data-ihymns-cvd] .songbook-badge {
+    border-left: 4px solid currentColor !important;
+}
+
+[data-ihymns-cvd] .songbook-badge[data-songbook="CP"]   { border-left-style: solid !important;  border-left-color: #6366f1 !important; }
+[data-ihymns-cvd] .songbook-badge[data-songbook="JP"]   { border-left-style: dashed !important; border-left-color: #ec4899 !important; }
+[data-ihymns-cvd] .songbook-badge[data-songbook="MP"]   { border-left-style: dotted !important; border-left-color: #14b8a6 !important; }
+[data-ihymns-cvd] .songbook-badge[data-songbook="SDAH"] { border-left-style: double !important; border-left-color: #f59e0b !important; }
+[data-ihymns-cvd] .songbook-badge[data-songbook="CH"]   { border-left-style: groove !important; border-left-color: #ef4444 !important; }
+[data-ihymns-cvd] .songbook-badge[data-songbook="Misc"] { border-left-style: ridge !important;  border-left-color: #8b5cf6 !important; }
 
 /* =========================================================================
  * RTL (RIGHT-TO-LEFT) SUPPORT (#318)

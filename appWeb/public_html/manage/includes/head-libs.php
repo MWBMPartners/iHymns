@@ -60,6 +60,21 @@ $_publicRoot = dirname(__DIR__, 2);
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_publicRoot . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_publicRoot . '/css/admin.css') ?>">
 <?php
+/* Accessibility modes — MUST load on admin too (#1643).
+   ELI5: admin pages were telling the browser "this user wants high contrast"
+   and then never shipping the stylesheet that knows what high contrast means.
+   Detail: admin-theme-init.php stamps data-ihymns-contrast / data-ihymns-cvd on
+   <html> for admin pages exactly as the public site does, but accessibility.css
+   — the ONLY file with rules for those attributes — was linked solely from the
+   public shell (index.php). So the two accessibility-specific modes were dead
+   across all of /manage and the editor, silently: light/dark still worked,
+   because that is Bootstrap's own data-bs-theme handled by admin.css, which is
+   why nobody noticed. Same class as #955 — attribute plumbing landed, the
+   stylesheet did not follow. Loaded AFTER admin.css so its !important overrides
+   win over the admin palette. */
+?>
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_publicRoot . '/css/accessibility.css') ?>">
+<?php
 /* External-link provider auto-detect (#841) — single source of truth
    for URL → tblExternalLinkTypes.Slug mapping, exposed on
    window.iHymnsLinkDetect. Loaded on every admin page so each

@@ -88,6 +88,11 @@ try {
     <!-- Shared iHymns palette (public site) + admin/editor styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/app.css') ?>">
     <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/admin.css') ?>">
+    <!-- Accessibility modes (#1643). The editor has a bespoke <head> rather than
+         including head-libs.php, so it needs this link of its own — that
+         divergence is exactly why it was missed the first time. Must stay AFTER
+         admin.css so the high-contrast !important rules win. -->
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/accessibility.css') ?>">
 
     <!-- =================================================================
          INLINE STYLES — reserved for genuinely editor-specific tweaks only.
