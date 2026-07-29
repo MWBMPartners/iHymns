@@ -719,18 +719,37 @@ export class SetList {
         let workingArr = [...arrangement];
         const components = songData.components;
 
-        /* Build pool chips (one per unique component) */
+        /* Build pool chips (one per unique component).
+         *
+         * ELI5: each chip is a real <button> now, not a <span> pretending
+         * to be one — so tapping Enter or Space on it "just works" the
+         * same way clicking it does.
+         *
+         * WHY: a <span role="button" tabindex="0"> is focusable (tabindex)
+         * and LABELLED as a button (role) but a <span> has no native
+         * activation behaviour — the browser only synthesises a click
+         * from Enter/Space for genuinely interactive elements (<button>,
+         * <a href>, etc). The old markup made every chip focusable and
+         * announced as "button" by a screen reader, then did nothing
+         * when the user pressed the one key they'd expect to work —
+         * completely silent, no console error, indistinguishable from a
+         * frozen page (#1644). A real <button> gets Enter/Space "for
+         * free" from the browser and needs no role/tabindex — both are
+         * intrinsic to the element, so they're dropped here rather than
+         * kept redundantly.
+         * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button
+         * https://www.w3.org/WAI/ARIA/apg/patterns/button/ ("prefer a
+         * native <button> over role=button whenever possible") */
         const poolChipsHtml = components.map((comp, idx) => {
             const tag = shortTag(comp);
             const label = fullLabel(comp);
             const color = typeColor(comp.type);
             const textColor = typeTextColor(comp.type);
-            return `<span class="badge rounded-pill arrangement-pool-chip"
+            return `<button type="button" class="badge rounded-pill arrangement-pool-chip border-0"
                           data-comp-idx="${idx}"
                           title="${escapeHtml(label)} — click to add"
                           style="background-color:${color};color:${textColor};cursor:pointer;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                          role="button" tabindex="0"
-                          aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</span>`;
+                          aria-label="Add ${escapeHtml(label)} to arrangement">${escapeHtml(tag)}</button>`;
         }).join(' ');
 
         const modal = document.createElement('div');
@@ -760,18 +779,20 @@ export class SetList {
                             <div class="d-flex flex-wrap gap-1" id="arr-pool">${poolChipsHtml}</div>
                         </div>
 
-                        <!-- Arrangement strip (draggable) -->
+                        <!-- Arrangement strip: move-left/move-right/remove buttons on every
+                             chip, drag-and-drop kept as a bonus for pointer input (#1644) -->
                         <div class="mb-2">
                             <label class="form-label fw-semibold small text-uppercase mb-1">
                                 <i class="fa-solid fa-arrows-left-right me-1" aria-hidden="true"></i>
-                                Arrangement — drag to reorder, click × to remove
+                                Arrangement
                             </label>
-                            <div class="d-flex flex-wrap gap-1 p-2 rounded border arrangement-strip"
+                            <div class="d-flex flex-wrap gap-2 p-2 rounded border arrangement-strip"
                                  id="arr-strip"
                                  style="min-height:40px;background:var(--bs-body-bg)"
-                                 aria-label="Current arrangement order">
+                                 aria-label="Current arrangement order. Use each item's move and remove buttons, arrow keys, or drag to reorder.">
                                 <!-- Populated by JS -->
                             </div>
+                            <small class="text-muted d-block mt-1">Use the ◀ ▶ buttons (or drag) to reorder; × removes a component.</small>
                         </div>
 
                         <!-- Quick actions -->
@@ -830,10 +851,32 @@ export class SetList {
             if (!strip) return;
 
             if (workingArr.length === 0) {
-                strip.innerHTML = '<span class="text-muted small fst-italic">Drag components here or click from the pool above</span>';
+                strip.innerHTML = '<span class="text-muted small fst-italic">Add components from the pool above</span>';
                 return;
             }
 
+            /* Each arrangement entry renders as a wrapper holding FOUR
+             * sibling controls — the chip itself, move-left, move-right,
+             * remove — never one nested inside another.
+             *
+             * ELI5: picture each entry as a little row of four separate
+             * buttons glued together, not one big button hiding three
+             * smaller ones inside it.
+             *
+             * WHY siblings, not nesting: the previous markup put the "×"
+             * remove control INSIDE the chip's own <span role="button">,
+             * i.e. an interactive control nested inside another
+             * interactive control — banned by WCAG 4.1.2 (Name, Role,
+             * Value) because assistive tech has no reliable way to expose
+             * or activate the inner control independently of the outer
+             * one (#1644). Four flat siblings sidesteps that outright,
+             * and each one gets its own unambiguous accessible name.
+             * https://www.w3.org/WAI/WCAG21/Understanding/name-role-value.html
+             *
+             * Move-left/move-right are real <button>s (not drag) so
+             * touch users — who cannot fire HTML5 drag-and-drop from a
+             * touchscreen at all — can still reorder; drag stays wired
+             * below as a pointer-only bonus, never the only path. */
             strip.innerHTML = workingArr.map((idx, pos) => {
                 const comp = components[idx];
                 if (!comp) return '';
@@ -841,26 +884,96 @@ export class SetList {
                 const label = fullLabel(comp);
                 const color = typeColor(comp.type);
                 const textColor = typeTextColor(comp.type);
-                return `<span class="badge rounded-pill arrangement-strip-chip d-inline-flex align-items-center gap-1"
-                              data-pos="${pos}" data-comp-idx="${idx}"
-                              draggable="true"
-                              title="${escapeHtml(label)} — position ${pos + 1}. Drag to reorder, click × to remove"
-                              style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
-                              role="button" tabindex="0"
-                              aria-label="${escapeHtml(label)}, position ${pos + 1}">${escapeHtml(tag)}<span class="arrangement-chip-remove" data-pos="${pos}" style="cursor:pointer;margin-left:2px;opacity:0.8" aria-label="Remove">×</span></span>`;
+                const isFirst = pos === 0;
+                const isLast = pos === workingArr.length - 1;
+                return `<div class="d-inline-flex align-items-center gap-1 arrangement-strip-item" data-pos="${pos}">
+                            <button type="button" class="badge rounded-pill arrangement-strip-chip border-0"
+                                    data-pos="${pos}" data-comp-idx="${idx}"
+                                    draggable="true"
+                                    title="${escapeHtml(label)} — position ${pos + 1} of ${workingArr.length}"
+                                    style="background-color:${color};color:${textColor};cursor:grab;user-select:none;font-size:0.8rem;padding:0.4em 0.7em"
+                                    aria-label="${escapeHtml(label)}, position ${pos + 1} of ${workingArr.length}">${escapeHtml(tag)}</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 arrangement-chip-move-left"
+                                    data-pos="${pos}" ${isFirst ? 'disabled' : ''}
+                                    aria-label="Move ${escapeHtml(label)} earlier">
+                                <i class="fa-solid fa-chevron-left" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary py-0 px-1 arrangement-chip-move-right"
+                                    data-pos="${pos}" ${isLast ? 'disabled' : ''}
+                                    aria-label="Move ${escapeHtml(label)} later">
+                                <i class="fa-solid fa-chevron-right" aria-hidden="true"></i>
+                            </button>
+                            <button type="button" class="btn btn-sm btn-outline-danger py-0 px-1 arrangement-chip-remove"
+                                    data-pos="${pos}"
+                                    aria-label="Remove ${escapeHtml(label)}">×</button>
+                        </div>`;
             }).join('');
 
-            /* Bind drag-and-drop on strip chips */
+            /* Drag-and-drop is re-bound on every render as a POINTER
+             * ENHANCEMENT ONLY — it never fires from touch input on
+             * mobile browsers (the other half of #1644), which is why
+             * the move buttons above exist and are wired independently
+             * of this. Never remove this call — see _initStripDragDrop(). */
             this._initStripDragDrop(strip, workingArr, components, renderStrip, renderPreview);
+
+            /* Move-left / move-right buttons. Bound fresh every render
+             * because renderStrip() just replaced every node above —
+             * exactly like the pre-existing remove-button binding below,
+             * which already had to do the same thing. */
+            strip.querySelectorAll('.arrangement-chip-move-left').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    moveStripEntry(parseInt(btn.dataset.pos, 10), -1);
+                });
+            });
+            strip.querySelectorAll('.arrangement-chip-move-right').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    moveStripEntry(parseInt(btn.dataset.pos, 10), 1);
+                });
+            });
+
+            /* ArrowLeft/ArrowRight on a focused chip is an ADDITIVE
+             * convenience for keyboard users — it does nothing for touch,
+             * which is why it is NOT what satisfies WCAG 2.5.7 (Dragging
+             * Movements); the move buttons above are the actual
+             * pointer-free path. preventDefault() stops the arrow key
+             * from also scrolling the modal body while the chip has
+             * focus.
+             * https://www.w3.org/WAI/WCAG21/Understanding/dragging-movements.html */
+            strip.querySelectorAll('.arrangement-strip-chip').forEach(chip => {
+                chip.addEventListener('keydown', (e) => {
+                    if (e.key === 'ArrowLeft') {
+                        e.preventDefault();
+                        moveStripEntry(parseInt(chip.dataset.pos, 10), -1);
+                    } else if (e.key === 'ArrowRight') {
+                        e.preventDefault();
+                        moveStripEntry(parseInt(chip.dataset.pos, 10), 1);
+                    }
+                });
+            });
 
             /* Bind remove buttons */
             strip.querySelectorAll('.arrangement-chip-remove').forEach(btn => {
                 btn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     const pos = parseInt(btn.dataset.pos, 10);
+                    const comp = components[workingArr[pos]];
+                    const label = comp ? fullLabel(comp) : 'Component';
                     workingArr.splice(pos, 1);
                     renderStrip();
                     renderPreview();
+                    this._announce(`${label} removed`);
+                    /* Same focus-restore problem as moveStripEntry() below:
+                       renderStrip() just destroyed the button that was
+                       clicked/activated, so without this a keyboard user
+                       is dropped to document.body after every removal
+                       too (#1644). Land on whichever remove button now
+                       occupies the vacated slot, or the previous one. */
+                    const nextPos = Math.min(pos, workingArr.length - 1);
+                    if (nextPos >= 0) {
+                        modal.querySelector(`.arrangement-chip-remove[data-pos="${nextPos}"]`)?.focus();
+                    }
                 });
             });
         };
@@ -887,6 +1000,44 @@ export class SetList {
             }).join('');
         };
 
+        /**
+         * Swap a strip entry with its earlier/later neighbour, re-render,
+         * then put keyboard focus back on the SAME chip at its NEW
+         * position and tell screen-reader users what happened.
+         *
+         * ELI5: slides two puzzle pieces past each other, then makes sure
+         * your finger (focus) stays on the piece you were holding instead
+         * of jumping back to the start of the puzzle.
+         *
+         * WHY the re-focus matters (the single most important detail of
+         * #1644): renderStrip() rebuilds #arr-strip's entire innerHTML on
+         * every change — simplest way to keep the strip, the disabled
+         * state of each end button, and every position label in sync —
+         * but that DESTROYS every button node inside it, including
+         * whichever one currently has keyboard focus. Left alone, the
+         * browser drops focus to <body>, so the NEXT Tab/Enter from a
+         * keyboard-only user starts back at the top of the modal instead
+         * of continuing to reorder — silently reintroducing the exact
+         * "technically focusable, nothing usable" failure this issue was
+         * filed to fix, just one step later. Re-querying the chip at its
+         * NEW data-pos and calling .focus() on it is the fix.
+         * https://www.w3.org/WAI/WCAG21/Understanding/focus-order.html
+         *
+         * @param {number} pos    Current position (0-based) of the chip to move
+         * @param {number} delta  -1 = earlier/left, +1 = later/right
+         */
+        const moveStripEntry = (pos, delta) => {
+            const newPos = pos + delta;
+            if (newPos < 0 || newPos >= workingArr.length) return;
+            const comp = components[workingArr[pos]];
+            const label = comp ? fullLabel(comp) : 'Component';
+            [workingArr[pos], workingArr[newPos]] = [workingArr[newPos], workingArr[pos]];
+            renderStrip();
+            renderPreview();
+            modal.querySelector(`.arrangement-strip-chip[data-pos="${newPos}"]`)?.focus();
+            this._announce(`${label} moved to position ${newPos + 1} of ${workingArr.length}`);
+        };
+
         /* Initial render */
         renderStrip();
         renderPreview();
@@ -898,6 +1049,8 @@ export class SetList {
                 workingArr.push(idx);
                 renderStrip();
                 renderPreview();
+                const comp = components[idx];
+                this._announce(`${comp ? fullLabel(comp) : 'Component'} added, position ${workingArr.length}`);
             });
         });
 
@@ -968,6 +1121,19 @@ export class SetList {
     /**
      * Initialise drag-and-drop reordering on arrangement strip chips.
      * Uses the HTML5 Drag and Drop API for natural drag behaviour.
+     *
+     * ELI5: lets a mouse user grab a chip and drop it somewhere else in
+     * the row — a nice-to-have shortcut, not the only way to reorder.
+     *
+     * WHY this is an ENHANCEMENT, never the only path (#1644): the HTML5
+     * Drag and Drop API this function uses is driven by mouse events
+     * under the hood and simply does not fire from touch input on mobile
+     * browsers — a worship leader arranging a song on their phone (the
+     * exact scenario this feature exists for) could not reorder anything
+     * through this code path alone. The move-left/move-right buttons
+     * wired in renderStrip() are what make reordering possible for touch
+     * AND keyboard users; this function stays as the bonus for a mouse.
+     * https://developer.mozilla.org/en-US/docs/Web/API/HTML_Drag_and_Drop_API#drag_and_drop_events
      *
      * @param {HTMLElement} strip       The strip container
      * @param {number[]}    workingArr  Mutable arrangement array

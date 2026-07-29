@@ -1520,6 +1520,16 @@ body[data-page-transition="blur"] ::view-transition-new(root) {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
+/* Arrangement strip item — move-left/move-right/remove buttons flanking
+ * each chip as SIBLINGS, not nested inside it (#1644, WCAG 4.1.2). They
+ * default to Bootstrap's .btn-sm height, which dwarfs the compact pill
+ * chip next to them; shrink them to match so the row of four controls
+ * reads as one unit instead of a chip with oversized buttons bolted on. */
+.arrangement-strip-item .btn {
+    font-size: 0.7rem;
+    line-height: 1;
+}
+
 /* Lyrics content protection — prevent copying */
 .song-lyrics,
 .presentation-lyrics {
