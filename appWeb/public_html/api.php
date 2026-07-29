@@ -30,6 +30,13 @@ declare(strict_types=1);
  *   action=songs_index — Slim DB-direct song index (id/number/title/songbook), live MySQL
  *   action=setlist_share (POST) — Create or update a shared setlist
  *   action=setlist_get&id=X    — Retrieve a shared setlist by short ID
+ *   action=health      — Unauthenticated liveness probe (#1022). 200
+ *                        {"status":"ok"} / 503 {"status":"unavailable"}.
+ *                        Answered ABOVE the switch (see the LIVENESS PROBE
+ *                        block) — there is deliberately no `case 'health':`.
+ *                        NOT to be confused with action=admin_songbook_health
+ *                        (#315), which is an editor-gated catalogue
+ *                        completeness report, not a probe.
  *
  * SECURITY:
  *   - Input sanitisation on all parameters
@@ -352,6 +359,133 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* Determine request type: page (HTML) or action (JSON) */
 $page   = isset($_GET['page'])   ? trim($_GET['page'])   : null;
 $action = isset($_GET['action']) ? trim($_GET['action']) : null;
+
+/* =========================================================================
+ * LIVENESS PROBE — GET /api?action=health  (#1022)
+ *
+ * ELI5: one tiny URL an uptime monitor or a load balancer can poll to ask
+ * "can this node actually serve?". It answers 200 {"status":"ok"} when the
+ * database replies to `SELECT 1`, and 503 {"status":"unavailable"} when it
+ * does not. Nothing else.
+ *
+ * WHY IT IS ANSWERED **HERE**, ABOVE THE DISPATCH SWITCH — there is
+ * deliberately NO `case 'health':` below, and that is load-bearing, not
+ * laziness:
+ *   `new SongData()` (immediately below) opens the MySQL connection in its
+ *   constructor. mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
+ *   (includes/db_mysql.php), so a failed connect THROWS \mysqli_sql_exception
+ *   — not the \RuntimeException the try/catch below catches. A DB-down probe
+ *   would therefore never reach the switch at all: it would land in the global
+ *   exception handler at the top of this file, which on Alpha/Beta ($verbose)
+ *   discloses the exception message, class and file:line. That is exactly the
+ *   disclosure this endpoint must never make, so the probe is served before
+ *   any application bootstrapping runs.
+ *
+ * WHAT IT DELIBERATELY DOES NOT RETURN: no app version, no environment name,
+ * no hostname, no schema/table names, no row counts, no query timings, no
+ * exception text. An unauthenticated endpoint is the cheapest reconnaissance
+ * surface an attacker has, so the body is a two-value enum and the HTTP status
+ * carries the whole signal. `SELECT 1` touches no table, so the probe cannot
+ * be turned into a data or schema oracle either.
+ *
+ * KNOWN INTERACTION (documented, not a bug): `enforceMaintenanceForApi()` runs
+ * earlier in this file and is NOT bypassed here, so while an environment is in
+ * admin-triggered maintenance the probe returns the maintenance 503 body
+ * instead of this one. 503 is still the correct ops answer ("not serving"),
+ * and the maintenance message is already public on the maintenance page. If
+ * the owner wants the probe to report NODE health independently of the
+ * maintenance flag, the fix is to add 'health' to the allow-list inside
+ * enforceMaintenanceForApi() (includes/maintenance.php) — forking that
+ * allow-list here instead would be the duplication CLAUDE.md forbids.
+ *
+ * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503
+ * @see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Retry-After
+ * ========================================================================= */
+if ($action === 'health') {
+    /* Read-only probe: GET (browsers/monitors) and HEAD (many load balancers
+       poll with HEAD). Anything else is 405. POST is already blocked upstream
+       by the X-Requested-With CSRF gate, so this is belt-and-braces that also
+       keeps the verb surface honest. The 405 body is the same two-value enum —
+       still nothing to learn from it. */
+    $healthMethod = (string)($_SERVER['REQUEST_METHOD'] ?? 'GET');
+    if ($healthMethod !== 'GET' && $healthMethod !== 'HEAD') {
+        http_response_code(405);
+        header('Allow: GET, HEAD');
+        header('Content-Type: application/json; charset=UTF-8');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: no-store');
+        echo json_encode(['status' => 'unavailable'], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+
+    /* Throttled so the probe can't be used as a free "make the origin touch
+       MySQL" amplifier, nor polled at high frequency to time an outage.
+       enforceReadRateLimit() is the shared windowed-counter limiter
+       (includes/read_rate_limit.php) — NOT checkRateLimit(), which writes ONE
+       tblLoginAttempts ROW PER REQUEST and would bury the auth brute-force
+       counters under ~86k probe rows a month at a 30s poll cadence. It is
+       FAIL-OPEN and table-existence-gated, so an un-migrated docroot simply
+       has no cap: a rate limiter must never be the thing that takes the site
+       down. 60/min ≈ 1 request/second — orders of magnitude above any real
+       monitor (30–60s), tight enough to be useless as an amplifier. */
+    enforceReadRateLimit('health', 60);
+
+    try {
+        /* The cheapest round-trip that proves the connection is usable
+           end-to-end: connect + prepare/execute + read a row back. NOTE the
+           absence of a `!== false` guard — under MYSQLI_REPORT_STRICT a failed
+           query THROWS, so a false-check would be dead code (CLAUDE.md red
+           flag). The catch below is the real error path. */
+        $healthDb  = getDbMysqli();
+        $healthRes = $healthDb->query('SELECT 1');
+        $healthRow = $healthRes->fetch_row();
+        $healthRes->close();
+        if ($healthRow === null || (int)$healthRow[0] !== 1) {
+            /* Connection answered but not with the expected value — treat as
+               unhealthy via the same path as a thrown failure. */
+            throw new \RuntimeException('health probe: unexpected SELECT 1 result');
+        }
+
+        http_response_code(200);
+        header('Content-Type: application/json; charset=UTF-8');
+        header('X-Content-Type-Options: nosniff');
+        /* no-store (not sendJson()'s `no-cache, must-revalidate`): a probe
+           response must never be STORED by an intermediary/CDN, or a monitor
+           can be shown a cached "ok" from a node that has since died. */
+        header('Cache-Control: no-store');
+        echo json_encode(['status' => 'ok'], JSON_UNESCAPED_SLASHES);
+        exit;
+    } catch (\Throwable $healthErr) {
+        /* Reuses the shared classifier from includes/db_mysql.php — the same
+           one the WS-K #1021 503 path uses — to decide whether this is a
+           TRANSIENT availability failure (server down / unreachable / too many
+           connections / auth / unknown DB) worth advertising Retry-After for.
+           The STATUS is 503 either way: for a liveness probe, "I could not
+           complete SELECT 1" IS unhealthy whatever the cause, and answering
+           500 would make a load balancer treat a drainable node as an
+           application bug instead of taking it out of rotation. */
+        $healthTransient = function_exists('isDbConnectionFailure')
+            && isDbConnectionFailure($healthErr);
+
+        if (!headers_sent()) {
+            http_response_code(503);
+            header('Content-Type: application/json; charset=UTF-8');
+            header('X-Content-Type-Options: nosniff');
+            header('Cache-Control: no-store');
+            if ($healthTransient) { header('Retry-After: 30'); }
+        }
+        /* Full detail goes to the SERVER log only, correlated by the request id
+           the global handler already minted — never into the response body. */
+        error_log(sprintf(
+            '[api health rid=%s] probe failed (%s): %s',
+            (string)($GLOBALS['_ihymnsApiRequestId'] ?? '-'),
+            $healthTransient ? 'db-unavailable' : 'other',
+            $healthErr->getMessage()
+        ));
+        echo json_encode(['status' => 'unavailable'], JSON_UNESCAPED_SLASHES);
+        exit;
+    }
+}
 
 /* Initialise the song data handler */
 try {
@@ -2196,6 +2330,79 @@ if ($action !== null) {
                 break;
             }
 
+            /* =============================================================
+             * PER-ACCOUNT LOCKOUT (#1027)
+             *
+             * ELI5: the check above counts bad guesses coming from ONE
+             * address. This one counts bad guesses aimed at ONE ACCOUNT, no
+             * matter how many addresses they arrive from — so a botnet that
+             * gives every node only nine tries (just under the per-IP cap)
+             * can no longer grind a single password forever.
+             *
+             * WHY IT NEEDS NO SCHEMA CHANGE. tblLoginAttempts has no UserId
+             * column (see the note in `case 'auth_register'` above, and the
+             * schema at appWeb/.sql/schema.sql), and adding one is a
+             * migration — which in this project means a migration-registry
+             * entry + a schema.sql mirror + a hand-run card (CLAUDE.md #19),
+             * i.e. owner-gated work. It is not needed: the account bucket is
+             * carried by the SHARED checkRateLimit()/recordRateLimitHit()
+             * helpers (includes/rate_limit.php), whose convention is
+             * "bucket key in IpAddress, action name in Username". Keying on
+             *   'acct:' . sha256(submitted username)
+             * therefore:
+             *   (a) needs no new column;
+             *   (b) rides the EXISTING idx_IpTime (IpAddress, AttemptedAt)
+             *       index, so it is a cheap indexed lookup — whereas a naive
+             *       `WHERE Username = ?` count would be an unindexed scan of
+             *       the whole 30-day attempt table;
+             *   (c) cannot collide with a real account name. The Username
+             *       column is overloaded to hold ACTION names for every
+             *       checkRateLimit() caller, and 'auth_apple' / 'email_verify'
+             *       / 'account_delete' are all valid username shapes under
+             *       the [a-z0-9_.\-]{3,} rule — so counting by Username would
+             *       let unrelated traffic lock out whoever registered those
+             *       names. Putting the key in IpAddress side-steps that
+             *       overload entirely.
+             * The hash also keeps the key inside VARCHAR(45) (5 + 40 = 45)
+             * and avoids writing account identifiers into a second table;
+             * it is NOT a secrecy measure (usernames are low-entropy and
+             * tblLoginAttempts already stores them in Username).
+             *
+             * NOT AN ENUMERATION ORACLE. The bucket is keyed on the SUBMITTED
+             * username, and the failure recorder below fires for an unknown
+             * user exactly as it does for a wrong password — so the counter
+             * fills identically for a real and an imaginary account, and the
+             * 429 message is byte-identical to the per-IP one above.
+             *
+             * THRESHOLD, AND THE LOCKOUT-DoS TRADE-OFF. 20 failures / 15 min
+             * is deliberately DOUBLE the per-IP budget (10 / 15 min, the
+             * literals a few lines above — same window, so the two compose).
+             * A single address trips the per-IP cap at 10 and can never
+             * contribute more than 9, so reaching 20 requires at least three
+             * distinct addresses. That matters: it means this limit can never
+             * lock an account that the per-IP limit would not already have
+             * locked, so it adds NO new self-inflicted lockout for a user who
+             * simply keeps mistyping. It does leave the classic per-account
+             * trade-off — an attacker with 3+ addresses can deliberately lock
+             * a known account out — but the window is a 15-minute SLIDING one
+             * that self-heals with no admin action, which is the standard
+             * accepted balance against unbounded distributed guessing.
+             * ============================================================= */
+            $loginAcctKey = 'acct:' . substr(hash('sha256', $username), 0, 40);
+            if (!checkRateLimit('auth_login_acct', $loginAcctKey, 20, 900, false)) {
+                logActivity(
+                    'auth.login',
+                    'user',
+                    $username,
+                    /* Distinguished from 'rate_limited' (per-IP) for operator
+                       triage only — the CLIENT sees the identical message. */
+                    ['reason' => 'rate_limited_account'],
+                    'failure'
+                );
+                sendJson(['error' => 'Too many failed login attempts. Please try again later.'], 429);
+                break;
+            }
+
             /* AvatarService (#616) only included when the column exists
                so a partly-migrated install can still log users in. */
             $hasAvatarSvcCol = false;
@@ -2228,6 +2435,20 @@ if ($action !== null) {
                 $stmt->bind_param('ss', $clientIp, $username);
                 $stmt->execute();
                 $stmt->close();
+
+                /* #1027 — the SAME failure also counts toward the per-account
+                   bucket checked at the top of this case. Written through the
+                   shared helper (includes/rate_limit.php) rather than a second
+                   hand-rolled INSERT, so the read and the write stay one pair.
+                   Success=0 because this row genuinely records a FAILED
+                   attempt (checkRateLimit() ignores the column, but the value
+                   should still read truthfully in the attempts table).
+                   CRITICAL: this line sits INSIDE the shared
+                   "unknown user OR wrong password" branch, so the counter
+                   advances identically for a real and an imaginary account —
+                   that is what keeps the lockout from becoming a
+                   username-existence oracle. */
+                recordRateLimitHit('auth_login_acct', $loginAcctKey, false);
 
                 logActivity(
                     'auth.login',
@@ -2700,6 +2921,85 @@ if ($action !== null) {
                 break;
             }
 
+            /* =============================================================
+             * FLOOD CONTROL (#1028) — MUST run before generatePasswordResetToken()
+             *
+             * ELI5: check two budgets first — one for "this computer", one
+             * for "this address" — so nobody can sit in a loop stuffing a
+             * known tester's inbox with real reset emails.
+             *
+             * Until now this handler went straight from "the field isn't
+             * empty" to minting a token and sending mail, with no cap at all.
+             * Each unthrottled call cost a DELETE + an INSERT into
+             * tblPasswordResetTokens plus a real SMTP send — and, worse,
+             * invalidated the victim's previous token every time, so a slow
+             * flood could keep a legitimate reset permanently unusable.
+             *
+             * The two verdicts are computed HERE (they need the DB); the
+             * decision they feed is the pure apiForgotPasswordDecision() at
+             * the bottom of this file, where the full rationale for treating
+             * the two buckets differently — 429 for the IP bucket, silent 200
+             * for the identifier bucket — is documented alongside the #898
+             * anti-enumeration contract it protects.
+             *
+             * Budgets: 15/hour per IP (well above a household or a church
+             * office that genuinely forgot a password, low enough to make
+             * scripted abuse pointless) and 5/hour per submitted identifier
+             * (a real user clicking "resend" three or four times never
+             * reaches it; an inbox flood does, immediately).
+             *
+             * checkRateLimit() is FAIL-OPEN by design (includes/rate_limit.php
+             * returns true and logs on any DB error), so a blip in the counter
+             * table degrades to today's unthrottled behaviour rather than
+             * locking every user out of password recovery.
+             * ============================================================= */
+            $forgotIp     = $_SERVER['REMOTE_ADDR'] ?? '';
+            $forgotIdKey  = apiForgotPasswordIdentifierKey($input);
+            $forgotIpOk   = checkRateLimit('auth_forgot_password_ip', $forgotIp, 15, 3600, false);
+            /* Both buckets are read BEFORE either is recorded, so the two
+               checks see a consistent snapshot of this request. */
+            $forgotIdOk   = checkRateLimit('auth_forgot_password_id', $forgotIdKey, 5, 3600, false);
+
+            /* Spend budget only on requests we actually let through — the
+               house pattern (see `analytics_ingest` above): a bucket is a
+               fixed allowance per window, not a punishment that re-arms
+               itself while an attacker keeps hammering. Recording a throttled
+               request would keep a shared-NAT congregation locked out for as
+               long as one bad actor behind it kept trying. */
+            if ($forgotIpOk) {
+                recordRateLimitHit('auth_forgot_password_ip', $forgotIp);
+                /* The identifier hit is recorded here — i.e. BEFORE the account
+                   lookup, and without ever consulting it. That ordering is the
+                   point: a counter that only advanced for accounts that turned
+                   out to be real would itself become an enumeration oracle,
+                   because an attacker could then work out which addresses
+                   exist purely from when the throttle eventually bites. */
+                if ($forgotIdOk) {
+                    recordRateLimitHit('auth_forgot_password_id', $forgotIdKey);
+                }
+            }
+
+            $forgotDecision = apiForgotPasswordDecision($forgotIpOk, $forgotIdOk);
+            if (!$forgotDecision['send']) {
+                /* Both non-send outcomes exit here. The identifier-throttled
+                   one carries status 200 and the SAME body as a successful
+                   request (apiForgotPasswordGenericResponse()), so it is
+                   indistinguishable from "we emailed them" / "no such
+                   account"; only the per-IP outcome is a visible 429, and
+                   that is keyed purely on the caller's own address.
+                   logActivity records which it was for operator triage —
+                   server-side only, never in the response. */
+                logActivity(
+                    'auth.password_reset_request',
+                    '',
+                    '',
+                    ['reason' => $forgotIpOk ? 'rate_limited_identifier' : 'rate_limited_ip'],
+                    'failure'
+                );
+                sendJson($forgotDecision['body'], $forgotDecision['status']);
+                break;
+            }
+
             $result = generatePasswordResetToken($input);
 
             /* Always return 200 to prevent username/email enumeration
@@ -2738,10 +3038,10 @@ if ($action !== null) {
                     isset($result['user_id']) ? (int)$result['user_id'] : null
                 );
             }
-            sendJson([
-                'ok'      => true,
-                'message' => 'If an account exists with that username or email, a reset link has been generated.',
-            ]);
+            /* One shared body builder (#1028) so the throttled-silently path
+               above and this one can never drift apart — the moment they
+               differ by a single byte, "throttled" becomes an oracle. */
+            sendJson($forgotDecision['body'], $forgotDecision['status']);
             break;
 
         /* -----------------------------------------------------------------
@@ -15297,6 +15597,129 @@ function apiAuthSuccessPayload(
             'avatar_service' => $avatarService,
         ],
     ];
+}
+
+/* =============================================================================
+ * PASSWORD-RESET FLOOD CONTROL — pure helpers for ?action=auth_forgot_password
+ * (#1028), mirroring the apiAuthSuccessPayload() pattern above.
+ *
+ * ELI5: before #1028 anyone could POST a known tester's email address in a
+ * loop and we would mint a fresh reset token and send a real email EVERY time
+ * — free inbox flooding, paid for with our token generation and our SMTP
+ * reputation. These two helpers hold the throttling DECISION, kept PURE (no
+ * DB, no superglobals, no clock) so tests/php/test-auth-rate-limit.php can
+ * assert the anti-enumeration contract without a request or a database.
+ *
+ * WHY A SEPARATE FUNCTION RATHER THAN AN `if` IN THE CASE BODY: #898 fixed the
+ * user-enumeration hole by making this endpoint return an IDENTICAL 200 whether
+ * or not the account exists, and a rate limit is the classic way that contract
+ * gets quietly broken again — "throttled" must not become the tell that says
+ * "this address is real". apiForgotPasswordDecision() makes that structural
+ * instead of conventional: it takes NO account-existence parameter, so account
+ * existence CANNOT influence the response, and a future edit that tried to make
+ * it would have to change the signature (which the test pins by reflection).
+ * ========================================================================== */
+
+/**
+ * The ONE 200-response body ?action=auth_forgot_password ever returns.
+ *
+ * ELI5: the single "we've done what we can, check your inbox" reply — the same
+ * words whether we just emailed a real user, found nobody with that address, or
+ * quietly declined because that address has already had its share of resets
+ * this hour.
+ *
+ * @return array{ok:bool,message:string}
+ */
+function apiForgotPasswordGenericResponse(): array
+{
+    return [
+        'ok'      => true,
+        'message' => 'If an account exists with that username or email, a reset link has been generated.',
+    ];
+}
+
+/**
+ * Decide what a forgot-password request does, given only the two throttle
+ * verdicts. PURE — no DB, no superglobals, no time.
+ *
+ * ELI5: two buckets have already been checked before we get here — "has this
+ * computer asked too often?" and "has this address been asked about too often?".
+ * This function turns those two yes/nos into what the user sees.
+ *
+ * THE TWO BUCKETS ARE HANDLED DIFFERENTLY, ON PURPOSE:
+ *
+ *   - PER-IP exhausted → a real 429. This says something about the REQUESTER
+ *     and nothing about any account: the bucket is keyed on the caller's own
+ *     address, so the caller could have predicted the 429 from their own
+ *     behaviour alone. Zero information transfer, and a legitimate user who
+ *     double-clicked gets an honest, actionable answer.
+ *
+ *   - PER-IDENTIFIER exhausted → a SILENT DROP: the ordinary 200 body, no token
+ *     minted, no email sent. A 429 here WOULD be an oracle in one specific
+ *     case: an attacker probing an address they had not themselves exhausted
+ *     could infer "somebody has been requesting resets for this address
+ *     recently, so it is a real one". Returning the standard 200 removes the
+ *     observable difference entirely. The cost is that a user who genuinely
+ *     over-requests gets silence rather than an explanation — the correct trade
+ *     for an endpoint whose whole job is to be uninformative (#898).
+ *
+ * Why an IDENTIFIER bucket at all, rather than per-IP only: per-IP alone stops
+ * one machine, but the abuse in #1028 (flood a known tester's inbox) is exactly
+ * what a handful of addresses — or a botnet — walks straight past. Capping per
+ * submitted identifier caps the VICTIM'S INBOX no matter where the requests
+ * come from. And why keep the per-IP bucket too: identifier-only would let one
+ * machine cycle identifiers indefinitely, burning token generation and mail
+ * quota across the whole user base. Neither is sufficient alone.
+ *
+ * The identifier bucket keys on the SUBMITTED string, never on a resolved
+ * account, so it fills identically for a real and an imaginary address.
+ *
+ * @param bool $ipAllowed         Per-IP bucket still has budget.
+ * @param bool $identifierAllowed Per-submitted-identifier bucket still has budget.
+ * @return array{status:int,send:bool,body:array} `send` = may we mint a token
+ *         and email it; `body`/`status` = exactly what to write to the client.
+ */
+function apiForgotPasswordDecision(bool $ipAllowed, bool $identifierAllowed): array
+{
+    if (!$ipAllowed) {
+        return [
+            'status' => 429,
+            'send'   => false,
+            'body'   => ['error' => 'Too many password reset requests. Please try again later.'],
+        ];
+    }
+    if (!$identifierAllowed) {
+        /* Silent drop — byte-identical to the allowed body below. */
+        return ['status' => 200, 'send' => false, 'body' => apiForgotPasswordGenericResponse()];
+    }
+    return ['status' => 200, 'send' => true, 'body' => apiForgotPasswordGenericResponse()];
+}
+
+/**
+ * Rate-limit bucket key for a submitted username-or-email.
+ *
+ * ELI5: turns whatever the user typed into a short fixed-length label we can
+ * count against, so two people typing the same address land in the same bucket.
+ *
+ * Normalised with strtolower(trim()) — the SAME normalisation
+ * generatePasswordResetToken() (manage/includes/auth.php) applies before its
+ * lookup, so "Alice@Example.com " and "alice@example.com" cannot be split into
+ * two buckets to double the budget for one real account.
+ *
+ * Hashed for two practical reasons, NOT for secrecy (an email address is
+ * low-entropy and the activity-log row for this endpoint already records the
+ * raw lookup): (1) tblLoginAttempts.IpAddress is VARCHAR(45) and email
+ * addresses routinely exceed that — an un-hashed key would silently truncate
+ * and merge unrelated addresses into one bucket; (2) it avoids copying account
+ * identifiers into a second table. 'pwr:' + 40 hex = 44 chars, inside the
+ * column width.
+ *
+ * @param string $submitted Raw `username` field from the request body.
+ * @return string Bucket key, ≤45 chars.
+ */
+function apiForgotPasswordIdentifierKey(string $submitted): string
+{
+    return 'pwr:' . substr(hash('sha256', strtolower(trim($submitted))), 0, 40);
 }
 
 /* =============================================================================
