@@ -7,9 +7,17 @@
  * Provides a form for users to report missing songs or request additions.
  * Generates a mailto: link with pre-filled subject and body. Includes
  * client-side rate limiting (one submission per minute).
+ *
+ * NAMED `SongRequest`, NOT `Request` (#1620). The old name shadowed the global
+ * Fetch-API `Request` constructor in every module that imported it — harmless
+ * while nobody constructed one, but `fetch()` accepts `string | URL | Request`,
+ * so `new Request(url, init)` in such a module would silently build a song-
+ * request form instead, with a failure mode that reads as nonsense. Renamed
+ * while #1031 was already reasoning about Request semantics.
+ * https://developer.mozilla.org/en-US/docs/Web/API/Request
  */
 
-export class Request {
+export class SongRequest {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
      */

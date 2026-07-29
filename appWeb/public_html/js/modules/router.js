@@ -472,16 +472,36 @@ export class Router {
                to the legacy pageOut → swap → pageIn flow. */
             await this.app.transitions.runViewTransition(() => {
                 content.innerHTML = html;
-                /* Browsers intentionally do NOT run <script> tags
-                   inserted via innerHTML, so any inline JS in the
-                   injected page template (e.g. home.php's Popular
-                   Songs / Browse by Theme / Recently Viewed fetches)
-                   silently no-ops. Replace each script node with a
-                   freshly-created one so the browser parses and runs
-                   it as if it had been in the original document.
-                   Preserves type, src, async/defer and other
-                   attributes. */
-                this._executeInlineScripts(content);
+                /* NO script re-execution here, deliberately (#1619).
+                 *
+                 * ELI5: page fragments are not allowed to carry code, so
+                 * there is nothing here to run.
+                 *
+                 * This used to call `_executeInlineScripts()`, which re-created
+                 * each injected <script> so the browser would run it (innerHTML
+                 * parses script tags but never executes them). That helper was
+                 * removed because it could not do its job and was actively
+                 * harmful:
+                 *
+                 *   - It copied attributes VERBATIM, so the re-created node had
+                 *     no CSP nonce. index.php sends an ENFORCING nonce CSP
+                 *     (#117), and fragments are separate, often shared-cache
+                 *     HTTP responses that can never carry a per-request nonce
+                 *     (rule #6). The browser refused every such script with a
+                 *     console-only violation — no exception, no toast. That
+                 *     silent half-execution killed the entire public Export
+                 *     feature for ~7 weeks (#1565).
+                 *   - It had nothing left to run: the only <script> in any
+                 *     fragment is an inert `application/ld+json` block in
+                 *     person.php, which needs parsing, not executing.
+                 *   - tests/php/test-fragment-inline-scripts.php now fails the
+                 *     build on any executable inline script in a fragment, and
+                 *     its allowlist is empty (#1572).
+                 *
+                 * Fragment behaviour is wired from afterPageLoad() as real ES
+                 * modules instead — see the home-page.js pattern (rule #30).
+                 * Do not reinstate this by injecting a nonce into fragments or
+                 * relaxing the CSP; both trade a working CSP for convenience. */
             }, content);
 
             /* Complete loading bar after the transition is done. */
@@ -501,33 +521,6 @@ export class Router {
                     Failed to load page. Please check your connection and try again.
                 </div>`;
             this.app.transitions.pageIn(content);
-        }
-    }
-
-    /**
-     * Re-create every <script> descendant of `root` so the browser actually
-     * executes it. `innerHTML` parses script tags but skips their execution
-     * by design — any JS in an injected page template would otherwise no-op
-     * silently. Re-created nodes preserve the original attributes (src,
-     * type, async, defer, nomodule, integrity, crossorigin) and replace
-     * the original in-place so document order is kept for side-effectful
-     * scripts that depend on it.
-     *
-     * @param {HTMLElement} root Container whose script descendants to run
-     * @private
-     */
-    _executeInlineScripts(root) {
-        if (!root) return;
-        const scripts = root.querySelectorAll('script');
-        for (const oldScript of scripts) {
-            const newScript = document.createElement('script');
-            for (const attr of oldScript.attributes) {
-                newScript.setAttribute(attr.name, attr.value);
-            }
-            if (!oldScript.src) {
-                newScript.textContent = oldScript.textContent;
-            }
-            oldScript.replaceWith(newScript);
         }
     }
 
@@ -825,11 +818,14 @@ export class Router {
            inline scripts, the fragment is a separate HTTP response that
            never sees the nonce, and `request` is in api.php's
            $_cacheablePages so it can't carry a per-request nonce at all
-           (rule #6). `_executeInlineScripts()` re-creates the node with its
-           attributes verbatim, so the copy has no nonce either and is
-           refused SILENTLY — every submit was quietly taken by the #711
-           no-JS `<form action>` fallback instead. Same fix as home-page.js
-           / export-ui.js: a real ES module imported here (#1572).
+           (rule #6). The router's old `_executeInlineScripts()` re-created
+           the node with its attributes verbatim, so the copy had no nonce
+           either and was refused SILENTLY — every submit was quietly taken
+           by the #711 no-JS `<form action>` fallback instead. That helper
+           has since been removed entirely (#1619), so a fragment script now
+           simply never runs rather than half-running. Same fix as
+           home-page.js / export-ui.js: a real ES module imported here
+           (#1572).
            `params` carries the forwarded `songbook` / `number` deep-link
            prefill; the module prefers the fragment's own data-prefill-*
            attributes and uses these only as the stale-cache fallback. */

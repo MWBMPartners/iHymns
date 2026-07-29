@@ -35,7 +35,7 @@ import { LiveFollow } from './modules/live-follow.js';
 import { ServiceFollow } from './modules/service-follow.js';
 import { Compare } from './modules/compare.js';
 import { Shortcuts } from './modules/shortcuts.js';
-import { Request } from './modules/request.js';
+import { SongRequest } from './modules/request.js';  /* #1620 — not `Request`: that name shadows the Fetch-API global */
 import { Transpose } from './modules/transpose.js';
 import { ReadingProgress } from './modules/reading-progress.js';
 import { SongbookIndex } from './modules/songbook-index.js';
@@ -133,7 +133,7 @@ class iHymnsApp {
         /** @type {Shortcuts} Keyboard shortcuts help overlay (#104) */
         this.shortcuts = null;
 
-        /** @type {Request} Missing song request form (#107) */
+        /** @type {SongRequest} Missing song request form (#107) */
         this.request = null;
 
         /** @type {Transpose} Transpose / capo indicator (#101) */
@@ -341,7 +341,7 @@ class iHymnsApp {
             this.shortcuts.init();
 
             /* Missing song request form (#107) */
-            this.request = new Request(this);
+            this.request = new SongRequest(this);
             this.request.init();
 
             /* Transpose / capo indicator (#101) */
