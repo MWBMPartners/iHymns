@@ -45,13 +45,13 @@ declare(strict_types=1);
  * the dashboard defines IHYMNS_SETUP_DASHBOARD and passes the phase via ?phase=.
  * In web mode we echo (HTML-escaped) and `return` from the included script
  * instead of writing STDOUT/STDERR + exit() — STDOUT/STDERR are undefined under
- * PHP-FPM (fatal) and exit() would truncate the dashboard. The NINE gates below
- * are IDENTICAL in both modes; only this wrapper differs.
+ * PHP-FPM (fatal) and exit() would truncate the dashboard. The ELEVEN gates
+ * below are IDENTICAL in both modes; only this wrapper differs.
  *
- * The nine are G1, G2, G3, G5, G6, G7, G8, G9, G10 — the numbering has holes,
- * and the holes are NOT all benign. The design pass (.claude/
+ * The eleven are G1, G2, G3, G4, G5, G6, G7, G8, G9, G10, G12 — the numbering
+ * has holes, and the holes are NOT all benign. The design pass (.claude/
  * lyrics-normalisation-strategy.md §11, table at L516-524) specifies thirteen.
- * Where the other four actually went, verified rather than assumed (#1615):
+ * Where the other two actually went, verified rather than assumed (#1615):
  *
  *   G11 (corpus fingerprint frozen across the drop) — IMPLEMENTED, but split
  *        across two files by design: this script WRITES the fingerprint (incl.
@@ -60,15 +60,39 @@ declare(strict_types=1);
  *        single-process gate here could not span the drop, so this is correct.
  *   G13 (byte/semantic parity on all projected cols incl. ChordsJson) —
  *        SUBSUMED by G2, whose comparison already covers ChordsJson.
- *   G4′ (ArrangementJson arrays index valid ordinals 0..n-1; SortOrder stays
- *        contiguous) — only HALF landed. G8 covers SortOrder contiguity. The
- *        ArrangementJson ordinal-validity half is NOT implemented anywhere.
- *   G12 (live Id-stability smoke: 3 sentinel songs, double re-projection,
- *        identical Id sets) — NOT implemented. It is a live operational check,
- *        not something a batch verifier can assert.
  *
- * So an all-green run here is NOT the full thirteen-gate proof the design doc
- * describes. G4′-ordinals and G12 are tracked as a gap in #1618. Do NOT
+ * #1618 closed the remaining two gaps:
+ *
+ *   G4 (design doc's G4′: ArrangementJson arrays index valid ordinals 0..n-1;
+ *       SortOrder stays contiguous) — NOW IMPLEMENTED. The SortOrder-contiguity
+ *       half was always G8; this gate covers the other half — every value in
+ *       tblSongs.ArrangementJson (#892) and every tblSongArrangements
+ *       .ComponentOrderJson row (#1066 Theme E) must be a non-negative int
+ *       < that song's component count. Runs every phase (both columns are
+ *       untouched by the P4/C6 drop). Duplicates are legal by design (a
+ *       repeated ordinal replays a component — schema.sql's own example is
+ *       [0,1,1,2,3]) so this checks range only, never uniqueness or coverage.
+ *   G12 (live Id-stability smoke: 3 sentinel songs, double re-projection,
+ *        identical Id sets) — NOW IMPLEMENTED, but ONLY under --phase=soak
+ *        (an operator step that must be remembered is exactly the failure
+ *        class this closes — see #1618). It is READ-ONLY: two independent
+ *        calls to the shared lyricLinesAssembleComponents() read path
+ *        (lyric_lines_read.php, rule #25) for 3 deterministically-picked
+ *        songs (most mirrored lines, SongId tiebreak — never random), diffed
+ *        on the flattened tblLyricLines.Id set. This proves the READ
+ *        projection is stable/repeatable; it does NOT prove the WRITE path's
+ *        Id-preserving diff (lyricLinesWriteComponents →
+ *        lyricLinesApplyDesired) survives a re-save of unchanged content —
+ *        that would mean invoking the write path, which a read-only verifier
+ *        must not do. A true write-path proof needs either a disposable
+ *        staging DB this gate could safely mutate + roll back, or the write
+ *        path exposing a pure dry-run (desired-vs-existing diff without
+ *        executing it); neither exists today.
+ *
+ * So an all-green run — including a --phase=soak run for G12 — is now the
+ * eleven-gate proof the design doc's thirteen rows collapse to once G11's
+ * split and G13's subsumption are accounted for. A pre/pre-drop/post-drop run
+ * skips G12 and says so; it is not part of those phases' green. Do NOT
  * renumber the survivors — design-doc citations must keep resolving. */
 $LCV_WEB = (PHP_SAPI !== 'cli') && defined('IHYMNS_SETUP_DASHBOARD');
 
@@ -350,8 +374,44 @@ function _vcTableExists(\mysqli $db, string $t): bool
 gate('G1', 'per-component LinesJson length == mirror line count');
 gate('G2', 'assembler output (from lines) byte-identical to LinesJson source');
 gate('G3', 'blank lines map 1:1 to IsInstrumental; whitespace vs empty preserved');
+gate('G4', "ArrangementJson/ComponentOrderJson ordinals are valid indices into that song's components[] (0..n-1); SortOrder contiguity is G8, not this gate");
 gate('G8', 'ComponentId runs contiguous; group order ≡ component SortOrder');
 gate('G10', 'per-line LanguageCode consistent (no spurious overrides emitted)');
+
+/* G4 prep (#1618) — two homes hold a component-order array (design doc §11.3 D-4,
+   still ⚖ under owner review transport-vs-storage): tblSongs.ArrangementJson (#892,
+   optional single override) and tblSongArrangements.ComponentOrderJson (#1066 Theme
+   E, named/multiple arrangements per song; an IsDefault=1 row there wins over
+   ArrangementJson — soft-deprecation, no backfill, no drop). Both hold a JSON array
+   of 0-based indices into that song's ordered components[]; a repeated index is BY
+   DESIGN (it replays a component, e.g. a refrain between verses — schema.sql's own
+   doc-comment example is [0,1,1,2,3]), so this gate checks range validity only,
+   never uniqueness or full coverage.
+   Prefetched WHOLE, not chunked per songbook like the per-song loop below: both
+   sources are near-empty by design (13 songs total across both, per the #1618
+   design-doc audit), so holding every row in memory is nothing like the #929
+   whole-corpus-LYRICS risk that chunking guards against — chunking this instead
+   would just trade a few KB of memory for an N+1 query against ~16k songs that
+   almost never have a row here. Column/table existence is probed first (both are
+   gated migrations — #892 / #1066 — so an un-migrated install has neither). */
+$g4ArrangementsBySong = [];   // SongId => list of ['source' => label, 'raw' => JSON string]
+if (_vcColExists($db, 'tblSongs', 'ArrangementJson')) {
+    $r = $db->query("SELECT SongId, ArrangementJson FROM tblSongs WHERE ArrangementJson IS NOT NULL");
+    while ($row = $r->fetch_assoc()) {
+        $g4ArrangementsBySong[(string)$row['SongId']][] = ['source' => 'tblSongs.ArrangementJson', 'raw' => $row['ArrangementJson']];
+    }
+    $r->close();
+}
+if (_vcTableExists($db, 'tblSongArrangements')) {
+    $r = $db->query("SELECT SongId, Id, Name, ComponentOrderJson FROM tblSongArrangements");
+    while ($row = $r->fetch_assoc()) {
+        $g4ArrangementsBySong[(string)$row['SongId']][] = [
+            'source' => "tblSongArrangements#{$row['Id']} ({$row['Name']})",
+            'raw'    => $row['ComponentOrderJson'],
+        ];
+    }
+    $r->close();
+}
 
 $songSql = "SELECT SongId FROM tblSongs ORDER BY SongId" . ($limit > 0 ? " LIMIT {$limit}" : "");
 $res = $db->query($songSql);
@@ -372,6 +432,24 @@ foreach ($songIds as $songId) {
 
     /* Feed a stable per-song serialisation into the corpus fingerprint. */
     hash_update($corpusHash, $songId . "\x1e" . json_encode($assembled, JSON_UNESCAPED_UNICODE));
+
+    /* G4 — ordinal validity against THIS song's assembled component count (#1618).
+       Runs every phase (both source columns are outside the P4/C6 drop's scope). */
+    if (isset($g4ArrangementsBySong[$songId])) {
+        $g4N = count($assembled);
+        foreach ($g4ArrangementsBySong[$songId] as $g4Arr) {
+            $g4Ords = json_decode((string)$g4Arr['raw'], true);
+            if (!is_array($g4Ords)) {
+                gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'reason' => 'malformed JSON (not an array)']);
+            } else {
+                foreach ($g4Ords as $g4Pos => $g4Val) {
+                    if (!is_int($g4Val) || $g4Val < 0 || $g4Val >= $g4N) {
+                        gfail('G4', ['songId' => $songId, 'source' => $g4Arr['source'], 'position' => $g4Pos, 'value' => $g4Val, 'componentCount' => $g4N]);
+                    }
+                }
+            }
+        }
+    }
 
     /* G2 + G1 — only when a JSON source still exists (skipped post-drop). */
     if (!empty($source) || $phase !== 'post-drop') {
@@ -445,6 +523,65 @@ while ($row = $r->fetch_assoc()) {
     }
 }
 $r->close();
+
+/* ---------------------------------------------------------------------- */
+/* G12 — live Id-stability smoke, --phase=soak ONLY (#1618).               */
+/* ---------------------------------------------------------------------- */
+if ($phase === 'soak') {
+    gate('G12', 'Id-stability smoke: 3 sentinel songs, double re-projection, identical tblLyricLines.Id sets');
+
+    /* Deterministic pick — NEVER random (design doc §11.5; an irreproducible failure
+       is worse than no check at all). "Most mirrored lines" both avoids an edge-case
+       empty/trivial song and stress-tests the ComponentId-grouping the assembler does
+       most; the SongId tiebreak means the same 3 songs are picked on every run. */
+    $g12Sentinels = [];
+    $r = $db->query(
+        "SELECT ly.SongId, COUNT(*) AS lineCount
+           FROM tblLyricLines ll JOIN tblLyrics ly ON ly.Id = ll.LyricsId
+          WHERE ly.Source = 'ihymns'
+          GROUP BY ly.SongId
+          ORDER BY lineCount DESC, ly.SongId ASC
+          LIMIT 3"
+    );
+    while ($row = $r->fetch_assoc()) { $g12Sentinels[] = (string)$row['SongId']; }
+    $r->close();
+
+    if (empty($g12Sentinels)) {
+        gfail('G12', ['reason' => 'no songs with mirrored lines to sample — un-migrated install?']);
+    }
+
+    /** Flatten an assembled components[] array to its sorted tblLyricLines.Id list. */
+    $g12IdsOf = static function (array $components): array {
+        $ids = [];
+        foreach ($components as $c) {
+            foreach (($c['lineIds'] ?? []) as $lid) { $ids[] = (int)$lid; }
+        }
+        sort($ids);
+        return $ids;
+    };
+
+    foreach ($g12Sentinels as $g12SongId) {
+        /* Read-only DOUBLE re-projection — two independent calls through the ONE
+           shared read path (lyricLinesAssembleComponents(), rule #25), NO write of
+           any kind. See the header block for what this does and does not prove. */
+        $g12IdsFirst  = $g12IdsOf(lyricLinesAssembleComponents($db, $g12SongId));
+        $g12IdsSecond = $g12IdsOf(lyricLinesAssembleComponents($db, $g12SongId));
+
+        if (empty($g12IdsFirst)) {
+            gfail('G12', ['songId' => $g12SongId, 'reason' => 'sentinel song re-projected to 0 lines']);
+        } elseif ($g12IdsFirst !== $g12IdsSecond) {
+            gfail('G12', [
+                'songId'       => $g12SongId,
+                'firstCount'   => count($g12IdsFirst),
+                'secondCount'  => count($g12IdsSecond),
+                'onlyInFirst'  => array_slice(array_values(array_diff($g12IdsFirst, $g12IdsSecond)), 0, 5),
+                'onlyInSecond' => array_slice(array_values(array_diff($g12IdsSecond, $g12IdsFirst)), 0, 5),
+            ]);
+        }
+    }
+} else {
+    out("  [SKIP] G12  Id-stability smoke only runs under --phase=soak (this run: phase={$phase}).");
+}
 
 $fingerprint = [
     'songs'       => $nSongs,
