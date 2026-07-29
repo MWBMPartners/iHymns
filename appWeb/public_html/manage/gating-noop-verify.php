@@ -101,10 +101,17 @@ function gatingNoop_hashSong(SongData $songData, string $songId): ?array
         return null;
     }
 
-    /* HTML — identical include path to bulk_songs (#1284). song.php re-fetches
-       $song from $songData->getSongById($songId) internally, so we only need
-       $songData + $songId in scope. */
-    $song = $detail;   /* song.php overwrites this from getSongById; set for parity */
+    /* HTML — identical include path to bulk_songs (#1284).
+       song.php USES an injected $song when one is already in scope (#1598):
+       it now guards its own getSongById() behind `if (!isset($song))`, so the
+       assignment below is what the render actually consumes.
+       It used to re-fetch unconditionally, which is exactly the per-song
+       re-hydration #1598 removed — the old comment here said song.php
+       "overwrites this from getSongById", which stopped being true the moment
+       that guard landed. Behaviour is unchanged either way, because $detail is
+       itself the result of a getSongById() call a few lines up; only the
+       number of queries differs. */
+    $song = $detail;
     ob_start();
     try {
         require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
