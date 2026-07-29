@@ -34,6 +34,12 @@ export const STORAGE_AUTO_UPDATE_SONGS  = 'ihymns_auto_update_songs';
 export const STORAGE_NUMPAD_LIVE_SEARCH = 'ihymns_numpad_live_search';
 export const STORAGE_SEARCH_LYRICS      = 'ihymns_search_lyrics';
 export const STORAGE_DISPLAY            = 'ihymns_display';
+/* NOTE the odd value: this key predates the `ihymns_` convention and is
+   already written into real users' browsers, so renaming it would silently
+   reset everyone's language filter. The CONSTANT is what new code must use —
+   it was a raw literal in three separate modules before #1031, which is the
+   same drift class as the raw event names #1581 banned. */
+export const STORAGE_LANGUAGE_FILTER    = 'songbook-language-filter';
 
 /* Status & consent */
 export const STORAGE_ANALYTICS_CONSENT  = 'ihymns_analytics_consent';
