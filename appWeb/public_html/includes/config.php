@@ -322,6 +322,18 @@ define('APP_CONFIG', [
             'css_local'  => 'vendor/fontawesome/css/all.min.css',
         ],
 
+        /* SortableJS 1.15 — drag-and-drop reorder for the card-layout editor (#1647).
+           Loaded lazily by js/modules/card-layout.js, not from a <script> tag, so
+           the module carries its own copy of these values — tests/test-vendor-sri.js
+           asserts the two agree, since "two lists that must match with nothing
+           enforcing it" is how this codebase has broken before. */
+        'sortablejs' => [
+            'version'    => '1.15.2',
+            'js_cdn'     => 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js',
+            'js_sri'     => 'sha384-BSxuMLxX+FCbTdYec3TbXlnMGEEM2QXTFdtDaveen71o+jswm2J36+xFqp8k4VHM',
+            'js_local'   => 'vendor/sortablejs/Sortable.min.js',
+        ],
+
         /* jQuery 3.7 — DOM manipulation & AJAX */
         'jquery' => [
             'version'    => '3.7.1',
