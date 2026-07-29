@@ -26,6 +26,7 @@
    auth-changed event's raw string here, so this listener can never drift
    out of sync with what user-auth.js actually dispatches. */
 import { EVT_AUTH_CHANGED } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 const LF_POLL_MS      = 2500;   // follower poll cadence
 const LF_HEARTBEAT_MS = 30000;  // host keepalive — comfortably inside the 180 s join/poll freshness window (api.php)
@@ -115,7 +116,7 @@ export class LiveFollow {
         if (auth && this.app.userAuth && typeof this.app.userAuth.authHeaders === 'function') {
             Object.assign(headers, this.app.userAuth.authHeaders());
         }
-        const res = await fetch('/api?action=' + action + query, {
+        const res = await apiFetch('/api?action=' + action + query, {
             method,
             headers,
             credentials: 'same-origin',

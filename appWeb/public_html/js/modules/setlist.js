@@ -21,6 +21,7 @@ import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
 import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class SetList {
     /**
@@ -655,7 +656,7 @@ export class SetList {
     async fetchSongData(songId) {
         try {
             const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-            const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const res = await apiFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
             if (!res.ok) return null;
             const json = await res.json();
             return json.song || null;
@@ -1580,7 +1581,7 @@ export class SetList {
         }
 
         try {
-            const response = await fetch(`${this.app.config.apiUrl}?action=setlist_share`, {
+            const response = await apiFetch(`${this.app.config.apiUrl}?action=setlist_share`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1716,7 +1717,7 @@ export class SetList {
     async fetchSharedSetlist(shareId) {
         try {
             const url = `${this.app.config.apiUrl}?action=setlist_get&id=${encodeURIComponent(shareId)}`;
-            const response = await fetch(url, {
+            const response = await apiFetch(url, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     /* #1535 — send the bearer token when signed in so the server
@@ -1772,7 +1773,7 @@ export class SetList {
             sharedData.songIds.map(async (songId) => {
                 try {
                     const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return null;
@@ -1973,7 +1974,7 @@ export class SetList {
             songIds.map(async (songId) => {
                 try {
                     const url = `${this.app.config.apiUrl}?action=song_data&id=${encodeURIComponent(songId)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return;
@@ -2088,7 +2089,7 @@ export class SetList {
         /* Remove any previous render so we don't stack. */
         document.getElementById('setlist-upcoming-card')?.remove();
 
-        fetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
+        apiFetch('/api?action=setlist_schedule_upcoming', { credentials: 'same-origin' })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
             .then(data => {
                 const upcoming = data.upcoming || [];
@@ -2144,7 +2145,7 @@ export class SetList {
 
         /* Visibility tracks the authenticated-user check via the API's
            401 on setlist_schedule_current. If we get 401, hide card. */
-        fetch(`/api?action=setlist_schedule_current&setlistId=${encodeURIComponent(listId)}`, {
+        apiFetch(`/api?action=setlist_schedule_current&setlistId=${encodeURIComponent(listId)}`, {
             credentials: 'same-origin',
         })
             .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -2186,7 +2187,7 @@ export class SetList {
                 if (resultEl) resultEl.innerHTML = '<span class="text-warning">Pick a date first.</span>';
                 return;
             }
-            fetch('/api?action=setlist_schedule_set', {
+            apiFetch('/api?action=setlist_schedule_set', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
@@ -2215,7 +2216,7 @@ export class SetList {
             clearBtn.textContent = 'Clear';
             newSave.parentNode.appendChild(clearBtn);
             clearBtn.addEventListener('click', () => {
-                fetch('/api?action=setlist_schedule_clear', {
+                apiFetch('/api?action=setlist_schedule_clear', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                     credentials: 'same-origin',
@@ -2263,7 +2264,7 @@ export class SetList {
         container.appendChild(section);
 
         const refresh = () => {
-            fetch(`/api?action=setlist_collab_list&setlistId=${encodeURIComponent(listId)}`, {
+            apiFetch(`/api?action=setlist_collab_list&setlistId=${encodeURIComponent(listId)}`, {
                 credentials: 'same-origin',
             })
                 .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -2289,7 +2290,7 @@ export class SetList {
                     `).join('');
                     list.querySelectorAll('.btn-remove-collab').forEach(btn => {
                         btn.addEventListener('click', () => {
-                            fetch('/api?action=setlist_collab_remove', {
+                            apiFetch('/api?action=setlist_collab_remove', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                                 credentials: 'same-origin',
@@ -2316,7 +2317,7 @@ export class SetList {
             );
             if (!email) return;
             const permission = (prompt('Permission: "view" or "edit"?', 'edit') || 'edit').trim().toLowerCase();
-            fetch('/api?action=setlist_collab_invite', {
+            apiFetch('/api?action=setlist_collab_invite', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 credentials: 'same-origin',
@@ -2373,7 +2374,7 @@ export class SetList {
             list.songs.map(async (song) => {
                 try {
                     const url = `${this.app.config.apiUrl}?page=song&id=${encodeURIComponent(song.id)}`;
-                    const response = await fetch(url, {
+                    const response = await apiFetch(url, {
                         headers: { 'X-Requested-With': 'XMLHttpRequest' }
                     });
                     if (!response.ok) return null;

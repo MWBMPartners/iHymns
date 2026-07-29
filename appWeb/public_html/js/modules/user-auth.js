@@ -18,6 +18,7 @@ import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import { STORAGE_AUTH_TOKEN, STORAGE_AUTH_USER, EVT_AUTH_CHANGED } from '../constants.js';
 import { performAppleSignIn } from './apple-signin.js';
+import { apiFetch } from '../utils/api-client.js';
 
 export class UserAuth {
     /**
@@ -50,7 +51,7 @@ export class UserAuth {
         if (this._appStatusPromise) return this._appStatusPromise;
         this._appStatusPromise = (async () => {
             try {
-                const r = await fetch('/api?action=app_status', {
+                const r = await apiFetch('/api?action=app_status', {
                     credentials: 'same-origin',
                 });
                 if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -206,7 +207,7 @@ export class UserAuth {
     async _postJson(url, body, defaultMsg) {
         let res;
         try {
-            res = await fetch(url, {
+            res = await apiFetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -307,7 +308,7 @@ export class UserAuth {
      */
     async logout() {
         try {
-            await fetch(`${this.app.config.apiUrl}?action=auth_logout`, {
+            await apiFetch(`${this.app.config.apiUrl}?action=auth_logout`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -343,7 +344,7 @@ export class UserAuth {
         if (!this.isLoggedIn()) return false;
 
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_me`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_me`, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
@@ -438,7 +439,7 @@ export class UserAuth {
     async listLinkedProviders() {
         if (!this.isLoggedIn()) return [];
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_providers_list`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_providers_list`, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
@@ -465,7 +466,7 @@ export class UserAuth {
     async unlinkProvider(provider) {
         let res;
         try {
-            res = await fetch(`${this.app.config.apiUrl}?action=auth_provider_unlink`, {
+            res = await apiFetch(`${this.app.config.apiUrl}?action=auth_provider_unlink`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -518,7 +519,7 @@ export class UserAuth {
         }
 
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=user_setlists_sync`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_setlists_sync`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -569,7 +570,7 @@ export class UserAuth {
         }
 
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=favorites_sync`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=favorites_sync`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -612,7 +613,7 @@ export class UserAuth {
         }
 
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=custom_tags_sync`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=custom_tags_sync`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -769,7 +770,7 @@ export class UserAuth {
         if (!this.isLoggedIn()) return null;
 
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=user_setlists`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=user_setlists`, {
                 headers: {
                     'X-Requested-With': 'XMLHttpRequest',
                     ...this.authHeaders(),
@@ -792,7 +793,7 @@ export class UserAuth {
     async updateProfile({ displayName, email }) {
         if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_update_profile`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_update_profile`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -827,7 +828,7 @@ export class UserAuth {
     async changeUsername({ newUsername, currentPassword }) {
         if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_change_username`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_change_username`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -860,7 +861,7 @@ export class UserAuth {
     async changePassword({ currentPassword, newPassword }) {
         if (!this.isLoggedIn()) return { success: false, error: 'Not signed in.' };
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_change_password`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_change_password`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -937,7 +938,7 @@ export class UserAuth {
 
     async _handleVerifyEmailToken(token) {
         try {
-            const r = await fetch(
+            const r = await apiFetch(
                 `${this.app.config.apiUrl}?action=auth_verify_email&token=${encodeURIComponent(token)}`,
                 { method: 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' } }
             );
@@ -957,7 +958,7 @@ export class UserAuth {
 
     async _handleMagicLinkToken(token) {
         try {
-            const r = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
+            const r = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 body: JSON.stringify({ token }),
@@ -1237,7 +1238,7 @@ export class UserAuth {
      */
     async forgotPassword(usernameOrEmail) {
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_forgot_password`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_forgot_password`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1263,7 +1264,7 @@ export class UserAuth {
      */
     async resetPasswordWithToken(token, newPassword) {
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=auth_reset_password`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_reset_password`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1648,7 +1649,7 @@ export class UserAuth {
             submitBtn.disabled = true;
 
             try {
-                const res = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_request`, {
+                const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_request`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
@@ -1699,7 +1700,7 @@ export class UserAuth {
             submitBtn.disabled = true;
 
             try {
-                const res = await fetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
+                const res = await apiFetch(`${this.app.config.apiUrl}?action=auth_email_login_verify`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

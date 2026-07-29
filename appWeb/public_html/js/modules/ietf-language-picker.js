@@ -33,6 +33,8 @@
  *   </div>
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 /* Debounce so we don't fire one fetch per keystroke. 200ms matches
    the affiliation typeahead (#670) and the editor's tag/credit
    searches — feels instant to a curator, coalesces typing bursts
@@ -150,7 +152,7 @@ function cachedLookup() {
    than spamming the console. */
 async function fetchJson(url) {
     try {
-        const r = await fetch(url, { credentials: 'same-origin' });
+        const r = await apiFetch(url, { credentials: 'same-origin' });
         if (!r.ok) return null;
         return await r.json();
     } catch (_e) {

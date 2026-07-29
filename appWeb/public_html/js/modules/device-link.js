@@ -28,6 +28,8 @@
  * established precedent (user-auth.js).
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const STORAGE_AUTH_TOKEN = 'ihymns_auth_token';
 
 function getToken() {
@@ -51,7 +53,7 @@ async function lookupCode(userCode) {
     const url = new URL('/api', window.location.origin);
     url.searchParams.set('action', 'auth_device_code_link_lookup');
     url.searchParams.set('user_code', userCode);
-    const res = await fetch(url.toString(), {
+    const res = await apiFetch(url.toString(), {
         headers: { 'X-Requested-With': 'XMLHttpRequest', ...authHeaders() },
     });
     if (res.status === 401) return { ok: false, error: 'not_authenticated' };
@@ -61,7 +63,7 @@ async function lookupCode(userCode) {
 
 async function resolveCode(userCode, approve) {
     const action = approve ? 'auth_device_code_approve' : 'auth_device_code_deny';
-    const res = await fetch(`/api?action=${action}`, {
+    const res = await apiFetch(`/api?action=${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...authHeaders() },
         body: JSON.stringify({ user_code: userCode }),

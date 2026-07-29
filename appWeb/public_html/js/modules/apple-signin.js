@@ -35,6 +35,8 @@
  * @link https://developer.apple.com/documentation/sign_in_with_apple/errorhandling  AppleID.auth.signIn() rejection shapes
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 /** Apple's hosted JS SDK — same CDN URL for every consumer worldwide. */
 const APPLE_JS_SDK_URL = 'https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js';
 
@@ -249,7 +251,7 @@ export async function performAppleSignIn({ apiUrl, clientId, link = false, authH
 
     let res;
     try {
-        res = await fetch(`${apiUrl}?action=auth_apple`, {
+        res = await apiFetch(`${apiUrl}?action=auth_apple`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

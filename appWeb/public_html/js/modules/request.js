@@ -17,6 +17,8 @@
  * https://developer.mozilla.org/en-US/docs/Web/API/Request
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 export class SongRequest {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -156,7 +158,7 @@ export class SongRequest {
         /* POST to the DB-backed endpoint — same contract as the /request page.
            `website` is the honeypot (must stay empty for a real submission). */
         try {
-            const res = await fetch('/api?action=song_request_submit', {
+            const res = await apiFetch('/api?action=song_request_submit', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                 body: JSON.stringify({ title, songbook, details: notes || '', email: email || '', website: '' }),

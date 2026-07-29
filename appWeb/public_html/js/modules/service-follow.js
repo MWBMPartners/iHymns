@@ -14,6 +14,8 @@
  * "Join service" entry rather than the per-song "Join Live".
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const SF_POLL_MS      = 2500;                       // follower poll cadence
 const SF_PRESENCE_KEY = 'ihymns_sf_presence';       // sessionStorage: {token, rev}
 const SF_DEVICE_KEY   = 'ihymns_sf_device';         // localStorage: durable anon device id
@@ -254,7 +256,7 @@ export class ServiceFollow {
         const url = '/api?action=' + action + (opts.query || '');
         const init = { method: opts.method || 'GET', headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' };
         if (opts.body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(opts.body); }
-        const res = await fetch(url, init);
+        const res = await apiFetch(url, init);
         let data = {};
         try { data = await res.json(); } catch (_e) {}
         return { httpOk: res.ok, status: res.status, data: data };

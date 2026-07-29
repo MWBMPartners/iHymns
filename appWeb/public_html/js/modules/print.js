@@ -18,6 +18,8 @@
  * Docs: https://developer.mozilla.org/en-US/docs/Web/API/Window/print
  * ========================================================================== */
 
+import { apiFetch } from '../utils/api-client.js';
+
 /* Block-type registry — drives BOTH the renderer (below) and the editor's palette.
    `label` = editor display; `options` = editable per-block option keys + defaults. */
 export const PRINT_BLOCK_TYPES = {
@@ -230,7 +232,7 @@ function printDoc(html) {
 async function fetchSong(app, songId) {
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
-        const res = await fetch(`${base}?action=song_data&id=${encodeURIComponent(songId)}`,
+        const res = await apiFetch(`${base}?action=song_data&id=${encodeURIComponent(songId)}`,
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (!res.ok) { return null; }
         const json = await res.json();
@@ -244,7 +246,7 @@ async function loadTemplates(app) {
     let custom = [];
     try {
         const base = (app && app.config && app.config.apiUrl) ? app.config.apiUrl : '/api';
-        const res = await fetch(`${base}?action=print_templates&scope=song`,
+        const res = await apiFetch(`${base}?action=print_templates&scope=song`,
             { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' });
         if (res.ok) {
             const json = await res.json();

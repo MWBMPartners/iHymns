@@ -53,7 +53,7 @@ import { Analytics } from './modules/analytics.js';
 import { Notifications } from './modules/notifications.js';
 import { bootErrorMonitor } from './modules/error-monitor.js';
 import { escapeHtml } from './utils/html.js';
-import { setAuthHeaderProvider } from './utils/api-client.js';
+import { setAuthHeaderProvider, apiFetch } from './utils/api-client.js';
 import {
     STORAGE_DEFAULT_SONGBOOK,
     STORAGE_DISCLAIMER_ACCEPTED,
@@ -639,7 +639,7 @@ class iHymnsApp {
             if (btn) { btn.disabled = true; }
             if (fb) { fb.className = 'small text-muted'; fb.textContent = 'Sending…'; }
             try {
-                const res = await fetch('/api?action=song_correction_submit', {
+                const res = await apiFetch('/api?action=song_correction_submit', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
                     body: JSON.stringify({

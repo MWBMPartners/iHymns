@@ -30,6 +30,8 @@
  *  ever required.
  * ========================================================================== */
 
+import { apiFetch } from '../utils/api-client.js';
+
 let _libsPromise = null;
 
 /** Lazy-load the export libraries once (ProPresenter ZIP writer first). */
@@ -79,7 +81,7 @@ function toast(message, type) {
 }
 
 async function fetchJson(url) {
-    const r = await fetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+    const r = await apiFetch(url, { credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest' } });
     if (!r.ok) { throw new Error('HTTP ' + r.status); }
     return r.json();
 }

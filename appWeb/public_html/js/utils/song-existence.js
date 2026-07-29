@@ -14,6 +14,8 @@
  * gone — never just un-checked.
  */
 
+import { apiFetch } from './api-client.js';
+
 const _CHUNK = 150;
 
 /**
@@ -33,7 +35,7 @@ export async function songsExist(app, ids) {
         for (let i = 0; i < unique.length; i += _CHUNK) {
             const batch = unique.slice(i, i + _CHUNK);
             const url = `${base}?action=songs_exist&ids=${encodeURIComponent(batch.join(','))}`;
-            const res = await fetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            const res = await apiFetch(url, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
             if (!res.ok) return null;
             const data = await res.json();
             /* exists === null is the server's "couldn't check" sentinel; an

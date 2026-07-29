@@ -57,6 +57,7 @@
  */
 
 import { offlineQueue } from './offline-queue.js';
+import { apiFetch } from '../utils/api-client.js';
 
 /** Queue bucket name. MUST match the SW's `ihymns-queue-song-requests`
  *  Background Sync tag (offline-queue.js builds the tag from this). */
@@ -135,7 +136,7 @@ function showError(ui, message) {
  * @returns {Promise<object>} `{ok: true, trackingId?: number}`
  */
 async function send(payload) {
-    const res = await fetch(SUBMIT_ENDPOINT, {
+    const res = await apiFetch(SUBMIT_ENDPOINT, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body:    JSON.stringify(payload),

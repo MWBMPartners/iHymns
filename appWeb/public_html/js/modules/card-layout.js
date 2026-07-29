@@ -27,6 +27,8 @@
  * default" button.
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const SORTABLE_CDN = 'https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js';
 
 let _sortablePromise = null;
@@ -66,7 +68,7 @@ function serialiseLayout(root) {
 
 async function postLayout(action, surface, payload) {
     const body = JSON.stringify({ surface, ...payload });
-    const res = await fetch(`/api?action=${action}`, {
+    const res = await apiFetch(`/api?action=${action}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body,
@@ -242,7 +244,7 @@ export async function applyCardLayout(root) {
 
     let data = null;
     try {
-        const res = await fetch(
+        const res = await apiFetch(
             `/api?action=card_layout_get&surface=${encodeURIComponent(surface)}`,
             { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }
         );

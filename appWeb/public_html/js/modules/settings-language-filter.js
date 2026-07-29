@@ -19,6 +19,7 @@
    STORAGE_LANGUAGE_FILTER for why this raw key name predates the ihymns_
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -44,7 +45,7 @@ function saveToAccount(subtags) {
     let token = null;
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (!token) return Promise.resolve();
-    return fetch('/api?action=user_preferred_languages_save', {
+    return apiFetch('/api?action=user_preferred_languages_save', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -71,7 +72,7 @@ function saveToAccount(subtags) {
 async function buildPicker(host) {
     let available = [];
     try {
-        const resp = await fetch('/api?action=catalogue_language_subtags');
+        const resp = await apiFetch('/api?action=catalogue_language_subtags');
         if (resp.ok) {
             const j = await resp.json();
             available = Array.isArray(j.subtags) ? j.subtags.slice() : [];

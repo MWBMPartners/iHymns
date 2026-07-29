@@ -926,7 +926,7 @@ export class Router {
      */
     async _verifyMagicLinkToken(token) {
         try {
-            const res = await fetch(`${this.apiUrl}?action=auth_email_login_verify`, {
+            const res = await apiFetch(`${this.apiUrl}?action=auth_email_login_verify`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

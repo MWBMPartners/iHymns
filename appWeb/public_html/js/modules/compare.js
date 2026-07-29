@@ -21,6 +21,7 @@
  */
 import { escapeHtml } from '../utils/html.js';
 import { toTitleCase } from '../utils/text.js';
+import { apiFetch } from '../utils/api-client.js';
 import './combobox-a11y.js';
 
 export class Compare {
@@ -124,7 +125,7 @@ export class Compare {
                 url.searchParams.set('q', q);
 
                 try {
-                    const resp = await fetch(url);
+                    const resp = await apiFetch(url);
                     const data = await resp.json();
                     const songs = (data.results || []).filter(s => s.id !== firstSongId).slice(0, 10);
 
@@ -196,8 +197,8 @@ export class Compare {
         /* Fetch both songs in parallel */
         const apiBase = this.app.config.apiUrl;
         const [respA, respB] = await Promise.all([
-            fetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdA)}`),
-            fetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdB)}`),
+            apiFetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdA)}`),
+            apiFetch(`${apiBase}?page=song&id=${encodeURIComponent(songIdB)}`),
         ]);
 
         if (!respA.ok || !respB.ok) {

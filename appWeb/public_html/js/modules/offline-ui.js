@@ -20,6 +20,7 @@ import {
     STORAGE_OFFLINE_INCLUDE_AUDIO_LEGACY,
     EVT_OFFLINE_SETTINGS_CHANGED,
 } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 /** Is this browser capable of offline caching? */
 export function isOfflineSupported() {
@@ -254,7 +255,7 @@ export async function queueAudioCacheForSongbooks(songbooks) {
     }
     for (const songbook of songbooks) {
         try {
-            const r = await fetch(`/api?action=bulk_audio&songbook=${encodeURIComponent(songbook)}`);
+            const r = await apiFetch(`/api?action=bulk_audio&songbook=${encodeURIComponent(songbook)}`);
             if (!r.ok) continue;
             const data = await r.json();
             const urls = (data.audio || []).map(a => a.url).filter(Boolean);

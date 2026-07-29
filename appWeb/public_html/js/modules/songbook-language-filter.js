@@ -71,6 +71,7 @@
    STORAGE_LANGUAGE_FILTER for why this raw key name predates the ihymns_
    prefix convention and must not be renamed. */
 import { EVT_LANGUAGE_FILTER_CHANGED, STORAGE_LANGUAGE_FILTER } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 const STORAGE_KEY = STORAGE_LANGUAGE_FILTER;
 
@@ -114,7 +115,7 @@ function saveSubtagsToAccount(subtags) {
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (!token) return;
 
-    fetch('/api?action=user_preferred_languages_save', {
+    apiFetch('/api?action=user_preferred_languages_save', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -391,7 +392,7 @@ export function bootSongbookLanguageFilter(root) {
     let token = null;
     try { token = localStorage.getItem('ihymns_auth_token'); } catch (_e) {}
     if (token) {
-        fetch('/api?action=user_preferred_languages', {
+        apiFetch('/api?action=user_preferred_languages', {
             headers: { 'Authorization': 'Bearer ' + token, 'X-Requested-With': 'XMLHttpRequest' },
         })
             .then(r => r.ok ? r.json() : null)

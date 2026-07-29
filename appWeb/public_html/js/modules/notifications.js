@@ -14,6 +14,7 @@
  */
 
 import { EVT_AUTH_CHANGED } from '../constants.js';
+import { apiFetch } from '../utils/api-client.js';
 
 const POLL_INTERVAL_MS = 60_000;   /* 1 min — cheap enough, avoids bursty refresh */
 const MAX_VISIBLE_ROWS = 50;
@@ -85,7 +86,7 @@ export class Notifications {
     async refresh() {
         if (!this.app.userAuth?.isLoggedIn?.()) return;
         try {
-            const res = await fetch(`${this.app.config.apiUrl}?action=notifications_list`, {
+            const res = await apiFetch(`${this.app.config.apiUrl}?action=notifications_list`, {
                 headers: { 'X-Requested-With': 'XMLHttpRequest', ...this.app.userAuth.authHeaders() },
                 credentials: 'same-origin',
             });
@@ -171,7 +172,7 @@ export class Notifications {
         this._renderBadge();
         this._renderList();
         try {
-            await fetch(`${this.app.config.apiUrl}?action=notifications_mark_read`, {
+            await apiFetch(`${this.app.config.apiUrl}?action=notifications_mark_read`, {
                 method:  'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...this.app.userAuth.authHeaders() },
                 credentials: 'same-origin',
@@ -185,7 +186,7 @@ export class Notifications {
         this._renderBadge();
         this._renderList();
         try {
-            await fetch(`${this.app.config.apiUrl}?action=notifications_mark_read`, {
+            await apiFetch(`${this.app.config.apiUrl}?action=notifications_mark_read`, {
                 method:  'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest', ...this.app.userAuth.authHeaders() },
                 credentials: 'same-origin',

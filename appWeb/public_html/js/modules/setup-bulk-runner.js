@@ -39,6 +39,8 @@
  * #862 / #863 / #868 / #870.
  */
 
+import { apiFetch } from '../utils/api-client.js';
+
 const ENDPOINT = '/manage/setup-database.php';
 
 /**
@@ -201,7 +203,7 @@ function addRefreshButton(panel) {
  */
 async function runOne(action) {
     const url = `${ENDPOINT}?action=${encodeURIComponent(action)}&format=text`;
-    const res = await fetch(url, {
+    const res = await apiFetch(url, {
         credentials: 'same-origin',
         headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'text/plain' },
     });
