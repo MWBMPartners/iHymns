@@ -39,6 +39,7 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
+    "jsdom": "^30.0.1",
     "protobufjs": "^8.5.0"
   }
 }

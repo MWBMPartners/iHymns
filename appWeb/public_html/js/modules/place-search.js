@@ -31,8 +31,12 @@
  *     not in the registry — the form falls back to display-string-only).
  *   - Picking a candidate from the dropdown POSTs to /upsert and
  *     fills the hidden Id with the returned tblPlaces row Id.
- *   - Down/Up cycles the highlight, Enter accepts, Escape closes
- *     without changing the value.
+ *   - Down/Up cycles the highlight, Home/End jump to the first/last
+ *     candidate, Enter accepts, Tab commits the highlighted candidate
+ *     and then moves focus on as normal, Escape closes without
+ *     changing the value (and does not propagate further — see the
+ *     #1594 note below for why that matters inside a Bootstrap
+ *     offcanvas/modal host).
  *   - Pre-filled value at attach time leaves both the visible
  *     input and the hidden Id alone — server's load handler is
  *     authoritative.
@@ -53,6 +57,46 @@
  *     hidden Id directly (e.g. an Edit-drawer pre-fill) and then
  *     dispatches its own 'change' event gets the same visual for free
  *     — no per-page duplication.
+ *
+ * #1594 — keyboard-accessible combobox completion:
+ *   - ELI5: arrow keys / Tab / Escape / Home / End now all behave the
+ *     way a screen-reader user (or anyone who doesn't reach for the
+ *     mouse) expects, the browser's own address-autofill popup no
+ *     longer steals the arrow keys, and Escape only closes OUR
+ *     dropdown instead of also slamming shut the whole Credit People
+ *     drawer underneath it.
+ *   - DETAILED, per sub-fix:
+ *     1. `autocomplete="off"` is replaced with an unrecognised token
+ *        (see the comment at the `setAttribute('autocomplete', …)`
+ *        call) — Chrome ignores `off` on address-shaped fields and
+ *        was intercepting Down/Up/Enter at the browser level before
+ *        our `onKeydown` ever ran.
+ *     2. Tab now COMMITS the highlighted candidate (`pickCandidate()`)
+ *        instead of silently discarding it via `onBlur()`'s bare
+ *        `closePanel()`; Tab is never `preventDefault()`-ed so focus
+ *        still moves on as normal (no keyboard trap).
+ *     3. Home / End jump the highlight to the first / last candidate.
+ *     4. Escape now `stopPropagation()`s in addition to
+ *        `preventDefault()` — see the comment on the Escape branch of
+ *        `onKeydown` for why the credit-people offcanvas drawer needed
+ *        this.
+ *     5. The ARIA 1.2 combobox pattern is now complete: `aria-controls`
+ *        ties the input to the (now uniquely `id`'d) listbox panel,
+ *        `aria-activedescendant` tracks the highlighted option's
+ *        (also uniquely `id`'d) row, inactive options carry an explicit
+ *        `aria-selected="false"`, and a reused polite live region
+ *        announces the result count on every resolved search.
+ *        @link https://www.w3.org/WAI/ARIA/apg/patterns/combobox/
+ *     6. The hover/keyboard "highlight fight" (mouse resting stationary
+ *        over a row that `renderPanel()` just recreated re-pins the
+ *        highlight against the arrow keys) is fixed by listening for
+ *        `mousemove` instead of `mouseenter` — see the comment on that
+ *        listener for the mechanism.
+ *   - NOT done: a partial/diffed re-render of just the changed rows on
+ *     highlight change (would also remove the need for fix #6 and
+ *     preserve scroll/focus state more cleanly) — `renderPanel()` still
+ *     does a full `innerHTML` rebuild on every highlight change. Scoped
+ *     out as a larger refactor; tracked as a follow-up in #1594.
  */
 
 (function () {
@@ -64,6 +108,16 @@
         debounceMs: 250,
         maxResults: 8,
     };
+
+    /* #1594 — module-scoped counter so every attach()'d input gets a
+       globally-unique panel/option id set. ELI5: the credit-people
+       drawer alone calls attach() twice on one page (birth place +
+       death place), so a hardcoded id would collide between the two
+       instances and break `aria-controls` / `aria-activedescendant` for
+       one of them (duplicate DOM ids are invalid HTML and assistive
+       tech behaviour around them is undefined). A simple incrementing
+       counter guarantees uniqueness without pulling in a UUID helper. */
+    let instanceSeq = 0;
 
     /* #1507 — one shared <style> block for every attach()'d input on the
        page (spinner keyframes + the two status-icon shapes). Injected at
@@ -101,17 +155,42 @@
         ensureStatusStyles();
         const settings = Object.assign({}, DEFAULTS, opts || {});
         inputEl.dataset.placeSearchAttached = '1';
-        inputEl.setAttribute('autocomplete', 'off');
+        /* #1594 — `autocomplete="off"` is NOT sufficient here. Chrome
+           deliberately IGNORES `off` on fields it heuristically decides
+           are address-shaped (this module's actual call sites: birth
+           place / death place / venue address / song origin city all
+           qualify), and layers its OWN native autofill dropdown on top
+           of ours — which then swallows ArrowDown/ArrowUp/Enter at the
+           BROWSER level before this module's `onKeydown` listener ever
+           sees them. That's why "the keydown listener is attached and
+           the keys still do nothing" was reported on the live site but
+           never reproduced under jsdom (no real autofill engine there).
+           Autofill engines only back off for a value they can't map to
+           a known field type, so we hand Chrome a value it has no
+           heuristic for instead of "off". This is empirically-observed
+           browser behaviour, not a documented guarantee — it may need
+           revisiting if a future Chrome starts pattern-matching custom
+           token strings too.
+           @link https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes/autocomplete */
+        inputEl.setAttribute('autocomplete', 'ihymns-place-search');
         inputEl.setAttribute('spellcheck', 'false');
         inputEl.setAttribute('role', 'combobox');
         inputEl.setAttribute('aria-autocomplete', 'list');
         inputEl.setAttribute('aria-expanded', 'false');
+
+        /* #1594 — every attach()'d instance needs a unique panel id so
+           `aria-controls` (input → panel) and `aria-activedescendant`
+           (input → active option) are valid, non-colliding references —
+           see the `instanceSeq` module-scope comment above for why a
+           hardcoded id would break the second instance on the same page. */
+        const instanceId = 'ihymns-place-search-panel-' + (++instanceSeq);
 
         /* Dropdown panel — appended to <body> so it escapes
            parent overflow:hidden containers (Bootstrap offcanvas,
            cards with overflow:auto). Position recomputed on
            focus + input + scroll. */
         const panel = document.createElement('div');
+        panel.id = instanceId;
         panel.className = 'ihymns-place-search-panel';
         panel.setAttribute('role', 'listbox');
         panel.style.position = 'absolute';
@@ -127,6 +206,43 @@
         panel.style.display = 'none';
         panel.style.fontSize = '0.875rem';
         document.body.appendChild(panel);
+        inputEl.setAttribute('aria-controls', instanceId);
+
+        /* #1594 — one reused polite live region per attach()'d instance,
+           announcing the result COUNT whenever a search resolves ("3
+           places found" / "No places found"). ELI5: the dropdown itself
+           is only useful to sighted mouse/keyboard users watching the
+           screen — a screen-reader user gets no feedback at all that
+           typing produced (or didn't produce) results unless something
+           explicitly speaks it. `aria-live="polite"` + `aria-atomic="true"`
+           makes a screen reader announce the ENTIRE new text every time
+           it changes (not just an appended diff), read out once the user
+           pauses rather than interrupting their typing. Created ONCE here
+           and its `textContent` is overwritten on each resolution —
+           creating a fresh node per keystroke would just be DOM churn
+           for zero benefit, since it's the live-region role (not node
+           identity) that assistive tech tracks. Visually hidden with the
+           standard "clip" technique (same approach Bootstrap's own
+           `.visually-hidden` uses) so sighted users never see it.
+           @link https://www.w3.org/WAI/ARIA/apg/patterns/combobox/ (announcing result counts)
+           @link https://developer.mozilla.org/en-US/docs/Web/Accessibility/ARIA/Attributes/aria-live */
+        const liveRegion = document.createElement('div');
+        liveRegion.setAttribute('aria-live', 'polite');
+        liveRegion.setAttribute('aria-atomic', 'true');
+        liveRegion.style.position = 'absolute';
+        liveRegion.style.width = '1px';
+        liveRegion.style.height = '1px';
+        liveRegion.style.padding = '0';
+        liveRegion.style.margin = '-1px';
+        liveRegion.style.overflow = 'hidden';
+        liveRegion.style.clip = 'rect(0,0,0,0)';
+        liveRegion.style.whiteSpace = 'nowrap';
+        liveRegion.style.border = '0';
+        document.body.appendChild(liveRegion);
+
+        function announce(text) {
+            liveRegion.textContent = text;
+        }
 
         /* #1507 — status icon (spinner while a lookup is in flight, a
            checkmark once the hidden Id carries a confirmed pick). Same
@@ -233,10 +349,55 @@
             panel.style.width  = Math.max(rect.width, 240) + 'px';
         }
 
+        /* #1594 — the id of the currently-highlighted option, or null. This
+           is the string `aria-activedescendant` needs; kept as one helper
+           so every call site (renderPanel's two branches, renderHint,
+           closePanel) computes/clears it the same way instead of each
+           re-deriving `instanceId + '-opt-' + highlight` inline. */
+        function optionId(index) {
+            return instanceId + '-opt-' + index;
+        }
+
+        /* #1594 — the piece of the ARIA combobox pattern that makes a
+           screen reader actually SPEAK the highlighted option. ELI5: the
+           yellow highlight box is a purely visual cue — without this, a
+           screen-reader user arrowing through the list hears nothing at
+           all change, because focus itself never leaves the <input> (this
+           is a "virtual focus" / "activedescendant" pattern, not real DOM
+           focus moving into the listbox). Must be called every time
+           `highlight` changes, and cleared (not left pointing at a
+           stale/removed option id) whenever there's no valid highlight.
+           @link https://www.w3.org/WAI/ARIA/apg/patterns/combobox/ */
+        function updateActiveDescendant() {
+            if (highlight >= 0 && highlight < candidates.length) {
+                inputEl.setAttribute('aria-activedescendant', optionId(highlight));
+            } else {
+                inputEl.removeAttribute('aria-activedescendant');
+            }
+        }
+
+        /* #1594 — follow the highlight when it moves via the KEYBOARD
+           (Arrow/Home/End) past what's currently scrolled into view.
+           `block: 'nearest'` is deliberate over `'center'`/`'start'`: it
+           only scrolls the minimum amount needed to bring the row fully
+           into view, so a highlight move that's already visible causes no
+           scroll jump at all. Guarded for environments (older browsers,
+           jsdom) where `scrollIntoView` isn't implemented, so a missing
+           polyfill degrades to "no auto-scroll" rather than a thrown error.
+           @link https://developer.mozilla.org/en-US/docs/Web/API/Element/scrollIntoView */
+        function scrollActiveIntoView() {
+            if (highlight < 0 || highlight >= candidates.length) return;
+            const el = document.getElementById(optionId(highlight));
+            if (el && typeof el.scrollIntoView === 'function') {
+                try { el.scrollIntoView({ block: 'nearest' }); } catch (_e) { /* no-op */ }
+            }
+        }
+
         function renderPanel() {
             if (!candidates.length) {
                 panel.style.display = 'none';
                 inputEl.setAttribute('aria-expanded', 'false');
+                updateActiveDescendant();
                 return;
             }
             panel.innerHTML = '';
@@ -244,6 +405,7 @@
                 const item = document.createElement('div');
                 item.className = 'ihymns-place-search-item';
                 item.setAttribute('role', 'option');
+                item.id = optionId(i);
                 item.dataset.index = String(i);
                 item.style.padding = '0.4rem 0.6rem';
                 item.style.cursor = 'pointer';
@@ -251,6 +413,13 @@
                 if (i === highlight) {
                     item.style.background = 'var(--bs-primary-bg-subtle, rgba(255, 193, 7, 0.18))';
                     item.setAttribute('aria-selected', 'true');
+                } else {
+                    /* #1594 — explicit "false" on every inactive row, not
+                       just an implicit absence of "true". Several screen
+                       readers only announce selection state reliably when
+                       aria-selected is present on ALL options in the
+                       listbox, not just the active one. */
+                    item.setAttribute('aria-selected', 'false');
                 }
                 const main = document.createElement('div');
                 main.textContent = c.display_name;
@@ -272,7 +441,29 @@
                     ev.preventDefault();
                     pickCandidate(i);
                 });
-                item.addEventListener('mouseenter', () => {
+                /* #1594 — bind 'mousemove', NOT 'mouseenter'. This looks
+                   like an obviously-safe swap so it's worth spelling out
+                   the bug it fixes: renderPanel() destroys and recreates
+                   EVERY row on each highlight change (arrow-key press). If
+                   the mouse cursor happens to be resting stationary over
+                   the list when that happens, the browser still fires
+                   'mouseenter' on the freshly-created node under it —
+                   because 'mouseenter' fires from a hit-test recompute
+                   whenever the DOM changes under a pointer, not only from
+                   genuine pointer motion. That handler used to then call
+                   renderPanel() again, which recreates the rows again,
+                   which can refire 'mouseenter' again — a feedback loop
+                   where simply resting the mouse over the list fights
+                   every arrow-key press and repeatedly pins the highlight
+                   back to wherever the cursor happens to sit.
+                   'mousemove' only fires on an actual pointer-input event,
+                   never as a side effect of us mutating the DOM, so this
+                   listener cannot re-trigger itself. The `highlight === i`
+                   guard is a second, cheap layer that also skips redundant
+                   re-renders while the pointer drifts within the same row.
+                   @link https://developer.mozilla.org/en-US/docs/Web/API/Element/mousemove_event */
+                item.addEventListener('mousemove', () => {
+                    if (highlight === i) return;
                     highlight = i;
                     renderPanel();
                 });
@@ -281,6 +472,7 @@
             positionPanel();
             panel.style.display = 'block';
             inputEl.setAttribute('aria-expanded', 'true');
+            updateActiveDescendant();
         }
 
         /* Show a single non-interactive info row in the panel. Used to
@@ -300,6 +492,12 @@
             positionPanel();
             panel.style.display = 'block';
             inputEl.setAttribute('aria-expanded', 'true');
+            /* #1594 — this panel state has no selectable options (it's an
+               informational row, not a listbox item — see the function
+               doc-comment above), so there's nothing valid to point
+               aria-activedescendant at; clear it rather than leave it
+               referencing a since-removed option id. */
+            updateActiveDescendant();
         }
 
         async function runSearch(query) {
@@ -349,10 +547,21 @@
             if (!candidates.length) {
                 setStatus('idle');
                 renderHint('No matching places — your text is saved as typed.');
+                /* #1594 — announce the resolved-but-empty result too, not
+                   just the success count below. A screen-reader user who
+                   hears nothing after typing can't tell "still searching"
+                   apart from "found nothing" apart from "this is broken". */
+                announce('No places found.');
                 return;
             }
             setStatus('idle');
             renderPanel();
+            /* #1594 — announce the result COUNT on every resolved search
+               (the ARIA APG combobox pattern's recommended feedback for
+               screen-reader users, who can't see the panel populate).
+               Singular/plural handled inline rather than pulling in a
+               pluralisation helper for one string. */
+            announce(candidates.length + (candidates.length === 1 ? ' place found.' : ' places found.'));
         }
 
         async function pickCandidate(index) {
@@ -397,6 +606,10 @@
             highlight = -1;
             panel.style.display = 'none';
             inputEl.setAttribute('aria-expanded', 'false');
+            /* #1594 — no panel means no valid active option; drop the
+               reference rather than leave the input pointing at an id
+               that's about to be wiped out on the next renderPanel(). */
+            updateActiveDescendant();
         }
 
         function onInput() {
@@ -422,17 +635,68 @@
                 ev.preventDefault();
                 highlight = Math.min(candidates.length - 1, highlight + 1);
                 renderPanel();
+                scrollActiveIntoView();
             } else if (ev.key === 'ArrowUp') {
                 ev.preventDefault();
                 highlight = Math.max(0, highlight - 1);
                 renderPanel();
+                scrollActiveIntoView();
+            } else if (ev.key === 'Home') {
+                /* #1594 — jump straight to the first candidate. Matches
+                   the ARIA APG combobox pattern's recommended keyboard
+                   support (Home = first option, End = last option) and
+                   spares a keyboard user N presses of ArrowUp on a long
+                   result list. */
+                ev.preventDefault();
+                highlight = 0;
+                renderPanel();
+                scrollActiveIntoView();
+            } else if (ev.key === 'End') {
+                ev.preventDefault();
+                highlight = candidates.length - 1;
+                renderPanel();
+                scrollActiveIntoView();
             } else if (ev.key === 'Enter') {
                 if (highlight >= 0 && highlight < candidates.length) {
                     ev.preventDefault();
                     pickCandidate(highlight);
                 }
+            } else if (ev.key === 'Tab') {
+                /* #1594 — Tab must COMMIT the highlighted option, not
+                   silently discard it. Previously Tab fell through with
+                   no handler here at all, so the field just blurred —
+                   onBlur()'s delayed closePanel() throws away whatever
+                   the user had arrowed to, a silent data-loss trap for
+                   anyone tabbing through the form by keyboard instead of
+                   pressing Enter first. Deliberately NOT preventDefault()
+                   here: trapping Tab would break the page's natural focus
+                   order, a keyboard-trap failure of its own (WCAG 2.1.2).
+                   So: commit synchronously, then let the browser move
+                   focus on exactly as it would have anyway — pickCandidate()
+                   calls closePanel() synchronously before its network
+                   round-trip, so there's nothing left open by the time
+                   focus lands on the next field.
+                   @link https://www.w3.org/WAI/ARIA/apg/patterns/combobox/
+                   @link https://www.w3.org/WAI/WCAG21/Understanding/no-keyboard-trap.html */
+                if (highlight >= 0 && highlight < candidates.length) {
+                    pickCandidate(highlight);
+                }
             } else if (ev.key === 'Escape') {
                 ev.preventDefault();
+                /* #1594 — MUST also stopPropagation(). Without it, this
+                   keydown keeps bubbling up past the input and reaches
+                   Bootstrap's own Escape handler on any offcanvas/modal
+                   host the field happens to live inside — e.g. Credit
+                   People's `#cpDrawer` — which then closes the ENTIRE
+                   drawer. The curator only meant to dismiss the suggestion
+                   panel and instead loses a part-filled form: a data-loss
+                   hazard, not just a UX papercut. This branch only runs
+                   while the panel is open (the function-top guard above
+                   returns early otherwise), so a bare Escape on an idle
+                   field is untouched by this and still bubbles normally —
+                   closing the host drawer/modal in that case is correct.
+                   @link https://developer.mozilla.org/en-US/docs/Web/API/Event/stopPropagation */
+                ev.stopPropagation();
                 closePanel();
             }
         }
@@ -468,6 +732,15 @@
             }
             if (panel.parentNode) panel.parentNode.removeChild(panel);
             if (statusIcon.parentNode) statusIcon.parentNode.removeChild(statusIcon);
+            /* #1594 — the live region is a body-appended node like panel/
+               statusIcon above, so it needs the same teardown; and the two
+               ARIA attributes this module added to the caller's own
+               <input> (aria-controls / aria-activedescendant) must be
+               removed too, or a torn-down instance leaves the input
+               pointing at ids for a panel/listbox that no longer exist. */
+            if (liveRegion.parentNode) liveRegion.parentNode.removeChild(liveRegion);
+            inputEl.removeAttribute('aria-controls');
+            inputEl.removeAttribute('aria-activedescendant');
             inputEl.style.borderColor = '';
             inputEl.style.boxShadow   = '';
             delete inputEl.dataset.placeSearchAttached;
