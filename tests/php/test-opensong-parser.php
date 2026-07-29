@@ -13,32 +13,30 @@
 
 declare(strict_types=1);
 
-/* The parser helpers live at the bottom of the editor's API file but
-   require none of its DB / HTTP machinery to function. We isolate the
-   helper definitions by extracting them into a temp file the test
-   includes — the alternative (require api.php) would emit headers and
-   short-circuit the response handler at the top of the file. */
-$apiPath = dirname(__DIR__, 2) . '/appWeb/public_html/manage/editor/api.php';
-$src     = file_get_contents($apiPath);
-if ($src === false) {
-    fwrite(STDERR, "could not read api.php\n");
-    exit(1);
-}
-
-/* Pull out only the OpenSong helpers + their dependencies. The block
-   we care about is delimited by the OPENSONG PARSER comment header
-   and runs to EOF. */
-$marker = '/* ===========================================================================' . "\n"
-        . ' * OPENSONG PARSER (#882)';
-$pos = strpos($src, $marker);
-if ($pos === false) {
-    fwrite(STDERR, "OPENSONG PARSER block not found in api.php\n");
-    exit(1);
-}
-$tmp = tempnam(sys_get_temp_dir(), 'ihymns-opensong-');
-file_put_contents($tmp, "<?php\n" . substr($src, $pos));
-require $tmp;
-@unlink($tmp);
+/* ELI5: we just load the file the importer actually lives in, then call it.
+ *
+ * Detail — this test USED to read manage/editor/api.php as TEXT, search it for
+ * the literal comment banner "OPENSONG PARSER (#882)", copy everything from
+ * there to EOF into a temp file and require THAT. #1200 Phase 4b moved the
+ * bulk-import parsers out of api.php into this shared include so api.php and
+ * api2.php stop forking one copy each (CLAUDE.md modularity rule), the banner
+ * went with them, `strpos()` returned false, and the test exited 1 before
+ * running a single assertion — a permanently-red test that asserted nothing
+ * about the parser. #1575.
+ *
+ * Requiring the real module instead of scraping source text is also what makes
+ * this test survive the NEXT move: a source-text scrape re-breaks whenever
+ * anything is reordered, whereas the public entry point
+ * `_bulkImport_parseOpenSong()` is the contract callers actually depend on.
+ * This mirrors the loader the newer sibling tests already use
+ * (tests/php/test-chordpro-parser.php, tests/php/test-openlyrics-parser.php).
+ *
+ * Safe to require directly: song_importers.php is a pure-function include. Its
+ * only top-level side effect is a direct-access guard keyed on
+ * $_SERVER['SCRIPT_FILENAME'] — under the CLI that is THIS test file, not the
+ * include, so the guard passes — and no parser touches the DB at include time.
+ * See https://www.php.net/manual/en/reserved.variables.server.php */
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/song_importers.php';
 
 /* -------------------------------------------------------------------- */
 /* Test runner — one-line PASS/FAIL per assertion.                       */

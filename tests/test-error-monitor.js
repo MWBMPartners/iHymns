@@ -25,20 +25,35 @@
  * per-fingerprint dedupe key and the secret scrubber), each broken one
  * at a time, then restored.
  *
+ * WIRING GUARD (#1599): the behavioural groups above all exercise the
+ * module in isolation — every one of them passed for weeks while the
+ * module was loaded on the PUBLIC site ONLY and no `/manage/*` page had
+ * any crash surfacing at all. That is the #1565/#1581 failure shape in
+ * miniature: a green suite proving a mechanism works, next to a surface
+ * that never invokes it. The final two groups below therefore assert the
+ * WIRING as source text, not behaviour — that
+ * `manage/includes/head-libs.php` really does import and boot the module,
+ * and that every admin page that emits a document really does go through
+ * that one partial.
+ *
  * USAGE:
  *   node tests/test-error-monitor.js
  *
  * Exit status 0 = all tests pass, 1 = at least one assertion failed.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
-const MODULE_PATH = path.resolve(
-    __dirname, '..', 'appWeb', 'public_html', 'js', 'modules', 'error-monitor.js'
-);
+const PUBLIC_HTML = path.resolve(__dirname, '..', 'appWeb', 'public_html');
+const MODULE_PATH = path.join(PUBLIC_HTML, 'js', 'modules', 'error-monitor.js');
+/* The ONE shared <head> partial every /manage/* page includes (modularity
+   rule — see .claude/CLAUDE.md "Web/PWA specific checkpoints"). */
+const HEAD_LIBS_PATH = path.join(PUBLIC_HTML, 'manage', 'includes', 'head-libs.php');
+const MANAGE_ROOT    = path.join(PUBLIC_HTML, 'manage');
 
 /* ======================================================================
  * Minimal browser shim — set up BEFORE the module's functions are ever
@@ -89,11 +104,17 @@ globalThis.window = {
        (see app.js's #1582 comment) and must tolerate that. */
 };
 
+/* Kept as the whole namespace object (not only the three destructured
+   bindings) because the #1599 wiring guard below cross-references the
+   names head-libs.php IMPORTS against what this module actually EXPORTS
+   — a rename of `bootErrorMonitor` that forgot the admin partial would
+   otherwise be a silent runtime-only break. */
+const errorMonitorModule = await import(MODULE_PATH);
 const {
     bootErrorMonitor,
     __handleErrorForTests: handleError,
     __resetForTests: resetErrorMonitor,
-} = await import(MODULE_PATH);
+} = errorMonitorModule;
 
 /* ======================================================================
  * Test helpers
@@ -613,6 +634,223 @@ console.log('Privacy — never location.search/hash in the payload:');
     }
     /* Restore the shared location shim for anything appended below. */
     globalThis.location = { pathname: '/song/MP-1008', href: 'https://ihymns.app/song/MP-1008' };
+}
+
+/* ======================================================================
+ * Assertion — #1599: the ADMIN surface actually loads and boots the
+ * module.
+ *
+ * ELI5: every test above proves the smoke detector WORKS. This one
+ * proves it is actually screwed to the ceiling in the admin area — for
+ * #1582's whole life it was wired only into the public site's `app.js`,
+ * so `/manage/*` had no crash surfacing whatsoever while this very file
+ * reported all-green.
+ *
+ * DETAIL: a source-text assertion (there is no admin page to boot in
+ * Node, and pretending to render PHP here would test the pretence, not
+ * the page). It reads the real `manage/includes/head-libs.php`, strips
+ * the PHP so what is left is the literal HTML the browser receives, and
+ * checks the five things that each independently make this a silent
+ * no-op if wrong:
+ *
+ *   1. the partial references the module at all;
+ *   2. it is loaded as `type="module"` — error-monitor.js uses `export`,
+ *      so a classic <script> is an outright SyntaxError;
+ *      https://developer.mozilla.org/docs/Web/HTML/Element/script#module
+ *   3. the boot function is CALLED — importing the module alone installs
+ *      nothing, the listeners only exist after `bootErrorMonitor()`;
+ *   4. the specifier is ROOT-absolute. A relative one resolves against
+ *      the DOCUMENT, so it would break for admin pages at another depth
+ *      (`/manage/editor/…`) — and this app's `.htaccess` catch-all
+ *      answers an unmatched path with 200 + the HTML shell, so the
+ *      failure surfaces as a confusing MIME-type refusal, not a 404
+ *      (the #1566 class, in CLAUDE.md's red-flag list);
+ *   5. every imported binding is a REAL export of error-monitor.js —
+ *      cross-referenced against the live module namespace, so renaming
+ *      the export without updating the partial fails here rather than in
+ *      an admin's console.
+ *
+ * PROVE-FAIL RECORD: this group was written and run BEFORE
+ * head-libs.php was touched — i.e. against the unfixed #1599 code — and
+ * went red, while all 40 pre-existing behavioural assertions stayed
+ * green (which is precisely the blindness it exists to remove):
+ *   Admin wiring — manage/includes/head-libs.php boots the monitor (#1599):
+ *     FAIL  head-libs.php contains exactly one <script> referencing error-monitor.js
+ *           matching <script> blocks=0 (0 = the admin area has no crash
+ *           surfacing at all — the #1599 bug)
+ *   40 passed, 1 failed
+ * It went green (47 passed, 0 failed) only once the partial actually
+ * imported and called bootErrorMonitor().
+ * ==================================================================== */
+console.log('');
+console.log('Admin wiring — manage/includes/head-libs.php boots the monitor (#1599):');
+
+/** Remove `<?php … ?>` / `<?= … ?>` regions, leaving the literal HTML+JS
+ *  the browser is actually served. Same "strip the server language first,
+ *  then assert on what ships" approach as
+ *  tests/php/test-fragment-inline-scripts.php (#1565). */
+function stripPhp(src) {
+    return src.replace(/<\?(?:php\b|=)?[\s\S]*?\?>/g, '');
+}
+
+/** Every `<script …>…</script>` in a chunk of HTML, as {attrs, body}. */
+function extractScripts(html) {
+    const out = [];
+    const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
+    let m;
+    while ((m = re.exec(html)) !== null) out.push({ attrs: m[1], body: m[2] });
+    return out;
+}
+
+{
+    const headLibsSrc  = fs.readFileSync(HEAD_LIBS_PATH, 'utf8');
+    const headLibsHtml = stripPhp(headLibsSrc);
+    const monitorScripts = extractScripts(headLibsHtml)
+        .filter(s => `${s.attrs}${s.body}`.includes('error-monitor.js'));
+
+    check(
+        'head-libs.php contains exactly one <script> referencing error-monitor.js',
+        monitorScripts.length === 1,
+        `matching <script> blocks=${monitorScripts.length} (0 = the admin area has no crash surfacing at all — the #1599 bug)`
+    );
+
+    if (monitorScripts.length === 1) {
+        const { attrs, body } = monitorScripts[0];
+
+        check(
+            'it is loaded as type="module" (error-monitor.js uses `export` — a classic <script> would be a SyntaxError)',
+            /type\s*=\s*["']module["']/i.test(attrs),
+            `attrs=${JSON.stringify(attrs)}`
+        );
+
+        const importMatch = /import\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/.exec(body);
+        check(
+            'it uses a named `import { … } from …` of the module',
+            importMatch !== null,
+            `body=${JSON.stringify(body)}`
+        );
+
+        if (importMatch) {
+            const specifier = importMatch[2];
+            const names = importMatch[1]
+                .split(',')
+                .map(n => n.trim().split(/\s+as\s+/)[0].trim())
+                .filter(Boolean);
+
+            check(
+                'the module specifier is root-absolute, never relative (#1566 — a relative URL resolves against the DOCUMENT and the .htaccess catch-all masks the 404)',
+                specifier.startsWith('/js/modules/error-monitor.js'),
+                `specifier=${JSON.stringify(specifier)}`
+            );
+
+            check(
+                'it imports bootErrorMonitor',
+                names.includes('bootErrorMonitor'),
+                `imported names=${JSON.stringify(names)}`
+            );
+
+            check(
+                'it CALLS bootErrorMonitor() (importing alone installs no listeners)',
+                /\bbootErrorMonitor\s*\(\s*\)/.test(body),
+                `body=${JSON.stringify(body)}`
+            );
+
+            const unknown = names.filter(n => typeof errorMonitorModule[n] !== 'function');
+            check(
+                'every name head-libs.php imports is a real exported function of error-monitor.js (rename drift guard)',
+                unknown.length === 0,
+                `not exported by the module: ${JSON.stringify(unknown)}; module exports=${JSON.stringify(Object.keys(errorMonitorModule))}`
+            );
+        }
+    }
+}
+
+/* ======================================================================
+ * Assertion — #1599: every admin page that emits a document goes through
+ * that one partial.
+ *
+ * ELI5: the check above proves the shared admin <head> boots the
+ * monitor. This one proves the admin pages actually USE that shared
+ * <head>, so nobody gets crash surfacing by accident and nobody loses it
+ * by writing a page with its own hand-rolled <head>.
+ *
+ * DETAIL: this is the modularity rule expressed as a test (.claude/
+ * CLAUDE.md — "every /manage/*.php page MUST use the shared partials").
+ * BESPOKE_HEAD_ADMIN_PAGES is a count-exact, SELF-CLEANING allowlist, the
+ * same convention as tests/php/test-fragment-inline-scripts.php: a listed
+ * page that has since started requiring head-libs.php fails here so the
+ * entry gets deleted rather than quietly outliving the exception. The
+ * three editor pages on it today are a REAL, KNOWN GAP — they each build
+ * their own <head> and so still have no error monitor; see #1599's
+ * follow-up note.
+ *
+ * PROVE-FAIL RECORD: run with 'editor/index.php' removed from
+ * BESPOKE_HEAD_ADMIN_PAGES, this block went red exactly as intended:
+ *   FAIL  every /manage/* page that emits an HTML document includes head-libs.php
+ *         uncovered pages (no head-libs.php, not allow-listed): ["editor/index.php"]
+ * Restored immediately after.
+ * ==================================================================== */
+console.log('');
+console.log('Admin coverage — every admin page that emits a document includes head-libs.php (#1599):');
+
+/* Admin pages that deliberately build their own <head> and therefore do
+   NOT pick the monitor up from head-libs.php. Paths are relative to
+   appWeb/public_html/manage/. Keep this list shrinking, never growing. */
+const BESPOKE_HEAD_ADMIN_PAGES = [
+    'editor/editor2.php',
+    'editor/import2.php',
+    'editor/index.php',
+];
+
+/** Recursively collect every *.php file under `dir` (relative paths). */
+function collectPhpFiles(dir, base = dir) {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...collectPhpFiles(full, base));
+        else if (entry.isFile() && entry.name.endsWith('.php')) {
+            out.push(path.relative(base, full).split(path.sep).join('/'));
+        }
+    }
+    return out;
+}
+
+{
+    /* A page "emits a document" when it opens <html> at the start of a
+       line — deliberately narrower than a bare /<html/ search, which also
+       matches the many doc-block sentences that merely MENTION `<html>`
+       (admin-theme-init.php has three) and the one-line 403 `echo
+       '<!DOCTYPE html><html …>'` bail-outs, neither of which is a page
+       whose <head> we can wire anything into. */
+    const EMITS_DOCUMENT_RE = /^[ \t]*<html[\s>]/m;
+    const REQUIRES_HEAD_LIBS_RE = /\b(?:require|include)(?:_once)?\b[^;\n]*head-libs\.php/;
+
+    const uncovered = [];
+    const staleAllowlistEntries = [];
+
+    for (const rel of collectPhpFiles(MANAGE_ROOT)) {
+        const src = fs.readFileSync(path.join(MANAGE_ROOT, rel), 'utf8');
+        if (!EMITS_DOCUMENT_RE.test(src)) continue;
+        const hasHeadLibs = REQUIRES_HEAD_LIBS_RE.test(src);
+        const allowed = BESPOKE_HEAD_ADMIN_PAGES.includes(rel);
+        if (!hasHeadLibs && !allowed) uncovered.push(rel);
+        if (hasHeadLibs && allowed) staleAllowlistEntries.push(rel);
+    }
+
+    check(
+        'every /manage/* page that emits an HTML document includes head-libs.php (and so boots the error monitor)',
+        uncovered.length === 0,
+        `uncovered pages (no head-libs.php, not allow-listed): ${JSON.stringify(uncovered)}`
+    );
+
+    const missingAllowlistFiles = BESPOKE_HEAD_ADMIN_PAGES
+        .filter(rel => !fs.existsSync(path.join(MANAGE_ROOT, rel)));
+    check(
+        'the bespoke-<head> allowlist is self-cleaning (no entry that has since been fixed or deleted)',
+        staleAllowlistEntries.length === 0 && missingAllowlistFiles.length === 0,
+        `now include head-libs.php (delete from the list): ${JSON.stringify(staleAllowlistEntries)}; `
+        + `no longer exist (delete from the list): ${JSON.stringify(missingAllowlistFiles)}`
+    );
 }
 
 /* ======================================================================

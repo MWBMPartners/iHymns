@@ -265,12 +265,67 @@ test('CH-0003 "Come, Thou Almighty King" parsed correctly', () => {
     assert.ok(song.components[0].lines.length >= 4);
 });
 
-test('CH-0563 "Softly and Tenderly" has refrain', () => {
+/* ELI5: this hymn's "Refrain" comes out labelled "chorus", on purpose.
+ *
+ * Detail — this assertion used to look for a component of type 'refrain' and
+ * had been red ever since #265. `tools/parse-songs.js` recognises "Refrain" as
+ * a section label (isComponentLabel → COMPONENT_LABELS includes 'refrain'), but
+ * the caller then collapses it:
+ *
+ *     const normalisedType = componentType === 'refrain' ? 'chorus' : componentType;
+ *
+ * so 'refrain' can never reach the output. The corpus bears this out — across
+ * all 3,612 songs the ONLY component types present are `verse` and `chorus`.
+ * The parser is behaving as designed; the EXPECTATION went stale when #265
+ * landed and was never updated, which left `npm test` permanently red. #1575.
+ *
+ * The check is therefore re-pointed at what #265 actually promises — the hymn's
+ * repeated section survives parsing and is typed `chorus` — rather than being
+ * deleted. Deleting it would drop the coverage; weakening it to `verse ||
+ * chorus || refrain` would make it unable to fail. */
+test('CH-0563 "Softly and Tenderly" refrain is normalised to a chorus (#265)', () => {
     const song = songData.songs.find(s => s.id === 'CH-0563');
     assert.ok(song, 'CH-0563 not found');
-    const refrain = song.components.find(c => c.type === 'refrain');
-    assert.ok(refrain, 'Should have a refrain component');
-    assert.ok(refrain.lines.length >= 3);
+    assert.equal(song.title, 'Softly and Tenderly');
+    assert.equal(song.songbook, 'CH');
+
+    /* The repeated "Come home, come home…" section must be present and typed
+       `chorus` — the post-#265 spelling of what the source file labels
+       "Refrain". */
+    const chorus = song.components.find(c => c.type === 'chorus');
+    assert.ok(chorus, 'Should have a chorus component (the normalised refrain)');
+    assert.ok(chorus.lines.length >= 3,
+        `Chorus should carry its lyrics, got ${chorus.lines.length} line(s)`);
+
+    /* And the verses either side of it still parse, so the chorus label did not
+       swallow the surrounding text. */
+    const verses = song.components.filter(c => c.type === 'verse');
+    assert.ok(verses.length >= 3, `Expected >= 3 verses, got ${verses.length}`);
+});
+
+/* Corpus-wide guard for the same rule. The single-song check above only proves
+   #265 held for ONE hymn; this proves it held for every one of them, so a
+   revert of the normalisation (or a new code path that emits a raw 'refrain')
+   turns the suite red immediately instead of silently splitting the vocabulary
+   in two. `validComponentTypes` above still lists 'refrain' deliberately — it
+   is an accepted INPUT label, just never an output type. */
+test('no component survives parsing as "refrain" — all are normalised (#265)', () => {
+    const offenders = [];
+    for (const song of songData.songs) {
+        for (const comp of song.components) {
+            if (comp.type === 'refrain') offenders.push(song.id);
+        }
+    }
+    assert.equal(offenders.length, 0,
+        `Expected 0 'refrain' components, found ${offenders.length} ` +
+        `(e.g. ${offenders.slice(0, 5).join(', ')})`);
+
+    /* Guard the other direction too: if the normalisation were "fixed" by
+       dropping refrain sections instead of retyping them, the chorus count
+       would collapse to zero and the assertion above would still pass. */
+    const choruses = songData.songs
+        .reduce((n, s) => n + s.components.filter(c => c.type === 'chorus').length, 0);
+    assert.ok(choruses > 0, 'Expected the corpus to contain chorus components');
 });
 
 test('MP-0050 "Be Still" has writer credits', () => {

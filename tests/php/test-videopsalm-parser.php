@@ -13,33 +13,30 @@
 
 declare(strict_types=1);
 
-/* The parser helpers live at the bottom of the editor's API file but
-   require none of its DB / HTTP machinery to function. We isolate the
-   helper definitions by extracting them into a temp file the test
-   includes — the alternative (require api.php) would emit headers and
-   short-circuit the response handler at the top of the file. */
-$apiPath = dirname(__DIR__, 2) . '/appWeb/public_html/manage/editor/api.php';
-$src     = file_get_contents($apiPath);
-if ($src === false) {
-    fwrite(STDERR, "could not read api.php\n");
-    exit(1);
-}
-
-/* Pull out only the OpenSong + VideoPsalm helpers + their
-   dependencies. The block we care about is delimited by the
-   OPENSONG PARSER comment header and runs to EOF (the VideoPsalm
-   block lives immediately after OpenSong). */
-$marker = '/* ===========================================================================' . "\n"
-        . ' * OPENSONG PARSER (#882)';
-$pos = strpos($src, $marker);
-if ($pos === false) {
-    fwrite(STDERR, "OPENSONG PARSER block not found in api.php\n");
-    exit(1);
-}
-$tmp = tempnam(sys_get_temp_dir(), 'ihymns-videopsalm-');
-file_put_contents($tmp, "<?php\n" . substr($src, $pos));
-require $tmp;
-@unlink($tmp);
+/* ELI5: we just load the file the importer actually lives in, then call it.
+ *
+ * Detail — this test USED to read manage/editor/api.php as TEXT, search it for
+ * the literal comment banner "OPENSONG PARSER (#882)" (the VideoPsalm block sat
+ * just after it), copy from there to EOF into a temp file and require THAT.
+ * #1200 Phase 4b moved the bulk-import parsers out of api.php into this shared
+ * include so api.php and api2.php stop forking one copy each (CLAUDE.md
+ * modularity rule); the banner went with them, `strpos()` returned false, and
+ * the test exited 1 before running a single assertion — a permanently-red test
+ * that asserted nothing about the parser. #1575.
+ *
+ * Requiring the real module instead of scraping source text is also what makes
+ * this test survive the NEXT move: a source-text scrape re-breaks whenever
+ * anything is reordered, whereas the public entry point
+ * `_bulkImport_parseVideoPsalmSongbook()` is the contract callers depend on.
+ * This mirrors the loader the newer sibling tests already use
+ * (tests/php/test-chordpro-parser.php, tests/php/test-openlyrics-parser.php).
+ *
+ * Safe to require directly: song_importers.php is a pure-function include. Its
+ * only top-level side effect is a direct-access guard keyed on
+ * $_SERVER['SCRIPT_FILENAME'] — under the CLI that is THIS test file, not the
+ * include, so the guard passes — and no parser touches the DB at include time.
+ * See https://www.php.net/manual/en/reserved.variables.server.php */
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/song_importers.php';
 
 /* -------------------------------------------------------------------- */
 /* Test runner — one-line PASS/FAIL per assertion.                       */
@@ -188,6 +185,32 @@ assertEq(_bulkImport_videopsalmAbbrevFromHint('foo/Sample [SH].json', 'Whatever'
                                                               'SH', 'bracketed token wins, even with folder prefix');
 assertEq(_bulkImport_videopsalmAbbrevFromHint('CIS.json',  'Christ in Song'),
                                                               'CIS', 'bare alphanum filename → uppercased abbrev');
+
+/* ELI5: a file inside a folder must still be recognised by its own name.
+ *
+ * Detail — _bulkImport_videopsalmAbbrevFromHint() strips leading path segments
+ * before testing the hint, via a preg_replace whose pattern is an anchored
+ * "everything up to and including the last slash" match.
+ *
+ * That line had NO coverage. Mutation-testing this file (#1575) showed both
+ * assertions above still pass with the strip deleted, for two different
+ * accidental reasons:
+ *
+ *   - 'foo/Sample [SH].json' — the bracket regex /\[([A-Za-z0-9_\-]+)\]/ is
+ *     UNANCHORED, so it finds "[SH]" wherever it sits. The label on that
+ *     assertion says "even with folder prefix", but the prefix is irrelevant
+ *     to the branch it actually exercises.
+ *   - 'CIS.json' carries no folder at all, so it never reaches the strip.
+ *
+ * The strip only bites on the BARE-FILENAME branch, whose guard is anchored
+ * (/^[A-Za-z0-9_\-]+$/) and therefore rejects any string still containing "/".
+ * Even then the assertion must use a songbook name whose INITIALS differ from
+ * the expected abbreviation — with 'Christ in Song' the title-initials fallback
+ * coincidentally also returns 'CIS', which masks the regression a second time.
+ * Hence 'Sample VideoPsalm Hymnal' (initials 'SVH') below: delete the strip and
+ * this returns 'SVH' instead of 'CIS'. */
+assertEq(_bulkImport_videopsalmAbbrevFromHint('books/CIS.json', 'Sample VideoPsalm Hymnal'),
+                                                              'CIS', 'folder-prefixed bare filename → leaf name wins over title initials');
 assertEq(_bulkImport_videopsalmAbbrevFromHint(null,        'Christ In Song Revised'),
                                                               'CISR', 'no hint → initials of title words');
 assertEq(_bulkImport_videopsalmAbbrevFromHint('',          ''),
