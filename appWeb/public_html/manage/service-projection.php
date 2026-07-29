@@ -51,7 +51,17 @@ if (!isAuthenticated()) {
 $currentUser = getCurrentUser();
 $role   = (string)($currentUser['role'] ?? '');
 $userId = (int)($currentUser['id'] ?? $currentUser['Id'] ?? 0);
-$isSuper = ($role === 'global_admin' || $role === 'admin');
+/* Entitlement, not a hardcoded role list (#1648 item 1, rule #1587).
+   ELI5: check the permission the menu advertises, not two role names.
+   Detail: `manage_organisations` defaults to ['admin','global_admin'] — exactly
+   the list this replaces — so behaviour is unchanged until an admin overrides
+   it via /manage/entitlements, which is the point of having that UI.
+   NOTE the org-admin branch below is deliberately KEPT: someone who administers
+   an organisation but holds neither super role still needs this page, and the
+   entitlement alone cannot express that. Replacing the whole gate with the
+   entitlement would have locked those users out — a functional regression
+   dressed as a security fix. */
+$isSuper = userHasEntitlement('manage_organisations', $role);
 $adminOrgIds = $isSuper ? [] : userIsOrgAdminOf($userId);
 if (!$isSuper && empty($adminOrgIds)) {
     http_response_code(403);

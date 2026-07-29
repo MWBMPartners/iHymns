@@ -2089,6 +2089,31 @@ if ($action !== null) {
          * Parameters: id (required) — 8-character hex ID
          * ----------------------------------------------------------------- */
         case 'setlist_get':
+            /* Throttle blind share-id enumeration (#1648 item 3).
+             *
+             * ELI5: stop someone guessing share links by trying millions of
+             * random ones.
+             *
+             * Detail: share ids are bin2hex(random_bytes(4)) — 8 hex chars, so
+             * 32 bits. Against ~10,000 live shares a blind guess succeeds
+             * roughly every 430,000 attempts, which is entirely practical
+             * against an endpoint that is unauthenticated AND was covered by
+             * neither enforceReadRateLimitKeyed nor checkRateLimit. Throttling
+             * turns "practical" back into "not worth it".
+             *
+             * 120/min matches `search` — far above any human opening shared
+             * lists, or a congregation of devices each loading one, but a hard
+             * ceiling on enumeration. Fail-open and table-existence-gated like
+             * every other caller, so it is a clean no-op until the migration
+             * runs and can never lock a legitimate reader out.
+             *
+             * The disclosure this bounds is genuinely limited — share content
+             * is content designed to be shared by link, owner identifiers are
+             * never echoed, and the update path is IDOR-guarded (#1380). This
+             * is defence in depth on a low-severity finding, not a patch for a
+             * hole. Widening the id itself is the stronger fix but must not
+             * invalidate existing links, so it is tracked separately. */
+            enforceReadRateLimitKeyed('setlist_get', 120);
             $shareId = isset($_GET['id']) ? preg_replace('/[^a-f0-9]/', '', strtolower(trim($_GET['id']))) : '';
             if ($shareId === '' || strlen($shareId) > 16) {
                 sendJson(['error' => 'Invalid or missing set list ID.'], 400);

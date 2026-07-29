@@ -127,7 +127,20 @@ function initSession(): void
         session_set_cookie_params([
             'lifetime' => SESSION_LIFETIME,
             'path'     => '/manage/',
-            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+            /* Honour X-Forwarded-Proto as well as HTTPS (#1648 item 2).
+               ELI5: if something in front of us handled the encryption, we
+               still need to mark this cookie as HTTPS-only.
+               Detail: behind a TLS-terminating proxy (a CDN, a load balancer)
+               $_SERVER['HTTPS'] is unset on the origin even though the browser
+               is on https — so this minted the /manage SESSION cookie WITHOUT
+               `secure`, leaving it eligible to be sent over a plaintext
+               request. includes/auth_cookie.php:61-63 already checks both for
+               exactly this reason; the two cookie helpers in one codebase
+               disagreeing was the actual defect. Latent on DreamHost today,
+               which sets HTTPS directly — it becomes real the moment anything
+               sits in front. */
+            'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                          || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
             'httponly'  => true,
             'samesite'  => 'Strict',
         ]);

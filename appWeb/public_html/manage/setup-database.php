@@ -44,9 +44,19 @@ if (!$isInitialSetup) {
         exit;
     }
     $currentUser = getCurrentUser();
-    if (!$currentUser || $currentUser['role'] !== 'global_admin') {
+    /* Gate on the SAME entitlement the nav advertises (#1648 item 1).
+       ELI5: the menu says this page needs the "run_db_install" permission, so
+       the page must check that permission, not a hardcoded role.
+       Detail: this compared role !== 'global_admin' while admin-links.php:107
+       advertises `run_db_install`, which is admin-editable at runtime. The
+       default map for run_db_install is exactly ['global_admin'], so this is a
+       no-op today and only diverges once someone overrides it — which is the
+       whole point of having an override UI. Rule #1587's red flag.
+       Note the $isInitialSetup branch above deliberately bypasses this: on a
+       virgin install there is no user table to have a role in yet. */
+    if (!$currentUser || !userHasEntitlement('run_db_install', $currentUser['role'] ?? null)) {
         http_response_code(403);
-        echo '<!DOCTYPE html><html><body><h1>403 — Global Admin access required</h1></body></html>';
+        echo '<!DOCTYPE html><html><body><h1>403 — the run_db_install entitlement is required</h1></body></html>';
         exit;
     }
 }

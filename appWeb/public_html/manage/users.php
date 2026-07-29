@@ -15,9 +15,21 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
-requireAdmin();
+requireAuth();
 
 $currentUser = getCurrentUser();
+/* Gate on the entitlement the nav advertises (#1648 item 1, rule #1587).
+   ELI5: the menu says this page needs "view users", so check that.
+   Detail: this called requireAdmin(), a hardcoded role check, while
+   admin-links.php advertises `view_users`. `view_users` defaults to
+   ['admin','global_admin'] — identical to requireAdmin() — so this is a no-op
+   today and only diverges once someone overrides it. Narrowing the entitlement
+   previously hid the nav link while the page still admitted every admin, on a
+   page listing every user account. */
+if (!$currentUser || !userHasEntitlement('view_users', $currentUser['role'] ?? null)) {
+    http_response_code(403);
+    exit('Access denied. The view_users entitlement is required.');
+}
 $activePage  = 'users';
 
 /* =========================================================================
