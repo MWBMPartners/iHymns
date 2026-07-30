@@ -70,6 +70,9 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    `function_exists('logActivity')` is always true inside this
    endpoint and the helper is available unconditionally. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
+   file's hand-rolled INSERT INTO tblNotifications. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
 /* Mirror every uncaught \Throwable + PHP fatal in any editor-API
    case (save_song, bulk_import_*, typeaheads, load) into
    tblActivityLog. Per-case try/catches still write their own
@@ -1968,27 +1971,25 @@ switch ($action) {
             /* Notify the curator so they find the result on their
                next page-load even if they walked away. Best-effort —
                a tblNotifications failure must not poison the import
-               result. */
+               result.
+
+               #1638 — that best-effort contract is exactly the precedent the
+               shared includes/notifications.php helper was built on, so this
+               call site now delegates to it instead of carrying its own copy
+               of the INSERT + try/catch. */
             if ($userId !== null) {
-                try {
-                    $created  = (int)($summary['songs_created'] ?? 0);
-                    $skipped  = (int)($summary['songs_skipped_existing'] ?? 0);
-                    $failed   = (int)($summary['songs_failed'] ?? 0);
-                    $title    = "Import finished: {$created} new, {$skipped} skipped"
-                              . ($failed > 0 ? ", {$failed} failed" : '');
-                    $body     = "Bulk import of \"{$origName}\" completed.";
-                    $url      = '/manage/editor/';
-                    $type     = 'bulk_import_complete';
-                    $stmt = $db->prepare(
-                        'INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl)
-                         VALUES (?, ?, ?, ?, ?)'
-                    );
-                    $stmt->bind_param('issss', $userId, $type, $title, $body, $url);
-                    $stmt->execute();
-                    $stmt->close();
-                } catch (\Throwable $_e) {
-                    error_log('[bulk_import_zip] notification insert skipped: ' . $_e->getMessage());
-                }
+                $created  = (int)($summary['songs_created'] ?? 0);
+                $skipped  = (int)($summary['songs_skipped_existing'] ?? 0);
+                $failed   = (int)($summary['songs_failed'] ?? 0);
+                notifyUser(
+                    $db,
+                    $userId,
+                    'bulk_import_complete',
+                    "Import finished: {$created} new, {$skipped} skipped"
+                        . ($failed > 0 ? ", {$failed} failed" : ''),
+                    "Bulk import of \"{$origName}\" completed.",
+                    '/manage/editor/'
+                );
             }
 
             /* #908 — top-level summary row in tblActivityLog so the

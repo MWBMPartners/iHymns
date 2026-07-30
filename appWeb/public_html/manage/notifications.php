@@ -194,7 +194,20 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    recipient. mysqli has no true multi-row prepared insert
                    without dynamically generated SQL — at NOTIFY_BROADCAST_MAX
                    = 5000 the loop is fast enough (~< 1s on a typical host)
-                   and stays auditable per-row. */
+                   and stays auditable per-row.
+
+                   #1638 DELIBERATELY LEFT ALONE. The two bulk-import call
+                   sites moved to the shared notifyUser() helper in
+                   includes/notifications.php, but this one has genuinely
+                   different semantics: prepare-ONCE / execute-many is the
+                   whole point of a 5000-recipient fan-out, whereas notifyUser()
+                   prepares per call, and this loop counts per-row successes
+                   with a suppressed execute() so one bad recipient does not
+                   abort the broadcast. Routing it through the helper would
+                   trade a documented performance property for tidiness.
+                   Single-recipient callers should use notifyUser(); a future
+                   notifyUsers(array $ids, ...) batch helper is the right home
+                   for this loop if a second fan-out ever appears. */
                 /* #1238 — include Environment + ExpiresAt only when the columns
                    exist; otherwise fall back to the original 5-column INSERT so an
                    un-migrated install still broadcasts (system-wide, never-expiring). */

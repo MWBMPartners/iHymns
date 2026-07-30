@@ -71,6 +71,10 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
+/* The ONE in-app notification writer (#1638) — notifyUser(). Replaces this
+   file's hand-rolled INSERT INTO tblNotifications, which was one of three
+   drifting copies. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
 require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
 /* Shared external-link helpers (#833/#845) — the SAME loader + save +
    reconcile the songbook / work surfaces use, so the song editor never
@@ -1912,18 +1916,22 @@ try {
             @unlink($persistPath);
             if ((int)($summary['songs_created'] ?? 0) > 0) { ed2_runSongbookMaintenance($db, 'import_zip.async'); }
 
-            /* Best-effort completion notification so the curator finds the result later. */
+            /* Best-effort completion notification so the curator finds the result later.
+               #1638 — was a hand-rolled INSERT INTO tblNotifications, one of
+               three near-identical copies. Now the shared notifyUser() helper,
+               which owns the best-effort try/catch, the column-width clipping
+               and the #1238 Environment/ExpiresAt migration gate that this copy
+               never had. */
             if ($ed2UserId !== null) {
-                try {
-                    $c = (int)($summary['songs_created'] ?? 0); $s = (int)($summary['songs_skipped_existing'] ?? 0); $fl = (int)($summary['songs_failed'] ?? 0);
-                    $title = "Import finished: {$c} new, {$s} skipped" . ($fl > 0 ? ", {$fl} failed" : '');
-                    $bodyMsg = 'Bulk import of "' . $origName . '" completed.';
-                    $url = '/manage/editor/'; $type = 'bulk_import_complete';
-                    $nt = $db->prepare('INSERT INTO tblNotifications (UserId, Type, Title, Body, ActionUrl) VALUES (?, ?, ?, ?, ?)');
-                    $nt->bind_param('issss', $ed2UserId, $type, $title, $bodyMsg, $url);
-                    $nt->execute();
-                    $nt->close();
-                } catch (\Throwable $_e) { error_log('[editor-v2-api import_zip] notification skipped: ' . $_e->getMessage()); }
+                $c = (int)($summary['songs_created'] ?? 0); $s = (int)($summary['songs_skipped_existing'] ?? 0); $fl = (int)($summary['songs_failed'] ?? 0);
+                notifyUser(
+                    $db,
+                    $ed2UserId,
+                    'bulk_import_complete',
+                    "Import finished: {$c} new, {$s} skipped" . ($fl > 0 ? ", {$fl} failed" : ''),
+                    'Bulk import of "' . $origName . '" completed.',
+                    '/manage/editor/'
+                );
             }
             logActivity('song.import_zip', 'import', $origName, [
                 'job_id'  => $jobId, 'mode' => 'async',

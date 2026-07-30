@@ -262,6 +262,20 @@ export class SetList {
     initSetListPage() {
         this.renderSyncBar();
         this.renderSetListOverview();
+
+        /* #1638 — honour a `?shared=<ownerId>:<setlistId>` deep link, which is
+           the ActionUrl the collaboration-invite notification carries. Reading
+           it from window.location.search mirrors the /link route's handling of
+           ?user_code= in router.js: parseRoute() only ever looks at path
+           SEGMENTS, so a query string has to be read here.
+
+           Deliberately best-effort — if the id no longer resolves (invite
+           revoked, setlist deleted) the user simply lands on the normal
+           overview rather than seeing an error about a link they did not type. */
+        try {
+            const target = new URLSearchParams(window.location.search || '').get('shared');
+            if (target) this._openSharedByKey(target);
+        } catch { /* malformed query string — the overview is a fine landing place */ }
     }
 
     /**
@@ -402,6 +416,410 @@ export class SetList {
             createBtn.replaceWith(freshBtn);
             freshBtn.addEventListener('click', () => this.showCreateDialog());
         }
+
+        /* #1638 — "Shared with me". Appended AFTER the own-lists markup above,
+           because that markup is written with container.innerHTML and would
+           blow away anything already inside. Async and non-blocking: the
+           user's own lists render from localStorage instantly and the shared
+           section fills in when the network answers. */
+        this._renderSharedWithMe(container);
+    }
+
+    /* =====================================================================
+     * COLLABORATION — SETLISTS SHARED WITH ME (#1638)
+     *
+     * ELI5: the lists other people have let you see or help edit.
+     *
+     * THE BUG THIS CLOSES. Collaboration shipped write-only: an owner could
+     * invite you and pick "view" or "edit", and you would never find out. The
+     * `setlist_collab_shared_with_me` endpoint existed and worked, and had
+     * ZERO callers on web, Apple and Android alike. This section is the first
+     * caller it has ever had.
+     *
+     * THE SYNC BOUNDARY — the most important thing in this block.
+     *
+     * Shared setlists are held in memory ONLY (`this._sharedLists`). They are
+     * never written to localStorage['ihymns_setlists'], because that array is
+     * what `_scheduleSync()` posts to `user_setlists_sync` in 'replace' mode.
+     * A shared list that leaked into it would be pushed back as if this user
+     * owned it, forking a second `tblUserSetlists` row under a different
+     * UserId — and that fork would then pass the owner-check in
+     * `setlist_collab_invite`, letting a collaborator re-share a list that is
+     * not theirs. Keeping them out of the store makes that impossible by
+     * construction rather than by remembering to filter.
+     *
+     * Consequence, accepted deliberately: shared setlists do not appear
+     * offline. Your own lists do (localStorage); somebody else's need the
+     * network. That is the correct trade — the alternative caches other
+     * people's data in the exact array that gets synced back as your own.
+     * ===================================================================== */
+
+    /**
+     * Fetch and render the "Shared with me" section.
+     *
+     * @param {HTMLElement} container The #setlist-container element.
+     * @private
+     */
+    _renderSharedWithMe(container) {
+        if (!container) return;
+
+        /* Anonymous users have nothing shared with them and the endpoint would
+           just 401 — skip the request entirely rather than firing one that is
+           guaranteed to fail. */
+        const auth = this.app.userAuth;
+        const loggedIn = auth ? auth.isLoggedIn() : !!localStorage.getItem(STORAGE_AUTH_TOKEN);
+        if (!loggedIn) return;
+
+        apiFetch('/api?action=setlist_collab_shared_with_me', { credentials: 'same-origin' })
+            .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+            .then(data => {
+                const shared = Array.isArray(data.shared) ? data.shared : [];
+                this._sharedLists = shared;   // in-memory only — see the note above
+                if (shared.length === 0) return;
+
+                /* Guard against a double-render: renderSetListOverview() can be
+                   called again (Sync Now, auth change) while this request is in
+                   flight, and two sections would otherwise stack up. */
+                document.getElementById('setlist-shared-with-me')?.remove();
+
+                const section = document.createElement('div');
+                section.id = 'setlist-shared-with-me';
+                section.className = 'mt-4';
+                section.innerHTML = `
+                    <h2 class="h6 text-muted mb-2">
+                        <i class="fa-solid fa-users me-2" aria-hidden="true"></i>Shared with me
+                    </h2>
+                    <div class="list-group">
+                        ${shared.map(s => this._sharedRowHtml(s)).join('')}
+                    </div>`;
+                container.appendChild(section);
+
+                section.querySelectorAll('.shared-setlist-item').forEach(item => {
+                    const open = () => {
+                        const entry = this._findShared(item.dataset.ownerId, item.dataset.setlistId);
+                        if (entry) this.renderSharedSetListDetail(entry);
+                    };
+                    item.addEventListener('click', open);
+                    item.addEventListener('keydown', (e) => { if (e.key === 'Enter') open(); });
+                });
+            })
+            .catch(() => {
+                /* 401 / offline / feature unavailable — render nothing. An
+                   empty section is the honest outcome; an error box about
+                   somebody else's setlists would be noise on a page whose main
+                   content loaded fine. */
+            });
+    }
+
+    /**
+     * One row of the "Shared with me" list.
+     *
+     * The owner's name and the permission are both in the row's ACCESSIBLE
+     * NAME, not just in visual badges — a screen-reader user needs to know
+     * whose list this is and whether they can change it before they open it.
+     * Same pattern as the language / unofficial-songbook badges elsewhere.
+     *
+     * @param {{ownerId:number, ownerName:string, setlistId:string, permission:string, name:string, songs:Array}} s
+     * @returns {string} HTML
+     * @private
+     */
+    _sharedRowHtml(s) {
+        const count = Array.isArray(s.songs) ? s.songs.length : 0;
+        const canEdit = s.permission === 'edit';
+        const permLabel = canEdit ? 'Can edit' : 'View only';
+        return `
+            <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 shared-setlist-item"
+                 data-owner-id="${escapeHtml(String(s.ownerId))}"
+                 data-setlist-id="${escapeHtml(s.setlistId)}"
+                 role="button" tabindex="0"
+                 aria-label="${escapeHtml(s.name)}, shared by ${escapeHtml(s.ownerName)}, ${permLabel}">
+                <div class="flex-grow-1">
+                    <strong>${escapeHtml(s.name)}</strong>
+                    <span class="badge ${canEdit ? 'text-bg-success' : 'text-bg-secondary'} ms-2"
+                          style="font-size:0.65rem">${permLabel}</span>
+                    <small class="text-muted d-block">
+                        ${count} song${count !== 1 ? 's' : ''}
+                        &middot; Shared by ${escapeHtml(s.ownerName)}
+                    </small>
+                </div>
+                <i class="fa-solid fa-chevron-right text-muted" aria-hidden="true"></i>
+            </div>`;
+    }
+
+    /**
+     * Look up a shared entry from the in-memory list.
+     *
+     * Keyed on BOTH ids: `setlistId` is client-generated and unique only per
+     * user, so two different owners can legitimately share lists with the same
+     * id string. Matching on the setlist id alone would open the wrong one.
+     *
+     * @param {string|number} ownerId
+     * @param {string} setlistId
+     * @returns {object|null}
+     * @private
+     */
+    _findShared(ownerId, setlistId) {
+        const list = Array.isArray(this._sharedLists) ? this._sharedLists : [];
+        return list.find(s => String(s.ownerId) === String(ownerId)
+            && String(s.setlistId) === String(setlistId)) || null;
+    }
+
+    /**
+     * Open a shared setlist from an `ownerId:setlistId` key.
+     *
+     * Used by the notification deep link. Fetches the shared list if the page
+     * has not already loaded it, so the link works on a cold page load.
+     *
+     * @param {string} key `<ownerId>:<setlistId>`
+     * @private
+     */
+    _openSharedByKey(key) {
+        const sep = key.indexOf(':');
+        if (sep <= 0) return;
+        const ownerId   = key.slice(0, sep);
+        /* The server rawurlencode()s the setlist id into the link, so decode
+           it back before comparing. decodeURIComponent throws on a malformed
+           %-sequence, hence the try. */
+        let setlistId = key.slice(sep + 1);
+        try { setlistId = decodeURIComponent(setlistId); } catch { /* use as-is */ }
+
+        const open = () => {
+            const entry = this._findShared(ownerId, setlistId);
+            if (entry) this.renderSharedSetListDetail(entry);
+        };
+
+        if (Array.isArray(this._sharedLists)) { open(); return; }
+        apiFetch('/api?action=setlist_collab_shared_with_me', { credentials: 'same-origin' })
+            .then(r => (r.ok ? r.json() : Promise.reject(r.status)))
+            .then(data => {
+                this._sharedLists = Array.isArray(data.shared) ? data.shared : [];
+                open();
+            })
+            .catch(() => { /* link no longer resolves — stay on the overview */ });
+    }
+
+    /**
+     * Render the detail view of a setlist somebody else shared.
+     *
+     * Deliberately a SEPARATE method from renderSetListDetail() rather than a
+     * mode flag on it. That method's every control writes straight to
+     * localStorage via moveSong/removeSong/rename — the exact store that must
+     * never hold shared data. Threading a "don't persist" flag through all of
+     * them is the kind of change where one missed branch silently reintroduces
+     * the sync hazard; a separate renderer cannot make that mistake.
+     *
+     * PERMISSION IS ENFORCED SERVER-SIDE. `setlist_collab_update` resolves the
+     * caller's level from the database on every write and refuses a 'view'
+     * collaborator with a 403. The read-only rendering below is an affordance,
+     * not a security control — hiding a button is not a permission.
+     *
+     * @param {object} shared Entry from setlist_collab_shared_with_me.
+     */
+    renderSharedSetListDetail(shared) {
+        const container = document.getElementById('setlist-container');
+        if (!container || !shared) return;
+
+        /* Work on a COPY. Edits are staged locally and pushed explicitly, so
+           an abandoned reorder never half-writes to the owner's list. */
+        const songs = Array.isArray(shared.songs) ? shared.songs.map(s => ({ ...s })) : [];
+        const canEdit = shared.permission === 'edit';
+
+        const rowsHtml = songs.length === 0
+            ? `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`
+            : `<div class="list-group" id="shared-setlist-songs">
+                ${songs.map((song, index) => `
+                    <div class="list-group-item d-flex align-items-center gap-2 shared-detail-song"
+                         data-song-id="${escapeHtml(String(song.id))}" data-index="${index}">
+                        <span class="text-muted fw-bold me-1" style="min-width:24px">${index + 1}.</span>
+                        <span class="song-number-badge" data-songbook="${escapeHtml(String(song.songbook || ''))}">${song.number ?? ''}</span>
+                        <div class="flex-grow-1">
+                            <a href="/song/${escapeHtml(String(song.id))}" data-navigate="song"
+                               class="text-decoration-none">${escapeHtml(toTitleCase(song.title || String(song.id)))}</a>
+                            <small class="text-muted d-block">${songbookLabel(song.songbook)}</small>
+                        </div>
+                        ${canEdit ? `
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-up"
+                                data-index="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move up">
+                            <i class="fa-solid fa-chevron-up" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary btn-shared-down"
+                                data-index="${index}" ${index === songs.length - 1 ? 'disabled' : ''} aria-label="Move down">
+                            <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger btn-shared-remove"
+                                data-index="${index}" aria-label="Remove from set list">
+                            <i class="fa-solid fa-xmark" aria-hidden="true"></i>
+                        </button>` : ''}
+                    </div>
+                `).join('')}
+               </div>`;
+
+        container.innerHTML = `
+            <div class="mb-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="shared-back-btn">
+                    <i class="fa-solid fa-arrow-left me-1" aria-hidden="true"></i> Back
+                </button>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <h2 class="h5 mb-0">${escapeHtml(shared.name)}</h2>
+                <div class="btn-group btn-group-sm">
+                    <button type="button" class="btn btn-outline-secondary" id="shared-copy-btn"
+                            aria-label="Copy set list to clipboard" title="Copy">
+                        <i class="fa-solid fa-copy" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="shared-print-btn"
+                            aria-label="Print set list" title="Print">
+                        <i class="fa-solid fa-print" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" id="shared-activate-btn"
+                            aria-label="Use this set list for navigation" title="Use this set list">
+                        <i class="fa-solid fa-play me-1" aria-hidden="true"></i> Use
+                    </button>
+                </div>
+            </div>
+            <p class="text-muted small mb-3">
+                Shared by <strong>${escapeHtml(shared.ownerName)}</strong>
+                &middot; <span class="badge ${canEdit ? 'text-bg-success' : 'text-bg-secondary'}"
+                               style="font-size:0.65rem">${canEdit ? 'Can edit' : 'View only'}</span>
+                &middot; ${songs.length} song${songs.length !== 1 ? 's' : ''}
+            </p>
+            ${!canEdit ? `
+            <div class="alert alert-secondary py-2 px-3 small" role="note">
+                <i class="fa-solid fa-eye me-1" aria-hidden="true"></i>
+                You have view-only access. Ask ${escapeHtml(shared.ownerName)} for edit access to make changes.
+            </div>` : ''}
+            ${rowsHtml}
+            <div id="shared-save-status" class="small mt-2" aria-live="polite"></div>`;
+
+        container.querySelector('#shared-back-btn')?.addEventListener('click', () => {
+            this.renderSetListOverview();
+        });
+
+        /* Read-only affordances work at BOTH permission levels — a view-only
+           collaborator can still print the running order and follow along. */
+        const asList = { id: shared.setlistId, name: shared.name, createdAt: '', songs };
+        container.querySelector('#shared-copy-btn')?.addEventListener('click', () => {
+            this.copyToClipboard(asList);
+        });
+        container.querySelector('#shared-print-btn')?.addEventListener('click', () => {
+            this.printSetList(asList);
+        });
+
+        /* Arm playback. Reuses the EXISTING `source: 'shared'` vocabulary from
+           #1533 rather than inventing a third notion of shared: that field's
+           only functional job is "this is not one of my local lists, so don't
+           try to apply a local custom arrangement", which is exactly true
+           here. `sourceId` is informational for a shared context — it is only
+           ever read back when source === 'own'. */
+        const armShared = () => {
+            if (songs.length === 0) return;
+            const titles = {};
+            for (const s of songs) { if (s && s.id) titles[s.id] = s.title || ''; }
+            this.setPlaylistContext({
+                songIds:  songs.map(s => s.id).filter(Boolean),
+                titles,
+                name:     shared.name,
+                source:   'shared',
+                sourceId: String(shared.setlistId || ''),
+            });
+        };
+        container.querySelector('#shared-activate-btn')?.addEventListener('click', () => {
+            armShared();
+            this.app.showToast(`Set list "${shared.name}" activated.`, 'success', 3000);
+        });
+        /* Arm on tap, matching the own-list behaviour from #1533.
+           Delegated onto the SONGS LIST rather than onto `container`: this
+           method re-renders itself after every edit, and `container` survives
+           that (only its innerHTML is replaced), so a listener bound there
+           would stack up one copy per edit. `#shared-setlist-songs` is
+           re-created each render, taking its listener with it. */
+        container.querySelector('#shared-setlist-songs')?.addEventListener('click', (e) => {
+            const link = e.target instanceof HTMLElement
+                ? e.target.closest('.shared-detail-song a[data-navigate="song"]')
+                : null;
+            if (link) armShared();
+        });
+
+        if (!canEdit) return;
+
+        /* ---- Edit controls. Every one of these ends in a server round-trip
+           through setlist_collab_update, which re-checks the permission. The
+           local `songs` array is only ever the OPTIMISTIC view. ---- */
+        const push = () => {
+            const status = document.getElementById('shared-save-status');
+            if (status) status.innerHTML = '<span class="text-muted">Saving…</span>';
+            return apiFetch('/api?action=setlist_collab_update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                },
+                credentials: 'same-origin',
+                body: JSON.stringify({
+                    ownerId:   shared.ownerId,
+                    setlistId: shared.setlistId,
+                    songs,
+                }),
+            })
+                .then(r => r.json().then(j => ({ ok: r.ok, data: j })))
+                .then(res => {
+                    if (!res.ok) {
+                        /* Re-render from the SERVER's copy so the UI never keeps
+                           showing a change the server refused (a view-only
+                           collaborator whose row was downgraded mid-session is
+                           the case that matters). */
+                        if (status) {
+                            status.innerHTML = `<span class="text-danger">${escapeHtml(res.data.error || 'Save failed.')}</span>`;
+                        }
+                        return false;
+                    }
+                    /* Keep the cached entry in step so Back → re-open shows the
+                       saved order without another fetch. Still memory-only. */
+                    shared.songs = Array.isArray(res.data.songs) ? res.data.songs : songs;
+                    if (status) status.innerHTML = '<span class="text-success">Saved.</span>';
+                    return true;
+                })
+                .catch(() => {
+                    if (status) status.innerHTML = '<span class="text-danger">Save failed — check your connection.</span>';
+                    return false;
+                });
+        };
+
+        const move = (from, to) => {
+            if (to < 0 || to >= songs.length) return;
+            const [moved] = songs.splice(from, 1);
+            songs.splice(to, 0, moved);
+            shared.songs = songs;
+            this.renderSharedSetListDetail(shared);
+            push();
+        };
+
+        container.querySelectorAll('.btn-shared-up').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                move(i, i - 1);
+            });
+        });
+        container.querySelectorAll('.btn-shared-down').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                move(i, i + 1);
+            });
+        });
+        container.querySelectorAll('.btn-shared-remove').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const i = parseInt(btn.dataset.index, 10);
+                if (Number.isNaN(i)) return;
+                songs.splice(i, 1);
+                shared.songs = songs;
+                this.renderSharedSetListDetail(shared);
+                push();
+            });
+        });
     }
 
     /**

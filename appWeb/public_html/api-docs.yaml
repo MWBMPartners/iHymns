@@ -5947,6 +5947,20 @@ paths:
       operationId: setlistCollabSharedWithMe
       tags: [Setlists — Collaboration]
       summary: Setlists the caller has been invited to
+      description: |
+        The READ half of collaboration. Returns every setlist another user has
+        invited the caller to, INCLUDING its songs, so one call is enough to
+        render the list — there is no endpoint for fetching a single setlist
+        the caller does not own.
+
+        Entries whose `Permission` is not one of `view` / `edit` are omitted
+        (fail closed), as are collaborator rows whose underlying setlist has
+        since been deleted.
+
+        Clients MUST NOT merge these into the user's own setlist store: the
+        collection posted to `user_setlists_sync` is owner-scoped and runs in
+        `replace` mode, so a shared list included there would be written back
+        as if the caller owned it.
       security:
         - bearerAuth: []
       parameters:
@@ -5968,10 +5982,96 @@ paths:
                       type: object
                       properties:
                         ownerId:    { type: integer }
-                        ownerName:  { type: string }
+                        ownerName:  { type: string, description: Owner display name, falling back to username }
                         setlistId:  { type: string }
                         permission: { type: string, enum: [view, edit] }
-                        name:       { type: string, nullable: true }
+                        name:       { type: string }
+                        updatedAt:  { type: string, description: Owner-side last-modified timestamp }
+                        songs:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              id:       { type: string }
+                              title:    { type: string }
+                              songbook: { type: string }
+                              number:   { type: integer }
+                              arrangement:
+                                type: array
+                                items: { type: integer }
+
+  /api.php?action=setlist_collab_update:
+    post:
+      operationId: setlistCollabUpdate
+      tags: [Setlists — Collaboration]
+      summary: Edit a setlist shared with the caller (#1638)
+      description: |
+        The WRITE half of collaboration, and the endpoint that makes
+        `Permission` mean something — before #1638 the view/edit choice was
+        never read for enforcement.
+
+        The caller's permission is resolved SERVER-side from
+        `tblSetlistCollaborators` on every request; a `view` collaborator, an
+        uninvited user, and an unrecognised permission value all get 403.
+
+        Deliberately narrow: a single `UPDATE` of one already-existing
+        (owner, setlistId) row. It cannot DELETE a setlist and cannot INSERT
+        one, which is why collaborative writes do NOT go through
+        `user_setlists_sync` — that handler runs in `replace` mode and would
+        let a collaborator's device delete the owner's other setlists.
+
+        Conflict handling is last-writer-wins. The owner's own `replace` sync
+        can still overwrite a collaborator's edit if the owner's device is
+        holding a stale copy.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_collab_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ownerId, setlistId, songs]
+              properties:
+                ownerId:   { type: integer, description: tblUsers.Id of the setlist owner }
+                setlistId: { type: string }
+                name:      { type: string, description: Optional rename; omit or send '' to leave the title alone }
+                songs:
+                  type: array
+                  description: Full replacement song list, max 200 entries
+                  items:
+                    type: object
+                    required: [id]
+                    properties:
+                      id:       { type: string }
+                      title:    { type: string }
+                      songbook: { type: string }
+                      number:   { type: integer }
+                      arrangement:
+                        type: array
+                        items: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Saved; echoes the sanitised song list actually stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  changed: { type: integer, description: affected_rows; 0 also means "no net change" }
+                  songs:   { type: array, items: { type: object } }
+        "400":
+          description: ownerId / setlistId / songs missing or malformed
+        "401":
+          description: Not authenticated
+        "403":
+          description: Caller has view-only access, or none at all
 
   # ===========================================================================
   # SYSTEM
@@ -7602,87 +7702,6 @@ paths:
                 properties:
                   ok: { type: boolean }
                   id: { type: string }
-
-  /api.php?action=setlist_collaborators:
-    get:
-      operationId: setlistCollaboratorsLegacy
-      tags: [Setlists — Collaboration]
-      summary: Legacy collaborators list (Deprecated)
-      description: |
-        **Deprecated** — superseded by `setlist_collab_list`. Kept for
-        older Apple / Android builds that already speak this endpoint.
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist_collaborators] }
-        - name: setlistId
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Collaborator list (same shape as `setlist_collab_list`)
-
-  /api.php?action=setlist_collaborator_add:
-    post:
-      operationId: setlistCollaboratorAddLegacy
-      tags: [Setlists — Collaboration]
-      summary: Legacy invite endpoint (Deprecated)
-      description: |
-        **Deprecated** — superseded by `setlist_collab_invite`. Kept for
-        API compatibility.
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist_collaborator_add] }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [setlistId, collaboratorEmail]
-              properties:
-                setlistId:         { type: string }
-                collaboratorEmail: { type: string, format: email }
-                permission:        { type: string, enum: [view, edit] }
-      responses:
-        "200":
-          description: Added
-
-  /api.php?action=setlist_collaborator_remove:
-    post:
-      operationId: setlistCollaboratorRemoveLegacy
-      tags: [Setlists — Collaboration]
-      summary: Legacy remove-collaborator endpoint (Deprecated)
-      description: |
-        **Deprecated** — superseded by `setlist_collab_remove`.
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist_collaborator_remove] }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [setlistId, collaboratorId]
-              properties:
-                setlistId:      { type: string }
-                collaboratorId: { type: integer }
-      responses:
-        "200":
-          description: Removed
 
   # ===========================================================================
   # ORGANISATIONS

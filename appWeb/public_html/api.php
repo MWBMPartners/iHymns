@@ -213,6 +213,18 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    over-cap user silently lost the tail of their collection. One helper, three
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
+/* Setlist collaboration access resolution (#1638). ONE implementation of
+   "may this viewer read / write somebody else's setlist?", asked by the
+   setlist_collab_* family — never re-decided inside a case body. Also hosts
+   setlistCollabSanitiseSongs(), shared with user_setlists_sync so the owner's
+   own push and a collaborator's edit cannot write different shapes into the
+   same tblUserSetlists.SongsJson column. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+/* The ONE in-app notification writer (#1638). Extracted because the raw
+   INSERT INTO tblNotifications had already been copy-pasted into three files
+   and the collaboration invite would have been the fourth. Best-effort by
+   contract: a notification failure never fails the action that triggered it. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'notifications.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 /* Mirror every uncaught \Throwable + PHP fatal into tblActivityLog
    so curators reading /manage/activity-log see every server-side
@@ -3003,27 +3015,13 @@ if ($action !== null) {
                 if ($setlistId === '') continue;
 
                 $name = mb_substr(trim($list['name'] ?? 'Untitled'), 0, 200);
-                $songs = is_array($list['songs'] ?? null) ? $list['songs'] : [];
 
-                /* Sanitise each song entry */
-                $cleanSongs = [];
-                foreach (array_slice($songs, 0, 200) as $s) {
-                    if (!is_array($s) || empty($s['id'])) continue;
-                    $entry = [
-                        'id'       => (string)$s['id'],
-                        'title'    => mb_substr((string)($s['title'] ?? ''), 0, 300),
-                        'songbook' => mb_substr((string)($s['songbook'] ?? ''), 0, 20),
-                        'number'   => (int)($s['number'] ?? 0),
-                    ];
-                    /* Preserve custom arrangement if present */
-                    if (isset($s['arrangement']) && is_array($s['arrangement'])) {
-                        $entry['arrangement'] = array_values(array_filter(
-                            $s['arrangement'],
-                            fn($v) => is_int($v) && $v >= 0
-                        ));
-                    }
-                    $cleanSongs[] = $entry;
-                }
+                /* Sanitise each song entry. #1638 moved the (previously
+                   inline) logic into includes/setlist_collab.php so the
+                   collaborative write path writes the identical shape into the
+                   identical column — behaviour unchanged, one implementation
+                   instead of two that could drift. */
+                $cleanSongs = setlistCollabSanitiseSongs($list['songs'] ?? null);
 
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
@@ -8546,205 +8544,29 @@ if ($action !== null) {
 
         /* =================================================================
          * COLLABORATIVE SETLISTS (#312)
+         *
+         * The three ORIGINAL handlers that lived here — setlist_collaborators,
+         * setlist_collaborator_add and setlist_collaborator_remove — were
+         * DELETED in #1638. They were not deprecated-but-working; they were
+         * unfixably broken, and had been since the day they were written:
+         *
+         *   - they JOINed / ORDER BY-ed tblSetlistCollaborators.UserId and
+         *     .CreatedAt, and neither column has ever existed (the table has
+         *     CollaboratorId and InvitedAt);
+         *   - the INSERT omitted the NOT NULL SetlistOwnerId entirely.
+         *
+         * Under mysqli's MYSQLI_REPORT_STRICT (see includes/db_mysql.php) each
+         * of those statements THROWS, so every call was an unconditional 500.
+         * No migration ever created a `UserId` shape, so no client can ever
+         * have depended on them — and api-docs.yaml documented them with
+         * parameter names (setlistId / collaboratorEmail) that the handlers
+         * did not even read. The docs' claim that they were "kept for older
+         * Apple / Android builds" was false twice over; a grep across
+         * appApple/ and appAndroid/ finds zero callers.
+         *
+         * The live implementation is the setlist_collab_* family further down
+         * this file: invite / list / remove / shared_with_me / update.
          * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get collaborators for a setlist
-         * Parameters: setlist_id (required)
-         * Requires: Bearer token — only the setlist owner can view
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborators':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $collabSetlistId = trim($_GET['setlist_id'] ?? '');
-            if ($collabSetlistId === '') {
-                sendJson(['error' => 'setlist_id is required.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-
-            /* Verify the authenticated user owns this setlist */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('si', $collabSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            $stmt = $db->prepare(
-                'SELECT c.Id AS id, c.UserId AS userId,
-                        u.Username AS username, u.DisplayName AS displayName,
-                        c.Permission AS permission, c.CreatedAt AS createdAt
-                 FROM tblSetlistCollaborators c
-                 JOIN tblUsers u ON u.Id = c.UserId
-                 WHERE c.SetlistId = ?
-                 ORDER BY c.CreatedAt ASC'
-            );
-            $stmt->bind_param('s', $collabSetlistId);
-            $stmt->execute();
-            $collaborators = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            foreach ($collaborators as &$collab) {
-                $collab['id'] = (int)$collab['id'];
-                $collab['userId'] = (int)$collab['userId'];
-            }
-            unset($collab);
-
-            sendJson(['collaborators' => $collaborators]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Add a collaborator to a setlist
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "username": "...",
-         *     "permission": "edit"|"view" }
-         * Requires: Bearer token — owner only
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborator_add':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $addSetlistId  = trim($body['setlist_id'] ?? '');
-            $addUsername    = mb_strtolower(trim($body['username'] ?? ''));
-            $addPermission = trim($body['permission'] ?? 'view');
-
-            if ($addSetlistId === '' || $addUsername === '') {
-                sendJson(['error' => 'setlist_id and username are required.'], 400);
-                break;
-            }
-            if (!in_array($addPermission, ['edit', 'view'])) {
-                sendJson(['error' => 'Permission must be "edit" or "view".'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* Verify ownership */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $stmt->bind_param('si', $addSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            /* Find the user to add */
-            $stmt = $db->prepare('SELECT Id FROM tblUsers WHERE Username = ? AND IsActive = 1');
-            $stmt->bind_param('s', $addUsername);
-            $stmt->execute();
-            $targetUser = $stmt->get_result()->fetch_assoc();
-            $stmt->close();
-
-            if (!$targetUser) {
-                sendJson(['error' => 'User not found.'], 404);
-                break;
-            }
-
-            $targetUserId = (int)$targetUser['Id'];
-
-            /* Cannot add yourself */
-            if ($targetUserId === $authUserId) {
-                sendJson(['error' => 'You cannot add yourself as a collaborator.'], 400);
-                break;
-            }
-
-            /* Upsert collaborator */
-            $stmt = $db->prepare(
-                'INSERT INTO tblSetlistCollaborators (SetlistId, UserId, Permission)
-                 VALUES (?, ?, ?)
-                 ON DUPLICATE KEY UPDATE Permission = VALUES(Permission)'
-            );
-            $stmt->bind_param('sis', $addSetlistId, $targetUserId, $addPermission);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true], 201);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Remove a collaborator from a setlist
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "collaborator_id": 123 }
-         * Requires: Bearer token — owner only
-         * ----------------------------------------------------------------- */
-        case 'setlist_collaborator_remove':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $rmSetlistId    = trim($body['setlist_id'] ?? '');
-            $rmCollabId     = (int)($body['collaborator_id'] ?? 0);
-
-            if ($rmSetlistId === '' || $rmCollabId <= 0) {
-                sendJson(['error' => 'setlist_id and collaborator_id are required.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* Verify ownership */
-            $stmt = $db->prepare(
-                'SELECT SetlistId FROM tblUserSetlists WHERE SetlistId = ? AND UserId = ?'
-            );
-            $stmt->bind_param('si', $rmSetlistId, $authUserId);
-            $stmt->execute();
-            $owns = $stmt->get_result()->fetch_row() !== null;
-            $stmt->close();
-            if (!$owns) {
-                sendJson(['error' => 'You do not own this setlist or it does not exist.'], 403);
-                break;
-            }
-
-            $stmt = $db->prepare(
-                'DELETE FROM tblSetlistCollaborators WHERE Id = ? AND SetlistId = ?'
-            );
-            $stmt->bind_param('is', $rmCollabId, $rmSetlistId);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true]);
-            break;
 
         /* =================================================================
          * SONG REVISIONS (#313)
@@ -9997,13 +9819,17 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
                 $authUserId = (int)$authUser['Id'];
-                /* Owner check */
-                $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
+                /* Owner check. #1638 — now selects Name too, because the
+                   invitee's notification has to say WHICH setlist was shared;
+                   "Someone shared a setlist with you" is a notification nobody
+                   can act on. Same single round-trip, one extra column. */
+                $own = $db->prepare('SELECT Name FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
                 $own->bind_param('is', $authUserId, $setlistId);
                 $own->execute();
-                $owns = $own->get_result()->fetch_row() !== null;
+                $ownRow = $own->get_result()->fetch_assoc();
                 $own->close();
-                if (!$owns) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+                if (!$ownRow) { sendJson(['error' => 'Setlist not found.'], 404); break; }
+                $setlistName = (string)($ownRow['Name'] ?? '');
 
                 /* Resolve collaborator by email.
                    #1635 (SECURITY) — was `WHERE Email = ? LIMIT 1` with no
@@ -10058,6 +9884,44 @@ if ($action !== null) {
                    shared rateLimitKey() rather than hand-written, so the
                    reader and the writer cannot drift apart (#1636). */
                 recordRateLimitHit('setlist_collab_invite', rateLimitKey($clientIp, (int)$authUser['Id']));
+
+                /* #1638 — TELL THE INVITEE. This is the half of collaboration
+                   that never existed: the owner got success feedback while the
+                   collaborator experienced nothing, ever. Without this the
+                   invite is invisible unless the collaborator happens to open
+                   the set-list page and notice a new entry.
+
+                   Best-effort by contract (see includes/notifications.php): the
+                   tblSetlistCollaborators row is ALREADY committed above, so a
+                   notification failure must not turn a successful invite into a
+                   500 — the precedent is manage/editor/api.php's "a
+                   tblNotifications failure must not poison the import".
+
+                   Environment is deliberately NULL (= all three docroots).
+                   tblUserSetlists has no channel column, so the shared setlist
+                   itself is visible on alpha, beta and production alike; a
+                   notification scoped to one of them would be a link the
+                   recipient sees only if they happen to be on the same site. */
+                $inviterName = (string)($authUser['DisplayName'] ?? '') !== ''
+                    ? (string)$authUser['DisplayName']
+                    : (string)($authUser['Username'] ?? 'Someone');
+                notifyUser(
+                    $db,
+                    (int)$collab['Id'],
+                    'setlist_collab_invite',
+                    $inviterName . ' shared a set list with you',
+                    $inviterName . ' gave you '
+                        . ($permission === 'edit' ? 'edit' : 'view-only')
+                        . ' access to the set list "'
+                        . ($setlistName !== '' ? $setlistName : 'Untitled')
+                        . '".',
+                    /* Deep link straight at the shared list. The setlist page
+                       reads ?shared=<ownerId>:<setlistId> and opens that entry,
+                       so the notification lands the recipient on the thing it
+                       is telling them about rather than on a page where they
+                       must go hunting. */
+                    '/setlist?shared=' . $authUserId . ':' . rawurlencode($setlistId)
+                );
 
                 /* Audit (#535) — collaborator id + permission lets
                    admins see who invited whom on what setlist. */
@@ -10147,31 +10011,220 @@ if ($action !== null) {
             }
             break;
 
+        /* -----------------------------------------------------------------
+         * The setlists somebody else has invited THIS user to (#398).
+         *
+         * This is the READ half of collaboration. Until #1638 it had ZERO
+         * callers on every platform — the endpoint existed, worked, and was
+         * never once asked, which is why an invited collaborator experienced
+         * nothing at all. It is now the sole source for the "Shared with me"
+         * section of the set-list page.
+         *
+         * It also now returns `songs` and `updatedAt`, so one round-trip is
+         * enough to RENDER a shared list. Previously it returned only the name
+         * and permission, and there was no second endpoint able to fetch a
+         * setlist the caller does not own — so even a client that had called
+         * this could not have shown the songs.
+         *
+         * Note the deliberate lack of a client cache: shared setlists are
+         * never persisted into the collaborator's own setlist store. See the
+         * SYNC BOUNDARY section of includes/setlist_collab.php — a shared list
+         * that reached localStorage['ihymns_setlists'] would be posted back by
+         * user_setlists_sync as if the collaborator owned it.
+         *
+         * Requires: Bearer token (or the same-origin ihymns_auth cookie).
+         * ----------------------------------------------------------------- */
         case 'setlist_collab_shared_with_me':
             $authUser = getAuthenticatedUser();
             if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
             try {
                 $db = getDbMysqli();
+                /* INNER JOIN on tblUserSetlists, not the previous LEFT JOIN:
+                   a collaborator row whose setlist has since been deleted has
+                   nothing to show, and used to surface as a ghost entry with a
+                   null name. The FK is on tblUsers, not on the setlist, so
+                   these orphans are a real state, not a theoretical one. */
                 $stmt = $db->prepare(
                     'SELECT c.SetlistOwnerId AS ownerId, u.Username AS ownerName,
+                            u.DisplayName AS ownerDisplayName,
                             c.SetlistId AS setlistId, c.Permission AS permission,
-                            l.Name AS name
+                            l.Name AS name, l.SongsJson AS songsJson,
+                            l.UpdatedAt AS updatedAt
                        FROM tblSetlistCollaborators c
                        JOIN tblUsers u ON u.Id = c.SetlistOwnerId
-                       LEFT JOIN tblUserSetlists l
+                       JOIN tblUserSetlists l
                               ON l.UserId = c.SetlistOwnerId AND l.SetlistId = c.SetlistId
                       WHERE c.CollaboratorId = ?
-                      ORDER BY c.InvitedAt DESC'
+                      ORDER BY c.InvitedAt DESC
+                      LIMIT 200'
                 );
                 $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('i', $authUserId);
                 $stmt->execute();
-                $shared = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+                $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
                 $stmt->close();
+
+                $shared = [];
+                foreach ($rows as $r) {
+                    /* Fail closed on an unrecognised Permission: the row is
+                       dropped from the response entirely rather than shown at
+                       some guessed level. setlistCollabResolveAccess() would
+                       refuse it on any subsequent write anyway, so listing it
+                       as editable would be a promise the server won't keep. */
+                    $perm = setlistCollabNormalisePermission($r['permission'] ?? null);
+                    if ($perm === null) { continue; }
+                    $shared[] = [
+                        'ownerId'    => (int)$r['ownerId'],
+                        'ownerName'  => ((string)($r['ownerDisplayName'] ?? '') !== '')
+                            ? (string)$r['ownerDisplayName']
+                            : (string)$r['ownerName'],
+                        'setlistId'  => (string)$r['setlistId'],
+                        'permission' => $perm,
+                        'name'       => (string)($r['name'] ?? ''),
+                        'songs'      => json_decode((string)($r['songsJson'] ?? '[]'), true) ?: [],
+                        'updatedAt'  => (string)($r['updatedAt'] ?? ''),
+                    ];
+                }
                 sendJson(['shared' => $shared]);
             } catch (\Throwable $e) {
                 error_log('[setlist_collab_shared_with_me] ' . $e->getMessage());
                 sendJson(['error' => 'Could not load shared setlists.'], 500);
+            }
+            break;
+
+        /* -----------------------------------------------------------------
+         * Collaborative WRITE to somebody else's setlist (#1638).
+         *
+         * ELI5: lets a person who was given "edit" actually change the list —
+         * and lets a person who was given "view" change nothing at all.
+         *
+         * This endpoint is what makes tblSetlistCollaborators.Permission mean
+         * something. Before #1638 the view/edit picker was decorative: the
+         * column was written on invite and never read for enforcement, so both
+         * levels granted exactly the same thing (nothing).
+         *
+         * WHY A DEDICATED ENDPOINT INSTEAD OF EXTENDING user_setlists_sync —
+         * this is the whole safety argument, so it is spelled out:
+         *
+         *   user_setlists_sync runs in 'replace' mode and DELETES server rows
+         *   absent from the payload. It is owner-scoped (`WHERE UserId = ?`)
+         *   and MUST STAY THAT WAY. Giving it a collaborator branch would mean
+         *   a collaborator's device — whose local collection legitimately does
+         *   not contain most of the owner's setlists — could delete the
+         *   owner's data. That turns a sharing feature into a data-loss
+         *   feature, so it is not done.
+         *
+         *   This endpoint instead does a single targeted UPDATE of one
+         *   already-existing (owner, setlistId) row. Structurally it cannot
+         *   DELETE anything and cannot INSERT a new row into the owner's
+         *   namespace: if the row is gone, affected_rows is 0 and the caller
+         *   is told, rather than a row being resurrected.
+         *
+         * POST body (JSON): { ownerId, setlistId, songs: [...], name? }
+         * Requires: Bearer token; caller must hold Permission = 'edit'.
+         * ----------------------------------------------------------------- */
+        case 'setlist_collab_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) { sendJson(['error' => 'Unauthorized'], 401); break; }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?? [];
+            $setlistId = trim((string)($body['setlistId'] ?? ''));
+            $ownerId   = (int)($body['ownerId'] ?? 0);
+            if ($setlistId === '' || $ownerId <= 0) {
+                sendJson(['error' => 'ownerId and setlistId required.'], 400);
+                break;
+            }
+            if (!is_array($body['songs'] ?? null)) {
+                sendJson(['error' => 'songs (array) required.'], 400);
+                break;
+            }
+            try {
+                $db = getDbMysqli();
+                $authUserId = (int)$authUser['Id'];
+
+                /* THE GATE. Resolved server-side from the live DB — the
+                   client's claimed permission is never consulted, and the
+                   shared helper is asked rather than a permission check being
+                   re-implemented inline (CLAUDE.md modularity rule). */
+                $access = setlistCollabResolveAccess($db, $authUserId, $setlistId, $ownerId);
+                if (!$access['canWrite']) {
+                    /* One message for both "not invited" and "view only", so
+                       the response can't be used to enumerate which of an
+                       owner's setlist ids exist. 403 either way. */
+                    sendJson(['error' => 'You do not have edit access to this set list.'], 403);
+                    break;
+                }
+                /* Trust the RESOLVED owner, not the claimed one, for the write
+                   itself — belt and braces if the resolver ever grows a path
+                   where the two could differ. */
+                $realOwnerId = (int)($access['ownerId'] ?? $ownerId);
+
+                /* Same sanitiser the owner's own sync uses, so a collaborator
+                   cannot store a shape the owner's client can't render. */
+                $cleanSongs = setlistCollabSanitiseSongs($body['songs']);
+                $songsJson  = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                /* json_encode returns FALSE on malformed UTF-8, and binding
+                   false writes an empty string — which would silently blank
+                   somebody else's setlist. Refuse instead: a rejected save the
+                   user can see beats a successful one that ate the list. */
+                if ($songsJson === false) {
+                    sendJson(['error' => 'Song list could not be encoded (invalid characters).'], 400);
+                    break;
+                }
+
+                /* Name is optional: omit it to leave the owner's title alone.
+                   A blank string is treated as "not supplied" rather than as a
+                   rename to empty. */
+                $newName = array_key_exists('name', $body)
+                    ? mb_substr(trim((string)$body['name']), 0, 200)
+                    : '';
+
+                if ($newName !== '') {
+                    $upd = $db->prepare(
+                        'UPDATE tblUserSetlists
+                            SET Name = ?, SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                          WHERE UserId = ? AND SetlistId = ?
+                          LIMIT 1'
+                    );
+                    $upd->bind_param('ssis', $newName, $songsJson, $realOwnerId, $setlistId);
+                } else {
+                    $upd = $db->prepare(
+                        'UPDATE tblUserSetlists
+                            SET SongsJson = ?, UpdatedAt = UTC_TIMESTAMP()
+                          WHERE UserId = ? AND SetlistId = ?
+                          LIMIT 1'
+                    );
+                    $upd->bind_param('sis', $songsJson, $realOwnerId, $setlistId);
+                }
+                $upd->execute();
+                /* affected_rows is 0 both when the row vanished AND when the
+                   payload was byte-identical to what is already stored, so it
+                   is NOT reported as a failure — only as information. */
+                $changed = $upd->affected_rows;
+                $upd->close();
+
+                /* Audit (#535). A write to somebody else's data is exactly the
+                   thing an owner may later want to ask "who did that?" about. */
+                logActivity('setlist.collab_update', 'setlist', $setlistId, [
+                    'owner_id'   => $realOwnerId,
+                    'editor_id'  => $authUserId,
+                    'song_count' => count($cleanSongs),
+                    'renamed'    => $newName !== '',
+                ]);
+
+                sendJson([
+                    'ok'      => true,
+                    'changed' => $changed,
+                    'songs'   => $cleanSongs,
+                ]);
+            } catch (\Throwable $e) {
+                error_log('[setlist_collab_update] ' . $e->getMessage());
+                logActivityError('setlist.collab_update', 'setlist', $setlistId, $e);
+                sendJson(['error' => 'Could not save the shared set list.'], 500);
             }
             break;
 
