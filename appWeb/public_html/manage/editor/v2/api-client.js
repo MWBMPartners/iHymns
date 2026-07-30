@@ -183,6 +183,19 @@ export const editorApi = {
     /* Revisions — history (metadata) + full-snapshot restore */
     listRevisions:     (songId)                  => getJson('revision_list', { songId: songId }),
     restoreRevision:   (revisionId, songId)      => postJson('revision_restore', { revisionId: revisionId, songId: songId }),
+
+    /* Arrangement — the song's running order (#161 / #1627 item 2). `arrangement`
+       is a list of 0-based indexes into the song's section list, e.g. [0,1,1,2]
+       for verse/chorus/chorus/verse; repetition is legal and expected. Pass null
+       (or []) to clear it back to sequential component order. api2.php echoes
+       back the STORED value (never the request) — see arrangement-editor.js's
+       persist() for why the client must write THAT back into the store rather
+       than trusting its own local array. 409 = the ArrangementJson migration
+       hasn't run here; 422 = this song has an empty section, so the editor's
+       section count and the published render's disagree — arrangement-editor.js
+       pattern-matches both out of the thrown Error's message (same technique
+       enrichment-panel.js uses for its own 409, see that file's isEnrichmentUnmigrated). */
+    updateArrangement: (songId, arrangement)     => postJson('arrangement_update', { songId: songId, arrangement: arrangement }),
 };
 
 export { csrfToken };

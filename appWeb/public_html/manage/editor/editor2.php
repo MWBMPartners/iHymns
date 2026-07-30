@@ -152,7 +152,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#pane-revisions" type="button"><i class="bi bi-clock-history me-1"></i>Revisions</button></li>
             </ul>
             <div class="tab-content">
-                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div></div>
+                <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-4"></div></div>
                 <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
                 <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
                 <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div></div>
@@ -232,6 +232,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { editorApi }         from './v2/api-client.js';
         import { mountSidebar }      from './v2/sidebar.js';
         import { mountStructureTab } from './v2/structure-tab.js';
+        import { mountArrangementEditor } from './v2/arrangement-editor.js';
         import { mountMetadataTab }  from './v2/metadata-tab.js';
         import { mountCreditsTab }   from './v2/credits-tab.js';
         import { mountLinksTab }     from './v2/links-tab.js';
@@ -289,6 +290,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             const ctx = { store, api: editorApi, songId, toast };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
+                /* #1627 item 2 — below the section cards, mirroring v1's own
+                   placement (editor.js's arrangement editor sits under the
+                   component list in the same Structure pane). */
+                mountArrangementEditor(byId('v2-arrangement'), ctx),
                 mountMetadataTab(byId('v2-metadata'), ctx),
                 mountCreditsTab(byId('v2-credits'), ctx),
                 mountLinksTab(byId('v2-links'), ctx),
