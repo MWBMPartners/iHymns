@@ -68,13 +68,12 @@ if (!empty($GLOBALS['_adminLayoutOpen'])):
      CSS). #527 closes the drift that previously had setup-database.php
      loading 5.3.6 CSS while this script loaded 5.3.3 JS. -->
 <?php
-    $_bsJs = APP_CONFIG['libraries']['bootstrap'] ?? null;
-    if ($_bsJs && !empty($_bsJs['js_cdn'])):
+    /* #1676 — emitted by the ONE shared helper, which the four bespoke-<head>
+       pages (editor/index.php, editor2.php, import2.php, channel_gate.php) also
+       call. Previously each of those hardcoded its own copy and drifted. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_js_script();
 ?>
-<script src="<?= htmlspecialchars((string)$_bsJs['js_cdn'], ENT_QUOTES) ?>"
-        integrity="<?= htmlspecialchars((string)($_bsJs['js_sri'] ?? ''), ENT_QUOTES) ?>"
-        crossorigin="anonymous"></script>
-<?php endif; ?>
 
 <?php
     /* Cross-page admin utilities — load AFTER Bootstrap so they can

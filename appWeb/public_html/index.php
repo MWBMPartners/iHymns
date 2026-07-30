@@ -103,6 +103,8 @@ set_exception_handler(function (\Throwable $e): void {
 });
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
+/* #1676 — ihymns_bootstrap_icons_css_link(), the shared emitter for the bi-* font. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'infoAppVer.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
@@ -820,11 +822,13 @@ if (!empty($breadcrumbItems)) {
          seeds bi-* classes (bi-spotify / bi-youtube / bi-instagram / …). The public app
          otherwise only loads Font Awesome, so those provider icons rendered blank on the
          song / person / work external-link buttons. CDN (jsdelivr is in the CSP style-src
-         + font-src); decorative, so it degrades to text-only labels if the CDN is offline. -->
-    <link rel="stylesheet"
-          href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-          crossorigin="anonymous"
-          id="bootstrap-icons-css">
+         + font-src); decorative, so it degrades to text-only labels if the CDN is offline.
+         #1676 — was the ONE external load in this shell not sourced from APP_CONFIG,
+         and the only one with no `integrity`. Its neighbours (Font Awesome above,
+         Animate.css below) were already pinned + hashed + fallback-backed, which is
+         exactly why nobody spotted this line: it sits in a block that looks handled.
+         Now emitted by the shared helper, same registry, same onerror fallback. -->
+    <?= ihymns_bootstrap_icons_css_link() ?>
 
     <!-- Animate.css — CDN with local fallback for offline PWA -->
     <link rel="stylesheet"

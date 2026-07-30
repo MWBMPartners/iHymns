@@ -128,7 +128,20 @@ function _renderChannelGate(): void
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>iHymns — Sign in</title>
     <meta name="robots" content="noindex, nofollow">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.6/dist/css/bootstrap.min.css" rel="stylesheet">
+    <?php
+    /* #1676 — Bootstrap CSS from the shared emitter, with `integrity`.
+       ELI5: this sign-in page was loading Bootstrap from the internet without
+       checking the file was the one we expect.
+       Detail: it hardcoded 5.3.6 (a THIRD version — the editors were on 5.3.3,
+       the registry on 5.3.6) and carried no SRI at all. This one matters beyond
+       the admin pages because it is the gate every alpha/beta visitor without an
+       entitlement sees, including while they type a password into the form
+       below. Icons are skipped: the gate renders no bi-* class, so pulling the
+       icon webfont here would be dead weight on the one page a first-time
+       visitor loads cold. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links(false);
+    ?>
     <link rel="stylesheet" href="/css/app.css">
     <style>
         body { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1rem; }

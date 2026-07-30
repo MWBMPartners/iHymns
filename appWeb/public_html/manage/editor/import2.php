@@ -54,15 +54,20 @@ $formats = [
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
     <title>Song Editor v2 — import</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php
+    /* #1676 — Bootstrap CSS from the shared emitter. Same story as editor2.php:
+       hardcoded 5.3.3 with no `integrity`, while the registry says 5.3.6. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    $_pubRoot = dirname(__DIR__, 2);
+    ?>
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_pubRoot . '/css/app.css') ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_pubRoot . '/css/admin.css') ?>">
     <!-- Accessibility modes (#1643). This shell includes admin-theme-init.php
          below, so it DOES stamp data-ihymns-contrast / data-ihymns-cvd on <html>
          — without this link it stamps an intent it then ships no CSS to honour.
          Must stay after admin.css so the high-contrast !important rules win. -->
-    <link rel="stylesheet" href="/css/accessibility.css">
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_pubRoot . '/css/accessibility.css') ?>">
     <?php
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }

@@ -314,6 +314,19 @@ define('APP_CONFIG', [
             'js_local'   => 'vendor/bootstrap/bootstrap.bundle.min.js',
         ],
 
+        /* Bootstrap-Icons 1.11 — the bi-* icon font (#1676)
+           Previously had no registry entry at all: head-libs.php and
+           manage/editor/index.php each hardcoded the URL + hash, and
+           editor2.php / import2.php hardcoded the URL with NO hash. Registered
+           here so ihymns_bootstrap_css_links() is the single emitter, exactly
+           as `bootstrap` above already was for the framework itself. */
+        'bootstrap_icons' => [
+            'version'    => '1.11.3',
+            'css_cdn'    => 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css',
+            'css_sri'    => 'sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+',
+            'css_local'  => 'vendor/bootstrap-icons/bootstrap-icons.min.css',
+        ],
+
         /* Font Awesome 6.7 — Icon library */
         'fontawesome' => [
             'version'    => '6.7.2',

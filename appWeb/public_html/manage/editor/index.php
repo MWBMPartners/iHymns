@@ -69,21 +69,16 @@ try {
          partial directly. -->
     <?php require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php'; ?>
 
-    <!-- Bootstrap 5.3 CSS — loaded from CDN for convenience (no local dependency) -->
-    <link
-        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
-        rel="stylesheet"
-        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
-        crossorigin="anonymous"
-    >
-
-    <!-- Bootstrap Icons — icon font for UI controls (drag handles, buttons, etc.) -->
-    <link
-        rel="stylesheet"
-        href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
-        integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
-        crossorigin="anonymous"
-    >
+    <?php
+    /* #1676 — Bootstrap + Bootstrap-Icons CSS from the ONE shared emitter.
+       This page did carry `integrity` (unlike editor2.php / import2.php), but it
+       pinned 5.3.3 while APP_CONFIG says 5.3.6 — so the v1 and v2 editors were
+       running different Bootstrap builds, and neither matched the rest of admin.
+       Sourcing both from the registry is what makes a version bump a one-line
+       change instead of a four-file hunt. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    ?>
 
     <!-- Shared iHymns palette (public site) + admin/editor styles -->
     <link rel="stylesheet" href="/css/app.css?v=<?= filemtime(dirname(__DIR__, 2) . '/css/app.css') ?>">
@@ -1553,12 +1548,10 @@ try {
     <!-- Toast notification container — dynamically populated by editor.js -->
     <div id="toast-container" class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index: 1090;"></div>
 
-    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other interactive components -->
-    <script
-        src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
-        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
-        crossorigin="anonymous"
-    ></script>
+    <!-- Bootstrap 5.3 JavaScript bundle — required for tabs, dropdowns, and other
+         interactive components. #1676: emitted by the shared helper so the version
+         tracks APP_CONFIG rather than a literal pinned here. -->
+    <?= ihymns_bootstrap_js_script() ?>
 
     <!-- Revision history modal (#400). Populated on demand when the
          History button is clicked; shows the timeline + side-by-side

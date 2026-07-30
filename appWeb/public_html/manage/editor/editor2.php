@@ -45,15 +45,27 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="csrf-token" content="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
     <title>Song Editor v2</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
-    <link rel="stylesheet" href="/css/app.css">
-    <link rel="stylesheet" href="/css/admin.css">
+    <?php
+    /* #1676 — Bootstrap CSS from the shared emitter, NOT hardcoded here.
+       ELI5: this page used to type the Bootstrap address itself, and had quietly
+       lost the "check this file hasn't been tampered with" attribute.
+       Detail: these two <link>s were pinned to 5.3.3 with NO `integrity`, while
+       APP_CONFIG says 5.3.6 and every page using head-libs.php loads that with
+       SRI. Third-party CSS inside an authenticated admin session with no
+       integrity check is the #1587 hazard — and #1601 promotes THIS page to the
+       default song editor, so it would have become the most-used admin page in
+       the app while being the least protected. */
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'bootstrap_assets.php';
+    echo ihymns_bootstrap_css_links();
+    $_pubRoot = dirname(__DIR__, 2);
+    ?>
+    <link rel="stylesheet" href="/css/app.css?v=<?= filemtime($_pubRoot . '/css/app.css') ?>">
+    <link rel="stylesheet" href="/css/admin.css?v=<?= filemtime($_pubRoot . '/css/admin.css') ?>">
     <!-- Accessibility modes (#1643). This shell includes admin-theme-init.php
          below, so it DOES stamp data-ihymns-contrast / data-ihymns-cvd on <html>
          — without this link it stamps an intent it then ships no CSS to honour.
          Must stay after admin.css so the high-contrast !important rules win. -->
-    <link rel="stylesheet" href="/css/accessibility.css">
+    <link rel="stylesheet" href="/css/accessibility.css?v=<?= filemtime($_pubRoot . '/css/accessibility.css') ?>">
     <?php
     $themeInit = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'admin-theme-init.php';
     if (is_file($themeInit)) { include $themeInit; }
@@ -140,7 +152,8 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <?php /* #1676 — Bootstrap JS from the shared emitter (pinned + SRI), was hardcoded 5.3.3 with no integrity. */ ?>
+    <?= ihymns_bootstrap_js_script() ?>
 
     <!-- Shared external-links modules (#833/#845) — classic globals the Links tab reuses. -->
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>

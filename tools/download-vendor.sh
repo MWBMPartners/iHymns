@@ -43,6 +43,7 @@ mkdir -p "$VENDOR_DIR/pdfjs"
 mkdir -p "$VENDOR_DIR/swagger-ui"
 mkdir -p "$VENDOR_DIR/qrcode-generator"
 mkdir -p "$VENDOR_DIR/sortablejs"
+mkdir -p "$VENDOR_DIR/bootstrap-icons/fonts"
 
 # Helper: download a file, verify it's not empty
 download() {
@@ -198,6 +199,28 @@ echo "[10/10] SortableJS 1.15.2"
 download "https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js" \
          "$VENDOR_DIR/sortablejs/Sortable.min.js" \
          "Sortable.min.js"
+
+# ---------------------------------------------------------------------------
+# Bootstrap-Icons 1.11.3 (#1676)
+#
+# Registered in APP_CONFIG['libraries']['bootstrap_icons'] and emitted by
+# ihymns_bootstrap_css_links(). Previously it had no registry entry and no
+# vendored copy at all — four pages hardcoded the CDN URL directly.
+#
+# The two woff/woff2 files are NOT optional. bootstrap-icons.min.css references
+# them with RELATIVE url(./fonts/...) rules, so a local fallback that ships only
+# the stylesheet renders every bi-* glyph as an empty box — a fallback that is
+# worse than no fallback, because it looks like the CSS loaded fine.
+# ---------------------------------------------------------------------------
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" \
+         "$VENDOR_DIR/bootstrap-icons/bootstrap-icons.min.css" \
+         "bootstrap-icons.min.css"
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff2" \
+         "$VENDOR_DIR/bootstrap-icons/fonts/bootstrap-icons.woff2" \
+         "bootstrap-icons.woff2"
+download "https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/fonts/bootstrap-icons.woff" \
+         "$VENDOR_DIR/bootstrap-icons/fonts/bootstrap-icons.woff" \
+         "bootstrap-icons.woff"
 
 echo ""
 echo "=== Done. Vendor libraries downloaded to: $VENDOR_DIR ==="
