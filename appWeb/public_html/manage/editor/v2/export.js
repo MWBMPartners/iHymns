@@ -13,8 +13,6 @@
  *    menuEl : the <ul class="dropdown-menu"> to populate.
  * ========================================================================== */
 
-const EDITOR_API_URL = '/manage/editor/api.php';   // legacy GET endpoints (EasyWorship export, read-only)
-
 /* v2 store slices -> the flat song object the legacy serializers expect:
    {title, number, songbook, songbookName, language, copyright, ccli, tuneName,
     writers:[name], composers:[name], arrangers:[name], artists:[name],
@@ -100,10 +98,13 @@ export function mountExportMenu(menuEl, opts) {
     }
 
     /* EasyWorship is generated server-side (SQLite) — trigger a download of the
-       gated GET endpoint (same-origin cookie carries the editor session). */
+       gated GET endpoint (same-origin cookie carries the editor session). Points
+       at the v2 API (api2.php), not the legacy api.php: v1's `easyworship_export`
+       action was one of the endpoints epic #1601's retirement would have broken,
+       so #1678 gave api2.php its own case backed by the same shared helpers. */
     function exportEasyWorship() {
         if (!songId) { toast('Open a song first.', 'danger'); return; }
-        const url = EDITOR_API_URL + '?action=easyworship_export&id=' + encodeURIComponent(songId) + '&maxLinesPerSlide=0';
+        const url = '/manage/editor/api2.php?action=easyworship_export&id=' + encodeURIComponent(songId) + '&maxLinesPerSlide=0';
         const a = document.createElement('a');
         a.href = url;
         a.rel = 'noopener';

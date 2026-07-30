@@ -5,18 +5,19 @@ declare(strict_types=1);
 /**
  * iHymns — v1 editor api.php consumer de-orphan guard (#1629)
  *
- * ELI5: four things OUTSIDE the song editor secretly depend on the old
- * `manage/editor/api.php` — a typeahead, an export button, a stale-job
- * poller, and a "go fix it in the editor" error message. This test makes
- * sure all four were actually moved off v1 before anyone deletes it, by
- * reading the real source files and checking the after-state, not by
- * trusting a changelog entry.
+ * ELI5: five things secretly depend on the old `manage/editor/api.php` — a
+ * typeahead, a songbooks export button, a stale-job poller, a "go fix it in
+ * the editor" error message, and (added by #1678) the v2 editor's OWN
+ * EasyWorship export button. This test makes sure all five were actually
+ * moved off v1 before anyone deletes it, by reading the real source files
+ * and checking the after-state, not by trusting a changelog entry.
  *
  * WHY THIS EXISTS
  * ----------------
  * Epic #1601 is retiring `manage/editor/api.php` in favour of the v2
- * editor API (`manage/editor/api2.php`). Four consumers of v1 are NOT part
- * of the editor UI and would have broken invisibly the day v1 disappears:
+ * editor API (`manage/editor/api2.php`). Four consumers of v1 identified by
+ * the original #1629 audit were NOT part of the editor UI and would have
+ * broken invisibly the day v1 disappears:
  *
  *   1. Content Restrictions' name-first picker
  *      (manage/includes/renderEntityPicker.js) called v1's user_search /
@@ -39,6 +40,19 @@ declare(strict_types=1);
  *      duplicate-songs.php itself (edit_songs-gated, validateCsrfRequest-
  *      CSRF'd, same as its sibling `link`/`dismiss` actions) and repoint
  *      the message at it.
+ *
+ *   5. (#1678 — the ONE the #1629 audit above MISSED) the v2 editor's own
+ *      EXPORT MENU (manage/editor/v2/export.js) called v1's
+ *      `?action=easyworship_export` for its "EasyWorship (beta)" item —
+ *      invisible to the #1629 audit because it lives INSIDE the v2 editor
+ *      surface the audit assumed was already v1-free, not in a sibling
+ *      admin page. api2.php had no equivalent case at all, so retiring v1
+ *      as planned would have broken that button outright. Fix: extract the
+ *      three RTF/SQLite builder functions VERBATIM into the new shared
+ *      `includes/easyworship_export.php` (the `song_importers.php`
+ *      precedent, #1200 Phase 4b), `require_once` it from BOTH api.php
+ *      (unchanged v1 behaviour while it still exists) and api2.php (a new
+ *      `easyworship_export` case), and repoint export.js at api2.php.
  *
  * METHOD — source analysis, no DB, no HTTP:
  *   Every assertion strips `//` and `/* *\/` comments (and preserves
@@ -383,6 +397,49 @@ check(
     'duplicate-songs.php still has the "already in different counterpart groups" conflict message (just repointed, not deleted)',
     strpos($dupSongsPhp, 'already in different counterpart groups') !== false,
     'the 409 conflict message text seems to have been removed entirely rather than repointed'
+);
+
+/* ======================================================================
+ * 6. EasyWorship export button — v2 export.js + includes/easyworship_export.php
+ *    (#1678 — the FIFTH v1 consumer, missed by the original #1629 audit
+ *    above because it lives inside the v2 editor surface itself)
+ * ====================================================================== */
+echo "\n6. EasyWorship export button (#1678, the fifth v1 consumer):\n";
+
+$easyworshipInc = readStripped($webRoot . '/includes/easyworship_export.php');
+$apiPhp         = readStripped($webRoot . '/manage/editor/api.php');
+$exportJs       = readStripped($webRoot . '/manage/editor/v2/export.js');
+
+foreach (['_ewExport_rtfEscape', '_ewExport_buildRtf', '_ewExport_writeDb'] as $ewFn) {
+    check(
+        "includes/easyworship_export.php defines {$ewFn}()",
+        (bool)preg_match('/function\s+' . preg_quote($ewFn, '/') . '\s*\(/', $easyworshipInc),
+        "expected \"function {$ewFn}(\" in includes/easyworship_export.php — the extraction never landed"
+    );
+    check(
+        "manage/editor/api.php no longer DEFINES {$ewFn}() (moved, not merely called)",
+        !(bool)preg_match('/function\s+' . preg_quote($ewFn, '/') . '\s*\(/', $apiPhp),
+        "found a \"function {$ewFn}(\" declaration still in api.php — the move left a duplicate definition behind"
+    );
+}
+check(
+    "api2.php now has an 'easyworship_export' case",
+    (bool)preg_match("/case\s+'easyworship_export'\s*:/", $api2Php),
+    "api2.php's switch has no case 'easyworship_export': — the v2 endpoint was never added"
+);
+check(
+    'export.js no longer references the legacy /manage/editor/api.php path',
+    strpos($exportJs, '/manage/editor/api.php') === false,
+    'found a "/manage/editor/api.php" reference in export.js — the retiring v1 endpoint is still targeted'
+);
+check(
+    'export.js targets api2.php for the EasyWorship export',
+    /* Anchored on a `&` or the closing quote after the action name — a bare
+       strpos() substring match would be fooled by e.g.
+       "action=easyworship_export_wrong", which contains the wanted string
+       as a prefix but names a different (nonexistent) action entirely. */
+    (bool)preg_match("/\\/manage\\/editor\\/api2\\.php\\?action=easyworship_export(?:&|')/", $exportJs),
+    'expected a "/manage/editor/api2.php?action=easyworship_export" URL literal (action name exact, not just a prefix) in export.js'
 );
 
 /* ======================================================================

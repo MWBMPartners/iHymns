@@ -26,6 +26,7 @@ declare(strict_types=1);
  *
  * Actions:
  *   GET  load_index                                         -> { ok, songs }  (slim sidebar index)
+ *   GET  easyworship_export?id=<SongId>|abbr=<BOOK>[&maxLinesPerSlide=N] -> streams an EasyWorship Songs.db (#1059/#1678)
  *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
  *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
  *   GET  load_song?id=<SongId>                              -> { ok, song }
@@ -2282,6 +2283,59 @@ try {
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
         $songData = new SongData();
         ed2_respond(['ok' => true, 'songs' => $songData->getSongsSlimIndex()]);
+        break;
+    }
+
+    /* ---- easyworship_export (GET) — build + stream an EasyWorship Songs.db
+           (#1059). Behaviourally identical to the legacy v1 handler this
+           replaces (api.php:2604-2642, now delegating to the SAME shared
+           includes/easyworship_export.php helpers, #1678 — v1's endpoint had
+           no v2 equivalent, which the #1629 v1-consumer audit missed and
+           epic #1601's v1 retirement would otherwise have broken). GET, so
+           the POST-only X-Requested-With gate above does not apply; the
+           file-level isAuthenticated()/editor-role guard already covers it.
+           This is the ONE binary-response case in this file: on success it
+           streams the file and `return`s instead of falling through to the
+           JSON default, matching v1's structure exactly. ---- */
+    case 'easyworship_export': {
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
+        $abbr     = strtoupper(trim((string)($_GET['abbr'] ?? '')));
+        $oneId    = trim((string)($_GET['id'] ?? ''));
+        $maxLines = max(0, (int)($_GET['maxLinesPerSlide'] ?? 0));
+        try {
+            $songData = new SongData();
+            $songs    = [];
+            $stem     = 'EasyWorship';
+            if ($oneId !== '') {
+                $one = $songData->getSongById($oneId);
+                if ($one !== null) { $songs = [$one]; $stem = (string)($one['title'] ?? $oneId); }
+            } elseif ($abbr !== '') {
+                $songs = $songData->getSongs($abbr);
+                $stem  = $abbr;
+            }
+            if (empty($songs)) {
+                ed2_respond(['ok' => false, 'error' => 'No songs found to export (pass ?abbr=<songbook> or ?id=<SongId>).'], 404);
+            }
+            $tmp = tempnam(sys_get_temp_dir(), 'ewexp_');
+            $n   = _ewExport_writeDb($tmp, $songs, $maxLines);
+            $fname = trim((string)preg_replace('/[^A-Za-z0-9 _\-]/', '', $stem));
+            if ($fname === '') { $fname = 'EasyWorship'; }
+            $fname .= ' Songs.db';
+            header('Content-Type: application/x-sqlite3');
+            header('Content-Disposition: attachment; filename="' . $fname . '"');
+            header('Content-Length: ' . filesize($tmp));
+            header('Cache-Control: no-store, no-cache, must-revalidate');
+            header('X-Song-Count: ' . $n);
+            readfile($tmp);
+            @unlink($tmp);
+            /* Streamed a binary file — don't fall through to the JSON default
+               (copies v1's api.php:2604-2642 structure exactly, #1678). */
+            return;
+        } catch (\Throwable $e) {
+            error_log('[easyworship_export] ' . $e->getMessage());
+            ed2_respond(['ok' => false, 'error' => 'Export failed: ' . $e->getMessage()], 500);
+        }
         break;
     }
 

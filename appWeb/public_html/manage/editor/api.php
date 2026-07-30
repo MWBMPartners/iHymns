@@ -99,6 +99,13 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_sync.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
 require_once dirname(dirname(__DIR__)) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'csv_safe.php'; // ihymns_fputcsv() — CSV formula-injection neutraliser
+/* _ewExport_rtfEscape() / _ewExport_buildRtf() / _ewExport_writeDb() — the
+   EasyWorship Songs.db builder (#1059) the `easyworship_export` case below
+   calls. Moved to includes/easyworship_export.php (#1678) so api2.php reuses
+   the SAME implementation instead of forking it. Required ABOVE the switch,
+   same reasoning as song_importers.php just above: the functions must exist
+   before any handler runs, not merely before this file's own text position. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'easyworship_export.php';
 
 /* =========================================================================
  * REQUEST HANDLING
@@ -3572,100 +3579,13 @@ switch ($action) {
  * two-table schema the iHymns EasyWorship importer (#1058) round-trips; real
  * EasyWorship may expect additional index/FTS tables, so "does EW itself read
  * it" should be confirmed against a live EasyWorship install.
+ *
+ * _ewExport_rtfEscape() / _ewExport_buildRtf() / _ewExport_writeDb() moved to
+ * includes/easyworship_export.php (#1678) so the v2 editor API
+ * (manage/editor/api2.php) can reuse the SAME implementation instead of
+ * forking it — epic #1601 is retiring this file, and the #1629 audit that
+ * inventoried v1-only endpoints still in use by v2 missed this one.
+ * `require_once`'d near the top of this file, ABOVE the switch (alongside
+ * song_importers.php), NOT here — a require placed after the switch would
+ * not have run yet when the `easyworship_export` case above executes.
  * =========================================================================== */
-
-/**
- * Escape one string for RTF: \ { } literals, non-ASCII → \uN (signed 16-bit,
- * with a '?' fallback char). Mirrors the JS exporter's rtfEscape.
- */
-function _ewExport_rtfEscape(string $text): string
-{
-    $out = '';
-    $len = mb_strlen($text, 'UTF-8');
-    for ($i = 0; $i < $len; $i++) {
-        $ch   = mb_substr($text, $i, 1, 'UTF-8');
-        $code = mb_ord($ch, 'UTF-8');
-        if ($ch === '\\')                  { $out .= '\\\\'; }
-        elseif ($ch === '{')               { $out .= '\\{'; }
-        elseif ($ch === '}')               { $out .= '\\}'; }
-        elseif ($code !== false && $code < 128) { $out .= $ch; }
-        else {
-            $rtfCode = ($code !== false && $code > 32767) ? $code - 65536 : (int)$code;
-            $out    .= '\\u' . $rtfCode . '?';
-        }
-    }
-    return $out;
-}
-
-/**
- * Build the EasyWorship `words` RTF for one song. Slides (chunks of <=
- * $maxLines lines, or whole components when $maxLines <= 0) are separated by
- * \par\par; lines within a slide by \par.
- */
-function _ewExport_buildRtf(array $components, int $maxLines): string
-{
-    $slides = [];
-    foreach ($components as $comp) {
-        $lines  = array_map('strval', (array)($comp['lines'] ?? []));
-        $chunks = ($maxLines > 0) ? array_chunk($lines, $maxLines) : [$lines];
-        foreach ($chunks as $chunk) {
-            $esc = array_map('_ewExport_rtfEscape', $chunk);
-            $slides[] = implode('\\par ', $esc);
-        }
-    }
-    if (empty($slides)) { $slides[] = ''; }
-    $body = implode('\\par\\par ', $slides);
-    return '{\\rtf1\\ansi\\ansicpg1252{\\fonttbl\\f0\\fswiss Arial;}\\pard\\f0\\fs40 ' . $body . '}';
-}
-
-/**
- * Write an EasyWorship Songs.db (song + word tables) at $path for the given
- * iHymns song records (the SongData::getSongs() shape). Returns the song
- * count written.
- */
-function _ewExport_writeDb(string $path, array $songs, int $maxLines): int
-{
-    if (!class_exists('SQLite3')) {
-        throw new \RuntimeException('the SQLite3 PHP extension is not available');
-    }
-    @unlink($path);
-    $db = new \SQLite3($path);
-    $db->exec('CREATE TABLE song (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
-            . 'title TEXT, author TEXT, copyright TEXT, reference_number TEXT)');
-    $db->exec('CREATE TABLE word (rowid INTEGER PRIMARY KEY AUTOINCREMENT, '
-            . 'song_id INTEGER, words TEXT)');
-
-    $songStmt = $db->prepare('INSERT INTO song (title, author, copyright, reference_number) VALUES (?,?,?,?)');
-    $wordStmt = $db->prepare('INSERT INTO word (song_id, words) VALUES (?,?)');
-
-    $count = 0;
-    $db->exec('BEGIN');
-    foreach ($songs as $song) {
-        $title = trim((string)($song['title'] ?? ''));
-        if ($title === '') { continue; }
-        $author = trim(implode(', ', array_filter(array_merge(
-            (array)($song['writers'] ?? []),
-            (array)($song['composers'] ?? [])
-        ))));
-        $copyright = (string)($song['copyright'] ?? '');
-        $refnum    = (string)($song['number'] ?? '');
-        $rtf       = _ewExport_buildRtf((array)($song['components'] ?? []), $maxLines);
-
-        $songStmt->bindValue(1, $title, SQLITE3_TEXT);
-        $songStmt->bindValue(2, $author, SQLITE3_TEXT);
-        $songStmt->bindValue(3, $copyright, SQLITE3_TEXT);
-        $songStmt->bindValue(4, $refnum, SQLITE3_TEXT);
-        $songStmt->execute();
-        $songStmt->reset();
-        $songId = $db->lastInsertRowID();
-
-        $wordStmt->bindValue(1, $songId, SQLITE3_INTEGER);
-        $wordStmt->bindValue(2, $rtf, SQLITE3_TEXT);
-        $wordStmt->execute();
-        $wordStmt->reset();
-        $count++;
-    }
-    $db->exec('COMMIT');
-    $db->close();
-    return $count;
-}
