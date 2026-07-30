@@ -96,6 +96,11 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 /* #1235 P3 / #1088 — shared per-line enrichment (translations / annotations)
    write+read layer; the SAME contract the future native API (#1201) reuses. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'line_enrichment.php';
+/* #1627 — the ONE ArrangementJson rule, shared with gate G4 (#1618) and the
+   write side. arrangement_update below must never persist ordinals the gate
+   would reject; sharing the validator is what makes that structurally true
+   rather than a thing two files happen to agree on today. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'arrangement.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -569,6 +574,36 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         $snapComps = array_values(array_filter($snap['components'], 'is_array'));
         usort($snapComps, static fn($a, $b) => ((int)($a['sortOrder'] ?? 0)) <=> ((int)($b['sortOrder'] ?? 0)));
         ed2_persistComponents($db, $songId, $snapComps);
+
+        /* ArrangementJson — restore it TOO (#1627).
+         *
+         * ELI5: the running order is part of the song, so restoring an old
+         * version has to bring the running order back with it.
+         *
+         * Detail: this column is not in ED2_META_FIELDS (nothing in v2 could
+         * write it until arrangement_update, above), so the scalar loop skips
+         * it — yet the snapshot row is a `SELECT *` and has carried the value
+         * all along. Restore therefore rebuilt every section and silently left
+         * the arrangement pointing at the CURRENT set. Harmless while no v2
+         * editor could create one; a live data-loss bug the moment one can.
+         *
+         * Deliberately inside the components branch: ordinals index the section
+         * list, so restoring an order without restoring the sections it indexes
+         * is how you get ordinals pointing past the end. Re-validated against
+         * the snapshot's own component count through the shared rule rather
+         * than trusted — an old revision may predate a section being deleted,
+         * and an out-of-range ordinal must clear to NULL, never be written back
+         * for gate G4 to find later. */
+        if (arrangementColumnExists($db)) {
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'arrangement.php';
+            $arrRaw = $songRow['ArrangementJson'] ?? null;
+            $arrOrd = is_string($arrRaw) ? json_decode($arrRaw, true) : $arrRaw;
+            $arrJson = arrangementSanitise($arrOrd, count($snapComps));
+            $ua = $db->prepare('UPDATE tblSongs SET ArrangementJson = ? WHERE SongId = ?');
+            $ua->bind_param('ss', $arrJson, $songId);
+            $ua->execute();
+            $ua->close();
+        }
     }
 
     /* Credits — replace each role table from the snapshot. */
@@ -1003,6 +1038,113 @@ try {
         }
         logActivity('song.component.reorder', 'song', $songId, ['count' => count($order)]);
         ed2_respond(['ok' => true, 'count' => count($order)]);
+        break;
+    }
+
+    /* ---- arrangement_update (POST) — the song's running order (#161 / #1627).
+     *
+     * ELI5: saves "play section 0, then 1, then 1 again, then 2".
+     *
+     * Body: { songId, arrangement: [0,1,1,2] }   — null or [] CLEARS it.
+     * ->    { ok, songId, arrangement }          — the stored value, echoed back.
+     *
+     * WHY THIS EXISTS
+     * v1 persisted ArrangementJson through its whole-song save (save_song_core.php:303).
+     * v2 has no such save — every edit is granular — and ED2_META_FIELDS cannot
+     * write this column, so no v2 endpoint touched it at all. #1601 would have
+     * made existing arrangements READ-ONLY FOSSIL DATA: the public render and
+     * every export format keep consuming them, but nobody could ever create or
+     * change one again. The admin dashboard advertises "arrangements" throughout.
+     *
+     * VALIDATION IS THE SHARED ONE, deliberately. #1618's gate G4 audits stored
+     * ordinals; this endpoint uses the SAME includes/arrangement.php rule, so the
+     * editor cannot manufacture data that later fails the cutover verification
+     * and blocks the C6 drop.
+     *
+     * THE 422 IS THE SUBTLE PART. G4 — and the public render — index the
+     * ASSEMBLED component list, while the editor indexes the EDITABLE one. Those
+     * are equal except when a zero-line component exists (reachable via
+     * components_replace with lines: []), where the editable list is longer. So
+     * ordinals are validated against the ASSEMBLED count, and while the two
+     * counts diverge we refuse to store a non-null arrangement at all rather
+     * than write ordinals that mean one thing to the editor and another to the
+     * renderer. Clearing is always allowed — you must be able to get out of that
+     * state.
+     *
+     * CSRF: covered by the file-level same-origin POST gate above (#1307). Auth:
+     * the file-level isAuthenticated() + editor role, exactly what protected
+     * v1's save_song write of this same column — no new entitlement invented. ---- */
+    case 'arrangement_update': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        /* Migrations are web-run, not applied on deploy, and mysqli is STRICT —
+           touching a missing column throws. Probe, don't assume (rule #19). */
+        if (!arrangementColumnExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'The ArrangementJson migration has not been run on this install.'], 409);
+        }
+
+        $raw = $body['arrangement'] ?? null;
+        if ($raw !== null && !is_array($raw)) {
+            ed2_respond(['ok' => false, 'error' => 'arrangement must be an array of section indexes, or null to clear.'], 400);
+        }
+
+        $json = null;
+        if ($raw !== null && $raw !== []) {
+            /* lyric_lines_read.php is required LAZILY inside ed2_currentComponents()
+               and its sibling, not at the top of this file. Calling
+               ed2_currentComponents() first happens to load it before
+               lyricLinesMirrorPresent() is reached below — but depending on that
+               ordering is the kind of thing a later refactor breaks silently, with
+               a fatal "undefined function" only on the branch that reorders. State
+               the dependency; require_once is idempotent and cheap. */
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
+
+            $nEditable  = count(ed2_currentComponents($db, $songId));
+            $nAssembled = lyricLinesMirrorPresent($db)
+                ? count(lyricLinesAssembleComponents($db, $songId))
+                : $nEditable;
+
+            if ($nAssembled !== $nEditable) {
+                ed2_respond([
+                    'ok'    => false,
+                    'error' => 'This song has empty sections, so section numbering differs between the '
+                             . 'editor and the published song. Remove them before setting an arrangement.',
+                ], 422);
+            }
+
+            $viol = arrangementViolations(array_values($raw), $nAssembled);
+            if ($viol !== []) {
+                $first = $viol[0];
+                $msg = $first['reason'] === 'malformed'
+                    ? 'arrangement must be an array of section indexes.'
+                    : 'arrangement[' . ($first['position'] ?? 0) . '] = '
+                      . json_encode($first['value'] ?? null)
+                      . ' is not a valid section index (this song has ' . $nAssembled . ' sections).';
+                ed2_respond(['ok' => false, 'error' => $msg], 400);
+            }
+
+            $json = arrangementSanitise(array_values($raw), $nAssembled);
+        }
+
+        $db->begin_transaction();
+        try {
+            $up = $db->prepare('UPDATE tblSongs SET ArrangementJson = ? WHERE SongId = ?');
+            $up->bind_param('ss', $json, $songId);
+            $up->execute();
+            $up->close();
+            ed2_touchRevision($db, $songId, $ed2UserId, 'arrangement');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.arrangement', 'song', $songId, ['length' => $json === null ? 0 : count(json_decode($json, true) ?: [])]);
+        /* Echo the STORED value, not the request, so the client's local copy can
+           only ever hold what the server actually kept. */
+        ed2_respond(['ok' => true, 'songId' => $songId, 'arrangement' => $json === null ? null : json_decode($json, true)]);
         break;
     }
 
