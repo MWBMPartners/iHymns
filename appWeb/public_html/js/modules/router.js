@@ -797,6 +797,22 @@ export class Router {
                 .catch(err => console.error('[Router] songbook-language-filter init failed:', err));
         }
 
+        /* Per-tile "Export songbook ▾" dropdowns on the /songbooks LIST
+           (#1607 — owner decision: whole-songbook export lives on
+           /songbooks and /songbook/<abbr>, NOT inside the single-song
+           view, to keep that dropdown uncluttered). Same CSP/shared-cache
+           reasoning as the song/songbook Export wiring above: the fragment
+           can never carry an inline <script>, so this is a real ES module
+           imported here. `initSongbookListExport()` wires every tile's own
+           menu to its own `data-songbook-id` — it does not take an abbr,
+           unlike the single-menu `initSongbookExport()` used on
+           /songbook/<abbr> below. */
+        if (page === 'songbooks') {
+            import('./export-ui.js')
+                .then(m => m.initSongbookListExport())
+                .catch(err => console.error('[Router] export-ui init failed:', err));
+        }
+
         /* Settings page — language preferences picker (#736). The
            settings page hosts a duplicate of the language filter UI
            inside the Language Preferences section, so the user can

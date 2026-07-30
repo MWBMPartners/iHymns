@@ -15,15 +15,25 @@ declare(strict_types=1);
  *
  * Caller contract:
  *
- *   $exportMenuSurface = 'song';       // or 'songbook'
+ *   $exportMenuSurface = 'song';       // or 'songbook' / 'songbook-list'
  *   require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'export-menu.php';
  *
  * $exportMenuSurface selects which CSS class the SPA-router-driven wiring
- * hooks on: `.song-export-menu` (export-ui.js `initSongExport()`) or
- * `.songbook-export-menu` (`initSongbookExport()`) — see router.js
- * afterPageLoad() (#1565) for where those two functions are actually called
- * from, now that the fragment can no longer self-wire via an inline
- * <script> (enforcing nonce CSP #117 + shared-cache rule #6).
+ * hooks on: `.song-export-menu` (export-ui.js `initSongExport()`, ONE menu
+ * on /song/<id>), `.songbook-export-menu` (`initSongbookExport()`, ONE menu
+ * on /songbook/<abbr>), or `.songbook-list-export-menu` (#1607,
+ * `initSongbookListExport()` — MANY menus, one per tile, on /songbooks) —
+ * see router.js afterPageLoad() for where these are actually called from,
+ * now that the fragment can no longer self-wire via an inline <script>
+ * (enforcing nonce CSP #117 + shared-cache rule #6).
+ *
+ * 'songbook-list' gets its own class rather than reusing
+ * `.songbook-export-menu` because the list page renders N of them — the
+ * single-menu selector export-ui.js uses for the song/songbook surfaces
+ * (`document.querySelector`, first match only) would silently wire every
+ * tile's menu to the FIRST tile's abbreviation. `initSongbookListExport()`
+ * instead walks every `.songbook-list-export-menu` and resolves each one's
+ * abbreviation from its own tile's `data-songbook-id` (#1607).
  *
  * The `data-export-format` KEYS below must match TWO registries kept in
  * sync by hand (there is no shared JS/PHP enum to import from):
@@ -45,11 +55,17 @@ declare(strict_types=1);
  * one). Sharing ONE list here is what keeps that from happening again.
  */
 
-if (!isset($exportMenuSurface) || !in_array($exportMenuSurface, ['song', 'songbook'], true)) {
+$EXPORT_MENU_CLASS_BY_SURFACE = [
+    'song'          => 'song-export-menu',
+    'songbook'      => 'songbook-export-menu',
+    'songbook-list' => 'songbook-list-export-menu',
+];
+
+if (!isset($exportMenuSurface) || !isset($EXPORT_MENU_CLASS_BY_SURFACE[$exportMenuSurface])) {
     /* Fail closed rather than guess — an unset/unknown surface would wire
-       neither export-ui.js hook (initSongExport / initSongbookExport look
-       for one specific class each), so rendering an unmarked menu would
-       silently ship a dead dropdown. Callers must set the contract var. */
+       no export-ui.js hook (each one looks for one specific class), so
+       rendering an unmarked menu would silently ship a dead dropdown.
+       Callers must set the contract var to a recognised surface. */
     return;
 }
 
@@ -65,7 +81,7 @@ $EXPORT_MENU_FORMATS = [
     'chordPro'      => 'ChordPro',
 ];
 
-$exportMenuClass = $exportMenuSurface === 'songbook' ? 'songbook-export-menu' : 'song-export-menu';
+$exportMenuClass = $EXPORT_MENU_CLASS_BY_SURFACE[$exportMenuSurface];
 ?>
 <ul class="dropdown-menu dropdown-menu-end <?= $exportMenuClass ?>">
     <?php foreach ($EXPORT_MENU_FORMATS as $fmtKey => $fmtLabel): ?>

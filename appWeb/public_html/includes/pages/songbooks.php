@@ -184,6 +184,40 @@ $stats = $songData->getStats();
                                 title="Download this songbook for offline use">
                             <i class="fa-solid fa-cloud-arrow-down" aria-hidden="true"></i>
                         </button>
+                        <!-- Export this whole songbook to a worship-presentation format
+                             (#1607). Owner decision: whole-songbook export lives on
+                             /songbooks and /songbook/<abbr> ONLY, never inside the
+                             single-song view (keeps that dropdown uncluttered) — see
+                             song.php's .song-export-menu, which stays single-song-only.
+                             Sits directly below the download button in the same
+                             top-right corner cluster (raised z-index above the
+                             stretched-link, same trick as that button). Wired by
+                             export-ui.js's initSongbookListExport() from router.js's
+                             afterPageLoad() (rule #30 — this fragment is shared-cache,
+                             #1565, so it can never carry an inline <script>).
+                             The button's aria-label names THIS book by name so N tiles
+                             on the page each get a distinguishing accessible name
+                             (WCAG 2.5.3 Label in Name — same pattern as #680/#856's
+                             language badge). Guarded against a 0-song tile even though
+                             the enclosing `if ($book['songCount'] > 0)` above already
+                             excludes those from this page entirely — belt-and-braces
+                             in case that filter ever changes; an empty book would
+                             otherwise throw 'no songs to export' deep inside the
+                             fetch/format pipeline instead of failing at the control. -->
+                        <div class="btn-group songbook-export-tile-group">
+                            <button type="button"
+                                    class="btn btn-sm btn-outline-secondary dropdown-toggle songbook-export-tile-btn"
+                                    data-bs-toggle="dropdown" aria-expanded="false"
+                                    aria-label="Export <?= htmlspecialchars($book['name']) ?> to a worship-presentation format"
+                                    title="Export this songbook"
+                                    <?php if (((int)($book['songCount'] ?? 0)) < 1): ?>disabled aria-disabled="true"<?php endif; ?>>
+                                <i class="fa-solid fa-file-export" aria-hidden="true"></i>
+                            </button>
+                            <?php
+                                $exportMenuSurface = 'songbook-list';
+                                require dirname(__DIR__) . DIRECTORY_SEPARATOR . 'partials' . DIRECTORY_SEPARATOR . 'export-menu.php';
+                            ?>
+                        </div>
                     </div>
                 </div>
             <?php endif; ?>

@@ -3344,6 +3344,35 @@ body.reduce-motion .related-songs-chevron {
     border-color: var(--accent-solid);
 }
 
+/* Per-tile "Export songbook" control on the /songbooks LIST (#1607). Stacks
+   directly BELOW the download button in the same top-right corner cluster
+   rather than sharing its row with the language badge — the badge can be up
+   to 3 letters wide (right: 2.5rem, see below) and there's no horizontal
+   room left in that row on a narrow xs tile. Stacking vertically instead of
+   widening the cluster sideways means the existing `padding-right: 5.75rem`
+   reservation on .page-songbooks .card-body (below) already covers it — that
+   reservation is for the row's WIDTH, and flow content never enters this
+   gutter at any height, so a second row placed lower in the same gutter
+   never collides with the title/series text either. Same "raised z-index
+   above the stretched-link" trick as .songbook-download-btn. */
+.songbook-export-tile-group {
+    position: absolute;
+    /* 0.35rem (download button's own top) + ~1.6rem (its rendered height,
+       btn-sm + this icon) + 0.15rem gap. */
+    top: 2.1rem;
+    right: 0.35rem;
+    z-index: 2;
+}
+.songbook-export-tile-btn {
+    padding: 0.2rem 0.45rem;
+    line-height: 1.3;
+}
+.songbook-export-tile-btn:disabled,
+.songbook-export-tile-btn[aria-disabled="true"] {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 /* Language indicator badge on a songbook tile (#680). Small uppercase
    2-3 letter ISO code in the top-right corner of each tile. Sits on
    the LEFT of the offline-download cloud button so the two don't
