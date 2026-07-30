@@ -158,7 +158,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                         <ul class="dropdown-menu dropdown-menu-end" id="v2-export-menu"></ul>
                     </div>
                     <button id="v2-delete-btn" type="button" class="btn btn-sm btn-outline-danger"><i class="bi bi-trash me-1"></i>Delete</button>
-                    <a href="/manage/editor/" class="btn btn-sm btn-outline-secondary">Legacy</a>
+                    <?php /* #1601 — MUST carry ?legacy=1: /manage/editor/ now redirects
+                             here, so a bare link would bounce straight back and read as
+                             a broken button. */ ?>
+                    <a href="/manage/editor/?legacy=1" class="btn btn-sm btn-outline-secondary">Legacy</a>
                 </div>
             </div>
             <div id="v2-status" class="alert alert-secondary py-2 small" role="status">Loading…</div>

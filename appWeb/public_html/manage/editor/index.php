@@ -23,6 +23,64 @@ declare(strict_types=1);
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 requireEditor();
 
+/* =========================================================================
+ * #1601 SCOPE ITEM 2 — /manage/editor/ NOW SERVES THE v2 EDITOR
+ * =========================================================================
+ *
+ * ELI5: this address used to open the old editor. It now forwards to the new
+ * one, keeping whatever the link asked for. `?legacy=1` still opens this one.
+ *
+ * WHY A REDIRECT AND NOT A NAV CHANGE
+ * -----------------------------------
+ * SIX places link into `/manage/editor/` with instructions in the URL:
+ * admin-links.php, manage/index.php's card, revisions.php (?song=&tab=history),
+ * missing-numbers.php (?songbook=#number=), duplicate-songs.php (?song=) and
+ * the public song page's Edit button (?song=). Changing only the nav href would
+ * leave the other five pointing at v1 — and after v1 is retired, at nothing.
+ * Redirecting the ROUTE fixes all six at once and touches none of them.
+ *
+ * The query string is forwarded verbatim; the browser carries the FRAGMENT
+ * (`#number=412`, which missing-numbers.php emits) across a 302 by itself,
+ * since a fragment is never sent to the server in the first place.
+ *
+ * WHY 302 AND NOT 301
+ * -------------------
+ * 301 is cached by the browser, sometimes indefinitely. If this cutover has to
+ * be reverted, every admin who visited once would keep being sent to v2 from
+ * their own cache, with no server-side way to stop it. 302 keeps the decision
+ * on the server where it can be changed.
+ *
+ * THE ESCAPE HATCHES, in order of how fast they act
+ * -------------------------------------------------
+ *   1. `?legacy=1` — per-visit, immediate, no state. Also what editor2.php's
+ *      "Legacy" button links to (it must NOT link to bare /manage/editor/, or
+ *      it would bounce straight back here — an infinite-feeling loop).
+ *   2. `tblAppSettings.editor_v2_default = '0'` — fleet-wide, no deploy. An
+ *      ABSENT key means v2, so no migration is required (rule #19 is about
+ *      schema; this is a key-value row). getAppSetting() returns its default on
+ *      ANY DB error, so a database wobble sends people to v2 rather than
+ *      throwing here.
+ *   3. Reverting this commit.
+ *
+ * WHAT THIS DOES NOT DO — deliberately
+ * ------------------------------------
+ * It does not DELETE v1 (#1601 scope item 3). Removing the fallback in the same
+ * change that makes v2 the default would leave no way back if something only
+ * shows up under real curator load — and this whole branch's verification is
+ * static: no MySQL, no browser, nobody has clicked any of it. #1601 also gates
+ * retirement on cross-branch state (beta and main are a month behind on
+ * unrelated histories, sharing ONE database) that cannot be checked from a
+ * build container. Retirement stays a separate, later change.
+ * ========================================================================= */
+if (($_GET['legacy'] ?? '') !== '1') {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+    if (getAppSetting('editor_v2_default', '1') !== '0') {
+        $_qs = $_SERVER['QUERY_STRING'] ?? '';
+        header('Location: /manage/editor/editor2.php' . ($_qs !== '' ? '?' . $_qs : ''), true, 302);
+        exit;
+    }
+}
+
 $currentUser = getCurrentUser();
 
 /* CSRF token mint — MUST run BEFORE any HTML output (mirrors editor2.php:34).

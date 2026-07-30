@@ -118,14 +118,21 @@ check(`found deep links into /manage/editor/ (${emitted.size} distinct params)`,
 const shellSrc = readFileSync(join(PUB, 'manage/editor/editor2.php'), 'utf8');
 const shell = stripPhp(shellSrc);
 
-/* A param counts as handled when the shell reads it server-side ($_GET['x'])
-   or client-side (the fragment parser). Comments are stripped first, so the
-   long notes explaining each of these cannot satisfy the assertion. */
+/* `/manage/editor/` is now a ROUTER: index.php either redirects to the v2 shell
+   or (with ?legacy=1) serves v1 itself. So a param is handled when EITHER end of
+   that route reads it — checking only the shell wrongly flags `?legacy=`, which
+   is addressed to the router and deliberately never reaches v2.
+   Comments are stripped from both first, so the long notes explaining each of
+   these params cannot satisfy an assertion about them. */
+const router = stripPhp(readFileSync(join(PUB, 'manage/editor/index.php'), 'utf8'));
+
 function handled(param) {
-    if (new RegExp(`\\$_GET\\[['"]${param}['"]\\]`).test(shell)) return true;
-    /* `number` arrives as a fragment from missing-numbers.php; the shell parses
-       it in JS because a fragment never reaches PHP. */
-    if (param === 'number' && /\^number=\(\\d\+\)\$|number=\(\\d\+\)/.test(shell)) return true;
+    const reads = new RegExp(`\\$_GET\\[['"]${param}['"]\\]`);
+    if (reads.test(shell) || reads.test(router)) return true;
+    /* `number` arrives as a FRAGMENT from missing-numbers.php, which the browser
+       never sends to the server — so the shell parses it in JS, and no
+       $_GET check can ever see it. */
+    if (param === 'number' && /location\.hash/.test(shell) && /number=/.test(shell)) return true;
     return false;
 }
 
@@ -161,6 +168,42 @@ check('findByBookAndNumber compares numbers NUMERICALLY (slim-index numbers are 
 
 check('the prefill awaits the index rather than racing it (whenLoaded)',
     /whenLoaded\s*\(\s*\)/.test(sidebar) && /whenLoaded\(\)/.test(shell));
+
+/* ---- 5. the route flip itself (#1601 scope item 2) ---------------------- */
+
+const v1 = router;   /* same source, already read + comment-stripped above */
+
+check('/manage/editor/ redirects to the v2 editor (the route flip, not just the nav)',
+    /header\(\s*['"]Location:\s*\/manage\/editor\/editor2\.php/.test(v1));
+
+/* The query string must survive, or every deep link above arrives at v2 stripped
+   of the very instruction it was carrying — the failure this whole file is about,
+   reintroduced by the fix for it. */
+check('the redirect forwards the query string verbatim',
+    /QUERY_STRING/.test(v1));
+
+/* 301 is cached by the browser, sometimes indefinitely: if this has to be
+   reverted, anyone who visited once keeps being sent to v2 from their own cache
+   with no server-side way to stop it. */
+check('the redirect is 302, not a browser-cached 301',
+    /,\s*true\s*,\s*302\s*\)/.test(v1) && !/,\s*true\s*,\s*301\s*\)/.test(v1));
+
+check('?legacy=1 still reaches v1 (the per-visit escape hatch)',
+    /\$_GET\[['"]legacy['"]\]/.test(v1));
+
+check("tblAppSettings.editor_v2_default='0' can revert it fleet-wide without a deploy",
+    /getAppSetting\(\s*['"]editor_v2_default['"]/.test(v1));
+
+/* An absent setting must mean v2, and getAppSetting() returns its default on ANY
+   DB error — so a database wobble sends people to the new editor rather than
+   throwing on the way in. */
+check('the flip defaults ON when the setting is absent or the DB is unreachable',
+    /getAppSetting\(\s*['"]editor_v2_default['"]\s*,\s*['"]1['"]\s*\)/.test(v1));
+
+/* editor2.php's own "Legacy" button must carry ?legacy=1. A bare
+   /manage/editor/ link would bounce straight back to v2 and read as broken. */
+check("editor2.php's Legacy button carries ?legacy=1 (a bare link would bounce back)",
+    /\/manage\/editor\/\?legacy=1/.test(shellSrc));
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
