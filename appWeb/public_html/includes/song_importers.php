@@ -107,16 +107,18 @@ function _ietfBcp47Validate(string $raw)
  */
 function _sanitiseArrangement($raw, int $componentCount): ?string
 {
-    if (!is_array($raw) || $componentCount <= 0) return null;
-    $clean = [];
-    foreach ($raw as $idx) {
-        if (!is_int($idx) && !(is_string($idx) && ctype_digit($idx))) return null;
-        $i = (int)$idx;
-        if ($i < 0 || $i >= $componentCount) return null;
-        $clean[] = $i;
-    }
-    if (empty($clean)) return null;
-    return json_encode(array_values($clean), JSON_UNESCAPED_UNICODE);
+    /* #1627 — the maths moved to includes/arrangement.php so the WRITE side
+       (this function, via save_song_core + the ZIP importer + the new v2
+       arrangement editor) and the AUDIT side (gate G4 in
+       .sql/verify-lyrics-cutover.php, #1618) cannot drift apart.
+       ELI5: the rule for "is this running order valid" now lives in one file.
+       Detail: if the writer's bound were ever looser than the gate's, curators
+       would quietly persist arrangements the gate rejects, and the #1618 cutover
+       verification would go red on real data — blocking the destructive C6 drop
+       that epic #1601 exists to unblock. Behaviour here is unchanged; the name
+       is kept so every existing caller is untouched. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'arrangement.php';
+    return arrangementSanitise($raw, $componentCount);
 }
 
 /* =========================================================================
