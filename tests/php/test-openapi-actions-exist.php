@@ -42,6 +42,8 @@ declare(strict_types=1);
  * Exit status 0 = all pass, 1 = at least one failure.
  */
 
+require_once __DIR__ . '/lib/dispatch_parser.php';
+
 $root = dirname(__DIR__, 2);
 $pub  = $root . '/appWeb/public_html';
 
@@ -59,71 +61,18 @@ function ok(string $label, bool $cond): void
 echo "\nOpenAPI: every documented action must exist\n\n";
 
 /**
- * Extract `case '<x>':` labels belonging to a SPECIFIC switch, by tracking brace
- * depth from that switch's opening brace with the PHP tokenizer.
+ * The tokenising switch-walker that used to live here now lives in
+ * `tests/php/lib/dispatch_parser.php`, because `test-orphan-inventory.php`
+ * needs the identical answer to "which actions does the server dispatch?".
+ * Two copies of that parser would be two answers (rule #35 — cross-file
+ * agreement needs a mechanism, not a comment); the brace-depth trap and the
+ * $page-vs-$action incident that motivated it are documented in full there.
  *
- * A regex cannot do this. `case 'song':` appears in both the $page and $action
- * switches of api.php, and matching text alone is exactly the mistake that let
- * four phantom endpoints look real. Tokenising also means a `case 'x':` inside a
- * string or comment cannot be mistaken for code.
- * https://www.php.net/manual/en/function.token-get-all.php
- *
- * @return array<int,string> the case labels dispatched by $switchVar
+ * The positive controls below are unchanged and still assert, from this file,
+ * that the shared parser distinguishes the two switches correctly.
  */
-function casesForSwitch(string $file, string $switchVar): array
-{
-    $src = (string)file_get_contents($file);
-    $toks = token_get_all($src);
-
-    $out = [];
-    $n = count($toks);
-    for ($i = 0; $i < $n; $i++) {
-        if (!is_array($toks[$i]) || $toks[$i][0] !== T_SWITCH) { continue; }
-
-        /* Confirm this switch is on the variable we care about, then find its
-           opening brace. */
-        $isOurs = false;
-        $j = $i + 1;
-        for (; $j < $n; $j++) {
-            $t = $toks[$j];
-            if (is_array($t) && $t[0] === T_VARIABLE && $t[1] === $switchVar) { $isOurs = true; }
-            if ($t === '{') { break; }
-        }
-        if (!$isOurs) { continue; }
-
-        /* Walk the switch body at depth 1; collect only its own case labels, so
-           a nested switch's cases are not attributed to this one.
-           ⚠️ T_CURLY_OPEN and T_DOLLAR_OPEN_CURLY_BRACES must count as opening
-           braces. String interpolation — "{$var}" and "${var}" — opens with one
-           of those TOKENS but closes with a plain '}' string. Counting only '{'
-           therefore under-counts opens while still counting every close, the
-           depth unwinds early, and the walk abandons the switch part-way. That
-           is not hypothetical: the first version of this file reported 29 real
-           actions instead of ~275 and failed loudly. It could just as easily
-           have over-reported and passed.
-           https://www.php.net/manual/en/tokens.php */
-        $depth = 0;
-        for (; $j < $n; $j++) {
-            $t = $toks[$j];
-            if ($t === '{'
-                || (is_array($t) && ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES))) {
-                $depth++;
-                continue;
-            }
-            if ($t === '}') { $depth--; if ($depth === 0) { break; } continue; }
-            if ($depth === 1 && is_array($t) && $t[0] === T_CASE) {
-                for ($k = $j + 1; $k < $n; $k++) {
-                    if (is_array($toks[$k]) && $toks[$k][0] === T_CONSTANT_ENCAPSED_STRING) {
-                        $out[] = trim($toks[$k][1], "'\"");
-                        break;
-                    }
-                    if ($toks[$k] === ':' || $toks[$k] === ';') { break; }
-                }
-            }
-        }
-    }
-    return $out;
-}
+$casesForSwitch = static fn (string $f, string $v): array
+    => dispatchParserCasesForSwitch($f, $v);
 
 /* ---- 1. build the set of REAL actions, from every dispatch file ---------- */
 
@@ -137,7 +86,7 @@ $dispatchers = [
 $realActions = [];
 foreach ($dispatchers as $file => $var) {
     if (!is_file($file)) { continue; }
-    foreach (casesForSwitch($file, $var) as $c) { $realActions[$c] = true; }
+    foreach ($casesForSwitch($file, $var) as $c) { $realActions[$c] = true; }
 }
 
 ok('parsed a plausible number of real actions from the dispatchers (>= 200)',
@@ -146,7 +95,7 @@ ok('parsed a plausible number of real actions from the dispatchers (>= 200)',
 /* Positive control: the tokenizer must NOT attribute the $page switch's labels
    to $action. If this fails, the parser is not doing what the doc-block claims
    and every result below is meaningless. */
-$pageCases = casesForSwitch($pub . '/api.php', '$page');
+$pageCases = $casesForSwitch($pub . '/api.php', '$page');
 ok("control: 'song' is a \$page case (proving the two switches are distinguished)",
     in_array('song', $pageCases, true));
 ok("control: 'song' is NOT a \$action case (this is exactly what §6.1 found)",
