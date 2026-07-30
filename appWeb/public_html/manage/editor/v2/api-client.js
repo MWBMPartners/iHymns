@@ -129,6 +129,28 @@ export const editorApi = {
     /* Bulk-set the whole component list (reflow / single-song import). mode = 'replace' | 'append'. */
     replaceComponents: (songId, components, mode) => postJson('components_replace', { songId: songId, components: components, mode: mode || 'replace' }),
 
+    /* Line enrichment — per-line translations/transliterations + annotations
+       (#1235 P3 / #1088, #1627 item 3). Anchored on tblLyricLines.Id (rule
+       #21): `translation`/`annotation` carry a `lineId`/`startLineId` the
+       caller reads off `component.lineIds[i]` (parallel to `component.lines`,
+       #1627's editor-shape addition to lyricLinesEditableComponents()) —
+       never a LinesJson array index, which shifts under edits. The four
+       action names + payload shapes mirror api2.php's line_translation_… /
+       line_annotation_… cases exactly; see enrichment-panel.js for the actual
+       UI + the vocab (kind/annotationType) it offers, which must stay a
+       subset of includes/line_enrichment.php's LINE_TRANSLATION_KINDS /
+       LINE_ANNOTATION_TYPES — tests/test-v2-enrichment-ui.js guards both the
+       action-name and vocabulary agreement so this file can't drift from the
+       server it calls. api2.php answers HTTP 409 (not 400/500) on an
+       un-migrated install; postJson()'s unwrap() turns that into a thrown
+       Error whose message contains "not migrated" — enrichment-panel.js's
+       callers pattern-match that to show a calm "not available yet" notice
+       instead of a red failure toast. */
+    upsertLineTranslation: (songId, translation) => postJson('line_translation_upsert', { songId: songId, translation: translation }),
+    deleteLineTranslation: (songId, id)          => postJson('line_translation_delete', { songId: songId, id: id }),
+    upsertLineAnnotation:  (songId, annotation)  => postJson('line_annotation_upsert', { songId: songId, annotation: annotation }),
+    deleteLineAnnotation:  (songId, id)          => postJson('line_annotation_delete', { songId: songId, id: id }),
+
     /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists */
     upsertCredit:      (songId, role, credit)    => postJson('credit_upsert', { songId: songId, role: role, credit: credit }),
     deleteCredit:      (songId, role, creditId)  => postJson('credit_delete', { songId: songId, role: role, creditId: creditId }),

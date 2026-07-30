@@ -13,10 +13,41 @@
  *    api   : editorApi from api-client.js
  *    songId: the server SongId
  *    toast : (message, type) => void   (optional)
+ *
+ *  #1627 items 1+3 — chords UI + per-line enrichment panel. Both extend
+ *  buildCard(), which is why they land in one PR: a chords textarea (ABOVE
+ *  the enrichment panel, mirroring v1's card layout order) ported from v1's
+ *  componentChordsToText(), and enrichment-panel.js's buildEnrichmentPanel()
+ *  for per-line language/translation/annotation. See enrichment-panel.js's
+ *  own file header for the full per-line-enrichment design; see
+ *  componentChordsToText() below + saveComponent()'s chords branch for the
+ *  chords clear-semantics trap (empty ARRAY clears, `null` PRESERVES).
  * ========================================================================== */
+
+import { buildEnrichmentPanel } from './enrichment-panel.js';
 
 const COMPONENT_TYPES = ['verse', 'chorus', 'refrain', 'bridge', 'pre-chorus', 'tag', 'coda', 'intro', 'outro', 'interlude'];
 const SAVE_DEBOUNCE_MS = 500;
+
+/**
+ * componentChordsToText(comp) — render a component's chords back into the
+ * editable textarea: one line per lyric line, chords space-separated. A
+ * freshly-LOADED component's chords are arrays per line (["C","G"]); a
+ * component the user has already typed into this session holds a plain
+ * per-line string ("C G") because the textarea's own input handler writes
+ * strings, not arrays — both render identically. Ported from v1
+ * (editor.js's componentChordsToText, ~1275) unchanged in behaviour. (#1094,
+ * #1627 item 1)
+ * @param {{chords?:Array}} comp
+ * @returns {string}
+ */
+function componentChordsToText(comp) {
+    if (!Array.isArray(comp.chords)) { return ''; }
+    return comp.chords.map((c) => {
+        if (Array.isArray(c)) { return c.join(' '); }
+        return (c == null) ? '' : String(c);
+    }).join('\n');
+}
 
 export function mountStructureTab(container, opts) {
     const { store, api, songId } = opts;
@@ -43,6 +74,15 @@ export function mountStructureTab(container, opts) {
                 lines:     comp.lines,
                 chords:    comp.chords || null,
                 language:  comp.language || null,
+                /* #1627 item 3 — per-line language OVERRIDES (comp.languages,
+                   an array parallel to lines), distinct from the single
+                   per-SECTION `language` above. `comp.languages || null`:
+                   once enrichment-panel.js's setLineLang() has turned this
+                   into an array it is NEVER null again (see that file's
+                   clear-semantics note), so this only ever sends `null` when
+                   no per-line override has ever been set on this component —
+                   a true no-op, not a clear attempt. */
+                languages: comp.languages || null,
             };
             const res = await api.upsertComponent(songId, payload);
             if (!comp.id && res.componentId) { comp.id = res.componentId; }
@@ -136,6 +176,55 @@ export function mountStructureTab(container, opts) {
             debouncedSave(comp);   // incremental — NO list re-render
         });
         body.appendChild(ta);
+
+        /* #1627 item 1 — optional manual per-line chords (collapsible),
+           ABOVE the enrichment panel (mirrors v1's card layout order). One
+           line of chords per lyric line; persisted via saveComponent()'s
+           existing `chords: comp.chords || null` (above). Auto-opened when
+           the loaded component already carries chords, same "hasChords"
+           test as v1's chordsBox.style.display. */
+        const chordsWrap = document.createElement('div');
+        chordsWrap.className = 'mt-2';
+        const hasChords = Array.isArray(comp.chords) && comp.chords.some((c) => c && (Array.isArray(c) ? c.length : String(c).trim()));
+        const chordsToggle = document.createElement('button');
+        chordsToggle.type = 'button';
+        chordsToggle.className = 'btn btn-sm btn-link p-0 text-decoration-none';
+        chordsToggle.innerHTML = '<i class="bi bi-music-note-beamed me-1"></i>Chords';
+        const chordsBox = document.createElement('div');
+        chordsBox.className = 'mt-1';
+        chordsBox.style.display = hasChords ? '' : 'none';
+        const chordsArea = document.createElement('textarea');
+        chordsArea.className = 'form-control form-control-sm component-chords font-monospace';
+        chordsArea.rows = 2;
+        chordsArea.placeholder = 'One line of chords per lyric line, e.g.  C    G    Am';
+        chordsArea.value = componentChordsToText(comp);
+        chordsArea.addEventListener('input', () => {
+            const rows = chordsArea.value.split('\n').map((l) => l.trim());
+            /* CLEAR-SEMANTICS TRAP, opposite direction from the per-line
+               language one in enrichment-panel.js: component_upsert PRESERVES
+               the stored chords when the `chords` key is absent/null
+               (isset() gate) but CLEARS them when it's an empty array. So an
+               all-blank textarea must become `[]`, never a same-length array
+               of '' — sending `['','','']` would "succeed" but silently
+               leave the old chord symbols in place, and `null` would too.
+               `[] || null` in saveComponent() stays `[]` (a truthy array),
+               so this is the one line that has to get it right. */
+            comp.chords = rows.some((r) => r !== '') ? rows : [];
+            debouncedSave(comp);   // incremental — NO list re-render
+        });
+        chordsToggle.addEventListener('click', () => {
+            chordsBox.style.display = (chordsBox.style.display === 'none') ? '' : 'none';
+            if (chordsBox.style.display !== 'none') { chordsArea.focus(); }
+        });
+        const chordsHint = document.createElement('div');
+        chordsHint.className = 'form-text small';
+        chordsHint.textContent = 'Optional. Each chord line lines up with the lyric line above it.';
+        chordsBox.append(chordsArea, chordsHint);
+        chordsWrap.append(chordsToggle, chordsBox);
+        body.appendChild(chordsWrap);
+
+        /* #1627 item 3 — per-line language / translation / annotation panel. */
+        body.appendChild(buildEnrichmentPanel(comp, { store, api, songId, toast, saveComponent }));
 
         card.append(header, body);
         return card;

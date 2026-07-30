@@ -269,8 +269,14 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         }
         const toast = (msg, type) => status(msg, type);
 
-        /* One store for the whole shell; slices are replaced on each song switch. */
-        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [] });
+        /* One store for the whole shell; slices are replaced on each song switch.
+           lineTranslations / lineAnnotations (#1627 item 3) hold api2.php
+           load_song's per-line enrichment rows (#1235 P3 / #1088) — a separate
+           concern from `components` (the lyric content itself), same as `media`
+           is separate from the song scalars. structure-tab.js's per-component
+           enrichment panel (enrichment-panel.js) reads + writes these two
+           slices directly. */
+        const store = createStore({ song: {}, components: [], credits: {}, tags: [], links: [], media: [], lineTranslations: [], lineAnnotations: [] });
         let teardowns = [];
         let currentSongId = null;
         let loadSeq = 0;   // monotonic token: only the latest load/delete applies (drops out-of-order results)
@@ -311,6 +317,12 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 store.set('tags', data.tags || []);
                 store.set('links', data.links || []);
                 store.set('media', data.media || []);
+                /* #1627 item 3 — api2 load_song already returns these top-level
+                   (see api2.php's load_song case); this shell used to drop them
+                   on the floor, which is the ONE thing blocking the v2 Structure
+                   tab's per-line enrichment panel from having anything to show. */
+                store.set('lineTranslations', data.lineTranslations || []);
+                store.set('lineAnnotations', data.lineAnnotations || []);
                 currentSongId = id;
                 mountTabs(id);
                 try { history.replaceState(null, '', '?song=' + encodeURIComponent(id)); } catch (_e) {}
