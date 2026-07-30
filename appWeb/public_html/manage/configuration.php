@@ -740,6 +740,32 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_feature_gating] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_editor_default') {
+            /* #1601 — the Song Editor cutover switch, given a UI control for the
+               same reason content_gating_enabled got one above: a flag that can
+               only be flipped with a raw SQL statement is not a usable revert.
+               If the v2 editor misbehaves under real curator load this is the
+               fleet-wide off switch, needing no deploy and no database client.
+               Note the polarity: '1' (or ABSENT) means v2. Writing '0' is the
+               only thing that creates the row at all. */
+            try {
+                $edVal = ((string)($_POST['editor_v2_default'] ?? '0')) === '1' ? '1' : '0';
+                $saveSetting($db, 'editor_v2_default', $edVal);
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        'editor_v2_default',
+                        ['keys' => ['editor_v2_default'], 'editor_v2_default' => $edVal === '1'],
+                        'success'
+                    );
+                }
+                $saveSuccess = '/manage/editor/ now opens the '
+                    . ($edVal === '1' ? 'NEW editor (v2).' : 'LEGACY editor.');
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_editor_default] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -807,6 +833,11 @@ $nativeAppAmazon  = (string)(getAppSetting('native_app_amazon', '') ?? '');
    contentGatingApply()/gatingRulesApply() themselves call, so this admin page
    can never disagree with what enforcement actually reads. */
 $contentGatingEnabledVal       = getAppSetting('content_gating_enabled', '0') === '1';
+/* #1601 — the Song Editor cutover switch. Note the default is '1' (v2), the
+   opposite of the gating flags above: an ABSENT key means the NEW editor, so no
+   migration or seed row is needed to turn the cutover on. The row only ever
+   exists once somebody has deliberately turned it OFF. */
+$editorV2DefaultVal            = getAppSetting('editor_v2_default', '1') !== '0';
 $featureGatingRulesEnabledVal  = getAppSetting('feature_gating_rules_enabled', '0') === '1';
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
@@ -991,6 +1022,49 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 </div>
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-save me-1"></i>Save feature-gating flags
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         SONG EDITOR SECTION (#1601 — the v2 cutover switch)
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-pencil-square me-2"></i>Song Editor
+            </h2>
+            <span class="badge <?= $editorV2DefaultVal ? 'bg-success' : 'bg-warning text-dark' ?>">
+                <?= $editorV2DefaultVal ? 'New editor (v2)' : 'Legacy editor' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <?php /* #1601 — this exists for the same reason content_gating_enabled got a control
+                     above: a flag that can only be flipped by a raw SQL statement is not a usable
+                     revert. If the new editor misbehaves under real curator load, this is the
+                     fleet-wide off switch that needs no deploy and no database client. */ ?>
+            <p class="text-secondary small">
+                Controls which editor <code>/manage/editor/</code> opens. Turning this off sends
+                everyone back to the legacy editor immediately — no deploy needed. Individual links
+                to <code>/manage/editor/?legacy=1</code> always reach the legacy editor regardless
+                of this setting.
+            </p>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_editor_default">
+                <!-- hidden 0 before the checkbox so an unchecked box still posts a value -->
+                <input type="hidden" name="editor_v2_default" value="0">
+                <div class="form-check form-switch mb-3">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           id="editor_v2_default" name="editor_v2_default" value="1"
+                           <?= $editorV2DefaultVal ? 'checked' : '' ?>>
+                    <label class="form-check-label" for="editor_v2_default">
+                        Use the new Song Editor (v2) at <code>/manage/editor/</code>
+                    </label>
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <i class="bi bi-save me-1"></i>Save editor setting
                 </button>
             </form>
         </div>

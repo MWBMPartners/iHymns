@@ -205,6 +205,21 @@ check('the flip defaults ON when the setting is absent or the DB is unreachable'
 check("editor2.php's Legacy button carries ?legacy=1 (a bare link would bounce back)",
     /\/manage\/editor\/\?legacy=1/.test(shellSrc));
 
+/* The fleet-wide switch needs a UI control, or it is not a usable revert. This
+   is the lesson content_gating_enabled already taught: it shipped with no admin
+   control and could only be flipped by a raw SQL statement, which #1481 had to
+   go back and fix. A revert nobody can perform under pressure is not a revert. */
+const config = stripPhp(readFileSync(join(PUB, 'manage/configuration.php'), 'utf8'));
+check('editor_v2_default is flippable from /manage/configuration, not only via raw SQL',
+    /save_editor_default/.test(config)
+    && /getAppSetting\(\s*['"]editor_v2_default['"]/.test(config)
+    && /name="editor_v2_default"/.test(config));
+
+/* Polarity is the easy thing to get backwards, and getting it backwards means
+   the cutover silently does not happen. ABSENT must mean v2 on BOTH sides. */
+check("the admin control reads editor_v2_default with default '1' (absent = v2, matching the router)",
+    /getAppSetting\(\s*['"]editor_v2_default['"]\s*,\s*['"]1['"]\s*\)/.test(config));
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
     console.error('\nFailures:');
