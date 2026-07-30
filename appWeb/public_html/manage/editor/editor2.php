@@ -171,6 +171,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 <span id="v2-bulk-count" class="small fw-semibold"></span>
                 <button id="v2-bulk-verify" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-check2-circle me-1"></i>Mark verified</button>
                 <button id="v2-bulk-tag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag me-1"></i>Add tag…</button>
+                <button id="v2-bulk-untag" type="button" class="btn btn-sm btn-outline-secondary"><i class="bi bi-tag-fill me-1"></i>Remove tag…</button>
                 <button id="v2-bulk-clear" type="button" class="btn btn-sm btn-outline-secondary ms-auto">Clear</button>
             </div>
 
@@ -402,6 +403,32 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 toast('Tagged ' + (r.attached || 0) + ' of ' + ids.length + ' song(s) with "' + (r.tag ? r.tag.name : name.trim()) + '".', 'success');
                 sidebar.clearSelection();
             } catch (e) { status('Bulk tag failed: ' + e.message, 'danger'); }
+        });
+
+        /* Remove a tag from the selection — the other half of bulk tagging.
+           v1's single `bulk_tag` action took add[] AND remove[]; v2 shipped only
+           attach, so a curator who bulk-tagged 200 songs with the wrong tag had
+           no way back except one song at a time. The server side landed in
+           `33f583e1`; this button is what makes it reachable.
+
+           Detaching a tag nothing carries is a successful no-op server-side, so
+           `detached: 0` is reported as an outcome ("none of them had it"), not
+           an error — the curator's intent is satisfied either way. */
+        byId('v2-bulk-untag').addEventListener('click', async () => {
+            const ids = sidebar.getSelectedIds();
+            if (!ids.length) { return; }
+            const name = window.prompt('Tag to remove from ' + ids.length + ' selected song(s):', '');
+            if (name === null || name.trim() === '') { return; }
+            try {
+                const r = await editorApi.bulkTagDetach(ids, name.trim());
+                const n = r.detached || 0;
+                const label = (r.tag && r.tag.name) ? r.tag.name : name.trim();
+                toast(n === 0
+                    ? 'None of the ' + ids.length + ' selected song(s) had the tag "' + label + '".'
+                    : 'Removed "' + label + '" from ' + n + ' of ' + ids.length + ' song(s).',
+                    n === 0 ? 'info' : 'success');
+                sidebar.clearSelection();
+            } catch (e) { status('Bulk untag failed: ' + e.message, 'danger'); }
         });
 
         /* ---- resizable sidebar (#1193) — drag the grip; width persists ---- */

@@ -136,6 +136,12 @@ export const editorApi = {
     /* Bulk ops (multi-select) */
     bulkVerify:        (songIds, verified)       => postJson('bulk_verify', { songIds: songIds, verified: verified ? 1 : 0 }),
     bulkTagAttach:     (songIds, name)           => postJson('bulk_tag_attach', { songIds: songIds, name: name }),
+    /* The remove half. v1's single `bulk_tag` took add[] AND remove[]; v2 shipped
+       attach only, so a curator who bulk-tagged 200 songs wrongly had no way back
+       except one song at a time. The endpoint landed in `33f583e1` — this method
+       and the toolbar button are what make it reachable, and their absence for
+       part of a day is exactly the orphan class #1671 is about. */
+    bulkTagDetach:     (songIds, name)           => postJson('bulk_tag_detach', { songIds: songIds, name: name }),
     loadSong:          (id)                      => getJson('load_song', { id: id }),
 
     /* Song lifecycle */
