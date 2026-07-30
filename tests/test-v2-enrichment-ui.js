@@ -185,6 +185,42 @@ check('enrichment-panel.js pads comp.languages with an Array before indexing int
 check("structure-tab.js's saveComponent() forwards comp.languages (falls back to null only when comp.languages itself is falsy, i.e. never touched)",
     /languages:\s*comp\.languages\s*\|\|\s*null\s*,/.test(struct));
 
+/* ---- the payload keys agree across THREE files ------------------------
+ *
+ * api2.php EMITS `lineTranslations` / `lineAnnotations` from load_song;
+ * editor2.php HYDRATES store slices of those names; enrichment-panel.js READS
+ * those slices. Three files, one pair of names, nothing tying them together.
+ *
+ * That is the #1581 shape exactly — the Settings language filter dispatched one
+ * event spelling while Song of the Day listened for another, and the result was
+ * a silent no-op with no error anywhere. Here a rename on any one side gives an
+ * enrichment panel that renders, accepts input, saves happily to the right
+ * endpoints, and shows no existing translations or annotations at all: every
+ * part works, the feature does not. Nothing in the suite above catches it,
+ * because each file is individually correct.
+ *
+ * Derived from source on all three sides rather than asserting a hardcoded pair,
+ * so renaming the keys DELIBERATELY (in all three) still passes.
+ */
+/* `panel` and the api2 source are already read above; only the shell is new. */
+const shell = stripJs(readFileSync(join(PUB, 'manage/editor/editor2.php'), 'utf8'));
+
+for (const key of ['lineTranslations', 'lineAnnotations']) {
+    /* Server side: emitted as a load_song payload key. */
+    const emitted = new RegExp(`['"]${key}['"]\\s*=>`).test(api);
+    /* Shell: both declared as a store slice AND hydrated from the response. */
+    const declared = new RegExp(`${key}\\s*:\\s*\\[`).test(shell);
+    const hydrated = new RegExp(`store\\.set\\(\\s*['"]${key}['"]`).test(shell)
+        && new RegExp(`data\\.${key}`).test(shell);
+    /* Panel: read back out of the store. */
+    const consumed = new RegExp(`store\\.get\\(\\s*['"]${key}['"]`).test(panel);
+
+    check(`'${key}' agrees across api2.php -> editor2.php -> enrichment-panel.js`
+        + (emitted && declared && hydrated && consumed ? '' :
+            ` [emit:${emitted} declare:${declared} hydrate:${hydrated} consume:${consumed}]`),
+        emitted && declared && hydrated && consumed);
+}
+
 /* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);
