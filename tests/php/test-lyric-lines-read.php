@@ -171,6 +171,52 @@ assertEq(
     'twin verse-1 components (distinct cid) stay separate'
 );
 
+/* ==================================================================== */
+/* 9 — the EDITOR shape carries lineIds too (#1627)                       */
+/*                                                                        */
+/* lyricLinesEditableComponents() takes a live \mysqli, so unlike          */
+/* lyricLinesAssembleFromRows() above it cannot be exercised as a pure     */
+/* function here. This is therefore a SOURCE assertion, and it is worth    */
+/* having despite that weakness because of what the omission cost:         */
+/*                                                                        */
+/* The assembler shape has always emitted `lineIds` (which is why every    */
+/* case above asserts them), and v1's editor reads that shape. The EDITOR  */
+/* shape — the one api2 and the whole v2 editor speak — dropped the        */
+/* `line_id` its own query already selected. So per-line translations and  */
+/* annotations (#1088) had nothing to anchor to in v2: the tables, the     */
+/* read path and api2's own endpoints all existed, with no way for the     */
+/* v2 UI to put data into them. Silent, and invisible from either side.    */
+/*                                                                        */
+/* Rule #21: enrichment anchors on tblLyricLines.Id, never a LinesJson     */
+/* index — an index shifts the moment a line is inserted and the           */
+/* annotation drifts onto a different line with no error.                  */
+/* ==================================================================== */
+$readerSrc = (string)file_get_contents(
+    dirname(__DIR__, 2) . '/appWeb/public_html/includes/lyric_lines_read.php'
+);
+/* Strip block comments — the note above the code quotes `lineIds` while
+   explaining it, and prose must not satisfy an assertion about code. */
+$readerCode = preg_replace('#/\*[\s\S]*?\*/#', '', $readerSrc) ?? $readerSrc;
+
+$editableFn = '';
+$fnStart = strpos($readerCode, 'function lyricLinesEditableComponents');
+if ($fnStart !== false) {
+    $nextFn = strpos($readerCode, "\nfunction ", $fnStart + 10);
+    $editableFn = substr($readerCode, $fnStart, $nextFn === false ? null : $nextFn - $fnStart);
+}
+
+assertEq($editableFn !== '', true, 'lyricLinesEditableComponents() found in the ONE read path');
+assertEq(
+    str_contains($editableFn, "'lineIds'"),
+    true,
+    "editor shape emits 'lineIds' — without it v2 has no anchor for #1088 enrichment"
+);
+assertEq(
+    str_contains($editableFn, "'line_id'"),
+    true,
+    'editor shape reads the line_id its own query selects (ll.Id AS line_id)'
+);
+
 echo "\n  ----------------------------------------\n";
 echo "  {$passed} passed, {$failed} failed\n";
 exit($failed === 0 ? 0 : 1);
