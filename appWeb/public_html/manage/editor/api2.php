@@ -2256,6 +2256,68 @@ try {
         break;
     }
 
+    /* ---- bulk_tag_detach (POST) — remove one tag from many songs (#1628 item 3).
+     *
+     * ELI5: the opposite of bulk_tag_attach — takes a tag OFF a set of songs.
+     *
+     * WHY: v1's single `bulk_tag` action (#399) took BOTH `add:[]` and
+     * `remove:[]`. v2 shipped only `bulk_tag_attach`, so the capability v2
+     * appeared to have was narrower than it looked — a curator who bulk-tagged
+     * 200 songs with the wrong tag had no way to undo it except one song at a
+     * time. That asymmetry is invisible from the v2 UI, which simply has no
+     * Remove button; it only bites after the mistake.
+     *
+     * Resolves the tag by SLUG, not by Id, so the client passes the same
+     * human-typed name it passes to attach, normalised the same way. An unknown
+     * tag is NOT an error — detaching a tag nothing carries is a successful
+     * no-op, and 404-ing there would make "remove this tag everywhere" fail
+     * whenever it had already succeeded.
+     *
+     * Deliberately does NOT delete the tag row itself when the last song loses
+     * it. Tags are a curated vocabulary (#1152 seeds the CCLI theme taxonomy
+     * into the same table, with hierarchy via ParentId); garbage-collecting a
+     * standard theme because it briefly had no songs would silently prune the
+     * vocabulary and orphan its children. ---- */
+    case 'bulk_tag_detach': {
+        $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
+        $ids = [];
+        foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
+        $name = ed2_normalizeTag((string)($body['name'] ?? ''));
+        if (!$ids || $name === '') { ed2_respond(['ok' => false, 'error' => 'songIds + a tag name are required.'], 400); }
+        $slug = ed2_tagSlug($name);
+        if ($slug === '') { ed2_respond(['ok' => false, 'error' => 'Tag name has no usable characters.'], 400); }
+
+        $sel = $db->prepare('SELECT Id FROM tblSongTags WHERE Slug = ? LIMIT 1');
+        $sel->bind_param('s', $slug);
+        $sel->execute();
+        $row = $sel->get_result()->fetch_row();
+        $sel->close();
+        if ($row === null) {
+            /* Nothing carries this tag — a successful no-op, not a failure. */
+            ed2_respond(['ok' => true, 'tag' => ['id' => null, 'name' => $name, 'slug' => $slug], 'detached' => 0, 'count' => count($ids)]);
+        }
+        $tagId = (int)$row[0];
+
+        $db->begin_transaction();
+        try {
+            $del = $db->prepare('DELETE FROM tblSongTagMap WHERE SongId = ? AND TagId = ?');
+            $detached = 0;
+            foreach ($ids as $sid) {
+                $del->bind_param('si', $sid, $tagId);
+                $del->execute();
+                if ($db->affected_rows > 0) { $detached++; }
+            }
+            $del->close();
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.bulk_tag_detach', 'song', '', ['tag' => $name, 'count' => count($ids), 'detached' => $detached]);
+        ed2_respond(['ok' => true, 'tag' => ['id' => $tagId, 'name' => $name, 'slug' => $slug], 'detached' => $detached, 'count' => count($ids)]);
+        break;
+    }
+
     /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the five
            song-credit tables (grouped by name → combined usage count + the roles
            it appears in) + the tblCreditPeople registry for kind=any. Table +
