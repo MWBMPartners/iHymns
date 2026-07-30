@@ -34,6 +34,46 @@ if (!$u || !hasRole((string)($u['role'] ?? ''), 'editor')) {
 $csrf   = csrfToken();
 $songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));   // optional deep-link
 
+/**
+ * `?tab=` deep-link (#1628 item 1).
+ *
+ * ELI5: a link can say which tab to open, not just which song.
+ *
+ * WHY THIS IS NOT OPTIONAL FOR THE #1601 FLIP
+ * -------------------------------------------
+ * `manage/revisions.php` links "Open in editor" as
+ * `/manage/editor/?song=<id>&tab=history`. v1 honours `tab` (editor.js:6250);
+ * this shell read only `song` and ignored `tab` entirely.
+ *
+ * That link was JUST fixed in #1623 — it previously said `?open=`, which the
+ * editor has no handler for, so it was silently ignored: the editor loaded fine
+ * and simply never selected anything. Flipping the default to v2 without `tab`
+ * support would reintroduce the identical failure, in the identical invisible
+ * way, on the identical button. Hence it ships with the parity work rather than
+ * as a follow-up.
+ *
+ * The map is an exact allow-list, not a sanitised passthrough: the value is
+ * interpolated into a CSS selector below, and an allow-list means the selector
+ * can only ever be one of eight literals this file wrote itself.
+ *
+ * `history` is v1's name for what v2 calls the Revisions tab — accepted as an
+ * alias so existing links keep working, alongside every real pane name so
+ * `?tab=metadata` and friends work too.
+ */
+$_ED2_TABS = [
+    'structure' => 'structure',
+    'metadata'  => 'metadata',
+    'credits'   => 'credits',
+    'links'     => 'links',
+    'tags'      => 'tags',
+    'media'     => 'media',
+    'preview'   => 'preview',
+    'revisions' => 'revisions',
+    'history'   => 'revisions',   // v1 alias — revisions.php + any bookmarked link
+];
+$tabParam   = strtolower(trim((string)($_GET['tab'] ?? '')));
+$initialTab = $_ED2_TABS[$tabParam] ?? '';
+
 /* External-link type registry for the Links tab, shipped via window._iHymnsLinkTypes. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
@@ -205,6 +245,22 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         const byId = (id) => document.getElementById(id);
         const initialSongId = <?= json_encode($songId) ?>;
 
+        /* ?tab= deep-link (#1628 item 1). Consumed ONCE, after the first song
+           finishes loading — the tab panes exist from page load, but their
+           contents are mounted by mountTabs(), so activating earlier would show
+           an empty Revisions pane and look like the feature is broken. */
+        let pendingInitialTab = <?= json_encode($initialTab) ?>;
+        function consumeInitialTab() {
+            const want = pendingInitialTab;
+            pendingInitialTab = '';                       // once only — a later song switch must not re-jump
+            if (!want) { return; }
+            /* `want` is one of eight literals from the PHP allow-list above, so
+               this selector cannot be attacker-shaped. */
+            const btn = document.querySelector('[data-bs-target="#pane-' + want + '"]');
+            if (!btn || !window.bootstrap || !window.bootstrap.Tab) { return; }
+            window.bootstrap.Tab.getOrCreateInstance(btn).show();
+        }
+
         const statusEl = byId('v2-status');
         function status(msg, kind) {
             statusEl.textContent = msg;
@@ -260,6 +316,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 try { history.replaceState(null, '', '?song=' + encodeURIComponent(id)); } catch (_e) {}
                 sidebar.setActive(id);
                 status('Editing "' + ((data.song && data.song.Title) || id) + '" — edits save instantly + atomically.', 'success');
+                consumeInitialTab();   /* #1628 — after mountTabs(), so the pane has content */
             } catch (e) {
                 if (seq !== loadSeq) { return; }   // don't surface a stale error after a newer switch
                 status('Load failed: ' + e.message, 'danger');

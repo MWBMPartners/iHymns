@@ -33,9 +33,38 @@ export function mountRevisionsTab(container, opts) {
         }
     }
 
+    /**
+     * Restore — with the v1/v2 semantics difference spelled out (#1628 item 4).
+     *
+     * ELI5: restoring here gives you the song AS IT WAS AFTER that edit. The old
+     * editor gave you the song as it was BEFORE it. Same button, one step apart.
+     *
+     * Detail: v1's `restore_revision` restores `PreviousData` — "undo the change
+     * this row recorded" (api.php:1284-1290, and v1 only offers Restore when
+     * `previousData` exists). v2's `revision_restore` restores `NewData` — "put
+     * the song back to this snapshot" (api2.php:2326).
+     *
+     * Both models are internally coherent; v2's is the clearer one and matches
+     * how the entries are labelled. The hazard is purely the handover: a curator
+     * carrying v1 muscle memory into v2 lands one revision off, and with no diff
+     * view (v2's `revision_list` returns metadata only — api2.php:2289) they
+     * cannot see that they did. So the confirm dialog says which one it is, at
+     * the moment it matters, rather than relying on anyone having read a note.
+     *
+     * A real side-by-side diff is the better fix and is still wanted; it needs
+     * `revision_list` to return the snapshots, so it is tracked separately.
+     */
     async function restore(rev) {
         const when = rev.createdAt || 'this version';
-        if (!window.confirm('Restore the song to the ' + fmtAction(rev.action) + ' snapshot from ' + when + '?\n\nThis replaces the current sections, metadata, credits, tags and links with that version. (Media files are not affected.)')) {
+        if (!window.confirm(
+            'Restore the song to how it looked AFTER the ' + fmtAction(rev.action)
+            + ' on ' + when + '?\n\n'
+            + 'This replaces the current sections, metadata, credits, tags and links '
+            + 'with that version. (Media files are not affected.)\n\n'
+            + 'Note: this restores the state AFTER that edit. The legacy editor\'s '
+            + 'Restore went back to the state BEFORE it — so if you are used to the '
+            + 'old editor, you may want the entry one row below this one.'
+        )) {
             return;
         }
         try {
@@ -50,9 +79,15 @@ export function mountRevisionsTab(container, opts) {
     function render(revs) {
         container.innerHTML = '';
 
+        /* #1628 item 4 — say WHICH state a restore lands on. The old editor's
+           Restore went one step further back (PreviousData vs NewData), and
+           without a diff view the difference is invisible until it has already
+           happened. */
         const intro = document.createElement('p');
         intro.className = 'text-muted small';
-        intro.textContent = 'Each entry is a saved snapshot of the whole song. Restore brings the song back to that version.';
+        intro.textContent = 'Each entry is a snapshot of the whole song taken just after that edit. '
+            + 'Restore brings the song back to that state — not to the state before the edit, '
+            + 'which is what the legacy editor\'s Restore did.';
         container.appendChild(intro);
 
         if (!revs.length) {
