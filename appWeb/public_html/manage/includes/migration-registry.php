@@ -2651,6 +2651,47 @@ return [
             || !_migProbe_tableExists($db, 'tblApnsTokens'),
     ],
 
+    /* ----------------------------------------------------------------------
+     * #1668 — remove the dead, self-misdescribing `ccli_validation_enabled`
+     * setting. Nothing has ever read the key, but its seeded description
+     * presented it as the CCLI enforcement switch, so an operator flipping it
+     * to 1 would believe copyright enforcement was live when nothing had
+     * changed. schema.sql's copy was corrected in #1640, but INSERT IGNORE
+     * means existing installs kept the false text — only a migration reaches
+     * them. Non-destructive in any meaningful sense (zero readers), so NOT
+     * flagged `manual`: it should run as part of "Apply all pending".
+     * -------------------------------------------------------------------- */
+    'remove-ccli-validation-setting' => [
+        'script' => 'migrate-remove-ccli-validation-setting.php',
+        'card' => [
+            'title'  => 'Remove dead ccli_validation_enabled setting (#1668)',
+            'body'   => 'Deletes the <code>ccli_validation_enabled</code> row from'
+                      . ' <code>tblAppSettings</code>. Nothing in the codebase has ever read'
+                      . ' this key, yet its description called it the CCLI enforcement switch —'
+                      . ' so setting it to <code>1</code> enforced nothing while looking like it'
+                      . ' did. The real controls are <code>content_gating_enabled</code> plus'
+                      . ' <code>require_licence:ccli</code> rows in'
+                      . ' <code>tblContentRestrictions</code>, with the licence itself resolved'
+                      . ' by <code>userHasValidCcli()</code> (#1668). No tables, no columns, no'
+                      . ' readers — deleting the row cannot change behaviour. Idempotent.',
+            'button' => 'Remove ccli_validation_enabled Setting',
+        ],
+        /* Pending while the row STILL EXISTS; applied once it is gone — the
+           inverse polarity of the seeding migrations, mirroring the DROP cards.
+           Detects real completion from live data (rule #19), never static-true,
+           and self-clears after a successful run. A fresh install passes
+           trivially because schema.sql no longer seeds the row. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'ccli_validation_enabled' LIMIT 1"
+            );
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_row();
+            $stmt->close();
+            return $row !== null;   /* row present → still pending */
+        })($db),
+    ],
+
     /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
        tblSongChords (#299) has zero PHP/JS references — chord notation now lives
        per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only

@@ -9410,6 +9410,7 @@ if ($action !== null) {
             }
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'ccli_validator.php';
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'licences.php';
 
             $authUser = getAuthenticatedUser();
             $userTier = 'public';
@@ -9418,14 +9419,19 @@ if ($action !== null) {
             if ($authUser) {
                 /* Resolve effective tier: highest of personal + org tiers */
                 $userTier = resolveEffectiveTier($authUser['Id']);
-                $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT CcliNumber, CcliVerified FROM tblUsers WHERE Id = ?');
-                $authUserId = (int)$authUser['Id'];
-                $stmt->bind_param('i', $authUserId);
-                $stmt->execute();
-                $userData = $stmt->get_result()->fetch_assoc();
-                $stmt->close();
-                $hasCcli = !empty($userData['CcliNumber']) && $userData['CcliVerified'];
+                /* ELI5: ask the one place that knows whether this person has
+                   a real CCLI licence — personally, or through their church.
+                   WHY (#1668): this used to be a third private copy of
+                   `SELECT CcliNumber, CcliVerified FROM tblUsers`, so it
+                   answered "personal, verified only" while licences.php
+                   answered "personal, anything non-empty" and NEITHER read the
+                   org store the admin UI writes. One resolver, one answer.
+                   NOTE this is a deliberate LOOSENING: a user whose
+                   organisation holds a live `ccli` licence now gets the
+                   ccli-derived allowances in this endpoint's response (which
+                   the native apps can see), and a well-formed personal number
+                   no longer needs the unsettable CcliVerified flag. */
+                $hasCcli = userHasValidCcli((int)$authUser['Id']);
             }
 
             $result = checkTierAccess($userTier, $checkAction, $hasCcli);

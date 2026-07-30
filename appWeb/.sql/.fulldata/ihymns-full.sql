@@ -1452,8 +1452,10 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
     ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
     ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
-    ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
-    ('ccli_validation_enabled', '0', 'Require valid CCLI licence for copyrighted songs (0=off, 1=on)');
+    -- (#1668) `ccli_validation_enabled` removed: nothing ever read it, and its
+    -- description falsely presented it as the CCLI enforcement switch. See the
+    -- matching note in schema.sql. Do NOT re-add it.
+    ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)');
 
 
 -- Default access tiers (#346)

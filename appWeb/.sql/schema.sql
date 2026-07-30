@@ -1719,7 +1719,15 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
     ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
     ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
-    ('ccli_validation_enabled', '0', 'RESERVED / NOT WIRED (#1640). Nothing in the codebase reads this key. It is NOT the CCLI enforcement switch, despite the name — the real controls are content_gating_enabled=1 PLUS require_licence:ccli rows in tblContentRestrictions (see rule #28). Setting this to 1 enforces nothing. Kept only so existing installs are not silently altered; remove or wire it via #1668.'),
+    -- NOTE (#1668): `ccli_validation_enabled` used to be seeded here. It was NEVER
+    -- read by any code, yet its description called it the CCLI enforcement switch —
+    -- so an operator setting it to 1 would believe copyright enforcement was on when
+    -- nothing whatsoever had changed. A dead flag that lies about what it does is
+    -- worse than no flag. The real controls are `content_gating_enabled` = 1 PLUS
+    -- `require_licence:ccli` rows in tblContentRestrictions (rule #28), and the
+    -- licence itself is now resolved by userHasValidCcli() in includes/licences.php.
+    -- Existing installs have the row deleted by migrate-remove-ccli-validation-setting.php.
+    -- Do NOT re-add it.
     ('audio_signing_enabled', '0', 'Sign /audio MP3 URLs so gated audio streams via the gated route (#1358); 0=off (serve static /data/audio literal), 1=on (mint signed /audio URLs). Requires content_gating_enabled=1 AND the AUDIO_SIGNING_KEY constant.'),
     ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder "TEAMID" appID. Set via manage/configuration.php "Apple native app" card — never hard-code in source.');
 

@@ -71,6 +71,12 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'environment.php';
+/* licenceCcliQualifies() — the shared "is this a usable CCLI licence?" rule
+   (#1668). Required so the Phase-3 unlock applies the SAME format criterion as
+   includes/licences.php rather than growing its own. licences.php pulls in
+   db_mysql.php + ccli_validator.php and depends on nothing here, so there is no
+   require cycle. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'licences.php';
 
 /** Rotation horizon + grace for a join code (the current+previous window). */
 const SERVICE_MODE_CODE_TTL_SECONDS   = 75;
@@ -793,6 +799,53 @@ function serviceMode_pollIntervalMs(string $role): int
 }
 
 /**
+ * #1668 — cached probe: does the `tblOrganisationLicences` join table (#640)
+ * exist on THIS install?
+ *
+ * ELI5: check the drawer is actually there before opening it, because opening
+ * a drawer that does not exist doesn't give you nothing — it knocks the whole
+ * cabinet over.
+ *
+ * WHY: mysqli runs under MYSQLI_REPORT_ERROR|MYSQLI_REPORT_STRICT
+ * (db_mysql.php), so preparing a statement against a missing table THROWS. The
+ * caller catches Throwable and returns null = "no CCLI grant", which means an
+ * unguarded join would have silently REVOKED the working legacy-column unlock
+ * on any install where migrate-organisation-licences.php has not been run.
+ * Migrations here are web-run, never auto-applied, and three docroots share one
+ * MySQL — so that install is a real possibility, not a hypothetical.
+ *
+ * Mirrors the established one-round-trip memoised pattern in this same file
+ * (serviceMode_presenceRoleColumnExists) and across includes/.
+ *
+ * @param \mysqli $db Live connection.
+ * @return bool true when the table exists; false on absence OR probe failure.
+ * @link https://www.php.net/manual/en/mysqli-driver.report-mode.php
+ */
+function serviceMode_orgLicencesTableExists(\mysqli $db): bool
+{
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $stmt = $db->prepare(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblOrganisationLicences' LIMIT 1"
+        );
+        $stmt->execute();
+        $cached = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+    } catch (\Throwable $_e) {
+        /* Probe failure — treat as "not migrated", i.e. fall back to the legacy
+           query. That preserves today's behaviour exactly; it never widens the
+           grant. */
+        $cached = false;
+    }
+    return $cached;
+}
+
+/**
  * Phase 3 gate read (#1335): does this presence token entitle the holder to the
  * org's CCLI licence right now? Returns the org's CCLI LicenceNumber (a string;
  * may be '' if the org left it blank) when the token resolves to an ACTIVE,
@@ -820,6 +873,29 @@ function serviceMode_pollIntervalMs(string $role): int
  * same predicate serviceMode_resolveJoin() already applies when MINTING presence
  * (see :356). Gate-on-read and gate-on-write must agree — a token that could not
  * be minted right now must not keep unlocking content right now.
+ *
+ * BOTH ORG LICENCE STORES (#1668). Until now this read ONLY the legacy
+ * `tblOrganisations.LicenceType/LicenceNumber/LicenceExpiresAt` columns. Every
+ * org-licence UI that actually ships — /manage/organisations,
+ * /manage/my-organisations and the `org_admin_licence_add/_change/_remove` API
+ * actions — writes `tblOrganisationLicences` (#640) instead, so a church that
+ * entered its CCLI licence the only way the site offers got NO Phase-3 unlock
+ * for its congregation. The query now accepts EITHER store, and prefers the
+ * #640 row's LicenceNumber when it is non-empty (that is the record an operator
+ * most recently touched). Same consolidation as licences.php branch (f).
+ *
+ * ⚠️ `tblOrganisationLicences` may not exist (migrations are web-run, never
+ * auto-applied, and the three docroots share one MySQL). Under mysqli STRICT a
+ * missing table THROWS, and the catch below turns every throw into "no grant" —
+ * so adding the join unconditionally would have silently REVOKED the working
+ * legacy-column unlock on any un-migrated install. Hence the memoised existence
+ * probe and the two explicit query shapes below: the legacy string is preserved
+ * byte-for-byte as the fallback.
+ *
+ * ⚠️ RULE #26: BOTH query shapes carry `p.Channel = ?` and the identical
+ * presence → session → organisation join. An un-Channel-filtered query here is
+ * the cross-env leak class — a presence token minted on one docroot must never
+ * unlock content on another.
  */
 function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, string $channel): ?string
 {
@@ -829,21 +905,59 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
     /* Same trusted int constant, same interpolation pattern as resolveJoin(). */
     $freshness = (int) LIVE_SESSION_FRESHNESS_SECONDS;
     try {
-        $stmt = $db->prepare(
-            "SELECT o.LicenceNumber
-               FROM tblServicePresence p
-               JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
-               JOIN tblOrganisations o      ON o.Id = s.OrgId
-              WHERE p.PresenceToken = ?
-                AND p.IsActive = 1
-                AND p.ExpiresAt > UTC_TIMESTAMP()
-                AND p.Channel = ?
-                AND s.IsActive = 1
-                AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
-                AND o.LicenceType = 'ccli'
-                AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
-              LIMIT 1"
-        );
+        if (serviceMode_orgLicencesTableExists($db)) {
+            /* BOTH stores. LEFT JOIN so a legacy-column-only org still matches;
+               the WHERE's OR is what admits either side. COALESCE+NULLIF prefers
+               the #640 row's number, falling back to the legacy column when the
+               #640 row left it blank.
+
+               Deliberately NO `o.IsActive = 1`: the legacy query below never had
+               it, and adding it only on this arm would make the same org unlock
+               or not depending on which store its licence happens to sit in.
+               Whether a DEACTIVATED org should keep unlocking Phase-3 content is
+               a real question — but it is a behaviour change to the EXISTING
+               path, not part of the store consolidation, so it is left alone
+               here rather than smuggled in under #1668. */
+            $sql =
+                "SELECT COALESCE(NULLIF(ol.LicenceNumber, ''), o.LicenceNumber) AS LicenceNumber
+                   FROM tblServicePresence p
+                   JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+                   JOIN tblOrganisations o      ON o.Id = s.OrgId
+                   LEFT JOIN tblOrganisationLicences ol
+                          ON ol.OrganisationId = o.Id
+                         AND ol.LicenceType = 'ccli'
+                         AND ol.IsActive = 1
+                         AND (ol.ExpiresAt IS NULL OR ol.ExpiresAt > NOW())
+                  WHERE p.PresenceToken = ?
+                    AND p.IsActive = 1
+                    AND p.ExpiresAt > UTC_TIMESTAMP()
+                    AND p.Channel = ?
+                    AND s.IsActive = 1
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+                    AND (
+                          ol.Id IS NOT NULL
+                       OR (o.LicenceType = 'ccli'
+                           AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW()))
+                        )
+                  LIMIT 1";
+        } else {
+            /* Pre-#640 install — the legacy-only query, unchanged. */
+            $sql =
+                "SELECT o.LicenceNumber
+                   FROM tblServicePresence p
+                   JOIN tblLiveFollowSessions s ON s.Id = p.SessionId
+                   JOIN tblOrganisations o      ON o.Id = s.OrgId
+                  WHERE p.PresenceToken = ?
+                    AND p.IsActive = 1
+                    AND p.ExpiresAt > UTC_TIMESTAMP()
+                    AND p.Channel = ?
+                    AND s.IsActive = 1
+                    AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
+                    AND o.LicenceType = 'ccli'
+                    AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
+                  LIMIT 1";
+        }
+        $stmt = $db->prepare($sql);
         $stmt->bind_param('ss', $presenceToken, $channel);
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();
@@ -851,7 +965,17 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
         if ($row === null) {
             return null;
         }
-        return (string)($row['LicenceNumber'] ?? '');
+        $number = (string)($row['LicenceNumber'] ?? '');
+        /* Apply the SAME format criterion as includes/licences.php (#1668) —
+           in PHP, via the shared helper, rather than as extra SQL, so the CCLI
+           format rule keeps living in exactly one place (validateCcliNumber()).
+           A blank number still grants (an operator may legitimately leave the
+           field empty and the row itself is the declaration); a number that is
+           PRESENT but malformed does not. */
+        if (!licenceCcliQualifies($number, false)) {
+            return null;
+        }
+        return $number;
     } catch (\Throwable $e) {
         /* Optional tables absent / probe failure → no grant (fail closed). */
         error_log('[service_mode/presenceCcli] ' . $e->getMessage());
