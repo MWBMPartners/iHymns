@@ -129,6 +129,32 @@ tools/           — Build + data-prep scripts
 - Never skip pre-commit hooks (`--no-verify`), never force-push main/alpha, never amend merged commits.
 - Audit before opening a PR: PHP syntax (`find appWeb -name '*.php' -exec php -l {} \;`), JS syntax (`find appWeb -name '*.js' -exec node --check {} \;`), security + accessibility + structure per the pattern established on PR #445.
 
+## 🙋 Asking the owner for a decision (owner-stated, 2026-07-30)
+
+**Never surface a bare question.** Whenever work stops on an owner decision — in chat, in a handoff,
+or in a GitHub issue — present it in this shape every time:
+
+1. **The decision** — what is actually being chosen between, in one sentence, in plain language.
+2. **Why it needs deciding** — what makes it a judgement call rather than something to work out from
+   the code. Usually one of: a product question, a data-shape consequence, or a plan you cannot see.
+3. **The options** — each with its real consequence, including the cost of doing nothing. A table is
+   usually the clearest form.
+4. **A recommendation, always** — say which one you would pick **and why**. "It's up to you" is not
+   an answer; the owner is asking because they want a considered view, not a menu.
+5. **What you need back** — the smallest possible reply that unblocks you ("A, B or C", "confirm the
+   number"). Make it answerable in a sentence.
+
+Also state plainly whether the decision **blocks** anything. Most do not, and saying so lets the
+owner defer without worrying they are holding up a branch.
+
+If a decision has a **sub-question the owner did not answer**, pick the defensible default, say so
+explicitly, and flag it as trivially changeable — do not stall the whole item on a detail.
+
+The three worked examples are #1661, #1668 and #1671. `#1679` is the worked example of the follow-up
+obligation: **if further investigation undermines your own recommendation, say so unprompted and
+explain what changed** — there, machinery already existed that made the option I had argued against
+much cheaper than I claimed.
+
 ## 🔁 Standing consistency tasks (non-negotiable)
 
 **GitHub Issues are this project's point of truth.** After every substantive piece of work — and always before a session ends — run the full **[.claude/standing-tasks.md](standing-tasks.md)** checklist so code, docs, Wiki, Milestones, the Project board and the Claude `.claude/` docs all stay consistent with reality:

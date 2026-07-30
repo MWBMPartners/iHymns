@@ -64,6 +64,14 @@ _Last updated: 2026-07-30._
   does NOT auto-close from an `alpha` merge (GitHub only auto-closes on the default branch `main`).
 - Every user-reported bug / feature gets a **tracking issue BEFORE** its closing commit.
 - Push with `git push -u origin <branch>`; retry on network error with backoff.
+- 🙋 **Owner decisions are NEVER a bare question** (owner-stated 2026-07-30, full shape in
+  `CLAUDE.md` → "Asking the owner for a decision"). Always: **the decision** in one plain sentence ·
+  **why it needs a human** (product call / data-shape consequence / a plan I can't see) · **the
+  options with real consequences**, including the cost of doing nothing · **a recommendation, always,
+  with reasoning** — "it's up to you" is not an answer · **the smallest reply that unblocks me** ·
+  and **whether it blocks anything** (most don't — say so, so it can be deferred guilt-free).
+  A sub-question the owner didn't answer gets a stated default, not a stall.
+  **And if later investigation undermines your own recommendation, say so unprompted** (#1679).
 
 ## Gotchas (hard-won — read before debugging a blank/odd/silent page)
 - **An inline `<script>` in an SPA fragment NEVER runs** (rule #30, #1565). Enforcing nonce CSP
