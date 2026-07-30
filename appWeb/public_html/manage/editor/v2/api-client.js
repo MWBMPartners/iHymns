@@ -42,7 +42,36 @@ async function getJson(action, params) {
     return unwrap(res);
 }
 
-/** POST write — CSRF-guarded, JSON body. */
+/**
+ * POST write — CSRF-guarded, JSON body.
+ *
+ * ELI5: `X-Requested-With` is the header that proves this request came from our
+ * own page. Without it the server refuses the write, and every edit in this
+ * editor fails.
+ *
+ * Detail (#1677): api2.php rejects EVERY POST that lacks
+ * `X-Requested-With: XMLHttpRequest` (api2.php:148, the #1307 same-origin CSRF
+ * gate). Neither write helper in this file sent it, so every mutation the v2
+ * editor could perform — save, create, delete, component upsert, media upload,
+ * bulk ops, the line-enrichment endpoints — returned 403 "Cross-site POST
+ * blocked". Only `getJson()` sent the header, and reads are not gated, so the
+ * one place it appeared was the one place it was not needed.
+ *
+ * It survived because v1 is still the default editor, so v2's write paths are
+ * barely exercised. And the gate's own comment names the caller it was written
+ * against — "editor.js ed2EnrichApi, which already sends it" — which is the V1
+ * editor calling into api2. #1307 was verified against v1; this file, the other
+ * consumer of the same endpoint, was never checked.
+ *
+ * The header is a "forbidden header name": a browser will not let a cross-origin
+ * <form> or navigation set it, and setting it from cross-origin fetch triggers a
+ * CORS preflight this server never honours. That is what makes its presence
+ * proof of same origin.
+ * https://developer.mozilla.org/docs/Glossary/Forbidden_header_name
+ *
+ * `X-CSRF-Token` below is vestigial — api2 stopped validating it in #1307
+ * (api2.php:127-148). Harmless, and removing it is a separate cleanup.
+ */
 async function postJson(action, body) {
     const res = await fetch(ENDPOINT + '?action=' + encodeURIComponent(action), {
         method: 'POST',
@@ -50,6 +79,7 @@ async function postJson(action, body) {
         headers: {
             'Content-Type': 'application/json',
             'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
             'X-CSRF-Token': csrfToken(),
         },
         body: JSON.stringify(body || {}),
@@ -59,12 +89,17 @@ async function postJson(action, body) {
 
 /** POST write — CSRF-guarded, MULTIPART body (file upload). Deliberately does
  *  NOT set Content-Type: the browser sets multipart/form-data + the boundary.
- *  The CSRF token still rides in the X-CSRF-Token header. */
+ *  `X-Requested-With` is what api2's POST gate actually checks (#1677 — see the
+ *  note on postJson above); the X-CSRF-Token alongside it is vestigial. */
 async function postForm(action, formData) {
     const res = await fetch(ENDPOINT + '?action=' + encodeURIComponent(action), {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrfToken() },
+        headers: {
+            'Accept': 'application/json',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-CSRF-Token': csrfToken(),
+        },
         body: formData,
     });
     return unwrap(res);
