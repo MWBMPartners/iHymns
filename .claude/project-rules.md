@@ -432,3 +432,72 @@ Two consequences worth internalising:
 
 - **The top of `CHANGELOG.md` is a user-facing surface.** A malformed or duplicated top header ships straight to testers — exactly what happened when a consolidation merge left two `## [unreleased]` headers and the page showed *unreleased, unreleased, April* (#1586).
 - **`markdown_lite.php` is deliberately tiny and escape-first**: it escapes the input, then applies a small closed set of inline rules. Do **not** swap in a full Markdown library. The input is a repo file today, but the renderer's safety property should not depend on that staying true.
+
+## 20. The v2 Song Editor cutover (epic #1601, 2026-07-30)
+
+`/manage/editor/` now serves the **v2** editor. `manage/editor/index.php` (v1) 302-redirects to
+`editor2.php`, forwarding the query string. v1 is **not** deleted.
+
+### 20.1 Why the route, not the nav
+
+Six surfaces link into `/manage/editor/` with instructions in the URL: `admin-links.php`,
+`manage/index.php`'s dashboard card, `revisions.php` (`?song=&tab=history`), `missing-numbers.php`
+(`?songbook=` + `#number=`), `duplicate-songs.php` (`?song=`), and the public song page's Edit
+button. Changing only the nav href leaves the other five on v1 — and after retirement, on nothing.
+
+**302, never 301.** A 301 is cached by the browser, sometimes indefinitely; on a revert, everyone
+who visited once keeps being sent to v2 *from their own cache*, with no server-side way to stop it.
+
+### 20.2 The three escape hatches, in order of how fast they act
+
+1. `?legacy=1` — per-visit, immediate, no state. **`editor2.php`'s "Legacy" button must carry it**;
+   a bare `/manage/editor/` link bounces straight back and reads as a broken button.
+2. `tblAppSettings.editor_v2_default = '0'` — fleet-wide, no deploy. An **absent** key means v2, so
+   no migration is required (rule #19 governs *schema*; this is a key-value row). `getAppSetting()`
+   returns its default on ANY DB error, so a database wobble sends people to v2 rather than throwing
+   on the way in.
+3. Reverting the commit.
+
+### 20.3 Why v1 is still there
+
+Retirement (#1601 scope item 3) is a separate change, for two reasons that outlive this pass:
+
+- **None of the cutover was runtime-verified.** It was built in a container with no MySQL and no
+  browser; every check is static analysis or a source-derived test. Deleting the fallback in the
+  same change that makes v2 the default leaves no way back if something only appears under real
+  curator load.
+- **The three docroots share ONE database** and `beta`/`main` sit on unrelated histories a month
+  behind. Retirement depends on cross-branch state that cannot be established from a build
+  container. The weakest branch decides.
+
+### 20.4 What v1 still owns
+
+`manage/editor/api.php` remains a back-compat shim (rule #29 — it serves `editorSaveSongCore()`).
+Before deleting it, re-run the consumer sweep: #1629 found four consumers, and a **fifth** — inside
+v2 itself (`v2/export.js`'s EasyWorship export, #1678) — was missed because that audit looked for
+consumers *outside* the editor. `tests/php/test-v1-consumer-deorphan.php` covers the known set.
+
+### 20.5 Two clear-semantics traps in `component_upsert`
+
+It decides "did the caller supply this field?" with `isset()`, and `isset()` is **false** for a JSON
+`null`. So **sending `null` PRESERVES the stored value** rather than clearing it:
+
+- clearing chords requires `[]` (an empty array replaces);
+- clearing the last per-line language override requires an **array of `null`s**, not `null`.
+
+Neither mistake produces an error at any layer — the save "succeeds" and the field silently keeps its
+old value, permanently un-clearable.
+
+### 20.6 Arrangement ordinals index the ASSEMBLED list
+
+`tblSongs.ArrangementJson` holds 0-based indexes into the song's section list, and repetition is the
+point (`[0,1,1,2]`). Two component lists exist: **assembled** (what gate G4 and the public render
+index) and **editable** (what the editor indexes). They are equal *except* when a zero-line component
+exists, where editable is longer. `arrangement_update` therefore validates against the **assembled**
+count and returns **422** while the two diverge, rather than storing ordinals that mean different
+things to each side. Clearing is always allowed — you must be able to get out of that state.
+
+The validator is the shared `includes/arrangement.php`; the write side (`_sanitiseArrangement()`) and
+gate G4 both call it. Its int-vs-digit-string asymmetry is deliberate: `arrangementSanitise()`
+coerces because it handles INPUT, `arrangementViolations()` is strict because it judges data already
+STORED, where a digit-string means the writer was bypassed.
