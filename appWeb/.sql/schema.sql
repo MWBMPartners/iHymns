@@ -1166,6 +1166,7 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
     SongsJson       MEDIUMTEXT      NOT NULL DEFAULT ('[]') COMMENT 'JSON array of song objects',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    ExpiresAt DATETIME NULL DEFAULT NULL COMMENT 'Optional expiry (#1661), UTC; NULL = never expires. DATETIME not TIMESTAMP (rule #20 TTL convention)',
 
     UNIQUE KEY uq_UserSetlist (UserId, SetlistId),
     INDEX idx_User (UserId),
@@ -1174,6 +1175,33 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
         FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ----------------------------------------------------------------------------
+-- tblUserSetlistTombstones (#1661)
+-- An EXPLICIT, permanent record that a setlist was deleted, so the sync
+-- protocol never has to infer deletion from a setlist being absent from a
+-- payload — the inference that let a truncated payload read as "the user
+-- deleted the tail of their collection" (#1649). A tombstoned id is dead
+-- forever; re-creating mints a fresh client id. An expiry that passes is
+-- converted into a tombstone with Reason='expired', so expiry and deletion
+-- share ONE propagation mechanism.
+--
+-- Mirror of appWeb/.sql/migrate-setlist-tombstones.php — keep byte-identical.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblUserSetlistTombstones (
+    UserId     INT UNSIGNED  NOT NULL,
+    SetlistId  VARCHAR(100)  NOT NULL COMMENT 'The client-generated id of the deleted setlist',
+    DeletedAt  DATETIME      NOT NULL COMMENT 'DB clock (userSyncNow frame) at deletion',
+    Reason     VARCHAR(20)   NOT NULL DEFAULT 'user' COMMENT 'user | expired | admin — VARCHAR not ENUM (rule #20)',
+
+    PRIMARY KEY (UserId, SetlistId),
+
+    CONSTRAINT fk_SetlistTomb_User
+        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
+        ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Explicitly deleted user setlists — anti-resurrection + cross-device prune (#1661).';
 
 
 -- ----------------------------------------------------------------------------

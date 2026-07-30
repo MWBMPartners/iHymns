@@ -2146,15 +2146,46 @@ paths:
       tags: [Setlists]
       summary: Sync setlists with server
       description: |
-        Reconcile local setlists with server-side storage. Behaviour depends
-        on `mode` (WS-F #1018):
-          * `replace` (default for per-edit auto-sync) — the client's full
-            current list is authoritative: setlists present in the payload are
-            upserted, and server setlists ABSENT from the payload are DELETED,
-            so a deletion on one device propagates to the others.
-          * `merge` (first-login backfill) — union: payload setlists are
-            upserted and server-only setlists are preserved (never deleted).
-        Maximum 50 setlists per user with up to 200 songs each.
+        Reconcile local setlists with server-side storage.
+
+        **There are two protocols, and the server picks between them by the
+        PRESENCE of the `deleted` key — even when it is an empty array.**
+
+        ### Protocol 2 (#1661) — explicit deletion, no cap
+        Send `deleted` (possibly `[]`) and the server stops inferring
+        deletions from absence entirely:
+          * ids listed in `deleted` are tombstoned (permanently) and removed;
+          * a tombstoned id can NEVER be resurrected — re-creating a setlist
+            must mint a fresh client id;
+          * setlists merely ABSENT from `setlists` are left alone;
+          * the response's `tombstones` array lists deletions this client
+            should apply locally (from other devices, or from expiry).
+        There is **no cap** on the number of setlists. An over-size request
+        body is REJECTED with **413** — never silently truncated.
+
+        ### Protocol 1 (legacy) — absence-based, unchanged
+        Omit `deleted` entirely (what the native apps do today) and behaviour
+        is exactly as before (WS-F #1018, guarded by #1649):
+          * `replace` — the client's full current list is authoritative;
+            server setlists absent from the payload are DELETED, subject to
+            the `since` watermark guard.
+          * `merge` (default) — union; server-only setlists are preserved.
+
+        `mode` governs only the absence inference. An explicit `deleted` list
+        is honoured in BOTH modes, because it is a statement rather than an
+        inference.
+
+        ### Optional expiry (#1661)
+        Each setlist may carry `expiresAt` (UTC, `YYYY-MM-DD HH:MM:SS`).
+        `null`/absent means **never expires**, which is the default and what
+        every pre-existing setlist has. The SERVER converts an expired
+        setlist into a tombstone (`reason: "expired"`) lazily, on the next
+        read or sync — clients render `expiresAt` for display only and must
+        not delete on expiry themselves.
+
+        Requires the `setlist-tombstones` migration; on an install where it
+        has not been applied the `deleted`/`expiresAt`/`tombstones` fields
+        degrade to no-ops and behaviour is exactly protocol 1.
       security:
         - bearerAuth: []
       parameters:
@@ -2177,11 +2208,30 @@ paths:
                   enum: [replace, merge]
                   default: merge
                   description: >
+                    Governs ABSENCE-based deletion only (protocol 1).
                     'replace' deletes server setlists absent from the payload;
-                    'merge' only adds/updates. Omitted → 'merge'.
+                    'merge' only adds/updates. Omitted → 'merge'. Ignored for
+                    absence purposes when `deleted` is present.
+                since:
+                  type: string
+                  description: >
+                    The `syncedAt` watermark from the last successfully
+                    absorbed response (#1649). The server will not delete rows
+                    written after it. Also filters the `tombstones` response.
+                deleted:
+                  type: array
+                  description: >
+                    #1661 — ids this client has deleted. **Sending this key at
+                    all (even as `[]`) selects protocol 2** and retires
+                    absence-based deletion for this request. Ids are
+                    permanently tombstoned; they can never be resurrected.
+                  items:
+                    type: string
                 setlists:
                   type: array
-                  maxItems: 50
+                  description: >
+                    #1661 — no maximum. The only limit is a 4 MiB whole-body
+                    ceiling, answered with 413.
                   items:
                     type: object
                     required: [id, name, songs]
@@ -2195,6 +2245,13 @@ paths:
                       createdAt:
                         type: string
                         format: date-time
+                      expiresAt:
+                        type: string
+                        nullable: true
+                        description: >
+                          #1661 — optional expiry, UTC 'YYYY-MM-DD HH:MM:SS'.
+                          null/absent = never expires. Round-trips through
+                          this upsert, so sending null CLEARS an expiry.
                       songs:
                         type: array
                         maxItems: 200
@@ -2212,6 +2269,40 @@ paths:
                     type: array
                     items:
                       $ref: "#/components/schemas/UserSetlist"
+                  syncedAt:
+                    type: string
+                    description: >
+                      DB-clock watermark to send back as `since` next time
+                      (#1649). Store it only after absorbing `setlists`.
+                  truncated:
+                    type: boolean
+                    description: >
+                      #1661 — always false for setlists; nothing is ever
+                      sliced. Retained because existing clients read it.
+                  cap:
+                    type: integer
+                    nullable: true
+                    description: >
+                      #1661 — always null: there is no cap. Key retained
+                      because native decoders may read it.
+                  tombstones:
+                    type: array
+                    description: >
+                      #1661 — deletions this client must apply to its local
+                      cache. Filtered to `>= since` when a watermark was sent.
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        deletedAt:
+                          type: string
+                        reason:
+                          type: string
+                          description: >
+                            user | expired | admin. App-validated VARCHAR
+                            vocabulary, not an ENUM — new reasons need no
+                            schema change.
         "400":
           description: Invalid request body
           content:
@@ -2226,6 +2317,14 @@ paths:
                 $ref: "#/components/schemas/Error"
         "405":
           description: Method not allowed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "413":
+          description: >
+            #1661 — request body exceeds the 4 MiB ceiling. NOTHING was
+            changed; this replaces the old silent truncation, which lost data.
           content:
             application/json:
               schema:
@@ -11823,6 +11922,14 @@ components:
         updatedAt:
           type: string
           format: date-time
+        expiresAt:
+          type: string
+          nullable: true
+          description: >
+            #1661 — optional expiry, UTC 'YYYY-MM-DD HH:MM:SS'. null = never
+            expires (the default). Always present in the response shape; null
+            both when unset and on an install that has not run the
+            `setlist-tombstones` migration.
 
     SetlistSongEntry:
       type: object

@@ -70,6 +70,17 @@ export const STORAGE_AUTH_USER          = 'ihymns_auth_user';
 export const STORAGE_SETLISTS_SYNCED_AT  = 'ihymns_setlists_synced_at';
 export const STORAGE_FAVORITES_SYNCED_AT = 'ihymns_favorites_synced_at';
 
+/* Pending explicit set-list deletions (#1661) — the ids this device has
+   deleted but not yet had acknowledged by a successful sync.
+   PERSISTED, not in-memory, and that is the whole point: a deletion made
+   offline, or one made a millisecond before the tab is closed, must still be
+   announced. Under sync protocol 2 the server no longer infers deletion from
+   a set list being absent from the payload, so if this queue were lost the
+   deletion would simply never reach the server — and the next reconcile would
+   hand the set list straight back. Cleared only by the ids the server has
+   actually accepted (see UserAuth.syncSetlists). */
+export const STORAGE_SETLISTS_DELETED    = 'ihymns_setlists_deleted';
+
 /* Accessibility — Colour Vision Deficiency mode (#319) */
 export const STORAGE_CVD_MODE           = 'ihymns_cvd_mode';
 

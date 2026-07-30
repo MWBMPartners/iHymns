@@ -2885,8 +2885,25 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
             $authUserId = (int)$authUser['Id'];
+
+            /* #1661 — LAZY EXPIRY. Converting here, before the read, is what
+               guarantees an expired set list is never SERVED, which is the
+               property that actually matters in the absence of a scheduler.
+               A no-op (and zero extra queries) on an un-migrated install, and
+               a no-op for the overwhelming majority of users, who have no
+               expiries set at all. See includes/user_sync.php. */
+            userSyncExpireSetlists($db, $authUserId);
+
+            /* The ExpiresAt column is optional until the #1661 card has been
+               run on this install, so the SELECT list is built from a
+               hardcoded constant chosen by a schema probe — never from
+               request data (CLAUDE.md rule #5). */
+            $expiresSelect = userSyncExpiryReady($db) ? ', ExpiresAt' : '';
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+            );
             $stmt->bind_param('i', $authUserId);
             $stmt->execute();
             $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -2899,6 +2916,12 @@ if ($action !== null) {
                     'songs'     => json_decode($row['SongsJson'], true) ?: [],
                     'createdAt' => $row['CreatedAt'],
                     'updatedAt' => $row['UpdatedAt'],
+                    /* #1661 — always present in the response shape (null when
+                       unset or un-migrated) so a client can tell "no expiry"
+                       from "this server doesn't do expiries" only by whether
+                       it ever sees a non-null value, and never has to branch
+                       on a missing key. */
+                    'expiresAt' => $row['ExpiresAt'] ?? null,
                 ];
             }, $rows);
 
@@ -2917,14 +2940,36 @@ if ($action !== null) {
          *     'replace' mode are deleted ONLY when userSyncDeletableIds()
          *     says it is safe (see includes/user_sync.php)
          *
+         * SYNC PROTOCOL 2 (#1661) — deletion is EXPLICIT, and there is no cap
+         * ------------------------------------------------------------------
+         * The owner's decision: no cap at all; a set list goes away only when
+         * the user deletes it, or when an optional expiry they set passes.
+         *
+         *   - `deleted: [id, …]` names deletions outright. The PRESENCE of the
+         *     key — even as `[]` — is what marks a protocol-2 client
+         *     (userSyncExplicitProtocol), and for such a client absence-based
+         *     deletion is RETIRED entirely: silence means nothing.
+         *   - Each deletion writes a permanent tombstone; a tombstoned id can
+         *     never be resurrected, so a stale device re-pushing it is a
+         *     no-op instead of an undelete.
+         *   - The 50-cap is GONE. An over-size body is REJECTED with 413 —
+         *     never silently clipped, which is the #1649 data-loss shape.
+         *     `cap` is still emitted (as null) because native decoders may
+         *     read the key.
+         *   - LEGACY CLIENTS ARE UNCHANGED. The native Apple/Android apps
+         *     never send `deleted`, so they keep today's #1649-guarded
+         *     absence-based behaviour exactly.
+         *
          * POST body (JSON):
-         *   { "setlists": [{ id, name, createdAt, songs: [...] }, ...],
+         *   { "setlists": [{ id, name, createdAt, expiresAt?, songs: [...] }, ...],
          *     "mode": "merge"|"replace",
-         *     "since": "YYYY-MM-DD HH:MM:SS"   // optional watermark (#1649)
+         *     "since": "YYYY-MM-DD HH:MM:SS",  // optional watermark (#1649)
+         *     "deleted": ["id", …]             // optional; presence = protocol 2 (#1661)
          *   }
          *
          * Returns: { "setlists": [...], "syncedAt": "...",
-         *            "truncated": bool, "cap": 50 }
+         *            "truncated": false, "cap": null,
+         *            "tombstones": [{ id, deletedAt, reason }, …] }
          * Requires: Authorization: Bearer <token>
          * ----------------------------------------------------------------- */
         case 'user_setlists_sync':
@@ -2940,6 +2985,22 @@ if ($action !== null) {
             }
 
             $rawBody = file_get_contents('php://input');
+
+            /* #1661 — the cap removal's abuse guard, and the ONLY limit left.
+               Checked on the RAW body before json_decode() so the work is
+               bounded before it is done, and answered with 413 rather than a
+               slice: a rejection is loud, retryable and visible to the user,
+               whereas the truncation it replaces was invisible and permanent.
+               4 MiB is tens of thousands of setlist entries — no real
+               collection reaches it. */
+            if (userSyncBodyExceeds((string)$rawBody)) {
+                sendJson([
+                    'error'    => 'Request too large. Your set lists were NOT changed.',
+                    'maxBytes' => userSyncMaxBodyBytes(),
+                ], 413);
+                break;
+            }
+
             $body = json_decode($rawBody, true);
 
             if (!is_array($body['setlists'] ?? null)) {
@@ -2947,13 +3008,18 @@ if ($action !== null) {
                 break;
             }
 
-            /* Cap at 50 setlists per user. userSyncCap() reports whether the
-               cap actually BIT, computed from the pre-slice count (#1649) — a
-               truncated payload is not an authoritative list, so the delete
-               pass below must know. */
-            $capped     = userSyncCap($body['setlists'], 50);
-            $localLists = $capped['items'];
-            $truncated  = $capped['truncated'];
+            /* #1661 — NO CAP. The payload is taken whole; nothing is sliced,
+               so `truncated` is now structurally false rather than computed.
+               userSyncCap() survives for favorites_sync / custom_tags_sync,
+               which keep their (much larger, and non-destructive) caps. */
+            $localLists = $body['setlists'];
+            $truncated  = false;
+
+            /* Presence of `deleted` — even `[]` — is the protocol marker. It
+               is qualified by the schema gate below: this is what the CLIENT
+               supports, not yet what this install can honour. */
+            $clientProtocol2 = userSyncExplicitProtocol($body);
+            $deletedIds      = userSyncSanitiseDeletedIds($body['deleted'] ?? null);
 
             /* Sync mode (WS-F #1018):
              *   'merge'   — union local + server, never delete (the safe
@@ -2977,8 +3043,63 @@ if ($action !== null) {
             $db = getDbMysqli();
             $userId = (int)$authUser['Id'];
 
+            /* #1661 — PROTOCOL 2 REQUIRES SOMEWHERE TO RECORD A DELETION.
+               Migrations here are web-run, so between a deploy and someone
+               pressing the button on /manage/setup-database this install has
+               protocol-2 CLIENTS but no tombstone table. Honouring the
+               protocol in that window would be the worst of both worlds:
+               absence-based deletion retired, and the explicit deletes
+               unrecordable — so a user's delete would silently come back on
+               the next reconcile, which is a fresh instance of the very bug
+               this work exists to remove. Falling back to the legacy rule
+               instead means the un-migrated window behaves EXACTLY as today. */
+            $tombstonesReady  = userSyncTombstonesReady($db);
+            $explicitProtocol = $clientProtocol2 && $tombstonesReady;
+
+            /* #1661 — ORDER IS LOAD-BEARING from here to the upsert loop:
+                 1. expire   — so an expired setlist is tombstoned BEFORE the
+                               upsert loop could re-create it from a client
+                               that still holds a local copy;
+                 2. delete   — explicit deletions, tombstoned then removed;
+                 3. read     — the tombstone set and the server snapshot, both
+                               taken AFTER 1 and 2 so they already reflect them.
+               Doing (3) before (1) would let a just-expired setlist appear in
+               the snapshot and be resurrected; doing (2) after the upsert
+               would delete a setlist the same request had just written. */
+            $expiredIds = userSyncExpireSetlists($db, $userId);
+
+            /* Explicit deletes. The tombstone is written EVEN IF no row exists:
+               this delete may be racing another device's create of the same
+               id, and the tombstone is what makes the outcome deterministic
+               whichever request the database sees first. */
+            $tombstonedNow = 0;
+            if ($deletedIds !== [] && $tombstonesReady) {
+                userSyncTombstoneWrite($db, $userId, $deletedIds, userSyncNow($db), 'user');
+                $del = $db->prepare('DELETE FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ?');
+                $delId = '';
+                $del->bind_param('is', $userId, $delId);
+                foreach ($deletedIds as $delId) {
+                    $del->execute();
+                    $tombstonedNow += $del->affected_rows;
+                }
+                $del->close();
+            }
+
+            /* Anti-resurrection set. Read AFTER the two steps above so it
+               already contains anything they created. */
+            $tombstoned = userSyncTombstonedIds($db, $userId);
+
+            /* The optional expiry column only exists once the #1661 card has
+               been run here; the SELECT list is assembled from hardcoded
+               constants under a schema probe (CLAUDE.md rule #5). */
+            $expiryReady   = userSyncExpiryReady($db);
+            $expiresSelect = $expiryReady ? ', ExpiresAt' : '';
+
             /* Fetch all existing server-side setlists for this user */
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ?');
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                . ' FROM tblUserSetlists WHERE UserId = ?'
+            );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $serverRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -2999,20 +3120,55 @@ if ($action !== null) {
                the user-editable columns. Fixes #568 — prior to this the
                SQL used PostgreSQL/SQLite ON CONFLICT syntax which MySQL
                doesn't recognise, silently breaking multi-device sync. */
-            $upsert = $db->prepare(
-                'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
-                 VALUES (?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    Name      = VALUES(Name),
-                    SongsJson = VALUES(SongsJson),
-                    UpdatedAt = VALUES(UpdatedAt)'
-            );
+            if ($expiryReady) {
+                /* #1661 — the expiry round-trips through the same upsert, so a
+                   client setting/clearing it needs no second endpoint.
+                   `ExpiresAt = VALUES(ExpiresAt)` means a client that sends
+                   null genuinely CLEARS the expiry — the same "the payload is
+                   the truth for this row" semantics Name and SongsJson already
+                   have on this statement. */
+                $upsert = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, ExpiresAt)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Name      = VALUES(Name),
+                        SongsJson = VALUES(SongsJson),
+                        UpdatedAt = VALUES(UpdatedAt),
+                        ExpiresAt = VALUES(ExpiresAt)'
+                );
+            } else {
+                $upsert = $db->prepare(
+                    'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt)
+                     VALUES (?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        Name      = VALUES(Name),
+                        SongsJson = VALUES(SongsJson),
+                        UpdatedAt = VALUES(UpdatedAt)'
+                );
+            }
+
+            $resurrectionsRefused = 0;
 
             foreach ($localLists as $list) {
                 if (empty($list['id'])) continue;
 
-                $setlistId = preg_replace('/[^a-zA-Z0-9_\-]/', '', $list['id']);
+                /* One shared sanitiser with the tombstone writer (#1661) — if
+                   the two disagreed about what an id is, a delete would
+                   tombstone a name no row uses and appear to succeed. */
+                $setlistId = userSyncSanitiseId($list['id']);
                 if ($setlistId === '') continue;
+
+                /* ANTI-RESURRECTION (#1661). A tombstoned id is dead forever;
+                   "re-create" mints a fresh client id. Deliberately NOT a
+                   timestamp comparison against the incoming updatedAt — that
+                   is a CLIENT clock, so a device running fast would resurrect
+                   everything it had ever deleted. A deterministic rule has no
+                   such failure mode. Skipped BEFORE $payloadIds so the row the
+                   client thinks it has is not counted as present. */
+                if (isset($tombstoned[$setlistId])) {
+                    $resurrectionsRefused++;
+                    continue;
+                }
 
                 $name = mb_substr(trim($list['name'] ?? 'Untitled'), 0, 200);
 
@@ -3026,8 +3182,19 @@ if ($action !== null) {
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
 
-                $upsert->bind_param('isssss',
-                    $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                if ($expiryReady) {
+                    /* Validated to the same 19-char shape as the `since`
+                       watermark; anything else (including an absent key)
+                       becomes null = "never expires". Failing that way round
+                       is deliberate — reading a malformed value as an expiry
+                       could delete a set list the user never dated. */
+                    $expiresAt = userSyncParseTimestamp($list['expiresAt'] ?? null);
+                    $upsert->bind_param('issssss',
+                        $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt);
+                } else {
+                    $upsert->bind_param('isssss',
+                        $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                }
                 $upsert->execute();
 
                 /* Record what the client sent; the deletion decision is made
@@ -3052,7 +3219,12 @@ if ($action !== null) {
                 $payloadIds,
                 $syncMode,
                 $truncated,
-                $since
+                $since,
+                /* #1661 — a protocol-2 client states its deletions, so
+                   inference from absence is retired entirely for it. Legacy
+                   clients (the native apps, which never send `deleted`) pass
+                   false here and keep today's behaviour untouched. */
+                $explicitProtocol
             );
             $deleted = 0;
             if (count($deletableIds) > 0) {
@@ -3077,7 +3249,10 @@ if ($action !== null) {
             $syncedAt = userSyncNow($db);
 
             /* Fetch the merged result (all setlists for this user) */
-            $stmt = $db->prepare('SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC');
+            $stmt = $db->prepare(
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
+            );
             $stmt->bind_param('i', $userId);
             $stmt->execute();
             $mergedRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -3090,21 +3265,41 @@ if ($action !== null) {
                     'songs'     => json_decode($row['SongsJson'], true) ?: [],
                     'createdAt' => $row['CreatedAt'],
                     'updatedAt' => $row['UpdatedAt'],
+                    'expiresAt' => $row['ExpiresAt'] ?? null,   /* #1661 */
                 ];
             }, $mergedRows);
 
+            /* #1661 — the deletions this client must apply locally. Filtered
+               to the client's watermark when it sent one; the full set
+               otherwise (a first sync, which needs to hear about everything).
+               See userSyncTombstoneList() for why the filter is `>=`. */
+            $tombstones = userSyncTombstoneList($db, $userId, $since);
+
             /* Audit (#1649) — setlists had no sync log at all, unlike
-               favourites. A truncated or deleting sync is exactly the event a
-               curator needs to see when a user reports "my set lists vanished",
-               so mirror what favorites.sync already records. Only logged when
-               something actually happened, to keep routine no-op reconciles out
-               of the table. */
-            if ($deleted > 0 || $truncated) {
+               favourites. A deleting sync is exactly the event a curator needs
+               to see when a user reports "my set lists vanished", so mirror
+               what favorites.sync already records. Only logged when something
+               actually happened, to keep routine no-op reconciles out of the
+               table. #1661 adds the three new outcomes: an explicit delete, a
+               lazily-converted expiry, and a refused resurrection — the last
+               of which is otherwise completely invisible and is the first
+               thing to look at if a user says "it keeps coming back" (or, more
+               likely, "it won't come back"). */
+            if ($deleted > 0 || $truncated || $tombstonedNow > 0
+                || $expiredIds !== [] || $resurrectionsRefused > 0) {
                 logActivity('setlists.sync', 'user', (string)$userId, [
-                    'mode'      => $syncMode,
-                    'truncated' => $truncated,
-                    'deleted'   => $deleted,
-                    'total'     => count($mergedSetlists),
+                    'mode'                 => $syncMode,
+                    /* Logged as the EFFECTIVE protocol, not the client's
+                       claim — an un-migrated install running protocol 1 for a
+                       protocol-2 client is exactly what someone reading this
+                       log after a deploy needs to see. */
+                    'protocol'             => $explicitProtocol ? 2 : 1,
+                    'truncated'            => $truncated,
+                    'deleted'              => $deleted,
+                    'explicitDeleted'      => $tombstonedNow,
+                    'expired'              => count($expiredIds),
+                    'resurrectionsRefused' => $resurrectionsRefused,
+                    'total'                => count($mergedSetlists),
                 ]);
             }
 
@@ -3114,10 +3309,17 @@ if ($action !== null) {
                    on its next sync. Clients that ignore it keep the legacy
                    absence-only behaviour. */
                 'syncedAt'  => $syncedAt,
-                /* Lets the client warn the user that their tail is device-only
-                   rather than silently pretending everything synced. */
+                /* #1661 — structurally false now that nothing is ever sliced.
+                   Kept in the response because clients (including the native
+                   apps) already read it; an over-size body is a 413 instead. */
                 'truncated' => $truncated,
-                'cap'       => 50,
+                /* #1661 — no cap. The key is retained and emitted as null
+                   because a native decoder may read it; removing a field from
+                   a shipped response shape is a contract change, and "there is
+                   no limit" is exactly what null says. */
+                'cap'       => null,
+                /* #1661 — ids this client must drop from its local cache. */
+                'tombstones' => $tombstones,
             ]);
             break;
 

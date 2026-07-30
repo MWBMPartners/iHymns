@@ -2692,6 +2692,46 @@ return [
         })($db),
     ],
 
+    /* ----------------------------------------------------------------------
+     * #1661 — setlist tombstones + optional expiry. The storage half of sync
+     * protocol 2: deletion becomes something a client SAYS (a tombstone row)
+     * rather than something the server INFERS from a setlist being absent
+     * from a payload — the inference that made a truncated payload look like
+     * a mass deletion (#1649). The 50-setlist cap goes away in the same
+     * change; over-size bodies are REJECTED (413), never silently clipped.
+     *
+     * Additive and dormant-safe: every reader is existence-gated
+     * (userSyncTombstonesReady() / userSyncExpiryReady() in
+     * includes/user_sync.php), so an install that has not run this card keeps
+     * exactly today's behaviour instead of throwing under STRICT (#1228).
+     * -------------------------------------------------------------------- */
+    'setlist-tombstones' => [
+        'script' => 'migrate-setlist-tombstones.php',
+        'card' => [
+            'title'  => 'Setlist tombstones + optional expiry (#1661)',
+            'body'   => 'Creates <code>tblUserSetlistTombstones</code> (an explicit, permanent'
+                      . ' record that a set list was deleted — so a deletion can never again be'
+                      . ' inferred from a truncated sync payload, #1649) and adds the optional'
+                      . ' <code>tblUserSetlists.ExpiresAt</code> column (<code>NULL</code> ='
+                      . ' never expires, which is what every existing row gets, so no set list'
+                      . ' changes behaviour). An expiry that passes is converted server-side'
+                      . ' into a tombstone with <code>Reason=\'expired\'</code>, so expiry and'
+                      . ' deletion propagate through one mechanism. Until this card is applied'
+                      . ' the sync path is existence-gated and behaves exactly as before —'
+                      . ' native app sync is unaffected either way. Additive, idempotent — safe'
+                      . ' to re-run.',
+            'button' => 'Run Setlist Tombstones Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): the migration creates a table AND
+           alters another, so a partial apply (connection lost between the two)
+           must NOT show the card green — otherwise "Apply all pending" would
+           skip the half that never ran, and the expiry gate would sit
+           permanently false with nothing indicating why. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblUserSetlistTombstones')
+            || !_migProbe_columnExists($db, 'tblUserSetlists', 'ExpiresAt'),
+    ],
+
     /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
        tblSongChords (#299) has zero PHP/JS references — chord notation now lives
        per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only

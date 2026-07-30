@@ -302,6 +302,119 @@ check('the two stores use distinct warn latches',
     /_setlistCapWarned/.test(userAuthSrc) && /_favCapWarned/.test(userAuthSrc));
 
 /* ---------------------------------------------------------------------- */
+/* 9. #1661 — the client half of sync protocol 2                          */
+/* ---------------------------------------------------------------------- */
+
+console.log('\nAssertion 9 — deletion is announced explicitly, and tombstones are applied:');
+
+const setlistNoComments = stripComments(setlistSrc);
+const authNoComments9   = stripComments(userAuthSrc);
+
+/* The pending-delete queue key lives in constants.js like every other one. */
+check('STORAGE_SETLISTS_DELETED is exported from constants.js',
+    /export const STORAGE_SETLISTS_DELETED\s*=\s*'ihymns_setlists_deleted'/.test(constantsSrc));
+check('setlist.js imports the key rather than re-typing the string',
+    /STORAGE_SETLISTS_DELETED/.test(setlistSrc)
+    && !/'ihymns_setlists_deleted'/.test(setlistNoComments));
+
+/* THE PROTOCOL MARKER. `deleted` must be sent on EVERY sync — the server
+   detects protocol 2 by the key's PRESENCE, so making it conditional on the
+   queue being non-empty would silently drop the client back to legacy
+   absence-based deletion on every sync that happened not to delete anything.
+   That is the bug, wearing the costume of an optimisation. */
+check('syncSetlists() sends a `deleted` field',
+    !!syncSetlistsBody && /\bdeleted,/.test(stripComments(syncSetlistsBody)));
+check('the `deleted` field is UNCONDITIONAL (no spread-if, unlike `since`)',
+    !!syncSetlistsBody
+    && !/\.\.\.\([^)]*deleted/.test(stripComments(syncSetlistsBody))
+    && !/deleted\.length\s*>\s*0\s*\?/.test(stripComments(syncSetlistsBody)));
+
+/* Captured before the request, cleared after — and only the ids sent, so a
+   deletion made while the request was in flight survives to be re-announced. */
+check('syncSetlists() reads the queue via getPendingDeletes()',
+    !!syncSetlistsBody && /getPendingDeletes\?\.\(\)|getPendingDeletes\(\)/.test(syncSetlistsBody));
+check('syncSetlists() clears ONLY the ids it sent, after a successful response',
+    !!syncSetlistsBody && /clearPendingDeletes\?\.\(\s*deleted\s*\)|clearPendingDeletes\(\s*deleted\s*\)/.test(syncSetlistsBody));
+check('the clear happens AFTER the response is parsed, not before the request',
+    !!syncSetlistsBody
+    && syncSetlistsBody.indexOf('await res.json()') < syncSetlistsBody.indexOf('clearPendingDeletes'));
+
+/* delete() must QUEUE before it saves — saveAll() schedules the sync, so a
+   queue write afterwards can lose a race with the debounce on a slow device
+   and publish a payload that deletes nothing. */
+const deleteBody = methodBody(setlistSrc, 'delete');
+check('setlist.js delete() exists', deleteBody !== null);
+check('delete() queues the id for explicit announcement',
+    !!deleteBody && /_queuePendingDelete\(/.test(deleteBody));
+check('delete() queues BEFORE saveAll() (saveAll schedules the sync)',
+    !!deleteBody && deleteBody.indexOf('_queuePendingDelete(') < deleteBody.indexOf('saveAll('));
+
+/* The queue is persisted, not in-memory: an offline delete, or one made a
+   moment before the tab closes, must still be announced. */
+check('the pending-delete queue is persisted to localStorage',
+    /localStorage\.setItem\(\s*STORAGE_SETLISTS_DELETED/.test(setlistNoComments));
+
+/* Tombstones from the server prune the local cache — and the ORDER matters:
+   _unionSetlists lets the local copy win for a shared id, so a set list
+   deleted on another device would survive its own tombstone if it were still
+   present at union time. */
+check('setlist.js exposes applyTombstones()', /applyTombstones\(/.test(setlistSrc));
+check('_absorbSetlistSync() applies tombstones',
+    !!absorbSetlistBody && /applyTombstones\(/.test(absorbSetlistBody));
+/* ⚠️ Expressed as DATA FLOW, not source order. The obvious version —
+   "applyTombstones appears before _unionSetlists" — passed mutation M24, in
+   which the prune WRAPPED the union: `applyTombstones(_unionSetlists(…))`
+   still puts applyTombstones at the lower index while doing the wrong thing.
+   The property that actually matters is that the union CONSUMES the pruned
+   list, so that is what is asserted. */
+check('_absorbSetlistSync() prunes BEFORE the union (the union consumes the pruned list)',
+    !!absorbSetlistBody
+    && /const\s+pruned\s*=\s*this\.app\.setList\.applyTombstones\(/.test(absorbSetlistBody)
+    && /_unionSetlists\(\s*pruned\s*,/.test(absorbSetlistBody));
+check('_absorbSetlistSync() does NOT wrap the union in the prune (local-wins would resurrect)',
+    !!absorbSetlistBody
+    && !/applyTombstones\(\s*(this\.)?_unionSetlists\(/.test(stripComments(absorbSetlistBody)));
+check('syncSetlists() surfaces the tombstones on its result object',
+    !!syncSetlistsBody && /tombstones:/.test(syncSetlistsBody));
+
+/* The cap removal's replacement guard is a REJECTION, and the user is told —
+   there is no partial success here to mistake for one. */
+check('syncSetlists() handles a 413 (over-size body) distinctly',
+    !!syncSetlistsBody && /res\.status\s*===\s*413/.test(syncSetlistsBody));
+check('the 413 branch tells the user rather than failing silently',
+    !!syncSetlistsBody && /413[\s\S]{0,400}?showToast/.test(stripComments(syncSetlistsBody)));
+
+/* Failure KINDS are distinguished by STATUS, never by matching the server's
+   prose (rule #35 — reword a server sentence and the UI degrades silently).
+   Banning the PHRASE outright would flag the legitimate user-facing toast
+   copy, and a guard that fails on correct code gets weakened or deleted
+   rather than fixed (rule #34) — so what is banned is the ACT of inspecting
+   the server's message to decide what happened. */
+check('failure kinds are branched on res.status, never on the server error TEXT',
+    !!syncSetlistsBody
+    && /res\.status\s*===\s*\d{3}/.test(syncSetlistsBody)
+    && !/(data|json|body)\??\.(error|message)\s*(\.(includes|match|startsWith|indexOf|test)\(|[=!]==?\s*['"`])/
+        .test(stripComments(syncSetlistsBody)));
+
+/* Expiry: captured as an absolute UTC instant, rendered from the stored
+   value, and never decided locally — the server owns the conversion. */
+check('setlist.js has an expiry picker', /showExpiryDialog\s*\(/.test(setlistSrc));
+check('setlist.js renders an expiry badge', /expiryBadge\s*\(/.test(setlistSrc));
+check('setExpiry() persists through the normal saveAll() path (so it syncs)',
+    (() => { const b = methodBody(setlistSrc, 'setExpiry'); return !!b && /saveAll\(/.test(b); })());
+check('the expiry is converted to UTC before it leaves the client',
+    (() => { const b = methodBody(setlistSrc, 'showExpiryDialog'); return !!b && /toISOString\(\)/.test(b); })());
+/* A bare `new Date('YYYY-MM-DD HH:MM:SS')` is not a defined format and is
+   parsed as LOCAL time by some engines — an expiry silently off by the
+   viewer's offset. The parser must be explicit about the value being UTC. */
+check("stored expiries are parsed explicitly as UTC (not a bare `new Date(' ')`)",
+    (() => { const b = methodBody(setlistSrc, '_parseExpiry'); return !!b && /\+\s*'Z'/.test(b); })());
+
+/* The client must not second-guess the server on whether something expired. */
+check('the client never deletes a set list locally on expiry (the server converts it)',
+    !/expired[\s\S]{0,120}?this\.delete\(/i.test(setlistNoComments));
+
+/* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {

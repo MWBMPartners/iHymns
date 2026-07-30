@@ -590,7 +590,16 @@ export class UserAuth {
      */
     _absorbSetlistSync(res) {
         if (!res || !Array.isArray(res.setlists) || !this.app.setList) return false;
-        const final = this._unionSetlists(this.app.setList.getAll(), res.setlists);
+        /* #1661 — PRUNE BEFORE UNION, and the order is load-bearing. The union
+           lets the CURRENT local copy win for a shared id (it may carry an
+           in-flight edit), so a set list another device deleted would survive
+           its own tombstone if it were still in the local array at union time.
+           Pruning first removes it from BOTH sides of the merge. */
+        const pruned = this.app.setList.applyTombstones(
+            this.app.setList.getAll(),
+            res.tombstones
+        );
+        const final = this._unionSetlists(pruned, res.setlists);
         this.app.setList.saveAll(final, { sync: false });
         this._setSyncedAt(STORAGE_SETLISTS_SYNCED_AT, res.syncedAt);
         return true;
@@ -642,6 +651,11 @@ export class UserAuth {
             return null;
         }
 
+        /* #1661 — the explicit deletions this device is announcing. Captured
+           BEFORE the request so the exact list can be cleared afterwards: a
+           deletion made while the request is in flight must stay queued. */
+        const deleted = this.app.setList?.getPendingDeletes?.() ?? [];
+
         try {
             const res = await apiFetch(`${this.app.config.apiUrl}?action=user_setlists_sync`, {
                 method: 'POST',
@@ -661,27 +675,58 @@ export class UserAuth {
                     ...(this._syncedAt(STORAGE_SETLISTS_SYNCED_AT)
                         ? { since: this._syncedAt(STORAGE_SETLISTS_SYNCED_AT) }
                         : {}),
+                    /* #1661 — sent UNCONDITIONALLY, empty array included. Its
+                       PRESENCE is what tells the server this client states its
+                       deletions explicitly, so absence-based deletion is
+                       retired for us. Sending it only when non-empty would
+                       silently flip us back to the legacy inference on every
+                       sync that happened not to delete anything — which is the
+                       bug, not a saving. */
+                    deleted,
                 }),
             });
 
             if (!res.ok) {
                 if (res.status === 401) this.clearCredentials();
+                /* #1661 — 413: the payload is too large to accept. Nothing on
+                   the server changed, so the local cache is intact and the
+                   user must be told, because unlike the truncation this
+                   replaced there is no partial success to mistake for one. */
+                if (res.status === 413 && !this._setlistTooLargeWarned) {
+                    this._setlistTooLargeWarned = true;
+                    this.app.showToast?.(
+                        'Your set lists are too large to sync in one request. Nothing was changed — '
+                        + 'try removing a very large set list.',
+                        'danger',
+                        8000
+                    );
+                }
                 return null;
             }
 
             const data = await res.json();
             if (!Array.isArray(data.setlists)) return null;
 
+            /* #1661 — the server accepted these deletions (they are now
+               permanent tombstones), so stop announcing them. Only the ids
+               actually sent are cleared. */
+            if (deleted.length > 0) this.app.setList?.clearPendingDeletes?.(deleted);
+
             /* Warn ONCE per session that the tail of the collection is
                device-only. Fired here rather than at each call site so every
                caller — reconcile, per-edit push, offline drain, share —
-               is covered by one piece of code (#1649). */
+               is covered by one piece of code (#1649). Retained although the
+               setlists cap is gone (#1661, `truncated` is now always false)
+               because favourites and custom tags still cap. */
             this._warnTruncated(data, '_setlistCapWarned', 'set lists');
 
             return {
                 setlists: data.setlists,
                 syncedAt: typeof data.syncedAt === 'string' ? data.syncedAt : null,
                 truncated: data.truncated === true,
+                /* #1661 — deletions from other devices (and lazily-converted
+                   expiries) for _absorbSetlistSync() to prune locally. */
+                tombstones: Array.isArray(data.tombstones) ? data.tombstones : [],
             };
         } catch (err) {
             /* Network error mid-fetch — queue a sync marker so it runs

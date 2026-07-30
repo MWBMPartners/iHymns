@@ -20,7 +20,7 @@
 import { toTitleCase } from '../utils/text.js';
 import { escapeHtml, verifiedBadge } from '../utils/html.js';
 import { shortTag, fullLabel, typeColor, typeTextColor, COMPONENT_TYPES } from '../utils/components.js';
-import { STORAGE_SETLISTS, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
+import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_AUTH_TOKEN, STORAGE_PLAYLIST_CONTEXT, songbookLabel, songbookFullName, SONGBOOK_NAMES, EVT_AUTH_CHANGED } from '../constants.js';
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 
@@ -181,14 +181,144 @@ export class SetList {
 
     /**
      * Delete a set list.
+     *
+     * #1661 — the deletion is QUEUED for the server as an explicit
+     * instruction before the local removal, not merely implied by the set
+     * list vanishing from the next payload. Under sync protocol 2 the server
+     * no longer reads absence as deletion at all, so without this queue entry
+     * the delete would never propagate and the next reconcile would hand the
+     * set list straight back.
+     *
+     * Queue first, remove second: saveAll() schedules the sync, so a queue
+     * write after it could lose a race with the debounce timer on a slow
+     * device and publish a payload that deletes nothing.
+     *
      * @param {string} listId
      */
     delete(listId) {
+        this._queuePendingDelete(listId);
         const lists = this.getAll().filter(l => l.id !== listId);
         this.saveAll(lists);
         if (this.activeSetListId === listId) {
             this.activeSetListId = null;
         }
+    }
+
+    /**
+     * Set (or clear) a set list's optional expiry (#1661).
+     *
+     * ELI5: give a set list a use-by date, or take one away.
+     *
+     * `null` means "never expires" — the owner's stated default, and what
+     * every set list has unless someone deliberately dates it. The value is
+     * an absolute instant in UTC, because the server compares it against its
+     * own UTC clock; sending a local wall-clock time would fire the expiry
+     * early or late by the device's offset.
+     *
+     * The server is the sole authority on the actual conversion — this only
+     * records the intent, and the set list keeps working normally until a
+     * sync observes that the moment has passed.
+     *
+     * @param {string} listId
+     * @param {?string} expiresAt 'YYYY-MM-DD HH:MM:SS' UTC, or null to clear.
+     * @returns {boolean} True if a matching set list was updated.
+     */
+    setExpiry(listId, expiresAt) {
+        const lists = this.getAll();
+        const list = lists.find(l => l.id === listId);
+        if (!list) return false;
+        list.expiresAt = expiresAt || null;
+        this.saveAll(lists);
+        return true;
+    }
+
+    /* =====================================================================
+     * EXPLICIT-DELETE QUEUE (#1661)
+     *
+     * The client half of sync protocol 2. The server distinguishes a
+     * protocol-2 client by the mere PRESENCE of a `deleted` key, so
+     * getPendingDeletes() is called on EVERY sync and its empty array is
+     * just as meaningful as a populated one — see UserAuth.syncSetlists.
+     * ===================================================================== */
+
+    /**
+     * The ids deleted on this device that the server has not yet acknowledged.
+     * @returns {string[]}
+     */
+    getPendingDeletes() {
+        try {
+            const v = JSON.parse(localStorage.getItem(STORAGE_SETLISTS_DELETED)) || [];
+            return Array.isArray(v) ? v.filter(id => typeof id === 'string' && id) : [];
+        } catch {
+            /* A corrupt queue must not wedge every future sync, and unlike the
+               setlists cache there is nothing here to salvage — the worst case
+               is one un-propagated deletion the user can repeat. */
+            return [];
+        }
+    }
+
+    /**
+     * Add an id to the pending-delete queue (idempotent).
+     * @param {string} listId
+     */
+    _queuePendingDelete(listId) {
+        if (!listId) return;
+        const pending = this.getPendingDeletes();
+        if (pending.includes(listId)) return;
+        pending.push(listId);
+        try { localStorage.setItem(STORAGE_SETLISTS_DELETED, JSON.stringify(pending)); } catch { /* quota — the delete still applied locally */ }
+    }
+
+    /**
+     * Drop the ids a sync has just had accepted.
+     *
+     * Removes ONLY the ids that were actually sent, never the whole queue:
+     * a deletion made while the request was in flight is still pending and
+     * must survive to be announced on the next sync.
+     *
+     * @param {string[]} acknowledged Ids included in the successful request.
+     */
+    clearPendingDeletes(acknowledged) {
+        if (!Array.isArray(acknowledged) || acknowledged.length === 0) return;
+        const done = new Set(acknowledged);
+        const remaining = this.getPendingDeletes().filter(id => !done.has(id));
+        try { localStorage.setItem(STORAGE_SETLISTS_DELETED, JSON.stringify(remaining)); } catch { /* quota */ }
+    }
+
+    /**
+     * Remove local copies of set lists the server reports as tombstoned.
+     *
+     * ELI5: another device deleted these (or they expired) — take them off
+     * this device too.
+     *
+     * Returns the pruned array instead of writing it, so the caller can fold
+     * this into the single saveAll() the absorb path already performs — two
+     * writes would render the overview twice and could interleave with an
+     * in-flight edit.
+     *
+     * @param {Array}  lists      The local set lists.
+     * @param {Array}  tombstones Server tombstones ([{id, deletedAt, reason}]).
+     * @returns {Array} The lists with tombstoned ids removed.
+     */
+    applyTombstones(lists, tombstones) {
+        if (!Array.isArray(tombstones) || tombstones.length === 0) return lists;
+        const dead = new Set(
+            tombstones.map(t => (t && typeof t.id === 'string') ? t.id : null).filter(Boolean)
+        );
+        if (dead.size === 0) return lists;
+        /* Disarm the getAll()-backed navigation fallback, which would
+           otherwise call getById() on a set list that is about to vanish.
+           The sessionStorage PLAYLIST CONTEXT is deliberately left alone: it
+           is a self-contained snapshot of song ids (which is why it can drive
+           a SHARED set list that was never in getAll() at all), and yanking a
+           leader out of mid-service navigation because a co-leader deleted
+           the list on their phone would be worse than letting this tab's
+           session finish. It is session-scoped, so it does not outlive the
+           tab. */
+        if (this.activeSetListId && dead.has(this.activeSetListId)) {
+            this.activeSetListId = null;
+        }
+        return (lists || []).filter(l => l && !dead.has(l.id));
     }
 
     /**
@@ -360,7 +490,7 @@ export class SetList {
                         <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 setlist-item"
                              data-setlist-id="${escapeHtml(list.id)}" role="button" tabindex="0">
                             <div class="flex-grow-1">
-                                <strong>${escapeHtml(list.name)}</strong>
+                                <strong>${escapeHtml(list.name)}</strong>${this.expiryBadge(list)}
                                 <small class="text-muted d-block">
                                     ${list.songs.length} song${list.songs.length !== 1 ? 's' : ''}
                                     &middot; Created ${this.formatDate(list.createdAt)}
@@ -888,11 +1018,15 @@ export class SetList {
                 </button>
             </div>
             <div class="d-flex justify-content-between align-items-center mb-3">
-                <h2 class="h5 mb-0">${escapeHtml(list.name)}</h2>
+                <h2 class="h5 mb-0">${escapeHtml(list.name)}${this.expiryBadge(list)}</h2>
                 <div class="btn-group btn-group-sm">
                     <button type="button" class="btn btn-outline-secondary" id="setlist-rename-btn"
                             aria-label="Rename set list" title="Rename">
                         <i class="fa-solid fa-pen" aria-hidden="true"></i>
+                    </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-expiry-btn"
+                            aria-label="Set or clear this set list's expiry date" title="Expiry">
+                        <i class="fa-solid fa-hourglass-half" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="btn btn-outline-secondary" id="setlist-share-btn"
                             aria-label="Share set list" title="Share">
@@ -945,6 +1079,11 @@ export class SetList {
                 this.rename(listId, name.trim());
                 this.renderSetListDetail(listId);
             }
+        });
+
+        /* Optional expiry (#1661) */
+        container.querySelector('#setlist-expiry-btn')?.addEventListener('click', () => {
+            this.showExpiryDialog(listId);
         });
 
         /* Export as text */
@@ -2965,6 +3104,127 @@ export class SetList {
         } catch {
             return '';
         }
+    }
+
+    /* =====================================================================
+     * OPTIONAL EXPIRY (#1661)
+     *
+     * A set list normally lives until the user deletes it. An expiry is an
+     * OPT-IN convenience for the throwaway ones ("Christmas Eve 2026"), and
+     * the SERVER owns the actual conversion — everything here is display and
+     * intent-capture only. Two devices with different clocks must never
+     * disagree about whether a set list still exists mid-service, which is
+     * exactly what per-device expiry would produce.
+     * ===================================================================== */
+
+    /**
+     * Parse a stored expiry into a Date, or null.
+     *
+     * The stored form is the wire form, 'YYYY-MM-DD HH:MM:SS' in UTC. It is
+     * parsed by replacing the space with 'T' and appending 'Z' rather than
+     * handed to `new Date()` raw: the space-separated form is NOT part of the
+     * ECMAScript Date Time String Format, so browsers parse it by
+     * implementation-specific fallback — historically as LOCAL time in some
+     * and as invalid in others. Being explicit is the difference between an
+     * expiry that reads correctly everywhere and one that is silently off by
+     * the viewer's UTC offset.
+     *
+     * @param {?string} expiresAt
+     * @returns {?Date}
+     */
+    _parseExpiry(expiresAt) {
+        if (typeof expiresAt !== 'string' || !expiresAt) return null;
+        const d = new Date(expiresAt.replace(' ', 'T') + 'Z');
+        return Number.isNaN(d.getTime()) ? null : d;
+    }
+
+    /**
+     * A small "Expires …" chip for a set list, or '' when it never expires.
+     *
+     * Returns MARKUP, so every value it interpolates is escaped — the date is
+     * machine-generated, but escaping unconditionally is cheaper than
+     * re-deriving that fact at each call site.
+     *
+     * @param {object} list
+     * @returns {string} HTML, or '' when there is no expiry.
+     */
+    expiryBadge(list) {
+        const when = this._parseExpiry(list?.expiresAt);
+        if (!when) return '';
+        const label = when.toLocaleString(undefined, {
+            day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+        /* Past-dated means the server simply has not been asked yet (expiry is
+           converted lazily, on the next sync) — say "Expired" rather than
+           pretending it is still scheduled. */
+        const past = when.getTime() <= Date.now();
+        return ` <span class="badge ${past ? 'bg-danger-subtle text-danger-emphasis' : 'bg-warning-subtle text-warning-emphasis'} ms-1"
+                       title="${escapeHtml(past ? 'Expired' : 'Expires')} ${escapeHtml(label)}">
+                    <i class="fa-solid fa-hourglass-half me-1" aria-hidden="true"></i>${escapeHtml(past ? 'Expired' : label)}
+                 </span>`;
+    }
+
+    /**
+     * Prompt for an expiry date and store it (or clear it).
+     *
+     * Uses a plain date prompt rather than a bespoke modal: expiry is a
+     * coarse, rarely-used convenience, and 'YYYY-MM-DD' is unambiguous. The
+     * time is pinned to the END of the chosen day in the user's own time zone
+     * — "expires on the 25th" plainly means "still works all of the 25th",
+     * and `Date.UTC` on a locally-constructed date would instead cut it short
+     * by the viewer's offset. The conversion to UTC happens here, once, so
+     * the wire value is always an absolute instant.
+     *
+     * @param {string} listId
+     */
+    async showExpiryDialog(listId) {
+        const list = this.getById(listId);
+        if (!list) return;
+
+        const current = this._parseExpiry(list.expiresAt);
+        /* Pre-fill with the local calendar date of any existing expiry. */
+        const prefill = current
+            ? `${current.getFullYear()}-${String(current.getMonth() + 1).padStart(2, '0')}-${String(current.getDate()).padStart(2, '0')}`
+            : '';
+
+        const answer = await this.app.showPrompt(
+            'Expire this set list on (YYYY-MM-DD) — leave blank to never expire:',
+            prefill,
+            { title: 'Set List Expiry', okText: 'Save' }
+        );
+        /* A cancelled prompt returns null and must change nothing; an empty
+           STRING is a deliberate "clear the expiry" and must. */
+        if (answer === null || answer === undefined) return;
+
+        const trimmed = String(answer).trim();
+        if (trimmed === '') {
+            this.setExpiry(listId, null);
+            this.app.showToast('Expiry removed — this set list will not expire.', 'success', 3000);
+            this.renderSetListDetail(listId);
+            return;
+        }
+
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+        if (!m) {
+            this.app.showToast('Please use the format YYYY-MM-DD.', 'warning', 3000);
+            return;
+        }
+        /* End of that local day. Constructing with the numeric constructor
+           (not Date.parse of the string) is what keeps it local — the
+           'YYYY-MM-DD' string form is defined to parse as UTC. */
+        const localEnd = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 23, 59, 59);
+        if (Number.isNaN(localEnd.getTime())) {
+            this.app.showToast('That date is not valid.', 'warning', 3000);
+            return;
+        }
+        const utc = localEnd.toISOString().slice(0, 19).replace('T', ' ');
+        this.setExpiry(listId, utc);
+        this.app.showToast(
+            `This set list will expire after ${localEnd.toLocaleDateString()}.`,
+            'success',
+            3000
+        );
+        this.renderSetListDetail(listId);
     }
 
     /* =====================================================================
