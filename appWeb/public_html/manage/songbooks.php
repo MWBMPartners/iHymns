@@ -2698,8 +2698,10 @@ $csrf = csrfToken();
                                        per the shared export-filename convention. The
                                        click handler is wired in inline JS at the bottom
                                        of this file; it calls the DB-direct
-                                       /manage/editor/api?action=songbook_export&abbr=…
-                                       endpoint (WS-J #1020), which returns only this
+                                       /api?action=songbook_export&abbr=… public endpoint
+                                       (WS-J #1020; repointed off the retiring editor
+                                       endpoint by #1629 — see that script block for the
+                                       content-gating caveat), which returns only this
                                        songbook's songs — no client-side corpus filter. */
                                 ?>
                                 <button type="button" class="btn btn-sm btn-outline-secondary songbook-export-btn"
@@ -4724,10 +4726,36 @@ $csrf = csrfToken();
 
     <!-- Songbook bundle-export wiring (#883 follow-up). Each
          .songbook-export-btn carries data-songbook-abbrev /
-         data-songbook-name; on click we fetch the editor's full
-         corpus, filter to the abbreviation, and trigger a download
-         using the shared filename helper so the convention stays
-         consistent with the editor's per-song / bulk-export flows. -->
+         data-songbook-name; on click we fetch the songbook's songs and
+         trigger a download using the shared filename helper so the
+         convention stays consistent with the editor's per-song /
+         bulk-export flows.
+
+         ELI5: clicking the button asks the server for every song in this
+         songbook and saves them as one JSON file.
+
+         WHY THE PUBLIC ENDPOINT, NOT THE EDITOR'S (#1629): this button
+         lives on the admin Songbooks page, not the editor, and the v1
+         editor api.php it used to call is being retired (the v2 editor
+         cutover, #1601). The public /api?action=songbook_export
+         (api.php:~1079) is DB-direct, scoped to one songbook (never the
+         whole corpus — CLAUDE.md #17) and returns the SAME { songs,
+         songbook } shape the editor's endpoint did, so this is a pure
+         repoint with no shape adaptation.
+
+         ⚠️ GATING CAVEAT (#1629) — record this, don't fix it here: the
+         public endpoint runs its export through contentGatingApply()
+         (#1388) when tblAppSettings.content_gating_enabled = '1'. That
+         flag is OFF by default today, so this repoint is byte-identical
+         behaviour. But the day gating goes live, THIS ADMIN BUTTON'S
+         OUTPUT BECOMES TIER-DEPENDENT ON THE CLICKING ADMIN'S OWN
+         ACCOUNT — an admin without an elevated tier could silently get a
+         bundle with lyrics/media stripped from some songs. Before gating
+         is switched on, either (a) make the admin export tier-exempt
+         (e.g. bypass contentGatingApply for an authenticated admin/
+         global_admin caller), or (b) give api2.php its own editor-gated
+         songbook_export that never runs the gate. Do NOT pre-build
+         either now — just don't lose this note when that day comes. -->
     <script type="module">
     import {
         songbookExportFilename,
@@ -4746,9 +4774,11 @@ $csrf = csrfToken();
             try {
                 /* DB-direct per-songbook export (WS-J #1020): the server
                    returns only this songbook's songs (+ its record), so we
-                   no longer download and filter the whole corpus. */
+                   no longer download and filter the whole corpus. Repointed
+                   from the retiring editor endpoint to the public one
+                   (#1629) — see the gating caveat in the comment above. */
                 const res = await fetch(
-                    '/manage/editor/api.php?action=songbook_export&abbr=' + encodeURIComponent(abbr),
+                    '/api?action=songbook_export&abbr=' + encodeURIComponent(abbr),
                     { credentials: 'same-origin' },
                 );
                 if (!res.ok) throw new Error('HTTP ' + res.status);

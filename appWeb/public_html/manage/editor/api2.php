@@ -39,6 +39,8 @@ declare(strict_types=1);
  *   POST credit_upsert          { songId, role, credit:{id?,name} } -> { ok, creditId }
  *   POST credit_delete          { songId, role, creditId }  -> { ok }
  *   GET  credit_search?q=&kind=&limit=                       -> { ok, suggestions }
+ *   GET  user_search?q=&limit=                                -> { ok, suggestions }  (#1629 — Content Restrictions picker, NOT an editor feature; ported off v1)
+ *   GET  org_search?q=&limit=                                 -> { ok, suggestions }  (#1629 — same picker, "organisation" source)
  *   GET  tag_list?id=<SongId>                                -> { ok, tags }
  *   GET  tag_search?q=&limit=                                -> { ok, suggestions }
  *   POST tag_attach             { songId, name }             -> { ok, tag, attached }
@@ -2159,6 +2161,112 @@ try {
                 'name'  => (string)$row['Name'],
                 'usage' => (int)$row['usageCount'],
                 'kinds' => $row['kinds'] !== null ? explode(',', (string)$row['kinds']) : [],
+            ];
+        }
+        $stmt->close();
+        ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
+    }
+
+    /* ---- user_search (GET) — live-search users by display name / username
+           (#498; ported into api2 by #1629 ahead of v1 api.php's retirement).
+           Powers the /manage/restrictions name-first picker
+           (manage/includes/renderEntityPicker.js) resolving a human-friendly
+           label ("Lance Manasse · @admin") to the canonical tblUsers.Id.
+
+           ELI5: the admin types a few letters of someone's name and this
+           hands back a short list of matching accounts to choose from.
+
+           WHY IT LIVES HERE, NOT ON THE PUBLIC api.php: tblUsers isn't
+           exposed there, and this endpoint needs the SAME admin/editor+
+           gate api2.php already enforces (line ~113) — matching api.php's
+           `hasRole($currentUser['role'], 'editor')` check exactly, so
+           moving files doesn't change who can call it.
+
+           NOT an editor feature: grep finds zero call sites in editor.js /
+           index.php / editor2.php / v2/* — its only consumer is Content
+           Restrictions (manage/restrictions.php). It rode along on the
+           editor's api.php only because that was the nearest admin-gated,
+           tblUsers-reading endpoint (#1629 corrects sibling issue #1609,
+           which had assumed this WAS editor-only).
+
+           Query + bind_param sequence are unchanged from v1 (verbatim
+           port); the only deliberate change is dropping v1's local
+           try/catch-swallow-to-empty-list in favour of api2's shared
+           ed2_respond()/outer-catch convention (every other case in this
+           file follows that pattern — a DB error surfaces as a real 500
+           with error_detail for admins, rather than a silent empty list
+           that looks like "no matches" to the curator). ---- */
+    case 'user_search': {
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(20, (int)($_GET['limit'] ?? 10)));
+        if ($q === '') { ed2_respond(['ok' => true, 'suggestions' => []]); }
+        $like = '%' . $q . '%';
+        $stmt = $db->prepare(
+            'SELECT Id, DisplayName, Username, Role
+               FROM tblUsers
+              WHERE DisplayName LIKE ? OR Username LIKE ?
+              ORDER BY DisplayName ASC
+              LIMIT ?'
+        );
+        $stmt->bind_param('ssi', $like, $like, $limit);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'id'    => (int)$row['Id'],
+                'label' => $row['DisplayName'] ?: $row['Username'],
+                'hint'  => '@' . $row['Username'] . ' · ' . $row['Role'],
+            ];
+        }
+        $stmt->close();
+        ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
+    }
+
+    /* ---- org_search (GET) — live-search organisations by name/slug (#498;
+           ported into api2 by #1629 alongside user_search — same picker,
+           same reasoning, same gate parity). The "organisation" source in
+           renderEntityPicker.js's Content Restrictions picker.
+
+           ELI5: same idea as user_search above, but for choosing an
+           organisation instead of a user.
+
+           DETAIL: an empty q still returns a page of active orgs (browse
+           mode) instead of nothing — mirrors v1's behaviour so opening the
+           picker with no query yet shows choices rather than an empty
+           panel. Query + bind_param sequence unchanged from v1; same
+           ed2_respond()/outer-catch adaptation noted above user_search. ---- */
+    case 'org_search': {
+        $q     = trim((string)($_GET['q'] ?? ''));
+        $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+        if ($q === '') {
+            $stmt = $db->prepare(
+                'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                  WHERE IsActive = 1
+                  ORDER BY Name ASC
+                  LIMIT ?'
+            );
+            $stmt->bind_param('i', $limit);
+        } else {
+            $like = '%' . $q . '%';
+            $stmt = $db->prepare(
+                'SELECT Id, Name, Slug, LicenceType FROM tblOrganisations
+                  WHERE IsActive = 1 AND (Name LIKE ? OR Slug LIKE ?)
+                  ORDER BY Name ASC
+                  LIMIT ?'
+            );
+            $stmt->bind_param('ssi', $like, $like, $limit);
+        }
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $suggestions = [];
+        while ($row = $res->fetch_assoc()) {
+            $suggestions[] = [
+                'id'    => (int)$row['Id'],
+                'label' => $row['Name'],
+                'hint'  => 'licence: ' . ($row['LicenceType'] ?: 'none') . ' · slug: ' . $row['Slug'],
             ];
         }
         $stmt->close();

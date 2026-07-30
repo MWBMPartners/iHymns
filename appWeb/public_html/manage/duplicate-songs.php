@@ -32,6 +32,10 @@ declare(strict_types=1);
  *     survivor, then deletes the duplicate. Irreversible. Same-official-songbook
  *     pairs require force=1 (the §2 guard, #1218).
  *   - link    (edit_songs) — write tblSongLinks counterpart group (#1219).
+ *   - unlink  (edit_songs) — remove ONE song from its tblSongLinks group,
+ *     cleaning up an orphaned singleton (#1629 — the editor's link CRUD
+ *     had no home outside the editor before this; retiring v1 api.php
+ *     would have made links append-only without it).
  *   - dismiss (edit_songs) — write tblSongLinkSuggestionsDismissed (#1219).
  *   - rebuild (edit_songs) — re-run the fuzzy suggestion builder (#1219).
  *
@@ -300,10 +304,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $lk->close();
 
             /* Mirror the editor add_song_link invariant: 0 groups → mint; 1 → join;
-               ≥2 distinct → refuse (the curator must unlink one first). */
+               ≥2 distinct → refuse (the curator must unlink one first).
+
+               #1629: this used to say "Unlink one in the editor first" —
+               the editor's own link CRUD (v1 api.php:475/552/689,
+               editor.js:3176-3459) is retiring with the rest of v1, which
+               would have turned this into a dead end pointing at a page
+               that won't exist. The `unlink` action below (this same
+               dispatcher, same page) is that home now, so the message
+               points at the button next to each linked row instead. */
             if (count($groups) >= 2) {
                 http_response_code(409);
-                echo json_encode(['error' => 'These songs are already in different counterpart groups. Unlink one in the editor first.']);
+                echo json_encode(['error' => 'These songs are already in different counterpart groups. Click "Unlink" next to one of them below, then Link again.']);
                 exit;
             }
             $createdBy = (int)($currentUser['id'] ?? 0) ?: null;
@@ -355,6 +367,92 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             try { $db->rollback(); } catch (\Throwable $_) {}
             http_response_code(500);
             echo json_encode(['error' => 'Link failed: ' . $e->getMessage()]);
+            exit;
+        }
+    }
+
+    /* -------- unlink (curator) — remove ONE song from its existing
+       counterpart group (#1629).
+       ELI5: takes one song out of its "these are the same hymn" group so
+       it's free to join a different group.
+
+       WHY THIS EXISTS: nothing outside the editor could remove a
+       tblSongLinks row — the `link` action above refuses to combine two
+       songs that are already in DIFFERENT groups with the 409 above, and
+       until now the only way to clear that conflict was the editor's
+       remove_song_link (v1 api.php:692, editor.js:3176-3459). Retiring v1
+       (the v2 editor cutover, #1601) would have made counterpart links
+       APPEND-ONLY with no way to fix a bad link short of a DB console —
+       so this ports the same delete-then-singleton-cleanup logic here,
+       the one place left that needs it. This also resolves #1608: the
+       editor's inline suggestions panel can retire only once unlink has
+       another home, and this is that home.
+
+       Entitlement: edit_songs — the SAME gate as link/dismiss above (the
+       page-level check at the top of this file), deliberately NOT
+       manage_duplicate_songs. Unlinking doesn't delete a song or lose
+       data (the group row is the only thing removed, and Link can always
+       recreate it) — merge is the one irreversible, admin-only action
+       here.
+       CSRF: validateCsrfRequest() already gated this whole POST
+       dispatcher above (line ~98) — same same-origin check (rule #29),
+       never a baked $_SESSION token compared with validateCsrf() alone. */
+    if ($action === 'unlink') {
+        $songId = trim((string)($_POST['song_id'] ?? ''));
+        if ($songId === '') {
+            http_response_code(400);
+            echo json_encode(['error' => 'song_id is required.']);
+            exit;
+        }
+        try {
+            /* Resolve the row + its GroupId before deleting so we can
+               clean up an orphaned singleton in the same pass — mirrors
+               v1's remove_song_link (api.php:692) exactly. */
+            $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE SongId = ?');
+            $stmt->bind_param('s', $songId);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$row) {
+                /* Already not linked — success, not an error, so a
+                   double-click (or a stale page) doesn't surface a
+                   spurious failure. Same choice v1 made. */
+                echo json_encode(['success' => true, 'deleted' => 0]);
+                exit;
+            }
+
+            $groupId = (int)$row['GroupId'];
+            $rowId   = (int)$row['Id'];
+
+            $del = $db->prepare('DELETE FROM tblSongLinks WHERE Id = ?');
+            $del->bind_param('i', $rowId);
+            $del->execute();
+            $deleted = $del->affected_rows;
+            $del->close();
+
+            /* A group with fewer than two members left is meaningless —
+               drop the remainder too (same rule the editor enforced). */
+            $r = $db->prepare('SELECT COUNT(*) AS n FROM tblSongLinks WHERE GroupId = ?');
+            $r->bind_param('i', $groupId);
+            $r->execute();
+            $remaining = (int)$r->get_result()->fetch_assoc()['n'];
+            $r->close();
+            if ($remaining < 2) {
+                $cleanup = $db->prepare('DELETE FROM tblSongLinks WHERE GroupId = ?');
+                $cleanup->bind_param('i', $groupId);
+                $cleanup->execute();
+                $cleanup->close();
+            }
+
+            if (function_exists('logActivity')) {
+                try { logActivity('song.unlink', 'song', $songId, ['group' => $groupId]); }
+                catch (\Throwable $_e) {}
+            }
+            echo json_encode(['success' => true, 'deleted' => $deleted]);
+            exit;
+        } catch (\Throwable $e) {
+            http_response_code(500);
+            echo json_encode(['error' => 'Unlink failed: ' . $e->getMessage()]);
             exit;
         }
     }
@@ -888,7 +986,7 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
 
     <?php
     /* ---- Unified cluster renderer. ---- */
-    $renderCluster = function (array $cl, string $section) use ($songs, $songLabel, $confClass, $signalChips, $lyricsCount, $canMerge): void {
+    $renderCluster = function (array $cl, string $section) use ($songs, $songLabel, $confClass, $signalChips, $lyricsCount, $canMerge, $groupOf): void {
         $members = $cl['members'];
         $best    = $cl['best'];
         $pct     = (int)round($best['score'] * 100);
@@ -936,6 +1034,19 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             echo '<td data-col-priority="primary"><a href="/manage/editor/?song=' . urlencode($sid) . '" target="_blank" rel="noopener">' . $songLabel($s) . '</a>';
             if ($isDistinct) {
                 echo ' <span class="badge bg-warning text-dark" title="Another song shares this title in the same official songbook — probably a different hymn">distinct?</span>';
+            }
+            /* #1629 — this song is already a member of an existing
+               tblSongLinks group. Surface it + offer Unlink right here,
+               since that existing membership is exactly what makes Link
+               refuse to combine this cluster when another member sits in
+               a DIFFERENT group (the 409 above). */
+            $existingGroup = $groupOf[$sid] ?? 0;
+            if ($existingGroup > 0) {
+                echo ' <span class="badge bg-info-subtle text-info-emphasis" title="Already linked as a counterpart, group #' . $existingGroup . '">linked</span>'
+                   . ' <button type="button" class="btn btn-sm btn-outline-secondary dup-unlink-btn py-0 px-1" '
+                   . 'data-song-id="' . htmlspecialchars($sid, ENT_QUOTES) . '" '
+                   . 'title="Remove this song from counterpart group #' . $existingGroup . ' so it can join a different one">'
+                   . '<i class="bi bi-x-circle"></i> Unlink</button>';
             }
             echo '</td>';
             echo '<td data-col-priority="secondary">' . ((int)$s['Verified'] === 1 ? '<span class="badge bg-success">verified</span>' : '<span class="badge bg-warning text-dark">unverified</span>') . '</td>';
@@ -1080,6 +1191,29 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 toast('Linked ' + ids.length + ' songs as counterparts.', true);
                 var card = btn.closest('.dup-cluster'); if (card) { card.remove(); }
             }).catch(function (e) { btn.disabled = false; toast(e.message || 'Link failed.', false); });
+        });
+    });
+
+    /* Unlink ONE song from its existing counterpart group (#1629) — the
+       button next to a row already tagged "linked". This is what the
+       409 error above (from .dup-link-btn) now points curators at,
+       replacing the dead-end "in the editor" message. Reloads on
+       success rather than removing just the card, because freeing a
+       song from its old group can change which OTHER clusters are
+       eligible to link (a cluster is filtered out server-side only
+       while ALL its members share one group — see the $groups check
+       above the render pass) — a full reload keeps that in sync rather
+       than the page silently going stale. */
+    document.querySelectorAll('.dup-unlink-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+            var songId = btn.dataset.songId;
+            if (!songId) return;
+            if (!confirm('Remove ' + songId + ' from its existing counterpart group?')) return;
+            btn.disabled = true;
+            postAction({ action: 'unlink', song_id: songId }).then(function () {
+                toast('Unlinked ' + songId + '. Reloading…', true);
+                setTimeout(function () { location.reload(); }, 700);
+            }).catch(function (e) { btn.disabled = false; toast(e.message || 'Unlink failed.', false); });
         });
     });
 
