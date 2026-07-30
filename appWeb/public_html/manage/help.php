@@ -621,7 +621,7 @@ foreach ($sections as $s) {
                         <dd>Read-only render of the finished song as users will see it.</dd>
                         <dt>Revisions</dt>
                         <dd>
-                            Every previous edit to this song, newest first, with a diff and a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way; if you land somewhere unexpected, restore again to step further.
+                            Every previous edit to this song, newest first, showing what kind of change it was, when, and by whom, with a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. There is no side-by-side comparison here yet, so if you are unsure which row you want, restore the most likely one and check the song: Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way and you can step again from wherever you land.
                         </dd>
                     </dl>
                     <h3 class="h6">Saving, importing, exporting</h3>
@@ -737,7 +737,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, showing the diff and a Restore button.</li>
+                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, listing every previous edit with a Restore button on each.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
