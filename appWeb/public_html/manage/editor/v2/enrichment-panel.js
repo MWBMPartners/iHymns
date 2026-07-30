@@ -178,13 +178,18 @@ function smallBtn(label, onClick) {
     return b;
 }
 
-/** True when an api-client Error's message names the #1088 tables as
- *  un-migrated (api2.php's 409 branches all use this exact wording) — the
- *  signal enrichment-panel.js uses to show a calm "not available on this
- *  install yet" notice instead of a red failure toast (task instructions:
- *  "handle that as feature unavailable, not as an error toast storm"). */
+/** True when the #1088 enrichment tables are un-migrated on this install — the
+ *  signal for a calm "not available here yet" notice instead of a red failure
+ *  toast.
+ *
+ *  Branches on the HTTP status, not the server's wording. This originally
+ *  matched /not migrated/i because unwrap() discarded `res.status`; it now
+ *  attaches it (see the note in api-client.js), so this reads the endpoint's
+ *  documented contract rather than a sentence somebody is free to reword.
+ *  Rewording a server string used to silently downgrade this to a generic red
+ *  toast, with nothing failing anywhere to say so. */
 function isEnrichmentUnmigrated(err) {
-    return /not migrated/i.test((err && err.message) || '');
+    return !!err && err.status === 409;
 }
 
 /**

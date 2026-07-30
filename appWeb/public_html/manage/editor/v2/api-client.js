@@ -21,13 +21,36 @@ function csrfToken() {
     return m ? (m.getAttribute('content') || '') : '';
 }
 
-/** Normalise a fetch Response into the server payload or throw. */
+/**
+ * Normalise a fetch Response into the server payload or throw.
+ *
+ * ELI5: on failure this throws an error that also remembers the HTTP status
+ * number, so a caller can tell "the migration hasn't run" (409) from "this song
+ * has empty sections" (422) without reading the sentence the server wrote.
+ *
+ * Detail: this used to throw a bare `new Error(msg)`, discarding `res.status`.
+ * Callers that need to distinguish failure KINDS were left with only one thing
+ * to branch on — the server's prose — so arrangement-editor.js matched
+ * /migration has not been run/i and /empty sections/i, with a comment admitting
+ * "if that wording ever changes, update these two together".
+ *
+ * That is the failure class this codebase keeps rediscovering: two things that
+ * must agree, with a comment where a mechanism should be. Reword a server error
+ * and the client's explanatory UI silently degrades to a generic toast — no
+ * exception, no test failure, just a worse experience nobody notices.
+ *
+ * `status` is attached as an own property rather than by subclassing Error,
+ * because every existing `catch (e) { toast(e.message) }` keeps working
+ * unchanged; only callers that WANT the status have to know about it.
+ */
 async function unwrap(res) {
     let data = null;
     try { data = await res.json(); } catch (_e) { /* non-JSON body */ }
     if (!res.ok || !data || data.ok !== true) {
         const msg = (data && (data.error_detail || data.error)) || ('HTTP ' + res.status);
-        throw new Error(msg);
+        const err = new Error(msg);
+        err.status = res.status;
+        throw err;
     }
     return data;
 }

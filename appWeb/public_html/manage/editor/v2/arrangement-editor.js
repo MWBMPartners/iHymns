@@ -172,17 +172,29 @@ function presetLabel(name) {
     return name.replace(/-/g, ' ').replace(/^\w/, (c) => c.toUpperCase());
 }
 
-/* ---- error-message pattern matching, same technique enrichment-panel.js
-   uses for its own 409 (isEnrichmentUnmigrated) — postJson()'s unwrap()
-   throws an Error whose message IS the server's `error` string, with no
-   status code attached, so this is the only signal available client-side.
-   Matched against api2.php's exact wording (case 'arrangement_update'
-   above) — if that wording ever changes, update these two together. */
+/* ---- failure KIND, from the HTTP status.
+ *
+ * ELI5: 409 means "this install hasn't run the migration yet"; 422 means "this
+ * song has empty sections". Both get a calm explanation instead of an error
+ * toast, so we need to tell them apart.
+ *
+ * Detail: this originally matched the server's PROSE
+ * (/migration has not been run/i, /empty sections/i) because unwrap() discarded
+ * res.status — and carried a comment saying "if that wording ever changes,
+ * update these two together". That is a comment where a mechanism belongs, and
+ * rewording a server string would have silently downgraded this UI to a generic
+ * toast with nothing failing anywhere.
+ *
+ * unwrap() now attaches `status` to the thrown Error, so these branch on the
+ * contract (the status code, which is part of the endpoint's documented
+ * interface) rather than on a sentence that is free to change. Numbers are
+ * asserted against api2.php's actual ed2_respond(..., NNN) calls by
+ * tests/test-v2-arrangement-ui.js. */
 function isMigrationMissing(err) {
-    return /migration has not been run/i.test((err && err.message) || '');
+    return !!err && err.status === 409;
 }
 function isEmptySections(err) {
-    return /empty sections/i.test((err && err.message) || '');
+    return !!err && err.status === 422;
 }
 
 /* Same small per-file helper structure-tab.js and media-tab.js already

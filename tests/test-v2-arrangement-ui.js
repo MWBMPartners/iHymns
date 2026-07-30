@@ -145,6 +145,54 @@ check("attemptSet()'s store write never uses the local `arr` parameter as the Ar
 check('attemptSet() only writes to the store inside the try (success) branch, never inside catch (failure)',
     !/catch \(e\) \{[\s\S]*store\.update/.test(attemptSetBody));
 
+/* ---- failure kinds come from the STATUS, not the server's prose ----------
+ *
+ * The 409 (migration not run) and 422 (empty sections) branches drive calm
+ * explanatory UI instead of a red toast, so the client has to tell them apart.
+ * It originally did that by matching the server's SENTENCES — with a comment
+ * conceding "if that wording ever changes, update these two together".
+ *
+ * That is a comment where a mechanism belongs, and it fails in the quietest
+ * possible way: reword a server error, and the explanatory UI silently
+ * degrades to a generic toast. Nothing throws, no test goes red, the feature
+ * still "works". Same family as #1581's dispatch/listen mismatch.
+ *
+ * So unwrap() now attaches `status` to the thrown Error, the client branches on
+ * the status code (part of the endpoint's documented contract), and the numbers
+ * are tied HERE to what api2.php's arrangement_update case actually responds
+ * with. Both sides derived from source.
+ */
+check('api-client unwrap() attaches the HTTP status to the thrown Error '
+    + '(without it, callers can only branch on prose)',
+    /err\.status\s*=\s*res\.status/.test(client));
+
+/* Pull the arrangement_update case body out of api2.php and collect the status
+   codes it actually responds with. */
+const caseStart = api.indexOf("case 'arrangement_update'");
+const caseBody = caseStart === -1 ? '' : api.slice(caseStart, caseStart + 4000);
+const serverCodes = new Set(
+    [...caseBody.matchAll(/ed2_respond\([\s\S]*?,\s*(\d{3})\s*\)/g)].map((m) => m[1])
+);
+
+check('api2.php arrangement_update was located and responds with status codes',
+    caseBody !== '' && serverCodes.size > 0);
+
+for (const [code, what] of [['409', 'migration not run'], ['422', 'empty sections']]) {
+    check(`api2.php arrangement_update still responds ${code} (${what})`,
+        serverCodes.has(code));
+    check(`arrangement-editor.js branches on status ${code}, not on the server's wording`,
+        new RegExp(`status\\s*===\\s*${code}`).test(arr));
+}
+
+/* Deliberately narrow: it looks for the pattern-MATCHING construct
+   (`/…prose…/.test(`), not for the phrases themselves. The explanatory UI
+   legitimately SAYS "empty sections" to the curator — that copy is the whole
+   point of the 422 branch. A blunter check confusing user-facing copy with a
+   regex against server prose fails on correct code, which is how a guard gets
+   weakened or deleted rather than fixed. */
+check('arrangement-editor.js does not regex-match the server error prose to decide failure kind',
+    !/\/[^/\n]*(?:migration has not been run|empty sections)[^/\n]*\/[a-z]*\s*\.test\s*\(/i.test(arr));
+
 /* ---------------------------------------------------------------------- */
 
 console.log(`\n${passed} passed, ${failed} failed`);
