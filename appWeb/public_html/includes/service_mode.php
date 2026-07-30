@@ -911,13 +911,29 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                the #640 row's number, falling back to the legacy column when the
                #640 row left it blank.
 
-               Deliberately NO `o.IsActive = 1`: the legacy query below never had
-               it, and adding it only on this arm would make the same org unlock
-               or not depending on which store its licence happens to sit in.
-               Whether a DEACTIVATED org should keep unlocking Phase-3 content is
-               a real question — but it is a behaviour change to the EXISTING
-               path, not part of the store consolidation, so it is left alone
-               here rather than smuggled in under #1668. */
+               `o.IsActive = 1` is on BOTH arms — owner decision, 2026-07-30:
+
+                 "An inactive organisation, that has [a] CCLI license assigned to
+                  it, should not unlock for users associated with that org,
+                  seeing as the org is inactive/closed/siezed."
+
+               ELI5: if the church has closed, its licence stops letting its
+               people through.
+
+               Detail: this was briefly left off both arms because the legacy
+               query never had it and putting it on one arm only would make the
+               same org unlock or not DEPENDING ON WHICH STORE its licence
+               happened to sit in — undebuggable from an operator's seat. The
+               answer was to add it to both, not to omit it from both. That also
+               makes this agree with the main resolver, which already filters
+               `o.IsActive = 1` in branches (e) and (f) of licences.php — so
+               Service Mode and `checkContentAccess()` can no longer disagree
+               about the same organisation (rule #35).
+
+               A congregant of a closed org is NOT stranded: the resolver still
+               unions a personal CCLI number, a licence from any OTHER active org
+               they belong to, and any tier that does not gate copyrighted
+               content behind CCLI at all. */
             $sql =
                 "SELECT COALESCE(NULLIF(ol.LicenceNumber, ''), o.LicenceNumber) AS LicenceNumber
                    FROM tblServicePresence p
@@ -933,6 +949,7 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                     AND p.ExpiresAt > UTC_TIMESTAMP()
                     AND p.Channel = ?
                     AND s.IsActive = 1
+                    AND o.IsActive = 1
                     AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
                     AND (
                           ol.Id IS NOT NULL
@@ -941,7 +958,10 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                         )
                   LIMIT 1";
         } else {
-            /* Pre-#640 install — the legacy-only query, unchanged. */
+            /* Pre-#640 install — the legacy-only query. Carries the SAME
+               `o.IsActive = 1` as the arm above (owner decision above): the
+               whole point of that decision is that an org's liveness, not the
+               store its licence sits in, determines whether it unlocks. */
             $sql =
                 "SELECT o.LicenceNumber
                    FROM tblServicePresence p
@@ -952,6 +972,7 @@ function serviceMode_presenceCcliNumber(\mysqli $db, string $presenceToken, stri
                     AND p.ExpiresAt > UTC_TIMESTAMP()
                     AND p.Channel = ?
                     AND s.IsActive = 1
+                    AND o.IsActive = 1
                     AND s.LastHeartbeatAt > DATE_SUB(UTC_TIMESTAMP(), INTERVAL {$freshness} SECOND)
                     AND o.LicenceType = 'ccli'
                     AND (o.LicenceExpiresAt IS NULL OR o.LicenceExpiresAt > NOW())
