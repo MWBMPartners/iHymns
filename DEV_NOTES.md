@@ -1170,9 +1170,17 @@ crucially — **never go stale**. State-changing AJAX endpoints call this instea
 - A **top-level POST gate on ALL legacy `/manage/editor/api.php` writes** — every
   state-changing POST must pass `validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)`
   or it 403s; GET reads are unaffected. The editor clients already send `X-Requested-With`.
-- The **v2 editor `api2.php`** uses the same same-origin signal directly
-  (`X-Requested-With: XMLHttpRequest` required on every POST) — which is why `save_song`
-  over there always worked, and the model #1289 ("Here to Stay" 403s) generalised.
+- The **v2 editor `api2.php`** requires this same same-origin signal directly
+  (`X-Requested-With: XMLHttpRequest` on every POST) — which is why `save_song` called
+  from the **legacy** editor's client (`editor.js`'s `ed2EnrichApi`, which already sent
+  it) always worked, and the model #1289 ("Here to Stay" 403s) generalised. **The v2
+  editor SHELL's own client did not send it** — until #1677 (P0, fixed 2026-07-30),
+  neither write helper in `manage/editor/v2/api-client.js` carried the header, so every
+  mutation from the v2 UI (save, create, delete, component writes, bulk actions,
+  revision restore, the enrichment endpoints) 403'd while reads (GETs) worked fine.
+  Fixed client-side, not by loosening the gate; `tests/php/test-editor-api2-contract.php`
+  now derives both the client's header usage and its action list from source so this
+  can't regress silently.
 
 ---
 
@@ -1208,7 +1216,7 @@ save.
 | Route | Purpose | Entitlement |
 | --- | --- | --- |
 | `/manage/` | Dashboard (library + activity stats) | `view_admin_dashboard` |
-| `/manage/editor/` | Song editor | `edit_songs` |
+| `/manage/editor/` | Song editor — 302-redirects to the v2 editor by default (#1601); `?legacy=1` per-visit or `tblAppSettings.editor_v2_default='0'` fleet-wide reverts to the legacy v1 editor, which is not retired | `edit_songs` |
 | `/manage/duplicate-songs` | Duplicate & counterpart detection / cross-book linking / merge (absorbed the old `/manage/song-link-suggestions`, now a 302) | `edit_songs` (Merge = `manage_duplicate_songs`) |
 | `/manage/works` | Works (composition grouping across songbooks) | `edit_songs` |
 | `/manage/external-link-types` | External-link provider registry + URL patterns | `manage_songbooks` |

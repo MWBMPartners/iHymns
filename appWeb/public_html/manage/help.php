@@ -555,6 +555,18 @@ foreach ($sections as $s) {
                         nothing materialises the entire corpus in your browser. Edit one
                         song or many at once and save straight back to MySQL.
                     </p>
+                    <div class="alert alert-info small mb-3">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>This is the redesigned Song Editor</strong> &mdash; it's
+                        now what opens by default. Every save applies the moment you make
+                        it, rather than waiting for one big "Save" at the end, and this
+                        page describes it throughout, including the Chords box and the
+                        Arrangement editor covered below. If you ever need the previous
+                        editor &mdash; for example to compare behaviour while you get used
+                        to the new one &mdash; add <code>?legacy=1</code> to the Song
+                        Editor's web address. It isn't going away yet, but it's no longer
+                        the one you land on by default.
+                    </div>
                     <h3 class="h6">Working with the catalogue</h3>
                     <ul>
                         <li><strong>Filter</strong> by songbook, search by title, or
@@ -566,7 +578,7 @@ foreach ($sections as $s) {
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
                             (verify, tag, move to another songbook, export, delete).</li>
                     </ul>
-                    <h3 class="h6">The seven tabs</h3>
+                    <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
                         <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
@@ -577,7 +589,13 @@ foreach ($sections as $s) {
                                 <strong>Paste &amp; Reflow</strong> (#1043) — the <em>Paste &amp; Reflow</em> button opens a modal where you paste a whole lyrics block; it auto-splits the text into classified sections (verse / chorus / bridge…) ProPresenter-style, and <strong>Apply</strong> turns them into components in one go — far quicker than adding each section by hand.
                             </p>
                             <p class="mb-2">
+                                <strong>Chords</strong> — each section has a collapsible Chords box (it opens automatically once a section already has chords). Enter one line of chord symbols per lyric line, in reading order (e.g. <code>G  Em  C  D</code>); leave a section's box empty if it has none. Chords carry through to chord-chart export formats like ChordPro.
+                            </p>
+                            <p class="mb-2">
                                 <strong>Per-line language, translations &amp; annotations</strong> (#1088 / #1235) — expand the per-line panel under the section to attach, line by line, a <em>translation</em> or <em>transliteration</em> (romanization) of a lyric line and Genius-style <em>annotations</em> (explanation / reference / scripture / history / trivia). These anchor to the individual lyric line, not the section's text blob, and are saved as you add them (save the song first so each line has an ID).
+                            </p>
+                            <p class="mb-2">
+                                <strong>Arrangement</strong> — below the section list, the Arrangement panel sets the song's actual running order for playback and export: which sections play, in what sequence, and how many times each repeats (e.g. Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus). Add sections from the pool and reorder them with the move-left/move-right buttons, or start from a quick-action preset ("Verses only", "Chorus after each verse", …) and adjust from there. Leaving it empty plays the sections in the order they're listed above.
                             </p>
                             <details class="mt-2">
                                 <summary class="small text-muted" style="cursor: pointer;">Verse-1-acts-as-chorus convention (e.g. SDAH-93 "All Things Bright and Beautiful")</summary>
@@ -600,15 +618,19 @@ foreach ($sections as $s) {
                         <dt>Media</dt>
                         <dd>Accompanying files for the song (#853) — audio recordings, sheet-music PDFs, MIDI sequences and MusicXML notation. Files inherit the song's content-access rules, so a gated song gates its media automatically. Audio is stored on disk and served via the gated <code>/song-media/&lt;id&gt;</code> route; sheet music / MIDI / MusicXML live in the database.</dd>
                         <dt>Preview</dt>
-                        <dd>Read-only render of the finished song as users will see it. Always check this before saving.</dd>
+                        <dd>Read-only render of the finished song as users will see it.</dd>
+                        <dt>Revisions</dt>
+                        <dd>
+                            Every previous edit to this song, newest first, with a diff and a <strong>Restore</strong> button on each row. <strong>Restore puts the song back to the state that row's edit left it in</strong> (i.e. it re-applies that historical change) &mdash; if you're used to the previous editor, note this lands one step further forward than its Restore did, which undid the change instead. Restore always creates a new revision rather than rewriting history, so nothing is destroyed either way; if you land somewhere unexpected, restore again to step further.
+                        </dd>
                     </dl>
                     <h3 class="h6">Saving, importing, exporting</h3>
                     <ul>
-                        <li><strong>Save</strong> writes everything to the database. Auto-save runs in the background while you work, but always click Save before navigating away.</li>
+                        <li><strong>Save</strong> happens automatically as you go &mdash; each change saves itself the moment you make it (a few fields debounce briefly), so there's no single Save button and nothing to lose by navigating away.</li>
                         <li><strong>Validate</strong> runs every song past a quality check (missing required fields, invalid language tags, orphaned references) and lists any problems.</li>
                         <li><strong>Import</strong> from JSON or CSV — small, single-file. For mass onboarding (e.g. a complete new hymnal), see the <strong>Bulk Import ZIP</strong> section below.</li>
                         <li><strong>Export</strong> the current view as JSON or CSV.</li>
-                        <li><strong>Revisions</strong> for the selected song shows a diff of every previous edit and a Restore button.</li>
+                        <li><strong>Revisions</strong> is now its own tab (see above) rather than a separate history button.</li>
                     </ul>
                     <h3 class="h6">Bulk Import ZIP (#664 / #676 / #882)</h3>
                     <p>
@@ -715,7 +737,7 @@ foreach ($sections as $s) {
                     <h3 class="h6">Key actions</h3>
                     <ul>
                         <li>Filter by user, song ID (partial match works), action (create / edit / restore / delete), and time range (7 / 30 / 90 / 365 days).</li>
-                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the History modal already open, showing the diff and a Restore button.</li>
+                        <li>Click <strong>Open in editor</strong> on a row to jump straight into that song with the Revisions tab already open, showing the diff and a Restore button.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.

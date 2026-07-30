@@ -6,7 +6,7 @@
 > `project-rules.md` (detailed rules), and `sessions/<date>-HANDOFF.md` (session history).
 > When something here goes stale, fix it **here and in the file it mirrors**.
 
-_Last updated: 2026-07-29._
+_Last updated: 2026-07-30._
 
 ## Where things stand
 - **Version:** `0.4001.0` (alpha, Phase 1) — authoritative source is `includes/infoAppVer.php`
@@ -27,13 +27,20 @@ _Last updated: 2026-07-29._
   (`getSongsSlimIndex` / `getSongs($abbr)` / `getSongById`); a DB outage is a themed 503, never stale.
 - **The consolidation LANDED (2026-07-28):** PR #1585 merged to alpha as squash **`887bcd2f`** (98
   commits, 228 files); the version bump followed in **`bad5ca4f`** (PR #1592). Both `claude/*`
-  branches are deleted — the remote is just `alpha`, `beta`, `main`, `archive/alpha`.
-- **Active branch:** **`claude/sotd-language-filter-typeahead-a11y`** — its two founding bugs,
-  #1593 (Song of the Day vanishes with >1 language selected) and #1594 (location typeahead was
-  mouse-only), both landed early and it has since carried a long tail of further work, most recently
-  **wave 2**: #1388 (pre-gating hardening), #1031 (deleted the `window.fetch` monkey-patch), #1533
-  (setlist playback) + #1623 (Revisions Audit link fix), #1619/#1620 (cleanup). See "Recent landings"
-  below — do not assume the branch name still describes its current scope.
+  branches were deleted at that point — since then, `claude/sotd-language-filter-typeahead-a11y`
+  (wave 2) has been created and merged, and `claude/wave3-fixes` (wave 3, active, not yet merged)
+  followed it; see below.
+- **Wave 2's branch merged:** `claude/sotd-language-filter-typeahead-a11y` squashed to alpha as
+  **`bc0eb52e`** (PR #1651, "Security fixes, data-loss fixes, and the behaviour-audit programme",
+  56 commits). Its two founding bugs, #1593 (Song of the Day vanishes with >1 language selected) and
+  #1594 (location typeahead was mouse-only), both landed early, and it carried a long tail of further
+  work — #1388 (pre-gating hardening), #1031 (deleted the `window.fetch` monkey-patch), #1533
+  (setlist playback) + #1623 (Revisions Audit link fix), #1619/#1620 (cleanup), and more. See "Recent
+  landings" below.
+- **Active branch: `claude/wave3-fixes`** (off `bc0eb52e`), 56 commits — headline: epic **#1601**
+  scope item 2, `/manage/editor/` now 302-redirects to the **v2 Song Editor** by default (`?legacy=1`
+  or `tblAppSettings.editor_v2_default='0'` reverts to v1, which is deliberately NOT retired). See
+  "Recent landings — wave 3" below; do not assume any branch name above still describes HEAD.
 - **Verified counts** (re-derived 2026-07-28 — most docs disagreed with all of these): **142** tables
   in `schema.sql`; **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
   **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
@@ -95,7 +102,57 @@ _Last updated: 2026-07-29._
   a month after #1010 removed it. **Never cite a count from another document** — re-derive it from
   `schema.sql` / `admin-links.php` / `ls .github/workflows/`, or de-version the sentence entirely.
 
-## Recent landings (2026-07-29 — wave 2, on `claude/sotd-language-filter-typeahead-a11y`, NOT yet on alpha)
+## Recent landings (2026-07-29/30 — wave 3, on `claude/wave3-fixes`, off `bc0eb52e`, NOT yet on alpha)
+- **Epic #1601 scope item 2 — `/manage/editor/` now serves the v2 Song Editor by default.**
+  `manage/editor/index.php` is a 302 redirect to the v2 shell, forwarding the query string, so all six
+  places linking into the editor with URL instructions (nav, dashboard card, Revisions "Open in
+  editor", Missing Numbers prefill, Duplicate Songs, the public song page's Edit button) land on v2
+  without their own change. 302 not 301 — stays reversible server-side. Two escape hatches: `?legacy=1`
+  per-visit, `tblAppSettings.editor_v2_default='0'` fleet-wide (absent key means v2). **v1 is NOT
+  retired** (scope item 3) — nothing here was runtime-verified (no MySQL, no browser in this
+  container) and retirement needs cross-branch coordination (beta/main share the one MySQL, a month
+  behind on unrelated history).
+- **#1677, P0 — every v2 write returned 403 until this fixed it.** `api2.php` requires
+  `X-Requested-With: XMLHttpRequest` on every POST; the v2 shell's own client sent it on reads only,
+  never on either write helper — so save/create/delete/component writes/bulk actions/revision
+  restore/enrichment all 403'd from the v2 UI while browsing (GETs) worked fine. Fixed client-side.
+  `tests/php/test-editor-api2-contract.php` derives both sides from source.
+- **#1627 — v2 gains a chords box, an Arrangement (running-order) editor, and per-line
+  translation/annotation panels.** New `arrangement_update` api2 action + shared
+  `includes/arrangement.php` validator (used by both the writer and the #1618 cutover-gate auditor).
+  Arrangement UI uses move-left/move-right buttons, not drag — sidesteps another unpinned SortableJS
+  CDN load and fixes the same keyboard/touch gaps #1644 closed elsewhere. Per-line enrichment needed a
+  `lineIds` field the editor read shape had been silently dropping (rule #21 — anchors on
+  `tblLyricLines.Id`, never a `LinesJson` index).
+- **#1628 / #1680 — v2 gains `?tab=`/`?songbook=`/`#number=`/`?open=` deep links, the sidebar
+  songbook filter + 3-way sort, `bulk_tag_detach`, and the export lines-per-slide setting.** The deep
+  links are the THIRD instance of the same shape (#1623 → #1628 → #1680) — a param another page emits
+  that the destination doesn't read is silent, so grep for callers before changing what a route serves
+  (see rule #33 in CLAUDE.md, added this wave).
+- **#1629 — de-orphan four v1 `api.php` consumers ahead of retirement** (Content Restrictions'
+  `user_search`/`org_search`, the admin Songbooks bundle-export button, the bulk-import progress
+  poller's stale-job fallback, and a new `unlink` action on `/manage/duplicate-songs`).
+- **#1676 — one shared emitter for Bootstrap CDN tags.** `includes/bootstrap_assets.php`; four pages
+  (incl. the v2 editor's own bespoke `<head>`) had drifted to three pinned versions, two with no SRI.
+- **#1638 — setlist collaboration finished end-to-end.** Notifications, a "Shared with me" list, and
+  actually-enforced view/edit permission (it had shipped write-only and decorative).
+- **#1649 — cross-device sync data-loss fixes.** Capped per-user syncs (set lists/favourites/custom
+  tags) no longer delete rows only absent because of the cap; a `since` watermark stops an older
+  device deleting another device's newer, unseen writes.
+- **#1643–#1648, #1665 — accessibility + security sweep.** High-contrast/CVD modes had never been
+  styled anywhere under `/manage` (the CSS keyed on the right attributes but only shipped to the public
+  shell); Present mode is now a real focus-trapping dialog; Service Mode announces section changes and
+  no longer races the render on a fixed timer; sortable headers keep their `columnheader` role; SPA
+  navigation stopped reading whole pages aloud; the setlist Arrangement editor works by keyboard and
+  touch; SortableJS + the Bootstrap CDN loads gained SRI + vendored fallbacks; eight admin pages' gates
+  now match what the nav advertises.
+- **#1633 — iHymns interchange JSON importer**, additive/merge-only, writing straight to the DB.
+- **#1634 — repaired `npm run build:proto`** (stale path, missing npm script, non-deterministic output).
+- Suites: **54 PHP / 34 node**. Documentation sweep (this pass) covers CHANGELOG backfill for #1625,
+  `api-docs.yaml`, in-app help, README/DEV_NOTES/PROJECT_STATUS, ProjectBrief, this file. **The Wiki
+  (`iHymns.wiki/`) is not present in this container and could not be updated** — tracked gap.
+
+## Recent landings (2026-07-29 — wave 2, merged to alpha as `bc0eb52e` (PR #1651) — was on `claude/sotd-language-filter-typeahead-a11y`)
 - **#1388 pre-gating hardening** — eight gaps closed before `content_gating_enabled` can ever flip to
   `'1'`; every change is a verified no-op today. The load-bearing one: **payload gating is not asset
   gating**. `contentGatingApply()` strips gated fields from JSON payloads (now including
@@ -124,8 +181,9 @@ _Last updated: 2026-07-29._
   left to execute once #1572 emptied the fragment allowlist); renamed `request.js`'s exported
   `Request` class to `SongRequest` so it stops shadowing the Fetch API's global `Request` (the file
   keeps its name — it's in the service-worker precache list).
-- **Documentation sweep now underway** for this wave — in-app help (`includes/pages/help.php`,
-  `manage/help.php`), the Wiki, and these `.claude/` files.
+- **Documentation sweep for this wave landed** — in-app help (`includes/pages/help.php`,
+  `manage/help.php`) and these `.claude/` files; the CHANGELOG backfill it deferred (issue #1625)
+  landed in wave 3 above. The Wiki was not reachable from this container in either pass.
 
 ## Recent landings (2026-07-28 — originated on `claude/observability-alpha-3k9wqz`, now MERGED to alpha via the consolidation squash `887bcd2f` — see "Where things stand" above)
 - **Observability trio** — #1581 (event names live once in `js/constants.js`; `tests/test-event-names.js`
@@ -173,7 +231,7 @@ _Last updated: 2026-07-29._
 - ⛔ Un-applied Service Mode migration ⇒ **Go Live 500s for plain Live Follow too** (its INSERT names
   `Channel`). Confirm the two cards on `/manage/setup-database` before debugging anything else (#1339).
 
-## Offline download's 7 defects — FIXED (#1597, 2026-07-29, on this branch, not yet on alpha)
+## Offline download's 7 defects — FIXED (#1597, 2026-07-29, merged to alpha as `bc0eb52e`)
 All "looks alive, isn't" bugs. Worst (RC1): bulk-downloaded and recently-viewed songs shared one
 2000-entry `RECENT_CACHE` budget that trimmed oldest-first on **every song view**, so downloading a
 3,517-song book and opening one song deleted ~1,500 entries. Now separate budgets; downloads are
@@ -207,6 +265,11 @@ browser and remains owner-verified.
   had this wrong twice.
 - Swagger UI → `/manage/api-docs` (`view_api_docs` entitlement, pinned + SRI + `/vendor/` fallback,
   #1587). The spec it renders is `appWeb/public_html/api-docs.yaml` — a public docroot file.
+- Song Editor → `/manage/editor/` 302-redirects to the **v2** editor by default (epic #1601, wave 3).
+  Legacy v1 (`api.php`) is NOT retired — `?legacy=1` per-visit or `tblAppSettings.editor_v2_default='0'`
+  fleet-wide reverts to it. v2's backend is `api2.php`; every POST there needs `X-Requested-With`
+  (client-side fixed in #1677 — the API doc was correct throughout, the client wasn't). v2 Restore
+  applies a revision's snapshot (state AFTER that edit); legacy v1 Restore undid it (state BEFORE).
 - Same-origin requests → `apiFetch()`/`apiFetchJson()` in `js/utils/api-client.js` (rule #31, #1031).
   No `window.fetch` override exists anywhere in the app now; the service worker is the one deliberate
   holdout (different global scope, not user-scoped).

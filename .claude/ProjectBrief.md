@@ -4,7 +4,7 @@
 
 ---
 
-## 📌 Continuation note — 2026-07-29
+## 📌 Continuation note — 2026-07-30
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
 (dated 07-28 but still being appended to as this branch's work continues; the 2026-07-26 handoff it
@@ -27,17 +27,45 @@ fires **only on a push to `beta`**, so an `alpha` merge NEVER bumps — that is 
 under one version string and the bump had to be done by hand. Expect to repeat that after any large
 alpha batch. Any version number written into a doc rots; prefer pointing at the footer or that file.
 
-**Current WIP branch: `claude/sotd-language-filter-typeahead-a11y`** (off `bad5ca4f`) has grown well
-past its two founding bugs. Both landed early: **#1593** Song of the Day vanishing at 2+ languages
-(the fetch-patch read `input.url` on a `URL` object, got `undefined`, threw across ten unrelated
-call sites) and **#1594** the location typeahead being mouse-only (grew into consolidating all nine
-typeaheads onto one shared keyboard + ARIA combobox helper). Since then the branch has carried a long
-tail of further fixes — perf (#1598 `bulk_songs`, #1037 songbook slim-index listing), #1080 ChordPro
-inline `[chord]` markers, #1089/#1100 per-line translation toggle, #1339 Service Mode congregant join
-QR, #1572 CSP (extracted `request-a-song`'s inline module — the fragment allowlist is now **empty**),
-#1028/#1027/#1022 auth hardening, #1589 What's New fix, #1597 offline bulk-download self-destruct
-fix, and #1612/#1615/#1618 (corrected the lyrics-cutover verifier's gate count to **nine** gates —
-G1, G2, G3, G5, G6, G7, G8, G9, G10 — not ten or thirteen).
+**The `claude/sotd-language-filter-typeahead-a11y` branch has since MERGED** — squashed to `alpha` as
+**`bc0eb52e`** (PR #1651, "Security fixes, data-loss fixes, and the behaviour-audit programme", 56
+commits). It had grown well past its two founding bugs. Both landed early: **#1593** Song of the Day
+vanishing at 2+ languages (the fetch-patch read `input.url` on a `URL` object, got `undefined`, threw
+across ten unrelated call sites) and **#1594** the location typeahead being mouse-only (grew into
+consolidating all nine typeaheads onto one shared keyboard + ARIA combobox helper). It also carried a
+long tail of further fixes — perf (#1598 `bulk_songs`, #1037 songbook slim-index listing), #1080
+ChordPro inline `[chord]` markers, #1089/#1100 per-line translation toggle, #1339 Service Mode
+congregant join QR, #1572 CSP (extracted `request-a-song`'s inline module — the fragment allowlist is
+now **empty**), #1028/#1027/#1022 auth hardening, #1589 What's New fix, #1597 offline bulk-download
+self-destruct fix, and #1612/#1615/#1618 (corrected the lyrics-cutover verifier's gate count to
+**nine** gates — G1, G2, G3, G5, G6, G7, G8, G9, G10 — not ten or thirteen). CHANGELOG backfill for
+this wave's gaps landed in Wave 3 below (issue #1625).
+
+**Wave 3 (2026-07-29/30, branch `claude/wave3-fixes`, off `bc0eb52e`), 56 commits — headline:
+`/manage/editor/` now serves the v2 Song Editor.** Epic **#1601** scope item 2: `manage/editor/index.php`
+is now a 302 redirect to the v2 shell (forwarding the query string), closing every parity gap the
+#1601 audits had found — a chords box, an Arrangement (running-order) editor, and per-line
+translation/annotation panels (#1627); `?tab=`/`?songbook=`/`#number=`/`?open=` deep links, the
+sidebar songbook filter + sort, `bulk_tag_detach`, and the export lines-per-slide setting (#1628,
+#1680); four de-orphaned v1 `api.php` consumers ahead of retirement (#1629); and a **P0** fix (#1677)
+for a bug that had made every v2 write return 403 since the v2 shell first shipped — its own client
+never sent the `X-Requested-With` header api2.php requires on every POST. **v1 is deliberately NOT
+retired** (scope item 3) — nothing on this branch was runtime-verified (no MySQL, no browser exist in
+this build container) and retirement also needs cross-branch coordination (beta/main are a month
+behind on unrelated history, sharing the one MySQL instance). Two escape hatches: `?legacy=1`
+per-visit, `tblAppSettings.editor_v2_default='0'` fleet-wide (absent key means v2). Also in this wave:
+setlist collaboration finished end-to-end (notify + "Shared with me" list + enforced view/edit
+permission, #1638); cross-device sync data-loss fixes for capped set-list/favourite/custom-tag syncs
+(#1649); an accessibility + security sweep (#1643–#1648, #1665) covering high-contrast/CVD modes dead
+across all of `/manage`, a real focus-trapping Present-mode dialog, Service Mode announcements, the
+setlist Arrangement editor's keyboard/touch support, SRI + vendored fallbacks for SortableJS and the
+Bootstrap CDN loads, and eight admin pages whose gates didn't match their nav entitlement; an iHymns
+interchange JSON importer (#1633); and a `build:proto` tool repair (#1634). Suites: 54 PHP / 34 node.
+Full detail: `.claude/sessions/2026-07-28-HANDOFF.md` (still the live resume point) and
+`git log origin/alpha..HEAD` on this branch for every commit body. **Now underway:** the documentation
+sweep (CHANGELOG backfill for #1625, `api-docs.yaml`, in-app help, README/DEV_NOTES/PROJECT_STATUS,
+this file, `MEMORY.md`) for this wave — the Wiki (`iHymns.wiki/`) is **not present in this container**
+and could not be updated; that remains a tracked gap.
 
 **Wave 2 (2026-07-29, this session):** **#1388** closed eight pre-gating leaks ahead of ever flipping
 `content_gating_enabled` — the load-bearing one is the **payload-vs-asset gating** distinction:
@@ -57,8 +85,8 @@ carrying its own song order. **#1623** fixed Revisions Audit's "Open in editor" 
 **#1619/#1620** followed up: deleted the now-dead `_executeInlineScripts()` router shim (nothing left
 to execute) and renamed `js/modules/request.js`'s exported `Request` class to `SongRequest` so it
 stops shadowing the Fetch API's global `Request` (the file itself keeps its name — it's in the
-service-worker precache list). **Now underway:** the documentation sweep (in-app help, Wiki,
-`.claude/` context docs) for this wave.
+service-worker precache list). This wave's own documentation sweep landed, then Wave 3 (above)
+continued on a new branch.
 
 The 2026-07-26 caveat is **discharged**: the merged Swift compiled green on CI (`apple.yml` `build`,
 run 30365569513) before #1585 merged. The **draft-PR-until-green** procedure is still the standing
@@ -95,7 +123,7 @@ A multiplatform Christian lyrics application providing searchable hymn and worsh
   refresh, the bulk-import UX batch) has moved to the historical log at the foot of this file. The
   release line on `main` sits at 0.25.2; `main` was promoted from `beta` on 2026-05-07 (PR #896).
 - **Database**: MySQL 5.7+ (**142 tables**, tblCamelCase naming — counted from `appWeb/.sql/schema.sql`). All three subdomains (`dev.ihymns.app` = alpha, `beta.ihymns.app` = beta, `www.ihymns.app` = main) connect to a **single shared MySQL** at `mysql.MWBMpartners.ltd:3306` / DB name `ihymns` — confirmed via `/manage/setup-database` connection banner across all three. 2026-04 added songbook metadata extensions (#672), an Affiliation registry (#670), optional Language column (#673 → composite IETF BCP 47 with `tblScripts` + `tblRegions` in #681), `tblBulkImportJobs` async-job table (#676), and Activity Log Result/Details columns (#695). 2026-05 added the MusicBrainz-style external-links registry (#833 — `tblExternalLinkTypes` + `tblSongExternalLinks` + `tblSongbookExternalLinks` + `tblCreditPersonExternalLinks`), Works composition grouping (#840 — `tblWorks` with self-FK nesting + `tblWorkSongs` + `tblWorkExternalLinks`, plus `AppliesTo` SET widened to `'work'`), curator-editable URL → provider rule table (#845 — `tblExternalLinkPatterns`), per-component language override (#858 — `tblSongComponents.Language`), song media uploads (#853 — `tblSongMedia`), arrangement persistence (#892 — `tblSongs.ArrangementJson`), and bulk-import diagnostics (#906 + #907 — `tblBulkImportJobs.PerSongbookJson` + `PhaseLabel`).
-- **API**: **≈195 JSON actions** via `api.php`, of which 189+ are documented in the OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` — browsable with Try-it-out at `/manage/api-docs` (Swagger UI, `view_api_docs` entitlement, hardened in #1587). Notable families: the public `action=scripts` + `action=regions` listings for native clients (#682); `?page=work&slug=…` for the Works public page (#840); the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail` (#1010/#1020); the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave` (#1323/#1335); and the telemetry endpoint `action=client_error_report` (#1582). The editor has its own separate `/manage/editor/api.php` + `api2.php` (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads) — the whole-song save now lives in the shared `save_song_core.php` served by both.
+- **API**: **≈195 JSON actions** via `api.php`, of which 189+ are documented in the OpenAPI 3.0 spec at `appWeb/public_html/api-docs.yaml` — browsable with Try-it-out at `/manage/api-docs` (Swagger UI, `view_api_docs` entitlement, hardened in #1587). Notable families: the public `action=scripts` + `action=regions` listings for native clients (#682); `?page=work&slug=…` for the Works public page (#840); the scoped DB-direct read endpoints `action=songs_index` / `action=song_detail` (#1010/#1020); the **Service Mode** endpoints `service_session_start` / `service_code_rotate` / `service_code_current` / `service_session_end` / `service_broadcast` / `service_join` / `service_poll` / `service_leave` (#1323/#1335); and the telemetry endpoint `action=client_error_report` (#1582). The editor has its own separate `/manage/editor/api.php` (legacy v1) + `api2.php` (granular v2, now the DEFAULT editor backend as of #1601 — see the Wave 3 note above) (load / save_song / songbook_export / bulk_import_zip / bulk_import_status / typeaheads / arrangement_update / bulk_tag_detach / easyworship_export) — the whole-song save lives in the shared `save_song_core.php` served by both.
 - **★ Latest (2026-06-25) — branch `feat/api-native-gating`, ~25 commits, PR in flight (this session):** the **API-native-gating + content-gating program**. **(1) Extensible gating registry** (#1352, CLAUDE.md **rule #28**) — `TIER_CAPS` in `includes/access_tier_validation.php` is the single registry; a new gateable cap is **ONE line + its migration card**, stored in the additive **`tblAccessTiers.Capabilities` JSON column** (the 7 original caps keep their `TINYINT` columns; all per-tier values live in MySQL, edited at `/manage/tiers`). **(2) Server-side content-gating enforcement** (#1353) — `includes/content_gating.php::contentGatingApply()` strips gated fields (lyric body, media) from `song_detail`/`song_data`/`random`; `checkTierAccess()` is registry-driven; **ENTIRELY DORMANT + a verified no-op unless `content_gating_enabled='1'`**, fail-open + STRICT-safe. **(3) Tier-aware web/offline gating** (#1357) — `song.php` (+ the `bulk_songs` offline bundle) composes the tier axis with the entity model; presence unlock overrides tier. **(4) Read rate-limiting** (#1354) — `includes/read_rate_limit.php` + `tblReadRateLimit` on the heavy public reads (per token/IP, 429, fail-open). **(5) Robust same-origin CSRF** (CLAUDE.md **rule #29**) — `validateCsrfRequest()` in `manage/includes/auth.php`; fixes the sporadic stale-token errors; swept across ALL manage AJAX-write pages (duplicate-songs, places-api, editor, api-keys, tags, languages, activity-log, songbooks). **(6) Editor save→v2** — `manage/editor/save_song_core.php` served by both editor APIs; editor POSTs save to api2 under its CSRF gate. **(7) The full API platform** — `/manage/api-keys` usage+limits dashboard, `catalogue:read` keyed reads (`enforceReadRateLimitKeyed`), the **dormant `content:gated`** scope (per-partner licensing grant), and **self-serve key requests** (`tblApiKeyRequests` + `request_api_keys` entitlement). Plus: the `?action=songs` whole-corpus **OOM fix** (rule #17), XSS `JSON_HEX_*` hardening, **OpenAPI refreshed to 0.1250.0**, a comprehensive docs pass (fixed stale Wiki/help.php/.md + a new Wiki `Service-Mode.md`), and the version bump to **0.1250.0**. **OPERATOR — run these `/manage/setup-database` cards** (not auto-applied): **JSON-backed tier capabilities** (#1352), **Public-read rate-limit** (#1354), **Self-serve API-key requests** (Phase D), and the **#1066 API-key usage** card. **content_gating_enabled stays `'0'`** until you decide #1357 follow-ons. **STILL TODO (own efforts):** Phase-D **webhooks**; **#1358** static `/data/audio` gating (a STAGED VERIFIED rollout — `.htaccess` deny changes live playback, can't test locally). Full detail: `.claude/sessions/2026-06-25-HANDOFF.md` (+ Continuation block) + the auto-memory resume + CLAUDE.md rules #28/#29 + `.claude/api-platform-strategy.md`. *(Prior 2026-06-21 Service Mode landing recorded in `.claude/sessions/2026-06-21-HANDOFF.md`.)*
 
 ---

@@ -14,19 +14,39 @@ info:
     noted. Three further surfaces share the action-query pattern:
 
     - The legacy admin **Editor API** (`/manage/editor/api.php`) — gated by the
-      `/manage/` PHP session.
+      `/manage/` PHP session. `/manage/editor/` no longer routes here by
+      default (see the v2 entry below); this API is still live and NOT
+      retired, reachable directly or via the v2 shell's `?legacy=1` escape
+      hatch, while the #1601 v1→v2 migration completes.
     - The granular **Editor API v2** (`/manage/editor/api2.php`, #1200) — a
       purpose-built, per-edit atomic editor backend that replaces the
-      whole-song `save_song` race (#1178). Requires `isAuthenticated()` AND
+      whole-song `save_song` race (#1178), and, as of **#1601 scope item 2**,
+      the backend behind the DEFAULT song editor: `/manage/editor/index.php`
+      is now a 302 redirect to the v2 shell, forwarding the query string
+      verbatim so every existing deep link (`?song=`/`?open=`, `?tab=`,
+      `?songbook=`/`#number=`) keeps working. Two escape hatches revert to
+      v1: `?legacy=1` per-visit, or `tblAppSettings.editor_v2_default='0'`
+      fleet-wide (no migration needed — an absent key means v2). v1 itself is
+      deliberately **not retired** — both editor APIs run side by side until
+      v2 has been exercised on alpha. Requires `isAuthenticated()` AND
       the `editor` role (`401`/`403` otherwise); every POST additionally
       requires the `X-Requested-With: XMLHttpRequest` same-origin header
       (NOT a session-token field — chosen to survive the cross-subdomain
-      adopted-token admin session, #1307). `action` travels via query string
+      adopted-token admin session, #1307; **#1677**, P0, fixed the v2 CLIENT
+      to actually send it — every v2 write returned `403` until then, since
+      only the GET helper sent the header). `action` travels via query string
       on GET reads or JSON body on POST writes; two endpoints
       (`media_upload`, `import_file`/`import_zip`) are `multipart/form-data`.
       Every response is `{ok: bool, …}`; an unknown `action` is `400`; an
       uncaught error is `500 {ok:false,error,error_detail}` (`error_detail`
-      admin-only). **Not yet broken out into individual paths below** (#1472
+      admin-only). Actions added to close v1/v2 parity gaps ahead of the
+      cutover: `arrangement_update` (writes `tblSongs.ArrangementJson`,
+      validated by the shared `includes/arrangement.php` rule, #1627),
+      `bulk_tag_detach` (the remove half of bulk tagging, v1's `bulk_tag`
+      already took `add`/`remove`, #1628), `easyworship_export` (#1678), and
+      `user_search` / `org_search` (ported verbatim from v1 for the Content
+      Restrictions picker, which was never actually an editor feature,
+      #1629). **Not yet broken out into individual paths below** (#1472
       — the `Editor API v2` tag was removed from the tag list as
       declared-but-unused; this paragraph is its only documentation until
       the per-action paths are added).
@@ -379,8 +399,12 @@ tags:
   - name: Editor API
     description: |
       Admin-only endpoints under `/manage/editor/api.php`, protected by the
-      /manage/ PHP session rather than a Bearer token. Used by the song
-      editor SPA for per-song save, bulk tag, and revision history.
+      /manage/ PHP session rather than a Bearer token. Used by the LEGACY
+      (v1) song editor SPA for per-song save, bulk tag, and revision
+      history. As of #1601, `/manage/editor/` serves the v2 editor (backed
+      by `api2.php`, described in prose above the tag list — #1472) by
+      default; this v1 API is still live and not retired, reachable
+      directly or via v2's `?legacy=1` link.
   - name: Live Follow
     description: |
       Host-led real-time multi-device follow (#1268) — the `live_follow_*`

@@ -344,9 +344,12 @@ declare(strict_types=1);
                     <h3 class="h6">Collaborate on a setlist (signed-in users)</h3>
                     <p>
                         Sign in with an account, then on any setlist's detail page open the <strong>Collaborators</strong>
-                        panel. Add other signed-in users by username — each one can re-order, add, and remove
-                        songs alongside you. Removed collaborators see the setlist disappear from their
-                        Shared list on next open.
+                        panel. Invite another signed-in user by email and choose whether they can
+                        <strong>view</strong> the setlist or also <strong>edit</strong> it (re-order, add, and remove
+                        songs) — a view-only collaborator can follow along but can't change anything. They get a
+                        notification linking straight to it, and it also appears under <strong>Shared with me</strong>
+                        on your Setlist tab. Removed collaborators see the setlist disappear from their Shared list
+                        on next open.
                     </p>
                     <p class="small text-muted mb-0">
                         Setlists you create are saved to your account if you're signed in, or to your device
@@ -816,7 +819,7 @@ declare(strict_types=1);
                 <div class="accordion-body">
                     <p>If you're a <em>Curator/Editor</em>, <em>Admin</em>, or <em>Global Admin</em>, you have access to the portal at <a href="/manage/">/manage/</a> (or the alias <a href="/admin/">/admin/</a>).</p>
                     <ul class="mb-2">
-                        <li><strong>Song Editor</strong> — edit lyrics, metadata, tags, arrangement; multi-select bulk delete; auto-saves per song.</li>
+                        <li><strong>Song Editor</strong> — edit lyrics, chords, arrangement, metadata, tags; multi-select bulk delete; auto-saves as you go.</li>
                         <li><strong>User Management</strong> — create, edit roles, deactivate.</li>
                         <li><strong>Analytics</strong> — top songs / searches / logins over 7, 30, 90 days; CSV export.</li>
                         <li><strong>Song Requests</strong> — triage user-submitted requests.</li>
