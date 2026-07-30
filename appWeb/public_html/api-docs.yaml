@@ -5476,26 +5476,6 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/SongSummary" }
 
-  /api.php?action=song:
-    get:
-      operationId: getSong
-      tags: [Songs]
-      summary: Full song record (metadata + components + writers/composers)
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [song] }
-        - name: id
-          in: query
-          required: true
-          schema: { type: string, example: CP-0202 }
-      responses:
-        "200":
-          description: Full song record
-        "404":
-          description: Song not found
-
   /api.php?action=song_view:
     post:
       operationId: logSongView
@@ -7303,66 +7283,6 @@ paths:
                         createdAt: { type: string, format: date-time }
                         username:  { type: string, nullable: true }
 
-  /api.php?action=writer:
-    get:
-      operationId: writerSongs
-      tags: [Song Metadata]
-      summary: Songs attributed to a given writer or composer
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [writer] }
-        - name: name
-          in: query
-          required: true
-          description: Writer / composer name (case-insensitive match)
-          schema: { type: string, example: John Newton }
-      responses:
-        "200":
-          description: Songs by that writer
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  writer: { type: string }
-                  songs:
-                    type: array
-                    items: { $ref: "#/components/schemas/SongSummary" }
-
-  /api.php?action=songbook:
-    get:
-      operationId: songbookSongs
-      tags: [Songs]
-      summary: All songs in one songbook
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [songbook] }
-        - name: abbr
-          in: query
-          required: true
-          description: Songbook abbreviation (`CP`, `MP`, `JP`, `SDAH`, `CH`, `Misc`)
-          schema: { type: string }
-      responses:
-        "200":
-          description: Songbook songs
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  songbook:
-                    type: object
-                    properties:
-                      abbr: { type: string }
-                      name: { type: string }
-                  songs:
-                    type: array
-                    items: { $ref: "#/components/schemas/SongSummary" }
-
   /api.php?action=songs_exist:
     get:
       operationId: songsExist
@@ -7558,36 +7478,6 @@ paths:
   # ===========================================================================
   # LEGACY SETLIST ENDPOINTS  (pre-#398; kept for API compatibility)
   # ===========================================================================
-
-  /api.php?action=setlist:
-    get:
-      operationId: setlistListMine
-      tags: [Setlists]
-      summary: List the caller's setlists (summary view)
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist] }
-      responses:
-        "200":
-          description: Setlist summaries
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  setlists:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:        { type: string }
-                        name:      { type: string }
-                        songCount: { type: integer }
-                        createdAt: { type: string, format: date-time }
 
   /api.php?action=setlist_schedule:
     get:
