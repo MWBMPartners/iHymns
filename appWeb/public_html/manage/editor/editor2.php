@@ -32,7 +32,37 @@ if (!$u || !hasRole((string)($u['role'] ?? ''), 'editor')) {
 /* CSRF token api2.php validates (X-CSRF-Token header), emitted as a <meta> for
    the v2 api-client. */
 $csrf   = csrfToken();
-$songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? ''));   // optional deep-link
+
+/* `?song=` — and `?open=` as an alias (#1680).
+   v1 keeps that alias deliberately (editor.js:6234): /manage/revisions linked
+   with `?open=` for its whole life while the editor read only `?song=`, so
+   "Open in editor" silently did nothing (#1623). The alias exists so a
+   bookmarked or pasted link from that era still works instead of failing the
+   same invisible way — which means v2 needs it too, or the flip re-breaks
+   exactly the links the alias was created to rescue. */
+$songId = preg_replace('/[^A-Za-z0-9\-]/', '', (string)($_GET['song'] ?? $_GET['open'] ?? ''));
+
+/**
+ * Missing-Numbers prefill: `?songbook=<ABBR>` + `?number=N` or `#number=N` (#1680).
+ *
+ * ELI5: a link can say "start a new song, in this book, at this number".
+ *
+ * `manage/missing-numbers.php:236` emits exactly this shape, using the FRAGMENT
+ * form. v1 honours both forms (editor.js:6257-6262). Without it here, flipping
+ * `/manage/editor/` to v2 would make that page's "Open in editor" button load
+ * the editor and do nothing at all — no prefill, no draft, no error. That is
+ * #1623's failure re-created on a different button, which is precisely the
+ * class this cutover keeps producing.
+ *
+ * The fragment is NOT sent to the server by the browser, so the number can only
+ * be read client-side; the songbook is read here so an invalid one never
+ * reaches the JS. Abbreviation charset is the SongId-prefix charset (rule #27):
+ * alphanumeric, <= 10.
+ */
+$prefillBook = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)($_GET['songbook'] ?? '')));
+if (strlen($prefillBook) > 10) { $prefillBook = ''; }
+$prefillNum  = (string)($_GET['number'] ?? '');
+$prefillNum  = ctype_digit($prefillNum) ? $prefillNum : '';
 
 /**
  * `?tab=` deep-link (#1628 item 1).
@@ -452,9 +482,80 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             }
         });
 
+        /**
+         * Missing-Numbers prefill (#1680) — ?songbook=<ABBR> + ?number=N | #number=N
+         *
+         * ELI5: land ready to type lyrics for song N of book XX, instead of an
+         * empty list and having to re-discover what to enter.
+         *
+         * The number may arrive as a query param OR as the FRAGMENT, because
+         * missing-numbers.php emits the fragment form and the browser never
+         * sends a fragment to the server — so PHP can pre-validate the songbook
+         * but only JS can see the number. v1 accepts both shapes; so does this.
+         *
+         * If that (songbook, number) ALREADY exists, open it rather than
+         * creating a duplicate. v1 checks this too, and it matters: Missing
+         * Numbers is a list of gaps, and a gap that was filled since the page
+         * was rendered would otherwise silently mint a second song on the same
+         * number.
+         *
+         * Sequenced rather than parameterised because v2's create_song mints
+         * its own canonical id and takes no number — Number is a separate
+         * metadata field. So: create -> set number -> load.
+         */
+        const prefillBook = <?= json_encode($prefillBook) ?>;
+        function prefillNumber() {
+            const qs = <?= json_encode($prefillNum) ?>;
+            if (qs) { return qs; }
+            const hash = String(window.location.hash || '').replace(/^#/, '');
+            const m = /^number=(\d+)$/.exec(hash);
+            return m ? m[1] : '';
+        }
+
+        async function runPrefill(book, numStr) {
+            const num = parseInt(numStr, 10);
+            status('Preparing ' + book + ' ' + num + '…');
+
+            /* Already exists? Open it — never mint a duplicate on the same number. */
+            const existing = sidebar.findByBookAndNumber(book, num);
+            if (existing) {
+                status('Song ' + num + ' already exists in ' + book + ' — opening it.', 'success');
+                loadSong(existing);
+                return;
+            }
+
+            try {
+                const res = await editorApi.createSong(book, 'New Song');
+                try {
+                    await editorApi.updateMetadata(res.songId, 'number', num);
+                } catch (e) {
+                    /* The song EXISTS at this point; only the number failed. Say so
+                       precisely — "create failed" would send the curator hunting for
+                       a song that is actually there, and they would create a second. */
+                    status('Created ' + res.songId + ' but could not set number ' + num
+                           + ': ' + e.message + ' — set it on the Metadata tab.', 'danger');
+                }
+                const book0 = sidebar.getSongbooks().find((b) => b.abbr === res.songbook);
+                sidebar.addSong({
+                    id: res.songId, number: num, title: res.title,
+                    songbook: res.songbook, songbookName: book0 ? book0.name : res.songbook,
+                });
+                loadSong(res.songId);
+            } catch (e) {
+                status('Could not start ' + book + ' ' + num + ': ' + e.message, 'danger');
+            }
+        }
+
         /* ---- initial ---- */
-        if (initialSongId) { loadSong(initialSongId); }
-        else { status('Pick a song from the list, or create a New one.'); }
+        if (initialSongId) {
+            loadSong(initialSongId);
+        } else if (prefillBook && prefillNumber()) {
+            /* Wait for the index: findByBookAndNumber and getSongbooks both need
+               it, and mountSidebar's load() is async. */
+            sidebar.whenLoaded().then(() => runPrefill(prefillBook, prefillNumber()));
+        } else {
+            status('Pick a song from the list, or create a New one.');
+        }
     </script>
 </body>
 </html>

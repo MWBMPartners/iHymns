@@ -243,6 +243,14 @@ export function mountSidebar(container, opts) {
     allBtn.addEventListener('click', () => { filtered().slice(0, RENDER_CAP).forEach((s) => selected.add(s.id)); notifySelection(); renderList(); });
     noneBtn.addEventListener('click', () => { selected.clear(); notifySelection(); renderList(); });
 
+    /* Resolves once the index has loaded (or failed). The shell's #1680
+       Missing-Numbers prefill needs the song list before it can tell "song 412
+       of CP is missing" from "it exists and should just be opened" — and
+       load() is async, so without a handle to await, the prefill would race the
+       fetch and mint a duplicate whenever the index was a moment slow. */
+    let resolveLoaded;
+    const loadedPromise = new Promise((r) => { resolveLoaded = r; });
+
     async function load() {
         listEl.innerHTML = '<div class="text-muted small p-3">Loading…</div>';
         try {
@@ -257,6 +265,12 @@ export function mountSidebar(container, opts) {
             err.textContent = 'Could not load song list: ' + e.message;
             listEl.appendChild(err);
             toast('Could not load song list: ' + e.message, 'danger');
+        } finally {
+            /* `finally`, not the success branch: a waiter must be released even
+               when the index FAILED, or the #1680 prefill hangs forever on a
+               spinner with no explanation. It then finds no match and reports a
+               real error instead — a wrong answer beats a silent stall. */
+            resolveLoaded();
         }
     }
 
@@ -287,6 +301,21 @@ export function mountSidebar(container, opts) {
            from a different book that is not on screen. */
         getFirstId() { const l = filtered(); return l.length ? l[0].id : null; },
         getSongbooks: songbookList,
+        /* Resolves once the index has loaded OR failed — see the note by
+           loadedPromise. Callers that need the corpus (the #1680 prefill) await
+           this instead of racing load(). */
+        whenLoaded() { return loadedPromise; },
+        /* Exact (songbook, number) lookup -> SongId, or null (#1680).
+           Numbers arrive from the slim index as strings, so compare NUMERICALLY:
+           `'412' === 412` is false, and a string compare here would report every
+           existing song as missing and mint a duplicate on its number — the one
+           outcome the Missing Numbers flow must never produce. */
+        findByBookAndNumber(abbr, number) {
+            const n = Number(number);
+            if (!abbr || !Number.isFinite(n)) { return null; }
+            const hit = songs.find((s) => s.songbook === abbr && Number(s.number) === n);
+            return hit ? hit.id : null;
+        },
         getSelectedIds() { return Array.from(selected); },
         clearSelection() { selected.clear(); notifySelection(); renderList(); },
         teardown() { container.innerHTML = ''; },
