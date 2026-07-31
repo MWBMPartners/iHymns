@@ -72,6 +72,17 @@ $sections = [
         'title' => 'Revisions Audit',
         'group' => 'Content',
     ],
+    /* #1694 — the soft-delete queue. Sits directly after Revisions Audit
+       because the two are the recovery pair a curator reaches for in the same
+       breath: Revisions restores a bad EDIT, Deleted Songs restores a bad
+       DELETE. Icon + group mirror the admin-links.php nav entry so the help
+       TOC and the sidebar read the same. */
+    [
+        'id'    => 'deleted-songs',
+        'icon'  => 'bi-trash3',
+        'title' => 'Deleted Songs',
+        'group' => 'Content',
+    ],
     [
         'id'    => 'missing-numbers',
         'icon'  => 'bi-binoculars',
@@ -577,10 +588,12 @@ foreach ($sections as $s) {
                             Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
                             (verify, tag, move to another songbook, export, delete).
-                            <br><strong>Deleting a song is admin-only</strong> (#1692). It is a
-                            permanent removal that also takes the song's revision history with it,
-                            so it sits with administrators until recoverable (soft) deletion ships.
-                            Editors keep every other bulk operation.</li>
+                            <br><strong>Deleting is now recoverable</strong> (#1694). A deleted song
+                            disappears from the app, from search and from this sidebar, but it is not
+                            destroyed &mdash; it moves to <a href="#deleted-songs">Deleted Songs</a>,
+                            keeping its lyrics, credits, media and full revision history, and one click
+                            puts it back. Permanent removal is a separate, deliberately harder step on
+                            that page. Deleting still needs <code>delete_songs</code> for now.</li>
                     </ul>
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
@@ -750,6 +763,58 @@ foreach ($sections as $s) {
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Revisions are immutable. Restore creates a <em>new</em> revision rather than rewriting history, so the trail stays honest.
+                    </div>
+                </section>
+
+                <section id="deleted-songs" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-trash3 me-2"></i>Deleted Songs</h2>
+                    <p class="role-badges">
+                        <span class="badge bg-warning text-dark">admin</span>
+                        <span class="badge bg-danger">global_admin</span>
+                    </p>
+                    <p>
+                        Deleting a song no longer destroys it. Since <a href="https://github.com/MWBMPartners/iHymns/issues/1694">#1694</a> a delete is
+                        <strong>recoverable</strong>: the song is hidden from every public and editorial
+                        surface &mdash; the app, search, songbook lists, the editor sidebar, exports &mdash;
+                        but the record itself is untouched. Its components, credits, media links, tags and
+                        complete revision history are all still there. This page is where those songs wait.
+                    </p>
+                    <h3 class="h6">Key actions</h3>
+                    <dl class="actions">
+                        <dt>Restore</dt>
+                        <dd>
+                            Puts the song straight back exactly as it was. Because deleting writes nothing
+                            else anywhere &mdash; no redirects, no cascades &mdash; there is nothing to
+                            repair on the way back: favourites, set lists, Work membership and revision
+                            history were never touched.
+                        </dd>
+                        <dt>Purge</dt>
+                        <dd>
+                            The old permanent delete, and the <em>only</em> way to reach it. A live song can
+                            no longer be destroyed in one step by anybody &mdash; it has to be deleted
+                            first, then purged from this page. Purge takes the revision history with it and
+                            cannot be undone, so it asks you to type the song's ID to confirm. You can
+                            optionally point the purged ID at a surviving song, so anyone following an old
+                            link or bookmark lands somewhere sensible instead of a dead end.
+                        </dd>
+                    </dl>
+                    <h3 class="h6">Who can do what</h3>
+                    <ul>
+                        <li>Seeing this page and using <strong>Restore</strong> needs <code>delete_songs</code>
+                            &mdash; the same privilege as deleting in the first place.</li>
+                        <li><strong>Purge</strong> needs its own separate privilege,
+                            <code>purge_songs</code>. Today both privileges sit with admins and global
+                            admins, so the split looks academic &mdash; it is not. Recoverable deletion is
+                            meant to widen to editors next (#1695), and giving the irreversible purge its
+                            own key is what stops it quietly widening along with it. One key per distinct
+                            power.</li>
+                    </ul>
+                    <div class="gotcha small">
+                        <strong>Gotcha:</strong> A deleted song still holds its number.
+                        <a href="#missing-numbers">Missing Numbers</a> deliberately counts hidden songs as
+                        present, so it will not offer you the slot &mdash; if it did, you could fill the gap
+                        and then find you had two songs on one number the moment somebody hit Restore.
+                        Restore or purge the song to genuinely free its number.
                     </div>
                 </section>
 
@@ -1674,7 +1739,10 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;I deleted a song by mistake.&rdquo;</h3>
                     <p class="small">
-                        Open <a href="#revisions">Revisions Audit</a>, find the song's last edit before the delete, click through to the editor, and use <strong>Revisions &rarr; Restore</strong>. Revisions are kept indefinitely so older deletes are still recoverable.
+                        Open <a href="#deleted-songs">Deleted Songs</a> and click <strong>Restore</strong>. The song comes back exactly as it was, with its lyrics, credits, media, tags and revision history intact &mdash; deleting hid it, it never destroyed anything (#1694).
+                    </p>
+                    <p class="small">
+                        This page previously told you to recover a deleted song through <a href="#revisions">Revisions Audit &rarr; Restore</a>. <strong>That advice did not work</strong>, and had not for as long as it was written: the old delete removed the song's revision rows along with the song, so by the time you went looking for them there was nothing left to restore from. Revisions Audit is for undoing a bad <em>edit</em>; Deleted Songs is for undoing a bad <em>delete</em>.
                     </p>
 
                     <h3 class="h6">&ldquo;The dashboard / a /manage page is blank.&rdquo;</h3>
