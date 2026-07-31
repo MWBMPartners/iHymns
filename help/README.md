@@ -13,8 +13,13 @@
 | [Songbooks](songbooks.md) | Browse and navigate the available songbooks |
 | [External Links & Works](external-links-and-works.md) | Find songs, songbooks and people elsewhere on the web; understand Works (groupings of the same composition across sources) |
 | [Favorites](favorites.md) | Save and manage your favorite songs |
+| [Musical Key, Tempo & Time Signature](musical-keys.md) | See a song's recorded key, tempo and time signature, and how it feeds Transpose |
+| [Setlist Templates & Service Plans](setlist-templates.md) | Reuse the shape of a service and drop your songs into it |
 | [Exporting](exporting.md) | Download song words into your projection software's format |
 | [Live Follow & Live Services](live-follow.md) | Follow a worship leader — or your church's service — live on your own device |
+| [Requesting a Song](requesting-a-song.md) | Ask for a missing song and track what happened to your request |
+| [Notifications](notifications.md) | Get notified on this device for announcements and updates |
+| [Signed-in Devices](signed-in-devices.md) | See — and sign out — the devices signed in to your account |
 | [Troubleshooting](troubleshooting.md) | Common issues and how to resolve them |
 | [FAQ](faq.md) | Frequently asked questions |
 
