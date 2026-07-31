@@ -136,6 +136,55 @@ function phpUnitsIsSqlStatement(string $value): bool
 }
 
 /**
+ * Is this `default` a `match` ARM rather than a `switch` LABEL?
+ *
+ * ELI5: `default` means two different things in PHP. Inside a `switch` it opens
+ * a branch of the dispatch; inside a `match` it is just the last option in an
+ * expression. Only the first one deserves its own analysis unit.
+ *
+ * WHY BOTH SIGNALS (#1707)
+ * ------------------------
+ * They are INDEPENDENT, and either alone has a blind spot:
+ *
+ *  - STRUCTURAL (`$matchDepths` non-empty) is the one #1707 asks to prefer,
+ *    because the enclosing construct is a fact rather than an inference. Its
+ *    blind spot is a `match` the brace tracker never saw open.
+ *  - LOOKAHEAD (`default` followed by `=>` rather than `:`) reads the arm's own
+ *    syntax and needs no state at all. Its blind spot is that it is local — it
+ *    cannot tell you what you are nested inside.
+ *
+ * ORed, because both answer the same question and a false "this is a switch
+ * label" is the expensive direction: it mints a phantom unit that STEALS the
+ * real default's name (`case default` for the arm, `case default#1` for the
+ * genuine one), which is how a guard ends up asserting against the wrong half
+ * of a split case. T_CASE is unaffected — `match` has no `case` keyword.
+ *
+ * @param list<array{0:int,1:string}|string> $toks the full token stream
+ * @param int                                $i    index of the T_DEFAULT/T_CASE
+ * @param int                                $id   the token id at $i
+ * @param list<int>                          $matchDepths brace depths of open matches
+ *
+ * @see https://www.php.net/manual/en/control-structures.match.php
+ */
+function phpUnitsIsMatchArmDefault(array $toks, int $i, int $id, array $matchDepths): bool
+{
+    if ($id !== T_DEFAULT) {
+        return false;                      // `case` never appears inside a match
+    }
+    if ($matchDepths !== []) {
+        return true;                       // structural: we are inside a match
+    }
+    /* Lookahead: an arm is `default =>`, a label is `default:`. */
+    $n = count($toks);
+    for ($k = $i + 1; $k < $n; $k++) {
+        if (is_array($toks[$k]) && $toks[$k][0] === T_WHITESPACE) { continue; }
+        if (is_array($toks[$k]) && $toks[$k][0] === T_COMMENT)    { continue; }
+        return is_array($toks[$k]) && $toks[$k][0] === T_DOUBLE_ARROW;
+    }
+    return false;
+}
+
+/**
  * Split a PHP source into per-function analysis units.
  *
  * @return array<string, array{code:string, strings:list<string>, sqlOnly:list<string>, comments:list<string>}>
@@ -155,6 +204,35 @@ function phpSourceUnits(string $src): array
     $awaitFn = false;              // seen `function`, waiting for its body `{`
     $fnName  = null;
     $anon    = 0;
+    /* Has the parameter list opened since `function`? A function's NAME can only
+       sit between `function` and its `(`; anything after that paren is a
+       parameter type, and anything after the closing paren is a return type.
+       Without this flag the naming rule took the next T_STRING wherever it
+       landed, so `function ($a, int $b)` became the unit `int` (#1703) and
+       `function (): bool` became `bool` (#1707).
+
+       That is not cosmetic. DECLARATION ORDER decided who won: a closure whose
+       parameter type shares a name with a real function, declared FIRST, took
+       that function's unit name outright — and an assertion reading
+       `$units['validate']` then read the closure's body while believing it read
+       validate(). No error, no warning, confident assertion about the wrong
+       code. Found live in 10 files under appWeb/, not the single latent case
+       the issues predicted. */
+    $sawFnParen = false;
+    /* Brace depths at which a `match` body opened, innermost last.
+
+       A `match` arm's `default =>` tokenizes as T_DEFAULT — the SAME token a
+       `switch`'s `default:` produces — so the case-splitter minted a phantom
+       `case default` unit part-way through a real case and split its
+       attribution in two (#1707). Worse, the phantom CLAIMED the name, pushing
+       the switch's genuine default to `case default#1`.
+
+       Tracked structurally rather than by lookahead because #1707 asks for the
+       structural signal where both are available: the enclosing construct is a
+       fact, whereas `=>`-vs-`:` is an inference. The lookahead is kept as a
+       second, independent signal below. */
+    $matchDepths = [];
+    $awaitMatch  = false;          // seen `match`, waiting for its body `{`
     /* Procedural dispatch files (api.php, api2.php) put every handler in one
        giant top-level `switch`, so "file scope" would be a single unit holding
        fifty unrelated handlers — and one handler's correctness would vouch for
@@ -174,11 +252,16 @@ function phpSourceUnits(string $src): array
         /* ---- structural bookkeeping ------------------------------------- */
         if (is_array($t)) {
             if ($t[0] === T_FUNCTION) {
-                $awaitFn = true;
-                $fnName  = null;
-            } elseif ($awaitFn && $t[0] === T_STRING && $fnName === null) {
+                $awaitFn    = true;
+                $fnName     = null;
+                $sawFnParen = false;
+            } elseif ($t[0] === T_MATCH) {
+                $awaitMatch = true;
+            } elseif ($awaitFn && !$sawFnParen && $t[0] === T_STRING && $fnName === null) {
+                /* Between `function` and `(` — this really is the name. */
                 $fnName = $t[1];
-            } elseif (!$stack && ($t[0] === T_CASE || $t[0] === T_DEFAULT)) {
+            } elseif (!$stack && ($t[0] === T_CASE || $t[0] === T_DEFAULT)
+                      && !phpUnitsIsMatchArmDefault($toks, $i, $t[0], $matchDepths)) {
                 /* Name the unit after the case's own literal, so a failure
                    report says `case 'metadata_field_update'` rather than a line
                    number that will be wrong by next week. Consecutive
@@ -204,8 +287,17 @@ function phpSourceUnits(string $src): array
                 $switchDepth = $depth + 1;
             }
         } else {
+            if ($t === '(' && $awaitFn) {
+                /* The parameter list has opened: no further T_STRING can be
+                   this function's name (#1703 / #1707). */
+                $sawFnParen = true;
+            }
             if ($t === '{') {
                 $depth++;
+                if ($awaitMatch) {
+                    $matchDepths[] = $depth;
+                    $awaitMatch    = false;
+                }
                 if ($awaitFn) {
                     $name = $fnName ?? ('{closure#' . (++$anon) . '}');
                     // Two same-named methods in one file (different classes) —
@@ -222,6 +314,11 @@ function phpSourceUnits(string $src): array
             } elseif ($t === '}') {
                 if ($stack && $stack[count($stack) - 1][1] === $depth) {
                     array_pop($stack);
+                }
+                /* Leaving a match body. Checked BEFORE the decrement, to mirror
+                   how the function stack above pops at its opening depth. */
+                if ($matchDepths && $matchDepths[count($matchDepths) - 1] === $depth) {
+                    array_pop($matchDepths);
                 }
                 $depth--;
                 /* Left the dispatch switch — stop attributing top-level code to
