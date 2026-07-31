@@ -1,8 +1,8 @@
 /**
  * iHymns — Shared API-Client Usage Guard (#1624)
  *
- * ELI5: this test walks every JS module under `js/modules/**` and
- * `js/utils/**` and makes sure nobody calls the bare browser `fetch()`
+ * ELI5: this test walks every JS file under `js/` and makes sure
+ * nobody calls the bare browser `fetch()`
  * any more — everybody goes through `apiFetch()` in
  * `js/utils/api-client.js`, the one place that knows how to attach the
  * language-filter header, the same-origin CSRF marker, and the
@@ -19,9 +19,10 @@
  * (a test that can't fail is worthless — see the #1581 precedent in
  * test-event-names.js, which this file's structure mirrors):
  *
- *   1. LITERAL BAN — scans every `appWeb/public_html/js/modules/**\/*.js`
- *      and `appWeb/public_html/js/utils/**\/*.js` file for a call to the
- *      bare `fetch(` identifier — i.e. NOT `apiFetch(`, NOT
+ *   1. LITERAL BAN — scans every `appWeb/public_html/js/**\/*.js` file
+ *      (widened from a typed list of two subdirectories in #1700, which
+ *      had never covered `js/app.js` or `js/constants.js`) for a call to
+ *      the bare `fetch(` identifier — i.e. NOT `apiFetch(`, NOT
  *      `window.fetch(` on some OTHER object, and NOT a mention of
  *      `fetch(` inside a `/* *\/` or `//` comment or a quoted string.
  *      Comments and string/template literals are stripped with a small
@@ -29,6 +30,17 @@
  *      the regex runs, rather than a single regex trying to do both
  *      jobs at once — a doc-comment explaining "this used to call
  *      fetch()" must never itself trip the ban.
+ *
+ *      That scanner also understands REGEX LITERALS (#1701). It did not
+ *      until then, and the consequence was severe: `s.replace(/"/g, …)`
+ *      left the `/` in code, the `"` inside the pattern opened a string
+ *      state that never closed, and EVERY `fetch(` in the rest of that
+ *      file became invisible — reported as zero violations, not as an
+ *      error. TEN scanned files were in that state, silently, for a year.
+ *      Assertion 3 now fails the build if any file ends the walk outside
+ *      the 'code' state, so a gap in the (necessarily heuristic) regex
+ *      detection can produce a loud false failure but never another
+ *      silent under-report.
  *
  *   2. COUNT-EXACT SELF-CLEANING ALLOWLIST — a handful of files are
  *      DELIBERATE, documented exceptions (see ALLOWLIST below) and are
@@ -87,10 +99,23 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 const JS_ROOT    = path.resolve(__dirname, '..', 'appWeb', 'public_html', 'js');
-const SCAN_DIRS  = [
-    path.join(JS_ROOT, 'modules'),
-    path.join(JS_ROOT, 'utils'),
-];
+/* ALL of js/, not a typed list of subdirectories (#1700).
+ *
+ * ELI5: look everywhere under js/, so a file that isn't in a folder we happened
+ * to name still gets checked.
+ *
+ * This was `[JS_ROOT/modules, JS_ROOT/utils]`, which is one directory level
+ * short of the tree it means to cover: `js/app.js` and `js/constants.js` sit at
+ * the top level and were never scanned. `constants.js` did in fact contain a
+ * bare `fetch(` for the whole life of the guard — allow-listed below now that it
+ * is visible. Same derive-vs-hardcode lesson as rule #34: a check that NAMES
+ * where to look misses whatever grows outside the names, and its green tick
+ * reads as coverage of the whole tree.
+ *
+ * `collectJsFiles()` already recurses, so pointing it at the root covers
+ * modules/ and utils/ exactly as before — no file previously scanned is dropped.
+ */
+const SCAN_DIRS  = [JS_ROOT];
 
 /**
  * Recursively collect every *.js file under `dir`. Plain manual walk
@@ -147,11 +172,55 @@ function check(name, ok, detail) {
  * `fetch(` call inside a template interpolation, so this cannot hide a
  * real violation in practice — see the file header's design note.
  * ==================================================================== */
+/**
+ * Could a `/` at this point begin a REGEX LITERAL rather than a division?
+ *
+ * ELI5: `/` means "divide" after a value and "start of a pattern" everywhere
+ * else — this looks at what came just before to tell which.
+ *
+ * The standard JS lexer heuristic (#1701): a regex may begin only where an
+ * OPERAND may begin. So if the previous significant character closes an operand
+ * — an identifier or number character, or `)`, `]`, `}` — the `/` is division.
+ * Anything else (`=`, `(`, `,`, `:`, `[`, `!`, `&`, `|`, `?`, `{`, `;`, `return`,
+ * start of file) means a regex can start here.
+ *
+ * KNOWN GAP, stated rather than hidden: `}` is treated as closing an operand
+ * (an object literal), which misreads `if (x) {} /re/.test(y)` — a block close
+ * followed by a regex. Nothing in this codebase writes that, and the
+ * derailment check below means the gap can only ever cause a LOUD failure, never
+ * a silent under-report. That asymmetry is the entire point of pairing the two.
+ *
+ * @param {string} out Code emitted so far (comments/strings already removed).
+ * @returns {boolean}
+ */
+function regexCanStartHere(out) {
+    for (let k = out.length - 1; k >= 0; k--) {
+        const ch = out[k];
+        if (ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r') { continue; }
+        if (/[A-Za-z0-9_$)\]}]/.test(ch)) {
+            /* `return`, `typeof`, `case` etc. end in identifier characters but are
+               KEYWORDS, after which a regex certainly can start. Check the word. */
+            const word = (out.slice(0, k + 1).match(/[A-Za-z_$][A-Za-z0-9_$]*$/) || [''])[0];
+            return ['return', 'typeof', 'case', 'in', 'of', 'delete', 'void',
+                    'instanceof', 'new', 'do', 'else', 'yield', 'await'].includes(word);
+        }
+        return true;   // an operator / punctuator — an operand may begin
+    }
+    return true;       // start of file
+}
+
+/**
+ * @returns {{code: string, state: string}} `state` is the lexer state the walk
+ *   ENDED in. Anything other than 'code' means the scan derailed and the
+ *   stripped output cannot be trusted — see the derailment check at the call
+ *   site. Returning it rather than swallowing it is the load-bearing half of
+ *   the #1701 fix.
+ */
 function stripCommentsAndStrings(src) {
     let out = '';
     let i = 0;
     const n = src.length;
-    /** @type {'code'|'block'|'line'|'sq'|'dq'|'tpl'} */
+    /** @type {'code'|'block'|'line'|'sq'|'dq'|'tpl'|'re'|'recls'} */
     let state = 'code';
 
     while (i < n) {
@@ -161,10 +230,41 @@ function stripCommentsAndStrings(src) {
         if (state === 'code') {
             if (c === '/' && c2 === '*') { state = 'block'; i += 2; continue; }
             if (c === '/' && c2 === '/') { state = 'line';  i += 2; continue; }
+            /* REGEX LITERAL (#1701). Before this existed, `s.replace(/"/g, 'x')`
+               left the `/` in code, then the `"` inside the pattern opened a
+               string state that never closed — and EVERY `fetch(` in the rest of
+               the file became invisible, reported as zero violations rather than
+               as an error. Ten scanned files derailed this way. */
+            if (c === '/' && regexCanStartHere(out)) { state = 're'; out += ' '; i += 1; continue; }
             if (c === "'")  { state = 'sq';  out += ' '; i += 1; continue; }
             if (c === '"')  { state = 'dq';  out += ' '; i += 1; continue; }
             if (c === '`')  { state = 'tpl'; out += ' '; i += 1; continue; }
             out += c;
+            i += 1;
+            continue;
+        }
+
+        /* Inside a regex body. A `/` inside a CHARACTER CLASS does not close it
+           (`/[/]/` is a valid regex matching a slash), so the class is tracked
+           as its own state. */
+        if (state === 're') {
+            if (c === '\\') { out += '  '; i += 2; continue; }
+            if (c === '[')  { state = 'recls'; out += ' '; i += 1; continue; }
+            if (c === '/')  { state = 'code';  out += ' '; i += 1; continue; }
+            if (c === '\n') { /* an unterminated regex — a newline cannot appear
+                                 in one, so treat it as code again rather than
+                                 running away to the end of the file. */
+                state = 'code'; out += '\n'; i += 1; continue; }
+            out += ' ';
+            i += 1;
+            continue;
+        }
+
+        if (state === 'recls') {
+            if (c === '\\') { out += '  '; i += 2; continue; }
+            if (c === ']')  { state = 're'; out += ' '; i += 1; continue; }
+            if (c === '\n') { state = 'code'; out += '\n'; i += 1; continue; }
+            out += ' ';
             i += 1;
             continue;
         }
@@ -198,13 +298,13 @@ function stripCommentsAndStrings(src) {
         i += 1;
     }
 
-    return out;
+    return { code: out, state };
 }
 
 /* ======================================================================
  * Assertion 1 — raw fetch( ban (comment/string-stripped source)
  * ==================================================================== */
-console.log('Assertion 1 — no raw fetch( call in js/modules/** or js/utils/** (outside the allowlist):');
+console.log('Assertion 1 — no raw fetch( call anywhere under js/ (outside the allowlist):');
 
 /* A bare `fetch(` — NOT preceded by an identifier char or `.`, so this
    never matches `apiFetch(`, `window.fetch(`, `this.fetch(`, etc. */
@@ -243,6 +343,18 @@ const ALLOWLIST = [
            + 'would make a merely-slow probe show a false "offline" banner.',
     },
     {
+        file: 'constants.js',
+        count: 1,
+        why: 'loadSongbookRegistry() must get EVERY songbook, and /api?action=songbooks '
+           + 'language-FILTERS its response (makeLanguageFilterPredicate over '
+           + 'resolvePreferredLanguagesForRequest). The registry is a NAME LOOKUP, not a '
+           + 'browsable list: filtered, songbookFullName() returns null for any book '
+           + 'outside the user\'s languages and every list view mentioning it silently '
+           + 'falls back to the bare abbreviation. apiFetch() attaches '
+           + 'X-Preferred-Languages, so migrating this call would cause exactly that '
+           + '(#1700). Invisible until now — this file was outside the scan.',
+    },
+    {
         file: 'modules/analytics.js',
         count: 1,
         why: '_sendToEndpoint()\'s fetch fallback posts to an admin-configured, possibly '
@@ -253,13 +365,48 @@ const ALLOWLIST = [
 ];
 
 const violationsByFile = new Map();
+/* Files whose scan DERAILED — see the check immediately below. */
+const derailed = [];
 for (const file of allFiles) {
     const relPath = path.relative(JS_ROOT, file).split(path.sep).join('/');
     const src = fs.readFileSync(file, 'utf8');
-    const stripped = stripCommentsAndStrings(src);
+    const { code: stripped, state: endState } = stripCommentsAndStrings(src);
+    if (endState !== 'code') { derailed.push(`${relPath}: ended in '${endState}'`); }
     const count = (stripped.match(RAW_FETCH_RE) || []).length;
     if (count > 0) violationsByFile.set(relPath, count);
 }
+
+/* -----------------------------------------------------------------------
+ * DERAILMENT — the load-bearing half of the #1701 fix.
+ *
+ * ELI5: if we lost track of where we were in a file, say so loudly instead
+ * of reporting "nothing wrong here".
+ *
+ * A well-formed JS file must leave the walk in the 'code' state. Ending
+ * anywhere else means the scanner mistook something for the start of a string,
+ * comment or regex and never found its end — from that point on the rest of the
+ * file was blanked, and every `fetch(` in it silently became invisible.
+ *
+ * Before this check, that read as ZERO VIOLATIONS. Ten scanned files were in
+ * exactly that state — a single regex literal containing a quote
+ * (`s.replace(/"/g, …)` in modules/request.js) switched the whole guard off for
+ * the remainder of each. The guard had reported green for a year.
+ *
+ * The regex-literal handling above is a heuristic and heuristics have gaps.
+ * THIS check is what makes a gap survivable: it can produce a false FAILURE,
+ * which someone must then look at, but it can never again let a scan that
+ * covered half a file be read as coverage of all of it. Rule #34 — a scanner
+ * that under-reports is worse than no scanner, because its tick is read as
+ * coverage.
+ * --------------------------------------------------------------------- */
+check(
+    'every scanned file lexed cleanly to the end (a derailed scan is not a clean one)',
+    derailed.length === 0,
+    derailed.length
+        ? 'these files ended mid-string/comment/regex, so everything after that point was '
+          + 'NOT scanned:\n        ' + derailed.join('\n        ')
+        : ''
+);
 
 const unexpected = [];
 for (const [relPath, count] of violationsByFile) {
@@ -304,7 +451,7 @@ console.log('');
 console.log('Assertion 2 — regex/stripper self-test (proves the guard can both fire and stay silent):');
 
 function countRawFetch(src) {
-    return (stripCommentsAndStrings(src).match(RAW_FETCH_RE) || []).length;
+    return (stripCommentsAndStrings(src).code.match(RAW_FETCH_RE) || []).length;
 }
 
 const selfTestCases = [
@@ -319,11 +466,82 @@ const selfTestCases = [
       src: "const u = 'https://example.test/x'; fetch(u);",                                                                expect: 1 },
     { label: 'window.fetch( is not matched (dot-qualified)',    src: 'return window.fetch(url);',                          expect: 0 },
     { label: 'multiple real calls are all counted',             src: 'fetch(a); fetch(b);',                                expect: 2 },
+
+    /* ---- REGEX LITERALS (#1701) -------------------------------------------
+       The first two cases ARE the defect: before regex handling existed, the
+       quote inside the pattern opened a string state that never closed, and the
+       `fetch(` after it — along with the whole rest of the file — was silently
+       invisible. Both are taken verbatim from the shape found live in
+       modules/request.js:187. */
+    { label: 'a regex containing a DOUBLE quote does not swallow the rest of the file',
+      src: 'const t = s.replace(/"/g, "&quot;"); fetch(u);',                                                               expect: 1 },
+    { label: 'a regex containing a SINGLE quote does not swallow the rest of the file',
+      src: "const t = s.replace(/'/g, '&#39;'); fetch(u);",                                                                expect: 1 },
+    { label: 'a regex containing a BACKTICK does not swallow the rest of the file',
+      src: 'const t = s.replace(/`/g, ""); fetch(u);',                                                                     expect: 1 },
+    { label: 'a slash inside a character class does not end the regex early',
+      src: 'const t = s.split(/[/]/); fetch(u);',                                                                          expect: 1 },
+    { label: 'a fetch( mention INSIDE a regex is not counted',
+      src: 'const re = /fetch\\(/; const x = 1;',                                                                            expect: 0 },
+
+    /* ---- DIVISION must NOT be mistaken for a regex --------------------------
+       The inverse error, and the one that would make this guard fail on correct
+       code: if `/` after an operand were read as a regex start, the rest of the
+       expression would be blanked and a real call after it lost. */
+    { label: 'division after an identifier is not read as a regex',
+      src: 'const ratio = width / height; fetch(u);',                                                                      expect: 1 },
+    { label: 'division after a closing paren is not read as a regex',
+      src: 'const v = (a + b) / 2; fetch(u);',                                                                             expect: 1 },
+    { label: 'division after a closing bracket is not read as a regex',
+      src: 'const v = arr[0] / 2; fetch(u);',                                                                              expect: 1 },
+    { label: 'a regex after `return` IS recognised (keyword, not operand)',
+      src: 'function f() { return /x"y/.test(s); } fetch(u);',                                                             expect: 1 },
 ];
 
 for (const t of selfTestCases) {
     check(`self-test: ${t.label}`, countRawFetch(t.src) === t.expect, `expected ${t.expect}, got ${countRawFetch(t.src)}`);
 }
+
+/* ======================================================================
+ * Assertion 3 — the DERAILMENT detector itself can fire (#1701)
+ *
+ * The check that protects every other assertion in this file is worth no
+ * more than its own ability to fail. Rule #34: derive it, then prove it.
+ * ==================================================================== */
+console.log('');
+console.log('Assertion 3 — the derailment detector reports a broken lex rather than a clean one:');
+
+const derailCases = [
+    { label: 'an unterminated double-quoted string derails',  src: 'const a = "oops;\nfetch(u);',      clean: false },
+    { label: 'an unterminated single-quoted string derails',  src: "const a = 'oops;\nfetch(u);",      clean: false },
+    { label: 'an unterminated template literal derails',      src: 'const a = `oops;\nfetch(u);',      clean: false },
+    { label: 'an unterminated block comment derails',         src: '/* oops\nfetch(u);',              clean: false },
+    { label: 'ordinary well-formed source does NOT derail',   src: 'const a = "ok"; fetch(u);',        clean: true  },
+    { label: 'a regex-heavy but well-formed file does NOT derail',
+      src: 'const t = s.replace(/"/g, "x").split(/[/]/); fetch(u);',                                   clean: true  },
+];
+
+for (const t of derailCases) {
+    const endState = stripCommentsAndStrings(t.src).state;
+    check(
+        `self-test: ${t.label}`,
+        (endState === 'code') === t.clean,
+        `end state was '${endState}', expected ${t.clean ? "'code'" : 'anything but code'}`
+    );
+}
+
+/* The two halves must agree: a derailed file is exactly one whose tail was
+   dropped. Proven by construction rather than asserted in prose — the same
+   source, with and without the unterminated quote, must differ in what the
+   scan can see. */
+const derailedSrc = 'const a = "oops;\nfetch(u);';
+const healthySrc  = 'const a = "ok"; fetch(u);';
+check(
+    'self-test: a derailed scan really does LOSE the call it should have found',
+    countRawFetch(derailedSrc) === 0 && countRawFetch(healthySrc) === 1,
+    `derailed saw ${countRawFetch(derailedSrc)} (want 0), healthy saw ${countRawFetch(healthySrc)} (want 1) — `
+    + 'if the derailed case found the call, this file no longer demonstrates why the detector exists'
+);
 
 /* ======================================================================
  * Summary
