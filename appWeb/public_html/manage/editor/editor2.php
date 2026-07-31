@@ -531,7 +531,10 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         byId('v2-delete-btn').addEventListener('click', async () => {
             if (!currentSongId) { status('No song open to delete.', 'danger'); return; }
             const name = (store.get('song') && store.get('song').Title) || currentSongId;
-            if (!window.confirm('Delete "' + name + '"?\n\nThis removes the song and ALL its data (sections, credits, tags, links, media, revisions). This cannot be undone.')) { return; }
+            /* SOFT delete since #1694 — honest copy: the song is hidden and
+               restorable; only the admin-only Purge on /manage/deleted-songs
+               is permanent. */
+            if (!window.confirm('Delete "' + name + '"?\n\nThis moves the song to Deleted songs: it disappears from the catalogue and every listing, but nothing is permanently removed. An admin can restore it — or permanently purge it — from /manage/deleted-songs.')) { return; }
             const gone = currentSongId;
             loadSeq++;   // invalidate any in-flight loadSong so it can't repaint the deleted song
             try {
@@ -540,7 +543,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 currentSongId = null;
                 const next = sidebar.getFirstId();
                 if (next) { loadSong(next); }
-                else { teardownTabs(); status('Song deleted. Create a New song or pick one.', 'success'); }
+                else { teardownTabs(); status('Song moved to Deleted songs (restorable). Create a New song or pick one.', 'success'); }
             } catch (e) {
                 status('Delete failed: ' + e.message, 'danger');
             }

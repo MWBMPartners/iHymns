@@ -331,10 +331,12 @@ function songSoftDeleteVerdict(string $op, string $songId, bool $ready, ?int $is
 }
 
 /**
- * Fetch one row's IsDeleted state, locked for this transaction.
+ * Fetch one row's IsDeleted state (+ its audit snapshot), locked for this
+ * transaction.
  *
- * ELI5: read the song's deleted-flag and hold onto the row so nobody else
- * changes it under us.
+ * ELI5: read the song's deleted-flag — plus its title and songbook, because
+ * the caller is about to change or destroy the row and wants to write down
+ * what it was — and hold onto the row so nobody else changes it under us.
  *
  * FOR UPDATE closes the check-then-act race: a plain SELECT inside REPEATABLE
  * READ reads a snapshot, so two concurrent deletes could both see "live" and
@@ -342,16 +344,89 @@ function songSoftDeleteVerdict(string $op, string $songId, bool $ready, ?int $is
  * state the row's CURRENT state until commit. Caller must hold an open
  * transaction and have verified songSoftDeleteReady().
  *
- * @return int|null null = no such row; 0/1 = IsDeleted.
+ * WHY THREE COLUMNS, NOT ONE (#1694 commit 4): the endpoints' logActivity
+ * rows record title + songbook (the hard-delete body always snapshotted them
+ * before the row vanished), and the SongCount recompute needs the songbook.
+ * Widening THIS read hands all three facts to every write core from the ONE
+ * locked row, instead of a second unlocked SELECT that could disagree with
+ * the row the lock is holding.
+ *
+ * @return array{isDeleted:int, songbookAbbr:string, title:string}|null
+ *         null = no such row.
  */
-function _songSoftDeleteRowState(\mysqli $db, string $songId): ?int
+function _songSoftDeleteRowState(\mysqli $db, string $songId): ?array
 {
-    $stmt = $db->prepare('SELECT IsDeleted FROM tblSongs WHERE SongId = ? LIMIT 1 FOR UPDATE');
+    $stmt = $db->prepare('SELECT IsDeleted, SongbookAbbr, Title FROM tblSongs WHERE SongId = ? LIMIT 1 FOR UPDATE');
     $stmt->bind_param('s', $songId);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    return $row === null ? null : (int)$row['IsDeleted'];
+    if ($row === null) {
+        return null;
+    }
+    return [
+        'isDeleted'    => (int)$row['IsDeleted'],
+        'songbookAbbr' => (string)($row['SongbookAbbr'] ?? ''),
+        'title'        => (string)($row['Title'] ?? ''),
+    ];
+}
+
+/**
+ * Recompute one songbook's cached SongCount under the D1 predicate —
+ * best-effort, transaction-fatal-aware.
+ *
+ * ELI5: after hiding, un-hiding or destroying a song, refresh the number on
+ * that songbook's home tile. If the refresh itself hiccups, the delete still
+ * stands — unless the hiccup was the kind that already destroyed the whole
+ * transaction, in which case we must NOT pretend anything succeeded.
+ *
+ * WHY THE WRITE CORES DO THIS AT ALL (#1694 commit 4): the live database has
+ * NO SongCount triggers (owner-run probe, commit f92964e3) — the app-side
+ * recomputes are not a fallback for trigger-denied hosts, they ARE the
+ * mechanism. Every other funnel that changes a book's visible-song population
+ * (save, import, relocate) recomputes; the soft-delete lifecycle changes that
+ * population too, and without this the owner's D1 decision ("SongCount counts
+ * visible songs") simply would not happen on a delete. On a host that DOES
+ * have the predicate-aware triggers, the trigger and this recompute write the
+ * same number — idempotent, never a conflict.
+ *
+ * BEST-EFFORT WITH THE ONE FATALITY LIST (the songRelocate() §7 pattern,
+ * #1679 F8/A1): a cosmetic failure (an ancient install missing the SongCount
+ * column, a permission oddity) must not roll back the lifecycle write — the
+ * count self-heals on the next pass. But 1213/1205-class errors have already
+ * rolled back the ENTIRE transaction, including the lifecycle write; swallow
+ * one of those and the caller commits nothing while answering ok=true — the
+ * false-success class. songRelocateIsTransactionFatal() is the ONE shared
+ * list (rule #35), loaded lazily to keep this module light for read-only
+ * consumers.
+ *
+ * @param \mysqli $db   Live connection; caller holds an open transaction.
+ * @param string  $abbr The songbook whose count moved ('' = nothing to do).
+ */
+function _songSoftDeleteRecountSongbook(\mysqli $db, string $abbr): void
+{
+    if ($abbr === '') {
+        return;
+    }
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';   /* songRelocateIsTransactionFatal() */
+    try {
+        $stmt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs. songVisibleSql() is
+               already settled 'IsDeleted = 0' here (the write cores gate on
+               songSoftDeleteReady() before any of them reach this). */
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
+              WHERE Abbreviation = ?'
+        );
+        $stmt->bind_param('ss', $abbr, $abbr);
+        $stmt->execute();
+        $stmt->close();
+    } catch (\Throwable $e) {
+        if (songRelocateIsTransactionFatal($e)) {
+            throw $e;
+        }
+        error_log('[songSoftDelete] SongCount recompute failed for ' . $abbr . ': ' . $e->getMessage());
+    }
 }
 
 /**
@@ -375,7 +450,9 @@ function _songSoftDeleteRowState(\mysqli $db, string $songId): ?int
  * @param int|null    $userId Acting user for DeletedBy (null = unattributed).
  * @param string|null $reason A songDeleteReasons() key, or null/'' for none.
  * @param string      $note   Free-text note (clamped to the column's 255).
- * @return array{ok:bool, status:int, error:string} the verdict (status 200 on success).
+ * @return array{ok:bool, status:int, error:string, title?:string, songbook?:string}
+ *         the verdict (status 200 on success, with the audit snapshot the
+ *         endpoints' logActivity rows record).
  */
 function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reason = null, string $note = ''): array
 {
@@ -397,7 +474,8 @@ function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reas
 
     $db->begin_transaction();
     try {
-        $verdict = songSoftDeleteVerdict('delete', $songId, true, _songSoftDeleteRowState($db, $songId), $reason);
+        $state   = _songSoftDeleteRowState($db, $songId);
+        $verdict = songSoftDeleteVerdict('delete', $songId, true, $state['isDeleted'] ?? null, $reason);
         if (!$verdict['ok']) {
             $db->rollback();
             return $verdict;
@@ -417,8 +495,15 @@ function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reas
         $stmt->bind_param('isss', $userId, $storedReason, $storedNote, $songId);
         $stmt->execute();
         $stmt->close();
+        /* The song just left its book's VISIBLE population (D1) — refresh the
+           cached tile count. Inside the transaction so a rollback rolls it
+           back too; see the helper for the trigger-less-host reasoning. */
+        _songSoftDeleteRecountSongbook($db, (string)($state['songbookAbbr'] ?? ''));
         $db->commit();
-        return $verdict;
+        return $verdict + [
+            'title'    => (string)($state['title'] ?? ''),
+            'songbook' => (string)($state['songbookAbbr'] ?? ''),
+        ];
     } catch (\Throwable $e) {
         $db->rollback();
         throw $e;   /* a failed write is FATAL to the caller, never swallowed */
@@ -438,7 +523,8 @@ function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reas
  * @param \mysqli  $db     Live connection from getDbMysqli().
  * @param string   $songId The song to bring back.
  * @param int|null $userId Acting user (endpoint layers log it; the row keeps no restorer column — WHERE IsDeleted = 1 is the queue, and a restored row leaves it).
- * @return array{ok:bool, status:int, error:string} the verdict (status 200 on success).
+ * @return array{ok:bool, status:int, error:string, title?:string, songbook?:string}
+ *         the verdict (status 200 on success, with the audit snapshot).
  */
 function songRestore(\mysqli $db, string $songId, ?int $userId): array
 {
@@ -452,7 +538,8 @@ function songRestore(\mysqli $db, string $songId, ?int $userId): array
 
     $db->begin_transaction();
     try {
-        $verdict = songSoftDeleteVerdict('restore', $songId, true, _songSoftDeleteRowState($db, $songId));
+        $state   = _songSoftDeleteRowState($db, $songId);
+        $verdict = songSoftDeleteVerdict('restore', $songId, true, $state['isDeleted'] ?? null);
         if (!$verdict['ok']) {
             $db->rollback();
             return $verdict;
@@ -466,8 +553,14 @@ function songRestore(\mysqli $db, string $songId, ?int $userId): array
         $stmt->bind_param('s', $songId);
         $stmt->execute();
         $stmt->close();
+        /* The song just re-joined its book's visible population — the
+           mirror-image of the delete's recompute (D1). */
+        _songSoftDeleteRecountSongbook($db, (string)($state['songbookAbbr'] ?? ''));
         $db->commit();
-        return $verdict;
+        return $verdict + [
+            'title'    => (string)($state['title'] ?? ''),
+            'songbook' => (string)($state['songbookAbbr'] ?? ''),
+        ];
     } catch (\Throwable $e) {
         $db->rollback();
         throw $e;
@@ -475,30 +568,57 @@ function songRestore(\mysqli $db, string $songId, ?int $userId): array
 }
 
 /**
- * Purge one soft-deleted song — GATES ONLY for now; the destructive body is
- * NOT here yet.
+ * Purge one soft-deleted song — the destructive cascade delete, moved here
+ * from the two near-identical editor delete_song bodies (#1694 commit 4).
  *
- * ELI5: the real "gone forever" delete. Today this function only enforces
- * WHO may be purged (a song must be soft-deleted first); the actual deletion
- * still lives in the editor endpoints.
+ * ELI5: the real "gone forever" delete. Only a song already in Deleted songs
+ * can be purged; the row, its components, credits, media links, tags and its
+ * entire revision history go in one cascade, and the song's old link is left
+ * pointing somewhere sensible (another song, or a friendly "removed" page).
  *
- * #1694 commit 4 moves the existing, well-tested hard-delete body here
- * VERBATIM (PublicId capture gated on songPublicId_columnReady(),
- * songRedirectRepoint() when relinking, the cascade DELETE,
- * songRedirectWrite() for SongId + PublicId — manage/editor/api2.php's
- * delete_song today). Shipping the gates first keeps THIS commit dormant:
- * nothing calls this yet, and if something prematurely does, the
- * LogicException below is a loud failure naming the missing piece — never a
- * silent fake "purged" that leaves the row in place, and never a premature
- * fork of the delete body (which would be the exact duplicate the modularity
- * rule bans).
+ * THIS IS THE ONE COPY of the delete dance. It previously existed TWICE,
+ * near-identically (manage/editor/api.php delete_song + api2.php delete_song
+ * — the modularity rule's worst case for an irreversible operation); both
+ * endpoints now soft-delete, and this body is the verbatim-in-behaviour move
+ * of what they used to do:
+ *   1. row state + audit snapshot under FOR UPDATE (title/songbook must be
+ *      captured BEFORE the row vanishes);
+ *   2. resolve the optional relink target — a DIFFERENT, EXISTING song, else
+ *      tombstone (the same "valid other id or null" rule as before; the
+ *      existence probe is deliberately visibility-blind: relinking to a
+ *      currently-hidden song is honest — it answers 410 while hidden and
+ *      self-heals if that song is restored);
+ *   3. capture the PublicId, GATED on songPublicId_columnReady(), so a shared
+ *      /song/<PublicId> keeps resolving too (#1343-B);
+ *   4. when relinking, songRedirectRepoint() FORWARDS every redirect already
+ *      pointing AT this song BEFORE the delete, so the FK ON DELETE SET NULL
+ *      cascade cannot strand a chain (mirrors the merge path; a tombstone
+ *      deliberately lets inbound chains fall to "removed");
+ *   5. ONE cascade DELETE — every inbound FK to tblSongs(SongId) is ON DELETE
+ *      CASCADE (38) or SET NULL (3), verified against
+ *      INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS (#1200), so no
+ *      hand-ordering and no orphans;
+ *   6. songRedirectWrite() for the SongId AND the PublicId (reason 'delete',
+ *      unchanged — resolver behaviour and existing rows depend on it);
+ *   7. the D1 SongCount recompute (the purged song was already hidden, so
+ *      the visible count normally does not move — but the recompute is cheap
+ *      insurance against a count that drifted while the row sat deleted).
+ *
+ * REQUIRES IsDeleted = 1 FIRST — purge is reachable only from the deleted
+ * state (two-step by construction; the verdict's purge clause enforces it).
+ * There is deliberately NO "skip the queue" flag: a caller wanting a
+ * one-click hard delete must soft-delete first, which is the entire point.
  *
  * @param \mysqli     $db         Live connection from getDbMysqli().
  * @param string      $songId     The soft-deleted song to purge.
- * @param int|null    $userId     Acting user (for the eventual audit row).
- * @param string|null $redirectTo Optional relink target for the permalink dance.
- * @return array{ok:bool, status:int, error:string} a REFUSAL verdict only.
- * @throws \LogicException when the gates pass — the body lands in #1694 commit 4.
+ * @param int|null    $userId     Acting user (recorded on the redirect rows;
+ *                                endpoint layers write the logActivity row).
+ * @param string|null $redirectTo Optional relink target for the permalink
+ *                                dance; blank/self/unknown → tombstone.
+ * @return array{ok:bool, status:int, error:string, deleted?:int,
+ *               redirectTo?:?string, title?:string, songbook?:string}
+ *         the verdict; on success `deleted` = tblSongs rows removed (1),
+ *         `redirectTo` = the resolved relink target or null (tombstone).
  */
 function songPurge(\mysqli $db, string $songId, ?int $userId, ?string $redirectTo = null): array
 {
@@ -513,21 +633,81 @@ function songPurge(\mysqli $db, string $songId, ?int $userId, ?string $redirectT
         return songSoftDeleteVerdict('purge', $songId, false, null);
     }
 
-    /* Plain read, no transaction: the gates-only stub never writes, and the
-       commit-4 body will bring its own transaction around the full dance. */
-    $stmt = $db->prepare('SELECT IsDeleted FROM tblSongs WHERE SongId = ? LIMIT 1');
-    $stmt->bind_param('s', $songId);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+    /* The redirect layer (repoint + tombstone writes) — lazy, matching how the
+       old endpoint bodies loaded it, so read-only consumers of this module
+       never pay for it. song_public_id.php is already a top-of-file require. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_redirects.php';
 
-    $verdict = songSoftDeleteVerdict('purge', $songId, true, $row === null ? null : (int)$row['IsDeleted']);
-    if (!$verdict['ok']) {
-        return $verdict;
+    $db->begin_transaction();
+    try {
+        $state   = _songSoftDeleteRowState($db, $songId);   /* FOR UPDATE — snapshot + lock */
+        $verdict = songSoftDeleteVerdict('purge', $songId, true, $state['isDeleted'] ?? null);
+        if (!$verdict['ok']) {
+            $db->rollback();
+            return $verdict;
+        }
+
+        /* Resolve the relink target: a DIFFERENT, EXISTING song, else null =
+           tombstone (verbatim rule from both old bodies). */
+        $target = null;
+        $redirectTo = trim((string)$redirectTo);
+        if ($redirectTo !== '' && $redirectTo !== $songId) {
+            $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $chk->bind_param('s', $redirectTo);
+            $chk->execute();
+            if ($chk->get_result()->fetch_row() !== null) {
+                $target = $redirectTo;
+            }
+            $chk->close();
+        }
+
+        /* Capture the PublicId BEFORE the delete so a shared /song/<PublicId>
+           resolves afterward (#1343-B). Gated — an un-migrated PublicId env
+           simply has no opaque permalink to preserve. */
+        $pubId = '';
+        if (songPublicId_columnReady($db)) {
+            $pp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $pp->bind_param('s', $songId);
+            $pp->execute();
+            $pubId = (string)($pp->get_result()->fetch_assoc()['PublicId'] ?? '');
+            $pp->close();
+        }
+
+        /* Keep permalinks alive (#1343): when relinking, forward inbound
+           redirects to the new target BEFORE the delete — the FK ON DELETE
+           SET NULL cascade would otherwise strand the chain. */
+        if ($target !== null) {
+            songRedirectRepoint($db, $songId, $target);
+        }
+
+        /* The single cascade delete — see the doc-block. */
+        $del = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
+        $del->bind_param('s', $songId);
+        $del->execute();
+        $deleted = (int)$del->affected_rows;
+        $del->close();
+
+        /* Reason stays 'delete' (never 'purge'): the resolver and every row
+           the old endpoints already wrote use it, and renaming the vocabulary
+           mid-stream would split one meaning across two spellings. */
+        songRedirectWrite($db, $songId, $target, 'delete', $userId);
+        if ($pubId !== '') {
+            songRedirectWrite($db, $pubId, $target, 'delete', $userId);
+        }
+
+        /* D1 recompute — normally a no-op (the row was hidden, so the visible
+           count already excluded it), kept for drift insurance. */
+        _songSoftDeleteRecountSongbook($db, (string)($state['songbookAbbr'] ?? ''));
+
+        $db->commit();
+        return $verdict + [
+            'deleted'    => $deleted,
+            'redirectTo' => $target,
+            'title'      => (string)($state['title'] ?? ''),
+            'songbook'   => (string)($state['songbookAbbr'] ?? ''),
+        ];
+    } catch (\Throwable $e) {
+        $db->rollback();
+        throw $e;   /* a failed purge is FATAL to the caller, never a fake success */
     }
-    throw new \LogicException(
-        'songPurge(): gates passed but the destructive body has not been moved here yet — '
-        . 'it lands with the editor cutover (#1694 commit 4). Refusing loudly rather than '
-        . 'faking a purge.'
-    );
 }

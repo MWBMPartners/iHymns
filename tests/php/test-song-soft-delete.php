@@ -58,6 +58,28 @@ declare(strict_types=1);
  *   M8 ready's lockstep `=== 5` weakened to `>= 1`                 → red
  *       (the partial-apply mode exists for exactly this mutant)
  *
+ * COMMIT-4 MUTATIONS (the purge body + the recompute; run 2026-07-31, each
+ * observed red against the real tree, then restored from a cp backup and the
+ * restore md5-verified):
+ *   M9  songPurge's PublicId songRedirectWrite deleted              → red ×2
+ *       (shared-permalink coverage AND the tombstone write count)
+ *   M10 songRedirectRepoint moved to AFTER the cascade DELETE       → red
+ *       (order read from the EXECUTION log — repointing after the
+ *        SET NULL cascade forwards nothing)
+ *   M11 purge verdict fed a hardcoded IsDeleted=1 (state bypassed)  → red ×6
+ *       (a live song became one-click purgeable; the migrated mode's
+ *        whole-run absences caught the collateral too)
+ *   M12 songSoftDelete's SongCount recompute deleted                → red
+ *       (the trigger-less live DB would overcount forever — D1)
+ *   M13 songPurge's catch downgraded to `return ok:true`            → red
+ *       (the fake-"purged" false success; scenario 3b exists for it)
+ *
+ * NOTE ON A TEST-SIDE BUG THIS SUITE'S OWN FIRST COMMIT-4 RUN CAUGHT: three
+ * redirectTo assertions used `?? 'unset'`, which null-coalesces a PRESENT
+ * null — the CORRECT tombstone answer — into 'unset' and failed on correct
+ * code (rule #34's other half). Fixed to array_key_exists(); recorded here
+ * so the next author does not re-simplify them.
+ *
  *   php tests/php/test-song-soft-delete.php            # parent: all modes
  *
  * Exit status 0 = all pass, 1 = a failure.
@@ -87,7 +109,7 @@ function ok(string $label, bool $cond, string $detail = ''): void
  * ===================================================================== */
 
 const SOFT_DELETE_MODE_ENV = 'IHYMNS_SOFT_DELETE_MODE';
-const SOFT_DELETE_MODES    = ['unmigrated', 'partial-apply', 'migrated', 'probe-failure'];
+const SOFT_DELETE_MODES    = ['unmigrated', 'partial-apply', 'migrated', 'purge', 'probe-failure'];
 
 $mode = getenv(SOFT_DELETE_MODE_ENV) ?: '';
 
@@ -391,6 +413,19 @@ if ($mode === 'migrated') {
        'tx events this call: ' . json_encode(array_slice($db->tx, $txBefore)));
     $countedOk('…and the row was read FOR UPDATE first (the check-then-act race is locked out)',
        $db->preparedMatching('/FOR UPDATE$/i') !== []);
+    /* #1694 commit 4 — D1 on a TRIGGER-LESS host: the live DB has no SongCount
+       triggers (commit f92964e3), so the write core's own recompute is the ONLY
+       thing that moves the tile count when a song is hidden. Filtered by the
+       predicate, scoped to the song's book. */
+    $recount = $db->executedMatching('/^UPDATE tblSongbooks SET SongCount = \(SELECT COUNT\(\*\) FROM tblSongs WHERE SongbookAbbr = \? AND IsDeleted = 0\)/i');
+    $countedOk('…and the songbook\'s cached SongCount was recomputed under the D1 predicate',
+       count($recount) === 1 && $recount[0]['params'] === ['MISC', 'MISC'],
+       'recount statements: ' . json_encode($recount)
+       . ' — without this, soft-deleting a song leaves the home tile overcounting '
+       . 'forever on the (trigger-less) live DB');
+    $countedOk('…and the success verdict carries the audit snapshot (title + songbook) for logActivity',
+       ($verdict['title'] ?? null) === 'Untitled' && ($verdict['songbook'] ?? null) === 'MISC',
+       'got ' . json_encode($verdict));
 
     /* -- the load-bearing absences, checked over the WHOLE mode at the end - */
 
@@ -449,21 +484,19 @@ if ($mode === 'migrated') {
     $countedOk('restoring an ABSENT song refuses with 404',
        songRestore($db, 'ZZ-9999', 7)['status'] === 404);
 
-    /* -- songPurge(): gates enforced, body deliberately absent -------------- */
+    /* -- songPurge(): the REFUSALS only, in this mode ------------------------ *
+     * The destructive happy path runs in its own 'purge' mode child, so this
+     * mode's whole-run absence assertions below ("no DELETE ever", "nothing
+     * touched tblSongRedirects") keep pinning the two load-bearing absences of
+     * the NON-purge lifecycle. A refusal must write nothing and touch neither. */
+    $txBefore = count($db->tx);
     $countedOk('purging a LIVE song refuses with 409 — purge only from the deleted state',
        songPurge($db, 'MP-1008', 7)['status'] === 409);
+    $countedOk('…and the refusal ROLLED BACK its transaction, having written nothing',
+       array_slice($db->tx, $txBefore) === ['begin', 'rollback'],
+       'tx events this call: ' . json_encode(array_slice($db->tx, $txBefore)));
     $countedOk('purging an ABSENT song refuses with 404',
        songPurge($db, 'ZZ-9999', 7)['status'] === 404);
-    $caught = null;
-    try {
-        songPurge($db, 'CP-0412', 7);
-    } catch (\Throwable $e) {
-        $caught = $e;
-    }
-    $countedOk('purge gates PASSING throws LogicException — the body lands in commit 4, and a fake "purged" would be worse than none',
-       $caught instanceof \LogicException,
-       'caught ' . ($caught === null ? 'nothing — songPurge() claimed success it cannot deliver yet'
-           : get_class($caught)));
 
     /* -- a failing UPDATE propagates and rolls back -------------------------- */
     $db->failExecutePattern = '/^UPDATE tblSongs SET IsDeleted = 1/i';
@@ -489,7 +522,142 @@ if ($mode === 'migrated') {
     $countedOk('NO statement touching tblSongRedirects was prepared by ANYTHING in this mode',
        $db->preparedMatching('/tblSongRedirects/i') === [],
        'a redirect write cannot be un-written on restore (#1694 plan §4) — '
-       . 'redirects are purge\'s business, in commit 4');
+       . 'redirects are purge\'s business, exercised in the purge mode below');
+
+    echo "MODE COMPLETE {$mode} ({$checks} assertions)\n";
+}
+
+/* --------------------------------------------------------------------- */
+if ($mode === 'purge') {
+    echo "songPurge() — the moved hard-delete body (#1694 commit 4), every branch\n";
+
+    /* Fixture: a migrated install WITH the redirect table (the permalink dance
+       is the point of this mode) and a PublicId column. Two soft-deleted songs
+       (one per purge scenario — the recording double never mutates songRows,
+       so each scenario purges a FRESH id), one live relink target. */
+    $db = new GateRecorderMysqli();
+    $db->columns = softDeleteColumnsFixture() + ['tblSongs.PublicId' => true];
+    $db->tables  = ['tblSongRedirects' => true];
+    $db->songRows = [
+        'CP-0412' => ['IsDeleted' => 1, 'SongbookAbbr' => 'CP', 'Title' => 'Gone Song'],
+        'ZZ-0002' => ['IsDeleted' => 1, 'SongbookAbbr' => 'ZZ', 'Title' => 'Tombstoned Song'],
+        'MP-1008' => ['IsDeleted' => 0, 'SongbookAbbr' => 'MP', 'Title' => 'Live Song'],
+    ];
+    $db->liveSongIds = ['CP-0412', 'ZZ-0002', 'MP-1008'];   // the relink-target existence probe
+    $db->publicIdMap = ['ABCDEFGHJK' => 'CP-0412'];          // only CP-0412 has an opaque permalink
+
+    /* -- 1. purge WITH a relink target: the full dance, in order ------------ */
+    $txBefore = count($db->tx);
+    $verdict  = songPurge($db, 'CP-0412', 7, 'MP-1008');
+    $countedOk('a soft-deleted song purges with a relink target: ok=true / 200',
+       $verdict['ok'] === true && $verdict['status'] === 200,
+       'got ' . json_encode($verdict));
+    $countedOk('…answering the TRUE deleted count and the RESOLVED target (never a fake success)',
+       ($verdict['deleted'] ?? null) === 1 && ($verdict['redirectTo'] ?? null) === 'MP-1008',
+       'got ' . json_encode($verdict));
+    $countedOk('…with the audit snapshot captured BEFORE the row vanished',
+       ($verdict['title'] ?? null) === 'Gone Song' && ($verdict['songbook'] ?? null) === 'CP');
+    $countedOk('…inside one committed transaction',
+       array_slice($db->tx, $txBefore) === ['begin', 'commit'],
+       'tx: ' . json_encode(array_slice($db->tx, $txBefore)));
+
+    $dels = $db->executedMatching('/^DELETE FROM tblSongs WHERE SongId = \?$/i');
+    $countedOk('…via exactly ONE cascade DELETE, bound to the one song id',
+       count($dels) === 1 && $dels[0]['params'] === ['CP-0412'],
+       'DELETEs executed: ' . json_encode($dels));
+
+    /* Repoint BEFORE delete — the FK ON DELETE SET NULL cascade strands any
+       chain still pointing at the row once it is gone (#1343; the merge-path
+       mirror). Order is read from the EXECUTION log, not the source. */
+    $repointIdx = null;
+    $deleteIdx  = null;
+    foreach ($db->executed as $i => $e) {
+        if ($repointIdx === null && preg_match('/^UPDATE tblSongRedirects SET NewSongId = \? WHERE NewSongId = \?$/i', $e['sql'])) { $repointIdx = $i; }
+        if ($deleteIdx === null && preg_match('/^DELETE FROM tblSongs WHERE SongId = \?$/i', $e['sql'])) { $deleteIdx = $i; }
+    }
+    $countedOk('…inbound redirects were REPOINTED to the target BEFORE the delete',
+       $repointIdx !== null && $deleteIdx !== null && $repointIdx < $deleteIdx
+       && $db->executed[$repointIdx]['params'] === ['MP-1008', 'CP-0412'],
+       'repoint at ' . var_export($repointIdx, true) . ', delete at ' . var_export($deleteIdx, true)
+       . ' — repointing after the delete forwards nothing (SET NULL already fired)');
+
+    /* Both permalink shapes tombstone-or-forward: the SongId AND the PublicId
+       (#1343-B). Reason stays 'delete' — the resolver vocabulary is unchanged. */
+    $writes = $db->executedMatching('/^INSERT INTO tblSongRedirects/i');
+    $countedOk('…and a redirect row was written for the SongId AND the PublicId, both → the target, reason \'delete\'',
+       count($writes) === 2
+       && $writes[0]['params'] === ['CP-0412', 'MP-1008', 'delete', '', 7]
+       && $writes[1]['params'] === ['ABCDEFGHJK', 'MP-1008', 'delete', '', 7],
+       'redirect INSERTs: ' . json_encode($writes)
+       . ' — dropping the PublicId write breaks every shared /song/<PublicId> link (#1343-B)');
+
+    $recount = $db->executedMatching('/^UPDATE tblSongbooks SET SongCount = \(SELECT COUNT\(\*\) FROM tblSongs WHERE SongbookAbbr = \? AND IsDeleted = 0\)/i');
+    $countedOk('…and the songbook count was recomputed (drift insurance; the row was already hidden)',
+       count($recount) === 1 && $recount[0]['params'] === ['CP', 'CP'],
+       'recounts: ' . json_encode($recount));
+
+    /* -- 2. purge WITHOUT a target: tombstone (NewSongId null), no repoint --- */
+    $prevRepoints = count($db->executedMatching('/^UPDATE tblSongRedirects SET NewSongId/i'));
+    $verdict = songPurge($db, 'ZZ-0002', 7, null);
+    $writes  = $db->executedMatching('/^INSERT INTO tblSongRedirects/i');
+    $last    = $writes !== [] ? $writes[count($writes) - 1] : null;
+    /* array_key_exists, NOT `?? 'unset'`: ?? null-coalesces, so a PRESENT
+       redirectTo:null — the correct tombstone answer — would read as absent
+       and fail this assertion on correct code (observed red on this suite's
+       own first run; rule #34's other half). */
+    $countedOk('a tombstone purge (no target) writes NewSongId = NULL and answers redirectTo null',
+       $verdict['ok'] === true
+       && array_key_exists('redirectTo', $verdict) && $verdict['redirectTo'] === null
+       && $last !== null && $last['params'] === ['ZZ-0002', null, 'delete', '', 7],
+       'got ' . json_encode($verdict) . '; last redirect INSERT: ' . json_encode($last));
+    $countedOk('…with NO repoint (a tombstone deliberately lets inbound chains fall to "removed")',
+       count($db->executedMatching('/^UPDATE tblSongRedirects SET NewSongId/i')) === $prevRepoints);
+    $countedOk('…and ONE redirect write only — this song has no PublicId to preserve',
+       count($writes) === 3,   /* 2 from scenario 1 + this one */
+       'redirect INSERTs so far: ' . json_encode($writes));
+
+    /* -- 3. the target rules: self and unknown both mean tombstone ----------- *
+     * The recording double never mutates songRows, so the two already-purged
+     * fixtures still read as deleted — reused here for the target-resolution
+     * branches. */
+    $verdict = songPurge($db, 'CP-0412', 7, 'CP-0412');
+    $countedOk('redirecting a purge to ITSELF resolves to a tombstone (null), never a self-loop',
+       $verdict['ok'] === true
+       && array_key_exists('redirectTo', $verdict) && $verdict['redirectTo'] === null,
+       'got ' . json_encode($verdict));
+    $verdict = songPurge($db, 'ZZ-0002', 7, 'NO-SUCH-1');
+    $countedOk('an unknown relink target resolves to a tombstone (the existence probe said no)',
+       $verdict['ok'] === true
+       && array_key_exists('redirectTo', $verdict) && $verdict['redirectTo'] === null,
+       'got ' . json_encode($verdict));
+
+    /* -- 3b. a failing cascade DELETE propagates after a rollback ------------ *
+     * The double never mutates songRows, so CP-0412 still reads as deleted and
+     * the gates pass; the synthetic execute failure then hits the DELETE. */
+    $db->failExecutePattern = '/^DELETE FROM tblSongs/i';
+    $txBefore = count($db->tx);
+    $caught = null;
+    try {
+        songPurge($db, 'CP-0412', 7, null);
+    } catch (\Throwable $e) {
+        $caught = $e;
+    }
+    $countedOk('a failing purge DELETE propagates out (fatal, never a fake "purged") after a rollback',
+       $caught instanceof \mysqli_sql_exception
+       && array_slice($db->tx, $txBefore) === ['begin', 'rollback'],
+       'caught ' . ($caught === null ? 'nothing — songPurge() swallowed its own failure' : get_class($caught))
+       . '; tx: ' . json_encode(array_slice($db->tx, $txBefore)));
+    $db->failExecutePattern = null;
+
+    /* -- 4. the wrong-state gates hold in THIS mode too ---------------------- */
+    $delsBefore = count($db->executedMatching('/^DELETE FROM tblSongs/i'));
+    $countedOk('purging a LIVE song refuses with 409 — soft delete first, always',
+       songPurge($db, 'MP-1008', 7, null)['status'] === 409);
+    $countedOk('purging an ABSENT song refuses with 404',
+       songPurge($db, 'NO-SUCH-1', 7, null)['status'] === 404);
+    $countedOk('…and neither refusal executed a DELETE',
+       count($db->executedMatching('/^DELETE FROM tblSongs/i')) === $delsBefore,
+       'DELETEs: ' . json_encode($db->executedMatching('/^DELETE FROM tblSongs/i')));
 
     echo "MODE COMPLETE {$mode} ({$checks} assertions)\n";
 }

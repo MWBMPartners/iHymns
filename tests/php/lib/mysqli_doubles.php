@@ -92,6 +92,14 @@ final class GateRecorderStmt
     /** @var list<mixed> references to the caller's bound variables */
     private array $refs = [];
 
+    /* #1694 commit 4 — songPurge() reads $del->affected_rows after its cascade
+       DELETE (the endpoints always echoed the TRUE count, never a fake
+       success). A fixed 1 is the faithful stand-in for "the one row this
+       statement targeted was hit"; a suite that needs 0 can set it on the
+       object prepare() returned. Default-inert: nothing read the property
+       before, so the older suites are byte-identical. */
+    public int $affected_rows = 1;
+
     public function __construct(private GateRecorderMysqli $db, private string $sql) {}
 
     /* By-ref variadic, exactly like the real bind_param: the VALUES are read at
@@ -261,16 +269,29 @@ final class GateRecorderMysqli extends \mysqli
         if (preg_match('/^SELECT 1 FROM tblSongs WHERE SongId = \?/i', $sql)) {
             return in_array((string)($params[0] ?? ''), $this->liveSongIds, true) ? ['1' => 1] : null;
         }
-        /* #1694 — the soft-delete row-state SELECT, with or without the write
-           cores' FOR UPDATE lock suffix. */
-        if (preg_match('/^SELECT IsDeleted FROM tblSongs WHERE SongId = \? LIMIT 1( FOR UPDATE)?$/i', $sql)) {
+        /* #1694 — the soft-delete row-state SELECT. Two spellings: the plain
+           IsDeleted probe (songSoftDeletedHolds), and the commit-4 widened
+           write-core read that also snapshots SongbookAbbr + Title under FOR
+           UPDATE. Answered from the same songRows fixture; the extra keys are
+           harmless to the caller that only reads IsDeleted. */
+        if (preg_match('/^SELECT IsDeleted(, SongbookAbbr, Title)? FROM tblSongs WHERE SongId = \? LIMIT 1( FOR UPDATE)?$/i', $sql)) {
             $row = $this->songRows[(string)($params[0] ?? '')] ?? null;
-            return $row === null ? null : ['IsDeleted' => (int)($row['IsDeleted'] ?? 0)];
+            return $row === null ? null : [
+                'IsDeleted'    => (int)($row['IsDeleted'] ?? 0),
+                'SongbookAbbr' => (string)($row['SongbookAbbr'] ?? 'MISC'),
+                'Title'        => (string)($row['Title'] ?? 'Untitled'),
+            ];
         }
         /* #1694 — songPublicId_resolveToSongId()'s lookup. */
         if (preg_match('/^SELECT SongId FROM tblSongs WHERE PublicId = \? LIMIT 1$/i', $sql)) {
             $sid = $this->publicIdMap[(string)($params[0] ?? '')] ?? null;
             return $sid === null ? null : ['SongId' => (string)$sid];
+        }
+        /* #1694 commit 4 — songPurge()'s PublicId capture (SongId → PublicId,
+           the reverse of the resolver above; same fixture, searched by value). */
+        if (preg_match('/^SELECT PublicId FROM tblSongs WHERE SongId = \? LIMIT 1$/i', $sql)) {
+            $pub = array_search((string)($params[0] ?? ''), $this->publicIdMap, true);
+            return $pub === false ? null : ['PublicId' => (string)$pub];
         }
         if (preg_match('/^SELECT 1 FROM tblSongRedirects WHERE OldSongId = \?/i', $sql)) {
             return in_array((string)($params[0] ?? ''), $this->redirectClaimedIds, true) ? ['1' => 1] : null;

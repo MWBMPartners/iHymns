@@ -3387,18 +3387,17 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * delete_song (#1200 Phase 0) — REMOVE a song + its ENTIRE dependent
-     * subtree. The first real server-side delete: the legacy editor's
-     * deleteSong() was CLIENT-ONLY (no endpoint existed), so its toast lied
-     * and the song came back on refresh (a #1010 regression). Every inbound FK
-     * to tblSongs(SongId) is ON DELETE CASCADE (37) or SET NULL (3) — VERIFIED
-     * against INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS — so ONE cascade
-     * DELETE atomically removes components → lyrics → words → syllables,
-     * credits, revisions, media, tags, links, presentation rows, etc. with no
-     * orphans and no RESTRICT failure (no hand-ordering, no FK-checks-off).
-     * Guarded by the #1200 CSRF gate (the editor API had none). Returns the
-     * TRUE affected_rows — never a false success. Dormant until the rewrite UI
-     * calls it (per-phase hard cutover).
+     * delete_song (#1200 Phase 0 → SOFT delete since #1694 commit 4).
+     * Originally the first real server-side delete (the legacy editor's
+     * deleteSong() was CLIENT-ONLY and its toast lied, #1010) — a single
+     * cascade DELETE. That destructive body now lives ONCE, in songPurge()
+     * (includes/song_soft_delete.php), admin-only and reachable only from the
+     * deleted state on /manage/deleted-songs; this endpoint hides the song
+     * instead (IsDeleted = 1 + who/when/why, restorable). It previously
+     * existed near-identically HERE and in api2.php — the modularity rule's
+     * worst case for an irreversible operation — so both now delegate to the
+     * ONE songSoftDelete() core. Still guarded by the #1200 CSRF gate + the
+     * delete_songs entitlement; still never a false success.
      * ----------------------------------------------------------------- */
     case 'delete_song':
         if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -3436,9 +3435,18 @@ switch ($action) {
         }
         $delBody   = json_decode(file_get_contents('php://input') ?: '', true);
         $delSongId = trim((string)(is_array($delBody) ? ($delBody['songId'] ?? $delBody['id'] ?? '') : ($_GET['id'] ?? '')));
-        /* #1343 — optional relink target for the deleted song's permalink (blank =
-           "removed" tombstone). Either way the old /song/<id> resolves, not 404s. */
+        /* `redirectTo` is ACCEPTED AND IGNORED (#1694, deliberately — the
+           response says so rather than silently dropping it). A soft delete
+           writes NOTHING to tblSongRedirects: a songRedirectRepoint() cannot
+           be un-written, so restore must be a no-op on redirect state (the
+           #1679 stranded-chain class). The relink happens at PURGE
+           (/manage/deleted-songs), where the old redirect dance runs unchanged. */
         $delRedirectTo = trim((string)(is_array($delBody) ? ($delBody['redirectTo'] ?? '') : ''));
+        /* Optional vocabulary (#1694): a songDeleteReasons() key + free note.
+           An unknown reason refuses 422 (allow-list, rule #20; status is the
+           contract, rule #35). */
+        $delReason = trim((string)(is_array($delBody) ? ($delBody['reason'] ?? '') : ''));
+        $delNote   = trim((string)(is_array($delBody) ? ($delBody['note'] ?? '') : ''));
         if ($delSongId === '') {
             http_response_code(400);
             echo json_encode(['ok' => false, 'error' => 'songId is required.']);
@@ -3446,66 +3454,33 @@ switch ($action) {
         }
         try {
             $db = getDbMysqli();
-            $db->begin_transaction();
-            /* Snapshot for the audit trail before the row vanishes. */
-            /* @deleted-visible: the DELETE path (#1694) — these pre-reads must
-               find the row REGARDLESS of visibility (a purge of an already-
-               soft-deleted song reaches here; commit 4 delegates this body to
-               songSoftDelete()/songPurge()). */
-            $delPrev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
-            $delPrev->bind_param('s', $delSongId);
-            $delPrev->execute();
-            $delPrevRow = $delPrev->get_result()->fetch_assoc();
-            $delPrev->close();
-            if ($delPrevRow === null) {
-                $db->rollback();
-                http_response_code(404);
-                echo json_encode(['ok' => false, 'error' => 'Song not found.', 'deleted' => 0]);
+            /* song_soft_delete.php is a top-of-file require (:64) — the ONE
+               lifecycle core both editor APIs delegate to. */
+            $delBy   = (int)($currentUser['id'] ?? 0) ?: null;
+            $verdict = songSoftDelete($db, $delSongId, $delBy, $delReason === '' ? null : $delReason, $delNote);
+            if (!$verdict['ok']) {
+                /* 400 empty id / 404 absent / 409 un-migrated or already
+                   deleted / 422 unknown reason — relayed as-is. */
+                http_response_code($verdict['status']);
+                echo json_encode(['ok' => false, 'error' => $verdict['error'], 'deleted' => 0]);
                 break;
             }
-            /* Resolve the relink target (a different, existing song) else tombstone. */
-            $delTarget = null;
-            if ($delRedirectTo !== '' && $delRedirectTo !== $delSongId) {
-                $delChk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $delChk->bind_param('s', $delRedirectTo);
-                $delChk->execute();
-                if ($delChk->get_result()->fetch_row() !== null) { $delTarget = $delRedirectTo; }
-                $delChk->close();
-            }
-            /* Keep permalinks alive (#1343) — gated. When relinking, FORWARD any
-               redirects already pointing AT this song to the new target BEFORE the
-               delete, so the FK ON DELETE SET NULL cascade can't strand a chain
-               (mirrors the merge path). Tombstone (null) lets inbound fall to "removed". */
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
-            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
-            /* Capture PublicId before the delete so a shared /song/<PublicId> resolves too (#1343-B). */
-            $delPubId = '';
-            if (songPublicId_columnReady($db)) {
-                $dpp = $db->prepare('SELECT PublicId FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $dpp->bind_param('s', $delSongId);
-                $dpp->execute();
-                $delPubId = (string)($dpp->get_result()->fetch_assoc()['PublicId'] ?? '');
-                $dpp->close();
-            }
-            if ($delTarget !== null) { songRedirectRepoint($db, $delSongId, $delTarget); }
-            /* Single cascade delete — see the block comment above. */
-            $delStmt = $db->prepare('DELETE FROM tblSongs WHERE SongId = ?');
-            $delStmt->bind_param('s', $delSongId);
-            $delStmt->execute();
-            $delCount = $delStmt->affected_rows;
-            $delStmt->close();
-            $delBy = (int)($currentUser['id'] ?? 0) ?: null;
-            songRedirectWrite($db, $delSongId, $delTarget, 'delete', $delBy);
-            if ($delPubId !== '') { songRedirectWrite($db, $delPubId, $delTarget, 'delete', $delBy); }
-            $db->commit();
-            logActivity('song.delete', 'song', $delSongId, [
-                'title'       => (string)($delPrevRow['Title'] ?? ''),
-                'songbook'    => (string)($delPrevRow['SongbookAbbr'] ?? ''),
-                'redirect_to' => $delTarget ?? '(tombstone)',
+            logActivity('song.soft_delete', 'song', $delSongId, [
+                'title'    => (string)($verdict['title'] ?? ''),
+                'songbook' => (string)($verdict['songbook'] ?? ''),
+                'reason'   => $delReason === '' ? null : $delReason,
+                'note'     => $delNote,
             ]);
-            echo json_encode(['ok' => true, 'deleted' => (int)$delCount, 'songId' => $delSongId, 'redirectTo' => $delTarget]);
+            echo json_encode([
+                'ok'          => true,
+                'deleted'     => 1,        /* back-compat: the one song left the catalogue */
+                'softDeleted' => true,     /* NEW — restorable from /manage/deleted-songs */
+                'songId'      => $delSongId,
+                'redirectTo'  => null,     /* no redirect is ever written at soft-delete time */
+            ] + ($delRedirectTo !== '' ? [
+                'notice' => 'redirectTo is ignored on a soft delete — choose the relink target when the song is purged from /manage/deleted-songs (#1694).',
+            ] : []));
         } catch (\Throwable $e) {
-            if (isset($db)) { try { $db->rollback(); } catch (\Throwable $_e) {} }
             error_log('[delete_song] ' . $e->getMessage());
             http_response_code(500);
             $delIsAdmin = isset($currentUser['role']) && hasRole($currentUser['role'], 'admin');

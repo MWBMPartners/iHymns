@@ -5659,35 +5659,33 @@ function deleteSong() {
     var song  = findSongById(currentSongId);
     var title = song ? song.title : currentSongId;
 
-    /* Ask for confirmation. */
-    if (!confirm('Delete "' + title + '"?\n\nThis permanently removes the song and ALL its data (components, lyric lines, credits, links, media) from the database. This cannot be undone.')) {
+    /* Ask for confirmation — SOFT delete since #1694: honest copy, no more
+       "permanent" (that word now belongs to the admin-only Purge on
+       /manage/deleted-songs). */
+    if (!confirm('Delete "' + title + '"?\n\nThis moves the song to Deleted songs: it disappears from the catalogue and every listing, but nothing is permanently removed. An admin can restore it — or permanently purge it — from /manage/deleted-songs.')) {
         return;
     }
 
     var idToDelete = currentSongId;
 
-    /* #1343 — keep the shared permalink alive. Offer to redirect the deleted
-       song's old link to another song; blank/Cancel leaves a friendly "removed"
-       page (the server validates the target and tombstones a blank/unknown id).
-       For a genuine duplicate, Merge on Duplicate & Counterpart Review is better —
-       it auto-redirects without this prompt. */
-    var redirectTo = (window.prompt(
-        'Optional: keep this song’s shared link working by redirecting it to another song.\n\n' +
-        'Enter the Song ID to redirect to (e.g. MP-0001), or leave blank for a “removed” page.',
-        ''
-    ) || '').trim();
+    /* The old redirect-target prompt is GONE (#1694): the server ignores
+       redirectTo on a soft delete (a redirect write cannot be un-written, so
+       restore would stop being a no-op — the #1679 stranded-chain class).
+       The relink choice is asked ONCE, where it takes effect: at purge time
+       on /manage/deleted-songs. Prompting here and discarding the answer
+       would be lying to the curator. */
 
     /* SERVER-BACKED delete (#1200 / #1290). The legacy implementation only
        filtered the in-memory songData.songs array and toasted "deleted" — the
        DB row was never touched, so the song reappeared on reload (and still
-       loaded in Song View). We now POST delete_song to the v2 API (cascade
-       delete + CSRF) and ONLY mutate local state + toast once the server
-       confirms. On failure nothing is removed locally and the error is shown,
-       so the toast can never lie again. */
+       loaded in Song View). We POST delete_song to the v2 API (soft delete +
+       CSRF) and ONLY mutate local state + toast once the server confirms. On
+       failure nothing is removed locally and the error is shown, so the toast
+       can never lie again. */
     var btn = document.getElementById('btn-delete-song');
     if (btn) { btn.disabled = true; }
 
-    ed2EnrichApi('delete_song', { songId: idToDelete, redirectTo: redirectTo })
+    ed2EnrichApi('delete_song', { songId: idToDelete })
         .then(function (res) {
             /* Server confirmed the cascade delete — sync local state now. */
             songData.songs = songData.songs.filter(function (s) { return s.id !== idToDelete; });
@@ -5699,10 +5697,11 @@ function deleteSong() {
             }
             renderSongList();
             updateStatusBar();
-            var n = (res && typeof res.deleted === 'number') ? res.deleted : null;
+            /* Soft delete (#1694): the row survives, hidden — say so, rather
+               than the old "(n rows removed)" which now under-describes what
+               happened AND over-describes its permanence. */
             showToast(
-                'Deleted "' + title + '" from the database'
-                    + (n !== null ? ' (' + n + ' row' + (n === 1 ? '' : 's') + ' removed).' : '.'),
+                'Moved "' + title + '" to Deleted songs — restorable by an admin at /manage/deleted-songs.',
                 'success'
             );
         })
