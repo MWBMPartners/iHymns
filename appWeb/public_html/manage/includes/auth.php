@@ -1340,18 +1340,87 @@ function renameUser(int $userId, string $newUsername, ?string &$error = null): b
 }
 
 /**
- * Activate or deactivate a user account.
+ * Activate or deactivate a user account — THE ONE ACCOUNT-STATE WRITER (#1698).
+ *
+ * ELI5: switches an account off (or back on), and while it is off, ends
+ * everything it was in the middle of.
+ *
+ * WHY THIS IS THE ONLY PLACE `IsActive` AND `Status` ARE WRITTEN TOGETHER.
+ * The two columns carry ONE fact between them, with an invariant:
+ *
+ *      IsActive = (Status === 'active')
+ *
+ * `IsActive` is what every authentication path filters on — `getAuthenticatedUser()`
+ * plus thirteen enforcement points in this file — and `Status` is what
+ * distinguishes a reversible DISABLE from an anonymised-tombstone ERASE. A
+ * second writer that set one without the other would produce an account that
+ * reads as active on one surface and closed on another, and nothing would go
+ * red. So both live here, and `accountErase()` is the only other writer (it sets
+ * `Status='deleted'` + `IsActive=0` in the same statement, for the same reason).
+ *
+ * The `Status` write is COLUMN-GATED: migrations are web-run from
+ * /manage/setup-database and three docroots share one MySQL, so an un-migrated
+ * install keeps the pre-#1698 behaviour exactly — `IsActive` alone, which is
+ * still the lock, and `userStateFromRow()` still classifies it correctly.
+ *
+ * REFUSES TO REACTIVATE A TOMBSTONE. An erased account's identity is gone —
+ * username replaced by a reserved placeholder, email and password hash blanked,
+ * private rows deleted. Flipping `IsActive` back to 1 would produce a signed-out
+ * husk that nothing can log into but that every "active users" count and
+ * last-global-admin guard would believe in. Enforced HERE rather than only in
+ * the admin UI, because a guard that lives in a form is a guard the API does not
+ * have.
  *
  * @param int  $userId   Target user ID
  * @param bool $isActive True to activate, false to deactivate
- * @return bool
+ * @return bool True on success; FALSE when refused (target is an erased tombstone).
  */
 function setUserActive(int $userId, bool $isActive): bool
 {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+        . DIRECTORY_SEPARATOR . 'user_status.php';
+
     $db = getDbMysqli();
+    $statusReady = userStatusColumnReady($db);
+
+    /* The tombstone guard. Only askable once the column exists — before that no
+       tombstone can exist, because nothing has ever written one. */
+    if ($isActive && $statusReady) {
+        $stmt = $db->prepare('SELECT Status FROM tblUsers WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $userId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_row();
+        $stmt->close();
+        if ($row !== null && userStateFromRow(null, (string)$row[0]) === 'deleted') {
+            logActivity(
+                'user.activate',
+                'user',
+                (string)$userId,
+                ['reason' => 'refused_erased_account'],
+                'failure'
+            );
+            return false;
+        }
+    }
+
     $isActiveInt = $isActive ? 1 : 0;
-    $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
-    $stmt->bind_param('ii', $isActiveInt, $userId);
+    if ($statusReady) {
+        /* ONE statement, so there is no window in which the two columns
+           disagree — the invariant is not "kept in sync", it is written
+           atomically. `StatusChangedAt` is UTC_TIMESTAMP() into a DATETIME
+           (rule #20): these rows outlive the session that wrote them. */
+        $newStatus = $isActive ? 'active' : 'disabled';
+        $stmt = $db->prepare(
+            'UPDATE tblUsers
+                SET IsActive = ?, Status = ?, StatusChangedAt = UTC_TIMESTAMP(),
+                    UpdatedAt = CURRENT_TIMESTAMP
+              WHERE Id = ?'
+        );
+        $stmt->bind_param('isi', $isActiveInt, $newStatus, $userId);
+    } else {
+        $stmt = $db->prepare('UPDATE tblUsers SET IsActive = ?, UpdatedAt = CURRENT_TIMESTAMP WHERE Id = ?');
+        $stmt->bind_param('ii', $isActiveInt, $userId);
+    }
     $stmt->execute();
     $stmt->close();
 
@@ -1361,6 +1430,34 @@ function setUserActive(int $userId, bool $isActive): bool
         $stmt->bind_param('i', $userId);
         $stmt->execute();
         $stmt->close();
+
+        /* #1698 — end any Live Follow session this user is HOSTING. The auth
+           lock already stops them broadcasting further, but a session left
+           marked active keeps appearing to congregants as a live service that
+           will never advance again. Ending it eagerly is the same reasoning as
+           revoking the tokens above: the lock stops NEW actions, and anything
+           already in flight should be closed rather than left hanging.
+           Table-existence-gated — `tblLiveFollowSessions` arrives with a
+           migration, and mysqli under STRICT throws on a missing table. */
+        try {
+            $probe = $db->prepare(
+                "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblLiveFollowSessions' LIMIT 1"
+            );
+            $probe->execute();
+            $hasSessions = $probe->get_result()->fetch_row() !== null;
+            $probe->close();
+            if ($hasSessions) {
+                $stmt = $db->prepare('UPDATE tblLiveFollowSessions SET IsActive = 0 WHERE HostUserId = ? AND IsActive = 1');
+                $stmt->bind_param('i', $userId);
+                $stmt->execute();
+                $stmt->close();
+            }
+        } catch (\Throwable $_e) {
+            /* Best-effort courtesy, never a reason to leave the account
+               enabled: the deactivation itself has already committed. */
+            error_log('[setUserActive] could not end hosted sessions: ' . $_e->getMessage());
+        }
     }
 
     /* Audit (#535) — `user.activate` / `user.deactivate` so the action
@@ -1375,42 +1472,80 @@ function setUserActive(int $userId, bool $isActive): bool
 }
 
 /**
- * Delete a user account permanently.
- * Foreign key cascades will remove tokens, setlists, etc.
+ * ERASE a user account — anonymised tombstone, not a row removal (#1698).
+ *
+ * ELI5: empties the account and blanks the person behind it, while leaving
+ * anything they had already published working for everybody else.
+ *
+ * ⚠ THE NAME IS UNCHANGED ON PURPOSE, THE BEHAVIOUR IS NOT. This used to be
+ * `DELETE FROM tblUsers WHERE Id = ?`, relying on the FK graph's cascades to
+ * take the rest. Two call sites (`manage/users.php`, `admin_user_delete`) invoke
+ * it and neither needed to change, so it keeps its name — but what it now does
+ * is delegate to `accountErase()`, which:
+ *   - deletes every private row the FK graph declares `ON DELETE CASCADE`,
+ *     i.e. exactly what the old hard delete destroyed;
+ *   - NULLs the behavioural/analytics columns, i.e. exactly what the old hard
+ *     delete's `ON DELETE SET NULL` produced for those tables;
+ *   - re-freezes the user's live share links first, so a link somebody else
+ *     bookmarked keeps serving what it showed a moment ago instead of falling
+ *     back to a months-old snapshot;
+ *   - scrubs every PII column and leaves an inactive, anonymous tombstone row
+ *     so ownership/attribution FKs keep resolving and nothing is orphaned.
+ *
+ * The full reasoning, including why a genuine hard purge is deliberately NOT
+ * built, is in includes/account_lifecycle.php's header.
+ *
+ * TRANSACTION: this function owns one, because both its callers are plain page
+ * actions with no surrounding transaction of their own. The self-service
+ * `account_delete` endpoint deliberately does NOT come through here — it has its
+ * own FOR UPDATE lock, re-auth and idempotency to keep atomic, so it calls
+ * `accountErase()` inside its own transaction.
+ *
+ * AUDIT — the strict convention, deliberately changed. This used to log the
+ * erased user's username, display name, role and email into `tblActivityLog`,
+ * which partly defeats the scrub it now performs (the log outlives the account
+ * and is readable by every admin). `account_delete` has always refused to, and
+ * that is the convention adopted here: the numeric id ONLY. Reversing it is one
+ * line, if the owner would rather have the forensics.
  *
  * @param int $userId Target user ID
- * @return bool
+ * @return bool True when the account was erased; false when there was no such user.
+ * @throws AccountEraseException when the migration has not run, or the live FK
+ *         graph has drifted (see accountErase()). Callers surface the message —
+ *         never fall back to a hard delete.
  */
 function deleteUser(int $userId): bool
 {
+    require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+        . DIRECTORY_SEPARATOR . 'account_lifecycle.php';
+
     $db = getDbMysqli();
 
-    /* Capture username for the audit row before the row vanishes
-       — the FK from tblActivityLog.UserId to tblUsers is `ON DELETE
-       SET NULL`, so after the cascade the log loses any obvious
-       handle on who got deleted unless we record it here. (#535) */
-    $beforeStmt = $db->prepare('SELECT Username, DisplayName, Role, Email FROM tblUsers WHERE Id = ?');
-    $beforeStmt->bind_param('i', $userId);
-    $beforeStmt->execute();
-    $before = $beforeStmt->get_result()->fetch_assoc() ?: null;
-    $beforeStmt->close();
-
-    $stmt = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
-    $stmt->bind_param('i', $userId);
-    $stmt->execute();
-    $deleted = $stmt->affected_rows > 0;
-    $stmt->close();
-
-    if ($deleted) {
-        logActivity(
-            'user.delete',
-            'user',
-            (string)$userId,
-            $before ? ['before' => $before] : []
-        );
+    $db->begin_transaction();
+    try {
+        $result = accountErase($db, $userId);
+        $db->commit();
+    } catch (\Throwable $e) {
+        try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+        throw $e;
     }
 
-    return $deleted;
+    /* Audit (#535/#1698) — numeric id only. No username, no email, no display
+       name, no role. Same shape as `account.delete`. */
+    logActivity(
+        'user.delete',
+        'user',
+        (string)$userId,
+        [
+            'mode'            => 'anonymised_tombstone',
+            'tokens_revoked'  => $result['tokensRevoked'],
+            'shares_refrozen' => $result['sharesRefrozen'],
+            'tables_cleared'  => count($result['deleted']),
+            'tables_nulled'   => count($result['nulled']),
+        ]
+    );
+
+    return true;
 }
 
 /**

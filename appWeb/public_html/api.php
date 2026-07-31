@@ -235,6 +235,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    setlistSlotsColumnReady(), the schema gate that keeps an un-migrated install
    from touching tblUserSetlists.SlotsJson at all. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_templates.php';
+/* Account lifecycle state (#1698) — the ONE answer to "is this owner active,
+   disabled, erased, or gone?", DERIVED at read time from the owner's single row
+   rather than stamped onto everything they own. Required EXPLICITLY rather than
+   leaning on setlist_collab.php having pulled it in: a transitive require is a
+   dependency nothing states and nothing enforces, and reordering the two lines
+   above would break these handlers with a fatal. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_status.php';
 /* The ONE in-app notification writer (#1638). Extracted because the raw
    INSERT INTO tblNotifications had already been copy-pasted into three files
    and the collaboration invite would have been the fourth. Best-effort by
@@ -6840,59 +6847,78 @@ if ($action !== null) {
             }
 
             /* B. The destructive transaction (§3.3): T1 FOR UPDATE lock +
-               idempotency check, T2 explicit token revoke, T3 the two PII
-               scrubs (§3.2) that the FK graph does NOT clean, T4 the user
-               delete itself (the whole cascade/anonymise graph fires
-               atomically as part of this ONE transaction — a mid-cascade
-               failure rolls EVERYTHING back, leaving the account intact). */
+               idempotency check, T2 the erasure itself. The whole graph fires
+               atomically as part of this ONE transaction — a mid-erasure
+               failure rolls EVERYTHING back, leaving the account intact.
+
+               #1698 — T2/T3/T4 used to be spelled out here: an explicit token
+               delete, the two PII scrubs, then `DELETE FROM tblUsers`. All three
+               now live in `accountErase()` (includes/account_lifecycle.php),
+               which this handler calls INSIDE its own transaction. Three reasons
+               the move is the right shape:
+                 - the same work is needed by `deleteUser()` (the admin funnel)
+                   and by `admin_user_delete` through it, and three copies of an
+                   irreversible operation is precisely the modularity rule's
+                   worst case;
+                 - the erasure is now DERIVED from the live FK graph rather than
+                   typed out, so a future table with a user FK is covered by its
+                   own declared ON DELETE rule instead of by somebody remembering
+                   to extend this case body;
+                 - a hard `DELETE FROM tblUsers` is replaced by an anonymised
+                   TOMBSTONE, so a set list this user had shared with somebody
+                   else keeps working for that person (visible, locked) instead
+                   of silently degrading to a months-old snapshot.
+
+               Everything AROUND it is deliberately untouched: the re-auth rungs,
+               the rate limit, the last-global-admin guard, the pre-transaction
+               Apple revoke, this FOR UPDATE lock and the idempotent-200 race
+               path all behave exactly as they did. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'account_lifecycle.php';
+
             $tokensRevoked = 0;
             $db->begin_transaction();
             try {
-                $lockStmt = $db->prepare('SELECT Id FROM tblUsers WHERE Id = ? FOR UPDATE');
+                /* The lock now selects Status as well as Id, because "already
+                   erased" is no longer "the row is gone" — the tombstone stays.
+                   Column-gated: on an un-migrated install accountErase() below
+                   REFUSES anyway (it never falls back to a hard delete), so the
+                   NULL here simply means "cannot already be erased", which is
+                   true. */
+                $lockSql = userStatusColumnReady($db)
+                    ? 'SELECT Status FROM tblUsers WHERE Id = ? FOR UPDATE'
+                    : 'SELECT NULL AS Status FROM tblUsers WHERE Id = ? FOR UPDATE';
+                $lockStmt = $db->prepare($lockSql);
                 $lockStmt->bind_param('i', $authUserId);
                 $lockStmt->execute();
-                $stillExists = $lockStmt->get_result()->fetch_row() !== null;
+                $lockRow = $lockStmt->get_result()->fetch_assoc();
                 $lockStmt->close();
 
-                if ($stillExists) {
-                    $countStmt = $db->prepare('SELECT COUNT(*) FROM tblApiTokens WHERE UserId = ?');
-                    $countStmt->bind_param('i', $authUserId);
-                    $countStmt->execute();
-                    $tokensRevoked = (int)($countStmt->get_result()->fetch_row()[0] ?? 0);
-                    $countStmt->close();
+                $alreadyErased = $lockRow !== null
+                    && $lockRow['Status'] !== null
+                    && userStateFromRow(null, (string)$lockRow['Status']) === 'deleted';
 
-                    /* Explicit even though tblApiTokens.UserId FK cascades —
-                       token revocation is a STATED security requirement, not
-                       merely an FK side effect, and the affected count feeds
-                       the audit row. */
-                    $delTok = $db->prepare('DELETE FROM tblApiTokens WHERE UserId = ?');
-                    $delTok->bind_param('i', $authUserId);
-                    $delTok->execute();
-                    $delTok->close();
-
-                    /* §3.2 PII stragglers the FK graph does NOT clean. */
-                    $blank = '';
-                    $scrubRequests = $db->prepare('UPDATE tblSongRequests SET ContactEmail = ?, IpAddress = ? WHERE UserId = ?');
-                    $scrubRequests->bind_param('ssi', $blank, $blank, $authUserId);
-                    $scrubRequests->execute();
-                    $scrubRequests->close();
-
-                    $usernameForScrub = (string)$authUser['Username'];
-                    $scrubAttempts = $db->prepare('DELETE FROM tblLoginAttempts WHERE Username = ?');
-                    $scrubAttempts->bind_param('s', $usernameForScrub);
-                    $scrubAttempts->execute();
-                    $scrubAttempts->close();
-
-                    $delUser = $db->prepare('DELETE FROM tblUsers WHERE Id = ?');
-                    $delUser->bind_param('i', $authUserId);
-                    $delUser->execute();
-                    $delUser->close();
+                if ($lockRow !== null && !$alreadyErased) {
+                    $eraseResult   = accountErase($db, $authUserId);
+                    $tokensRevoked = $eraseResult['tokensRevoked'];
                 }
-                /* else: the T1 no-row race — a concurrent request already
-                   deleted this account between our getAuthenticatedUser()
-                   and this lock. Commit this empty transaction and fall
-                   through to the SAME idempotent 200 the winner returned. */
+                /* else: the T1 race — a concurrent request already erased this
+                   account between our getAuthenticatedUser() and this lock (or,
+                   on a pre-#1698 install, hard-deleted the row). Commit this
+                   empty transaction and fall through to the SAME idempotent 200
+                   the winner returned. */
                 $db->commit();
+            } catch (AccountEraseException $e) {
+                try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
+                /* NOT a 500: this is "this deployment cannot do that yet / its
+                   schema has drifted", which is an operator action, and the
+                   account is completely untouched. 503 says "try again later"
+                   truthfully; the message names what to run. Logged as a
+                   failure so the owner sees a systematic problem rather than a
+                   user quietly unable to close their account. */
+                error_log('[api/account_delete erase refused] ' . $e->getMessage());
+                logActivity('account.delete', 'user', (string)$authUserId, ['reason' => 'erase_unavailable'], 'failure');
+                sendJson(['error' => 'Account deletion is temporarily unavailable. Please contact support.'], 503);
+                break;
             } catch (\Throwable $e) {
                 try { $db->rollback(); } catch (\Throwable $_ignore) { /* best-effort */ }
                 throw $e; /* → api.php's global exception handler (~line 81): clean 500, account left fully intact. */
@@ -8120,14 +8146,27 @@ if ($action !== null) {
             $db = getDbMysqli();
             $authUser = getAuthenticatedUser();
 
+            /* #1698 — the author's ACCOUNT STATE rides along on the query that
+               was already running. `tblUsers` is LEFT-joined (never INNER): a
+               template whose `CreatedBy` went NULL under `fk_Template_User`'s
+               ON DELETE SET NULL must still be LISTED — it is the #1698 orphan,
+               and hiding it would swap "nobody can edit this public template"
+               for "nobody can even see it exists". The `Status` column is
+               SELECT-gated because migrations here are web-run and three
+               docroots share one MySQL; on an un-migrated install the NULL falls
+               back to IsActive inside userStateFromRow(). */
+            $tplStatusCol = userStatusColumnReady($db) ? 'u.Status' : 'NULL';
+
             if ($authUser) {
                 $stmt = $db->prepare(
                     'SELECT t.Id AS id, t.Name AS name, t.Description AS description,
                             t.SlotsJson AS slotsJson, t.IsPublic AS isPublic,
                             t.OrgId AS orgId, t.CreatedBy AS createdBy,
-                            t.CreatedAt AS createdAt
+                            t.CreatedAt AS createdAt,
+                            u.IsActive AS ownerIsActive, ' . $tplStatusCol . ' AS ownerStatus
                      FROM tblSetlistTemplates t
                      LEFT JOIN tblOrganisationMembers m ON m.OrgId = t.OrgId AND m.UserId = ?
+                     LEFT JOIN tblUsers u ON u.Id = t.CreatedBy
                      WHERE t.IsPublic = 1
                         OR t.CreatedBy = ?
                         OR m.UserId IS NOT NULL
@@ -8138,13 +8177,15 @@ if ($action !== null) {
                 $stmt->execute();
             } else {
                 $stmt = $db->prepare(
-                    'SELECT Id AS id, Name AS name, Description AS description,
-                            SlotsJson AS slotsJson, IsPublic AS isPublic,
-                            OrgId AS orgId, CreatedBy AS createdBy,
-                            CreatedAt AS createdAt
-                     FROM tblSetlistTemplates
-                     WHERE IsPublic = 1
-                     ORDER BY Name ASC'
+                    'SELECT t.Id AS id, t.Name AS name, t.Description AS description,
+                            t.SlotsJson AS slotsJson, t.IsPublic AS isPublic,
+                            t.OrgId AS orgId, t.CreatedBy AS createdBy,
+                            t.CreatedAt AS createdAt,
+                            u.IsActive AS ownerIsActive, ' . $tplStatusCol . ' AS ownerStatus
+                     FROM tblSetlistTemplates t
+                     LEFT JOIN tblUsers u ON u.Id = t.CreatedBy
+                     WHERE t.IsPublic = 1
+                     ORDER BY t.Name ASC'
                 );
                 $stmt->execute();
             }
@@ -8153,11 +8194,29 @@ if ($action !== null) {
             $stmt->close();
 
             $viewerId = $authUser ? (int)$authUser['Id'] : 0;
+            /* The admin override (#1698). Resolved ONCE, outside the loop —
+               it depends on the caller's role, not on the row. */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
             foreach ($templates as &$tpl) {
                 $tpl['id'] = (int)$tpl['id'];
                 $tpl['isPublic'] = (bool)$tpl['isPublic'];
                 $tpl['orgId'] = $tpl['orgId'] ? (int)$tpl['orgId'] : null;
                 $tpl['createdBy'] = $tpl['createdBy'] ? (int)$tpl['createdBy'] : null;
+
+                /* Derive the author's state from the columns just fetched —
+                   NEVER a second query per row (that would be an N+1 on a list
+                   endpoint). A NULL CreatedBy is 'absent', which
+                   userContentLocked() treats as locked, so the orphan case needs
+                   no branch of its own. */
+                $tpl['ownerState'] = $tpl['createdBy'] === null
+                    ? userStateAbsent()
+                    : userStateFromRow(
+                        $tpl['ownerIsActive'] !== null ? (int)$tpl['ownerIsActive'] : null,
+                        $tpl['ownerStatus']   !== null ? (string)$tpl['ownerStatus'] : null
+                      );
+                $tpl['ownerLocked'] = userContentLocked($tpl['ownerState']);
+                /* Internal join columns are not part of the wire shape. */
+                unset($tpl['ownerIsActive'], $tpl['ownerStatus']);
                 /* #1671 F4 — decoded through the SHARED sanitiser rather than a
                    bare json_decode, so a row written before this change (by the
                    old handler, which stored slots with no `id` and could slice
@@ -8172,8 +8231,14 @@ if ($action !== null) {
                    re-derived the rule from createdBy would be a second copy of
                    an authorisation policy with nothing keeping the two in step
                    (rule #35) — and the copy would be the one drawing the
-                   buttons. */
-                $tpl['canEdit'] = setlistTemplateCanEdit($tpl['createdBy'], $viewerId);
+                   buttons.
+
+                   The `|| $tplCanManageAny` half is the #1698 admin override,
+                   and it is stated HERE as well as enforced in the two write
+                   endpoints for exactly that reason: if the list said `false`
+                   while `setlist_template_update` said yes, an admin would have
+                   the power and no button to use it with. */
+                $tpl['canEdit'] = setlistTemplateCanEdit($tpl['createdBy'], $viewerId) || $tplCanManageAny;
             }
             unset($tpl);
 
@@ -8219,6 +8284,27 @@ if ($action !== null) {
 
             if ($tplName === '') {
                 sendJson(['error' => 'Template name is required.'], 400);
+                break;
+            }
+
+            /* PUBLISHING IS A BROADCAST, NOT A SAVE (#1698). `IsPublic = 1`
+               makes this template visible to EVERY user of the app, signed in or
+               not — the `setlist_templates` list returns public rows to
+               anonymous callers. Until now any authenticated user could do that,
+               which is the same "anyone could publish" that produced the
+               unowned-public-content problem this issue is about.
+
+               REJECTED, NEVER SILENTLY DEMOTED TO PRIVATE. A demotion would save
+               successfully, report success, and quietly not do the thing the
+               user asked for — the silent-no-op class (rule #30) that cost this
+               codebase seven weeks of a dead Export button. 403 says what
+               happened and what to do about it. */
+            if ($tplIsPublic === 1
+                && !userHasEntitlement('publish_public_templates', $authUser['Role'] ?? null)) {
+                sendJson([
+                    'error' => 'You do not have permission to publish a public template. '
+                             . 'Save it as private, or ask an administrator.',
+                ], 403);
                 break;
             }
 
@@ -8332,6 +8418,21 @@ if ($action !== null) {
             $tplSlots    = $body['slots'] ?? null;
             $tplIsPublic = !empty($body['is_public']) ? 1 : 0;
 
+            /* Same publish gate as the create path (#1698) — an UPDATE that sets
+               IsPublic = 1 publishes just as thoroughly as a create does, and a
+               gate on only one of the two is not a gate. Editing an ALREADY
+               public template while leaving it public is also a publish for this
+               purpose: the row stays visible to everybody, and its content is
+               what is changing. */
+            if ($tplIsPublic === 1
+                && !userHasEntitlement('publish_public_templates', $authUser['Role'] ?? null)) {
+                sendJson([
+                    'error' => 'You do not have permission to publish a public template. '
+                             . 'Save it as private, or ask an administrator.',
+                ], 403);
+                break;
+            }
+
             /* Rejection, never a slice — same reasoning as the create path. */
             if (setlistTemplateSlotsExceedCap($tplSlots)) {
                 sendJson([
@@ -8360,7 +8461,23 @@ if ($action !== null) {
                — org membership is a VISIBILITY grant in setlist_templates, and
                silently reusing it as an EDIT grant would hand every member of a
                church destructive power over a colleague's template. */
-            if (!setlistTemplateCanEdit(
+            /* THE #1698 ADMIN OVERRIDE. `setlistTemplateCanEdit()` is
+               author-only and stays that way — org membership is a VISIBILITY
+               grant here, and quietly reusing it as an EDIT grant would hand
+               every member of a church destructive power over a colleague's
+               template. What it CANNOT resolve is a template with no living
+               author: `fk_Template_User` is ON DELETE SET NULL, so an
+               authorless template was editable by nobody and a PUBLIC one could
+               only be removed with direct database access. That gap is recorded
+               in setlistTemplateCanEdit()'s own doc-block as a known,
+               deliberately-unbuilt case; #1698 is the owner asking for it.
+
+               Note this is a SEPARATE entitlement, not `edit_songs` or an admin
+               ROLE check: an operator can hand it to a trusted curator at
+               /manage/entitlements without granting anything else, and a role
+               check would not be editable at all (rule #1587). */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
+            if (!$tplCanManageAny && !setlistTemplateCanEdit(
                 $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
                 $authUserId
             )) {
@@ -8373,18 +8490,44 @@ if ($action !== null) {
                 JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             );
 
-            $stmt = $db->prepare(
-                'UPDATE tblSetlistTemplates
-                    SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
-                  WHERE Id = ? AND CreatedBy = ?'
-            );
-            /* CreatedBy is repeated in the WHERE even though it was just
-               checked: the check and the write are two statements, and a
-               narrowed UPDATE is what makes the pair safe if anything ever
-               slips between them. Costs nothing, removes a whole class. */
-            $stmt->bind_param('sssiii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId, $authUserId);
+            if ($tplCanManageAny) {
+                /* The override path cannot narrow on CreatedBy — the whole point
+                   is that it may be NULL, or somebody else's. The Id is the
+                   primary key, so the statement is still exactly one row. */
+                $stmt = $db->prepare(
+                    'UPDATE tblSetlistTemplates
+                        SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
+                      WHERE Id = ?'
+                );
+                $stmt->bind_param('sssii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId);
+            } else {
+                $stmt = $db->prepare(
+                    'UPDATE tblSetlistTemplates
+                        SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
+                      WHERE Id = ? AND CreatedBy = ?'
+                );
+                /* CreatedBy is repeated in the WHERE even though it was just
+                   checked: the check and the write are two statements, and a
+                   narrowed UPDATE is what makes the pair safe if anything ever
+                   slips between them. Costs nothing, removes a whole class. */
+                $stmt->bind_param('sssiii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId, $authUserId);
+            }
             $stmt->execute();
             $stmt->close();
+
+            /* Audit (#535/#1698) — an override edit is one person changing
+               somebody else's published content, which is exactly the thing an
+               owner may later want to ask "who did that?" about. The ordinary
+               author-edits-own-template path stays unlogged, as before. */
+            if ($tplCanManageAny && !setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            )) {
+                logActivity('setlist.template_admin_update', 'setlist_template', (string)$tplId, [
+                    'editor_id'  => $authUserId,
+                    'created_by' => $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                ]);
+            }
 
             sendJson(['ok' => true, 'id' => $tplId]);
             break;
@@ -8436,19 +8579,40 @@ if ($action !== null) {
                 sendJson(['error' => 'Template not found.'], 404);
                 break;
             }
-            if (!setlistTemplateCanEdit(
+            /* The #1698 admin override — see the long note on the same check in
+               setlist_template_update. The case it exists for is at its sharpest
+               here: a PUBLIC template whose author's account has been erased is
+               visible to every user of the app and, before this, removable by no
+               one short of a database console. */
+            $tplCanManageAny = userHasEntitlement('manage_setlist_templates', $authUser['Role'] ?? null);
+            $tplIsOwnRow     = setlistTemplateCanEdit(
                 $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
                 $authUserId
-            )) {
+            );
+            if (!$tplCanManageAny && !$tplIsOwnRow) {
                 sendJson(['error' => 'You can only delete templates you created.'], 403);
                 break;
             }
 
-            $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ? AND CreatedBy = ?');
-            $stmt->bind_param('ii', $tplId, $authUserId);
+            if ($tplCanManageAny && !$tplIsOwnRow) {
+                $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ?');
+                $stmt->bind_param('i', $tplId);
+            } else {
+                $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ? AND CreatedBy = ?');
+                $stmt->bind_param('ii', $tplId, $authUserId);
+            }
             $stmt->execute();
             $tplDeleted = $stmt->affected_rows;
             $stmt->close();
+
+            /* Audit (#535/#1698) — deleting somebody else's published template
+               is irreversible and invisible to its author, so it is recorded. */
+            if ($tplCanManageAny && !$tplIsOwnRow) {
+                logActivity('setlist.template_admin_delete', 'setlist_template', (string)$tplId, [
+                    'editor_id'  => $authUserId,
+                    'created_by' => $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                ]);
+            }
 
             sendJson(['ok' => true, 'deleted' => $tplDeleted]);
             break;
@@ -10649,9 +10813,16 @@ if ($action !== null) {
                    nothing to show, and used to surface as a ghost entry with a
                    null name. The FK is on tblUsers, not on the setlist, so
                    these orphans are a real state, not a theoretical one. */
+                /* #1698 — the owner's account state rides along on a JOIN that
+                   was already there, so this list costs ZERO extra round-trips.
+                   `Status` is SELECT-gated (web-run migrations, three docroots,
+                   one MySQL); on an un-migrated install the NULL falls back to
+                   `IsActive` inside userStateFromRow(). */
+                $sharedStatusCol = userStatusColumnReady($db) ? 'u.Status' : 'NULL';
                 $stmt = $db->prepare(
                     'SELECT c.SetlistOwnerId AS ownerId, u.Username AS ownerName,
                             u.DisplayName AS ownerDisplayName,
+                            u.IsActive AS ownerIsActive, ' . $sharedStatusCol . ' AS ownerStatus,
                             c.SetlistId AS setlistId, c.Permission AS permission,
                             l.Name AS name, l.SongsJson AS songsJson,
                             l.UpdatedAt AS updatedAt
@@ -10678,6 +10849,21 @@ if ($action !== null) {
                        as editable would be a promise the server won't keep. */
                     $perm = setlistCollabNormalisePermission($r['permission'] ?? null);
                     if ($perm === null) { continue; }
+
+                    /* VISIBLE BUT LOCKED (#1698). The row still appears — the
+                       collaborator is an innocent third party and taking their
+                       access away would punish them for somebody else's account
+                       closing — but `locked` tells the client to render a badge
+                       and drop the edit affordances, matching what
+                       `setlist_collab_update` will now enforce anyway. The
+                       server states the policy; the client does not re-derive
+                       it from ownerState (rule #35). */
+                    $ownerState = userStateFromRow(
+                        $r['ownerIsActive'] !== null ? (int)$r['ownerIsActive'] : null,
+                        $r['ownerStatus']   !== null ? (string)$r['ownerStatus'] : null
+                    );
+                    $ownerLocked = userContentLocked($ownerState);
+
                     $shared[] = [
                         'ownerId'    => (int)$r['ownerId'],
                         'ownerName'  => ((string)($r['ownerDisplayName'] ?? '') !== '')
@@ -10688,6 +10874,13 @@ if ($action !== null) {
                         'name'       => (string)($r['name'] ?? ''),
                         'songs'      => json_decode((string)($r['songsJson'] ?? '[]'), true) ?: [],
                         'updatedAt'  => (string)($r['updatedAt'] ?? ''),
+                        'ownerState' => $ownerState,
+                        'locked'     => $ownerLocked,
+                        /* `canWrite` is the SAME question setlist_collab_update
+                           answers, stated up front so the UI and the server
+                           cannot disagree about which rows are editable. */
+                        'canWrite'   => (!$ownerLocked && $perm === 'edit'),
+                        'lockReason' => $ownerLocked ? userStateLockReason($ownerState) : '',
                     ];
                 }
                 sendJson(['shared' => $shared]);
@@ -12865,6 +13058,16 @@ if ($action !== null) {
             try {
                 deleteUser($targetId);
                 sendJson(['ok' => true, 'id' => $targetId, 'username' => (string)$target['username']]);
+            } catch (AccountEraseException $e) {
+                /* #1698 — "this deployment cannot erase yet / its schema has
+                   drifted", not "something broke". The account is untouched, and
+                   the message NAMES the migration card to run, so it is passed
+                   through verbatim: this caller is an authenticated admin, which
+                   is exactly who can act on it. A generic 500 here would send an
+                   operator hunting for a bug that is really an unrun migration. */
+                logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
+                error_log('[admin_user_delete] ' . $e->getMessage());
+                sendJson(['error' => $e->getMessage()], 503);
             } catch (\Throwable $e) {
                 logActivityError('api.admin.user.delete', 'user', (string)$targetId, $e);
                 error_log('[admin_user_delete] ' . $e->getMessage());
