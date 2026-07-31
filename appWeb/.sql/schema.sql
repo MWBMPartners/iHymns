@@ -595,11 +595,7 @@ CREATE TABLE IF NOT EXISTS tblLyrics (
     INDEX idx_Status  (Status),
 
     CONSTRAINT fk_Lyrics_Song
-        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_Lyrics_SubmittedBy
-        FOREIGN KEY (SubmittedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL,
-    CONSTRAINT fk_Lyrics_ApprovedBy
-        FOREIGN KEY (ApprovedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS tblLyricLines (
@@ -684,10 +680,8 @@ CREATE TABLE IF NOT EXISTS tblApiKeys (
     CreatedAt   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     UNIQUE KEY uq_KeyHash (KeyHash),
-    INDEX idx_Active (Active),
+    INDEX idx_Active (Active)
 
-    CONSTRAINT fk_ApiKeys_CreatedBy
-        FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -3188,11 +3182,7 @@ CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     CONSTRAINT fk_LiveFollow_Org
         FOREIGN KEY (OrgId) REFERENCES tblOrganisations(Id) ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT fk_LiveFollow_Song
-        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_LiveFollow_Venue
-        FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id) ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_LiveFollow_Schedule
-        FOREIGN KEY (ScheduleId) REFERENCES tblOrgServiceSchedules(Id) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (CurrentSongId) REFERENCES tblSongs(SongId) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Live-follow broadcast sessions for native present+follow (#1090 P7); extended for Service Mode org/venue/service sessions (#1335).';
 
@@ -3267,7 +3257,7 @@ CREATE TABLE IF NOT EXISTS tblServicePollCounters (
 CREATE TABLE IF NOT EXISTS tblSessionControlTokens (
     Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     TokenHash  CHAR(64)     NOT NULL COMMENT 'SHA-256 hex of the scoped control token (raw value never stored)',
-    SessionId  BIGINT UNSIGNED NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; the live/service session this token may control',
+    SessionId  INT UNSIGNED    NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly; a BIGINT here is errno 150 and the table cannot be created (#1708)',
     Channel    VARCHAR(16)     NULL DEFAULT NULL COMMENT '3-docroot env discriminator (rule #26) — filter in every issue/validate/revoke query',
     Scope      VARCHAR(40)      NOT NULL DEFAULT 'broadcast' COMMENT 'granted capability, e.g. broadcast | view — app-validated, VARCHAR not ENUM (rule #20)',
     IssuedAt   DATETIME     NOT NULL,
@@ -3296,7 +3286,7 @@ CREATE TABLE IF NOT EXISTS tblApnsTokens (
     Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Kind       VARCHAR(20)    NOT NULL DEFAULT 'device' COMMENT 'device | liveActivity — app-validated, VARCHAR not ENUM (rule #20); Live Activity tokens churn per-activity so Kind + nullable SessionId hedge without a 2nd migration',
     UserId     INT UNSIGNED   NULL DEFAULT NULL COMMENT 'FK tblUsers — owning user; NULL for an anonymous/presence-scoped token',
-    SessionId  BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; set only for Kind=liveActivity tokens tied to one live/service session',
+    SessionId  INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly (#1708); set only for Kind=liveActivity tokens tied to one live/service session',
     PushToken  VARBINARY(255) NOT NULL COMMENT 'Raw APNs device/activity push token bytes',
     ApnsEnv    VARCHAR(20)    NOT NULL DEFAULT 'production' COMMENT 'sandbox | production — which APNs gateway this token is valid against',
     ExpiresAt  DATETIME       NULL DEFAULT NULL COMMENT 'Optional TTL — NULL = no expiry (ordinary device tokens); Live Activity tokens set this to the activity end',
@@ -4077,3 +4067,28 @@ CREATE TABLE IF NOT EXISTS tblGatingRules (
     CONSTRAINT fk_GatingRule_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES tblUsers(Id)              ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Admin-defined enforcement rules (#1481 P2, schema created in P1 one-pass per rule #20) -- cap-to-behaviour-kind mapping; DORMANT until P2 ships the enforcement loop and both feature flags are on.';
+
+-- =====================================================================
+-- DEFERRED FOREIGN KEYS (#1708)
+--
+-- ELI5: these links point at tables that are created further down this
+-- file, so they have to wait until everything exists.
+--
+-- InnoDB requires the referenced table to EXIST when an inline FOREIGN KEY
+-- is declared. Declared inline, each of these referenced a table defined
+-- LATER in this file, so a fresh install died with
+--   ERROR 1005 (errno: 150 "Foreign key constraint is incorrectly formed")
+-- and produced 16 of 136 tables. Nobody noticed because long-running
+-- installs are built incrementally by migration cards and never execute
+-- this file end to end.
+--
+-- Moving them here is the idiom this file already uses for the same reason
+-- (see fk_Songs_Tune and fk_Songs_DeletedBy above). tests/php/
+-- test-schema-installs.php now proves the whole file builds.
+-- =====================================================================
+ALTER TABLE tblLyrics ADD CONSTRAINT fk_Lyrics_SubmittedBy FOREIGN KEY (SubmittedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblLyrics ADD CONSTRAINT fk_Lyrics_ApprovedBy FOREIGN KEY (ApprovedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblApiKeys ADD CONSTRAINT fk_ApiKeys_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL;
+ALTER TABLE tblLiveFollowSessions ADD CONSTRAINT fk_LiveFollow_Venue FOREIGN KEY (VenueId) REFERENCES tblOrgVenues(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE tblLiveFollowSessions ADD CONSTRAINT fk_LiveFollow_Schedule FOREIGN KEY (ScheduleId) REFERENCES tblOrgServiceSchedules(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+

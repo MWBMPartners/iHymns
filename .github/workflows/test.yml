@@ -59,6 +59,37 @@ jobs:
     # Skip CI automation commits
     if: "!contains(github.event.head_commit.message, '[skip ci]')"
 
+    # -------------------------------------------------------------------------
+    # A real MariaDB, so tests/php/test-schema-installs.php can ACTUALLY BUILD
+    # schema.sql rather than only reasoning about it (#1708).
+    #
+    # It was worth this much: on 2026-07-31 schema.sql was loaded into an empty
+    # database for what appears to be the first time and produced 16 of 136
+    # tables. Two of those missing tables (tblSessionControlTokens,
+    # tblApnsTokens) had NEVER existed on any environment, because the migration
+    # that creates them carried the same malformed foreign key. CI was green
+    # throughout — test-schema-coverage.php compares the file's TEXT to the
+    # migrations, which is a good check and a different one.
+    #
+    # The service container costs ~15s to become healthy and the load itself
+    # takes under a second. That is the whole price of never shipping an
+    # un-installable schema again.
+    #
+    # https://docs.github.com/en/actions/using-containerized-services/about-service-containers
+    # -------------------------------------------------------------------------
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: 'yes'
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
     steps:
       # -----------------------------------------------------------------------
       # Step 1: Checkout repository
@@ -229,6 +260,10 @@ jobs:
       # "forgot to wire up the new file" failure mode.
       # -----------------------------------------------------------------------
       - name: All PHP test suites
+        env:
+          # Points test-schema-installs.php at the service container above. Any
+          # suite that does not need a database ignores it entirely.
+          IHYMNS_TEST_DSN: 'host=127.0.0.1;user=root;pass='
         run: |
           echo "Running every tests/php/*.php suite..."
           php tools/run-php-tests.php

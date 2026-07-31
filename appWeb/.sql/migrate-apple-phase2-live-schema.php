@@ -222,7 +222,7 @@ try {
             "CREATE TABLE tblSessionControlTokens (
                 Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 TokenHash  CHAR(64)        NOT NULL COMMENT 'SHA-256 hex of the scoped control token (raw value never stored)',
-                SessionId  BIGINT UNSIGNED NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; the live/service session this token may control',
+                SessionId  INT UNSIGNED    NOT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly; a BIGINT here is errno 150 and the table cannot be created (#1708)',
                 Channel    VARCHAR(16)     NULL DEFAULT NULL COMMENT '3-docroot env discriminator (rule #26) — filter in every issue/validate/revoke query',
                 Scope      VARCHAR(40)      NOT NULL DEFAULT 'broadcast' COMMENT 'granted capability, e.g. broadcast | view — app-validated, VARCHAR not ENUM (rule #20)',
                 IssuedAt   DATETIME     NOT NULL,
@@ -255,7 +255,7 @@ try {
                 Id         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
                 Kind       VARCHAR(20)    NOT NULL DEFAULT 'device' COMMENT 'device | liveActivity — app-validated, VARCHAR not ENUM (rule #20); Live Activity tokens churn per-activity so Kind + nullable SessionId hedge without a 2nd migration',
                 UserId     INT UNSIGNED   NULL DEFAULT NULL COMMENT 'FK tblUsers — owning user; NULL for an anonymous/presence-scoped token',
-                SessionId  BIGINT UNSIGNED NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — BIGINT UNSIGNED to match the referenced PK; set only for Kind=liveActivity tokens tied to one live/service session',
+                SessionId  INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK tblLiveFollowSessions(Id) — INT UNSIGNED, matching that PK exactly (#1708); set only for Kind=liveActivity tokens tied to one live/service session',
                 PushToken  VARBINARY(255) NOT NULL COMMENT 'Raw APNs device/activity push token bytes',
                 ApnsEnv    VARCHAR(20)    NOT NULL DEFAULT 'production' COMMENT 'sandbox | production — which APNs gateway this token is valid against',
                 ExpiresAt  DATETIME       NULL DEFAULT NULL COMMENT 'Optional TTL — NULL = no expiry (ordinary device tokens); Live Activity tokens set this to the activity end',
