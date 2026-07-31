@@ -85,6 +85,15 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 ## 📌 Next Milestones
 
+### Milestone 0 (blocking, not a feature): runtime verification of `claude/wave3-fixes`
+
+~90 commits of correctness work sit on that branch, **none of it ever run against a database or a
+browser** — the container has neither. Migrations applied, one v2 editor write, a real songbook
+move, two-device setlist sync, and the CCLI gate flipped on in a controlled window. Ranked P0 with
+the full sequence in `.claude/proposals-2026-07-31.md`; it outranks everything below because a
+runtime surprise there invalidates assumptions the rest build on.
+
+
 ### Milestone 4 & 5: Apple App (consolidated, unreleased)
 
 - Phase 1 + Phase 2 code-complete (iHymnsKit SwiftPM package; watch relay, tvOS projector, Live Activities, App Intents); consolidated and CI-compiled but unreleased; device matrices and APNs provisioning owner-gated
@@ -110,7 +119,7 @@ Web-based admin tool at `/manage/editor/`: metadata, structure/arrangement, writ
 
 - **Songs**: ~14,000 across 30+ songbooks (multilingual: English, Afrikaans, Spanish, French, Swahili, Portuguese, and others; live count in `tblSongs` — query the DB, don't trust this file), served **live from MySQL** (DB-direct #1010)
 - **Web PWA**: Feature-complete (core + enhanced + admin portal + editor)
-- **GitHub Issues**: highest issue now #1624+ — see GitHub for live open/closed counts
+- **GitHub Issues**: highest issue now #1696+ — see GitHub for live open/closed counts
 - **Phase**: ONE (v0.x.x — pre-release)
 - **Version**: 0.4001.0 Alpha (authoritative: `includes/infoAppVer.php`)
 - **CI/CD**: 14 GitHub Actions workflows live
