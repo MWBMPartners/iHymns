@@ -62,8 +62,13 @@ if ($song === null) {
     $rdGone = (bool)$rd['redirected'] || songSoftDeletedHolds(getDbMysqli(), (string)$songId);
     http_response_code($rdGone ? 410 : 404);
     if (function_exists('renderErrorFragment')) {
-        echo renderErrorFragment(404, [
-            'title'   => $rdGone ? 'Song removed' : 'Song not found',
+        /* #1704 — ask for the status this branch already decided ($rdGone ?
+           410 : 404) instead of always rendering 404's card with the title
+           overridden by hand. errorPageMap() now has honest copy for both,
+           so only the 'message' is overridden here — that sentence ("may
+           have been a duplicate that was merged") is context only this page
+           has; the title, emoji and generic wording come from the map. */
+        echo renderErrorFragment($rdGone ? 410 : 404, [
             'message' => $rdGone
                 ? 'This song has been removed — it may have been a duplicate that was merged, or withdrawn. Try a search for the title.'
                 : 'We couldn\'t find a song with the ID "' . $songId . '". It may have been removed, or the link is out of date.',
