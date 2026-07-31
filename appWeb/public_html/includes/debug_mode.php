@@ -129,7 +129,20 @@ function _ihymnsDebugSetCookie(): void
     setcookie(IHYMNS_DEBUG_COOKIE, '1', [
         'expires'  => time() + IHYMNS_DEBUG_TTL,
         'path'     => '/',
-        'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        /* Honour X-Forwarded-Proto as well as HTTPS — the third site of the
+           defect #1648 item 2 fixed in manage/includes/auth.php, missed by that
+           pass and found by the security sweep.
+           ELI5: if something in front of us handled the encryption, this cookie
+           still needs marking as HTTPS-only.
+           Detail: behind a TLS-terminating proxy (CDN / load balancer)
+           $_SERVER['HTTPS'] is unset on the origin even though the browser is
+           on https, so this minted the debug cookie WITHOUT `secure` and left
+           it eligible to ride a plaintext request. includes/auth_cookie.php:63
+           has always checked both; the two helpers disagreeing IS the defect.
+           Latent on DreamHost (which sets HTTPS directly) — real the moment
+           anything sits in front. Guarded by tests/php/test-cookie-secure-proxy.php. */
+        'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                      || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);
@@ -145,7 +158,13 @@ function _ihymnsDebugClearCookie(): void
     setcookie(IHYMNS_DEBUG_COOKIE, '', [
         'expires'  => time() - 3600,
         'path'     => '/',
-        'secure'   => !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off',
+        /* The CLEAR must carry byte-identical attributes to the SET above, or
+           the browser treats it as a different cookie and the original survives
+           — the same drift clearAuthTokenCookie()'s doc-block was written to
+           stop. So this expression tracks the one in _ihymnsDebugSetCookie()
+           exactly; see there for why X-Forwarded-Proto is consulted. */
+        'secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+                      || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https'),
         'httponly' => true,
         'samesite' => 'Strict',
     ]);

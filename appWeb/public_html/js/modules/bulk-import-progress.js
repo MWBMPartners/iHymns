@@ -89,12 +89,34 @@ function clearActiveJob() {
  * DOM construction
  * ------------------------------------------------------------------ */
 
+/**
+ * Escape text for HTML. (security sweep)
+ *
+ * ELI5: turns characters that would be read as markup into ones that just
+ * show up as themselves.
+ *
+ * Detail: the `'` mapping was missing. Every one of this codebase's other nine
+ * escapers has it, including the canonical js/utils/html.js::escapeHtml. It was
+ * not exploitable here — all three call sites below emit into TEXT content,
+ * where a bare `'` is inert — but a shared helper that is only safe because of
+ * where it happens to be called today hands the gap to its next caller in
+ * silence. The character matters the moment an escaped value lands in a
+ * SINGLE-quoted attribute (`title='…'`), which nothing stops a later edit doing.
+ *
+ * Guarded by tests/test-html-escapers.js, which derives the helper list from the
+ * tree so a new copy is covered on the day it is written.
+ *
+ * @param {*} s Any value; null/undefined become ''.
+ * @returns {string} HTML-safe text.
+ * @see appWeb/public_html/js/utils/html.js  the canonical implementation
+ */
 function escapeHtml(s) {
     return String(s == null ? '' : s)
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function ensureWidget() {
