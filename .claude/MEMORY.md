@@ -292,3 +292,49 @@ browser and remains owner-verified.
   wiki, .md docs, and these `.claude/` files).
 - **"HA" in `maintenance-ha-integrity-audit.yml` is Himnario Adventista** (a Spanish songbook), NOT
   Home Assistant. The workflow cross-checks two scrapers' extracts of it.
+
+## From the 2026-07-31 remediation programme (branch `claude/wave3-fixes`)
+
+- **THE METHOD LESSON, and the most expensive thing learned here.** Four consecutive rounds shipped a
+  guard that was **green while the thing it guarded was broken**, every time for one reason: *source
+  inspection was used as primary evidence for a property that has a runtime handle.* When a property
+  lives in a **pure function, test the function.** `tests/php/test-transaction-fatal.php` is the
+  worked example — it constructs exceptions and asserts booleans, reads no source, and killed a
+  bypass that had defeated two previous guard generations. Proof: gut the predicate to `return false;`
+  leaving `1213`/`1205`/`mysqli_sql_exception` sitting in a dead array, and the source-inspecting
+  guard stays GREEN while the behavioural one goes RED. Reserve source inspection for what genuinely
+  has no runtime handle ("every call site does X", "no fragment carries an inline script").
+- **A remediation can introduce the bug it removes.** `songRedirectsTableReady($db, true)` — added in
+  the same pass as `songRelocateIsTransactionFatal()` — wraps its cause in a plain `RuntimeException`,
+  and the predicate only type-checked the OUTERMOST exception. A deadlock inside that probe was
+  swallowed again, through a brand-new code path added by its own fix. Predicates that classify
+  exceptions must walk `getPrevious()`.
+- **A mutation that "passes" may never have applied.** Two separate agents (and I) reported a green
+  mutation that had patched a **doc-comment** rather than the code, or passed `F=$MOD` as an argument
+  instead of an env var. Always diff the file after mutating and assert the needle was found.
+- **`delete_songs` is admin-only, and that is the ONE deliberate non-equivalence in the entitlement
+  map** (#1692/#1693). Every other key Batch 6 wired answers exactly what its raw gate answered.
+  Song deletion is a HARD `DELETE FROM tblSongs`; there is no soft-delete column; 38 of 41 FKs cascade
+  **including `fk_Revisions_Song`**, so the whole revision history dies with the song. INTERIM until
+  #1694 ships soft delete — and **restore must be PREVENTION, not repair**: once the row goes, nothing
+  the app holds can rebuild the children.
+- **The remediation plan was WRONG about `delete_songs`** (claimed a raw `admin` gate; it was
+  `editor`). Acting on it unverified would have stripped every curator's delete. `.claude/*.md` are
+  **claims to check**, never truth — that is now twice this branch that a plan or handoff misled.
+- **All ten decorative entitlements are wired or deleted**; the orphan allowlist's `entitlements`
+  bucket is EMPTY. `manage_org_licences` was the tenth, invisible because it had no label. Its intent
+  came from the originating commit (#462): *"so licence edits can be delegated without granting full
+  org admin"* — SITE-ADMIN delegation, not org membership. I had inferred the opposite and the primary
+  source settled it in minutes.
+- **An orphan is not idle code, it is untested code that looks tested.** Building a UI for
+  `song_key_save` — dispatched since #298, never once called — found **three guaranteed 500s** (NULL
+  into a `NOT NULL` column, a 10-char cap on `VARCHAR(5)`, an int-cast into `INT UNSIGNED`) plus an
+  OpenAPI page describing an API that does not exist.
+- **Web Push crypto is proven against RFC 8291 §5's published vector, byte-for-byte** — an independent
+  oracle, not a self-consistent round trip. That is the only acceptable evidence for hand-rolled
+  crypto. **But no push has ever reached a device**; delivery is entirely unexercised.
+- ⚠️ **NOTHING ON THIS BRANCH HAS BEEN RUN.** No MySQL, no browser, no network. ~95 commits are
+  reasoned correct and observed correct nowhere. That is **P0** in `.claude/proposals-2026-07-31.md`
+  and it outranks every feature.
+- ⚠️ **The Wiki (`iHymns.wiki/`) is NOT in this container**, so standing-task item 4 could not be done
+  for any of this work. Tracked, not silently skipped.
