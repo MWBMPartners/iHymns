@@ -1264,18 +1264,31 @@ switch ($action) {
                 $lyrics   = (string)($restorePayload['LyricsText']      ?? '');
                 $copyr    = (string)($restorePayload['Copyright']       ?? '');
                 $ccli     = (string)($restorePayload['CCLI']            ?? '');
-                $sbAbbr   = (string)($restorePayload['SongbookAbbr']    ?? '');
+                /* #1679 — SongbookAbbr is NOT restored (the v2 restore path,
+                   ed2_applySongSnapshot(), makes the same exclusion for the same
+                   reason).
+
+                   ELI5: putting the old words back must not also pick the song up
+                   and drop it into a songbook it has since left.
+
+                   Detail: the abbreviation IS the SongId prefix (rule #27). This
+                   restore writes SCALARS only — it cannot re-key the id, cascade
+                   the ~25 FK children or write the permalink redirect — so
+                   restoring an old abbreviation would leave the id claiming one
+                   book and the column another: exactly the mismatch #1679 exists
+                   to remove, produced as a SIDE EFFECT of an action aimed at the
+                   lyrics. A restore keeps the song's current home; moving books is
+                   an explicit act that funnels through songRelocate(). */
                 $upd = $db->prepare(
                     'UPDATE tblSongs SET Title=?, Number=?, Verified=?,
                         LyricsPublicDomain=?, MusicPublicDomain=?, HasAudio=?,
-                        HasSheetMusic=?, LyricsText=?, Copyright=?, CCLI=?,
-                        SongbookAbbr=?
+                        HasSheetMusic=?, LyricsText=?, Copyright=?, CCLI=?
                      WHERE SongId=?'
                 );
                 $upd->bind_param(
-                    'siiiiiisssss',
+                    'siiiiiissss',
                     $title, $number, $verified, $lyricsPD, $musicPD, $hasAudio,
-                    $hasSheet, $lyrics, $copyr, $ccli, $sbAbbr, $songId
+                    $hasSheet, $lyrics, $copyr, $ccli, $songId
                 );
                 $upd->execute();
                 $upd->close();

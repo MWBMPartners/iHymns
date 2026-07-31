@@ -1942,11 +1942,13 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
 
 -- ----------------------------------------------------------------------------
 -- tblSongRedirects (#1343) — keep a shared permalink (/song/<SongId>) alive
--- after a song is merged, deleted or renamed, instead of a dead 404 (the
--- "Here To Stay" problem). OldSongId is the dead id (PK, NOT an FK — the row is
--- gone); NewSongId is the 301 target (FK->tblSongs ON DELETE SET NULL) or NULL
--- for a tombstone ("removed"). Merge auto-writes duplicate->survivor; delete
--- offers relink-or-tombstone. Resolution is transitive + cycle-guarded.
+-- after a song is merged, deleted, renamed or MOVED to another songbook,
+-- instead of a dead 404 (the "Here To Stay" problem). OldSongId is the dead id
+-- (PK, NOT an FK — the row is gone); NewSongId is the 301 target
+-- (FK->tblSongs ON DELETE SET NULL) or NULL for a tombstone ("removed").
+-- Merge auto-writes duplicate->survivor; delete offers relink-or-tombstone; a
+-- songbook move (#1679, includes/song_relocate.php) writes Reason='move'.
+-- Resolution is transitive + cycle-guarded.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongRedirects (
     OldSongId  VARCHAR(20)  NOT NULL
@@ -1954,7 +1956,7 @@ CREATE TABLE IF NOT EXISTS tblSongRedirects (
     NewSongId  VARCHAR(20)  NULL DEFAULT NULL
                COMMENT 'Resolve target (FK->tblSongs); NULL = tombstone (removed, no replacement).',
     Reason     VARCHAR(20)  NOT NULL DEFAULT 'merge'
-               COMMENT 'merge | delete | rename — VARCHAR not ENUM (rule #20).',
+               COMMENT 'merge | delete | rename | move — VARCHAR not ENUM (rule #20); move = songbook re-key (#1679).',
     Note       VARCHAR(255) NOT NULL DEFAULT '',
     CreatedBy  INT UNSIGNED NULL DEFAULT NULL
                COMMENT 'tblUsers.Id of the curator who created the redirect, if signed in',

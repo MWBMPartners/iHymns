@@ -312,33 +312,33 @@ function editorSaveSongCore(): array
         $previousId = $songId;                                   /* the id the client sent */
         $assignedId = null;                                      /* set only when we rename */
         $isDraftId  = (strncmp($songId, 'song-', 5) === 0);
+        /* #1380 FIX 3 flag — see $upsertDuplicateClause below. TRUE only for a
+           freshly-MINTED brand-new id (a draft promotion), which is the case that
+           must INSERT without ON DUPLICATE KEY UPDATE. Deliberately NOT the same
+           thing as `$assignedId !== null`: since #1679 a songbook MOVE also sets
+           $assignedId (the client relabel signal is shared) but the row it names
+           already EXISTS — a plain INSERT there would hit the PK and 500 a
+           legitimate save. */
+        $mintedNewId = false;
 
         try {
             $db = getDbMysqli();
             $db->begin_transaction();
 
             if ($isDraftId) {
-                /* Reuse the bulk-import next-number helper so the editor and the
-                   importer agree on how a songbook's next slot is chosen. The
-                   collision-safe loop walks past any id already taken (the UNIQUE
-                   PK on tblSongs.SongId is the final backstop). $songbookAbbr is
-                   already coerced to 'Misc' when blank, so we always have a book. */
-                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_importers.php';
-                $n        = _bulkImport_nextSongNumberFor($db, $songbookAbbr);
-                $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-                $candidate  = sprintf('%s-%04d', $songbookAbbr, $n);
-                $existsStmt->bind_param('s', $candidate);
-                $existsStmt->execute();
-                while ($existsStmt->get_result()->fetch_row() !== null) {
-                    $n++;
-                    $candidate = sprintf('%s-%04d', $songbookAbbr, $n);
-                    $existsStmt->bind_param('s', $candidate);
-                    $existsStmt->execute();
-                }
-                $existsStmt->close();
+                /* Reuse the ONE canonical-id mint (includes/song_relocate.php) so the
+                   editor, the songbook-move re-key and the bulk importers all agree on
+                   how a songbook's next slot is chosen — the collision-safe loop and
+                   its _bulkImport_nextSongNumberFor() seed live in one place now
+                   (#1679; the loop itself is byte-for-byte the one that was inlined
+                   here). $songbookAbbr is already coerced to 'Misc' when blank, so we
+                   always have a book. */
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+                [$candidate, $n] = songRelocateMintId($db, $songbookAbbr);
 
-                $songId     = $candidate;        /* canonical id used by ALL inserts below */
-                $assignedId = $candidate;        /* signal the rename to the client */
+                $songId      = $candidate;       /* canonical id used by ALL inserts below */
+                $assignedId  = $candidate;       /* signal the rename to the client */
+                $mintedNewId = true;             /* brand-new row -> plain INSERT (FIX 3) */
 
                 /* An official songbook numbers its songs; if the curator hadn't set
                    a Number yet, adopt the slot we just chose so the number and the id
@@ -360,6 +360,45 @@ function editorSaveSongCore(): array
                 $previousData = json_encode($prevRow, JSON_UNESCAPED_UNICODE);
             }
             $action = $prevRow === null ? 'create' : 'edit';
+
+            /* #1679 — SONGBOOK MOVE. `tblSongbooks.Abbreviation` IS the SongId
+               prefix (rule #27), so a save that changes an EXISTING song's book
+               must re-key the id too; leaving it alone is what produced songs whose
+               id claimed one book and whose column claimed another.
+               songRelocate() mints the new id, cascades every child row, rewrites
+               the one non-FK soft reference (content restrictions), clears Number
+               and writes the tblSongRedirects row so old permalinks keep resolving.
+               It runs INSIDE this transaction, so a later failure rolls the move
+               back with the rest of the save.
+               After it, the normal UPSERT below proceeds under the NEW id and takes
+               the ON DUPLICATE KEY UPDATE path against the row we just renamed —
+               which is why $mintedNewId, not $assignedId, drives the FIX-3 clause.
+               $previousData / $prevRow deliberately keep the PRE-move snapshot: the
+               revision row is a historical record, and the SongCount refresh below
+               reads the OLD SongbookAbbr out of it (recomputing both books is
+               idempotent with songRelocate's own recompute). */
+            if ($prevRow !== null && $songbookAbbr !== ''
+                && (string)($prevRow['SongbookAbbr'] ?? '') !== $songbookAbbr) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+                $moveUserId = null;
+                if (function_exists('getCurrentUser')) {
+                    $moveUser   = getCurrentUser();
+                    $moveUserId = isset($moveUser['id']) ? (int)$moveUser['id'] : null;
+                }
+                $relocation = songRelocate($db, $songId, $songbookAbbr, $moveUserId);
+                if ($relocation['renamed']) {
+                    $previousId = $relocation['previousId'];
+                    $songId     = $relocation['songId'];
+                    /* Reuse the #1380 client-relabel contract verbatim — editor.js
+                       already re-keys its in-memory song, dirty set, rendered-song
+                       ref and sidebar on assignedId/previousId. */
+                    $assignedId = $relocation['songId'];
+                    /* Owner's stated default: a moved song's Number is CLEARED
+                       (v1 parity; also dodges a collision in the target book). The
+                       UPSERT below must not write the client's stale number back. */
+                    $number = null;
+                }
+            }
 
             /* #892 — schema-probe for the optional ArrangementJson column.
                Pre-migration deploys keep the legacy 16-column UPSERT; once
@@ -385,15 +424,18 @@ function editorSaveSongCore(): array
                BOTH pass the existence check before either writes, then both reach the
                shared UPSERT — and `ON DUPLICATE KEY UPDATE` would SILENTLY OVERWRITE
                the first song's row with the second's (data loss, no error). So when we
-               just minted a canonical id ($assignedId !== null — always a brand-new
-               CREATE, $prevRow is null), use a PLAIN INSERT with NO ON DUPLICATE KEY
+               just minted a canonical id ($mintedNewId — always a brand-new CREATE,
+               $prevRow is null), use a PLAIN INSERT with NO ON DUPLICATE KEY
                UPDATE clause: a colliding PK throws ER_DUP_ENTRY (1062), which the
                surrounding catch turns into a clean rollback → 500 the client retries
                (the editor's per-song save loop re-mints a fresh slot on retry).
                A GENUINE update (or a non-draft create) keeps the existing UPSERT — a
                re-save of an existing real SongId MUST update it, not error. The
-               ON DUPLICATE KEY UPDATE tail is therefore appended only when NOT minting. */
-            $upsertDuplicateClause = $assignedId !== null
+               ON DUPLICATE KEY UPDATE tail is therefore appended only when NOT minting.
+               #1679 — the test is $mintedNewId, NOT `$assignedId !== null`: a songbook
+               move ALSO sets $assignedId (it shares the client-relabel contract) but
+               its row already exists, so it needs the UPDATE tail, not a plain INSERT. */
+            $upsertDuplicateClause = $mintedNewId
                 ? ''
                 : ' ON DUPLICATE KEY UPDATE
                         Number = VALUES(Number), Title = VALUES(Title),
@@ -1421,8 +1463,10 @@ function editorSaveSongCore(): array
                #1380 — when a draft id was promoted to a canonical id, also return
                assignedId (the new canonical id) + previousId (the draft id the
                client sent) so editor.js can relabel its in-memory song without a
-               reload. Both are OMITTED on a normal save (non-draft id), so the wire
-               shape is byte-identical to today for the common case. */
+               reload. #1679 reuses the SAME pair for a songbook MOVE (the id is
+               re-keyed to the new book's prefix), which is precisely why no client
+               change was needed for the v1 editor. Both are OMITTED on a normal
+               save, so the wire shape is byte-identical for the common case. */
             $respBody = ['ok' => true, 'songId' => $songId, 'action' => $action];
             if ($assignedId !== null) {
                 $respBody['assignedId'] = $assignedId;

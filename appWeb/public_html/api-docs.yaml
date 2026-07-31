@@ -1384,6 +1384,17 @@ paths:
         after a paginated index hit (#1012). Returns the complete song with
         lyrics components, writers, composers and metadata. Subject to the same
         read rate limit and content gating (#1353) as `song_data`.
+
+        PERMALINK REDIRECTS (#1343 / #1679). If `id` names a song that has since
+        been merged, deleted or MOVED to another songbook (a move re-keys the
+        SongId to the new book's prefix), this endpoint follows the redirect
+        chain instead of 404-ing: it returns the CURRENT record plus
+        `redirectedFrom` set to the id you asked for. Persist the new
+        `song.id` — the old one will keep working, but only via this hop.
+        A song removed with no replacement answers **410 Gone** (as opposed to
+        404 "never existed"), which is the signal to prune it from a local
+        cache. `redirectedFrom` is OMITTED on a normal read, so the happy-path
+        shape is unchanged.
       parameters:
         - name: action
           in: query
@@ -1404,11 +1415,23 @@ paths:
                 properties:
                   song:
                     $ref: "#/components/schemas/Song"
+                  redirectedFrom:
+                    type: string
+                    description: >-
+                      Present ONLY when the requested id was a dead permalink
+                      that resolved to this song (#1343/#1679). Holds the id
+                      that was requested; `song.id` is the current one.
+                    example: MP-1008
         "400":
           description: Missing song ID
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "404":
           description: Song not found
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "410":
+          description: >-
+            Song removed — the id resolved to a redirect tombstone (merged or
+            deleted with no replacement). Prune it locally (#1343/#1679).
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           $ref: "#/components/responses/RateLimited"

@@ -33,6 +33,8 @@ declare(strict_types=1);
  *   POST create_song            { songbook, title? }        -> { ok, songId }
  *   POST delete_song            { songId }                  -> { ok, deleted }
  *   POST metadata_field_update  { songId, field, value }    -> { ok }
+ *                               field=songbook RE-KEYS the SongId (#1679) and
+ *                               answers { ok, field, songId, previousId }
  *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
@@ -533,6 +535,19 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
  * owns the transaction. Tolerates an old scalar-only snapshot (the bare tblSongs
  * row with no 'song' key) by restoring scalars only. Mirrors the relational
  * write paths so a restore lands identical to having re-typed everything.
+ *
+ * ONE DELIBERATE EXCLUSION — `SongbookAbbr` (#1679).
+ *
+ * ELI5: restoring an old version of the words must not silently pick the song up
+ * and drop it back into a songbook it left.
+ *
+ * Detail: the abbreviation IS the SongId prefix (rule #27). A restore writes
+ * SCALARS only — it cannot re-key the id, cascade the ~25 FK children or leave a
+ * permalink redirect — so restoring an old `SongbookAbbr` would recreate exactly
+ * the SongId↔SongbookAbbr mismatch #1679 exists to kill, as a SIDE EFFECT of an
+ * action the curator asked for on a completely different field. A restore
+ * therefore keeps the song's CURRENT home; moving books stays an explicit act
+ * (`metadata_field_update` with field=songbook → songRelocate()).
  */
 function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
     /* A v2 full snapshot has a 'song' key; an old scalar-only snapshot IS the row. */
@@ -541,6 +556,8 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
     /* Scalars — only the allow-listed editable columns (same coercion as
        metadata_field_update). */
     foreach (ED2_META_FIELDS as $field => [$column, $type]) {
+        /* #1679 — never restore the songbook (see the doc-block above). */
+        if ($column === 'SongbookAbbr') { continue; }
         if (!array_key_exists($column, $songRow)) { continue; }
         $raw = $songRow[$column];
         if ($type === 'i') {
@@ -871,6 +888,58 @@ try {
 
         [$column, $type] = ED2_META_FIELDS[$field];
         $raw = $body['value'] ?? null;
+
+        /* ---- #1679 — SONGBOOK MOVE is not a scalar update ----------------
+           `tblSongbooks.Abbreviation` IS the SongId prefix (rule #27), so
+           writing SongbookAbbr through the generic UPDATE below would leave the
+           id claiming the OLD book forever. Branch out to the shared re-key
+           helper instead: it mints the new id, cascades every child row, clears
+           Number, rewrites the non-FK content-restriction rows and leaves a
+           tblSongRedirects row so old permalinks keep resolving.
+           The generic path opens no transaction (a single UPDATE needs none) —
+           a move is several statements, so it gets its own. */
+        if ($column === 'SongbookAbbr') {
+            $targetAbbr = trim((string)($raw ?? ''));
+            if ($targetAbbr === '') {
+                ed2_respond(['ok' => false, 'error' => 'A target songbook abbreviation is required.'], 400);
+            }
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+            $db->begin_transaction();
+            try {
+                $rel = songRelocate($db, $songId, $targetAbbr, $ed2UserId);
+                ed2_touchRevision($db, $rel['songId'], $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\InvalidArgumentException $e) {
+                /* The abbreviation is a free-text field, so a typo is ordinary
+                   user input, not a server fault — 422, with the reason. Caught
+                   SEPARATELY from \Throwable because mysqli_sql_exception is a
+                   RuntimeException: a single broad catch would report a real
+                   database failure as "you typed the wrong book". Clients branch
+                   on the STATUS, never on this sentence (rule #35). */
+                $db->rollback();
+                ed2_respond(['ok' => false, 'error' => $e->getMessage()], 422);
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.metadata', 'song', $rel['songId'], [
+                'field'         => $field,
+                'songbook'      => $targetAbbr,
+                'previous_book' => $rel['previousSongbookAbbr'],
+                'previous_id'   => $rel['previousId'],
+                'renamed'       => $rel['renamed'],
+            ]);
+            /* `previousId` !== `songId` is the client's signal to re-open the song
+               under its new id (the shell re-keys its in-memory id + the ?song=
+               URL). Always present so the client has one thing to compare, and
+               equal on a no-op move. */
+            ed2_respond([
+                'ok'         => true,
+                'field'      => $field,
+                'songId'     => $rel['songId'],
+                'previousId' => $rel['previousId'],
+            ]);
+        }
 
         /* Coerce per the allow-listed type; numberless/empty → NULL where the
            column allows it (Number/TuneName/Iswc/OriginCity are nullable). */

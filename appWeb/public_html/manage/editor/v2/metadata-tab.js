@@ -33,11 +33,31 @@ const FIELDS = [
 export function mountMetadataTab(container, opts) {
     const { store, api, songId } = opts;
     const toast = opts.toast || function () {};
+    /* #1679 — the shell's "this song now has a different id" handler. A plain
+       injected callback rather than a DOM event, so there is no event-name
+       literal to keep in sync with anything (rule #35 / #1581). Defaults to a
+       no-op so the tab still mounts standalone in a test harness. */
+    const onSongIdChange = opts.onSongIdChange || function () {};
     const timers = new Map();
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
 
     function save(field, value) {
-        api.updateMetadata(songId, field, value).catch((e) => {
+        api.updateMetadata(songId, field, value).then((res) => {
+            /* #1679 — changing the songbook RE-KEYS the SongId server-side
+               (`tblSongbooks.Abbreviation` IS the id prefix, rule #27). Every id
+               this tab captured at mount — and the shell's ?song= URL, the
+               sidebar row, the other tabs — now points at a dead id, so hand the
+               new one back to the shell, which re-opens the song under it.
+               Compared by VALUE, not by field name: the server tells us whether
+               a rename actually happened, so a no-op move (same book) doesn't
+               churn the UI. */
+            if (res && res.previousId && res.songId && res.songId !== res.previousId) {
+                /* Guarded so a fault in the shell's re-open cannot fall through to
+                   the .catch() below and toast "could not save" about a save that
+                   actually succeeded — a misleading error is worse than none. */
+                try { onSongIdChange(res.previousId, res.songId); } catch (_e) { /* shell owns its own errors */ }
+            }
+        }).catch((e) => {
             toast('Could not save ' + field + ': ' + e.message, 'danger');
         });
     }

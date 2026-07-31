@@ -320,8 +320,22 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
             teardowns.forEach((fn) => { try { if (typeof fn === 'function') { fn(); } } catch (_e) {} });
             teardowns = [];
         }
+        /* #1679 — a songbook change re-keys the SongId server-side, so the id the
+           tabs, the ?song= URL and the sidebar hold is dead the instant the move
+           lands. Re-open under the new id: sidebar.refresh() re-pulls the index so
+           the row shows the new id, loadSong() tears the tabs down, re-hydrates the
+           store and history-replaces the URL. Passed to every tab as a callback
+           (metadata-tab.js is the only caller today) rather than dispatched as a
+           DOM event — no event-name literal to keep in sync (rule #35 / #1581). */
+        function onSongIdChange(previousId, newId) {
+            if (!newId || newId === previousId) { return; }
+            status('Moved songbook — this song is now ' + newId + '.', 'success');
+            try { sidebar.refresh(); } catch (_e) {}
+            loadSong(newId);
+        }
+
         function mountTabs(songId) {
-            const ctx = { store, api: editorApi, songId, toast };
+            const ctx = { store, api: editorApi, songId, toast, onSongIdChange };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
                 /* #1627 item 2 — below the section cards, mirroring v1's own

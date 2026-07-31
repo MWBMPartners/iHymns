@@ -981,6 +981,45 @@ if ($action !== null) {
             }
 
             $song = $songData->getSongById($songId);
+
+            /* #1679 / #1343 — a JSON read follows the permalink redirect layer
+               before giving up, exactly as the HTML fragment already does
+               (includes/pages/song.php).
+
+               ELI5: if a song moved, an app asking for its old id gets the song
+               anyway, plus a note saying "this id changed".
+
+               Detail: this is the SAFETY NET for every SOFT reference the
+               `ON UPDATE CASCADE` fan-out cannot reach — SongsJson blobs in
+               tblUserSetlists / tblSetlistTemplates, native-app local caches, PWA
+               offline stores, third-party bookmarks. Without it a songbook move
+               (#1679) or a merge (#1343) turns every one of those into a silent
+               404 in a client that has no way to learn the new id. The response
+               carries `redirectedFrom` so a client can rewrite what it stored
+               rather than re-resolving forever; a tombstone (removed, no
+               replacement) answers 410 Gone, which is a DIFFERENT thing from 404
+               "we have never heard of this" and lets a client prune with
+               confidence (rule #35 — status is the contract, not the prose).
+               No cache concern: sendJson() sets no-cache and the ETag/304 path
+               above applies only to `page=` fragments, not to actions. */
+            $redirectedFrom = null;
+            if ($song === null) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';
+                $sdRd = songRedirectResolve(getDbMysqli(), $songId);
+                if ($sdRd['redirected'] && $sdRd['target'] !== null) {
+                    $sdTargetSong = $songData->getSongById((string)$sdRd['target']);
+                    if ($sdTargetSong !== null) {
+                        $redirectedFrom = $songId;
+                        $songId         = (string)$sdRd['target'];
+                        $song           = $sdTargetSong;
+                    }
+                }
+                if ($song === null && $sdRd['redirected']) {
+                    sendJson(['error' => 'Song removed.', 'gone' => true], 410);
+                    break;
+                }
+            }
+
             if ($song === null) {
                 sendJson(['error' => 'Song not found.'], 404);
             } else {
@@ -1019,7 +1058,13 @@ if ($action !== null) {
                     $sdPresence = (string)$_COOKIE['ihymns_sf_presence_token'];
                 }
                 $song   = contentGatingApply($song, $sdUid, $sdPlat, $sdPresence);
-                sendJson(['song' => $song]);
+                /* #1679 — `redirectedFrom` is present ONLY when the requested id
+                   was a dead permalink we followed, so the wire shape stays
+                   byte-identical for every normal read (a strict native decoder
+                   sees no new key on the happy path). */
+                $sdPayload = ['song' => $song];
+                if ($redirectedFrom !== null) { $sdPayload['redirectedFrom'] = $redirectedFrom; }
+                sendJson($sdPayload);
             }
             break;
 
