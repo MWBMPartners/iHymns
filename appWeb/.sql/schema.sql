@@ -722,6 +722,13 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     Role            VARCHAR(20)     NOT NULL DEFAULT 'user' COMMENT 'global_admin, admin, editor, user',
     GroupId         INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUserGroups for version access',
     IsActive        TINYINT(1)      NOT NULL DEFAULT 1,
+    -- Account lifecycle (#1698). IsActive stays THE lock (13+ enforcement points
+    -- in manage/includes/auth.php plus getAuthenticatedUser()); Status only says
+    -- WHICH kind of inactive, so disabled (reversible) and deleted (anonymised
+    -- tombstone) are distinguishable. Invariant IsActive = (Status = 'active'),
+    -- enforced in the ONE writer, setUserActive().
+    Status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active | disabled | deleted — app-validated vocabulary, VARCHAR not ENUM (rule #20). deleted = anonymised tombstone (#1698)',
+    StatusChangedAt DATETIME NULL DEFAULT NULL COMMENT 'UTC instant Status last changed; DATETIME not TIMESTAMP so it is not re-read against a session zone (#1698)',
     AccessTier      VARCHAR(20)     NOT NULL DEFAULT 'free' COMMENT 'public, free, ccli, premium, pro',
     CcliNumber      VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'CCLI licence number (6-7 digits)',
     CcliVerified    TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = CCLI number validated',
@@ -736,6 +743,7 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     INDEX idx_Role      (Role),
     INDEX idx_Email     (Email),
     INDEX idx_Group     (GroupId),
+    INDEX idx_Status    (Status),
 
     CONSTRAINT fk_Users_Group
         FOREIGN KEY (GroupId) REFERENCES tblUserGroups(Id)

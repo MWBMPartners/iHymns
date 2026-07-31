@@ -2933,6 +2933,42 @@ return [
             !_migProbe_columnExists($db, 'tblUserSetlists', 'SlotsJson'),
     ],
 
+    /* ---- #1698 — account lifecycle: disabled vs deleted ------------------------
+       Adds tblUsers.Status + tblUsers.StatusChangedAt + idx_Status. `IsActive`
+       remains THE lock on every authenticated path (getAuthenticatedUser() filters
+       IsActive = 1, and manage/includes/auth.php has thirteen more enforcement
+       points); Status exists ONLY to distinguish a reversible DISABLE from an
+       irreversible anonymised-tombstone ERASE.
+
+       THREE objects, so a THREE-clause OR-probe (rule #19). The migration applies
+       them as three separate guarded statements precisely so a dropped connection
+       leaves a partial state — and a partial apply must NOT show the card green,
+       or "Apply all pending" skips the half that never ran while
+       userStatusColumnReady() sits true and the erasure core writes a Status the
+       index cannot serve. */
+    'user-account-status' => [
+        'script' => 'migrate-user-account-status.php',
+        'card' => [
+            'title'  => 'Account lifecycle status (#1698)',
+            'body'   => 'Adds <code>tblUsers.Status</code> (<code>active | disabled | deleted</code>)'
+                      . ' + <code>StatusChangedAt</code> + an index, so a <strong>disabled</strong>'
+                      . ' account (switched off, fully reversible) is distinguishable from an'
+                      . ' <strong>erased</strong> one (anonymised tombstone). Existing'
+                      . ' <code>IsActive = 0</code> rows are backfilled to <code>disabled</code>,'
+                      . ' which is what they are. Adds no new lock — <code>IsActive</code> is still'
+                      . ' what every auth path checks — so applying this changes the behaviour of'
+                      . ' zero existing accounts. Until it is applied every reader is'
+                      . ' existence-gated and falls back to <code>IsActive</code>, and account'
+                      . ' <em>erasure</em> deliberately REFUSES rather than falling back to the old'
+                      . ' irreversible hard delete. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Account Lifecycle Status Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblUsers', 'Status')
+            || !_migProbe_columnExists($db, 'tblUsers', 'StatusChangedAt')
+            || !_migProbe_indexExists($db, 'tblUsers', 'idx_Status'),
+    ],
+
     /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
        tblSongChords (#299) has zero PHP/JS references — chord notation now lives
        per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only
