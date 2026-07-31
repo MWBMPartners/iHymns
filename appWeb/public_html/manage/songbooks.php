@@ -3348,7 +3348,8 @@ $csrf = csrfToken();
                                     <button type="button"
                                             class="btn btn-outline-secondary"
                                             id="edit-parent-clear"
-                                            title="Clear parent">
+                                            title="Clear parent"
+                                            aria-label="Clear parent songbook">
                                         <i class="bi bi-x-lg" aria-hidden="true"></i>
                                     </button>
                                 </div>

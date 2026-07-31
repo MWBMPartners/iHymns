@@ -3464,7 +3464,7 @@ if ($hasCredentials && defined('DB_HOST')) {
                             </div>
                             <div class="input-group input-group-sm">
                                 <input type="text" class="form-control font-monospace" id="secretGenValue" readonly aria-label="Generated master key">
-                                <button type="button" class="btn btn-outline-secondary" id="secretGenCopy" title="Copy to clipboard"><i class="bi bi-clipboard"></i></button>
+                                <button type="button" class="btn btn-outline-secondary" id="secretGenCopy" title="Copy to clipboard" aria-label="Copy generated master key to clipboard"><i class="bi bi-clipboard" aria-hidden="true"></i></button>
                             </div>
                         </div>
                         <button type="button" class="btn btn-outline-primary btn-sm" id="secretGenBtn">

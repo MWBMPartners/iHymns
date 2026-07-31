@@ -1032,11 +1032,21 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             /* Default "Pick" = checked, except a same-official-book "distinct?" row. */
             $checked = $isDistinct ? '' : ' checked';
 
+            /* #1150/#1151 — the "Keep"/"Pick" <th> headers give these columns a
+               VISUAL label, but a <th> is not an accessible NAME source for a
+               form control (that needs a <label>, aria-label or aria-labelledby
+               — WCAG 4.1.2/3.3.2). Without one a screen-reader user tabbing
+               through the table hears only "radio button" / "checkbox, checked"
+               with no indication of which of the several songs in this cluster
+               it refers to. $songLabel() is already htmlspecialchars()-escaped
+               for HTML body use, which is equally safe to drop into a
+               double-quoted attribute value. */
+            $ariaSongLabel = $songLabel($s);
             echo '<tr' . ($isDistinct ? ' class="table-warning"' : '') . '>';
             if ($canMerge) {
-                echo '<td><input type="radio" name="survivor" value="' . htmlspecialchars($sid, ENT_QUOTES) . '"' . ($first ? ' checked' : '') . '></td>';
+                echo '<td><input type="radio" name="survivor" value="' . htmlspecialchars($sid, ENT_QUOTES) . '"' . ($first ? ' checked' : '') . ' aria-label="Keep ' . $ariaSongLabel . ' as the survivor"></td>';
             }
-            echo '<td><input type="checkbox" class="dup-pick" value="' . htmlspecialchars($sid, ENT_QUOTES) . '" data-book="' . htmlspecialchars($abbr, ENT_QUOTES) . '" data-official="' . ($official ? '1' : '0') . '"' . $checked . '></td>';
+            echo '<td><input type="checkbox" class="dup-pick" value="' . htmlspecialchars($sid, ENT_QUOTES) . '" data-book="' . htmlspecialchars($abbr, ENT_QUOTES) . '" data-official="' . ($official ? '1' : '0') . '"' . $checked . ' aria-label="Include ' . $ariaSongLabel . ' in this action"></td>';
             echo '<td data-col-priority="primary"><a href="/manage/editor/?song=' . urlencode($sid) . '" target="_blank" rel="noopener">' . $songLabel($s) . '</a>';
             if ($isDistinct) {
                 echo ' <span class="badge bg-warning text-dark" title="Another song shares this title in the same official songbook — probably a different hymn">distinct?</span>';

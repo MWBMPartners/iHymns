@@ -458,8 +458,9 @@ if ($hasSchema && !empty($catalogues)) {
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="id"     value="<?= (int)$c['Id'] ?>">
-                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete">
-                                            <i class="bi bi-trash"></i>
+                                        <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete"
+                                                aria-label="Delete collection &quot;<?= htmlspecialchars($c['Title'], ENT_QUOTES) ?>&quot;">
+                                            <i class="bi bi-trash" aria-hidden="true"></i>
                                         </button>
                                     </form>
                                 </td>
@@ -539,8 +540,9 @@ if ($hasSchema && !empty($catalogues)) {
                                                         <input type="hidden" name="action"       value="remove_member">
                                                         <input type="hidden" name="catalogue_id" value="<?= (int)$c['Id'] ?>">
                                                         <input type="hidden" name="song_id"      value="<?= htmlspecialchars($m['SongId']) ?>">
-                                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove">
-                                                            <i class="bi bi-x"></i>
+                                                        <button type="submit" class="btn btn-sm btn-outline-danger py-0 px-2" title="Remove"
+                                                                aria-label="Remove <?= htmlspecialchars($m['SongId'], ENT_QUOTES) ?> from this collection">
+                                                            <i class="bi bi-x" aria-hidden="true"></i>
                                                         </button>
                                                     </form>
                                                 </li>

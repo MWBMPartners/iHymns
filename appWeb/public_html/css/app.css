@@ -573,7 +573,9 @@ a.link-bare:hover {
 .btn-sm,
 .btn-group-sm > .btn,
 .theme-chip,
-.card-layout-hide-btn {
+.card-layout-hide-btn,
+.card-layout-move-up-btn,
+.card-layout-move-down-btn {
     min-width: 24px;
     min-height: 24px;
 }
@@ -3687,10 +3689,18 @@ body.reduce-motion .theme-chip:focus-visible {
 .card-layout-ghost {
     opacity: 0.4;
 }
-/* The module injects the hide (×) button into the handle strip; push it
-   to the right end so the strip reads "≡ Drag to reorder … ×". */
-.card-layout-handle .card-layout-hide-btn {
+/* The module injects Move up / Move down / Hide (×) buttons into the
+   handle strip as one `.card-layout-controls` group; push the whole
+   group to the right end so the strip reads
+   "≡ Drag to reorder … ▲ ▼ ×". (#1151 — the up/down pair is the
+   keyboard/switch alternative to dragging, WCAG 2.2 2.5.7.) */
+.card-layout-handle .card-layout-controls {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.card-layout-handle .card-layout-hide-btn {
     padding: 0 0.4rem;
     line-height: 1.4;
 }

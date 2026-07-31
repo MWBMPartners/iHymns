@@ -958,13 +958,20 @@ if ($hasSchema) {
             const note = String(m.note || '');
             const can  = m.isCanonical ? 'checked' : '';
             const songLabel = escapeHtml((m.songbook || '') + (m.number ? (' #' + m.number) : '') + ' — ' + (m.title || sid));
+            /* #1150/#1151 — the "Sort"/"Canon" <th> headers label the COLUMN
+               visually, but a <th> is not an accessible NAME source for the
+               <input>/<checkbox> in each row (WCAG 4.1.2/3.3.2) — without an
+               explicit aria-label a screen-reader user tabbing through hears
+               only "spin button" / "checkbox, not checked" with no
+               indication of which of the work's several songs it is for. */
+            const rowNote = escapeHtml((m.songbook || '') + (m.number ? (' #' + m.number) : '') + ' — ' + (m.title || sid));
             return '' +
               '<tr data-song-id="' + escapeHtml(sid) + '">' +
-                '<td><input type="number" class="form-control form-control-sm" name="member_sort[' + escapeHtml(sid) + ']" value="' + Number(sort) + '" min="0" max="65535" style="width:6rem"></td>' +
-                '<td class="text-center"><div class="form-check form-check-inline ms-1"><input class="form-check-input" type="checkbox" name="member_canonical[]" value="' + escapeHtml(sid) + '" ' + can + '></div></td>' +
+                '<td><input type="number" class="form-control form-control-sm" name="member_sort[' + escapeHtml(sid) + ']" value="' + Number(sort) + '" min="0" max="65535" style="width:6rem" aria-label="Sort order for ' + rowNote + '"></td>' +
+                '<td class="text-center"><div class="form-check form-check-inline ms-1"><input class="form-check-input" type="checkbox" name="member_canonical[]" value="' + escapeHtml(sid) + '" ' + can + ' aria-label="Mark ' + rowNote + ' as the canonical recording"></div></td>' +
                 '<td><input type="hidden" name="member_song_ids[]" value="' + escapeHtml(sid) + '">' + songLabel + '</td>' +
-                '<td><input type="text" class="form-control form-control-sm" name="member_note[' + escapeHtml(sid) + ']" maxlength="255" value="' + escapeHtml(note) + '" placeholder="e.g. \'1779 original\'"></td>' +
-                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-member" title="Remove"><i class="bi bi-x-lg"></i></button></td>' +
+                '<td><input type="text" class="form-control form-control-sm" name="member_note[' + escapeHtml(sid) + ']" maxlength="255" value="' + escapeHtml(note) + '" placeholder="e.g. \'1779 original\'" aria-label="Note for ' + rowNote + '"></td>' +
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger" data-action="remove-member" title="Remove" aria-label="Remove ' + rowNote + ' from this work"><i class="bi bi-x-lg" aria-hidden="true"></i></button></td>' +
               '</tr>';
         }
 

@@ -1598,7 +1598,8 @@ export class UserAuth {
                             <div class="mb-3">
                                 <label for="auth-password" class="form-label">Password</label>
                                 <input type="password" class="form-control" id="auth-password"
-                                       placeholder="Password (min 8 characters)" autocomplete="current-password" required>
+                                       placeholder="Password (min 8 characters)"
+                                       autocomplete="${mode === 'register' ? 'new-password' : 'current-password'}" required>
                             </div>
                             <button type="submit" class="btn btn-primary w-100" id="auth-submit-btn">
                                 <span id="auth-submit-text">${mode === 'register' ? 'Create Account' : 'Sign In'}</span>
@@ -1690,7 +1691,7 @@ export class UserAuth {
                                 <div class="mb-2">
                                     <label for="auth-reset-password" class="form-label small">New Password</label>
                                     <input type="password" class="form-control form-control-sm" id="auth-reset-password"
-                                           placeholder="Min 8 characters" minlength="8" required>
+                                           placeholder="Min 8 characters" minlength="8" autocomplete="new-password" required>
                                 </div>
                                 <button type="submit" class="btn btn-sm btn-primary w-100">
                                     Reset Password
@@ -1808,6 +1809,13 @@ export class UserAuth {
             modal.querySelector('#auth-display-name-group').style.display = isReg ? '' : 'none';
             const emailGroup = modal.querySelector('#auth-email-group');
             if (emailGroup) emailGroup.style.display = isReg ? '' : 'none';
+            /* #1150/#1151 — keep the shared password field's autocomplete
+               purpose (WHATWG "new-password" vs "current-password") in
+               step with the mode it's actually being used for, so a
+               password manager offers to GENERATE a strong password when
+               creating an account instead of offering a saved login. */
+            const pwField = modal.querySelector('#auth-password');
+            if (pwField) pwField.setAttribute('autocomplete', isReg ? 'new-password' : 'current-password');
             modal.querySelector('#auth-forgot-link-wrapper').style.display = isReg ? 'none' : '';
             modal.querySelector('#auth-toggle').innerHTML = isReg
                 ? 'Already have an account? <strong>Sign in</strong>'

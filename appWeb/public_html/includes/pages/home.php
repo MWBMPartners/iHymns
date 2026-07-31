@@ -36,9 +36,19 @@ $songbooks = $songData->getSongbooks();
    default order and personalisation happens client-side. */
 $homeCard = static function (string $cardId): string {
     $id = htmlspecialchars($cardId, ENT_QUOTES, 'UTF-8');
+    /* #1151 — the handle strip is NOT aria-hidden: card-layout.js injects
+       real, focusable "Move up" / "Move down" / "Hide this card" buttons
+       into it once edit mode is entered, and an aria-hidden ancestor
+       removes focusable descendants from the accessibility tree while
+       leaving them in the visual/keyboard tab order (WCAG 4.1.2 Name,
+       Role, Value) — a screen-reader user tabbing through could land on
+       a control with no announced name or role at all. Only the
+       decorative grip glyph is hidden from AT; the "Drag to reorder"
+       text stays available as a plain-text label for anyone who does
+       reach the (only-visible-in-edit-mode) strip. */
     return '<div class="card-layout-item" data-card-id="' . $id . '">'
-         . '<div class="card-layout-handle" aria-hidden="true">'
-         . '<i class="bi bi-grip-vertical"></i><span class="ms-1">Drag to reorder</span>'
+         . '<div class="card-layout-handle">'
+         . '<i class="bi bi-grip-vertical" aria-hidden="true"></i><span class="ms-1">Drag to reorder</span>'
          . '</div>';
 };
 $homeCardEnd = '</div>';

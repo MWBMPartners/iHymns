@@ -33,6 +33,63 @@
     --bs-tertiary-bg: #333 !important;
     --bs-link-color: #ffff00 !important;
     --bs-link-hover-color: #ffcc00 !important;
+
+    /* #1150/#1151 — this block only ever redefined BOOTSTRAP's own `--bs-*`
+       tokens. app.css has a SECOND, parallel set of custom properties
+       (--text-primary/--text-secondary/--text-muted, --glass-bg, --card-
+       border) that dozens of components — .btn-header-icon, the bottom
+       .footer-nav (present on every page, including home, in every auth
+       state), .songbook-tile-language-badge, etc. — read directly, and
+       which stayed at their LIGHT-theme values here (high contrast always
+       forces data-bs-theme="light", see settings.js applyTheme()). Two
+       concrete, computed failures this produces without the four lines
+       below:
+         1. .btn-header-icon sets its OWN `color: var(--text-primary)`
+            (#1e293b, dark slate) — a normal (non-!important) declaration
+            on the element itself, which wins over the ancestor .navbar's
+            `color: #fff !important` above (an ancestor's !important only
+            wins for elements the ancestor SELECTOR matches; a descendant
+            with its own declared `color` is never overridden by it).
+            #1e293b text on the .navbar's forced #000 background computes
+            to ~1.44:1 — every header icon (search, notifications, user
+            menu, theme toggle) becomes nearly invisible in the one mode
+            whose entire purpose is legibility.
+         2. .app-footer / .app-header paint from `--footer-bg` / `--header-
+            bg`, both `var(--glass-bg)` = light theme's translucent
+            rgba(255,255,255,0.85) — NOT one of the four selectors this
+            block force-blacks (.card/.modal-content/.dropdown-menu/
+            .navbar; .app-footer and .footer-nav are neither). Composited
+            over the forced-black <body>, that renders as light grey
+            (~rgb(217,217,217)), and .footer-nav-item's `color: var(--
+            text-muted)` (#94a3b8) computes to ~1.8:1 against it — the
+            primary bottom navigation, the app's most-used control,
+            reduced from a compliant 4.5:1+ (its ordinary light-theme
+            reading) to a near-illegible ~1.8:1 specifically BECAUSE high
+            contrast mode was turned on.
+       Both are the exact same root cause: a component-level `var(--text-
+       *)` / `var(--glass-bg)` reference this file never redefined. Fixing
+       the four custom properties here — the shared source every such
+       component already reads from — closes this whole class of escapes
+       at once, the same way the --bs-* overrides above do for Bootstrap's
+       own components, rather than chasing every component selector that
+       happens to reference them (the CLAUDE.md "extract, don't duplicate"
+       rule applied to a CSS custom property instead of a partial). Values
+       reuse the ratios already proven elsewhere in this file: #ccc on
+       #000 is the same pairing as the .text-muted/.text-secondary utility
+       override two rules below (~13:1); #fff on #000 matches --bs-body-
+       color/--bs-emphasis-color above (max ratio); solid #000 for the
+       glass surfaces removes the accidental light-grey composite outright
+       (the backdrop-filter blur becomes a visual no-op over full opacity,
+       which is harmless — nothing is "blurred away", it simply never
+       shows). --card-border white matches this file's own "all
+       interactive elements have visible outlines" design intent (line 24
+       above) for the subtle 1px dividers (e.g. .app-footer's border-top)
+       that would otherwise render as ~6%-opacity black-on-black. */
+    --text-primary: #fff !important;
+    --text-secondary: #ccc !important;
+    --text-muted: #ccc !important;
+    --glass-bg: #000 !important;
+    --card-border: #fff !important;
 }
 
 [data-ihymns-contrast="high"] body {

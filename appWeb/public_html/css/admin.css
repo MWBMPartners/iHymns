@@ -471,13 +471,22 @@ body:has(.navbar-admin) {
 .card-layout-ghost {
     opacity: 0.4;
 }
-.card-layout-hide-btn {
+/* Move up / Move down / Hide (×) buttons are grouped into one
+   `.card-layout-controls` wrapper by card-layout.js and pinned to the
+   card's top-right corner. The up/down pair is the keyboard/switch
+   alternative to dragging the card (#1151, WCAG 2.2 2.5.7). */
+.card-layout-controls {
     position: absolute;
     top: 0.35rem;
     right: 0.35rem;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    z-index: 2;
+}
+.card-layout-hide-btn {
     padding: 0 0.4rem;
     line-height: 1.4;
-    z-index: 2;
 }
 
 /* ==========================================================================

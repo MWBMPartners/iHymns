@@ -18,8 +18,12 @@
  * current viewer is permitted to edit at all.
  *
  * Uses SortableJS (CDN-loaded once, on first edit toggle) for the
- * reorder interaction. Keyboard fallback: while in edit mode, each
- * card shows up / down buttons that move it by one slot.
+ * reorder interaction. WCAG 2.2 2.5.7 (Dragging Movements) + 2.1.1
+ * (Keyboard) fallback: while in edit mode, each card also grows
+ * "Move up" / "Move down" buttons (mirrors the pattern already used
+ * for set-list reordering in setlist.js) so nobody has to be able to
+ * drag with a pointer to reorder a card. This comment used to claim
+ * that fallback existed when only the hide (×) button did — see #1151.
  *
  * On save the order + hidden set is POSTed to /api?action=card_layout_
  * save_user. Admins with manage_default_card_layout can also save the
@@ -174,6 +178,52 @@ function debounce(fn, wait) {
 }
 
 /**
+ * Re-derive the disabled state of every Move up / Move down button from
+ * the CURRENT DOM order, so the boundary buttons stay correct after a
+ * drag-drop, a button move, or a hide. Cheap — the grids this runs
+ * against are a handful of items — so it is simplest to just recompute
+ * on every change rather than track indices by hand.
+ * @param {HTMLElement} root
+ */
+function refreshMoveButtons(root) {
+    const items = qsa(root, '.card-layout-item');
+    items.forEach((item, idx) => {
+        const up = qs(item, '.card-layout-move-up-btn');
+        const down = qs(item, '.card-layout-move-down-btn');
+        if (up) up.disabled = (idx === 0);
+        if (down) down.disabled = (idx === items.length - 1);
+    });
+}
+
+/**
+ * Move one card-layout-item by one slot in the DOM (the keyboard/switch
+ * equivalent of dragging it past its neighbour). No-ops silently at
+ * either end — callers keep the buttons disabled there, but a stray
+ * event (e.g. a double click racing the disabled-state update) should
+ * never throw.
+ * @param {HTMLElement} root
+ * @param {HTMLElement} item
+ * @param {number} delta -1 to move up, +1 to move down
+ */
+function moveCardItem(root, item, delta) {
+    const items = qsa(root, '.card-layout-item');
+    const idx = items.indexOf(item);
+    if (idx === -1) return;
+    const targetIdx = idx + delta;
+    if (targetIdx < 0 || targetIdx >= items.length) return;
+    if (delta < 0) {
+        root.insertBefore(item, items[targetIdx]);
+    } else {
+        root.insertBefore(item, items[targetIdx].nextElementSibling);
+    }
+    refreshMoveButtons(root);
+    /* Keep focus on the control the keyboard user just activated (now at
+       its new position) so repeated presses keep working without the
+       browser losing track of where focus should land. */
+    qs(item, delta < 0 ? '.card-layout-move-up-btn' : '.card-layout-move-down-btn')?.focus();
+}
+
+/**
  * Initialise a card grid. Idempotent — safe to call multiple times.
  * @param {HTMLElement} root The `.row` container with data-layout-surface
  */
@@ -221,7 +271,36 @@ export function initCardLayout(root) {
         help?.classList.remove('d-none');
 
         for (const item of qsa(root, '.card-layout-item')) {
-            if (!qs(item, '.card-layout-hide-btn')) {
+            if (!qs(item, '.card-layout-controls')) {
+                const host = qs(item, handleSel);
+                if (!host) continue;
+                const controls = document.createElement('div');
+                controls.className = 'card-layout-controls';
+
+                const upBtn = document.createElement('button');
+                upBtn.type = 'button';
+                upBtn.className = 'btn btn-sm btn-outline-secondary card-layout-move-up-btn';
+                upBtn.setAttribute('aria-label', 'Move card up');
+                upBtn.title = 'Move up';
+                upBtn.innerHTML = '<i class="bi bi-chevron-up" aria-hidden="true"></i>';
+                upBtn.addEventListener('click', () => {
+                    moveCardItem(root, item, -1);
+                    save();
+                });
+                controls.appendChild(upBtn);
+
+                const downBtn = document.createElement('button');
+                downBtn.type = 'button';
+                downBtn.className = 'btn btn-sm btn-outline-secondary card-layout-move-down-btn';
+                downBtn.setAttribute('aria-label', 'Move card down');
+                downBtn.title = 'Move down';
+                downBtn.innerHTML = '<i class="bi bi-chevron-down" aria-hidden="true"></i>';
+                downBtn.addEventListener('click', () => {
+                    moveCardItem(root, item, 1);
+                    save();
+                });
+                controls.appendChild(downBtn);
+
                 const hideBtn = document.createElement('button');
                 hideBtn.type = 'button';
                 hideBtn.className = 'btn btn-sm btn-outline-danger card-layout-hide-btn';
@@ -233,9 +312,12 @@ export function initCardLayout(root) {
                     item.classList.add('d-none');
                     save();
                 });
-                qs(item, handleSel)?.appendChild(hideBtn);
+                controls.appendChild(hideBtn);
+
+                host.appendChild(controls);
             }
         }
+        refreshMoveButtons(root);
 
         loadSortable().then(S => {
             if (sortable) return;
@@ -243,7 +325,10 @@ export function initCardLayout(root) {
                 animation: 160,
                 ghostClass: 'card-layout-ghost',
                 handle: handleSel,
-                onEnd: () => save(),
+                onEnd: () => {
+                    refreshMoveButtons(root);
+                    save();
+                },
             });
         }).catch(err => console.error('[card-layout] sortable load failed', err));
     }
@@ -255,7 +340,7 @@ export function initCardLayout(root) {
         btnReset?.classList.add('d-none');
         btnDefault?.classList.add('d-none');
         help?.classList.add('d-none');
-        for (const btn of qsa(root, '.card-layout-hide-btn')) btn.remove();
+        for (const controls of qsa(root, '.card-layout-controls')) controls.remove();
         if (sortable) { sortable.destroy(); sortable = null; }
     }
 

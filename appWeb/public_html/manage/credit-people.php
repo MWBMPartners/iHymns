@@ -1934,8 +1934,8 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <span class="input-group-text"><i class="bi bi-search"></i></span>
                         <input type="search" class="form-control" id="cp-search"
                                placeholder="Filter by name, lifespan, notes…" autocomplete="off">
-                        <button class="btn btn-outline-secondary" type="button" id="cp-search-clear" title="Clear">
-                            <i class="bi bi-x-lg"></i>
+                        <button class="btn btn-outline-secondary" type="button" id="cp-search-clear" title="Clear" aria-label="Clear search">
+                            <i class="bi bi-x-lg" aria-hidden="true"></i>
                         </button>
                     </div>
                 </div>

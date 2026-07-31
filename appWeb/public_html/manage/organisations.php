@@ -560,18 +560,21 @@ $csrf = csrfToken();
                                 </td>
                                 <td class="text-center"><?= (int)$o['MemberCount'] ?></td>
                                 <td class="text-end">
-                                    <a href="?edit=<?= (int)$o['Id'] ?>" class="btn btn-sm btn-outline-info" title="Edit and manage members">
-                                        <i class="bi bi-pencil"></i>
+                                    <a href="?edit=<?= (int)$o['Id'] ?>" class="btn btn-sm btn-outline-info" title="Edit and manage members"
+                                       aria-label="Edit and manage members of <?= htmlspecialchars($o['Name'], ENT_QUOTES) ?>">
+                                        <i class="bi bi-pencil" aria-hidden="true"></i>
                                     </a>
                                     <?php if ((int)$o['MemberCount'] === 0): ?>
                                         <form method="POST" class="d-inline" onsubmit="return confirm('Delete organisation <?= htmlspecialchars($o['Name'], ENT_QUOTES) ?>?')">
                                             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                             <input type="hidden" name="action" value="delete">
                                             <input type="hidden" name="id" value="<?= (int)$o['Id'] ?>">
-                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete (empty org)"><i class="bi bi-trash"></i></button>
+                                            <button type="submit" class="btn btn-sm btn-outline-danger" title="Delete (empty org)"
+                                                    aria-label="Delete organisation <?= htmlspecialchars($o['Name'], ENT_QUOTES) ?>"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                         </form>
                                     <?php else: ?>
-                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Org has members — remove them first"><i class="bi bi-trash"></i></button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" disabled title="Org has members — remove them first"
+                                                aria-label="Delete organisation <?= htmlspecialchars($o['Name'], ENT_QUOTES) ?> — disabled, it has members, remove them first"><i class="bi bi-trash" aria-hidden="true"></i></button>
                                     <?php endif; ?>
                                 </td>
                             </tr>
@@ -816,7 +819,8 @@ $csrf = csrfToken();
                                                     <input type="hidden" name="action"  value="remove_member">
                                                     <input type="hidden" name="org_id"  value="<?= (int)$editOrg['Id'] ?>">
                                                     <input type="hidden" name="user_id" value="<?= (int)$m['Id'] ?>">
-                                                    <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-x"></i></button>
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                                                            aria-label="Remove <?= htmlspecialchars($m['Username'], ENT_QUOTES) ?> from this organisation"><i class="bi bi-x" aria-hidden="true"></i></button>
                                                 </form>
                                             </td>
                                         </tr>
@@ -850,8 +854,8 @@ $csrf = csrfToken();
                                         <option value="<?= $mr ?>"><?= $mr ?></option>
                                     <?php endforeach; ?>
                                 </select>
-                                <button type="submit" class="btn btn-sm btn-amber-solid">
-                                    <i class="bi bi-plus"></i>
+                                <button type="submit" class="btn btn-sm btn-amber-solid" aria-label="Add selected user to this organisation">
+                                    <i class="bi bi-plus" aria-hidden="true"></i>
                                 </button>
                             </form>
                         <?php endif; ?>

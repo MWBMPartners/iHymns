@@ -609,9 +609,9 @@ if ($hasSchema) {
                   +   `<span class="badge bg-secondary-subtle text-secondary-emphasis">${i + 1}</span>`
                   +   `<strong class="small">${esc(reg.label || block.type)}</strong>`
                   +   `<div class="ms-auto btn-group btn-group-sm">`
-                  +     `<button type="button" class="btn btn-outline-secondary" data-act="up"${i === 0 ? ' disabled' : ''} title="Move up"><i class="bi bi-arrow-up"></i></button>`
-                  +     `<button type="button" class="btn btn-outline-secondary" data-act="down"${i === working.blocks.length - 1 ? ' disabled' : ''} title="Move down"><i class="bi bi-arrow-down"></i></button>`
-                  +     `<button type="button" class="btn btn-outline-danger" data-act="remove" title="Remove"><i class="bi bi-x-lg"></i></button>`
+                  +     `<button type="button" class="btn btn-outline-secondary" data-act="up"${i === 0 ? ' disabled' : ''} title="Move up" aria-label="Move ${esc(reg.label || block.type)} block up"><i class="bi bi-arrow-up" aria-hidden="true"></i></button>`
+                  +     `<button type="button" class="btn btn-outline-secondary" data-act="down"${i === working.blocks.length - 1 ? ' disabled' : ''} title="Move down" aria-label="Move ${esc(reg.label || block.type)} block down"><i class="bi bi-arrow-down" aria-hidden="true"></i></button>`
+                  +     `<button type="button" class="btn btn-outline-danger" data-act="remove" title="Remove" aria-label="Remove ${esc(reg.label || block.type)} block"><i class="bi bi-x-lg" aria-hidden="true"></i></button>`
                   +   `</div>`
                   + `</div>`
                   + optsHtml;
