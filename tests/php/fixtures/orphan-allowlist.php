@@ -200,33 +200,23 @@ return [
         'push_unsubscribe'     => '#1435 / #1671 — server live, no SW push handler yet; wiring is remediation F6. DELETE THIS ENTRY when F6 lands',
         /* F1 (devices_list / device_signout), F2 (my_song_requests) and F3
            (song_key / song_key_save) LANDED in the #1671 Batch-8 pass; their
-           five entries were deleted here in the same commit, and this guard's
+           five entries were deleted there in the same commit, and this guard's
            stale-entry check is what proved the wiring is real rather than
            merely written — it went RED naming exactly those five the moment
            the modules referenced the action names.
 
-           F4 is the one that did NOT land, and deliberately so. Its two
-           endpoints work in isolation, but the FEATURE they belong to cannot
-           be built against them without server work, so building a UI would
-           have shipped a screen that implies more than it can do:
-
-             - a template's whole payload is its `SlotsJson` service-order plan,
-               and there is nowhere to put those slots. `user_setlists_sync`
-               persists SetlistId / Name / SongsJson / CreatedAt / UpdatedAt /
-               ExpiresAt only, and `setlistCollabSanitiseSongs()` keeps just
-               id/title/songbook/number/arrangement per entry — so slots carried
-               into a set list would round-trip to the server and come back
-               GONE, for signed-in users only. Silent data loss on sync is the
-               exact class this programme exists to remove;
-             - there is no `setlist_template_delete` or `_update`, so every
-               template — including one created with `is_public: true`, visible
-               to everyone — would be permanent and uneditable from the UI that
-               created it.
-
-           Neither is a UI problem, so neither is fixable in a UI batch. Tracked
-           for a decision rather than half-built. */
-        'setlist_templates'    => '#1671 / #301 — server pair works in isolation but the FEATURE needs server work: set-list sync drops SlotsJson (nowhere to persist a template plan) and there is no delete/update endpoint. Deliberately NOT wired in the Batch-8 UI pass; see this block for the analysis',
-        'setlist_template_save'=> '#1671 / #301 — server pair works in isolation but the FEATURE needs server work: set-list sync drops SlotsJson (nowhere to persist a template plan) and there is no delete/update endpoint. Deliberately NOT wired in the Batch-8 UI pass; see this block for the analysis',
+           F4 (setlist_templates / setlist_template_save) has now gone the same
+           way, and its two entries died here. Batch 8's refusal to build it was
+           correct and its analysis was the spec: a template's whole payload is
+           its slots and `user_setlists_sync` had nowhere to keep them, so a
+           plan applied to a set list round-tripped and came back GONE —
+           silently, and for signed-in users only. That was a SERVER problem, so
+           it was fixed server-first: `tblUserSetlists.SlotsJson`
+           (migrate-setlist-slots.php), the shared slot model in
+           includes/setlist_templates.php, and the two missing endpoints
+           (`setlist_template_update` / `_delete`) so a template is no longer
+           permanent and uneditable from the screen that made it. Only then did
+           the UI land. */
 
         /* ---------------------------------------------------------------
          * 1f. TEMPORARY — scheduled for DELETION in remediation Batch 3.

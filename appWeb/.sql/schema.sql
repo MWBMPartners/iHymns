@@ -1120,6 +1120,12 @@ CREATE TABLE IF NOT EXISTS tblUserSetlists (
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     ExpiresAt DATETIME NULL DEFAULT NULL COMMENT 'Optional expiry (#1661), UTC; NULL = never expires. DATETIME not TIMESTAMP (rule #20 TTL convention)',
+    -- Mirror of appWeb/.sql/migrate-setlist-slots.php — keep byte-identical (rule #19).
+    -- ONE envelope column rather than SlotsJson + a TemplateId FK: templateName is a
+    -- SNAPSHOT so provenance survives the template being deleted or renamed, and the
+    -- sync loop needs no per-row existence check. Growth (durations, flags) goes
+    -- inside the JSON, never into a second ALTER (rule #20).
+    SlotsJson JSON NULL DEFAULT NULL COMMENT 'Optional service plan (#301/#1671 F4): {templateId, templateName, slots[]}. NULL = no plan',
 
     UNIQUE KEY uq_UserSetlist (UserId, SetlistId),
     INDEX idx_User (UserId),

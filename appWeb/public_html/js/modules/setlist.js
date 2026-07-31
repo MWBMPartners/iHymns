@@ -1044,6 +1044,10 @@ export class SetList {
                             aria-label="Print set list" title="Print">
                         <i class="fa-solid fa-print" aria-hidden="true"></i>
                     </button>
+                    <button type="button" class="btn btn-outline-secondary" id="setlist-template-btn"
+                            aria-label="Save this set list as a reusable template" title="Save as template">
+                        <i class="fa-solid fa-file-lines" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="btn btn-outline-primary" id="setlist-activate-btn"
                             aria-label="Activate set list for navigation" title="Use this set list">
                         <i class="fa-solid fa-play me-1" aria-hidden="true"></i> Use
@@ -1058,6 +1062,20 @@ export class SetList {
            call also silently gates on authUser. */
         this._renderSetlistSchedule(listId);
         this._renderSetlistCollaborators(container, listId);
+
+        /* Service plan (#301 / #1671 F4). Dynamically imported rather than a
+           static import at the top of this file, for the same reason router.js
+           imports its page modules that way: this screen is one of many, and a
+           set list with no plan (the overwhelming majority) should not pay for
+           the module at all. */
+        this._renderServicePlan(container, listId);
+
+        /* Save as template (#301 / #1671 F4). */
+        container.querySelector('#setlist-template-btn')?.addEventListener('click', () => {
+            import('./setlist-templates.js')
+                .then(m => m.saveSetlistAsTemplate(this.getById(listId)))
+                .catch(err => console.error('[SetList] setlist-templates import failed:', err));
+        });
 
         /* Back button */
         container.querySelector('#setlist-back-btn')?.addEventListener('click', () => {
@@ -1161,6 +1179,82 @@ export class SetList {
 
         /* Drag-to-reorder */
         this.initDragReorder(listId);
+    }
+
+    /**
+     * Render + wire the service plan card for one set list (#301 / #1671 F4).
+     *
+     * ELI5: shows the running order this set list was built from, and lets you
+     * pick which of its songs goes in each labelled space.
+     *
+     * A no-op when the set list has no plan, which is every set list until the
+     * user applies a template — so this costs nothing on the common path.
+     *
+     * THE WRITE GOES THROUGH saveAll(), WHICH SYNCS. That is the whole point of
+     * the #1671 F4 server work: before `tblUserSetlists.SlotsJson` existed the
+     * plan would have been dropped on the next round trip, silently, for
+     * signed-in users only. Nothing here needs to know that — it just saves the
+     * set list — which is exactly why the fix belonged in the sync path rather
+     * than in a UI workaround.
+     *
+     * @param {Element} container
+     * @param {string}  listId
+     */
+    _renderServicePlan(container, listId) {
+        const list = this.getById(listId);
+        if (!list || !list.plan || !Array.isArray(list.plan.slots) || list.plan.slots.length === 0) {
+            return;
+        }
+        import('./setlist-templates.js').then((m) => {
+            /* The set list may have changed while the module loaded (a user can
+               delete it, or navigate away); re-read rather than closing over a
+               stale object. */
+            const current = this.getById(listId);
+            if (!current?.plan) { return; }
+
+            /* Slot-type labels come from the SERVER's registry so a picker is
+               never a hardcoded copy (rule #35). A failed load degrades to raw
+               type keys, which are still readable — never to a blank card. */
+            m.loadTemplateCatalogue().catch(() => ({ slotTypes: {} })).then((cat) => {
+                const host = document.createElement('div');
+                host.innerHTML = m.renderPlanHtml(current.plan, current.songs, cat?.slotTypes || {});
+                const card = host.firstElementChild;
+                if (!card) { return; }
+
+                /* Inserted after the header block rather than appended, so the
+                   plan reads above the song list it organises. */
+                const songs = container.querySelector('#setlist-songs') || container.lastElementChild;
+                songs?.parentNode?.insertBefore(card, songs);
+
+                card.addEventListener('change', (e) => {
+                    const sel = e.target instanceof HTMLSelectElement ? e.target : null;
+                    const slotId = sel?.getAttribute('data-plan-slot');
+                    if (!sel || !slotId) { return; }
+                    const lists = this.getAll();
+                    const target = lists.find(l => l.id === listId);
+                    if (!target) { return; }
+                    target.plan = m.assignSongToSlot(target.plan, slotId, sel.value);
+                    this.saveAll(lists);
+                    this.renderSetListDetail(listId);
+                });
+
+                card.querySelector('[data-plan-clear]')?.addEventListener('click', () => {
+                    if (!window.confirm('Remove the service plan from this set list? The songs stay.')) { return; }
+                    const lists = this.getAll();
+                    const target = lists.find(l => l.id === listId);
+                    if (!target) { return; }
+                    /* null, not delete: the sync path reads PRESENCE of the key
+                       as "here is the truth about plans", so an explicit null is
+                       what actually clears the stored plan. Deleting the key
+                       would mean "I know nothing about plans" and the server
+                       would keep the old one — the isset() clear-semantics trap,
+                       from the client side. */
+                    target.plan = null;
+                    this.saveAll(lists);
+                    this.renderSetListDetail(listId);
+                });
+            });
+        }).catch(err => console.error('[SetList] service plan render failed:', err));
     }
 
     /**

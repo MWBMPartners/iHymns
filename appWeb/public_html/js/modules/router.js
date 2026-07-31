@@ -930,6 +930,23 @@ export class Router {
         /* Initialise set list page controls (#94) */
         if (page === 'setlist') {
             this.app.setList.initSetListPage();
+
+            /* Set-list templates / service plans (#301, wired #1671 F4).
+               Same rule-#30 wiring as home-page.js / export-ui.js: the set-list
+               fragment can never carry an executable inline <script> (enforcing
+               nonce CSP #117 + a fragment that never sees the nonce), so the
+               behaviour is a real ES module imported here. The module finds its
+               own hook (#template-dropdown) and no-ops when it is absent, so
+               this costs nothing on any other route.
+
+               The dropdown's markup has existed since #301 behind
+               `display:none !important` with NO JS referencing it anywhere —
+               the same orphan shape as #298's song-key container. It is
+               revealed by the module, not by the fragment, so it can never
+               again be visible without something behind it. */
+            import('./setlist-templates.js')
+                .then(m => m.bootSetlistTemplates(this.app.setList))
+                .catch(err => console.error('[Router] setlist-templates init failed:', err));
         }
 
         /* Initialise shared set list page (#147) */

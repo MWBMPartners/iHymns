@@ -7656,13 +7656,39 @@ paths:
   # endpoints used a from/to date range) — a second, independent doc-vs-code
   # disagreement on top of having no first-party caller.
 
+  # ---------------------------------------------------------------------------
+  # SETLIST TEMPLATES (#301; completed + documented #1671 F4)
+  #
+  # ⚠️ WHAT THIS SECTION USED TO SAY WAS FICTION, and worth recording because it
+  # is the second instance of the same failure in this file (the song_key pair
+  # was the first, #1671 Batch 8). It documented `songIds: [string]` where the
+  # handler reads `slots: [{label, type}]`, an `id: string` where the column is
+  # an AUTO_INCREMENT integer, and a summary of "Create or update" for an
+  # endpoint that could only ever create. Nobody could have made a successful
+  # call from that page. It drifted for exactly the reason both did: nothing
+  # exercised it. Documentation is not a mechanism (rule #35) — the guard that
+  # actually holds this honest is tests/php/test-openapi-actions-exist.php plus
+  # tests/php/test-setlist-templates.php.
+  #
+  # A template is a SERVICE ORDER — labelled slots — not a list of songs. Songs
+  # are chosen per set list, into the plan the template produces.
+  # ---------------------------------------------------------------------------
+
   /api.php?action=setlist_templates:
     get:
       operationId: setlistTemplates
       tags: [Setlists]
-      summary: List saved setlist templates
+      summary: List setlist templates visible to the caller
+      description: >
+        Returns public templates plus the caller's own plus those belonging to
+        organisations the caller is a member of. Callable anonymously, in which
+        case only public templates are returned. `slotTypes` is the server's ONE
+        slot-type registry — build a picker from it rather than hardcoding a
+        copy — and `canEdit` states, per template, whether THIS caller may
+        update or delete it (owner-only); never re-derive that from `createdBy`.
       security:
         - bearerAuth: []
+        - {}
       parameters:
         - name: action
           in: query
@@ -7670,7 +7696,7 @@ paths:
           schema: { type: string, enum: [setlist_templates] }
       responses:
         "200":
-          description: Template list
+          description: Template list, the slot-type registry and the slot cap
           content:
             application/json:
               schema:
@@ -7681,16 +7707,43 @@ paths:
                     items:
                       type: object
                       properties:
-                        id:         { type: string }
-                        name:       { type: string }
-                        songIds:    { type: array, items: { type: string } }
-                        createdAt:  { type: string, format: date-time }
+                        id:          { type: integer }
+                        name:        { type: string }
+                        description: { type: string }
+                        slotsJson:
+                          type: array
+                          description: The ordered service plan.
+                          items:
+                            type: object
+                            properties:
+                              id:    { type: string, description: "Stable slot key, [A-Za-z0-9_-]{1,40}" }
+                              label: { type: string, maxLength: 100 }
+                              type:  { type: string, maxLength: 50, description: A key from slotTypes, or free text }
+                        isPublic:    { type: boolean }
+                        orgId:       { type: integer, nullable: true }
+                        createdBy:   { type: integer, nullable: true }
+                        createdAt:   { type: string, format: date-time }
+                        canEdit:
+                          type: boolean
+                          description: True when the caller authored this template.
+                  slotTypes:
+                    type: object
+                    additionalProperties: { type: string }
+                    description: Slot-type key => human label.
+                  maxSlots:
+                    type: integer
+                    description: Slots per template. Exceeding it is a 413, never a silent truncation.
 
   /api.php?action=setlist_template_save:
     post:
       operationId: setlistTemplateSave
       tags: [Setlists]
-      summary: Create or update a setlist template
+      summary: Create a setlist template
+      description: >
+        Creates only — use `setlist_template_update` to change one. `org_id` may
+        only name an organisation the caller is a member of (403 otherwise).
+        More than `maxSlots` slots is refused with 413 and nothing is stored;
+        the payload is never silently shortened.
       security:
         - bearerAuth: []
       parameters:
@@ -7704,21 +7757,131 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, songIds]
+              required: [name]
               properties:
-                id:      { type: string, description: Omit to create; pass existing id to update }
-                name:    { type: string }
-                songIds: { type: array, items: { type: string } }
+                name:        { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 2000 }
+                slots:
+                  type: array
+                  items:
+                    type: object
+                    required: [label]
+                    properties:
+                      id:    { type: string }
+                      label: { type: string, maxLength: 100 }
+                      type:  { type: string, maxLength: 50 }
+                org_id:      { type: integer, nullable: true }
+                is_public:   { type: boolean, default: false }
       responses:
-        "200":
-          description: Saved; returns the template id
+        "201":
+          description: Created; returns the new template id
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok: { type: boolean }
-                  id: { type: string }
+                  id: { type: integer }
+        "400": { description: Template name is required }
+        "401": { description: Not authenticated }
+        "403": { description: org_id names an organisation the caller does not belong to }
+        "413": { description: Too many slots — nothing was stored }
+
+  /api.php?action=setlist_template_update:
+    post:
+      operationId: setlistTemplateUpdate
+      tags: [Setlists]
+      summary: Update a setlist template you created
+      description: >
+        Owner-only. Organisation membership grants VISIBILITY of a template, not
+        the right to change it. `org_id` is deliberately not re-assignable here —
+        moving a template between organisations changes who can see it, which is
+        an access decision; delete and re-create instead, so the membership check
+        runs again.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_template_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, name]
+              properties:
+                id:          { type: integer }
+                name:        { type: string, maxLength: 200 }
+                description: { type: string, maxLength: 2000 }
+                slots:
+                  type: array
+                  items:
+                    type: object
+                    required: [label]
+                    properties:
+                      id:    { type: string }
+                      label: { type: string, maxLength: 100 }
+                      type:  { type: string, maxLength: 50 }
+                is_public:   { type: boolean, default: false }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  id: { type: integer }
+        "400": { description: Template id and name are required }
+        "401": { description: Not authenticated }
+        "403": { description: The caller did not create this template }
+        "404": { description: No such template }
+        "413": { description: Too many slots — nothing was changed }
+
+  /api.php?action=setlist_template_delete:
+    post:
+      operationId: setlistTemplateDelete
+      tags: [Setlists]
+      summary: Delete a setlist template you created
+      description: >
+        Owner-only. Set lists already built from the template are UNAFFECTED —
+        a plan is copied into the set list when it is applied, and the copy keeps
+        a snapshot of the template's name, so deleting a template can never empty
+        somebody's service.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [setlist_template_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  deleted: { type: integer, description: Rows removed (0 or 1) }
+        "400": { description: Template id is required }
+        "401": { description: Not authenticated }
+        "403": { description: The caller did not create this template }
+        "404": { description: No such template }
 
   # ===========================================================================
   # ORGANISATIONS

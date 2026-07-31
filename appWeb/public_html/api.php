@@ -228,6 +228,13 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    own push and a collaborator's edit cannot write different shapes into the
    same tblUserSetlists.SongsJson column. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_collab.php';
+/* Set-list service plans / template slots (#301, #1671 F4). ONE definition of
+   what a slot is, shared by the four setlist_template_* endpoints AND by
+   user_setlists_sync — so a plan written through a template and a plan written
+   through a sync cannot end up two different shapes in two columns. Also hosts
+   setlistSlotsColumnReady(), the schema gate that keeps an un-migrated install
+   from touching tblUserSetlists.SlotsJson at all. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'setlist_templates.php';
 /* The ONE in-app notification writer (#1638). Extracted because the raw
    INSERT INTO tblNotifications had already been copy-pasted into three files
    and the collaboration invite would have been the fourth. Best-effort by
@@ -2956,8 +2963,13 @@ if ($action !== null) {
                hardcoded constant chosen by a schema probe — never from
                request data (CLAUDE.md rule #5). */
             $expiresSelect = userSyncExpiryReady($db) ? ', ExpiresAt' : '';
+            /* #301/#1671 F4 — the service-plan column is equally optional until
+               the "Set-list service plans" card has been run here, and equally
+               assembled from a hardcoded constant chosen by a schema probe,
+               never from request data (CLAUDE.md rule #5). */
+            $slotsSelect = setlistSlotsColumnReady($db) ? ', SlotsJson' : '';
             $stmt = $db->prepare(
-                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
                 . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
             );
             $stmt->bind_param('i', $authUserId);
@@ -2978,6 +2990,12 @@ if ($action !== null) {
                        it ever sees a non-null value, and never has to branch
                        on a missing key. */
                     'expiresAt' => $row['ExpiresAt'] ?? null,
+                    /* #301/#1671 F4 — same contract for the service plan: the
+                       key is ALWAYS present, null meaning "no plan" (or "this
+                       install has not run the card"). Decoded through the
+                       shared sanitiser so a malformed stored document can
+                       never reach a renderer. */
+                    'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
                 ];
             }, $rows);
 
@@ -3071,6 +3089,23 @@ if ($action !== null) {
             $localLists = $body['setlists'];
             $truncated  = false;
 
+            /* #301/#1671 F4 — THE SLOT CAP IS A REJECTION, NEVER A TRUNCATION.
+               Checked here, BEFORE a single row is written, so an over-size
+               plan leaves every stored set list exactly as it was. The module
+               deliberately owns no array_slice(): silently storing a shortened
+               plan and then treating the shortened version as the truth is the
+               precise shape that ate users' set lists in #1649 and their 201st
+               song in #1662. 413 mirrors the whole-body ceiling above. */
+            foreach ($localLists as $planCheck) {
+                if (is_array($planCheck) && setlistTemplatePlanExceedsCap($planCheck['plan'] ?? null)) {
+                    sendJson([
+                        'error'    => 'A set list plan has too many slots. Nothing was changed.',
+                        'maxSlots' => setlistTemplateMaxSlots(),
+                    ], 413);
+                    break 2;
+                }
+            }
+
             /* Presence of `deleted` — even `[]` — is the protocol marker. It
                is qualified by the schema gate below: this is what the CLIENT
                supports, not yet what this install can honour. */
@@ -3150,10 +3185,17 @@ if ($action !== null) {
                constants under a schema probe (CLAUDE.md rule #5). */
             $expiryReady   = userSyncExpiryReady($db);
             $expiresSelect = $expiryReady ? ', ExpiresAt' : '';
+            /* #301/#1671 F4 — the service-plan column, gated the same way and
+               for the same reason (web-run migrations, one shared MySQL,
+               MYSQLI_REPORT_STRICT). A separate probe from the expiry one
+               because they come from separate migrations and either may be
+               applied without the other. */
+            $slotsReady    = setlistSlotsColumnReady($db);
+            $slotsSelect   = $slotsReady ? ', SlotsJson' : '';
 
             /* Fetch all existing server-side setlists for this user */
             $stmt = $db->prepare(
-                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
                 . ' FROM tblUserSetlists WHERE UserId = ?'
             );
             $stmt->bind_param('i', $userId);
@@ -3203,6 +3245,58 @@ if ($action !== null) {
                 );
             }
 
+            /* #301/#1671 F4 — A SECOND STATEMENT, CHOSEN PER ROW BY WHETHER THE
+               CLIENT MENTIONED `plan` AT ALL.
+               ------------------------------------------------------------------
+               ELI5: if the app told us about the service plan we save what it
+               said, and if it never mentioned one we leave the saved plan alone.
+
+               The `$upsert` above is deliberately UNCHANGED and never names
+               SlotsJson, so on a duplicate key it PRESERVES whatever plan is
+               stored. That is what protects the shipped native apps: they will
+               never send `plan`, and if the single statement had carried
+               `SlotsJson = VALUES(SlotsJson)` then an iPhone sync would wipe a
+               plan the user had just built on the web — a fresh instance of the
+               cross-device silent data loss this whole programme exists to
+               remove.
+
+               The alternative, `COALESCE(VALUES(SlotsJson), SlotsJson)`, is the
+               plausible-looking wrong answer: it makes a plan impossible to
+               CLEAR, because "no plan" and "didn't mention plans" become the
+               same message. That is the isset() clear-semantics trap
+               (project-rules §20.5) — a value nothing can ever delete, with no
+               error to explain it.
+
+               So the distinction is PRESENCE OF THE KEY, exactly as
+               userSyncExplicitProtocol() reads `deleted`: present (even as
+               null) means "here is the truth", absent means "I know nothing
+               about plans". */
+            $upsertPlan = null;
+            if ($slotsReady) {
+                if ($expiryReady) {
+                    $upsertPlan = $db->prepare(
+                        'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, ExpiresAt, SlotsJson)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            Name      = VALUES(Name),
+                            SongsJson = VALUES(SongsJson),
+                            UpdatedAt = VALUES(UpdatedAt),
+                            ExpiresAt = VALUES(ExpiresAt),
+                            SlotsJson = VALUES(SlotsJson)'
+                    );
+                } else {
+                    $upsertPlan = $db->prepare(
+                        'INSERT INTO tblUserSetlists (UserId, SetlistId, Name, SongsJson, CreatedAt, UpdatedAt, SlotsJson)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)
+                         ON DUPLICATE KEY UPDATE
+                            Name      = VALUES(Name),
+                            SongsJson = VALUES(SongsJson),
+                            UpdatedAt = VALUES(UpdatedAt),
+                            SlotsJson = VALUES(SlotsJson)'
+                    );
+                }
+            }
+
             $resurrectionsRefused = 0;
 
             foreach ($localLists as $list) {
@@ -3238,26 +3332,53 @@ if ($action !== null) {
                 $songsJson = json_encode($cleanSongs, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
                 $createdAt = (string)($list['createdAt'] ?? $now);
 
-                if ($expiryReady) {
-                    /* Validated to the same 19-char shape as the `since`
-                       watermark; anything else (including an absent key)
-                       becomes null = "never expires". Failing that way round
-                       is deliberate — reading a malformed value as an expiry
-                       could delete a set list the user never dated. */
-                    $expiresAt = userSyncParseTimestamp($list['expiresAt'] ?? null);
+                /* Validated to the same 19-char shape as the `since`
+                   watermark; anything else (including an absent key)
+                   becomes null = "never expires". Failing that way round
+                   is deliberate — reading a malformed value as an expiry
+                   could delete a set list the user never dated. */
+                $expiresAt = $expiryReady ? userSyncParseTimestamp($list['expiresAt'] ?? null) : null;
+
+                /* #301/#1671 F4 — see the $upsertPlan doc-block above for why
+                   this is array_key_exists() and not isset(). `plan: null` is a
+                   deliberate instruction to CLEAR; an absent `plan` key is a
+                   client that knows nothing about plans and must not clear
+                   anything. */
+                $planStatement = ($upsertPlan !== null && array_key_exists('plan', $list));
+                if ($planStatement) {
+                    $planJson = setlistTemplateEncodePlan(setlistTemplateSanitisePlan($list['plan']));
+                    /* Type strings counted against the value list, not eyeballed:
+                       8 values = 'i' + 7×'s'; 7 values = 'i' + 6×'s'. A
+                       mismatch here is an ArgumentCountError at runtime, which
+                       is why tests/php/test-setlist-templates.php asserts the
+                       lengths against the placeholder counts in these very
+                       statements rather than trusting the reading. */
+                    if ($expiryReady) {
+                        $upsertPlan->bind_param('isssssss',
+                            $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt, $planJson);
+                    } else {
+                        $upsertPlan->bind_param('issssss',
+                            $userId, $setlistId, $name, $songsJson, $createdAt, $now, $planJson);
+                    }
+                    $upsertPlan->execute();
+                } elseif ($expiryReady) {
                     $upsert->bind_param('issssss',
                         $userId, $setlistId, $name, $songsJson, $createdAt, $now, $expiresAt);
+                    $upsert->execute();
                 } else {
                     $upsert->bind_param('isssss',
                         $userId, $setlistId, $name, $songsJson, $createdAt, $now);
+                    $upsert->execute();
                 }
-                $upsert->execute();
 
                 /* Record what the client sent; the deletion decision is made
                    once, after the loop, by the shared helper (#1649). */
                 $payloadIds[] = $setlistId;
             }
             $upsert->close();
+            /* #301/#1671 F4 — only prepared when the column exists, so the
+               null check is the schema gate showing through, not defensiveness. */
+            if ($upsertPlan !== null) { $upsertPlan->close(); }
 
             /* Authoritative replace (WS-F #1018, guarded #1649): server rows
                absent from the payload MAY represent a user deletion — but only
@@ -3306,7 +3427,7 @@ if ($action !== null) {
 
             /* Fetch the merged result (all setlists for this user) */
             $stmt = $db->prepare(
-                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect
+                'SELECT SetlistId, Name, SongsJson, CreatedAt, UpdatedAt' . $expiresSelect . $slotsSelect
                 . ' FROM tblUserSetlists WHERE UserId = ? ORDER BY UpdatedAt DESC'
             );
             $stmt->bind_param('i', $userId);
@@ -3322,6 +3443,12 @@ if ($action !== null) {
                     'createdAt' => $row['CreatedAt'],
                     'updatedAt' => $row['UpdatedAt'],
                     'expiresAt' => $row['ExpiresAt'] ?? null,   /* #1661 */
+                    /* #301/#1671 F4 — the plan comes back on the SAME response
+                       that accepted it. That round trip is the whole point:
+                       until this column existed, a client that sent slots got a
+                       response with no slots in it and no error, and the only
+                       symptom was a service order quietly emptying itself. */
+                    'plan'      => setlistTemplateDecodePlan($row['SlotsJson'] ?? null),
                 ];
             }, $mergedRows);
 
@@ -8025,16 +8152,39 @@ if ($action !== null) {
             $templates = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
 
+            $viewerId = $authUser ? (int)$authUser['Id'] : 0;
             foreach ($templates as &$tpl) {
                 $tpl['id'] = (int)$tpl['id'];
                 $tpl['isPublic'] = (bool)$tpl['isPublic'];
                 $tpl['orgId'] = $tpl['orgId'] ? (int)$tpl['orgId'] : null;
                 $tpl['createdBy'] = $tpl['createdBy'] ? (int)$tpl['createdBy'] : null;
-                $tpl['slotsJson'] = json_decode($tpl['slotsJson'], true) ?: [];
+                /* #1671 F4 — decoded through the SHARED sanitiser rather than a
+                   bare json_decode, so a row written before this change (by the
+                   old handler, which stored slots with no `id` and could slice
+                   them) still comes out in the one canonical shape every reader
+                   expects. The key keeps its shipped `slotsJson` name — renaming
+                   a field in a published response is a contract change. */
+                $tpl['slotsJson'] = setlistTemplateSanitiseSlots(
+                    json_decode((string)$tpl['slotsJson'], true)
+                );
+                /* Whether THIS caller may edit or delete THIS template is the
+                   server's decision, so the server states it. A client that
+                   re-derived the rule from createdBy would be a second copy of
+                   an authorisation policy with nothing keeping the two in step
+                   (rule #35) — and the copy would be the one drawing the
+                   buttons. */
+                $tpl['canEdit'] = setlistTemplateCanEdit($tpl['createdBy'], $viewerId);
             }
             unset($tpl);
 
-            sendJson(['templates' => $templates]);
+            sendJson([
+                'templates' => $templates,
+                /* The ONE slot-type registry, emitted so a picker is built from
+                   the server's list instead of a hardcoded copy in JS. Adding a
+                   type stays ONE line in setlistTemplateSlotTypes(). */
+                'slotTypes' => setlistTemplateSlotTypes(),
+                'maxSlots'  => setlistTemplateMaxSlots(),
+            ]);
             break;
 
         /* -----------------------------------------------------------------
@@ -8072,15 +8222,27 @@ if ($action !== null) {
                 break;
             }
 
-            /* Sanitise slots */
-            $cleanSlots = [];
-            foreach (array_slice($tplSlots, 0, 50) as $slot) {
-                if (!is_array($slot) || empty($slot['label'])) continue;
-                $cleanSlots[] = [
-                    'label' => mb_substr(trim($slot['label']), 0, 100),
-                    'type'  => mb_substr(trim($slot['type'] ?? 'song'), 0, 50),
-                ];
+            /* #301/#1671 F4 — THE CAP IS NOW A REJECTION, NOT A SLICE.
+               This handler used to do `array_slice($tplSlots, 0, 50)` and store
+               the result, i.e. quietly keep half a service order and report
+               success. That is byte-for-byte the shape that destroyed set lists
+               in #1649 and amputated them in #1662. A 413 leaves the caller
+               holding their own complete copy and able to retry. */
+            if (setlistTemplateSlotsExceedCap($tplSlots)) {
+                sendJson([
+                    'error'    => 'Too many slots. The template was NOT saved.',
+                    'maxSlots' => setlistTemplateMaxSlots(),
+                ], 413);
+                break;
             }
+
+            /* ONE sanitiser, shared with user_setlists_sync (see
+               includes/setlist_templates.php). Two copies of "what is a slot"
+               would drift, and the drift would be invisible until a template
+               applied to a set list produced a plan the renderer could not
+               read — the same reasoning that moved setlistCollabSanitiseSongs()
+               out of this file in #1638. */
+            $cleanSlots = setlistTemplateSanitiseSlots($tplSlots);
 
             $slotsJson = json_encode($cleanSlots, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
@@ -8117,6 +8279,178 @@ if ($action !== null) {
             $stmt->close();
 
             sendJson(['ok' => true, 'id' => $newId], 201);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Update a setlist template  (#301, added #1671 F4)
+         *
+         * POST body (JSON):
+         *   { "id": 7, "name": "…", "description": "…",
+         *     "slots": [{"label": "Opening", "type": "song"}, …],
+         *     "is_public": false }
+         * Requires: Bearer token, AND the caller must be the template's author.
+         *
+         * WHY THIS ENDPOINT HAD TO EXIST BEFORE ANY UI COULD.
+         * #301 shipped create + read and nothing else, so a template — including
+         * one created with `is_public: true` and therefore visible to every user
+         * of the app — was permanent and uneditable from the screen that made
+         * it. A typo in a public template was forever. That, plus the missing
+         * slot storage, is why #1671 Batch 8 refused to build the UI: neither
+         * gap was fixable in a UI batch.
+         *
+         * `org_id` is deliberately NOT re-assignable here. Moving a template
+         * between organisations changes WHO CAN SEE IT, which is an access
+         * decision wearing an edit form's clothing; the safe operation is to
+         * delete and re-create with the intended org, which re-runs the
+         * membership check on the way in.
+         * ----------------------------------------------------------------- */
+        case 'setlist_template_update':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true);
+            $tplId = (int)($body['id'] ?? 0);
+            if ($tplId <= 0) {
+                sendJson(['error' => 'Template id is required.'], 400);
+                break;
+            }
+
+            $tplName = mb_substr(trim($body['name'] ?? ''), 0, 200);
+            if ($tplName === '') {
+                sendJson(['error' => 'Template name is required.'], 400);
+                break;
+            }
+            $tplDesc     = mb_substr(trim($body['description'] ?? ''), 0, 2000);
+            $tplSlots    = $body['slots'] ?? null;
+            $tplIsPublic = !empty($body['is_public']) ? 1 : 0;
+
+            /* Rejection, never a slice — same reasoning as the create path. */
+            if (setlistTemplateSlotsExceedCap($tplSlots)) {
+                sendJson([
+                    'error'    => 'Too many slots. The template was NOT changed.',
+                    'maxSlots' => setlistTemplateMaxSlots(),
+                ], 413);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            $stmt = $db->prepare('SELECT CreatedBy FROM tblSetlistTemplates WHERE Id = ? LIMIT 1');
+            $stmt->bind_param('i', $tplId);
+            $stmt->execute();
+            $tplRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$tplRow) {
+                sendJson(['error' => 'Template not found.'], 404);
+                break;
+            }
+            /* The authorisation decision lives in a PURE function so a test can
+               ASK it rather than grep this handler for the word "CreatedBy"
+               (the test-transaction-fatal.php lesson). Owner-only, deliberately
+               — org membership is a VISIBILITY grant in setlist_templates, and
+               silently reusing it as an EDIT grant would hand every member of a
+               church destructive power over a colleague's template. */
+            if (!setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            )) {
+                sendJson(['error' => 'You can only edit templates you created.'], 403);
+                break;
+            }
+
+            $slotsJson = json_encode(
+                setlistTemplateSanitiseSlots($tplSlots),
+                JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+            );
+
+            $stmt = $db->prepare(
+                'UPDATE tblSetlistTemplates
+                    SET Name = ?, Description = ?, SlotsJson = ?, IsPublic = ?
+                  WHERE Id = ? AND CreatedBy = ?'
+            );
+            /* CreatedBy is repeated in the WHERE even though it was just
+               checked: the check and the write are two statements, and a
+               narrowed UPDATE is what makes the pair safe if anything ever
+               slips between them. Costs nothing, removes a whole class. */
+            $stmt->bind_param('sssiii', $tplName, $tplDesc, $slotsJson, $tplIsPublic, $tplId, $authUserId);
+            $stmt->execute();
+            $stmt->close();
+
+            sendJson(['ok' => true, 'id' => $tplId]);
+            break;
+
+        /* -----------------------------------------------------------------
+         * Delete a setlist template  (#301, added #1671 F4)
+         *
+         * POST body (JSON): { "id": 7 }
+         * Requires: Bearer token, AND the caller must be the template's author.
+         *
+         * SET LISTS BUILT FROM THE TEMPLATE ARE UNAFFECTED, by design. A plan is
+         * COPIED into tblUserSetlists.SlotsJson when it is applied, and the
+         * envelope keeps a snapshot of the template's name — so deleting a
+         * template can never reach into somebody's Sunday service and empty it.
+         * That property is exactly why the plan column is an envelope rather
+         * than a foreign key (see includes/setlist_templates.php).
+         * ----------------------------------------------------------------- */
+        case 'setlist_template_delete':
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+
+            $authUser = getAuthenticatedUser();
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true);
+            $tplId = (int)($body['id'] ?? 0);
+            if ($tplId <= 0) {
+                sendJson(['error' => 'Template id is required.'], 400);
+                break;
+            }
+
+            $db = getDbMysqli();
+            $authUserId = (int)$authUser['Id'];
+
+            $stmt = $db->prepare('SELECT CreatedBy FROM tblSetlistTemplates WHERE Id = ? LIMIT 1');
+            $stmt->bind_param('i', $tplId);
+            $stmt->execute();
+            $tplRow = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+
+            if (!$tplRow) {
+                /* 404 rather than a silent ok: "delete something that is not
+                   there" reads as success to a client and hides a wrong id. */
+                sendJson(['error' => 'Template not found.'], 404);
+                break;
+            }
+            if (!setlistTemplateCanEdit(
+                $tplRow['CreatedBy'] !== null ? (int)$tplRow['CreatedBy'] : null,
+                $authUserId
+            )) {
+                sendJson(['error' => 'You can only delete templates you created.'], 403);
+                break;
+            }
+
+            $stmt = $db->prepare('DELETE FROM tblSetlistTemplates WHERE Id = ? AND CreatedBy = ?');
+            $stmt->bind_param('ii', $tplId, $authUserId);
+            $stmt->execute();
+            $tplDeleted = $stmt->affected_rows;
+            $stmt->close();
+
+            sendJson(['ok' => true, 'deleted' => $tplDeleted]);
             break;
 
         /* =================================================================

@@ -2785,6 +2785,34 @@ return [
             || !_migProbe_columnExists($db, 'tblUserSetlists', 'ExpiresAt'),
     ],
 
+    /* ---- #301 / #1671 F4 — set-list service plans (template slots) -------------
+       Adds tblUserSetlists.SlotsJson, the storage half that #1671 Batch 8 found
+       missing: tblSetlistTemplates has stored a template's SlotsJson since #301,
+       but user_setlists_sync had nowhere to keep the plan once a template was
+       applied, so slots round-tripped and came back GONE for signed-in users.
+       ONE column, ONE object, so the probe is a single columnExists — a
+       multi-object OR-probe would be dishonest here (rule #19 asks for one only
+       when a partial apply is possible). */
+    'setlist-slots' => [
+        'script' => 'migrate-setlist-slots.php',
+        'card' => [
+            'title'  => 'Set-list service plans (#301)',
+            'body'   => 'Adds the optional <code>tblUserSetlists.SlotsJson</code> column so a'
+                      . ' set list can remember the service-order plan it was built from'
+                      . ' (<code>{templateId, templateName, slots[]}</code>). Without it,'
+                      . ' applying a set-list <em>template</em> produced slots that the very'
+                      . ' next sync silently discarded — the reason the template UI was'
+                      . ' deliberately not built in the #1671 Batch-8 pass. <code>NULL</code> ='
+                      . ' no plan, which is what every existing set list gets, so applying'
+                      . ' this changes the behaviour of zero existing rows. Until it is'
+                      . ' applied the sync path is existence-gated and behaves exactly as'
+                      . ' before. Additive, idempotent — safe to re-run.',
+            'button' => 'Run Set-list Service Plans Migration',
+        ],
+        'probe' => static fn(\mysqli $db) =>
+            !_migProbe_columnExists($db, 'tblUserSetlists', 'SlotsJson'),
+    ],
+
     /* ---- #1613 — DROP tblSongChords (DESTRUCTIVE, manual + gated) ---------------
        tblSongChords (#299) has zero PHP/JS references — chord notation now lives
        per-line on tblLyricLines.ChordsJson (rule #21/#25 of .claude/CLAUDE.md). The only
