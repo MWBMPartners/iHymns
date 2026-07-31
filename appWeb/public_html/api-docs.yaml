@@ -5704,69 +5704,36 @@ paths:
   # PREFERENCES
   # ===========================================================================
 
-  /api.php?action=user_preferences:
-    get:
-      operationId: getUserPreferences
-      tags: [Preferences]
-      summary: Fetch the caller's server-synced preferences
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [user_preferences] }
-      responses:
-        "200":
-          description: Preference map
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  preferences:
-                    type: object
-                    additionalProperties:
-                      type: string
-                    example:
-                      theme: dark
-                      fontSize: "18"
-                      defaultSongbook: CP
-
-  /api.php?action=user_preferences_sync:
-    post:
-      operationId: syncUserPreferences
-      tags: [Preferences]
-      summary: Last-write-wins sync of preferences across devices
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [user_preferences_sync] }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [preferences]
-              properties:
-                preferences:
-                  type: object
-                  additionalProperties: { type: string }
-      responses:
-        "200":
-          description: Applied server-side; merged result returned
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  preferences:
-                    type: object
-                    additionalProperties: { type: string }
+  # ---------------------------------------------------------------------------
+  # REMOVED (#1671 F5) — action=user_preferences  /  action=user_preferences_sync
+  #
+  # Both are GONE from the dispatcher and now return `400 Unknown action`.
+  #
+  # They were an un-namespaced duplicate of `action=user_settings` — the same
+  # concept and the same payload shape, stored on a parallel table
+  # (`tblUserPreferences`, since dropped) — with no caller anywhere in the
+  # first-party tree. Two stores for one concept is a data-integrity trap:
+  # whichever a client picked, the other would hold stale truth with nothing to
+  # say so.
+  #
+  # MIGRATION FOR AN EXTERNAL INTEGRATOR:
+  #   GET  ?action=user_preferences        →  GET  ?action=user_settings
+  #                                              (optionally &namespace=<yours>)
+  #   POST ?action=user_preferences_sync   →  POST ?action=user_settings
+  #        { "preferences": { … } }              { "namespace": "<yours>",
+  #                                                "settings": { … } }
+  #
+  # Naming a namespace replaces ONLY your subtree, so an independent product
+  # can share this store without any key-collision convention. See the
+  # `user_settings` path near the end of this file for the full contract.
+  #
+  # This block is deliberately a comment and not a deprecated path: a path here
+  # is rendered as try-it-out-able by /manage/api-docs and is asserted by
+  # tests/php/test-openapi-actions-exist.php to have a live dispatcher case, so
+  # documenting a removed endpoint as a PATH would put a guaranteed 400 in front
+  # of an admin. Recording the removal is documentation; keeping the path would
+  # be a lie.
+  # ---------------------------------------------------------------------------
 
   # ===========================================================================
   # USER PREFERRED LANGUAGES  (#736)
@@ -9950,6 +9917,15 @@ paths:
         for the caller — used by the PWA to sync per-user banner state,
         theme preferences, and other client-side flags across devices.
         Empty object when nothing has been stored yet.
+
+        Supply `namespace` to read back one subtree instead of the whole
+        blob (#1671 F5). An unknown namespace returns `{}`, not a 404 —
+        a client reading its own settings before it has ever written any
+        is the normal first-run case.
+
+        This is the **only** user-preference store. `user_preferences` /
+        `user_preferences_sync` were an un-namespaced duplicate of it and
+        were removed in #1671 F5; both now return `400 Unknown action`.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -9958,28 +9934,61 @@ paths:
           in: query
           required: true
           schema: { type: string, enum: [user_settings] }
+        - name: namespace
+          in: query
+          required: false
+          description: |
+            Optional subtree to read. Must match
+            `^[a-z][a-z0-9_]{1,31}(\.[a-z][a-z0-9_]{1,31})?$`
+            (e.g. `ihymns.web`, `ilyricsdb`, `apple`). Omit for the whole blob.
+          schema: { type: string, example: ilyricsdb }
       responses:
         "200":
-          description: Settings blob
+          description: Settings blob (or the requested subtree)
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   ok:         { type: boolean, example: true }
+                  namespace:  { type: string, nullable: true, description: Echoed back only when a namespace was requested }
                   settings:   { type: object, description: Free-form preference object }
                   updated_at: { type: string, format: date-time, nullable: true }
+        "400":
+          description: namespace supplied but malformed
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     post:
       operationId: setUserSettings
       tags: [Preferences]
-      summary: Replace the authenticated user's stored settings blob
+      summary: Store the authenticated user's settings — whole blob, or one namespace
       description: |
-        Persists the supplied JSON object to `tblUsers.Settings`. The
-        PWA writes the whole object on every change (small payload,
-        no diff), so subsequent GETs return what was last POSTed.
+        Persists the supplied JSON object to `tblUsers.Settings`.
+
+        **Without `namespace`** (the legacy contract, unchanged): the whole
+        blob is REPLACED by `settings`. The PWA writes the whole object on
+        every change (small payload, no diff), so subsequent GETs return what
+        was last POSTed. Payload cap 16 KB.
+
+        **With `namespace`** (#1671 F5): only that subtree is replaced —
+        `settings[namespace] = <body.settings>` — and every sibling namespace
+        is left untouched. This is what lets an independent product share this
+        store: its clients write their own subtree with no key-collision
+        convention to agree and no lockstep releases. Per-namespace cap 16 KB.
+
+        The merge is at the namespace **root** and is deliberately not
+        recursive: a deep merge would make deleting a key impossible (send the
+        subtree without it and a deep merge keeps the old value, silently). So
+        the rule is simply "what you POST is what you GET" for that subtree.
+
+        Over-size payloads are **rejected with 413**, never truncated and
+        stored.
+
+        ⚠ A namespace-less POST still replaces the WHOLE blob, so it clears
+        every namespace. Isolation between products holds once all writers
+        name a namespace.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -9988,6 +9997,11 @@ paths:
           in: query
           required: true
           schema: { type: string, enum: [user_settings] }
+        - name: namespace
+          in: query
+          required: false
+          description: Alternative to the body field; the body field wins if both are given.
+          schema: { type: string, example: ilyricsdb }
       requestBody:
         required: true
         content:
@@ -9996,18 +10010,37 @@ paths:
               type: object
               required: [settings]
               properties:
+                namespace:
+                  type: string
+                  description: |
+                    Optional. Must match
+                    `^[a-z][a-z0-9_]{1,31}(\.[a-z][a-z0-9_]{1,31})?$`.
+                    Omit for the legacy whole-blob replace.
+                  example: ilyricsdb
                 settings:
                   type: object
                   description: Free-form preference object to persist.
       responses:
         "200":
           description: Saved
-          content: { application/json: { schema: { $ref: "#/components/schemas/SuccessResponse" } } }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:        { type: boolean, example: true }
+                  namespace: { type: string, nullable: true, description: Echoed back only for a namespaced write }
         "400":
-          description: settings object missing or not an object
+          description: settings object missing or not an object, or namespace malformed
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "401":
           description: Not authenticated
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "413":
+          description: |
+            Payload too large — the namespace subtree exceeds 16 KB, or the
+            resulting whole blob exceeds the per-account backstop. Nothing is
+            stored; the previous value is intact.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   /api.php?action=auth_change_username:

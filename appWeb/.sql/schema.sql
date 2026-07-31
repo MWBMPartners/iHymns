@@ -1624,18 +1624,13 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserPreferences (#310)
--- Server-side preference sync.
+-- tblUserPreferences (#310) — DROPPED (#1671 F5). It was an un-namespaced duplicate of
+-- tblUsers.Settings: same concept, same payload shape, a parallel table, and no caller in
+-- the first-party tree. Server-side preference sync now lives ONLY on tblUsers.Settings
+-- (see the `Settings` column above and appWeb/public_html/includes/user_settings.php),
+-- whose write contract gained a namespace so a second product can share the row. The
+-- (self-guarded, confirm-gated) drop is appWeb/.sql/migrate-drop-user-preferences.php.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPreferences (
-    UserId          INT UNSIGNED    NOT NULL PRIMARY KEY,
-    PreferencesJson JSON            NOT NULL COMMENT 'Theme, font size, default songbook, etc.',
-    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_Prefs_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------

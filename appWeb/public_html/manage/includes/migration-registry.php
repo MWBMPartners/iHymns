@@ -2819,6 +2819,34 @@ return [
         'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblSongChords'),
     ],
 
+    'drop-user-preferences' => [
+        'script' => 'migrate-drop-user-preferences.php',
+        /* #1671 F5 — DESTRUCTIVE + manual-only: EXCLUDED from "Apply all" (both the JS bulk
+           runner and the no-JS apply-all loop) and from the pending counter; the single run
+           still requires confirm=1. Same convention as drop-song-chords / C6 above —
+           setup-database.php honours `manual` in $migrationManual. */
+        'manual' => true,
+        'card' => [
+            'title'  => '⚠ Drop superseded tblUserPreferences (#1671 F5)',
+            'body'   => 'DESTRUCTIVE — drops <code>tblUserPreferences</code> (#310), an'
+                      . ' un-namespaced duplicate of <code>tblUsers.Settings</code>. Its only two'
+                      . ' endpoints (<code>user_preferences</code>,'
+                      . ' <code>user_preferences_sync</code>) had no caller anywhere in the tree'
+                      . ' and were removed; preference sync now lives solely on'
+                      . ' <code>action=user_settings</code>, which gained a namespaced write'
+                      . ' contract so a second product can share the row. REFUSES to drop unless'
+                      . ' the live table is verifiably EMPTY (checked independent of'
+                      . ' confirmation), so a row written by an out-of-repo caller is a hard stop'
+                      . ' rather than silent data loss. Idempotent — a no-op once the table is'
+                      . ' gone.',
+            'button' => 'Drop tblUserPreferences (gated)',
+        ],
+        /* Pending while the table STILL EXISTS — a DROP is "applied" once the table is gone,
+           so the probe self-clears after a successful run (the same inverted polarity as
+           drop-song-chords). Reads the live schema; never a hardcoded static-true. */
+        'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblUserPreferences'),
+    ],
+
     /* ----------------------------------------------------------------------
      * #1590 — entitlement truth-up: clear the three stale saved overrides.
      *

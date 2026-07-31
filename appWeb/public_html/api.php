@@ -213,6 +213,14 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    over-cap user silently lost the tail of their collection. One helper, three
    call sites — never a per-handler copy of the decision. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_sync.php';
+/* #1671 F5 — the ONE namespaced user-preference store. `user_settings` used to
+   be a whole-blob replace, which cannot survive a second product sharing this
+   database: whichever client saved last wiped the other's keys. The pure merge
+   helpers here let a caller name a namespace and replace only that subtree.
+   The duplicate `user_preferences` / `user_preferences_sync` pair on
+   tblUserPreferences was deleted in the same change — two stores for one
+   concept is a data-integrity trap, not a dormant feature. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_settings.php';
 /* Setlist collaboration access resolution (#1638). ONE implementation of
    "may this viewer read / write somebody else's setlist?", asked by the
    setlist_collab_* family — never re-decided inside a case body. Also hosts
@@ -3376,14 +3384,33 @@ if ($action !== null) {
          *
          * GET   /api?action=user_settings
          *   → { ok: true, settings: { … }, updated_at: '…' }
+         * GET   /api?action=user_settings&namespace=ilyricsdb
+         *   → { ok: true, namespace: 'ilyricsdb', settings: { … }, updated_at }
          * POST  /api?action=user_settings
          *   body: { settings: { theme: 'dark', fontSize: 18, … } }
-         *   → { ok: true }
+         *   → { ok: true }                       (whole-blob replace — legacy)
+         * POST  /api?action=user_settings
+         *   body: { namespace: 'ilyricsdb', settings: { … } }
+         *   → { ok: true, namespace: 'ilyricsdb' }   (that subtree only)
          *
          * Stored as a JSON blob in tblUsers.Settings; the client decides
          * which keys are syncable (a strict whitelist in settings.js) so
          * we never mirror device-local prefs (analytics consent, install
          * banner state, etc.) onto the server.
+         *
+         * #1671 F5 — THE NAMESPACE. This is the ONE user-preference store now:
+         * the parallel `user_preferences` / `user_preferences_sync` pair on
+         * tblUserPreferences was an un-namespaced duplicate with no caller
+         * anywhere in the tree, and was deleted (its table drops via the
+         * manual, confirm-gated `drop-user-preferences` card). What survives
+         * is this endpoint plus a write contract that a SECOND product can
+         * share: name a namespace and only that subtree is replaced, so
+         * iLyricsDB's clients write their own keys with zero coordination
+         * against iHymns'.
+         *
+         * Every decision below lives in pure functions in
+         * includes/user_settings.php so a test can CALL them rather than
+         * pattern-match this file. Nothing here re-implements a rule.
          * ----------------------------------------------------------------- */
         case 'user_settings':
             $authUser = getAuthenticatedUser();
@@ -3401,12 +3428,47 @@ if ($action !== null) {
                 $row = $stmt->get_result()->fetch_assoc();
                 $stmt->close();
                 $settingsRaw = $row['Settings'] ?? null;
-                $settings = is_string($settingsRaw) && $settingsRaw !== ''
-                    ? (json_decode($settingsRaw, true) ?: new \stdClass())
-                    : new \stdClass();
+                /* Work in ARRAY form internally (that is what the pure helpers
+                   take), and convert an empty result to `{}` only at the point
+                   of emit — json_decode(…, true) yields `[]` for `{}`, which
+                   would otherwise go out as a JSON array. Long-standing wire
+                   behaviour, preserved. */
+                $settingsArr = is_string($settingsRaw) && $settingsRaw !== ''
+                    ? json_decode($settingsRaw, true)
+                    : null;
+                if (!is_array($settingsArr)) { $settingsArr = []; }
+
+                /* Optional subtree read. An unknown namespace is `{}`, not a
+                   404 — a client asking for its own settings before it has ever
+                   written any is the normal first-run case. A non-string value
+                   (`?namespace[]=x`) is a 400, never a silent whole-blob read:
+                   answering a different question than the one asked is the
+                   silent-no-op class this codebase keeps paying for. */
+                $nsGet = '';
+                if (isset($_GET['namespace'])) {
+                    if (!is_string($_GET['namespace'])) {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    $nsGet = $_GET['namespace'];
+                }
+                if ($nsGet !== '') {
+                    if (!userSettingsNamespaceValid($nsGet)) {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    sendJson([
+                        'ok'         => true,
+                        'namespace'  => $nsGet,
+                        'settings'   => userSettingsSubtree($settingsArr, $nsGet),
+                        'updated_at' => $row['UpdatedAt'] ?? null,
+                    ]);
+                    break;
+                }
+
                 sendJson([
                     'ok'         => true,
-                    'settings'   => $settings,
+                    'settings'   => $settingsArr === [] ? new \stdClass() : $settingsArr,
                     'updated_at' => $row['UpdatedAt'] ?? null,
                 ]);
                 break;
@@ -3415,19 +3477,94 @@ if ($action !== null) {
             if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $rawBody = file_get_contents('php://input');
                 $body = json_decode($rawBody, true);
-                $settings = $body['settings'] ?? null;
+                $settings = is_array($body) ? ($body['settings'] ?? null) : null;
                 if (!is_array($settings)) {
                     sendJson(['error' => 'Settings object required.'], 400);
                     break;
                 }
-                /* Cap payload size — prefs are small; this guards against abuse. */
+
+                /* The namespace may arrive in the body (the natural place for a
+                   JSON POST) or on the query string (convenient for a curl /
+                   Swagger try-it-out call); body wins. Absent, JSON `null`, or
+                   the empty string = the legacy whole-blob path below.
+                   A namespace that is PRESENT but not a string is a 400 — it
+                   must never fall through to the whole-blob replace, because
+                   that would silently do something far more destructive than
+                   what the caller asked for. */
+                $nsRaw = null;
+                if (is_array($body) && array_key_exists('namespace', $body)) {
+                    $nsRaw = $body['namespace'];
+                } elseif (isset($_GET['namespace'])) {
+                    $nsRaw = $_GET['namespace'];
+                }
+                if ($nsRaw !== null && !is_string($nsRaw)) {
+                    sendJson(['error' => 'Invalid namespace.'], 400);
+                    break;
+                }
+                $nsPost = (string)($nsRaw ?? '');
+
+                $authUserId = (int)$authUser['Id'];
+
+                if ($nsPost !== '') {
+                    /* Read-modify-write of ONE subtree. Not a transaction: the
+                       blob is per-user and a user's own devices racing each
+                       other is last-write-wins by design (identical to the
+                       legacy path). What the namespace buys is that a race
+                       between two PRODUCTS is no longer possible at all,
+                       because they never touch the same subtree. */
+                    $sel = $db->prepare('SELECT Settings FROM tblUsers WHERE Id = ?');
+                    $sel->bind_param('i', $authUserId);
+                    $sel->execute();
+                    $curRow = $sel->get_result()->fetch_row();
+                    $sel->close();
+                    $curRaw = (string)($curRow[0] ?? '');
+                    $current = $curRaw !== '' ? json_decode($curRaw, true) : [];
+                    if (!is_array($current)) { $current = []; }
+
+                    /* ONE decision function. The reason code — never the
+                       sentence — chooses the status, so a client branches on
+                       the HTTP status and never on our prose (rule #35). */
+                    $reason = userSettingsRejectReason($current, $nsPost, $settings);
+                    if ($reason === 'invalid_namespace') {
+                        sendJson(['error' => 'Invalid namespace.'], 400);
+                        break;
+                    }
+                    if ($reason === 'namespace_too_large') {
+                        sendJson(['error' => 'Settings payload too large.'], 413);
+                        break;
+                    }
+                    if ($reason === 'total_too_large') {
+                        sendJson(['error' => 'Stored settings would exceed the per-account limit.'], 413);
+                        break;
+                    }
+
+                    /* REJECTED, never truncated — a silently amputated payload
+                       is how #1649 / #1662 destroyed users' set lists. */
+                    $json = userSettingsEncode(
+                        userSettingsMergeNamespace($current, $nsPost, $settings)
+                    );
+                    $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
+                    $stmt->bind_param('si', $json, $authUserId);
+                    $stmt->execute();
+                    $stmt->close();
+                    sendJson(['ok' => true, 'namespace' => $nsPost]);
+                    break;
+                }
+
+                /* ---- Legacy whole-blob replace — byte-for-byte unchanged ----
+                   settings.js and the shipped native apps send no namespace and
+                   must keep working exactly as before, so this branch keeps the
+                   same 16 KB cap, the same status and the same error text.
+                   ⚠ It also still REPLACES the whole blob, i.e. it destroys any
+                   sibling namespace. The isolation property only holds once
+                   every writer is namespaced; migrating settings.js to
+                   `namespace: 'ihymns.web'` is the remaining step. */
                 $json = json_encode($settings, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
                 if (strlen($json) > 16384) {
                     sendJson(['error' => 'Settings payload too large.'], 413);
                     break;
                 }
                 $stmt = $db->prepare('UPDATE tblUsers SET Settings = ?, UpdatedAt = NOW() WHERE Id = ?');
-                $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('si', $json, $authUserId);
                 $stmt->execute();
                 $stmt->close();
@@ -8440,86 +8577,30 @@ if ($action !== null) {
             break;
 
         /* =================================================================
-         * USER PREFERENCES (#310)
-         * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get user preferences
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'user_preferences':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT PreferencesJson FROM tblUserPreferences WHERE UserId = ?'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('i', $authUserId);
-            $stmt->execute();
-            $row = $stmt->get_result()->fetch_row();
-            $stmt->close();
-            $prefsJson = (string)($row[0] ?? '');
-
-            $preferences = $prefsJson !== '' ? (json_decode($prefsJson, true) ?: []) : [];
-
-            sendJson(['preferences' => $preferences]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Save/sync user preferences
+         * USER PREFERENCES (#310) — REMOVED in #1671 F5
          *
-         * POST body (JSON):
-         *   { "preferences": { "theme": "dark", "fontSize": 16, ... } }
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'user_preferences_sync':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            if (!is_array($body['preferences'] ?? null)) {
-                sendJson(['error' => 'Invalid request. Required: preferences (object).'], 400);
-                break;
-            }
-
-            $prefsJson = json_encode($body['preferences'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-
-            /* Cap JSON size at 64 KB */
-            if (strlen($prefsJson) > 65536) {
-                sendJson(['error' => 'Preferences data too large (max 64 KB).'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblUserPreferences (UserId, PreferencesJson)
-                 VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    PreferencesJson = VALUES(PreferencesJson),
-                    UpdatedAt = NOW()'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('is', $authUserId, $prefsJson);
-            $stmt->execute();
-            $stmt->close();
-
-            sendJson(['ok' => true]);
-            break;
+         * `user_preferences` (GET) and `user_preferences_sync` (POST) lived
+         * here and read/wrote `tblUserPreferences`. They were an un-namespaced
+         * duplicate of `user_settings` (case 'user_settings' above, on
+         * tblUsers.Settings) — same concept, same payload shape, a parallel
+         * table, and NO caller anywhere in the tree: verified by file-walk
+         * across appWeb + appApple + appAndroid, because `rg` cannot see
+         * `appWeb/.sql/` and under-reports this class of audit.
+         *
+         * Two stores for one concept is a data-integrity trap rather than a
+         * dormant feature: whichever a future client picked, the other would
+         * hold stale truth forever with nothing to say so. `user_settings`
+         * kept the concept and took the namespaced write contract that lets a
+         * second product (iLyricsDB) share the row; this pair was deleted and
+         * `tblUserPreferences` drops via the manual, confirm-gated
+         * `drop-user-preferences` card on /manage/setup-database.
+         *
+         * ⚠ An OUT-OF-REPO caller (an API-key partner, a curl script) would now
+         * get `400 Unknown action`. That is accepted and is exactly the stated
+         * blind spot of the orphan guard: it reports "no in-repo caller", never
+         * "unused". Both are marked superseded in api-docs.yaml rather than
+         * silently vanishing from the published spec.
+         * ================================================================= */
 
         /* =================================================================
          * USER PREFERRED LANGUAGES (#736)

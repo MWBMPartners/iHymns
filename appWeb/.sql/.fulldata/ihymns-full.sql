@@ -1378,18 +1378,13 @@ CREATE TABLE IF NOT EXISTS tblSongRevisions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserPreferences (#310)
--- Server-side preference sync.
+-- tblUserPreferences (#310) — DROPPED (#1671 F5). Removed here as well as in schema.sql
+-- because this file is what a FULL import actually executes: leaving the CREATE here
+-- would resurrect the table on the next full import, exactly as the un-removed seed row
+-- would have resurrected `ccli_validation_enabled` in #1668. It carried no data rows.
+-- Preference sync lives solely on tblUsers.Settings — see appWeb/.sql/schema.sql and
+-- appWeb/public_html/includes/user_settings.php.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPreferences (
-    UserId          INT UNSIGNED    NOT NULL PRIMARY KEY,
-    PreferencesJson JSON            NOT NULL COMMENT 'Theme, font size, default songbook, etc.',
-    UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    CONSTRAINT fk_Prefs_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------

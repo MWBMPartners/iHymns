@@ -215,9 +215,13 @@ return [
          * self-cleaning in the same direction — deleting the endpoint makes
          * the entry stale and the guard demands the entry go too, so the
          * endpoint and its allowlist line die in the same commit.
+         *
+         * The self-cleaning worked as designed: `user_preferences` and
+         * `user_preferences_sync` were removed from api.php in #1671 F5
+         * (superseded by the namespaced `user_settings`) and their two
+         * entries died in the same commit — the guard's stale-entry check
+         * is what forces that pairing.
          * --------------------------------------------------------------- */
-        'user_preferences'      => 'deliberate temporary — superseded by user_settings (#1671); deletion is remediation F5. DELETE ENDPOINT AND ENTRY TOGETHER',
-        'user_preferences_sync' => 'deliberate temporary — superseded by user_settings (#1671); deletion is remediation F5. DELETE ENDPOINT AND ENTRY TOGETHER',
     ],
 
     /* =====================================================================
