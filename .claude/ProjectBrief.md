@@ -4,9 +4,51 @@
 
 ---
 
-## 📌 Continuation note — 2026-07-30
+## 📌 Continuation note — 2026-07-31 (supersedes the 07-30 note below)
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
+
+⚠️ **The 07-30 note below says "both `claude/*` branches are now deleted". That is STALE.** Active
+work lives on **`claude/wave3-fixes`**, ~90 commits ahead of `alpha`, all pushed. **No PR exists** —
+the owner wants ONE PR to `alpha`, created on their word.
+
+⚠️ **The branch named in the session prompt (`claude/apple-branches-cleanup-export-7mxhpo`) is a
+DIFFERENT, older branch.** Pushing there strands a commit away from its history — it happened once
+this session. Check `git branch -vv` before pushing.
+
+**Suites: 64 PHP / 37 node.** Both runners glob their directories, so a new suite cannot exist
+without running — except in the `php-compat` matrix, which still hand-lists and therefore runs the
+newest guards on one interpreter (#1682).
+
+### What this programme is
+
+The owner's instruction after reading the orphan audit: *"fix ALL of the issues it had identified …
+We dont want to be back here again later with more issues!"* Two durable documents drive it —
+`.claude/orphan-inventory-2026-07-30.md` (the mechanically-derived audit) and
+`.claude/remediation-plan-2026-07-30.md` (the batch plan). Both are **claims to check**, not truth:
+§4.6's table was wrong about `delete_songs`, and acting on it unverified would have stripped every
+curator's delete.
+
+Delivered so far: the permanent orphan CI guard; org CCLI licences (three disconnected stores);
+setlists (no cap, tombstones, optional expiry); the #1679 songbook-move re-key plus two rounds of
+hardening; seed-column-width guard; the entitlement truth-up — **all ten** decorative permissions now
+wired or deleted, the allowlist's `entitlements` bucket is empty; the namespaced preference store;
+and four of #1671's six features.
+
+### The two things a new session must not mis-read
+
+1. **NOTHING ON THIS BRANCH HAS BEEN RUN.** No MySQL, no browser. ~90 commits are reasoned correct
+   and observed correct nowhere. That is **P0** in `.claude/proposals-2026-07-31.md` and it outranks
+   every feature.
+2. **THE METHOD LESSON** (written up in the handoff, worth reading before writing any guard): four
+   consecutive rounds shipped a guard that was green while the thing it guarded was broken, because
+   **source inspection was used as primary evidence for properties that have a runtime handle**.
+   When a property lives in a pure function, TEST THE FUNCTION —
+   `tests/php/test-transaction-fatal.php` is the worked example.
+
+---
+
+## 📌 Continuation note — 2026-07-30 (superseded, kept for the consolidation record)
 (dated 07-28 but still being appended to as this branch's work continues; the 2026-07-26 handoff it
 supersedes is still the reference for the export root-cause chain).
 
