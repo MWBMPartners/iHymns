@@ -196,8 +196,6 @@ return [
          * That is the intended pressure, and the reason none of them carries
          * a date.
          * --------------------------------------------------------------- */
-        'push_subscribe'       => '#1435 / #1671 — server live, no SW push handler yet; wiring is remediation F6. DELETE THIS ENTRY when F6 lands',
-        'push_unsubscribe'     => '#1435 / #1671 — server live, no SW push handler yet; wiring is remediation F6. DELETE THIS ENTRY when F6 lands',
         /* F1 (devices_list / device_signout), F2 (my_song_requests) and F3
            (song_key / song_key_save) LANDED in the #1671 Batch-8 pass; their
            five entries were deleted there in the same commit, and this guard's
@@ -216,7 +214,17 @@ return [
            includes/setlist_templates.php, and the two missing endpoints
            (`setlist_template_update` / `_delete`) so a template is no longer
            permanent and uneditable from the screen that made it. Only then did
-           the UI land. */
+           the UI land.
+
+           F6 (push_subscribe / push_unsubscribe) went the same way. Its blocker
+           was not a UI at all: NOTHING HAD EVER SENT A PUSH. There was no VAPID
+           keypair, no RFC 8291 payload encryption and no service-worker `push`
+           handler — three missing links in a four-link chain, so the two
+           endpoints were a permanently untested surface that read as working.
+           Fixed by includes/web_push.php (VAPID ES256 + aes128gcm, hand-rolled
+           on openssl because this project has no Composer), the service
+           worker's `push` / `notificationclick` listeners, and the operator
+           surface on /manage/notifications. Their two entries died here. */
 
         /* ---------------------------------------------------------------
          * 1f. TEMPORARY — scheduled for DELETION in remediation Batch 3.

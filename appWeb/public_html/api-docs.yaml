@@ -6323,17 +6323,43 @@ paths:
   # PUSH NOTIFICATIONS
   # ===========================================================================
 
+  # ⚠️ WHAT THIS SECTION USED TO SAY WAS WRONG IN THE ONE WAY THAT MATTERS, and
+  # it is the THIRD instance of this in this file (after the song_key pair in
+  # #1671 Batch 8 and the setlist_template pair above). It documented the body
+  # as `{endpoint, keys: {p256dh, auth}}` — the browser's own PushSubscription
+  # shape — while the handler has always read a FLAT `{endpoint, p256dh_key,
+  # auth_key}`. Anybody following this page would have got a 400 saying
+  # "Required: endpoint, p256dh_key, auth_key" and no idea why. It drifted for
+  # the same reason all three did: nothing exercised it. Documentation is not a
+  # mechanism (rule #35) — tests/test-push-helpers.js now re-reads api.php and
+  # asserts the client sends exactly the fields the handler reads.
+  #
+  # The "dormant, no caller" note is also gone, and that change is real rather
+  # than cosmetic: #1671 F6 built the three missing links (VAPID keypair,
+  # RFC 8291 payload encryption in includes/web_push.php, and the service
+  # worker's `push` / `notificationclick` handlers), so these two endpoints now
+  # have a caller in js/modules/push-notifications.js.
+
   /api.php?action=push_subscribe:
     post:
       operationId: pushSubscribe
       tags: [Push]
       summary: Register a Web Push subscription for the current user
       description: |
-        Dormant: no web client subscribes yet and the service worker
-        (`service-worker.js.php`) has no `push` event handler yet either,
-        so a stored subscription is never sent to. Relates to #1435; the
-        endpoint itself is live and writes to `tblPushSubscriptions`, it
-        simply has no caller.
+        Stores one browser's Web Push subscription against the caller's account.
+        Idempotent per (user, endpoint): re-subscribing replaces the existing
+        row rather than duplicating it.
+
+        The three fields come from the browser's `PushSubscription`, but are
+        sent FLAT and RENAMED — `subscription.keys.p256dh` becomes `p256dh_key`
+        and `subscription.keys.auth` becomes `auth_key`. Sending the browser's
+        nested `keys` object is a 400.
+
+        Whether a stored subscription actually RECEIVES anything depends on two
+        further things: an operator having generated a VAPID keypair on
+        /manage/notifications, and the user having opted in to the notification
+        kind being sent (stored in the `ihymns.push` namespace of
+        `?action=user_settings`).
       security:
         - bearerAuth: []
       parameters:
@@ -6347,21 +6373,30 @@ paths:
           application/json:
             schema:
               type: object
-              required: [endpoint, keys]
+              required: [endpoint, p256dh_key, auth_key]
               properties:
-                endpoint: { type: string, format: uri }
-                keys:
-                  type: object
-                  required: [p256dh, auth]
-                  properties:
-                    p256dh: { type: string }
-                    auth:   { type: string }
+                endpoint:
+                  type: string
+                  format: uri
+                  description: The push service URL from `PushSubscription.endpoint`.
+                p256dh_key:
+                  type: string
+                  description: >
+                    base64url of the subscription's public key — the 65-byte
+                    uncompressed P-256 point from `subscription.keys.p256dh`.
+                auth_key:
+                  type: string
+                  description: >
+                    base64url of the 16-byte auth secret from
+                    `subscription.keys.auth` (RFC 8291 §3.2).
       responses:
         "200":
           description: Subscription stored
           content:
             application/json:
               schema: { $ref: "#/components/schemas/SuccessResponse" }
+        "400": { description: A required field is missing, or the endpoint is not a URL }
+        "401": { description: Not authenticated }
 
   /api.php?action=push_unsubscribe:
     post:
@@ -6369,10 +6404,13 @@ paths:
       tags: [Push]
       summary: Remove a Web Push subscription
       description: |
-        Dormant: no web client subscribes yet and the service worker
-        has no `push` event handler yet either (same #1435 gap as
-        `push_subscribe`) — the endpoint itself is live and idempotent,
-        it simply has no caller.
+        Deletes the caller's own subscription for this endpoint. Idempotent —
+        `deleted: 0` means there was nothing to remove, which is a success.
+
+        Note the server ALSO prunes a subscription on its own initiative when a
+        push service answers 404 or 410 for it (RFC 8030 — the subscription has
+        been permanently revoked). Only those two statuses prune: a prune is
+        irreversible, so a 429 or a 5xx never removes a working subscription.
       security:
         - bearerAuth: []
       parameters:
@@ -6394,7 +6432,13 @@ paths:
           description: Removed (idempotent)
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SuccessResponse" }
+              schema:
+                type: object
+                properties:
+                  ok:      { type: boolean }
+                  deleted: { type: integer, description: Rows removed (0 or 1) }
+        "400": { description: Endpoint is required }
+        "401": { description: Not authenticated }
 
   # ===========================================================================
   # APNs BRIDGE (#1410, Apple Phase-2 PR-13) — push-TOKEN REGISTRATION ONLY.

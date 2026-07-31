@@ -1219,6 +1219,114 @@ self.addEventListener('sync', (event) => {
     })());
 });
 
+/* =========================================================================
+ * WEB PUSH (#311, wired #1671 F6)
+ *
+ * ELI5: when the server sends this device a notification, show it — and when
+ * the user taps it, open the page it points at, reusing a tab that is already
+ * on it rather than piling up new ones.
+ *
+ * WHY THESE TWO LISTENERS ARE THE WHOLE CLIENT HALF. `tblPushSubscriptions`,
+ * `push_subscribe` and `push_unsubscribe` have existed since #311 and NOTHING
+ * HAS EVER SENT A PUSH: there was no VAPID keypair, no RFC 8291 payload
+ * encryption, and no handler here to receive one. A subscription with no `push`
+ * listener is not merely idle — some browsers show a generic "This site has
+ * been updated in the background" notification instead, so the user gets an
+ * unexplained buzz from an app that never meant to send one.
+ *
+ * NATIVE fetch IS CORRECT HERE and is the one deliberate exception to rule #31.
+ * The service worker is a different global scope with no `localStorage`, its
+ * requests are not user-scoped, and `js/utils/api-client.js` is a window-scope
+ * module. Importing it here would be the rule misapplied. Neither handler makes
+ * a request at all, so the point is moot in practice — it is recorded because
+ * the next person to add one here will need it.
+ *
+ * THE PAYLOAD SHAPE IS A CROSS-FILE AGREEMENT with webPushBuildPayload() in
+ * includes/web_push.php: `{kind, title, body, url}`. Nothing in the browser can
+ * call that PHP function, so tests/php/test-web-push.php asserts that every key
+ * the builder emits is read HERE — a mechanism, not a comment (rule #35).
+ *
+ * https://developer.mozilla.org/docs/Web/API/ServiceWorkerGlobalScope/push_event
+ * https://developer.mozilla.org/docs/Web/API/ServiceWorkerGlobalScope/notificationclick_event
+ * ========================================================================= */
+self.addEventListener('push', (event) => {
+    /* A push with no data is legitimate (a "wake up and go look" ping) and must
+       still produce SOMETHING: a browser that is handed a push event whose
+       waitUntil resolves without showing a notification may show its own
+       generic one, or penalise the origin's future pushes. So the fallback
+       below is not defensive noise — it is the required behaviour. */
+    let payload = { kind: 'announcement', title: 'iHymns', body: '', url: '/' };
+    if (event.data) {
+        try {
+            const parsed = event.data.json();
+            if (parsed && typeof parsed === 'object') {
+                payload = {
+                    kind:  typeof parsed.kind  === 'string' ? parsed.kind  : 'announcement',
+                    title: typeof parsed.title === 'string' && parsed.title ? parsed.title : 'iHymns',
+                    body:  typeof parsed.body  === 'string' ? parsed.body  : '',
+                    /* Site-relative only. The server already restricts this, but
+                       a notification is an attacker-attractive way to send
+                       somebody to another origin and the check costs nothing on
+                       the receiving side too. */
+                    url:   (typeof parsed.url === 'string' && /^\/[^/\\]/.test(parsed.url)) ? parsed.url : '/',
+                };
+            }
+        } catch {
+            /* Not JSON — keep the fallback rather than dropping the push. */
+        }
+    }
+
+    event.waitUntil(self.registration.showNotification(payload.title, {
+        body: payload.body,
+        /* Paths taken from manifest.json's own icon list, not guessed: the
+           assets live at /assets/icon-<size>.png, NOT under an /assets/icons/
+           directory. A wrong path here is silent — the notification still
+           shows, with the browser's generic globe. */
+        icon: '/assets/icon-192.png',
+        badge: '/assets/icon-96.png',
+        /* Tagging by KIND collapses repeats of the same sort of message rather
+           than stacking five identical announcements on a lock screen. */
+        tag: 'ihymns-' + payload.kind,
+        renotify: false,
+        data: { url: payload.url, kind: payload.kind },
+    }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const target = (event.notification.data && event.notification.data.url) || '/';
+
+    event.waitUntil((async () => {
+        const url = new URL(target, self.location.origin);
+        /* Same-origin only — belt and braces after the two checks above,
+           because this is the line that actually navigates a window. */
+        if (url.origin !== self.location.origin) { return; }
+
+        const clients = await self.clients.matchAll({
+            includeUncontrolled: true,
+            type: 'window',
+        });
+        /* Reuse an open tab rather than opening another one. A user who taps
+           three notifications over a morning should not end up with three
+           copies of the app; focusing the existing window is also what every
+           platform's notification guidance expects. */
+        for (const c of clients) {
+            if (c.url === url.href && 'focus' in c) {
+                return c.focus();
+            }
+        }
+        for (const c of clients) {
+            if ('navigate' in c && 'focus' in c) {
+                await c.focus();
+                return c.navigate(url.href);
+            }
+        }
+        if (self.clients.openWindow) {
+            return self.clients.openWindow(url.href);
+        }
+    })());
+});
+
 self.addEventListener('message', (event) => {
     if (!event.data) return;
 

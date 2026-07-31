@@ -28,6 +28,13 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Web Push (#311, wired #1671 F6). Required HARD, not function_exists-guarded:
+   this page can WRITE the VAPID private key, and secret_crypto.php's
+   appSettingValueForStorage() must fail CLOSED rather than silently storing a
+   secret in the clear if the engine were ever missing. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'secret_crypto.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'maintenance.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'web_push.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -278,6 +285,113 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         }
 
+        /* ==============================================================
+         * WEB PUSH (#311, wired #1671 F6)
+         *
+         * Lives on THIS page rather than a new one because it is the same
+         * job as the in-app broadcast above — "tell users something" —
+         * behind the same `manage_notifications` gate, which was verified
+         * to be a REAL, labelled, nav-linked entitlement before anything
+         * was built on it (Batch 6 found ten decorative keys, so it was
+         * checked rather than assumed).
+         * ============================================================== */
+
+        if ($action === 'push_generate_keys') {
+            /* A SECOND keypair invalidates every existing subscription: a push
+               service binds a subscription to the application-server key that
+               created it. So generating over an existing key requires an
+               explicit confirm rather than being a one-click foot-gun. */
+            $existing = (string)(getAppSetting('webpush_vapid_public', '') ?? '');
+            if ($existing !== '' && ($_POST['confirm_replace'] ?? '') !== '1') {
+                $flashError = 'A VAPID key already exists. Replacing it will silently stop '
+                    . 'notifications for every device already subscribed — tick the confirm box.';
+            } else {
+                $subject = trim((string)($_POST['vapid_subject'] ?? ''));
+                if (!webPushSubjectValid($subject)) {
+                    $flashError = 'Contact must be a mailto: address or an https:// URL (RFC 8292 §2).';
+                } else {
+                    $keys = webPushGenerateVapidKeys();
+                    if ($keys === null) {
+                        $flashError = 'This server\'s OpenSSL could not generate a P-256 key.';
+                    } else {
+                        try {
+                            /* The PRIVATE half goes through the shared writer, which
+                               encrypts it at rest (it is registered in
+                               secretSettingKeys()) and THROWS rather than storing it
+                               in the clear if the master key is missing here. The
+                               PUBLIC half is not a secret — it is handed to every
+                               browser as applicationServerKey. */
+                            setAppSetting($db, 'webpush_vapid_private', $keys['privateKey']);
+                            setAppSetting($db, 'webpush_vapid_public',  $keys['publicKey']);
+                            setAppSetting($db, 'webpush_vapid_subject', $subject);
+                            /* Same audit surface the in-app broadcast below
+                               writes to, via the ONE shared writer (#1638)
+                               rather than a fourth copy of the raw INSERT. */
+                            logActivity('notification.push.keys_generated', 'notification', '', [
+                                'replaced' => $existing !== '',
+                            ]);
+                            $_SESSION['notifications_flash'] = ['success' =>
+                                'VAPID keypair generated. Users can now turn notifications on in Settings.'];
+                            header('Location: /manage/notifications');
+                            exit;
+                        } catch (\Throwable $e) {
+                            $flashError = 'Could not store the key: ' . $e->getMessage();
+                        }
+                    }
+                }
+            }
+        }
+
+        if ($action === 'push_send' || $action === 'push_test') {
+            $pushKind  = (string)($_POST['push_kind'] ?? 'announcement');
+            $pushTitle = trim((string)($_POST['push_title'] ?? ''));
+            $pushBody  = trim((string)($_POST['push_body']  ?? ''));
+            $pushUrl   = trim((string)($_POST['push_url']   ?? ''));
+
+            if ($action === 'push_test') {
+                /* A test is a real push through the real pipeline — same kind
+                   registry, same encryption, same transport — aimed only at the
+                   operator's own devices. A "test" that took a different path
+                   would prove nothing about the one that matters. */
+                $pushKind  = 'test';
+                $pushTitle = $pushTitle !== '' ? $pushTitle : 'iHymns test notification';
+                $pushBody  = $pushBody !== '' ? $pushBody : 'If you can see this, push notifications are working.';
+            }
+
+            if (!webPushConfigured()) {
+                $flashError = 'Generate a VAPID keypair first — nothing can be sent without one.';
+            } elseif (!webPushKindValid($pushKind)) {
+                $flashError = 'Unknown notification kind.';
+            } elseif ($pushTitle === '') {
+                $flashError = 'A push notification needs a title.';
+            } else {
+                $payload = webPushBuildPayload($pushKind, $pushTitle, $pushBody, $pushUrl);
+                $targets = ($action === 'push_test')
+                    ? [(int)($currentUser['Id'] ?? $currentUser['id'] ?? 0)]
+                    : null;
+                $res = webPushBroadcast($db, $pushKind, $payload, $targets);
+
+                logActivity('notification.push.broadcast', 'notification', '', [
+                    'kind'    => $pushKind,
+                    'test'    => $action === 'push_test',
+                    'sent'    => $res['sent'],
+                    'failed'  => $res['failed'],
+                    'pruned'  => $res['pruned'],
+                    'skipped' => $res['skipped'],
+                ]);
+
+                /* Every outcome is reported, including the boring ones. "Sent to
+                   0 devices" is the single most useful line an operator can see
+                   when nothing arrives, and a bare "Sent." would hide it. */
+                $_SESSION['notifications_flash'] = ['success' => sprintf(
+                    'Push: %d sent, %d failed, %d dead subscriptions removed, %d skipped (opted out).',
+                    $res['sent'], $res['failed'], $res['pruned'], $res['skipped']
+                )];
+                header('Location: /manage/notifications');
+                exit;
+            }
+        }
+
         if ($action === 'delete') {
             $id = (int)($_POST['id'] ?? 0);
             if ($id > 0) {
@@ -384,6 +498,27 @@ if ($typesRes) {
     $typesRes->close();
 }
 
+/* ----------------------------------------------------------------------
+ * WEB PUSH state for the card below (#311 / #1671 F6)
+ *
+ * Every read is wrapped: tblPushSubscriptions ships in schema.sql but the three
+ * docroots share ONE MySQL and migrations are web-run, so "it is in schema.sql"
+ * is not the same statement as "it exists here". mysqli runs STRICT, so an
+ * absent table THROWS — an ungated count would white-screen the whole admin
+ * page rather than showing zero (#1228).
+ * ---------------------------------------------------------------------- */
+$pushPublicKey  = (string)(getAppSetting('webpush_vapid_public', '') ?? '');
+$pushSubject    = (string)(getAppSetting('webpush_vapid_subject', '') ?? '');
+$pushConfigured = webPushConfigured();
+$pushSubCount   = 0;
+try {
+    if (webPushSubscriptionsReady($db)) {
+        $pushSubCount = (int)$db->query('SELECT COUNT(*) FROM tblPushSubscriptions')->fetch_row()[0];
+    }
+} catch (\Throwable $_e) {
+    $pushSubCount = 0;
+}
+
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
 <!DOCTYPE html>
@@ -431,6 +566,150 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
             <i class="bi bi-exclamation-triangle me-1"></i><?= htmlspecialchars($flashError) ?>
         </div>
     <?php endif; ?>
+
+    <!-- ===========================
+         WEB PUSH (#311, wired #1671 F6)
+
+         Lives on THIS page, not a new one: it is the same job as the
+         in-app broadcast above, behind the same manage_notifications
+         gate. That entitlement was VERIFIED real — labelled in
+         manage/entitlements.php, mapped in includes/entitlements.php +
+         its JS mirror, nav-linked in admin-links.php and enforced at the
+         top of this file — rather than assumed, because Batch 6 found
+         ten decorative permission keys in this codebase.
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-3">
+        <div class="card-body">
+            <h2 class="h6 mb-2">
+                <i class="fa-solid fa-mobile-screen-button me-2"></i>Web Push
+                <?php if ($pushConfigured): ?>
+                    <span class="badge bg-success ms-1">Configured</span>
+                <?php else: ?>
+                    <span class="badge bg-secondary ms-1">Not configured</span>
+                <?php endif; ?>
+            </h2>
+            <p class="text-secondary small">
+                Push notifications go to a user's browser or installed app even when
+                iHymns is closed. They are encrypted end-to-end (RFC 8291) — the push
+                service that relays them cannot read the contents.
+                <strong><?= number_format($pushSubCount) ?></strong>
+                device<?= $pushSubCount === 1 ? '' : 's' ?> currently subscribed.
+            </p>
+
+            <?php if (!$pushConfigured): ?>
+                <!-- SETUP. Nothing can be sent without an application-server
+                     identity keypair (VAPID, RFC 8292). The private half is
+                     stored encrypted at rest (secretSettingKeys(), #1466) and
+                     never leaves the server; the public half is handed to every
+                     browser as `applicationServerKey` and is not a secret. -->
+                <form method="post" class="row g-2 align-items-end">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                    <input type="hidden" name="action" value="push_generate_keys">
+                    <div class="col-md-6">
+                        <label class="form-label small" for="vapid-subject">Operator contact <span class="text-danger">*</span></label>
+                        <input type="text" id="vapid-subject" name="vapid_subject" class="form-control form-control-sm"
+                               placeholder="mailto:admin@example.com" required
+                               value="<?= htmlspecialchars($pushSubject) ?>">
+                        <div class="form-text small">
+                            Required by RFC 8292 §2 so a push service can contact you about
+                            delivery problems. <code>mailto:</code> or <code>https://</code>.
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <button type="submit" class="btn btn-sm btn-primary">
+                            <i class="bi bi-key me-1"></i>Generate VAPID keypair
+                        </button>
+                    </div>
+                </form>
+            <?php else: ?>
+                <div class="row g-3">
+                    <div class="col-lg-7">
+                        <!-- BROADCAST. Audience is "everyone opted in to this kind";
+                             the kind list is rendered from webPushKinds(), the ONE
+                             registry, so adding a kind is one line of PHP and this
+                             form needs no edit. -->
+                        <form method="post" class="row g-2">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                            <input type="hidden" name="action" value="push_send">
+                            <div class="col-sm-5">
+                                <label class="form-label small" for="push-kind">Kind</label>
+                                <select id="push-kind" name="push_kind" class="form-select form-select-sm">
+                                    <?php foreach (webPushKinds() as $kindKey => $kindMeta): ?>
+                                        <option value="<?= htmlspecialchars($kindKey) ?>">
+                                            <?= htmlspecialchars($kindMeta[0]) ?>
+                                        </option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="col-sm-7">
+                                <label class="form-label small" for="push-title">Title <span class="text-danger">*</span></label>
+                                <input type="text" id="push-title" name="push_title" class="form-control form-control-sm"
+                                       maxlength="120" required placeholder="Short — lock screens truncate">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label small" for="push-body">Body</label>
+                                <input type="text" id="push-body" name="push_body" class="form-control form-control-sm"
+                                       maxlength="300" placeholder="One or two lines">
+                            </div>
+                            <div class="col-sm-8">
+                                <label class="form-label small" for="push-url">Opens</label>
+                                <input type="text" id="push-url" name="push_url" class="form-control form-control-sm"
+                                       maxlength="300" placeholder="/songbooks">
+                                <div class="form-text small">Site-relative path only. Blank opens the home page.</div>
+                            </div>
+                            <div class="col-sm-4 d-flex align-items-end">
+                                <button type="submit" class="btn btn-sm btn-primary w-100">
+                                    <i class="bi bi-send me-1"></i>Send push
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                    <div class="col-lg-5">
+                        <!-- TEST. Goes through the REAL pipeline — same registry,
+                             same RFC 8291 encryption, same transport — aimed only
+                             at this operator's own devices. A "test" that took a
+                             different path would prove nothing about the one that
+                             matters. -->
+                        <form method="post" class="mb-2">
+                            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                            <input type="hidden" name="action" value="push_test">
+                            <button type="submit" class="btn btn-sm btn-outline-info w-100">
+                                <i class="bi bi-bell me-1"></i>Send a test to my devices
+                            </button>
+                        </form>
+                        <p class="text-secondary small mb-2">
+                            Contact: <code><?= htmlspecialchars($pushSubject) ?></code><br>
+                            Public key: <code class="text-break"><?= htmlspecialchars(substr($pushPublicKey, 0, 24)) ?>…</code>
+                        </p>
+                        <details>
+                            <summary class="small text-warning">Replace the VAPID keypair</summary>
+                            <form method="post" class="mt-2">
+                                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
+                                <input type="hidden" name="action" value="push_generate_keys">
+                                <div class="alert alert-warning py-2 small">
+                                    Replacing the keypair <strong>silently stops notifications for
+                                    every one of the <?= number_format($pushSubCount) ?> devices already
+                                    subscribed</strong> — a push service binds a subscription to the key
+                                    that created it. Each user would have to turn notifications off and
+                                    on again in Settings.
+                                </div>
+                                <input type="text" name="vapid_subject" class="form-control form-control-sm mb-2"
+                                       value="<?= htmlspecialchars($pushSubject) ?>" required>
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input" type="checkbox" value="1"
+                                           name="confirm_replace" id="confirm-replace" required>
+                                    <label class="form-check-label small" for="confirm-replace">
+                                        I understand this breaks every existing subscription.
+                                    </label>
+                                </div>
+                                <button type="submit" class="btn btn-sm btn-outline-danger">Replace keypair</button>
+                            </form>
+                        </details>
+                    </div>
+                </div>
+            <?php endif; ?>
+        </div>
+    </div>
 
     <!-- ===========================
          FILTER RAIL

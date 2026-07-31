@@ -203,16 +203,19 @@ $saveSetting = function (mysqli $db, string $key, string $value): void {
        non-empty secret can NEVER be silently stored as plaintext once encryption
        is active: if the master key is missing on this docroot we throw rather
        than write a cleartext secret. */
-    if ($value !== '' && isSecretSettingKey($key)
-        && getAppSetting('secret_encryption_active', '0') === '1') {
-        if (!secretCryptoReady()) {
-            throw new \RuntimeException(
-                'Secret encryption is active but the master key is unavailable on this server '
-                . '(.auth/secrets_master_key.php) — refusing to store "' . $key . '" unencrypted.'
-            );
-        }
-        $value = secretEncrypt($value);
-    }
+    /* #1671 F6 — the rule itself now lives in the PURE
+       appSettingValueForStorage() (includes/secret_crypto.php) because a second
+       page (manage/notifications.php, storing the VAPID private key) needed the
+       identical decision, and a second copy of "encrypt secrets at rest" is the
+       kind of duplication whose divergence is invisible until a secret is
+       sitting in the database in the clear. Behaviour here is UNCHANGED
+       byte-for-byte — including the deliberate absence of a function_exists()
+       guard, which is what makes it fail CLOSED. */
+    $value = appSettingValueForStorage(
+        $key,
+        $value,
+        getAppSetting('secret_encryption_active', '0') === '1'
+    );
     $stmt = $db->prepare(
         'INSERT INTO tblAppSettings (SettingKey, SettingValue)
          VALUES (?, ?)

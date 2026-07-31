@@ -868,6 +868,15 @@ export class Router {
                real ES module imported here. The module finds its own card via
                [data-devices-card] and no-ops when it is absent, so this costs
                nothing on any other route. */
+            /* Push notifications card (#311 server / #1671 F6). Same rule-#30
+               wiring, same DOM-first hook ([data-push-card]), and it reads its
+               two inputs — the VAPID public key and the server's kind registry —
+               from data-* the fragment already emits, so no extra API round trip
+               and no hardcoded copy of the kind list. */
+            import('./push-notifications.js')
+                .then(m => m.bootPushCard())
+                .catch(err => console.error('[Router] push-notifications init failed:', err));
+
             import('./devices.js')
                 .then(m => m.bootDevicesCard())
                 .catch(err => console.error('[Router] devices init failed:', err));

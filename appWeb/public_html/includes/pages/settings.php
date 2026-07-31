@@ -351,6 +351,89 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         PUSH NOTIFICATIONS (#311 server / #1671 F6 UI)
+
+         ELI5: turn on notifications for this device, and choose which
+         kinds of message you want.
+
+         Detail: tblPushSubscriptions, `?action=push_subscribe` and
+         `?action=push_unsubscribe` have existed since #311 and NOTHING
+         HAS EVER SENT A PUSH — there was no VAPID keypair, no RFC 8291
+         payload encryption, and no service-worker `push` handler. This
+         card is the first caller those endpoints have ever had.
+
+         THE TWO data-* ATTRIBUTES ARE THE WHOLE SERVER CONTRACT, and
+         both are here rather than behind an API action on purpose:
+
+           - data-vapid-key is the application-server PUBLIC key. It is
+             designed to be handed to every browser (it is exactly what
+             `PushManager.subscribe({applicationServerKey})` takes), so
+             it is not a secret and needs no endpoint of its own. Its
+             private half lives in tblAppSettings, encrypted at rest via
+             secretSettingKeys() (#1466), and never leaves the server.
+           - data-push-kinds is webPushKinds() rendered as JSON. The
+             client builds ONE checkbox per entry from it, which is what
+             makes "adding a kind is one line in the PHP registry"
+             literally true rather than aspirational (rule #35 — a
+             mechanism, not a comment).
+
+         An EMPTY data-vapid-key means no operator has generated a
+         keypair yet; the module then explains that rather than offering
+         a button that cannot work.
+
+         This fragment is NOT in api.php's $_cacheablePages (settings is
+         user-specific), so emitting per-request server state here is
+         legitimate — unlike home/song/songbook, where rule #6 forbids it.
+
+         There is no inline <script> here and there can never be one: the
+         document sends an enforcing nonce CSP (#117), this fragment is a
+         separate HTTP response that never sees the per-request nonce, and
+         the browser refuses a nonce-less inline script SILENTLY (#1565,
+         rule #30). Behaviour is wired by js/modules/push-notifications.js,
+         imported from router.js's afterPageLoad().
+         ============================================================ -->
+    <?php
+        /* Loaded here rather than at the top of the file so a fragment that is
+           never rendered for a signed-out visitor still costs nothing. Both
+           reads are plain settings lookups; getAppSetting() returns its default
+           on ANY database error, so a wobble renders the card as "not
+           configured" instead of throwing inside a fragment. */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'web_push.php';
+        $pushVapidPublic = (string)(getAppSetting('webpush_vapid_public', '') ?? '');
+        $pushKindsJson   = (string)json_encode(
+            array_map(
+                static fn(array $k): array => ['label' => $k[0], 'description' => $k[1], 'default' => (bool)$k[2]],
+                webPushKinds()
+            ),
+            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+        );
+    ?>
+    <div class="card card-settings mb-3 d-none" id="settings-push-card" data-push-card
+         data-vapid-key="<?= htmlspecialchars($pushVapidPublic, ENT_QUOTES, 'UTF-8') ?>"
+         data-push-kinds="<?= htmlspecialchars($pushKindsJson, ENT_QUOTES, 'UTF-8') ?>">
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-bell me-2" aria-hidden="true"></i>
+                Notifications
+            </h2>
+            <p class="text-muted small">
+                Get a notification on this device when something you care about
+                happens. You can turn this off at any time, here or in your
+                browser's site settings.
+            </p>
+            <!-- role="alert" so a failure is ANNOUNCED, not merely displayed
+                 (WCAG 4.1.3 Status Messages). Successes go through the shared
+                 announcer in js/utils/announce.js. -->
+            <div id="push-msg" class="alert d-none py-2 small" role="alert"></div>
+            <div id="push-status" class="mb-2">
+                <p class="text-muted small mb-0">Checking notification support…</p>
+            </div>
+            <div id="push-kinds" class="mb-2"></div>
+            <button type="button" class="btn btn-outline-secondary btn-sm d-none" id="push-toggle-btn"></button>
+        </div>
+    </div>
+
+    <!-- ============================================================
          SYNC SECTION — Cross-device sync preferences (#284)
          ============================================================ -->
     <div class="card card-settings mb-3" id="settings-sync-card">
