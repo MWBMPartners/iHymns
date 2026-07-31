@@ -500,13 +500,41 @@ foreach (['setlist_template_update', 'setlist_template_delete'] as $case) {
     $next = strpos($apiNoComments, "\n        case '", $start + 10);
     $body = substr($apiNoComments, $start, ($next !== false ? $next : strlen($apiNoComments)) - $start);
 
+    /* #1698 — the refusal grew a SECOND disjunct: an admin holding
+       `manage_setlist_templates` may edit or delete a template they did not
+       create. That is the one case `setlistTemplateCanEdit()` structurally
+       cannot answer — its own doc-block recorded it as a known, deliberately-
+       unbuilt gap, because `fk_Template_User` is ON DELETE SET NULL and a public
+       template whose author's account closed was editable by NOBODY.
+
+       So the shape asserted is now "refuse unless the override OR authorship
+       says yes", with BOTH halves required. Asserting only the authorship half
+       would pass a build that had dropped the override (an admin left unable to
+       clean up an orphan); asserting only the override half would pass a build
+       where every caller can edit every template. */
     _sltAssert(
-        (bool)preg_match('/if\s*\(\s*!\s*setlistTemplateCanEdit\(/', $body),
-        "$case REFUSES on !setlistTemplateCanEdit(...) — not merely mentions it"
+        str_contains($body, 'setlistTemplateCanEdit('),
+        "$case still asks the shared authorship question"
     );
     _sltAssert(
-        (bool)preg_match('/if\s*\(\s*!\s*setlistTemplateCanEdit\([\s\S]{0,400}?\]\s*,\s*403\s*\)/', $body),
-        "$case answers 403 when the authorisation question says no"
+        (bool)preg_match(
+            '/if\s*\(\s*!\$tplCanManageAny\s*&&\s*!\s*(?:setlistTemplateCanEdit\(|\$tplIsOwnRow)/',
+            $body
+        ),
+        "$case REFUSES on !override && !author — not merely mentions either"
+    );
+    _sltAssert(
+        (bool)preg_match(
+            '/if\s*\(\s*!\$tplCanManageAny\s*&&\s*!\s*(?:setlistTemplateCanEdit\(|\$tplIsOwnRow)[\s\S]{0,400}?\]\s*,\s*403\s*\)/',
+            $body
+        ),
+        "$case answers 403 when both halves of the authorisation question say no"
+    );
+    /* The override must be RESOLVED from the entitlement, not from a role — a
+       role check is not editable at /manage/entitlements (rule #1587). */
+    _sltAssert(
+        str_contains($body, "userHasEntitlement('manage_setlist_templates'"),
+        "$case resolves the override from the manage_setlist_templates entitlement"
     );
     _sltAssert(str_contains($body, '404'), "$case answers 404 for a template that does not exist");
     /* The write is narrowed by CreatedBy as well as by Id, so the check and the

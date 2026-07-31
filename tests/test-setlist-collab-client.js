@@ -211,8 +211,24 @@ check('the write identifies the OWNER, not just the setlist id',
     /ownerId:\s*shared\.ownerId/.test(collabBlock),
     'setlistId is unique only per user, so the owner must be named');
 
-check('edit controls are only rendered for the edit permission',
-    /canEdit\s*=\s*shared\.permission === 'edit'/.test(collabBlock));
+/* #1698 — this assertion used to pin the literal expression
+   `canEdit = shared.permission === 'edit'`, and it went RED the moment the
+   decision legitimately grew a second input: whether the OWNER's account is
+   still active. That is rule #34's other failure mode — a guard narrow enough to
+   fail on correct code gets weakened or deleted rather than fixed — so it is
+   restated as the PROPERTY it was always about: the client must take the
+   server's answer, not compute its own.
+
+   `sharedCanWrite()` prefers the server's `canWrite` and falls back to
+   `permission` only when the server did not send one (an older, service-worker-
+   cached response). Two places computing one authorisation policy with nothing
+   holding them together is rule #35's shape, and the copy that draws the buttons
+   would be the wrong one. */
+check('edit controls are driven by the SERVER\'s canWrite, not a client re-derivation',
+    /canEdit\s*=\s*sharedCanWrite\(shared\)/.test(collabBlock)
+    && /function sharedCanWrite/.test(src)
+    && /typeof shared\.canWrite === 'boolean'\) return shared\.canWrite/.test(src),
+    'the owner\'s account state is the second input the client cannot see');
 
 check('the renderer returns early for a view-only collaborator before binding edit handlers',
     /if \(!canEdit\) return;/.test(collabBlock),
