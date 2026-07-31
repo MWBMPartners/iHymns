@@ -3405,9 +3405,38 @@ switch ($action) {
             echo json_encode(['ok' => false, 'error' => 'POST method required.']);
             break;
         }
-        /* CSRF — the editor posts JSON, so the token rides an explicit
-           X-CSRF-Token header (emitted as a <meta> by the rewrite editor head). */
-        if (!validateCsrf((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))) {
+        /* CSRF — via validateCsrfRequest(), the shared same-origin check
+           (rule #29). The editor posts JSON, so a token may ride an explicit
+           X-CSRF-Token header; the header route is accepted too.
+
+           WHY THIS CHANGED (#1695, 2026-07-31). It used to call
+           `validateCsrf()` ALONE, which the review red-flag list names
+           explicitly: a per-render baked `$_SESSION['csrf_token']` rotates,
+           gets GC'd and differs across tabs, so a legitimate delete from a
+           long-open editor tab is rejected with a bare "Invalid or missing
+           CSRF token" — the SPORADIC failure rule #29 exists to remove.
+
+           Two facts make the stricter check pointless rather than valuable:
+
+           1. IT ADDED NO SECURITY. The file-level gate at the top of this
+              file ALREADY requires validateCsrfRequest() for every POST, so
+              no request reaches here without passing it. The inner check
+              could only ever REJECT a request the outer one had accepted —
+              i.e. contribute failures, never protection.
+
+           2. THE ENDPOINT IS NO LONGER DESTRUCTIVE. This was defensible when
+              delete_song ran a cascade DELETE. Since #1694 it performs a SOFT
+              delete: the song is hidden and restorable in one click. The
+              irreversible operation is `songPurge()`, which lives behind its
+              own `purge_songs` entitlement and a server-enforced
+              type-to-confirm on /manage/deleted-songs.
+
+           The security sweep that found this deliberately did NOT change it,
+           on the reasoning that loosening a destructive endpoint mid-sweep
+           was not its call — correct at the time, and #1694/#1695 have since
+           removed the premise. #1695 also widened `delete_songs` to editor+,
+           so the stale-token failure now reaches many more people. */
+        if (!validateCsrfRequest($_SERVER['HTTP_X_CSRF_TOKEN'] ?? null)) {
             http_response_code(403);
             echo json_encode(['ok' => false, 'error' => 'Invalid or missing CSRF token.']);
             break;
