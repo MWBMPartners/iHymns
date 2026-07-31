@@ -5167,6 +5167,33 @@ function autoSaveSongsPerSong(ids) {
                             if (_renderedSongId === data.previousId) {
                                 _renderedSongId = data.assignedId;
                             }
+                            /* #1679 F5 — (c) `number`. The two paths that rename a
+                               song also CHANGE its number: a songbook move clears
+                               it (the slot belongs to the book it left), and a
+                               #1380 draft promotion into an official book adopts
+                               the slot the mint chose. Neither was reflected here,
+                               so the in-memory song and the on-screen
+                               `#edit-number` both kept the pre-save value — and the
+                               NEXT save posted it straight back, silently undoing
+                               the clear and able to land on a number another song
+                               in the target book already holds (tblSongs indexes
+                               SongbookNumber but does not make it UNIQUE, so
+                               nothing would report the collision).
+                               The server sends the authoritative value alongside
+                               the rename rather than the client re-deriving which
+                               kind of rename it was — status/facts over inference
+                               (rule #35). `hasOwnProperty` because `null` IS the
+                               meaningful "cleared" answer and `data.number ||`
+                               would flatten it into "not sent". */
+                            if (Object.prototype.hasOwnProperty.call(data, 'number')) {
+                                if (renamed) { renamed.number = data.number; }
+                                /* Only repaint the field if the renamed song is the
+                                   one on screen — currentSongId was re-keyed above,
+                                   so compare against the NEW id. */
+                                if (currentSongId === data.assignedId) {
+                                    setVal('edit-number', data.number == null ? '' : String(data.number));
+                                }
+                            }
                             renderSongList();
                             saved.push(data.assignedId);
                         } else {

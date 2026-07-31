@@ -6,18 +6,34 @@
  *  selects/checkboxes) — no whole-song save. A failed save surfaces a real error
  *  and the field keeps the typed value for retry.
  *
- *  mountMetadataTab(container, { store, api, songId, toast }) -> teardown fn
+ *  mountMetadataTab(container, { store, api, songId, toast, onSongIdChange,
+ *                                getSongbooks }) -> teardown fn
  *  Reads initial values from the store's `song` slice (the tblSongs row, as
  *  returned by api2.php load_song — note the columns are PascalCase).
  * ========================================================================== */
 
 const SAVE_DEBOUNCE_MS = 500;
 
-/* field key (api2 ED2_META_FIELDS) -> [label, tblSongs column, input kind] */
+/* field key (api2 ED2_META_FIELDS) -> [label, tblSongs column, input kind]
+ *
+ * Input kinds: 'text' | 'number' (debounced on `input`), 'check' (immediate on
+ * `change`), 'select' (immediate on `change`, options supplied by the caller).
+ *
+ * #1679 H1 — `songbook` is a SELECT, and deliberately not a text box. Since the
+ * move became a re-key, writing this field mints a NEW SongId, clears Number,
+ * cascades ~41 child tables and writes a permanent tblSongRedirects row. As a
+ * debounced text input that irreversible action fired on a KEYSTROKE PAUSE: a
+ * curator clearing the field and typing `C`, `P` who paused half a second after
+ * the `C` moved the song into songbook `C`, and moving it back restored neither
+ * the id nor the number. A closed list removes the typo entirely, `change`
+ * removes the timer, and the confirm below removes the surprise. v1 has always
+ * validated its move target against the loaded songbook list (editor.js's bulk
+ * move) — this is the same rule, expressed as a control the user cannot get
+ * wrong rather than as a check after the fact. */
 const FIELDS = [
     ['title',              'Song Title',        'Title',              'text'],
     ['number',             'Song Number',       'Number',             'number'],
-    ['songbook',           'Songbook (abbr)',   'SongbookAbbr',       'text'],
+    ['songbook',           'Songbook',          'SongbookAbbr',       'select'],
     ['language',           'Language (BCP 47)', 'Language',           'text'],
     ['ccli',               'CCLI Number',       'Ccli',               'text'],
     ['iswc',               'ISWC',              'Iswc',               'text'],
@@ -38,10 +54,25 @@ export function mountMetadataTab(container, opts) {
        literal to keep in sync with anything (rule #35 / #1581). Defaults to a
        no-op so the tab still mounts standalone in a test harness. */
     const onSongIdChange = opts.onSongIdChange || function () {};
+    /* #1679 H1 — the songbook options, injected the same way. The shell passes
+       sidebar.getSongbooks(), which derives the distinct books from the loaded
+       slim index — the SAME list the New-song modal offers, so there is one
+       implementation of "which songbooks exist" and no new endpoint (its known
+       limit is that a book with zero songs is not listed; that is inherited from
+       the index, not introduced here). Defaults to an empty list so the tab
+       still mounts standalone. */
+    const getSongbooks = opts.getSongbooks || function () { return []; };
     const timers = new Map();
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
 
-    function save(field, value) {
+    /**
+     * @param {string}   field
+     * @param {*}        value
+     * @param {Function} [onError]  called after the failure toast, so a control
+     *                              that cannot be left showing a value the server
+     *                              rejected (the songbook select) can revert.
+     */
+    function save(field, value, onError) {
         api.updateMetadata(songId, field, value).then((res) => {
             /* #1679 — changing the songbook RE-KEYS the SongId server-side
                (`tblSongbooks.Abbreviation` IS the id prefix, rule #27). Every id
@@ -59,11 +90,88 @@ export function mountMetadataTab(container, opts) {
             }
         }).catch((e) => {
             toast('Could not save ' + field + ': ' + e.message, 'danger');
+            if (typeof onError === 'function') { try { onError(e); } catch (_e) {} }
         });
     }
     function debouncedSave(field, value) {
         if (timers.has(field)) { clearTimeout(timers.get(field)); }
         timers.set(field, setTimeout(() => save(field, value), SAVE_DEBOUNCE_MS));
+    }
+
+    /**
+     * The songbook control (#1679 H1) — a closed list, saved immediately on
+     * `change`, behind a confirm that spells out what a move actually does.
+     *
+     * ELI5: pick the book the song belongs in. It is a proper move, not a label
+     * change, so we ask first — the song gets a new id and loses its number.
+     *
+     * Detail, in the order it matters:
+     *  - OPTIONS come from the loaded index (see getSongbooks above). The song's
+     *    CURRENT book is prepended when the list does not contain it, so the
+     *    control always shows the truth even if the index is still loading or
+     *    the book has only this one song.
+     *  - `change`, never `input` + debouncedSave. A debounce timer turns an
+     *    irreversible re-key into something that happens while you are still
+     *    deciding; on a <select> there is no partial state to debounce anyway.
+     *  - CONFIRM before the request, not a toast after it. The three
+     *    consequences are stated plainly because none of them is guessable from
+     *    the words "songbook": a new SongId, a cleared Number, and the old id
+     *    demoted to a redirect. Moving back does not undo any of them.
+     *    window.confirm matches what the shell already uses for Delete — the one
+     *    other irreversible action in this editor — rather than introducing a
+     *    second confirmation idiom.
+     *  - On CANCEL or on a server error the select snaps back to the book the
+     *    song is actually in, so the control never sits there claiming a move
+     *    that did not happen.
+     */
+    function renderSongbookSelect(song, field, label, column) {
+        const wrap = document.createElement('div');
+        const lab = document.createElement('label');
+        lab.className = 'form-label small mb-1';
+        lab.htmlFor = 'meta-' + field;
+        lab.textContent = label;
+
+        const current = song[column] != null ? String(song[column]) : '';
+        const books = (getSongbooks() || []).slice();
+        if (current !== '' && !books.some((b) => b.abbr === current)) {
+            books.unshift({ abbr: current, name: current });
+        }
+
+        const sel = document.createElement('select');
+        sel.className = 'form-select form-select-sm';
+        sel.id = 'meta-' + field;
+        books.forEach((b) => {
+            const o = document.createElement('option');
+            o.value = b.abbr;
+            o.textContent = (b.name && b.name !== b.abbr) ? (b.name + ' (' + b.abbr + ')') : b.abbr;
+            sel.appendChild(o);
+        });
+        sel.value = current;
+
+        const help = document.createElement('div');
+        help.className = 'form-text small';
+        help.textContent = 'Moving a song re-keys its id and clears its number.';
+
+        sel.addEventListener('change', () => {
+            const target = sel.value;
+            if (target === current) { return; }
+            const confirmed = window.confirm(
+                'Move this song to songbook "' + target + '"?\n\n'
+                + 'This is a move, not a label change:\n'
+                + '  • the song gets a NEW id (' + (current || '?') + '-… becomes ' + target + '-…)\n'
+                + '  • its song number is cleared\n'
+                + '  • the old id becomes a permanent redirect to the new one\n\n'
+                + 'Moving it back later will NOT restore the old id or number.'
+            );
+            if (!confirmed) { sel.value = current; return; }
+            /* Immediate — no debouncedSave. The store is NOT updated optimistically:
+               a successful move makes the shell re-open the song under its new id,
+               which re-hydrates the whole slice from the server. */
+            save(field, target, () => { sel.value = current; });
+        });
+
+        wrap.append(lab, sel, help);
+        return wrap;
     }
 
     function render() {
@@ -95,6 +203,8 @@ export function mountMetadataTab(container, opts) {
                 lab.textContent = label;
                 wrap.append(input, lab);
                 col.appendChild(wrap);
+            } else if (kind === 'select') {
+                col.appendChild(renderSongbookSelect(song, field, label, column));
             } else {
                 const lab = document.createElement('label');
                 lab.className = 'form-label small mb-1';

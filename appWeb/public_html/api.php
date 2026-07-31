@@ -990,9 +990,12 @@ if ($action !== null) {
                anyway, plus a note saying "this id changed".
 
                Detail: this is the SAFETY NET for every SOFT reference the
-               `ON UPDATE CASCADE` fan-out cannot reach — SongsJson blobs in
-               tblUserSetlists / tblSetlistTemplates, native-app local caches, PWA
-               offline stores, third-party bookmarks. Without it a songbook move
+               `ON UPDATE CASCADE` fan-out cannot reach — the song-list blobs in
+               tblUserSetlists.SongsJson and tblSharedSetlists.Data, native-app
+               local caches, PWA offline stores, third-party bookmarks. (An
+               earlier revision named tblSetlistTemplates here; that table holds
+               SlotsJson — the {label, type} STRUCTURE of a service order — and
+               carries no song ids at all.) Without it a songbook move
                (#1679) or a merge (#1343) turns every one of those into a silent
                404 in a client that has no way to learn the new id. The response
                carries `redirectedFrom` so a client can rewrite what it stored

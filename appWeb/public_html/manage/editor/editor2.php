@@ -335,7 +335,17 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         }
 
         function mountTabs(songId) {
-            const ctx = { store, api: editorApi, songId, toast, onSongIdChange };
+            /* #1679 H1 — getSongbooks is the sidebar's own distinct-books list
+               (the one the New-song modal already uses), handed to the metadata
+               tab so its songbook control is a closed <select> rather than a
+               free-text box whose every keystroke pause re-keyed the song.
+               Wrapped in an arrow so it resolves at RENDER time: the sidebar's
+               index loads asynchronously, and a direct reference would freeze
+               whatever the list happened to be when the tabs were mounted. */
+            const ctx = {
+                store, api: editorApi, songId, toast, onSongIdChange,
+                getSongbooks: () => sidebar.getSongbooks(),
+            };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
                 /* #1627 item 2 — below the section cards, mirroring v1's own

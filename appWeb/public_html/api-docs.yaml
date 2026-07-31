@@ -621,6 +621,20 @@ paths:
         Supports flexible ID formats: `MP-1`, `MP-01`, `MP-001`, and `MP-0001`
         all resolve to the same song.
 
+        PERMALINK REDIRECTS (#1343 / #1679). `song_data` and `song_detail` are
+        ONE handler in api.php (`case 'song_detail': case 'song_data':`), so this
+        behaviour is identical on both — it is documented twice because a client
+        reading only this path would otherwise not know it exists. If `id` names
+        a song that has since been merged, deleted or MOVED to another songbook
+        (a move re-keys the SongId to the new book's prefix), this endpoint
+        follows the redirect chain instead of 404-ing: it returns the CURRENT
+        record plus `redirectedFrom` set to the id you asked for. Persist the new
+        `song.id` — the old one keeps working, but only via this hop. A song
+        removed with no replacement answers **410 Gone** (as opposed to 404
+        "never existed"), which is the signal to prune it from a local cache.
+        `redirectedFrom` is OMITTED on a normal read, so the happy-path shape is
+        unchanged.
+
         **Content gating (#1353).** When `content_gating_enabled='1'` and the
         caller's access tier lacks the relevant capability, the returned `song`
         is filtered: `components` / `translations` / `annotations` /
@@ -664,6 +678,13 @@ paths:
                 properties:
                   song:
                     $ref: "#/components/schemas/Song"
+                  redirectedFrom:
+                    type: string
+                    description: >-
+                      Present ONLY when the requested id was a dead permalink
+                      that resolved to this song (#1343/#1679). Holds the id
+                      that was requested; `song.id` is the current one.
+                    example: MP-1008
         "400":
           description: Missing song ID
           content:
@@ -680,6 +701,14 @@ paths:
                 $ref: "#/components/schemas/Error"
               example:
                 error: Song not found.
+        "410":
+          description: >-
+            Song removed — the id resolved to a redirect tombstone (merged or
+            deleted with no replacement). Prune it locally (#1343/#1679).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -1385,10 +1414,12 @@ paths:
         lyrics components, writers, composers and metadata. Subject to the same
         read rate limit and content gating (#1353) as `song_data`.
 
-        PERMALINK REDIRECTS (#1343 / #1679). If `id` names a song that has since
-        been merged, deleted or MOVED to another songbook (a move re-keys the
-        SongId to the new book's prefix), this endpoint follows the redirect
-        chain instead of 404-ing: it returns the CURRENT record plus
+        PERMALINK REDIRECTS (#1343 / #1679) — documented identically on
+        `song_data`, which is the SAME handler, not a different one. If `id`
+        names a song that has since been merged, deleted or MOVED to another
+        songbook (a move re-keys the SongId to the new book's prefix), this
+        endpoint follows the redirect chain instead of 404-ing: it returns the
+        CURRENT record plus
         `redirectedFrom` set to the id you asked for. Persist the new
         `song.id` — the old one will keep working, but only via this hop.
         A song removed with no replacement answers **410 Gone** (as opposed to

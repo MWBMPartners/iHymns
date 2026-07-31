@@ -133,7 +133,16 @@ function editorSaveSongCore(): array
             return ['status' => 400, 'body' => ['error' => 'Missing required fields: id, title.']];
         }
 
-        $songId       = (string)$song['id'];
+        $songId = (string)$song['id'];
+        /* #1679 M2 — was the songbook ACTUALLY sent? Kept as its own flag,
+           read from the RAW payload, because $songbookAbbr below is defaulted a
+           line later and can never afterwards be distinguished from a real
+           value. The relocate branch keys off this, not off the defaulted
+           string: a partial save that simply omits the key must not be read as
+           "move this song to Misc" — which, since the move became a re-key, is
+           a NEW id, a cleared Number and a permanent redirect row. */
+        $songbookSent = array_key_exists('songbook', $song)
+                     && trim((string)($song['songbook'] ?? '')) !== '';
         $songbookAbbr = trim((string)($song['songbook'] ?? ''));
         /* Every song MUST belong to a songbook — tblSongs.SongbookAbbr is
            NOT NULL with an FK to tblSongbooks. When a save arrives with no
@@ -141,7 +150,26 @@ function editorSaveSongCore(): array
            rather than failing the INSERT on the constraint (or, on a
            pre-FK install, silently creating an orphan with a blank
            songbook). Misc is a seeded songbook whose Number is nullable,
-           so an unnumbered Misc song is valid. */
+           so an unnumbered Misc song is valid.
+
+           #1679 M2 — but "Misc" is the right default only for a song that does
+           not exist yet. For an EXISTING song the payload's silence means "I am
+           not saying anything about the songbook", and the UPSERT below writes
+           SongbookAbbr unconditionally: defaulting to Misc there would relabel
+           the column while the SongId kept the old book's prefix, i.e. recreate
+           by omission the exact id/column mismatch #1679 exists to remove.
+           So an existing song's own book is the default, and Misc is reached
+           only when there is genuinely no row to ask. Read here (before the
+           IsOfficial probe) so $isOfficialSongbook and $number are derived from
+           the same book the UPSERT will write. */
+        if ($songbookAbbr === '') {
+            $keep = getDbMysqli()->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $keep->bind_param('s', $songId);
+            $keep->execute();
+            $keepRow = $keep->get_result()->fetch_assoc();
+            $keep->close();
+            $songbookAbbr = trim((string)($keepRow['SongbookAbbr'] ?? ''));
+        }
         if ($songbookAbbr === '') {
             $songbookAbbr = 'Misc';
         }
@@ -366,8 +394,9 @@ function editorSaveSongCore(): array
                must re-key the id too; leaving it alone is what produced songs whose
                id claimed one book and whose column claimed another.
                songRelocate() mints the new id, cascades every child row, rewrites
-               the one non-FK soft reference (content restrictions), clears Number
-               and writes the tblSongRedirects row so old permalinks keep resolving.
+               the two non-FK soft references (content restrictions + the
+               tblSongbookEntries home row), clears Number and writes the
+               tblSongRedirects row so old permalinks keep resolving.
                It runs INSIDE this transaction, so a later failure rolls the move
                back with the rest of the save.
                After it, the normal UPSERT below proceeds under the NEW id and takes
@@ -376,8 +405,17 @@ function editorSaveSongCore(): array
                $previousData / $prevRow deliberately keep the PRE-move snapshot: the
                revision row is a historical record, and the SongCount refresh below
                reads the OLD SongbookAbbr out of it (recomputing both books is
-               idempotent with songRelocate's own recompute). */
-            if ($prevRow !== null && $songbookAbbr !== ''
+               idempotent with songRelocate's own recompute).
+
+               #1679 M2 — gated on $songbookSent (the RAW payload actually carried
+               a non-empty `songbook` key), NOT on `$songbookAbbr !== ''`. That
+               older test could never be false: $songbookAbbr is defaulted several
+               hundred lines above, so a partial save which omitted the key
+               compared 'Misc' against the song's real book, found them different,
+               and performed a full destructive move — a new id, a cleared Number
+               and a permanent redirect — for a payload that never mentioned the
+               songbook at all. A move is now something a client has to ASK for. */
+            if ($prevRow !== null && $songbookSent
                 && (string)($prevRow['SongbookAbbr'] ?? '') !== $songbookAbbr) {
                 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
                 $moveUserId = null;
@@ -1471,6 +1509,18 @@ function editorSaveSongCore(): array
             if ($assignedId !== null) {
                 $respBody['assignedId'] = $assignedId;
                 $respBody['previousId'] = $previousId;
+                /* #1679 F5 — the AUTHORITATIVE Number that was just written, sent
+                   only alongside a rename. Both renaming paths change it and the
+                   client cannot infer which happened: a MOVE clears it to null,
+                   while a #1380 draft promotion into an official book ADOPTS the
+                   slot the mint chose. editor.js held the value the curator had
+                   typed, so its very next save posted the stale number straight
+                   back — silently undoing the clear, and able to collide in the
+                   target book (tblSongs has only INDEX idx_SongbookNumber, not a
+                   UNIQUE key, so nothing would even complain).
+                   Sent as a fact rather than left to be re-derived: two files
+                   agreeing by reasoning is the failure mode rule #35 names. */
+                $respBody['number'] = $number;
             }
             /* #1626 — only present when a staged translation link could NOT be
                persisted (unknown language tag, vanished target song, self-link).
