@@ -41,20 +41,72 @@ declare(strict_types=1);
  *      the server must SEND the authoritative number and the client must APPLY
  *      it (rule #35: two files that must agree need a mechanism, not a comment).
  *
- * HOW IT LOOKS AT THE SOURCE
- * --------------------------
+ * HOW IT LOOKS AT THE SOURCE — STRUCTURE, NEVER A CHARACTER WINDOW
+ * ---------------------------------------------------------------
  * Through `tests/php/lib/php_source_units.php` (#1688) — the shared per-function
- * `code` / `sql` split, not a private tokenizer. `code` cannot be satisfied by
- * prose (every non-identifier literal collapses to `'@STR@'`, with `@SQLUPD@`
- * marking where an UPDATE statement stood), and `sql` reconstructs statements
- * across concatenation. Ordering assertions use the `sql` list's own order,
- * which is source order, rather than a character window — the window bug rule
- * #34 records was found twice in this codebase already.
+ * split into three views. Which view an assertion uses is load-bearing:
  *
- * TWO assertions deliberately read RAW source, both flagged in place: the
- * refusal MESSAGE (where the prose IS the deliverable — a refusal that does not
- * name the migration is no better than the raw FK error it replaces) and the
- * ABSENCE of the removed swallow-and-log line.
+ *   `code`    for anything about CONTROL FLOW. Prose cannot satisfy it (every
+ *             non-identifier literal is `'@STR@'`), and each statement leaves a
+ *             `@SQL:<VERB>:<table>@` marker so an ordering or containment check
+ *             can point at ONE statement without being able to read it.
+ *   `sqlOnly` for anything about the SHAPE of a query.
+ *   `strings` ONLY where the PROSE is the deliverable (the refusal message).
+ *
+ * EVERY ASSERTION HERE WAS DEFEATED ONCE (2026-07-31)
+ * --------------------------------------------------
+ * An adversarial pass mutated the real tree and drove this file green five ways.
+ * The root cause was the same every time — CHARACTER WINDOWS and PROSE MATCHING
+ * where STRUCTURAL BOUNDARIES and TOKEN MATCHING were needed:
+ *
+ *  A5   the view then named `sql` held every string chain, so "the pre-check
+ *       filters to FKs on tblSongs(SongId) and reads UPDATE_RULE" was satisfied
+ *       by the REFUSAL SENTENCE plus the `$r['UPDATE_RULE']` subscript, with the
+ *       query itself irrelevant. Measured rather than assumed, because the
+ *       finding as handed over said "the entire H3 section stayed green" and that
+ *       is not what happens: replacing the whole prepare/execute/fetch with
+ *       `$rows = [];` and running the PRE-FIX guard turns two of the three shape
+ *       assertions red (`INFORMATION_SCHEMA.…` and `DATABASE()` appear only in
+ *       the query) and leaves exactly the named one PASSING. One green assertion
+ *       inside a red section is still the bug — it claims a property nothing
+ *       holds — but the scope was smaller than reported and is written down here
+ *       accordingly. Shape assertions now read `sqlOnly`.
+ *  A3   `enclosingGuard()` read ONE level then `strrpos($head, 'if (')` over all
+ *       preceding source, so the "guard" it reported could be a SIBLING `if`
+ *       hundreds of characters above the block the call is really in. Reported
+ *       as: wrap the branch in `try { … } catch`, delete the M2 fix, and both M2
+ *       assertions stay green. HONESTY NOTE — that exact instance did not
+ *       reproduce here: with the M2 fix deleted, `strrpos` lands on the (now
+ *       flag-less) guard itself and the pre-fix guard goes RED, and it still did
+ *       when the guard was additionally written `if(` so the search would skip
+ *       it. What DID reproduce, against the real file, is the other direction:
+ *       leave the guard entirely CORRECT and add one neutral nesting level after
+ *       the (balanced) `if (function_exists('getCurrentUser'))` block, and the
+ *       pre-fix guard reports the correct guard as MISSING. Both directions are
+ *       the same defect — "nearest `if` above me" is not "the block I am in" —
+ *       and the chain walk fixes both; only one of them was demonstrable.
+ *  A4   `substr_count($code, 'try {') === 1` cannot see `try{`, and
+ *       "the sentence 'content-restriction rewrite failed' is absent" is one
+ *       exact sentence. The M3 swallow was restored verbatim, green.
+ *  A11  `/1213[^;]{0,80}1205[^;]{0,80}throw \$e;/` and an anchor on the exact
+ *       text `'data.assignedId && data.previousId'` both go RED on obvious
+ *       refactors (two `if`s; swapping two `&&` operands). A guard that fails on
+ *       correct code gets deleted, not fixed (rule #34).
+ *  A12  "the block is existence-gated" only checked that a literal appeared
+ *       BEFORE the SQL, never that the writes were INSIDE the gate — so hoisting
+ *       the probe to a variable and deleting the condition kept it green, and on
+ *       an install where #1044 never ran the read then throws under mysqli STRICT
+ *       inside the caller's transaction and rolls back the entire song save.
+ *       "The gate is evaluated before the statement is prepared" was
+ *       `strpos($code, '@STR@', $p) !== false` — "is there any string later?" —
+ *       unconditionally true, so it could not fail for the ordering it named.
+ *       And the editor.js check sliced a raw 3000-character window from the
+ *       rename anchor: MEASURED, that overruns the real block by 1466 characters.
+ *       No second `'edit-number'` happens to fall in the overrun today (the next
+ *       one is 5840 characters out), so that assertion was correct BY LUCK rather
+ *       than by construction — one edit away from the reported failure, and the
+ *       distinction is recorded because a guard that passes for the wrong reason
+ *       is read as coverage either way.
  *
  * WHAT IT CANNOT CATCH (so its tick is not over-read)
  * --------------------------------------------------
@@ -62,10 +114,25 @@ declare(strict_types=1);
  *    checked for shape and order, never executed.
  *  - Whether the pre-check's verdict is right on a real drifted install.
  *  - A funnel that never calls the helper at all — that is the other file's job.
+ *  - Whether a path REACHES the guarded branch. Containment is structural;
+ *    reachability needs a running program.
  *
- * Every assertion here was mutation-tested against the real files (see the
- * session report): each was confirmed to go RED for the specific regression it
- * names, then the file was restored and re-confirmed green.
+ * WHAT WAS MUTATION-TESTED, AND WHAT WAS NOT
+ * ------------------------------------------
+ * Every assertion CHANGED in this pass was driven against the real files in BOTH
+ * directions — break the property and watch it go red, then write a
+ * correct-but-different version and watch it stay green (rule #34). The
+ * correct-but-different half matters as much as the other: hoisting a probe to a
+ * local, splitting a predicate into two `if`s, dropping the braces round a
+ * `throw`, swapping two `&&` operands and re-indenting a `try` all keep this
+ * green, and each of them turned some earlier version of some assertion red.
+ *
+ * NOT individually mutated, because this pass did not change them and their
+ * shape is a plain identifier presence test: "the mint asks the shared claim
+ * check", "the refusal is a RuntimeException"/"extends \RuntimeException", "gated
+ * on the EXISTING songRedirectsTableReady()", "…in STRICT mode". They read the
+ * `code` view, so prose cannot satisfy them; they are named here so their tick is
+ * not read as more than it is.
  *
  *   php tests/php/test-song-relocate-hardening.php
  *
@@ -89,42 +156,258 @@ function ok(string $label, bool $cond, string $detail = ''): void
     }
 }
 
-/**
- * The condition of the block that ENCLOSES $pos — `if (…)` text, or ''.
- *
- * ELI5: "which `if` am I inside?" — not "which `if` is nearest above me".
- *
- * Detail: the obvious `strrpos($code, 'if (')` finds the LAST `if` before the
- * position, which for the relocate call is the inner
- * `if (function_exists('getCurrentUser'))` — a confidently wrong answer that
- * reported a real, correct guard as missing on this file's first run (rule #34,
- * again). So walk backwards balancing braces to the enclosing `{` and read the
- * condition that opened it. String literals are already `'@STR@'` in the `code`
- * view, so no brace inside a literal can unbalance the walk.
- */
-function enclosingGuard(string $code, int $pos): string
+/* ------------------------------------------------------- local helpers ----- */
+
+/** An empty unit, so a renamed/removed function fails ONE assertion loudly. */
+const EMPTY_UNIT = ['code' => '', 'strings' => [], 'sqlOnly' => []];
+
+/** Does any statement in the unit's SQL-only view match $re? */
+function sqlHas(array $unit, string $re): bool
 {
-    $depth = 0;
-    for ($i = $pos - 1; $i >= 0; $i--) {
-        $c = $code[$i];
-        if ($c === '}') { $depth++; continue; }
-        if ($c !== '{') { continue; }
-        if ($depth > 0) { $depth--; continue; }
-        $head = substr($code, 0, $i);
-        $ifAt = strrpos($head, 'if (');
-        return $ifAt === false ? '' : substr($head, $ifAt);
+    foreach ($unit['sqlOnly'] as $s) {
+        if (preg_match($re, phpUnitsNormaliseSql((string)$s))) { return true; }
     }
-    return '';
+    return false;
 }
 
-/** Index of the first SQL statement in a unit matching $re, or null. */
-function sqlIndex(array $unit, string $re): ?int
+/** Byte offsets of every `@SQL:<VERB>:<table>@` marker matching $re, in order. */
+function markerPositions(string $code, string $re): array
 {
-    foreach ($unit['sql'] as $i => $s) {
-        if (preg_match($re, (string)$s)) { return $i; }
+    if (!preg_match_all($re, $code, $m, PREG_OFFSET_CAPTURE)) { return []; }
+    return array_map(static fn(array $h): int => $h[1], $m[0]);
+}
+
+/**
+ * Is this block head a `try` / `catch` / `finally`?
+ *
+ * ELI5: "is the thing I am inside an error-swallower?"
+ *
+ * Detail: anchored at the END of the head, because a head can carry a leading
+ * `case '@STR@':` label (the backward scan stops at statement boundaries, and a
+ * case label is not one). `strpos($head, 'try')` would also match the word
+ * inside an identifier such as `$retryCount`.
+ */
+function isSwallowHead(string $head): bool
+{
+    return (bool)preg_match('/\b(try|finally)\s*$/', $head)
+        || (bool)preg_match('/\bcatch\s*\([^)]*\)\s*$/', $head);
+}
+
+/**
+ * Is $pos structurally INSIDE a block whose head matches $headRe?
+ *
+ * ELI5: not "does that word appear somewhere above me" — "am I actually inside
+ * that if?".
+ *
+ * This is the A12 fix. "The block is existence-gated" is a CONTAINMENT claim,
+ * and the version it replaces tested two list indexes for ordering, which stays
+ * true when the probe is hoisted to a variable and the `if` deleted — the exact
+ * mutation that, on an install without the table, makes the read throw under
+ * mysqli STRICT inside the caller's transaction and roll back the whole save.
+ */
+function enclosedByHead(string $code, int $pos, string $headRe): bool
+{
+    foreach (phpUnitsEnclosingBlocks($code, $pos) as $b) {
+        if (preg_match($headRe, $b['head'])) { return true; }
+    }
+    return false;
+}
+
+/**
+ * A pattern matching "the answer to this probe" — the CALL itself, plus any
+ * variable the unit assigns it to. DERIVED from the unit, never typed.
+ *
+ * ELI5: `if (tableExists(…))` and `$ready = tableExists(…); if ($ready)` are the
+ * same guard written two ways; accept both.
+ *
+ * Detail: rule #34's second failure mode. Hoisting a probe to a local is an
+ * ordinary refactor, and a containment check that only knows the inline form
+ * would go red on correct code — after which it gets weakened or deleted rather
+ * than fixed. What must stay RED is hoisting the probe and DROPPING the
+ * condition, which is a different edit and still has no matching head.
+ *
+ * @param string $callRe an un-delimited regex for the probe call.
+ */
+function probeAcceptors(string $code, string $callRe): string
+{
+    $alts = [$callRe];
+    if (preg_match_all('/(\$\w+)\s*=\s*' . $callRe . '/', $code, $m)) {
+        foreach (array_unique($m[1]) as $v) { $alts[] = preg_quote($v, '/') . '\b'; }
+    }
+    return '/(?:' . implode('|', $alts) . ')/';
+}
+
+/**
+ * Is $pos inside a `try`/`catch` that is itself INSIDE the block matching
+ * $outerRe (or, when $outerRe is null, anywhere out to the unit body)?
+ *
+ * ELI5: "did somebody wrap this in an error-swallower?" — while ignoring the
+ * legitimate outer one the whole function already runs inside.
+ */
+function swallowedWithin(string $code, int $pos, ?string $outerRe): bool
+{
+    foreach (phpUnitsEnclosingBlocks($code, $pos) as $b) {
+        if ($outerRe !== null && preg_match($outerRe, $b['head'])) { return false; }
+        if (isSwallowHead($b['head'])) { return true; }
+    }
+    return false;
+}
+
+/* ---- JavaScript: the same structural discipline, without a JS tokenizer ---- */
+
+/**
+ * Can a `/` at $i begin a REGEX literal rather than a division?
+ *
+ * ELI5: `a / b` divides; `x.replace(/…/, …)` is a pattern. Tell them apart by
+ * what came just before.
+ *
+ * Detail: the standard lexical heuristic — a regex can only start where a VALUE
+ * is expected, i.e. after an operator, an opening bracket, a comma/semicolon, or
+ * one of the keywords that are followed by an expression. After an identifier,
+ * a number, `)` or `]` a `/` is division. This is not a JS parser and does not
+ * need to be; being wrong costs an under-redacted regex (the walk may end a
+ * block early = a red guard someone will look at) not a silent pass.
+ */
+function jsRegexCanStartHere(string $js, int $i, string $prev): bool
+{
+    if ($prev === '') { return true; }
+    if (strpos('(,=:[!&|?{};+-*%~^<>', $prev) !== false) { return true; }
+    /* `return /re/`, `typeof /re/`, `case /re/:` … — a WORD before the slash is
+       division unless the word is one of these. */
+    if (preg_match('/\b(return|typeof|case|in|of|do|else|void|delete|instanceof|new|throw|yield|await)\s*$/',
+                   substr($js, max(0, $i - 24), min($i, 24)))) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Blank the CONTENTS of every JS string / template / regex literal, preserving
+ * LENGTH.
+ *
+ * ELI5: keep the quotes, replace what is between them with filler, so the text
+ * is the same size but a brace hiding inside a string can no longer confuse a
+ * brace-counting walk.
+ *
+ * Detail: same-length redaction is what lets offsets found on the redacted copy
+ * be used to slice the ORIGINAL — which is how `'edit-number'` can still be
+ * asserted inside a block whose boundaries were computed without it.
+ *
+ * REGEX LITERALS ARE NOT OPTIONAL HERE. A first draft skipped them, on the
+ * reasoning that the block being bounded contains none. That was true and
+ * irrelevant: `editor.js:` `String(s).replace(/[&<>"']/g, …)` puts a `"` and a
+ * `'` inside a character class, and one un-redacted quote does not damage its own
+ * line — it swallows the next TEN THOUSAND characters as a string, including the
+ * whole rename block, so `strpos()` reported the block as absent. A same-length
+ * redactor is only safe if it understands every literal form the file uses; half
+ * of one is worse than none, because it fails far from its cause.
+ */
+function jsRedactLiterals(string $js): string
+{
+    $out  = $js;
+    $n    = strlen($js);
+    $prev = '';                       // last significant char OUTSIDE any literal
+    for ($i = 0; $i < $n; $i++) {
+        $c = $js[$i];
+
+        if ($c === "'" || $c === '"' || $c === '`') {
+            for ($j = $i + 1; $j < $n; $j++) {
+                if ($js[$j] === '\\') { $out[$j] = 'x'; $j++; if ($j < $n) { $out[$j] = 'x'; } continue; }
+                if ($js[$j] === $c)   { break; }
+                if ($js[$j] !== "\n") { $out[$j] = 'x'; }
+            }
+            $i    = $j;
+            $prev = $c;
+            continue;
+        }
+
+        if ($c === '/' && jsRegexCanStartHere($js, $i, $prev)) {
+            $inClass = false;
+            for ($j = $i + 1; $j < $n; $j++) {
+                $d = $js[$j];
+                /* A newline inside an unterminated "regex" means it was not one
+                   — bail without having redacted past the line. */
+                if ($d === "\n") { break; }
+                if ($d === '\\') { $out[$j] = 'x'; $j++; if ($j < $n && $js[$j] !== "\n") { $out[$j] = 'x'; } continue; }
+                if ($d === '[')  { $inClass = true; }
+                if ($d === ']')  { $inClass = false; }
+                if ($d === '/' && !$inClass) { break; }
+                $out[$j] = 'x';
+            }
+            $i    = $j;
+            $prev = '/';
+            continue;
+        }
+
+        if (!ctype_space($c)) { $prev = $c; }
+    }
+    return $out;
+}
+
+/**
+ * The first `if (…)` whose CONDITION mentions $token: its condition text and the
+ * offset of the `{` that opens its body.
+ *
+ * ELI5: find the `if` that tests this thing, and hand back what it tests plus
+ * where its block starts.
+ *
+ * Detail: paren-BALANCED rather than `[^)]*`. Two reasons, one of them found the
+ * hard way here: a negated-class scan across a redacted 180 KB file (where string
+ * contents no longer supply any `)`) blows PCRE's backtrack limit and preg_match
+ * returns FALSE — which reads as "the block is missing", i.e. a confident red on
+ * correct code. Balancing also survives a call in the condition
+ * (`if (Object.prototype.hasOwnProperty.call(data, 'number'))`), which `[^)]*`
+ * truncates half-way through.
+ *
+ * @return array{cond:string, open:int}|null  $open indexes the body's `{`.
+ */
+function jsIfWithToken(string $redacted, string $token): ?array
+{
+    $n = strlen($redacted);
+    if (!preg_match_all('/\bif\s*\(/', $redacted, $m, PREG_OFFSET_CAPTURE)) { return null; }
+    foreach ($m[0] as $hit) {
+        $p      = $hit[1] + strlen($hit[0]) - 1;   // index of the `(`
+        $depth  = 0;
+        $end    = null;
+        for ($i = $p; $i < $n; $i++) {
+            if ($redacted[$i] === '(') { $depth++; continue; }
+            if ($redacted[$i] === ')') { $depth--; if ($depth === 0) { $end = $i; break; } }
+        }
+        if ($end === null) { continue; }
+        $cond = substr($redacted, $p + 1, $end - $p - 1);
+        if (strpos($cond, $token) === false) { continue; }
+        /* Only a BLOCK body can be walked; `if (…) doThing();` has none. */
+        if (!preg_match('/\G\s*\{/', $redacted, $b, PREG_OFFSET_CAPTURE, $end + 1)) { continue; }
+        return ['cond' => $cond, 'open' => $b[0][1] + strlen($b[0][0]) - 1];
     }
     return null;
 }
+
+/**
+ * The `{ … }` block that opens at or after $from: [start, end) in the ORIGINAL.
+ *
+ * Brace-balanced on the redacted copy, so the boundary is the block's real one
+ * rather than "$from + 3000 characters" (A12).
+ *
+ * @return array{0:int,1:int}|null
+ */
+function jsBlockAfter(string $redacted, int $from): ?array
+{
+    $n    = strlen($redacted);
+    $open = strpos($redacted, '{', $from);
+    if ($open === false) { return null; }
+    $depth = 0;
+    for ($i = $open; $i < $n; $i++) {
+        if ($redacted[$i] === '{') { $depth++; continue; }
+        if ($redacted[$i] === '}') {
+            $depth--;
+            if ($depth === 0) { return [$open + 1, $i]; }
+        }
+    }
+    return null;
+}
+
+/* ------------------------------------------------------------- sources ----- */
 
 $RELOCATE_PATH = $ROOT . '/appWeb/public_html/includes/song_relocate.php';
 $SAVECORE_PATH = $ROOT . '/appWeb/public_html/manage/editor/save_song_core.php';
@@ -144,16 +427,16 @@ if (!isset($relocate['songRelocate'], $saveCore['editorSaveSongCore'])) {
 }
 
 $move   = $relocate['songRelocate'];
-$mint   = $relocate['songRelocateMintId'] ?? ['code' => '', 'sql' => []];
-$assert = $relocate['songRelocateAssertCascades'] ?? ['code' => '', 'sql' => []];
+$mint   = $relocate['songRelocateMintId'] ?? EMPTY_UNIT;
+$assert = $relocate['songRelocateAssertCascades'] ?? EMPTY_UNIT;
 $save   = $saveCore['editorSaveSongCore'];
 /* The two predicates the A1/A9 pass extracted OUT of the functions above,
    precisely so several files could share one copy (rule #35). The properties
    asserted below did not change — where they are implemented did, so the unit
    the assertion reads has to follow them or it silently stops checking
    anything. */
-$taken  = $relocate['songRelocateIdTaken'] ?? ['code' => '', 'sql' => []];
-$fatal  = $relocate['songRelocateIsTransactionFatal'] ?? ['code' => '', 'sql' => []];
+$taken  = $relocate['songRelocateIdTaken'] ?? EMPTY_UNIT;
+$fatal  = $relocate['songRelocateIsTransactionFatal'] ?? EMPTY_UNIT;
 
 /* ------------------------------------------------- H3 — cascade pre-check -- */
 
@@ -163,27 +446,35 @@ ok('songRelocateAssertCascades() is declared in song_relocate.php',
    $assert['code'] !== '');
 
 /* ORDER is the whole point: a pre-check that runs after the re-key is not a
-   pre-check. `@SQLUPD@` marks where an UPDATE statement literal stood, so the
-   first one in this unit IS the re-key. */
-$callPos = strpos($move['code'], 'songRelocateAssertCascades(');
-$firstUpdate = strpos($move['code'], '@SQLUPD@');
+   pre-check. The `@SQL:<VERB>:<table>@` markers show where each statement stood,
+   so "before the first WRITE" is answerable without reading any of them. */
+$callPos    = strpos($move['code'], 'songRelocateAssertCascades(');
+$writePos   = markerPositions($move['code'], '/@SQL:(?:UPDATE|INSERT|DELETE|REPLACE):[\w.]+@/');
+$firstWrite = $writePos === [] ? null : $writePos[0];
 ok('songRelocate() calls the pre-check', $callPos !== false,
    'nothing in songRelocate() invokes songRelocateAssertCascades() — a drifted install '
    . 'would fail mid-transaction with ER_ROW_IS_REFERENCED_2 and lose the whole save');
-ok('and calls it BEFORE its first UPDATE',
-   $callPos !== false && $firstUpdate !== false && $callPos < $firstUpdate,
+ok('and calls it BEFORE its first WRITE',
+   $callPos !== false && $firstWrite !== null && $callPos < $firstWrite,
    'the pre-check must precede every write; found call at ' . var_export($callPos, true)
-   . ', first UPDATE at ' . var_export($firstUpdate, true));
+   . ', first write at ' . var_export($firstWrite, true)
+   . ' (' . count($writePos) . ' write statement(s) seen)');
 
-$fkSql = implode("\n", $assert['sql']);
+/* A5 — sqlOnly, NOT the full string view. Read on `strings`, all three of these
+   were satisfied by the refusal SENTENCE (which contains "tblSongs(SongId)") plus
+   the `$r['UPDATE_RULE']` array subscript, so the query could be deleted outright
+   and H3 stayed green. */
+$fkSql = implode("\n", array_map('phpUnitsNormaliseSql', $assert['sqlOnly']));
 ok('the pre-check reads REFERENTIAL_CONSTRAINTS joined to KEY_COLUMN_USAGE',
    stripos($fkSql, 'INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS') !== false
-   && stripos($fkSql, 'INFORMATION_SCHEMA.KEY_COLUMN_USAGE') !== false);
+   && stripos($fkSql, 'INFORMATION_SCHEMA.KEY_COLUMN_USAGE') !== false,
+   'SQL statements in this function: ' . (count($assert['sqlOnly']) ?: 'NONE'));
 ok('scoped to the CURRENT schema (DATABASE()), not every schema on the server',
    stripos($fkSql, 'DATABASE()') !== false);
 ok('filtered to FKs that reference tblSongs(SongId), and reads UPDATE_RULE',
    stripos($fkSql, 'tblSongs') !== false && stripos($fkSql, 'SongId') !== false
-   && stripos($fkSql, 'UPDATE_RULE') !== false);
+   && stripos($fkSql, 'UPDATE_RULE') !== false,
+   'the statement(s) read: ' . substr($fkSql, 0, 400));
 
 /* A RuntimeException, NOT InvalidArgumentException — api2's move handler catches
    InvalidArgumentException to answer 422 "you named a book that doesn't exist",
@@ -208,15 +499,13 @@ ok('and SongRelocateEnvironmentException extends \\RuntimeException',
    the fix is no more actionable than the raw MySQL error it replaces. Both
    precedents (migrate-backfill-canonical-songids.php, songbook_maintenance.php)
    point at the same migration.
-   Scoped to THIS FUNCTION'S string literals, not the raw file: on its first run
-   this read the whole source and passed happily while the message itself no
-   longer named the migration — the doc-block above mentions it too. That is the
-   "prose satisfied the guard" trap this repo keeps re-shipping, caught here only
-   because the assertion was mutation-tested. */
-$refusalText = implode(' ', $assert['sql']);
+   Scoped to this function's NON-SQL literals: the raw file mentions the migration
+   in its doc-block (that is how this first passed while the message itself no
+   longer named it), and a query is not a message either. */
+$prose = array_values(array_diff($assert['strings'], $assert['sqlOnly']));
 ok('the refusal MESSAGE names migrate-songid-prefix-fixup.php (the message IS the fix)',
-   strpos($refusalText, 'migrate-songid-prefix-fixup.php') !== false,
-   'message literals read: ' . substr($refusalText, 0, 400));
+   strpos(implode(' ', $prose), 'migrate-songid-prefix-fixup.php') !== false,
+   'message literals read: ' . substr(implode(' ', $prose), 0, 400));
 
 /* -------------------------------------------------------------- M1 — mint -- */
 
@@ -232,14 +521,14 @@ ok('the mint asks the shared claim check',
    'a mint that inlines its own "is this free?" probe is how the redirect half '
    . 'went missing from four of the five minting sites');
 ok('the claim check probes tblSongRedirects.OldSongId',
-   sqlIndex($taken, '/FROM\s+tblSongRedirects\b.*OldSongId/is') !== null,
+   sqlHas($taken, '/FROM\s+tblSongRedirects\b.*OldSongId/is'),
    'the seed is MAX(Number)+1 and a move clears Number, so a freed slot can '
    . 're-mint the exact id a live redirect forwards away from — getSongById() '
    . 'matches it exactly and never consults the redirect, so an old bookmark '
    . 'silently serves a DIFFERENT song');
 ok('gated on the EXISTING songRedirectsTableReady() helper, not a second probe',
    strpos($taken['code'], 'songRedirectsTableReady(') !== false
-   && stripos(implode(' ', $taken['sql']), 'INFORMATION_SCHEMA') === false,
+   && !sqlHas($taken, '/INFORMATION_SCHEMA/i'),
    'tblSongRedirects is optional (#1343 may not be migrated here) and an ungated '
    . 'read throws under mysqli STRICT — reuse the one helper, do not fork a probe');
 ok('and it asks that helper in STRICT mode (a broken probe must not read as "free")',
@@ -248,35 +537,75 @@ ok('and it asks that helper in STRICT mode (a broken probe must not read as "fre
    . 'means "no redirect claims this id" — silently switching the whole check '
    . 'off. That is #1679 A13b; the same reasoning already produced the separate '
    . 'non-swallowing songRelocateTableExists()');
-ok('the gate is evaluated before the redirect statement is prepared',
-   ($p = strpos($taken['code'], 'songRedirectsTableReady(')) !== false
-   && ($q = strpos($taken['code'], '@STR@', $p)) !== false);
+
+/* A12 — the assertion this replaces read
+   `strpos($taken['code'], '@STR@', $gatePos) !== false`, i.e. "is there any
+   opaque string literal later in this function?". That is unconditionally true
+   and could not fail for the ordering it named. Two real properties instead:
+   the statement comes after the gate, AND the gate actually short-circuits. */
+$gateAt      = strpos($taken['code'], 'songRedirectsTableReady(');
+$redirectSql = markerPositions($taken['code'], '/@SQL:SELECT:tblSongRedirects@/');
+ok('the redirect probe is only PREPARED after the table gate has been asked',
+   $gateAt !== false && $redirectSql !== [] && $gateAt < $redirectSql[0],
+   'gate at ' . var_export($gateAt, true) . ', redirect SELECT at '
+   . var_export($redirectSql[0] ?? null, true));
+/* Ordering alone is not enough — a gate whose answer is DISCARDED is decoration,
+   and asking it is exactly what the defeated version confirmed. Two shapes are
+   correct and both are accepted (rule #34): an early return between the gate and
+   the statement (`if (!ready) { return false; }`, what the code does today), or
+   the statement nested inside `if (ready) { … }`. What is rejected is a gate
+   whose answer leads to neither — after which an install without
+   tblSongRedirects reaches the SELECT and throws under mysqli STRICT. */
+$gateReady    = probeAcceptors($taken['code'], 'songRedirectsTableReady\s*\(');
+$betweenGate  = ($gateAt !== false && $redirectSql !== [] && $gateAt < $redirectSql[0])
+    ? substr($taken['code'], $gateAt, $redirectSql[0] - $gateAt)
+    : '';
+ok('and that gate SHORT-CIRCUITS the probe (early return, or the probe nested inside it)',
+   (bool)preg_match('/\breturn\b/', $betweenGate)
+   || ($redirectSql !== [] && enclosedByHead($taken['code'], $redirectSql[0], $gateReady)),
+   'the gate is asked and its answer thrown away, so an install without '
+   . 'tblSongRedirects reaches the SELECT and throws under mysqli STRICT');
 
 /* ------------------------------------------------ F3 — tblSongbookEntries -- */
 
 echo "\nF3 — the move carries the tblSongbookEntries home row with it\n";
 
-$iRekey   = sqlIndex($move, '/UPDATE\s+tblSongs\s+SET\s+SongId/i');
-$iGate    = sqlIndex($move, '/^tblSongbookEntries$/');
-$iEntries = sqlIndex($move, '/\btblSongbookEntries\b.*\b(SET|WHERE)\b/is');
-
-ok('songRelocate() writes tblSongbookEntries', $iEntries !== null,
+ok('songRelocate() writes tblSongbookEntries',
+   sqlHas($move, '/\b(UPDATE|DELETE\s+FROM)\s+tblSongbookEntries\b/i'),
    'without it the junction row reads "(old book, NEW id, old number, IsHome=1)" — '
    . 'it claims the song\'s home is the book it just left, and uq_book_number keeps '
    . 'the vacated slot occupied in a book the song is no longer in');
 ok('it moves the home row into the new book and clears SongNumber',
-   sqlIndex($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+SongbookAbbr\s*=\s*\?,\s*SongNumber\s*=\s*NULL/i') !== null);
+   sqlHas($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+SongbookAbbr\s*=\s*\?,\s*SongNumber\s*=\s*NULL/i'));
 ok('it handles a song that is ALREADY a member of the target book (uq_book_song)',
-   sqlIndex($move, '/DELETE\s+FROM\s+tblSongbookEntries/i') !== null
-   && sqlIndex($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+IsHome\s*=\s*1/i') !== null,
+   sqlHas($move, '/DELETE\s+FROM\s+tblSongbookEntries/i')
+   && sqlHas($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+IsHome\s*=\s*1/i'),
    'multi-book membership is this table\'s whole point, so the target may already '
    . 'hold a row for this song; moving the old home row onto it would abort the '
    . 'entire save on a duplicate key');
-ok('the whole block is existence-gated (migrations are web-run; #1044 may be absent)',
-   strpos($move['code'], "songRelocateTableExists(\$db, 'tblSongbookEntries')") !== false
-   && $iGate !== null && $iEntries !== null && $iGate < $iEntries);
+
+/* A12 — CONTAINMENT, not ordering. Every tblSongbookEntries statement must sit
+   INSIDE the existence gate. The version this replaces only checked that the
+   literal 'tblSongbookEntries' appeared in an earlier list entry than the SQL,
+   which survives hoisting the probe to a variable and deleting the `if` — after
+   which, on an install where #1044 never ran, the read throws under mysqli
+   STRICT inside the CALLER's transaction and rolls back the entire song save. */
+$entryStmts = markerPositions($move['code'], '/@SQL:(?:SELECT|UPDATE|DELETE):tblSongbookEntries@/');
+$entryGate  = probeAcceptors($move['code'], "songRelocateTableExists\s*\(\s*\\\$db\s*,\s*'tblSongbookEntries'\s*\)");
+$ungated    = [];
+foreach ($entryStmts as $p) {
+    if (!enclosedByHead($move['code'], $p, $entryGate)) { $ungated[] = $p; }
+}
+ok('every tblSongbookEntries statement is INSIDE the existence gate (migrations are web-run; #1044 may be absent)',
+   $entryStmts !== [] && $ungated === [],
+   count($entryStmts) . ' statement(s) found, ' . count($ungated) . ' outside the '
+   . "songRelocateTableExists(\$db, 'tblSongbookEntries') block");
+
+/* Ordering, now within ONE view rather than across two differently-populated
+   lists: the re-key marker must precede the first junction statement. */
+$rekeyAt = markerPositions($move['code'], '/@SQL:UPDATE:tblSongs@/');
 ok('and it runs AFTER the re-key, so SongId has already cascaded',
-   $iRekey !== null && $iEntries !== null && $iRekey < $iEntries,
+   $rekeyAt !== [] && $entryStmts !== [] && $rekeyAt[0] < $entryStmts[0],
    're-keying second would leave the entries rows pointing at the dead id');
 
 /* ------------------------------------ M3 — the restriction rewrite is fatal -- */
@@ -284,22 +613,33 @@ ok('and it runs AFTER the re-key, so SongId has already cascaded',
 echo "\nM3 — a restriction that cannot follow the song blocks the move\n";
 
 ok('the content-restriction rewrite is still performed',
-   sqlIndex($move, '/UPDATE\s+tblContentRestrictions\s+SET\s+EntityId/i') !== null);
-/* The ABSENCE of a specific removed line — again scoped to this function's own
-   literals, so a doc-comment that explains the removal cannot fail the check
-   (the mirror image of the trap the refusal assertion above fell into). */
-ok('the swallow-and-log around it is gone',
-   strpos(implode(' ', $move['sql']), 'content-restriction rewrite failed') === false,
+   sqlHas($move, '/UPDATE\s+tblContentRestrictions\s+SET\s+EntityId/i'));
+
+/* A4 — STRUCTURE, not one sentence. The check this replaces was
+   `strpos($sql, 'content-restriction rewrite failed') === false`: exactly one
+   wording, so the swallow could be restored with the message reworded and the
+   suite stayed green. What actually matters is that the statement is not inside
+   a try/catch — asked of the enclosing block chain, stopping at the function
+   body so the (legitimate) SongCount try later in the function is irrelevant.
+   NB "no `catch` between this statement and the end of the unit" would be the
+   wrong test: step 7's cache recompute has one, correctly. */
+$restrictAt = markerPositions($move['code'], '/@SQL:UPDATE:tblContentRestrictions@/');
+ok('the restriction rewrite is not wrapped in a try/catch',
+   $restrictAt !== [] && !swallowedWithin($move['code'], $restrictAt[0], null),
    'a restriction left on the dead id stops applying — withheld content becomes '
    . 'readable, the move commits anyway, and error_log is the only trace');
+
 /* One try/catch remains in songRelocate: the SongCount recompute (F8 below).
    Counting is blunt but it is the property that matters — re-wrapping any other
-   step "just to be safe" is how M3 happened in the first place. */
-ok('songRelocate() has exactly ONE try/ block (the SongCount recompute)',
-   substr_count($move['code'], 'try {') === 1,
-   'found ' . substr_count($move['code'], 'try {') . '. Every step in this function '
-   . 'except the cache recompute is load-bearing; wrapping one in a catch makes its '
-   . 'failure invisible while the move commits regardless');
+   step "just to be safe" is how M3 happened in the first place.
+   TOKEN-counted (A4): `substr_count($code, 'try {')` cannot see `try{`, so the
+   swallow was restored verbatim minus one space and this stayed green. */
+$tryCount = phpUnitsCountToken($move['code'], T_TRY);
+ok('songRelocate() has exactly ONE try block (the SongCount recompute)',
+   $tryCount === 1,
+   'found ' . $tryCount . '. Every step in this function except the cache recompute '
+   . 'is load-bearing; wrapping one in a catch makes its failure invisible while '
+   . 'the move commits regardless');
 
 /* ------------------------------------------------------ F8 — transaction -- */
 
@@ -309,44 +649,62 @@ echo "\nF8 — a transaction-fatal error is re-thrown, never logged and ignored\
    it ask the ONE predicate?", because the codes now live in exactly one place.
    That was not a refactor for tidiness: the re-throw here only holds if nothing
    between the relocate and the caller's commit() swallows the same error again,
-   and both funnels have nine more best-effort catches in that span. A copy of
-   the code list in each was the "keep these in sync" comment rule #35 names as
-   the failure rather than the fix. */
-ok('the SongCount recompute asks the shared transaction-fatal predicate',
-   strpos($move['code'], 'songRelocateIsTransactionFatal(') !== false
-   && preg_match('/songRelocateIsTransactionFatal\([^)]*\)\s*\)\s*\{\s*throw /', $move['code']) === 1,
-   'a bare catch (\\Throwable) cannot tell "this column is missing on an old '
-   . 'install" from "InnoDB just rolled back your entire transaction"');
+   and both funnels have nine more best-effort catches in that span.
+
+   A11 — asserted against the catch BLOCK's own boundaries rather than a regex
+   spanning `[^;]{0,80}`, and accepting a braced or unbraced `throw`, so the
+   codes-and-throw claim survives every refactor that keeps them together. */
+$moveCatches = phpUnitsCatchBlocks($move['code']);
+$guardedMove = 0;
+foreach ($moveCatches as $c) {
+    if (preg_match('/^\s*if\s*\(\s*songRelocateIsTransactionFatal\s*\([^)]*\)\s*\)\s*\{?\s*throw\b/', $c['body'])) {
+        $guardedMove++;
+    }
+}
+ok('the SongCount recompute re-throws via the shared predicate, first thing in its catch',
+   $moveCatches !== [] && $guardedMove === count($moveCatches),
+   count($moveCatches) . ' catch block(s) in songRelocate(), ' . $guardedMove . ' opening with '
+   . 'the predicate + throw. A bare catch (\\Throwable) cannot tell "this column is '
+   . 'missing on an old install" from "InnoDB just rolled back your entire transaction"');
+
+/* The two codes, as NUMERIC TOKENS in the predicate. Token-matched so a code
+   mentioned in a message cannot satisfy it, and deliberately NOT position-coupled:
+   hoisting them to `$fatal = [1213, 1205];` or splitting the test into two `if`s
+   are both obvious refactors that must stay green (A11). */
+$fatalNums = [];
+foreach (@token_get_all('<?php ' . $fatal['code']) as $t) {
+    if (is_array($t) && $t[0] === T_LNUMBER) { $fatalNums[] = (int)$t[1]; }
+}
 ok('deadlock (1213) and lock-wait timeout (1205) are what that predicate re-throws',
-   preg_match('/1213/', $fatal['code']) === 1
-   && preg_match('/1205/', $fatal['code']) === 1
+   in_array(1213, $fatalNums, true) && in_array(1205, $fatalNums, true)
    && strpos($fatal['code'], 'mysqli_sql_exception') !== false,
-   'both can roll back the WHOLE InnoDB transaction, not just the statement — '
-   . 'swallowing them lets execution reach the caller\'s commit(), which commits '
-   . 'nothing and answers {ok:true, songId:<new>} for a song that no longer exists '
-   . 'under that id');
+   'numbers seen: ' . implode(', ', $fatalNums) . '. Both codes can roll back the WHOLE '
+   . 'InnoDB transaction, not just the statement — swallowing them lets execution reach '
+   . 'the caller\'s commit(), which commits nothing and answers {ok:true, songId:<new>} '
+   . 'for a song that no longer exists under that id');
 
 /* The re-throw is only worth anything end-to-end. DERIVED, not listed: every
    `catch (\Throwable $_e) {` inside the save core — probes, revisions, SongCount,
    external links, works, translations — sits between begin_transaction() and
-   commit(), so each must open with the predicate. A new best-effort catch added
+   commit(), so each must OPEN with the predicate. A new best-effort catch added
    later is covered automatically, which a typed list of line numbers would not
-   be (rule #34). Comments are already stripped from the `code` view, so a
-   comment mentioning the predicate cannot satisfy this. */
-$saveCatches = preg_match_all(
-    '/catch\s*\(\s*\\\\Throwable\s+\$_e\s*\)\s*\{/',
-    $save['code'],
-    $_m,
-    PREG_OFFSET_CAPTURE
-);
+   be (rule #34).
+   Bounded by the catch block's own braces (A12): the 120-character window this
+   replaces both truncated a long first statement and, on a short catch, ran into
+   whatever followed the block. */
+$saveCatches = array_values(array_filter(
+    phpUnitsCatchBlocks($save['code']),
+    static fn(array $c): bool => strpos($c['head'], '$_e') !== false
+));
 $unguarded = 0;
-foreach ($_m[0] as $hit) {
-    $window = substr($save['code'], $hit[1] + strlen($hit[0]), 120);
-    if (strpos($window, 'songRelocateIsTransactionFatal($_e)') === false) { $unguarded++; }
+foreach ($saveCatches as $c) {
+    if (!preg_match('/^\s*if\s*\(\s*songRelocateIsTransactionFatal\s*\(\s*\$_e\s*\)\s*\)\s*\{?\s*throw\b/', $c['body'])) {
+        $unguarded++;
+    }
 }
-ok('every best-effort catch in the save core re-throws a transaction-fatal error first',
-   $saveCatches > 0 && $unguarded === 0,
-   $saveCatches . ' catch(\\Throwable $_e) block(s) found, ' . $unguarded . ' without the '
+ok('every best-effort catch in the save core re-throws a transaction-fatal error FIRST',
+   $saveCatches !== [] && $unguarded === 0,
+   count($saveCatches) . ' catch(\\Throwable $_e) block(s) found, ' . $unguarded . ' without the '
    . 'guard as their first statement. songRelocate() re-throwing 1213/1205 is undone by '
    . 'ANY later swallow before commit(): the commit then succeeds trivially and the '
    . 'endpoint answers ok:true naming a songId that does not exist');
@@ -361,15 +719,36 @@ ok('the save core tests the RAW payload for a songbook key',
    . 'it can never be false — a partial save re-keyed the song into Misc, cleared '
    . 'its Number and wrote a permanent redirect');
 
-/* Derived, not a fixed window: read the condition of the block that ENCLOSES
-   the songRelocate() call and require the raw-key flag inside it. */
+/* A3 — the WHOLE enclosing chain, not one level plus `strrpos($head, 'if (')`.
+   That fallback searched all preceding source, so it happily returned a SIBLING
+   `if (!$songbookSent && $prevRow !== null)` sitting hundreds of characters above
+   — and both assertions below passed with the M2 fix deleted. It also failed on
+   correct code: one extra neutral nesting level read as "guard missing". */
 $relCall = strpos($save['code'], 'songRelocate(');
-$guard   = $relCall === false ? '' : enclosingGuard($save['code'], $relCall);
-ok('and the branch that calls songRelocate() is gated on that flag',
-   $guard !== '' && strpos($guard, '$songbookSent') !== false,
-   'guard read: ' . ($guard === '' ? '(not located)' : trim($guard)));
+$chain   = $relCall === false ? [] : phpUnitsEnclosingBlocks($save['code'], $relCall);
+$guardIx = null;
+foreach ($chain as $i => $b) {
+    if (preg_match('/^if\s*\(/', $b['head']) && strpos($b['head'], '$songbookSent') !== false) {
+        $guardIx = $i;
+        break;
+    }
+}
+$guard = $guardIx === null ? '' : $chain[$guardIx]['head'];
+ok('and the branch that calls songRelocate() is ENCLOSED by a guard on that flag',
+   $guardIx !== null,
+   'enclosing blocks were: ' . ($chain === []
+       ? '(none — songRelocate() not found in editorSaveSongCore)'
+       : implode(' | ', array_map(static fn(array $b): string => substr($b['head'], 0, 120), $chain))));
 ok("the defeated `\$songbookAbbr !== ''` form is gone from that guard",
-   $guard !== '' && strpos($guard, "\$songbookAbbr !== '@STR@'") === false);
+   $guardIx !== null && strpos($guard, "\$songbookAbbr !== '@STR@'") === false);
+/* A3's other half: the guard is worthless if the call inside it is wrapped in a
+   try/catch, because songRelocateAssertCascades() and the M3 rewrite both refuse
+   by THROWING. Bounded at the guard itself, so the outer transaction try — which
+   every statement in this function is legitimately inside — is not counted. */
+ok('and nothing swallows the call between that guard and songRelocate()',
+   $guardIx !== null && !swallowedWithin($save['code'], $relCall, '/\$songbookSent/'),
+   'a try/catch here turns the cascade refusal and the fatal restriction rewrite '
+   . 'back into silent no-ops, which is exactly what H3 and M3 removed');
 
 /* --------------------------------------- F5 — the rename carries its Number -- */
 
@@ -380,8 +759,13 @@ echo "\nF5 — a rename tells the client the song's new Number, and the client a
    the fix (rule #35). */
 $respAssigned = strpos($save['code'], "\$respBody['assignedId']");
 $respNumber   = strpos($save['code'], "\$respBody['number']");
-ok('save_song_core sends `number` alongside a rename',
-   $respAssigned !== false && $respNumber !== false && $respNumber > $respAssigned,
+/* SAME BLOCK, not merely "later in the file": `number` must be emitted by the
+   very branch that emits the rename pair, or a save with no rename starts
+   shipping a number the client will apply to a song that did not move. */
+$assignedBlk = $respAssigned === false ? [] : phpUnitsEnclosingBlocks($save['code'], $respAssigned);
+$numberBlk   = $respNumber === false ? [] : phpUnitsEnclosingBlocks($save['code'], $respNumber);
+ok('save_song_core sends `number` from the SAME branch that sends the rename pair',
+   $assignedBlk !== [] && $numberBlk !== [] && $assignedBlk[0]['open'] === $numberBlk[0]['open'],
    'both rename paths change the Number — a MOVE clears it, a #1380 draft promotion '
    . 'into an official book adopts the minted slot — and the client cannot tell which');
 
@@ -390,9 +774,24 @@ $editorJs = (string)file_get_contents($EDITORJS_PATH);
    discusses `data.number` at length) cannot satisfy a code assertion. */
 $editorCode = preg_replace('#/\*[\s\S]*?\*/#', ' ', $editorJs);
 $editorCode = (string)preg_replace('#(^|[^:])//.*$#m', '$1', (string)$editorCode);
-$renameAt = strpos($editorCode, 'data.assignedId && data.previousId');
-$renameBlock = $renameAt === false ? '' : substr($editorCode, $renameAt, 3000);
-ok('editor.js has the rename-relabel block', $renameAt !== false);
+$editorRedacted = jsRedactLiterals($editorCode);
+
+/* A11 — anchored on ONE identifier inside the `if` CONDITION, with the other
+   asserted separately. The version this replaces matched the exact text
+   `'data.assignedId && data.previousId'`, so swapping two `&&` operands — a
+   no-op — turned three assertions red.
+   A12 — and the block is brace-bounded, not `substr(..., 3000)`; that window ran
+   past the rename block into unrelated functions, where any nearby mention of
+   'edit-number' satisfied the DOM assertion. */
+$renameIf    = jsIfWithToken($editorRedacted, 'data.assignedId');
+$renameCond  = $renameIf === null ? '' : $renameIf['cond'];
+$renameBody  = $renameIf === null ? null : jsBlockAfter($editorRedacted, $renameIf['open']);
+$renameBlock = $renameBody === null ? '' : substr($editorCode, $renameBody[0], $renameBody[1] - $renameBody[0]);
+
+ok('editor.js has the rename-relabel block', $renameIf !== null && $renameBlock !== '');
+ok('and it is entered only when BOTH the new and the previous id arrived',
+   strpos($renameCond, 'data.previousId') !== false,
+   'condition read: ' . $renameCond);
 ok('and it applies data.number to the in-memory song',
    preg_match('/\.number\s*=\s*data\.number/', $renameBlock) === 1,
    'without it the next save posts the stale number straight back, undoing the clear');
@@ -400,6 +799,143 @@ ok("and repaints #edit-number, or the DOM keeps feeding the old value back",
    strpos($renameBlock, "'edit-number'") !== false,
    'bindMetadataListeners() writes #edit-number straight into song.number on the next '
    . 'keystroke or save, so an un-refreshed field silently restores the old number');
+
+/* -------------------------------------------------- MUTATION SELF-TESTS ---- */
+
+echo "\nMutation self-tests — the structural helpers must be able to fail\n";
+
+/*
+ * The five defeats above were all found by mutating the REAL tree, which cannot
+ * be done from inside a test run. What CAN live here is proof that the helpers
+ * those fixes rest on answer the question they claim to — in both directions.
+ * Each pair is a mutant that must be caught and a correct-but-different variant
+ * that must not be (rule #34's two failure modes, one test each).
+ */
+
+/** Convenience: units of a synthetic source. */
+function hardSelfUnits(string $php): array { return phpSourceUnits($php); }
+
+/* T1 — enclosing chain vs. a SIBLING `if` above (the A3 defeat, in miniature). */
+$t1 = hardSelfUnits('<?php
+function f($a, $b) {
+    if ($flagSent && $a) { doSomethingElse(); }
+    if ($a !== $b) { try { target(); } catch (\Throwable $e) {} }
+}');
+$t1code = $t1['f']['code'];
+$t1pos  = strpos($t1code, 'target(');
+$t1heads = array_map(static fn(array $x): string => $x['head'], phpUnitsEnclosingBlocks($t1code, $t1pos));
+ok('T1a: a sibling `if` above the call is NOT reported as enclosing it',
+   !preg_match('/\$flagSent/', implode(' | ', $t1heads)),
+   'chain: ' . implode(' | ', $t1heads));
+ok('T1b: …while the real enclosing chain (try, then the if) IS reported',
+   count($t1heads) >= 2 && preg_match('/\btry$/', $t1heads[0]) === 1
+   && strpos($t1heads[1], '$a !== $b') !== false,
+   'chain: ' . implode(' | ', $t1heads));
+ok('T1c: and the try/catch wrapper is detected as a swallow',
+   swallowedWithin($t1code, $t1pos, '/\$a !== \$b/'));
+
+/* T2 — neutral nesting must NOT hide a correct guard (the other A3 direction). */
+$t2 = hardSelfUnits('<?php
+function g($sent) {
+    if ($sent) { foreach ($rows as $r) { target(); } }
+}');
+$t2code = $t2['g']['code'];
+ok('T2: one extra neutral nesting level inside the guard still finds the guard',
+   enclosedByHead($t2code, strpos($t2code, 'target('), '/\$sent/'));
+
+/* T3 — `try{` with no space must count as a try (the A4 defeat). */
+ok('T3a: T_TRY counts `try{` written without a space',
+   phpUnitsCountToken('function h() { try{ x(); } catch (\Throwable $e) {} }', T_TRY) === 1);
+ok('T3b: …and the word "try" inside an identifier is not counted',
+   phpUnitsCountToken('$retry = 1; $trying = 2;', T_TRY) === 0);
+
+/* T4 — sqlOnly must exclude prose that merely contains SQL vocabulary (A5). */
+$t4 = hardSelfUnits('<?php
+function q(\mysqli $db) {
+    $msg  = "the UPDATE_RULE on tblSongs(SongId) was not CASCADE";
+    $key  = \'UPDATE_RULE\';
+    $stmt = $db->prepare("SELECT rc.UPDATE_RULE FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc");
+}');
+$t4unit = $t4['q'];
+ok('T4a: the refusal sentence and the array key are in `strings`',
+   count($t4unit['strings']) >= 3);
+ok('T4b: …but `sqlOnly` holds ONLY the statement',
+   count($t4unit['sqlOnly']) === 1
+   && stripos($t4unit['sqlOnly'][0], 'INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS') !== false,
+   'sqlOnly: ' . json_encode($t4unit['sqlOnly']));
+ok('T4c: deleting the statement empties sqlOnly while `strings` still reads well',
+   hardSelfUnits('<?php function q() { $msg = "UPDATE_RULE on tblSongs(SongId)"; }')['q']['sqlOnly'] === []);
+
+/* T5 — the statement marker must NAME the table it stood for (A12). */
+$t5 = hardSelfUnits('<?php
+function w(\mysqli $db) {
+    $db->prepare("SELECT 1 FROM tblSongRedirects WHERE OldSongId = ?");
+    $db->prepare("UPDATE tblContentRestrictions SET EntityId = ?");
+    $db->prepare("DELETE FROM tblSongbookEntries WHERE SongId = ?");
+}')['w']['code'];
+ok('T5: each statement leaves a marker naming its verb and table',
+   strpos($t5, '@SQL:SELECT:tblSongRedirects@') !== false
+   && strpos($t5, '@SQL:UPDATE:tblContentRestrictions@') !== false
+   && strpos($t5, '@SQL:DELETE:tblSongbookEntries@') !== false,
+   $t5);
+
+/* T6 — the JS block walk must stop at the block's own brace (A12). */
+$t6src = "if (data.previousId && data.assignedId) {\n"
+       . "    renamed.number = data.number;\n"
+       . "}\n"
+       . "function unrelated() { setVal('edit-number', ''); }\n";
+$t6red = jsRedactLiterals($t6src);
+$t6if  = jsIfWithToken($t6red, 'data.assignedId');
+$t6b   = $t6if === null ? null : jsBlockAfter($t6red, $t6if['open']);
+$t6blk = $t6b === null ? '' : substr($t6src, $t6b[0], $t6b[1] - $t6b[0]);
+ok('T6a: the block is found with the && operands in the OTHER order',
+   $t6if !== null && strpos($t6blk, 'data.number') !== false);
+ok('T6b: …and it stops at the closing brace, not N characters later',
+   strpos($t6blk, 'edit-number') === false,
+   'block read: ' . $t6blk);
+ok('T6c: a brace inside a JS string does not unbalance the walk',
+   (static function (): bool {
+       $s = "if (data.assignedId) { var t = '} not a brace'; ok(); }\n";
+       $r = jsRedactLiterals($s);
+       $f = jsIfWithToken($r, 'data.assignedId');
+       $b = $f === null ? null : jsBlockAfter($r, $f['open']);
+       return $b !== null && strpos(substr($s, $b[0], $b[1] - $b[0]), 'ok()') !== false;
+   })());
+/* T6d — the one that actually bit. editor.js's HTML-escaper is
+   `String(s).replace(/[&<>"']/g, …)`: an un-redacted quote inside a regex
+   character class swallows everything that follows as a string, and the rename
+   block (10 000 characters later) simply stopped existing. Real source, real
+   failure, so it gets a real self-test rather than a comment. */
+ok('T6d: a regex literal containing quotes does not swallow the rest of the file',
+   (static function (): bool {
+       $s = "var e = String(s).replace(/[&<>\"']/g, f);\n"
+          . "if (data.assignedId) { renamed.number = data.number; }\n";
+       $f = jsIfWithToken(jsRedactLiterals($s), 'data.assignedId');
+       return $f !== null;
+   })());
+ok('T6e: …and ordinary division is still not mistaken for a regex',
+   (static function (): bool {
+       /* `(a) / b; …` — were the `/` read as a regex opener it would redact to
+          the next `/` or newline and hide the `if` on the same line. */
+       $s = "var r = (a) / b; if (data.assignedId) { hit(); }\n";
+       $red = jsRedactLiterals($s);
+       return strpos($red, 'data.assignedId') !== false;
+   })());
+
+/* T7 — the catch-block walk must bound on braces, not a fixed window. */
+$t7 = phpUnitsCatchBlocks(
+    'try { a(); } catch (\Throwable $_e) { if (guard($_e)) { throw $_e; } log(); } after();'
+);
+ok('T7a: exactly one catch block is found, bounded by its own braces',
+   count($t7) === 1 && strpos($t7[0]['body'], 'after()') === false,
+   json_encode($t7));
+ok('T7b: …and a guard moved off the FIRST statement is detected',
+   count($t7) === 1
+   && preg_match('/^\s*if\s*\(\s*guard\s*\(/', $t7[0]['body']) === 1
+   && preg_match(
+       '/^\s*if\s*\(\s*guard\s*\(/',
+       phpUnitsCatchBlocks('try { a(); } catch (\Throwable $_e) { log(); if (guard($_e)) { throw $_e; } }')[0]['body']
+   ) === 0);
 
 if ($fail === 0) {
     echo "\nAll songbook-move hardening assertions passed.\n";

@@ -38,6 +38,18 @@
  *   5. A server failure reverts the control, so it never sits there displaying a
  *      book the song is not in.
  *   6. A successful move hands (previousId, newId) to the shell's callback.
+ *   7. A songbook list that arrives AFTER mount re-fills the control (a deep
+ *      link mounts the tabs before the index lands).
+ *   8. The `songbooks` payload key and its row fields agree across api2.php →
+ *      sidebar.js → metadata-tab.js, both sides derived from source.
+ *   9. Sections 1–7 inject `getSongbooks` as a STUB, so they pin what the tab
+ *      does with a list and say nothing about what the real list can contain.
+ *      Section 9 therefore mounts the REAL sidebar and asserts the two things a
+ *      stub can never be wrong about: a songbook with ZERO songs is offerable
+ *      (the list is the catalogue, not the set of books present in the loaded
+ *      index), and the answer is not frozen at mount. Plus the contrast that
+ *      keeps the fix honest — the sidebar's own FILTER dropdown must still omit
+ *      that book, because filtering by a book with no songs shows nothing.
  *
  * Pass an alternate module path as argv[2] to point this at a mutated copy —
  * that is how each assertion above was proven ABLE to fail (rule #34).
@@ -330,6 +342,98 @@ async function main() {
     assert(serverFields.join(',') === clientFields.join(','),
         'server row fields ' + JSON.stringify(serverFields)
         + ' are exactly the fields metadata-tab.js reads ' + JSON.stringify(clientFields));
+
+    /* ---- 9. the catalogue itself: an EMPTY songbook is offerable ---------- */
+
+    /* #1679 A2, second half. Sections 1 and 7 inject `getSongbooks` as a stub, so
+     * they pin the tab's BEHAVIOUR and say nothing about where the list comes
+     * from — and "where it comes from" is the whole finding. The v2 sidebar used
+     * to derive the list from the loaded song index, which cannot contain a book
+     * with ZERO songs, so a curator who had just created a songbook could not
+     * move the first song into it. A stub answering [{CP},{MP}] is green either
+     * way; only the real module can be wrong about this.
+     *
+     * Both properties are asserted against the real sidebar:
+     *   (a) a book present in load_index's `songbooks` but in NO song reaches
+     *       getSongbooks();
+     *   (b) the answer is not frozen at mount — before the index resolves it is
+     *       the index-derived fallback, after it the catalogue.
+     * Plus the contrast that keeps the fix honest: the sidebar's own FILTER
+     * dropdown must still NOT offer the empty book, because filtering the list on
+     * screen by a book with no songs can only ever show nothing. Same data,
+     * different question — a change that pointed both at the catalogue would pass
+     * (a) and (b) while making the filter useless, and this catches it. */
+    console.log('\n--- 9. an empty songbook is offerable, and the list is not frozen at mount ---');
+    const { mountSidebar } = await import(pathToFileURL(path.join(
+        __dirname, '..', 'appWeb', 'public_html', 'manage', 'editor', 'v2', 'sidebar.js')).href);
+
+    const dom4 = new JSDOM('<!doctype html><html><body><div id="root4"></div></body></html>');
+    const c4 = dom4.window.document.getElementById('root4');
+    global.window = dom4.window; global.document = dom4.window.document;
+
+    let releaseIndex4;
+    const indexLanded = new Promise((r) => { releaseIndex4 = r; });
+    const sidebar = mountSidebar(c4, {
+        api: {
+            loadIndex: () => indexLanded.then(() => ({
+                songs: [
+                    { id: 'MP-0041', number: 41, title: 'Amazing Grace', songbook: 'MP', songbookName: 'Mission Praise' },
+                    { id: 'CP-0007', number: 7, title: 'Abide With Me', songbook: 'CP', songbookName: 'Common Praise' },
+                ],
+                /* EMPTY is in the catalogue and in no song — the whole point. */
+                songbooks: [
+                    { abbr: 'CP', name: 'Common Praise' },
+                    { abbr: 'MP', name: 'Mission Praise' },
+                    { abbr: 'EMPTY', name: 'Brand New Book' },
+                ],
+            })),
+        },
+        toast: () => {},
+    });
+
+    const beforeIndex = sidebar.getSongbooks().map((b) => b.abbr).sort().join(',');
+    assert(beforeIndex === '', 'before the index resolves the sidebar offers nothing (no frozen stale list)');
+
+    releaseIndex4();
+    await sidebar.whenLoaded();
+    await flush(10);
+
+    const afterIndex = sidebar.getSongbooks().map((b) => b.abbr).sort().join(',');
+    assert(afterIndex !== beforeIndex,
+        'the songbook list is re-answered after the index lands, not frozen at mount'
+        + ' (before "' + beforeIndex + '", after "' + afterIndex + '")');
+    assert(afterIndex === 'CP,EMPTY,MP',
+        'a songbook with NO songs is offered as a move target (got ' + afterIndex + ')');
+
+    const filterOptions = Array.from(c4.querySelectorAll('select option'))
+        .map((o) => o.value).filter((v) => v !== '' && v !== 'title' && v !== 'number' && v !== 'songbook');
+    assert(!filterOptions.includes('EMPTY'),
+        'but the sidebar FILTER still omits it — filtering by a book with no songs shows nothing'
+        + ' (options: ' + JSON.stringify(filterOptions) + ')');
+
+    /* End to end: that same handle, wired the way editor2.php wires it
+       (`getSongbooks: () => sidebar.getSongbooks()`), puts the empty book in the
+       Metadata tab's <select>. Sections 1 and 7 stop one step short of this —
+       they prove the tab renders whatever it is HANDED, never that what the shell
+       hands it can contain an empty book. Both halves have to hold for the move
+       to be possible, and they live in different files (rule #35). */
+    const host4 = dom4.window.document.createElement('div');
+    dom4.window.document.body.appendChild(host4);
+    const down4 = mountMetadataTab(host4, {
+        store: makeStore({ song: { SongbookAbbr: 'MP', Number: 41 } }),
+        api,
+        songId: 'MP-0041',
+        toast: () => {},
+        getSongbooks: () => sidebar.getSongbooks(),
+        whenSongbooksReady: () => sidebar.whenLoaded(),
+    });
+    await flush(10);
+    const tabOptions = Array.from(host4.querySelectorAll('#meta-songbook option'))
+        .map((o) => o.value).sort().join(',');
+    assert(tabOptions === 'CP,EMPTY,MP',
+        'and the Metadata tab, wired to the real sidebar, offers it too (got ' + tabOptions + ')');
+    down4();
+    global.window = window; global.document = window.document;
 
     teardown();
 

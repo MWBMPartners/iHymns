@@ -6,24 +6,43 @@ declare(strict_types=1);
  * iHymns — PHP source → analysis units (shared test library)
  * ==========================================================
  *
- * Turns a PHP file into the two views a source assertion actually needs, split
+ * Turns a PHP file into the three views a source assertion actually needs, split
  * per FUNCTION rather than per file:
  *
- *   `code` — the token stream with comments removed and every string literal
+ *   `code`    — the token stream with comments removed and every string literal
  *            replaced by something that cannot be mistaken for code. An
  *            identifier-like literal (`'SongbookAbbr'`, `'songbook'`) survives
  *            verbatim because it IS load-bearing code — it names a column or a
  *            field key. Anything else (prose, SQL, messages) collapses to the
- *            atom `'@STR@'`, plus the marker `@SQLUPD@` when the literal was an
- *            `UPDATE <table>` statement, so positional checks can still see
- *            "a write happened here" without being able to read the sentence.
+ *            atom `'@STR@'`, plus the marker `@SQL:<VERB>:<table>@` when the
+ *            literal BEGAN a SQL statement, so positional checks can still see
+ *            "a read/write against tblX happened here" without being able to
+ *            read the sentence.
  *
- *   `sql`  — every SQL-looking string literal, RECONSTRUCTED across `.`
+ *   `strings` — EVERY string chain in the unit, RECONSTRUCTED across `.`
  *            concatenation and interpolation, so a statement split over five
- *            PHP string pieces reads as one statement.
+ *            PHP string pieces reads as one statement. It is NOT a SQL view:
+ *            it holds refusal sentences, `error_log` messages, array subscripts
+ *            (`'UPDATE_RULE'`), everything. Use it when the PROSE is the point.
  *
- * WHY BOTH, AND WHY PER FUNCTION (#1688)
- * --------------------------------------
+ *   `sqlOnly` — the subset of `strings` that actually BEGINS a SQL statement
+ *            (`SELECT` / `INSERT` / `UPDATE` / `DELETE` / `REPLACE`). Use it for
+ *            every assertion about the SHAPE of a query.
+ *
+ * WHY `strings` AND `sqlOnly` ARE SEPARATE (A5, 2026-07-31)
+ * --------------------------------------------------------
+ * `strings` was called `sql`, and the name was a lie that a review turned into a
+ * bypass. The hardening guard asserted "the pre-check's query filters to FKs
+ * referencing tblSongs(SongId) and reads UPDATE_RULE" by `stripos()`-ing that
+ * field for three substrings — and the function's REFUSAL SENTENCE contains
+ * "tblSongs(SongId)" while its result loop subscripts `$r['UPDATE_RULE']`. So the
+ * whole prepare/execute/fetch could be replaced with `$rows = [];` and every H3
+ * assertion stayed green. A view named for a language must contain only that
+ * language, or every assertion pointed at it is really an assertion about the
+ * file's vocabulary.
+ *
+ * WHY PER FUNCTION (#1688)
+ * ------------------------
  * Three separate failures in the guard this replaces, all found by adversarial
  * review mutating the real tree:
  *
@@ -89,9 +108,27 @@ function phpUnitsIsIdentifierLiteral(string $value): bool
 }
 
 /**
+ * Does this string literal BEGIN a SQL statement?
+ *
+ * ELI5: does this text start with "SELECT" / "UPDATE" / …? If it only mentions
+ * one of those words half-way through a sentence, it is prose, not a query.
+ *
+ * Detail: anchored deliberately. An un-anchored `stripos($s, 'UPDATE')` is what
+ * let a refusal message ("…would fail or orphan its child rows…UPDATE_RULE…")
+ * and a `' ON DUPLICATE KEY UPDATE …'` fragment both read as statements. A real
+ * statement literal always starts at the verb — every one in this tree does,
+ * including the multi-line ones, because the leading newline is inside the
+ * indentation of the NEXT line, not before the verb.
+ */
+function phpUnitsIsSqlStatement(string $value): bool
+{
+    return (bool)preg_match('/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $value);
+}
+
+/**
  * Split a PHP source into per-function analysis units.
  *
- * @return array<string, array{code:string, sql:list<string>}>
+ * @return array<string, array{code:string, strings:list<string>, sqlOnly:list<string>}>
  *         Keys are function names; everything outside any function body is
  *         collected under `(file scope)`.
  */
@@ -102,7 +139,7 @@ function phpSourceUnits(string $src): array
         return [];
     }
 
-    $units   = ['(file scope)' => ['code' => '', 'sql' => []]];
+    $units   = ['(file scope)' => ['code' => '', 'strings' => []]];
     $stack   = [];                 // [unitName, braceDepthAtOpen]
     $depth   = 0;
     $awaitFn = false;              // seen `function`, waiting for its body `{`
@@ -121,7 +158,7 @@ function phpSourceUnits(string $src): array
         $t       = $toks[$i];
         $unit    = $stack ? $stack[count($stack) - 1][0] : ($caseName ?? '(file scope)');
         if (!isset($units[$unit])) {
-            $units[$unit] = ['code' => '', 'sql' => []];
+            $units[$unit] = ['code' => '', 'strings' => []];
         }
 
         /* ---- structural bookkeeping ------------------------------------- */
@@ -151,7 +188,7 @@ function phpSourceUnits(string $src): array
                    them would re-create exactly the vouching bug this split
                    fixes, so disambiguate rather than reuse. */
                 if (isset($units[$caseName])) { $caseName .= '#' . (++$anon); }
-                $units[$caseName] = ['code' => '', 'sql' => []];
+                $units[$caseName] = ['code' => '', 'strings' => []];
                 $unit = $caseName;
             } elseif (!$stack && $t[0] === T_SWITCH) {
                 $switchDepth = $depth + 1;
@@ -167,7 +204,7 @@ function phpSourceUnits(string $src): array
                         $name .= '#' . (++$anon);
                     }
                     $stack[]  = [$name, $depth];
-                    $units[$name] = ['code' => '', 'sql' => []];
+                    $units[$name] = ['code' => '', 'strings' => []];
                     $awaitFn  = false;
                     $fnName   = null;
                     $unit     = $name;
@@ -191,7 +228,7 @@ function phpSourceUnits(string $src): array
             }
         }
 
-        /* ---- render into the unit's two views --------------------------- */
+        /* ---- render into the unit's views ------------------------------- */
         if (is_array($t)) {
             if ($t[0] === T_COMMENT || $t[0] === T_DOC_COMMENT) {
                 $units[$unit]['code'] .= ' ';
@@ -201,7 +238,7 @@ function phpSourceUnits(string $src): array
                 [$rendered, $joined, $consumed] = phpUnitsReadStringChain($toks, $i);
                 $units[$unit]['code'] .= $rendered;
                 if ($joined !== null) {
-                    $units[$unit]['sql'][] = $joined;
+                    $units[$unit]['strings'][] = $joined;
                 }
                 $i = $consumed;
                 continue;
@@ -214,8 +251,8 @@ function phpSourceUnits(string $src): array
                     $body .= is_array($toks[$j]) ? $toks[$j][1] : $toks[$j];
                 }
                 $units[$unit]['code'] .= phpUnitsRenderOpaque($body);
-                if (stripos($body, 'UPDATE') !== false) {
-                    $units[$unit]['sql'][] = $body;
+                if (phpUnitsIsSqlStatement($body) || stripos($body, 'UPDATE') !== false) {
+                    $units[$unit]['strings'][] = $body;
                 }
                 $i = $j;
                 continue;
@@ -236,8 +273,8 @@ function phpSourceUnits(string $src): array
                 }
             }
             $units[$unit]['code'] .= phpUnitsRenderOpaque($body);
-            if (stripos($body, 'UPDATE') !== false) {
-                $units[$unit]['sql'][] = $body;
+            if (phpUnitsIsSqlStatement($body) || stripos($body, 'UPDATE') !== false) {
+                $units[$unit]['strings'][] = $body;
             }
             $i = $j;
             continue;
@@ -248,6 +285,13 @@ function phpSourceUnits(string $src): array
 
     foreach ($units as $k => $u) {
         $units[$k]['code'] = (string)preg_replace('/\s+/', ' ', $u['code']);
+        /* `sqlOnly` is DERIVED from `strings`, never collected in parallel: two
+           lists filled at two sites drift, and a shape assertion pointed at the
+           wrong one is exactly the A5 bypass this view exists to close. */
+        $units[$k]['sqlOnly'] = array_values(array_filter(
+            $u['strings'],
+            static fn(string $s): bool => phpUnitsIsSqlStatement($s)
+        ));
     }
 
     return $units;
@@ -255,11 +299,41 @@ function phpSourceUnits(string $src): array
 
 /**
  * Render a non-identifier literal so it cannot be read as code, while leaving a
- * positional marker when it was an UPDATE statement.
+ * positional marker naming the statement it stood for.
+ *
+ * ELI5: replace the text with a blank tile, but stamp the tile with "this was a
+ * SELECT against tblSongRedirects" so an ordering check can still find it.
+ *
+ * Detail: the marker used to be a bare `@SQLUPD@`, which made every write in a
+ * function look identical — so an assertion like "the tblSongbookEntries block is
+ * inside its existence gate" had no way to point at the statement it named and
+ * fell back to comparing indexes in two different lists (A12). Tagging the verb
+ * and the table makes the `code` view POSITIONALLY precise without making it
+ * readable: `@SQL:UPDATE:tblContentRestrictions@` says where a write is, and
+ * still says nothing about what the sentence around it claimed.
+ *
+ * Anchored via phpUnitsIsSqlStatement(), so a message that merely contains the
+ * word "update" no longer mints a phantom write marker.
  */
 function phpUnitsRenderOpaque(string $value): string
 {
-    $marker = preg_match('/\bUPDATE\s+`?\w+`?\b/i', $value) ? " @SQLUPD@ " : '';
+    $marker = '';
+    if (phpUnitsIsSqlStatement($value)) {
+        preg_match('/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $value, $v);
+        $verb = strtoupper($v[1]);
+        /* Where the table name sits depends on the verb: UPDATE names it first,
+           INSERT/REPLACE after INTO, SELECT/DELETE after FROM. Getting this
+           wrong is not a crash, it is a marker that says `@SQL:SELECT:1@` —
+           which reads like a table and matches nothing, i.e. a positional check
+           that silently stops locating anything. */
+        $tablePattern = match ($verb) {
+            'UPDATE'           => '/^\s*UPDATE\s+`?([\w.]+)`?/i',
+            'INSERT', 'REPLACE' => '/\bINTO\s+`?([\w.]+)`?/i',
+            default            => '/\bFROM\s+`?([\w.]+)`?/i',
+        };
+        $table  = preg_match($tablePattern, $value, $m) ? $m[1] : '?';
+        $marker = ' @SQL:' . $verb . ':' . $table . '@ ';
+    }
     return "'@STR@'" . $marker;
 }
 
@@ -328,4 +402,153 @@ function phpUnitsReadStringChain(array $toks, int $i): array
 function phpUnitsNormaliseSql(string $sql): string
 {
     return (string)preg_replace('/\s+/', ' ', str_replace('`', '', $sql));
+}
+
+/* ==========================================================================
+ *  STRUCTURAL WALKERS — "which block am I in?", not "how many characters away?"
+ *
+ *  Every one of these exists because a character window or a `strrpos()` over
+ *  all preceding source was defeated on the real tree (A3, A4, A11, A12,
+ *  2026-07-31). They run on the `code` view, where every string literal has
+ *  already been reduced to `'@STR@'` — so no brace, paren or semicolon inside a
+ *  string can unbalance a walk. That property is what makes a text-level walk
+ *  sound enough to assert structure with; it does not survive being pointed at
+ *  raw source, so do not do that.
+ * ========================================================================== */
+
+/**
+ * The blocks that ENCLOSE $pos, innermost first, out to the unit's own body.
+ *
+ * ELI5: "which ifs / trys / loops am I inside?" — the whole chain, not just the
+ * nearest one, and never a sibling that merely happens to sit above me.
+ *
+ * WHY THE WHOLE CHAIN (A3)
+ * ------------------------
+ * The version this replaces read ONE enclosing level and then fell back to
+ * `strrpos($head, 'if (')` over ALL preceding source. Both halves were wrong in
+ * opposite directions, and a review demonstrated each on the real file:
+ *
+ *  - TOO WEAK: wrapping the relocate branch in `try { … } catch` (an entirely
+ *    natural change now the pre-check throws) made the single level land on
+ *    `try {`, whereupon `strrpos` found an unrelated EARLIER
+ *    `if (!$songbookSent && $prevRow !== null)` — a SIBLING, hundreds of
+ *    characters above — and both M2 assertions passed with the M2 fix deleted.
+ *  - TOO STRONG: one extra neutral nesting level inside the correct guard
+ *    reported that correct guard as missing. A guard that fails on correct code
+ *    gets weakened or deleted rather than fixed (rule #34).
+ *
+ * Collecting the chain fixes both: a sibling `if` is never in it, and neutral
+ * nesting simply adds an entry the caller ignores.
+ *
+ * The `head` of a block is the source between the previous statement boundary
+ * and the block's `{` — `if (…)`, `foreach (…)`, `try`, `catch (…)`, `else`,
+ * `function f(…)`. The backward scan for that boundary is PAREN-AWARE, because
+ * `for ($i = 0; $i < $n; $i++)` puts semicolons inside the head itself.
+ *
+ * @return list<array{head:string, open:int}> innermost first; empty at file scope.
+ */
+function phpUnitsEnclosingBlocks(string $code, int $pos): array
+{
+    $out   = [];
+    $i     = min($pos, strlen($code)) - 1;
+    $depth = 0;
+
+    while ($i >= 0) {
+        $c = $code[$i];
+        if ($c === '}') { $depth++; $i--; continue; }
+        if ($c !== '{')  { $i--; continue; }
+        if ($depth > 0)  { $depth--; $i--; continue; }
+
+        /* Unmatched `{` — this block encloses $pos. Read its head backwards to
+           the previous statement boundary at paren depth 0. */
+        $parens = 0;
+        $j      = $i - 1;
+        for (; $j >= 0; $j--) {
+            $d = $code[$j];
+            if ($d === ')') { $parens++; continue; }
+            if ($d === '(') { if ($parens > 0) { $parens--; } continue; }
+            if ($parens === 0 && ($d === ';' || $d === '{' || $d === '}')) { break; }
+        }
+        $out[] = ['head' => trim(substr($code, $j + 1, $i - $j - 1)), 'open' => $i];
+
+        /* Step outside this block and look for ITS parent. */
+        $i     = $i - 1;
+        $depth = 0;
+    }
+
+    return $out;
+}
+
+/**
+ * The body of the block whose `{` is at $open: [bodyStart, bodyEnd) offsets.
+ *
+ * ELI5: find the matching closing brace, so "inside this block" is a real
+ * boundary rather than "the next 3000 characters".
+ *
+ * @return array{0:int,1:int} start (just after `{`) and end (at the matching `}`);
+ *         end is strlen($code) when the source is truncated / unbalanced.
+ */
+function phpUnitsBlockBody(string $code, int $open): array
+{
+    $n     = strlen($code);
+    $depth = 0;
+    for ($i = $open; $i < $n; $i++) {
+        if ($code[$i] === '{') { $depth++; continue; }
+        if ($code[$i] === '}') {
+            $depth--;
+            if ($depth === 0) { return [$open + 1, $i]; }
+        }
+    }
+    return [$open + 1, $n];
+}
+
+/**
+ * Every `catch (…) { … }` block in a unit, as [head, body] pairs.
+ *
+ * ELI5: list the "if it goes wrong, do this" blocks, with their real contents.
+ *
+ * Detail: used instead of `substr($code, $hit + $len, 120)`. A fixed window is
+ * both under- and over-inclusive — it stops mid-statement on a long first line
+ * and runs into the NEXT catch on a short one — and "the guard is the FIRST
+ * statement of this catch" is only a meaningful claim against the block's own
+ * boundaries.
+ *
+ * @return list<array{head:string, body:string, open:int}>
+ */
+function phpUnitsCatchBlocks(string $code): array
+{
+    $out = [];
+    if (!preg_match_all('/\bcatch\s*\([^)]*\)\s*\{/', $code, $m, PREG_OFFSET_CAPTURE)) {
+        return $out;
+    }
+    foreach ($m[0] as $hit) {
+        $open        = $hit[1] + strlen($hit[0]) - 1;   // index of the `{`
+        [$s, $e]     = phpUnitsBlockBody($code, $open);
+        $out[]       = ['head' => $hit[0], 'body' => substr($code, $s, $e - $s), 'open' => $open];
+    }
+    return $out;
+}
+
+/**
+ * How many times does a KEYWORD TOKEN appear in a unit's code view?
+ *
+ * ELI5: count real `try` keywords, not the letters t-r-y wherever they land.
+ *
+ * Detail: the assertion this replaces was `substr_count($code, 'try {') === 1`.
+ * Source written `try{` renders as `try{` and was invisible to it, so the M3
+ * swallow could be restored verbatim (minus one space) with the suite green.
+ * Re-tokenising the code view answers the question that was actually being
+ * asked. The view is a re-joined token stream, so it re-tokenises cleanly.
+ *
+ * @param int $tokenId e.g. `T_TRY`, `T_CATCH`, `T_THROW`.
+ */
+function phpUnitsCountToken(string $code, int $tokenId): int
+{
+    $toks = @token_get_all('<?php ' . $code);
+    if (!is_array($toks)) { return 0; }
+    $n = 0;
+    foreach ($toks as $t) {
+        if (is_array($t) && $t[0] === $tokenId) { $n++; }
+    }
+    return $n;
 }

@@ -44,6 +44,26 @@ declare(strict_types=1);
  *  4. **`WHERE Id = ?` and backticks were invisible.** Both idioms already
  *     appear in this tree.
  *
+ * WHICH VIEW EACH CHECK READS, AND WHY (A5, 2026-07-31)
+ * ----------------------------------------------------
+ * `php_source_units.php` now offers `strings` (every string chain — the field
+ * this file used to call `sql`) and `sqlOnly` (the subset that actually BEGINS a
+ * statement). The split was forced by the hardening guard, where prose satisfied
+ * a query-shape assertion. Both are used here, deliberately:
+ *
+ *  - The CLASSIFIER stays on `strings`. Shape A is
+ *    `SongbookAbbr = VALUES(SongbookAbbr)`, which lives in a fragment starting
+ *    `' ON DUPLICATE KEY UPDATE …'` — not a statement start, so `sqlOnly` does
+ *    not contain it and `save_song_core.php` would stop being detected at all
+ *    (S11 is what proves that, and it went red when this was tried). The prose
+ *    risk runs the SAFE way round here: a sentence that reads like a write only
+ *    ADDS a site, which then has to call songRelocate(); it can never exempt one.
+ *  - CHECK 3's POSITIVE statement assertions read `sqlOnly` — they are pure
+ *    query-shape claims, which is exactly the class A5 defeated.
+ *  - CHECK 3's NEGATIVE assertion (PublicId is never touched) keeps the wider
+ *    view: for a "this must not appear" test, a narrower corpus can only
+ *    under-report.
+ *
  * WHAT COUNTS AS A "PER-SONG SONGBOOK WRITE"
  * ------------------------------------------
  *   A. `SongbookAbbr = VALUES(SongbookAbbr)` — an UPSERT whose duplicate-key
@@ -207,7 +227,7 @@ function relocGuardFindSongbookSkip(string $unitCode, array $names): ?string
 /**
  * Classify one analysis unit (a function body, or file scope).
  *
- * @param array{code:string, sql:list<string>} $unit
+ * @param array{code:string, strings:list<string>, sqlOnly:list<string>} $unit
  * @return array{shapes:list<string>, dynamic:bool, canNameSongbook:bool, skip:?string}
  */
 function relocGuardClassifyUnit(array $unit, string $fileCode): array
@@ -228,7 +248,7 @@ function relocGuardClassifyUnit(array $unit, string $fileCode): array
     }
     $skip = $canName ? relocGuardFindSongbookSkip($code, $names) : null;
 
-    foreach ($unit['sql'] as $raw) {
+    foreach ($unit['strings'] as $raw) {
         $sql = phpUnitsNormaliseSql($raw);
 
         /* A — UPSERT duplicate-key tail overwriting the book. */
@@ -372,13 +392,20 @@ echo "\nCHECK 3 — the move writes a permalink redirect\n";
 $implUnits = $implFiles ? $units[$implFiles[0]] : [];
 $implCode  = implode(' ', array_column($implUnits, 'code'));
 $implSql   = [];
-foreach ($implUnits as $u) { foreach ($u['sql'] as $s) { $implSql[] = phpUnitsNormaliseSql($s); } }
-$implSqlAll = implode(' ;; ', $implSql);
+$implStmts = [];
+foreach ($implUnits as $u) {
+    foreach ($u['strings'] as $s) { $implSql[]     = phpUnitsNormaliseSql($s); }
+    foreach ($u['sqlOnly'] as $s) { $implStmts[]   = phpUnitsNormaliseSql($s); }
+}
+$implSqlAll   = implode(' ;; ', $implSql);      // every literal — for ABSENCE tests
+$implStmtsAll = implode(' ;; ', $implStmts);   // real statements — for SHAPE tests
 
 ok('songRelocate() writes a tblSongRedirects row',
    (bool)preg_match("/songRedirectWrite\s*\(.{0,200}'move'/s", $implCode));
 ok("songRelocate() clears Number on move (owner's stated default)",
-   (bool)preg_match('/UPDATE tblSongs SET SongId = \?, SongbookAbbr = \?, Number = NULL WHERE SongId = \?/i', $implSqlAll));
+   (bool)preg_match('/UPDATE tblSongs SET SongId = \?, SongbookAbbr = \?, Number = NULL WHERE SongId = \?/i', $implStmtsAll),
+   'a SHAPE claim, so it reads sqlOnly: on the wider `strings` view a doc-string '
+   . 'quoting the statement would satisfy it (A5)');
 ok('songRelocate() does NOT touch PublicId (it exists to survive a move)',
    !preg_match('/UPDATE\s+tblSongs[^;]{0,200}PublicId\s*=/i', $implSqlAll));
 
@@ -541,7 +568,10 @@ ok('S10b: deleting that skip makes the function a flagged shape-C site',
 /* S11 — the real save core is still one of the detected sites. */
 $saveCoreFile = $ROOT . '/appWeb/public_html/manage/editor/save_song_core.php';
 $saveShapes   = isset($units[$saveCoreFile])
-    ? relocGuardClassifyUnit($units[$saveCoreFile]['editorSaveSongCore'] ?? ['code' => '', 'sql' => []], $fileCode[$saveCoreFile] ?? '')
+    ? relocGuardClassifyUnit(
+        $units[$saveCoreFile]['editorSaveSongCore'] ?? ['code' => '', 'strings' => [], 'sqlOnly' => []],
+        $fileCode[$saveCoreFile] ?? ''
+      )
     : ['shapes' => []];
 ok('S11: the real save core is detected as a write site', $saveShapes['shapes'] !== []);
 
