@@ -378,3 +378,25 @@ browser and remains owner-verified.
   IDEALLY be accessed"* — it excludes soft-deleted rows but deliberately does **NOT** account for
   per-user gating (CCLI/tier). "Ideally accessible", never "accessible to you". Making it per-viewer
   would also break the shared-cache home fragment (rule #6).
+
+## 2026-07-31 (later) — the environment limit that was never tested
+
+- 🗄️ **THE CONTAINER CAN RUN MySQL.** `apt-get install mariadb-server` (~1 min) then `mariadbd
+  --user=mysql --socket=…` — no systemd, no Docker (the docker CLI exists but its daemon does not).
+  For ~95 commits every plan on this branch opened with *"no MySQL in this container"* and deferred
+  verification to an alpha rehearsal. **Nobody had ever checked.** It took one command.
+  🔑 **Always test a claimed environment limit before designing around it.** The cost of the
+  assumption was ~95 commits of reasoned-correct, observed-nowhere work.
+- 🔥 **The first thing it found: `schema.sql` could not install — 16 of 136 tables** (#1708). Five
+  inline FKs referenced tables created LATER in the same file; two columns were `BIGINT UNSIGNED`
+  against an `INT UNSIGNED` PK. **Both mismatched columns carried a COMMENT asserting they matched**
+  — #1604's thesis, live. And the migration creating them had the same declaration, so it had never
+  run anywhere: two Apple Phase-2 features had no storage, and #1642 had mis-diagnosed it as a
+  deploy problem.
+- **A text-agreement check is not a build check.** `test-schema-coverage.php` proves schema.sql and
+  the migrations AGREE. It cannot prove either one BUILDS A DATABASE — and it was green throughout.
+  When a guard compares two artefacts, ask what neither of them is being executed against.
+- **Ask what the smallest safe evidence is, not for the biggest.** Offered a 292 MB production dump,
+  the right answer was a ~2 KB read-only INFORMATION_SCHEMA probe
+  (`tools/db-structural-probe.sql`) — no emails, hashes, tokens, IPs or lyrics, safe to paste into an
+  issue. And **do not run migrations before capturing state**: the drift IS the finding.
