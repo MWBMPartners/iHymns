@@ -79,6 +79,11 @@ export function mountMetadataTab(container, opts) {
     const timers = new Map();
     let disposed = false;     // set by teardown, so a late list can't touch a dead tab
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
+    /* #1671 F3 — teardown for the "Musical key" fieldset. render() wipes the
+       container on every `song`-slice change, so the panel is torn down and
+       re-mounted with it; without this its in-flight fetch would resolve into a
+       detached node and its listener would leak. */
+    let keyPanelDetach = null;
 
     /**
      * @param {string}   field
@@ -216,6 +221,7 @@ export function mountMetadataTab(container, opts) {
     function render() {
         const song = store.get('song') || {};
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
+        if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         container.innerHTML = '';
         const row = document.createElement('div');
         row.className = 'row g-3';
@@ -304,6 +310,21 @@ export function mountMetadataTab(container, opts) {
         if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
             placeDetach = window.iHymnsPlaceSearch.attach(pinput, { hiddenIdInput: phidden }) || null;
         }
+
+        /* Musical key / tempo / time signature (#298 server, wired #1671 F3).
+           A separate table (`tblSongKeys`) behind a separate endpoint pair with
+           an all-or-nothing contract, so it is its own fieldset with its own
+           Save rather than three more debounced `metadata_field_update` fields.
+           Mounted LAST so the tab's own scalar grid keeps its position, and
+           dynamically imported so a curator who never opens Metadata does not
+           pay for it. Failure is logged, never fatal: the rest of the tab must
+           still work if this one chunk cannot load. */
+        import('./song-key-panel.js')
+            .then((m) => {
+                if (disposed || !container.isConnected) { return; }
+                keyPanelDetach = m.mountSongKeyPanel(container, { songId: songId, toast: toast });
+            })
+            .catch((e) => { console.error('[metadata-tab] song-key panel failed to load:', e); });
     }
 
     const off = store.subscribe('song', render);
@@ -315,6 +336,7 @@ export function mountMetadataTab(container, opts) {
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
+        if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         container.innerHTML = '';
     };
 }

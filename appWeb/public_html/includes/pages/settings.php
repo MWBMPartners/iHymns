@@ -297,6 +297,60 @@ declare(strict_types=1);
     </div>
 
     <!-- ============================================================
+         SIGNED-IN DEVICES (#1409 server / #1671 F1 UI)
+
+         ELI5: the list of phones, tablets and computers currently signed
+         in to this account, with a button to sign any one of them out.
+
+         Detail: `?action=devices_list` and `?action=device_signout` have
+         been complete and hardened server-side since #1409/#1511 — CSRF
+         gate, per-USER (not per-IP) rate limit, own-tokens-only DELETE —
+         and had ZERO callers on web, Apple and Android alike. This card
+         is the first one they have ever had.
+
+         Everything below is EMPTY MARKUP on purpose. There is no inline
+         <script> here and there can never be one: the document sends an
+         enforcing nonce CSP (#117), this fragment is a separate HTTP
+         response that never sees the per-request nonce, and the browser
+         refuses a nonce-less inline script SILENTLY — the feature looks
+         alive and dies on click (#1565, rule #30). Behaviour is wired by
+         js/modules/devices.js, imported from router.js's afterPageLoad().
+         CI guard: tests/php/test-fragment-inline-scripts.php.
+
+         `data-devices-card` is the module's DOM-first hook — the module
+         reads the card out of the DOM rather than being told an id, the
+         same contract .page-song[data-song-id] gives export-ui.js.
+
+         Hidden by default (`d-none`) because the whole card is
+         meaningless to a signed-out visitor; devices.js reveals it on
+         EVT_AUTH_CHANGED and hides it again on sign-out.
+         ============================================================ -->
+    <div class="card card-settings mb-3 d-none" id="settings-devices-card" data-devices-card>
+        <div class="card-body">
+            <h2 class="h6 mb-3">
+                <i class="fa-solid fa-mobile-screen-button me-2" aria-hidden="true"></i>
+                Signed-in devices
+            </h2>
+            <p class="text-muted small">
+                Devices currently signed in to your account. Signing one out
+                immediately ends its session — it will need to sign in again.
+            </p>
+            <!-- role="alert" so a failure is ANNOUNCED, not merely displayed
+                 (WCAG 4.1.3 Status Messages). Successes are announced through
+                 the shared announcer in js/utils/announce.js instead, so a
+                 destructive action confirms itself audibly. -->
+            <div id="devices-msg" class="alert d-none py-2 small" role="alert"></div>
+            <div id="devices-list" class="mb-2">
+                <p class="text-muted small mb-0">Loading your devices…</p>
+            </div>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="devices-refresh-btn">
+                <i class="fa-solid fa-arrows-rotate me-1" aria-hidden="true"></i>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    <!-- ============================================================
          SYNC SECTION — Cross-device sync preferences (#284)
          ============================================================ -->
     <div class="card card-settings mb-3" id="settings-sync-card">

@@ -683,6 +683,18 @@ export class Router {
             import('./song-translations.js')
                 .then(m => m.initLineTranslations())
                 .catch(err => console.error('[Router] song-translations init failed:', err));
+            /* Musical key / tempo / time signature (#298, wired #1671 F3).
+               Runs AFTER this.app.transpose.initSongPage() above deliberately:
+               transpose.js reads `dataset.key` once at init, and `data-key` has
+               never actually been emitted by song.php (SongData sets no `key`
+               field at all), so its key-display branch has never executed. This
+               module fetches the key, sets the attribute and re-runs
+               initSongPage() so that branch finally has an input. Most songs
+               have no key row and the endpoint answers 404, which the module
+               treats as "nothing to show" rather than as an error. */
+            import('./song-key.js')
+                .then(m => m.initSongKey(exportSongId))
+                .catch(err => console.error('[Router] song-key init failed:', err));
             /* readingProgress.initOnAnyPage() already ran at the top
                of afterPageLoad — covers every page including song.
                Removing the song-specific re-call avoids a redundant
@@ -848,6 +860,17 @@ export class Router {
         /* Initialise settings controls on settings page */
         if (page === 'settings') {
             this.app.settings.initSettingsPage();
+
+            /* Signed-in devices card (#1671 F1). Same rule-#30 wiring as
+               home-page.js / export-ui.js: the settings fragment can never
+               carry an executable inline <script> (enforcing nonce CSP #117 +
+               a fragment that never sees the nonce), so the behaviour is a
+               real ES module imported here. The module finds its own card via
+               [data-devices-card] and no-ops when it is absent, so this costs
+               nothing on any other route. */
+            import('./devices.js')
+                .then(m => m.bootDevicesCard())
+                .catch(err => console.error('[Router] devices init failed:', err));
         }
 
         /* Device-code pairing "Link a device" page (#1407). */
@@ -880,6 +903,16 @@ export class Router {
             import('./request-a-song.js')
                 .then(m => m.initRequestASong(params))
                 .catch(err => console.error('[Router] request-a-song init failed:', err));
+
+            /* "Your requests" (#1671 F2) — the outcome side of the form above.
+               Same rule-#30 wiring, and for the same reason: `request` is in
+               api.php's $_cacheablePages, so this fragment can never carry the
+               document's per-request CSP nonce and an inline <script> in it
+               would be refused silently. The module finds its own section via
+               [data-my-requests] and no-ops when it is absent. */
+            import('./my-song-requests.js')
+                .then(m => m.initMySongRequests())
+                .catch(err => console.error('[Router] my-song-requests init failed:', err));
         }
 
         /* After the new page HTML is in the DOM, broadcast the current auth

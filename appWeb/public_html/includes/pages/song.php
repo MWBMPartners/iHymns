@@ -862,17 +862,47 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                 </div>
             <?php endif; ?>
 
-            <!-- Song key display and transpose buttons (#298) -->
-            <div id="song-key-container" class="d-inline-flex align-items-center gap-2 mb-2" style="display:none !important">
-                <span class="badge bg-secondary" id="song-key-badge" title="Song key"></span>
-                <div class="btn-group btn-group-sm">
-                    <button class="btn btn-outline-secondary" id="btn-transpose-down" title="Transpose down">
-                        <i class="fa-solid fa-minus"></i>
-                    </button>
-                    <button class="btn btn-outline-secondary" id="btn-transpose-up" title="Transpose up">
-                        <i class="fa-solid fa-plus"></i>
-                    </button>
-                </div>
+            <!-- ============================================================
+                 Song key / tempo / time signature (#298, wired #1671 F3)
+
+                 ELI5: the little "Key: G · 120 BPM · 4/4" line, filled in by
+                 JavaScript once it has asked the server for this song's key.
+
+                 WHAT CHANGED HERE AND WHY. This block shipped with #298 as
+                 DEAD MARKUP: `display:none !important` and — verified by a
+                 tree-wide scan — not one line of JS anywhere referenced
+                 #song-key-container, #song-key-badge, #song-key-info,
+                 #btn-transpose-down or #btn-transpose-up. It sat inert for
+                 the whole life of the feature while `tblSongKeys` had no
+                 reader and no writer.
+
+                 The two transpose buttons are DELETED rather than wired. They
+                 were a SECOND, divergent copy of controls js/modules/
+                 transpose.js already renders (with different ids —
+                 #transpose-down / #transpose-up — plus reset and an offset
+                 readout). Wiring them would have put two transpose widgets on
+                 one page, which is the duplicate-UI regression the modularity
+                 rule exists to prevent. transpose.js keeps sole ownership of
+                 transposition; this element is a read-only fact about the
+                 song.
+
+                 `data-song-key-panel` is the DOM-first hook for
+                 js/modules/song-key.js, imported by router.js's
+                 afterPageLoad(). There is no inline <script> here and there
+                 can never be one: `page=song` is in api.php's
+                 $_cacheablePages, so these exact bytes are replayed to every
+                 visitor and can never carry the document's per-request CSP
+                 nonce (#117 / rule #6 / rule #30). CI guard:
+                 tests/php/test-fragment-inline-scripts.php.
+
+                 Hidden with `d-none` — a Bootstrap class the module can
+                 remove — rather than the previous inline
+                 `style="display:none !important"`, which no class toggle can
+                 ever override and which is a large part of why this markup
+                 stayed invisible even to somebody trying to revive it.
+                 ============================================================ -->
+            <div id="song-key-container" class="d-none align-items-center gap-2 mb-2" data-song-key-panel>
+                <span class="badge bg-secondary" id="song-key-badge"></span>
                 <small class="text-muted" id="song-key-info"></small>
             </div>
 

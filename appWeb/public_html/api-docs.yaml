@@ -7251,40 +7251,98 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  # ---------------------------------------------------------------------------
+  # MUSICAL KEY (#298, UI wired #1671 F3)
+  #
+  # These two entries USED TO DESCRIBE AN API THAT DOES NOT EXIST. Every one of
+  # the following was wrong, and had been since #298:
+  #   - the GET parameter was documented `songId`; the handler reads `id`;
+  #   - the POST body was documented `{songId, key}`; the handler reads
+  #     `{song_id, original_key, tempo, time_signature}`;
+  #   - the GET response was documented as a bare `{key: "G"}` string; it is an
+  #     object of three fields;
+  #   - both were described as "the CALLER'S preferred key", implying a per-user
+  #     setting. It is one shared per-song value on `tblSongKeys`, and the save
+  #     is editor-only.
+  # A consumer following this page could not have made a single successful call.
+  # It survived because nothing called these endpoints at all — documentation is
+  # not a mechanism (rule #35), and a doc nobody exercises drifts silently.
+  # Corrected here against the handlers.
+  # ---------------------------------------------------------------------------
   /api.php?action=song_key:
     get:
       operationId: songKeyGet
       tags: [Song Metadata]
-      summary: Fetch the caller's saved preferred key for a song
-      security:
-        - bearerAuth: []
+      summary: Musical key, tempo and time signature for one song
+      description: |
+        Public read. `tblSongKeys` is sparse — most songs have no row — so
+        **404 is the ordinary answer**, not an error, and clients should treat
+        it as "no key recorded". Branch on the STATUS, never on the message.
+
+        Consumed by the public song page (`js/modules/song-key.js`), which uses
+        the key to feed the transpose controls, and by the v2 editor's Musical
+        key panel.
       parameters:
         - name: action
           in: query
           required: true
           schema: { type: string, enum: [song_key] }
-        - name: songId
+        - name: id
           in: query
           required: true
-          schema: { type: string, example: CP-0202 }
+          description: The SongId, e.g. `MP-1008`.
+          schema: { type: string, example: MP-1008 }
       responses:
         "200":
-          description: Preferred key or null
+          description: The stored key.
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   key:
-                    type: string
-                    nullable: true
-                    example: G
+                    type: object
+                    properties:
+                      originalKey:
+                        type: string
+                        description: >-
+                          Note A-G, optionally `#` or `b`, optionally `m` for
+                          minor. May be the empty string on a legacy row.
+                        example: Bb
+                      tempo:
+                        type: integer
+                        nullable: true
+                        description: BPM, or null when unspecified.
+                        example: 96
+                      timeSignature:
+                        type: string
+                        description: >-
+                          `n/n`, or the EMPTY STRING when unspecified — the
+                          column is NOT NULL, so "unset" is `''`, never null.
+                        example: 4/4
+        "400": { description: "`id` was not supplied." }
+        "404": { description: "No key recorded for this song. The normal answer for most songs." }
 
   /api.php?action=song_key_save:
     post:
       operationId: songKeySave
       tags: [Song Metadata]
-      summary: Save the caller's preferred key for a song
+      summary: Set the musical key, tempo and time signature for one song
+      description: |
+        Requires the `edit_songs` entitlement (editor / admin / global_admin by
+        default, retunable at `/manage/entitlements`). Upsert semantics: the
+        payload is the truth for all three fields.
+
+        Responds with the **stored** values, which may differ from what was
+        sent — the root note is upper-cased, and an omitted time signature
+        comes back as `''`. Clients should write the response into their form
+        rather than trusting their own copy.
+
+        Every rejection carries a stable `reason` alongside the human `error`,
+        so a client can branch on a code rather than on prose (rule #35).
+        There is deliberately no way to CLEAR a key: `original_key` is required
+        on every call, and an endpoint that deleted the row on an empty string
+        would make an accidental blank field destructive.
       security:
         - bearerAuth: []
       parameters:
@@ -7298,19 +7356,64 @@ paths:
           application/json:
             schema:
               type: object
-              required: [songId, key]
+              required: [song_id, original_key]
               properties:
-                songId: { type: string }
-                key:
+                song_id:
                   type: string
-                  description: Musical key (empty string to clear)
-                  example: Eb
+                  description: An existing SongId (max 20 chars).
+                  example: MP-1008
+                original_key:
+                  type: string
+                  description: >-
+                    Note A-G, optional `#` or `b` (lower-case `b` means flat;
+                    upper-case `B` is the note, so `BB` is refused), optional
+                    `m` for minor.
+                  example: Bb
+                tempo:
+                  type: integer
+                  nullable: true
+                  minimum: 20
+                  maximum: 400
+                  description: BPM. Omit, send null, or send "" for unspecified.
+                  example: 96
+                time_signature:
+                  type: string
+                  description: >-
+                    `n/n` with both parts >= 1. Omit or send "" for
+                    unspecified — stored as the empty string, never null.
+                  example: 4/4
       responses:
         "200":
-          description: Stored
+          description: Stored. Echoes the values as persisted.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SuccessResponse" }
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  key:
+                    type: object
+                    properties:
+                      originalKey:   { type: string, example: Bb }
+                      tempo:         { type: integer, nullable: true, example: 96 }
+                      timeSignature: { type: string, example: 4/4 }
+        "400":
+          description: |
+            Validation failure. `reason` is one of `body_invalid`,
+            `song_id_required`, `song_id_too_long`, `key_required`,
+            `key_invalid`, `tempo_invalid`, `time_signature_invalid`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:  { type: string }
+                  reason: { type: string, example: tempo_invalid }
+        "401": { description: "Not authenticated." }
+        "403": { description: "Authenticated, but the role lacks `edit_songs`." }
+        "404":
+          description: "`reason: song_not_found` — no such SongId. Checked before the write, because the FK would otherwise raise a 500."
+        "405": { description: "POST required." }
 
   /api.php?action=song_revisions:
     get:

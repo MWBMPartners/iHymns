@@ -242,4 +242,121 @@ export const editorApi = {
     updateArrangement: (songId, arrangement)     => postJson('arrangement_update', { songId: songId, arrangement: arrangement }),
 };
 
+/* ==========================================================================
+ *  THE ONE OTHER ENDPOINT THIS EDITOR TALKS TO — /api (#298 song keys, #1671 F3)
+ *
+ *  ELI5: musical key, tempo and time signature live on a different server file
+ *  from everything else in this editor, so they get their own two functions
+ *  here rather than a second copy of "how to call the server" in the panel.
+ *
+ *  WHY NOT api2.php. `tblSongKeys` already has a complete, public, documented
+ *  pair — `?action=song_key` (GET) and `?action=song_key_save` (POST) — used by
+ *  the public song page too. Re-implementing them as api2 actions would be a
+ *  second writer for one table, which is the fork the modularity rule exists to
+ *  prevent, and would leave the original pair orphaned again.
+ *
+ *  WHY NOT js/utils/api-client.js's `apiFetch` (rule #31). That module is the
+ *  PUBLIC SPA's client: it dispatches the SPA's offline/online events, attaches
+ *  the reader's `X-Preferred-Languages` filter, and reads an auth-header
+ *  provider that only `js/app.js` installs. None of that exists or belongs
+ *  inside /manage, whose tree already has exactly one client — this file. The
+ *  spirit of rule #31 is "one client per tree, by structure, never a global
+ *  patch"; two clients in two trees satisfies it, importing the SPA's into the
+ *  admin bundle would not.
+ *
+ *  WHAT MAKES THE WRITE WORK. `api.php` refuses EVERY POST without
+ *  `X-Requested-With: XMLHttpRequest` (its top-of-file CSRF gate), and
+ *  authenticates from the `ihymns_auth` cookie a /manage sign-in mints
+ *  (`mintCrossSurfaceAuthToken()`, #1377) when no bearer token is present.
+ *  `credentials: 'same-origin'` is what sends that cookie.
+ *
+ *  BOTH HELPERS ATTACH `err.status` — callers branch on the NUMBER, never on
+ *  the server's sentence (rule #35 / #1677). It matters concretely here: 401
+ *  means "this admin session has no app-API cookie, sign in again", 403 means
+ *  "your role lacks edit_songs", and 404 on the GET is the ordinary "this song
+ *  has no key recorded" — three completely different things to say.
+ * ========================================================================== */
+
+const PUBLIC_API = '/api';
+
+/**
+ * Turn a non-OK /api response into a throw that remembers its status.
+ *
+ * @param {Response} res
+ * @returns {Promise<Error>}
+ */
+async function publicApiError(res) {
+    let msg = '';
+    try {
+        const data = await res.json();
+        if (data && typeof data.error === 'string') msg = data.error;
+    } catch (_e) { /* non-JSON body (an HTML error page from a 500) */ }
+    const err = new Error(msg || ('HTTP ' + res.status));
+    err.status = res.status;
+    return err;
+}
+
+/**
+ * Read a song's stored key, or null when it has none.
+ *
+ * The 404 is the NORMAL answer — `tblSongKeys` is sparse — so it is translated
+ * into `null` here rather than thrown, and only a genuine failure throws.
+ *
+ * @param {string} songId
+ * @returns {Promise<{originalKey:string, tempo:number|null, timeSignature:string}|null>}
+ */
+export async function songKeyGet(songId) {
+    const res = await fetch(
+        PUBLIC_API + '?action=song_key&id=' + encodeURIComponent(songId),
+        {
+            credentials: 'same-origin',
+            headers: { 'Accept': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+        }
+    );
+    if (res.status === 404) return null;
+    if (!res.ok) throw await publicApiError(res);
+    const data = await res.json();
+    return data && data.key ? data.key : null;
+}
+
+/**
+ * Save a song's key. Resolves with the STORED values the server echoes back.
+ *
+ * The echo is load-bearing: the server normalises (`bB` → `Bb`, an omitted time
+ * signature → `''`), so a caller that kept its own copy would display something
+ * the database does not hold.
+ *
+ * @param {string} songId
+ * @param {{originalKey:string, tempo:number|null, timeSignature:string}} key
+ * @returns {Promise<{originalKey:string, tempo:number|null, timeSignature:string}>}
+ */
+export async function songKeySave(songId, key) {
+    const res = await fetch(PUBLIC_API + '?action=song_key_save', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            /* The header api.php's global POST gate actually checks. Without it
+               every save here is a flat 403 — the exact #1677 failure the v2
+               client had against api2.php for months. */
+            'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({
+            song_id:        songId,
+            original_key:   key.originalKey,
+            tempo:          key.tempo,
+            time_signature: key.timeSignature,
+        }),
+    });
+    if (!res.ok) throw await publicApiError(res);
+    const data = await res.json();
+    if (!data || data.ok !== true) {
+        const err = new Error((data && data.error) || 'Save failed.');
+        err.status = res.status;
+        throw err;
+    }
+    return data.key;
+}
+
 export { csrfToken };

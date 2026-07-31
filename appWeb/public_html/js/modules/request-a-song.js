@@ -356,6 +356,21 @@ export function initRequestASong(params = {}) {
                 if (idEl) idEl.textContent = data.trackingId ? `Reference: #${data.trackingId}` : '';
                 ui.ok?.classList.remove('d-none');
                 form.reset();
+
+                /* #1671 F2 — refresh "Your requests" so the submission the user
+                   just made appears immediately. A user who sends a request and
+                   does not see it in the list directly below reasonably
+                   concludes the list is broken.
+                   A direct call through a dynamic import rather than a custom
+                   DOM event: an event name is a second thing two files have to
+                   agree about with nothing enforcing it (rule #35 / #1581), and
+                   there is exactly one caller. Dynamic so the module is not
+                   pulled in for a signed-out visitor who never sees the list,
+                   and `.catch` so a chunk-load blip can never turn a SUCCESSFUL
+                   submission into a visible error. */
+                import('./my-song-requests.js')
+                    .then(m => m.refreshMySongRequests())
+                    .catch(() => { /* the router will render it on next visit */ });
             } catch (err) {
                 /* fetch() rejects with a TypeError when the request never left
                    the device (DNS failure, or going offline between the

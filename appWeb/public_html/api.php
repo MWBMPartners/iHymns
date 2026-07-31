@@ -7858,6 +7858,35 @@ if ($action !== null) {
          * POST body (JSON):
          *   { "song_id": "CP-0001", "original_key": "G",
          *     "tempo": 120, "time_signature": "4/4" }
+         *
+         * #1671 F3 — this endpoint was dispatched from #298 onward with NO
+         * caller anywhere, so nothing ever ran it. Building its UI found three
+         * guaranteed 500s and one missing distinction:
+         *
+         *   (a) it bound NULL into `TimeSignature`, which is NOT NULL — so
+         *       saving a key without a time signature always threw (mysqli
+         *       under MYSQLI_REPORT_STRICT raises, it does not return false);
+         *   (b) it capped `original_key` at 10 chars for a VARCHAR(5) column;
+         *   (c) it `(int)`-cast `tempo` into an INT UNSIGNED column, so a
+         *       negative number was an out-of-range throw rather than a 400;
+         *   (d) an unknown song_id hit `fk_SongKeys_Song` and threw 1452 —
+         *       a 500 where a 404 belongs.
+         *
+         * (a)-(c) are now decided by the pure `songKeyValidate()` in
+         * includes/song_key.php, which `tests/php/test-song-key.php` CALLS
+         * (never greps). (d) is the existence probe below.
+         *
+         * The gate also changed from a hardcoded `['editor','admin',
+         * 'global_admin']` role list to `userHasEntitlement('edit_songs', …)`.
+         * That list was byte-identical to `edit_songs` in
+         * includes/entitlements.php, so the set of roles allowed is unchanged
+         * today — but a hardcoded copy of a central map is a CLAUDE.md red
+         * flag, and since #1590 an operator can retune `edit_songs` on
+         * /manage/entitlements. With the copy in place, that control silently
+         * did nothing here. Splitting 401 from 403 matters too: the editor UI
+         * needs to tell "your admin session is not linked to the app API,
+         * sign in again" apart from "your role cannot edit songs", and a
+         * single 403 for both made that impossible (rule #35).
          * ----------------------------------------------------------------- */
         case 'song_key_save':
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -7866,29 +7895,43 @@ if ($action !== null) {
             }
 
             $authUser = getAuthenticatedUser();
-            if (!$authUser || !in_array($authUser['Role'], ['editor', 'admin', 'global_admin'])) {
+            if (!$authUser) {
+                sendJson(['error' => 'Not authenticated.'], 401);
+                break;
+            }
+            if (!userHasEntitlement('edit_songs', $authUser['Role'] ?? null)) {
                 sendJson(['error' => 'Editor access required.'], 403);
                 break;
             }
 
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_key.php';
 
-            $keySongId      = trim($body['song_id'] ?? '');
-            $originalKey    = mb_substr(trim($body['original_key'] ?? ''), 0, 10);
-            $tempo          = isset($body['tempo']) ? (int)$body['tempo'] : null;
-            $timeSignature  = mb_substr(trim($body['time_signature'] ?? ''), 0, 10);
-
-            if ($keySongId === '') {
-                sendJson(['error' => 'song_id is required.'], 400);
+            $keyResult = songKeyValidate(json_decode((string)file_get_contents('php://input'), true));
+            if ($keyResult['ok'] !== true) {
+                sendJson(['error' => $keyResult['error'], 'reason' => $keyResult['reason']], 400);
                 break;
             }
-            if ($originalKey === '') {
-                sendJson(['error' => 'original_key is required.'], 400);
-                break;
-            }
+
+            $keySongId     = $keyResult['songId'];
+            $originalKey   = $keyResult['originalKey'];
+            $tempo         = $keyResult['tempo'];          /* int|null — column is NULL-able */
+            $timeSignature = $keyResult['timeSignature'];  /* ALWAYS a string — column is NOT NULL */
 
             $db = getDbMysqli();
+
+            /* The song must exist, or the FK throws 1452 and the caller gets a
+               500 that explains nothing. Checked BEFORE the write so the
+               refusal costs one indexed lookup and changes nothing. */
+            $keyExists = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $keyExists->bind_param('s', $keySongId);
+            $keyExists->execute();
+            $keySongFound = $keyExists->get_result()->fetch_row() !== null;
+            $keyExists->close();
+            if (!$keySongFound) {
+                sendJson(['error' => 'Unknown song.', 'reason' => 'song_not_found'], 404);
+                break;
+            }
+
             $stmt = $db->prepare(
                 'INSERT INTO tblSongKeys (SongId, OriginalKey, Tempo, TimeSignature)
                  VALUES (?, ?, ?, ?)
@@ -7897,12 +7940,32 @@ if ($action !== null) {
                     Tempo = VALUES(Tempo),
                     TimeSignature = VALUES(TimeSignature)'
             );
-            $tsOrNull = $timeSignature !== '' ? $timeSignature : null;
-            $stmt->bind_param('ssis', $keySongId, $originalKey, $tempo, $tsOrNull);
+            $stmt->bind_param('ssis', $keySongId, $originalKey, $tempo, $timeSignature);
             $stmt->execute();
             $stmt->close();
 
-            sendJson(['ok' => true]);
+            /* Audit (#535 convention) — this is a curator write to song data and
+               had no logging at all, unlike every neighbouring song mutation. */
+            logActivity('song.key_save', 'song', $keySongId, [
+                'key'            => $originalKey,
+                'tempo'          => $tempo,
+                'time_signature' => $timeSignature,
+            ], 'success', (int)$authUser['Id']);
+
+            /* Echo the STORED values back, not the request. The normaliser
+               rewrites what it was given — `g` becomes `G`, `CM` becomes `Cm`,
+               an omitted time signature becomes `''` — so a client that trusted
+               its own copy would display something the database does not hold.
+               The v2 editor panel writes this response into its fields for
+               exactly that reason. */
+            sendJson([
+                'ok'  => true,
+                'key' => [
+                    'originalKey'   => $originalKey,
+                    'tempo'         => $tempo,
+                    'timeSignature' => $timeSignature,
+                ],
+            ]);
             break;
 
         /* =================================================================
