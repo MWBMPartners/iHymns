@@ -50,8 +50,16 @@ if ($song === null) {
     }
 
     /* No live target — a tombstone (removed/merged with no replacement) reads as
-       "removed" (410 Gone) rather than the generic "not found" (404). */
-    $rdGone = (bool)$rd['redirected'];
+       "removed" (410 Gone) rather than the generic "not found" (404).
+
+       #1694 D2 — a SOFT-DELETED song reads as "removed" too. Separate consult,
+       fails OPEN: un-migrated installs and transient probe failures keep
+       today's 404, never turn a live page into a 410. This fragment is a
+       shared-cache response (page=song is in $_cacheablePages) and the
+       visibility flag is GLOBAL, not per-viewer, so caching the 410 is safe
+       (rule #6). */
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+    $rdGone = (bool)$rd['redirected'] || songSoftDeletedHolds(getDbMysqli(), (string)$songId);
     http_response_code($rdGone ? 410 : 404);
     if (function_exists('renderErrorFragment')) {
         echo renderErrorFragment(404, [
@@ -369,6 +377,7 @@ try {
 
     if ($hasLinksTable) {
         $sid = (string)($song['id'] ?? '');
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $stmt = $translationsDb->prepare(
             'SELECT s.SongId       AS song_id,
                     s.Title        AS title,
@@ -382,8 +391,9 @@ try {
                JOIN tblSongs s         ON s.SongId = other.SongId
                JOIN tblSongbooks sb    ON sb.Abbreviation = s.SongbookAbbr
               WHERE self.SongId = ?
+                AND ' . songVisibleSql($translationsDb, 's') . '
               ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-        );
+        );   /* #1694 — a hidden counterpart stays off the panel */
         if ($stmt !== false) {
             $stmt->bind_param('s', $sid);
             $stmt->execute();

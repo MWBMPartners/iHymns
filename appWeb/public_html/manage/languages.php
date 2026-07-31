@@ -299,6 +299,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    row 'en' surfaces every 'en', 'en-GB', 'en-US' that
                    uses it. */
                 $likePrefix = $code . '-%';
+                /* @deleted-visible: refuse-on-cite integrity count (#1694) — a
+                   soft-deleted song still cites the language and would come
+                   back citing it on restore, so it must keep blocking the
+                   delete. */
                 $stmt = $db->prepare(
                     'SELECT
                         (SELECT COUNT(*) FROM tblSongs     WHERE Language = ? OR Language LIKE ?) AS songs,

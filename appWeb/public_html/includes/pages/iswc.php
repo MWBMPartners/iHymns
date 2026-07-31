@@ -39,13 +39,14 @@ $iswcWorkTitle    = '';
 if ($iswcCode !== '') {
     try {
         $idb = getDbMysqli();
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $stmt = $idb->prepare(
             "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
                FROM tblSongs s
                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-              WHERE s.Iswc = ?
+              WHERE s.Iswc = ? AND " . songVisibleSql($idb, 's') . "
               ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
-        );
+        );   /* #1694 — visible songs only */
         $stmt->bind_param('s', $iswcCode);
         $stmt->execute();
         $iswcRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);

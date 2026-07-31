@@ -25,6 +25,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'activity_log.php';
 
 if (!isAuthenticated()) {
@@ -92,8 +93,9 @@ if ($hasSchema
                   FROM tblSongs s
                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  WHERE (s.Title LIKE ? OR s.SongId LIKE ?)
+                   AND " . songVisibleSql($db, 's') . "
                  ORDER BY s.Title ASC
-                 LIMIT ?";
+                 LIMIT ?";   /* #1694 — hidden songs are not offered for membership */
         $stmt = $db->prepare($sql);
         $stmt->bind_param('ssi', $like, $like, $limit);
         $stmt->execute();
@@ -310,8 +312,9 @@ if ($hasSchema && !empty($catalogues)) {
                FROM tblCatalogueSongs cs
                JOIN tblSongs s ON s.SongId = cs.SongId
                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+              WHERE ' . songVisibleSql($db, 's') . '
               ORDER BY cs.CatalogueId ASC, cs.SortOrder ASC, s.Title ASC'
-        );
+        );   /* #1694 — membership survives; the panel hides hidden members */
         $stmt->execute();
         foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $r) {
             $membersByCatalogueId[(int)$r['CatalogueId']][] = $r;

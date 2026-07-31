@@ -42,6 +42,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 /* Shared credit-people helpers (#719 PR 2d) — link-type catalogue +
    normalisers + flag-columns-exist probe. Same helpers used by the
    admin_credit_person_* API endpoints in /api.php so a tweak to the
@@ -216,10 +217,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
         ];
         $byRole = [];
         foreach ($tables as $role => $tbl) {
+            /* #1694 — visible songs only, matching the public person page.
+               (Person merges/renames rewrite tblSong* rows BY NAME, unfiltered,
+               so hidden rows are still correctly rewritten either way.) */
             $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
                       FROM {$tbl} c
                       JOIN tblSongs s ON s.SongId = c.SongId
-                     WHERE c.Name = ?
+                     WHERE c.Name = ? AND " . songVisibleSql($db, 's') . "
                      ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
             $stmt = $db->prepare($sql);
             $stmt->bind_param('s', $name);

@@ -49,6 +49,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_similarity.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';   /* #1343 */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -126,8 +127,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             exit;
         }
 
-        /* Both must exist. */
-        $chk = $db->prepare('SELECT SongId FROM tblSongs WHERE SongId IN (?, ?)');
+        /* Both must exist AND be visible (#1694) — a soft-deleted song is
+           never OFFERED for merge (the listings below are filtered), so a
+           merge naming one is a stale request; refuse rather than destroy or
+           resurrect. Restore first, then merge. */
+        $chk = $db->prepare('SELECT SongId FROM tblSongs WHERE SongId IN (?, ?) AND ' . songVisibleSql($db, ''));
         $chk->bind_param('ss', $survivor, $duplicate);
         $chk->execute();
         $found = [];
@@ -275,8 +279,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $ph    = implode(',', array_fill(0, count($ids), '?'));
             $types = str_repeat('s', count($ids));
 
-            /* All must exist. */
-            $chk = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+            /* All must exist AND be visible (#1694 — same stale-request
+               reasoning as the merge gate above). */
+            $chk = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph) AND " . songVisibleSql($db, ''));
             $chk->bind_param($types, ...$ids);
             $chk->execute();
             $exist = [];
@@ -623,8 +628,9 @@ $res = $db->query(
             s.Isrc, s.Iswc, s.Ccli,
             COALESCE(sb.IsOfficial, 0) AS IsOfficial, sb.Name AS SongbookName
        FROM tblSongs s
-       LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr'
-);
+       LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+      WHERE ' . songVisibleSql($db, 's')
+);   /* #1694 — a hidden song must not be offered for merge/link */
 if ($res) {
     while ($row = $res->fetch_assoc()) { $songs[(string)$row['SongId']] = $row; }
     $res->close();
@@ -763,9 +769,9 @@ foreach (array_chunk($candidateIds, 200) as $chunk) {
            FROM tblSongs s
            LEFT JOIN tblSongWriters   w ON w.SongId = s.SongId
            LEFT JOIN tblSongComposers c ON c.SongId = s.SongId
-          WHERE s.SongId IN ($ph)
+          WHERE s.SongId IN ($ph) AND " . songVisibleSql($db, 's') . "
           GROUP BY s.SongId"
-    );
+    );   /* #1694 — belt-and-braces; the id chunks come from the filtered cheap pass */
     $stmt->bind_param($types, ...$chunk);
     $stmt->execute();
     $rr = $stmt->get_result();

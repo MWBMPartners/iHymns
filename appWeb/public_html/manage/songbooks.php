@@ -17,6 +17,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1694 — soft-delete visibility predicate for the admin list's ActualSongCount. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook-palette.php';
 /* Shared validators (#719 PR 2a) — same rules used by the admin_songbook_*
    API endpoints in /api.php. Single source of truth so a tweak to the
@@ -591,6 +593,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
         }
         $abbr = (string)$row['Abbreviation'];
 
+        /* @deleted-visible: this preview must count the SAME rows the bulk
+           `UPDATE tblSongs SET Language …` below will touch — and that write
+           is deliberately unfiltered (#1694: writing a hidden row is harmless
+           and restore-preserving). A filtered preview would under-state what
+           the confirm dialog is confirming. */
         $stmt = $db->prepare(
             "SELECT
                 SUM(CASE WHEN Language IS NULL OR Language = '' THEN 1 ELSE 0 END) AS untagged,
@@ -606,6 +613,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
         /* Sample distinct existing tags for the confirm dialog —
            the curator wants to know what they're about to overwrite.
            Capped at 10 so the dialog stays readable. */
+        /* @deleted-visible: same reason as the counts above — the sample
+           shows what the unfiltered overwrite would replace. */
         $stmt = $db->prepare(
             "SELECT DISTINCT Language
                FROM tblSongs
@@ -1665,6 +1674,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $abbr = (string)($row[0] ?? '');
                 if ($abbr === '') { $error = 'Songbook not found.'; break; }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — the FK on
+                   SongbookAbbr is ON DELETE RESTRICT, so the refusal must
+                   count every row that would block the delete, hidden ones
+                   included. Mirrors api.php's admin_songbook_delete. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -1736,6 +1749,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 /* Count how many songs we're about to delete so we can
                    report it in the success banner + Activity Log. */
+                /* @deleted-visible: PHYSICAL row count (#1694) — reports how
+                   many rows the cascade DELETE below will destroy, hidden
+                   ones included. Mirrors api.php's _cascade handler. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -2412,10 +2428,13 @@ try {
                 b.Copyright, b.Affiliation' . $langSelect . $placeSelect . $bibSelect . $parentSelect . $displayAbbrSelect . ',
                 COUNT(s.Id) AS ActualSongCount
            FROM tblSongbooks b
-           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation' . $parentJoin . '
+           LEFT JOIN tblSongs s ON s.SongbookAbbr = b.Abbreviation
+                               AND ' . songVisibleSql($db, 's') . $parentJoin . '
           GROUP BY b.Id
           ORDER BY b.DisplayOrder ASC, b.Name ASC'
-    );
+    );   /* #1694 — ActualSongCount counts VISIBLE songs, matching the D1
+            definition the cached SongCount now carries (predicate lives in the
+            LEFT JOIN ON clause so bookless rows still list) */
     $stmt->execute();
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();

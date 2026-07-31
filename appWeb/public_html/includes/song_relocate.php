@@ -318,6 +318,12 @@ function songRelocateIsTransactionFatal(\Throwable $e): bool
  */
 function songRelocateIdTaken(\mysqli $db, string $songId): bool
 {
+    /* @deleted-visible: THE taken-probe (#1694) — a soft-deleted song's id IS
+       taken: the row still exists and still holds the SongId UNIQUE key.
+       "Helpfully" adding the visibility predicate here would make a mint
+       believe the id free and then 500 on the duplicate key at INSERT time.
+       test-song-soft-delete.php pins this with a recording double — the probe
+       must recognise a soft-deleted row as taken. */
     $live = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $live->bind_param('s', $songId);
     $live->execute();
@@ -1265,7 +1271,11 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
     ];
     if ($oldSongId === '' || $targetAbbr === '') { return $noop; }
 
-    /* 1 — where does the song live right now? */
+    /* 1 — where does the song live right now?
+
+       @deleted-visible: write-path state read (#1694) — relocating a hidden
+       song (e.g. via a repair funnel) must keep working; visibility is not
+       this function's question. */
     $cur = $db->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
     $cur->bind_param('s', $oldSongId);
     $cur->execute();
@@ -1350,9 +1360,14 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
        best-effort, because a cache recompute must never roll back the move
        itself — it self-heals on the next pass (#791). */
     try {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs; this app-side
+               recompute must agree with the (predicate-aware) triggers or a
+               relocate on a trigger-denied host would write the stale
+               unfiltered number back. */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         foreach ([$targetAbbr, $currentAbbr] as $abbr) {

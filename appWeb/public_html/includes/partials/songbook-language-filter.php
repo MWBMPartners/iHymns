@@ -91,11 +91,13 @@ try {
     $hasSongLangCol = $probe->get_result()->fetch_row() !== null;
     $probe->close();
     if ($hasSongLangCol) {
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $stmt = $db->prepare(
             "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                FROM tblSongs
-              WHERE Language IS NOT NULL AND Language <> ''"
-        );
+              WHERE Language IS NOT NULL AND Language <> ''
+                AND " . songVisibleSql($db, '')
+        );   /* #1694 — a hidden song's language mints no filter chip */
         $stmt->execute();
         $res = $stmt->get_result();
         while ($row = $res->fetch_row()) {

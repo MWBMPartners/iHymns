@@ -280,7 +280,9 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
     $status        = (string)($opts['status'] ?? 'pending_review');
     $submittedBy   = isset($opts['submittedBy']) ? (int)$opts['submittedBy'] : null;
 
-    /* Song must exist (FK would reject anyway, but a clear error is nicer). */
+    /* Song must exist (FK would reject anyway, but a clear error is nicer).
+       @deleted-visible: write-path FK pre-check (#1694) — ingesting lyrics
+       into a hidden row is harmless and restore-preserving. */
     $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $chk->bind_param('s', $songId);
     $chk->execute();
@@ -433,7 +435,12 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
 {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
 
-    /* 1. Explicit songId → verify it exists. */
+    /* 1. Explicit songId → verify it exists.
+
+       @deleted-visible: ingest identity RESOLVER (#1694, this and the ISRC /
+       title matches below) — matching the hidden row preserves single
+       identity: the ingest attaches to it and everything reconciles on
+       restore, instead of minting a duplicate that collides then. */
     $songId = trim((string)($payload['songId'] ?? $payload['song_id'] ?? ''));
     if ($songId !== '') {
         $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
@@ -450,6 +457,7 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
     /* 2. Match by ISRC (exact) — the strongest signal once songs carry one. */
     $isrc = trim((string)($payload['isrc'] ?? ''));
     if ($isrc !== '') {
+        /* @deleted-visible: identity resolver — see the marker at step 1. */
         $st = $db->prepare('SELECT SongId FROM tblSongs WHERE Isrc = ? LIMIT 1');
         $st->bind_param('s', $isrc);
         $st->execute();
@@ -469,6 +477,7 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
     if ($norm !== '') {
         $candidates = [];
         /* Exact-title fast path. */
+        /* @deleted-visible: identity resolver — see the marker at step 1. */
         $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title = ? LIMIT 50');
         $st->bind_param('s', $title);
         $st->execute();
@@ -481,6 +490,7 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
             $firstWord = preg_split('/\s+/', $norm)[0] ?? '';
             if ($firstWord !== '' && mb_strlen($firstWord) >= 2) {
                 $like = '%' . $firstWord . '%';
+                /* @deleted-visible: identity resolver — see the marker at step 1. */
                 $st = $db->prepare('SELECT SongId, Title FROM tblSongs WHERE Title LIKE ? LIMIT 300');
                 $st->bind_param('s', $like);
                 $st->execute();
@@ -570,6 +580,9 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
         $songId = '';
         for ($try = 0; $try < 5; $try++) {
+            /* @deleted-visible: id MINT SEED (#1694) — a hidden song keeps
+               its id reserved; songRelocateIdTaken() below shares the same
+               contract. */
             $st = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId LIKE ? ORDER BY LENGTH(SongId) DESC, SongId DESC LIMIT 1");
             $like = $abbr . '-%';
             $st->bind_param('s', $like);

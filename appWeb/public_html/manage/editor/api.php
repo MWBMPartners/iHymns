@@ -58,6 +58,10 @@ if (!$currentUser || !hasRole($currentUser['role'], 'editor')) {
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'config.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
+/* #1694 — song soft-delete predicate. Filtered sites below degrade to '1=1'
+   un-migrated; the delete/restore-adjacent reads stay deliberately unfiltered
+   (see their @deleted-visible markers). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 /* Places adoption helper — exposes placeColumnExists() so the
    save_song path persists OriginCityId alongside the legacy
    OriginCity display string only when the places-adoption
@@ -413,8 +417,9 @@ switch ($action) {
                        JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                       WHERE l.GroupId = ?
                         AND l.SongId  <> ?
+                        AND ' . songVisibleSql($db, 's') . '
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-                );
+                );   /* #1694 — hidden counterparts stay off the editor panel */
                 $stmt->bind_param('is', $groupId, $songId);
                 $stmt->execute();
                 $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -479,7 +484,10 @@ switch ($action) {
                cheaper than catching an FK violation after a partial
                INSERT. */
             $probe = $db->prepare(
-                'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?)'
+                /* #1694 — filtered: a hidden song cannot be LINKED to (it is
+                   not offered anywhere, so a link request naming one is stale
+                   — refuse with the existing not-found answer; restore first). */
+                'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?) AND ' . songVisibleSql($db, '')
             );
             $probe->bind_param('ss', $srcId, $tgtId);
             $probe->execute();
@@ -705,8 +713,8 @@ switch ($action) {
                         b.Number    AS numberB,
                         b.SongbookAbbr AS songbookB
                    FROM tblSongLinkSuggestions s
-                   JOIN tblSongs a ON a.SongId = s.SongIdA
-                   JOIN tblSongs b ON b.SongId = s.SongIdB
+                   JOIN tblSongs a ON a.SongId = s.SongIdA AND ' . songVisibleSql($db, 'a') . '
+                   JOIN tblSongs b ON b.SongId = s.SongIdB AND ' . songVisibleSql($db, 'b') . '
                   WHERE (s.SongIdA = ? OR s.SongIdB = ?)
                     AND NOT EXISTS (
                         SELECT 1 FROM tblSongLinkSuggestionsDismissed d
@@ -1023,6 +1031,9 @@ switch ($action) {
                song WAS saved but its persisted SongId differs from
                the editor's local copy). #960-follow-up */
             if (!empty($songIds)) {
+                /* @deleted-visible: write-path FK pre-check (#1694) — tagging a
+                   hidden row is harmless and restore-preserving; filtering here
+                   would misreport a real row as "missing" mid-save. */
                 $place      = implode(',', array_fill(0, count($songIds), '?'));
                 $checkStmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($place)");
                 $checkStmt->bind_param(str_repeat('s', count($songIds)), ...$songIds);
@@ -1253,6 +1264,9 @@ switch ($action) {
             /* Capture the current state so the new revision row's
                PreviousData matches reality (not the stale PreviousData
                from the chosen row). */
+            /* @deleted-visible: revision-restore snapshot capture (#1694) —
+               repairing a hidden song's data must keep working; the editor's
+               LISTS go dark instead (restore-first workflow). */
             $cur = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
             $cur->bind_param('s', $songId);
             $cur->execute();
@@ -2830,6 +2844,9 @@ switch ($action) {
                them. */
             $placeholders = implode(',', array_fill(0, count($skipped), '?'));
             $types        = str_repeat('s', count($skipped));
+            /* @deleted-visible: audit CSV (#1694) — a skip happened because
+               the row EXISTED at import time; resolving its title must not
+               depend on later visibility. */
             $look = $db->prepare(
                 "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
                    FROM tblSongs s
@@ -3009,7 +3026,9 @@ switch ($action) {
                 break;
             }
 
-            /* Song must exist — gives a clean 404 instead of an FK violation. */
+            /* Song must exist — gives a clean 404 instead of an FK violation.
+               @deleted-visible: write-path FK pre-check (#1694) — media attached
+               to a hidden row survives restore; the FK holds either way. */
             $stmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
             $stmt->bind_param('s', $songId);
             $stmt->execute();
@@ -3429,6 +3448,10 @@ switch ($action) {
             $db = getDbMysqli();
             $db->begin_transaction();
             /* Snapshot for the audit trail before the row vanishes. */
+            /* @deleted-visible: the DELETE path (#1694) — these pre-reads must
+               find the row REGARDLESS of visibility (a purge of an already-
+               soft-deleted song reaches here; commit 4 delegates this body to
+               songSoftDelete()/songPurge()). */
             $delPrev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
             $delPrev->bind_param('s', $delSongId);
             $delPrev->execute();

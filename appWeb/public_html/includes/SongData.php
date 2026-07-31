@@ -214,6 +214,32 @@ class SongData
         $this->db = getDbMysqli();
     }
 
+    /**
+     * #1694 — the soft-delete visibility predicate, for every SELECT this
+     * class builds against tblSongs.
+     *
+     * ELI5: the little "and it isn't deleted" clause each song query glues
+     * onto its WHERE — or a harmless "1=1" before the migration has run.
+     *
+     * ONE delegate to the ONE shared unit (songVisibleSql(), which gates on
+     * songSoftDeleteReady() — the #1228 STRICT-mode lesson: an ungated
+     * IsDeleted reference on an un-migrated docroot would THROW and
+     * white-screen every song surface). Call sites embed it UNCONDITIONALLY
+     * after WHERE/AND: migrated it reads `s.IsDeleted = 0`, un-migrated it
+     * degrades to `1=1`, so the SQL stays valid either way with zero
+     * per-site branching. Same require_once + $this->db delegate shape as
+     * the songRedirectClaimsId() consult in getSongById().
+     *
+     * @param string $alias Table alias to prefix ('' for un-aliased queries).
+     * @return string SQL predicate fragment — a hardcoded constant from PHP
+     *                source (rule #5 clause a), never runtime data.
+     */
+    private function _visible(string $alias = 's'): string
+    {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        return songVisibleSql($this->db, $alias);
+    }
+
     /* =====================================================================
      * METADATA METHODS
      * ===================================================================== */
@@ -229,7 +255,10 @@ class SongData
             return $this->jsonData['meta'] ?? [];
         }
 
-        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs");
+        /* #1694 D1 — totalSongs means VISIBLE songs (owner: "ideally
+           accessible", deliberately NOT per-user), so the soft-delete
+           predicate applies here exactly as it does on the tiles. */
+        $stmt = $this->db->prepare("SELECT COUNT(*) AS total FROM tblSongs WHERE " . $this->_visible(''));
         $stmt->execute();
         $result = $stmt->get_result();
         $totalSongs = (int)$result->fetch_assoc()['total'];
@@ -238,13 +267,15 @@ class SongData
         /* #963 — only count songbooks that have at least one song.
            Empty placeholder rows in tblSongbooks would otherwise
            inflate the home-page "N Songbooks" badge and the PWA
-           cache's meta.totalSongbooks. */
+           cache's meta.totalSongbooks. #1694 — "at least one song" now
+           means at least one VISIBLE song, matching totalSongs above. */
         $stmt = $this->db->prepare(
             "SELECT COUNT(*) AS total
                FROM tblSongbooks b
               WHERE EXISTS (
                   SELECT 1 FROM tblSongs s
                    WHERE s.SongbookAbbr = b.Abbreviation
+                     AND " . $this->_visible() . "
               )"
         );
         $stmt->execute();
@@ -285,12 +316,21 @@ class SongData
             return [];
         }
         try {
+            /* #1694 — every branch hides soft-deleted songs. The inward branch
+               already joins tblSongs (src) and just gains the predicate; the
+               outward + sibling branches list TranslatedSongId WITHOUT touching
+               tblSongs, so each gains a visibility JOIN — otherwise a deleted
+               translation target would still be OFFERED in the language picker
+               and the click would land on a 410 (the wrong-content class). The
+               joins are semantically neutral pre-delete: tblSongTranslations
+               rows always reference existing tblSongs rows (FK). */
             $sql = '
                 /* Outward — this song has translations to other languages */
                 SELECT t.TranslatedSongId AS song_id, t.TargetLanguage AS target_language,
                        l.Name AS language_name, l.NativeName AS native_name,
                        l.TextDirection AS text_direction, t.Translator AS translator, t.Verified AS verified
                   FROM tblSongTranslations t
+                  JOIN tblSongs tgt ON tgt.SongId = t.TranslatedSongId AND ' . $this->_visible('tgt') . '
                   JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  WHERE t.SourceSongId = ? AND l.IsActive = 1
                 UNION
@@ -299,7 +339,7 @@ class SongData
                        srcLang.Name AS language_name, srcLang.NativeName AS native_name,
                        srcLang.TextDirection AS text_direction, "" AS translator, 1 AS verified
                   FROM tblSongTranslations selfT
-                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId
+                  JOIN tblSongs src ON src.SongId = selfT.SourceSongId AND ' . $this->_visible('src') . '
                   JOIN tblLanguages srcLang ON srcLang.Code = src.Language
                  WHERE selfT.TranslatedSongId = ? AND srcLang.IsActive = 1
                 UNION
@@ -311,6 +351,7 @@ class SongData
                   JOIN tblSongTranslations sibling
                        ON sibling.SourceSongId = selfT2.SourceSongId
                       AND sibling.TranslatedSongId <> selfT2.TranslatedSongId
+                  JOIN tblSongs sib ON sib.SongId = sibling.TranslatedSongId AND ' . $this->_visible('sib') . '
                   JOIN tblLanguages l2 ON l2.Code = sibling.TargetLanguage
                  WHERE selfT2.TranslatedSongId = ? AND l2.IsActive = 1
             ';
@@ -746,7 +787,8 @@ class SongData
                            ) AS langs
                       FROM tblSongs
                      WHERE Language IS NOT NULL AND Language <> ''
-                     GROUP BY SongbookAbbr";
+                       AND " . $this->_visible('') . "
+                     GROUP BY SongbookAbbr";   /* #1694 — a hidden song's language must not mint a chip */
             $res = $this->db->query($sql);
             $out = [];
             if ($res) {
@@ -1210,8 +1252,10 @@ class SongData
             return null;
         }
         try {
+            /* #1694 — filtered: this powers the public parent-songbook deep
+               link (pages/song.php), and a hidden song must not be linked to. */
             $stmt = $this->db->prepare(
-                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1'
+                'SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? AND ' . $this->_visible('') . ' LIMIT 1'
             );
             $stmt->bind_param('si', $abbr, $number);
             $stmt->execute();
@@ -1571,7 +1615,8 @@ class SongData
             /* Step 1 — pull the source song's (SongbookAbbr, Number).
                Cheap, no joins. */
             $stmt = $this->db->prepare(
-                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? LIMIT 1'
+                /* #1694 — a hidden song has no counterparts panel to hang off. */
+                'SELECT SongbookAbbr, Number FROM tblSongs WHERE SongId = ? AND ' . $this->_visible('') . ' LIMIT 1'
             );
             $stmt->bind_param('s', $songId);
             $stmt->execute();
@@ -1611,7 +1656,8 @@ class SongData
                             b.Language AS bookLanguage
                        FROM tblSongs s
                        JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
-                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)";
+                      WHERE s.Number = ? AND s.SongbookAbbr IN ($ph)
+                        AND " . $this->_visible();   /* #1694 — hidden counterparts stay hidden */
             $stmt = $this->db->prepare($sql);
             $types = 'i' . str_repeat('s', count($candidates));
             $args  = array_merge([$number], $candidates);
@@ -1691,6 +1737,10 @@ class SongData
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $where[] = 's.LyricsPublicDomain = 1';
         }
+
+        /* #1694 — hidden songs never reach the paginated index (and the COUNT
+           above the page rows shares this $where, so `total` agrees). */
+        $where[] = $this->_visible();
 
         [$langWhere, $langTypes, $langParams] = applyLanguageFilterSql('s.Language', $langSubtags);
 
@@ -1784,13 +1834,16 @@ class SongData
                        s.Language AS language,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic{$pubCol}
                 FROM tblSongs s
-                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr";
+                LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                WHERE " . $this->_visible();   /* #1694 — the PWA index and the
+                editor sidebar both go dark on a hidden song (restore-first
+                workflow); '1=1' un-migrated keeps the clause always valid */
 
         /* Scoped variant (#1037). The abbreviation is BOUND, never interpolated
            (rule #5) — it reaches here from a URL segment. */
         $scoped = ($songbookAbbr !== null && $songbookAbbr !== '');
         if ($scoped) {
-            $sql .= " WHERE s.SongbookAbbr = ?";
+            $sql .= " AND s.SongbookAbbr = ?";
         }
 
         $sql .= " ORDER BY s.SongbookAbbr ASC,
@@ -1857,6 +1910,12 @@ class SongData
         if (APP_CONFIG['features']['public_domain_only'] ?? false) {
             $where[] = "s.LyricsPublicDomain = 1";
         }
+
+        /* #1694 — soft-deleted songs are invisible to every consumer of this
+           bulk read (songbook page, songbook_export, bulk_songs, bulk_audio,
+           sitemap). Unconditional: '1=1' un-migrated, so $where is now never
+           empty and the clause below always renders a WHERE. */
+        $where[] = $this->_visible();
 
         $whereClause = !empty($where) ? 'WHERE ' . implode(' AND ', $where) : '';
 
@@ -2027,10 +2086,14 @@ class SongData
            placeholder string is built from a hardcoded count() (never from
            user input) and every value is bound (CLAUDE.md SQL rule). */
         $placeholders = implode(',', array_fill(0, count($variants), '?'));
+        /* #1694 — the OR pair is PARENTHESISED so the visibility predicate
+           applies to BOTH branches (AND binds tighter than OR — appended bare,
+           it would only filter the composer branch). */
         $sql = "SELECT DISTINCT s.SongId
                   FROM tblSongs s
-                 WHERE s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
-                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders))";
+                 WHERE (s.SongId IN (SELECT SongId FROM tblSongWriters   WHERE LOWER(Name) IN ($placeholders))
+                    OR s.SongId IN (SELECT SongId FROM tblSongComposers WHERE LOWER(Name) IN ($placeholders)))
+                   AND " . $this->_visible();
         $stmt = $this->db->prepare($sql);
         /* Variants are bound twice — once for each subquery. */
         $types  = str_repeat('s', count($variants) * 2);
@@ -2146,6 +2209,26 @@ class SongData
                 if (songRedirectClaimsId($this->db, $id)) {
                     return null;
                 }
+                /* #1694 — a SOFT-DELETED id suppresses the guess too, for the
+                 * same #1689 reason: the filtered exact read above just MISSED
+                 * a row that still EXISTS, and falling through would serve
+                 * whatever now holds that number — 200 OK, wrong song, no
+                 * error anywhere.
+                 *
+                 * ELI5: if this exact song is merely hidden, say "nothing
+                 * here" instead of guessing a lookalike.
+                 *
+                 * A SEPARATE `if`, deliberately NOT a `||` widening of the
+                 * redirect-claim condition above: test-song-redirect-claim.php
+                 * asserts that `return null` is gated on songRedirectClaimsId()
+                 * ALONE (an added conjunct can only narrow when the
+                 * suppression fires, so the guard rejects any widening). The
+                 * probe fails OPEN — un-migrated installs and transient
+                 * failures degrade to today's fallback, never to a 404. */
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+                if (songSoftDeletedHolds($this->db, $id)) {
+                    return null;
+                }
             }
 
             return $this->getSongByNumber($prefix, $number);
@@ -2172,7 +2255,8 @@ class SongData
         }
 
         $stmt = $this->db->prepare(
-            "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? LIMIT 1"
+            /* #1694 — the number heuristic must never pick a hidden song. */
+            "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND Number = ? AND " . $this->_visible('') . " LIMIT 1"
         );
         $stmt->bind_param('si', $songbook, $number);
         $stmt->execute();
@@ -2236,7 +2320,8 @@ class SongData
                         $row = $this->_extrasRow(
                             'SELECT t.Id AS id, t.Name AS name, t.Slug AS slug, t.MeterCode AS meter, '
                           . 't.MusicBrainzWorkMBID AS musicBrainzWorkMbid '
-                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? LIMIT 1',
+                          . 'FROM tblTunes t JOIN tblSongs s ON s.TuneId = t.Id WHERE s.SongId = ? '
+                          . 'AND ' . $this->_visible() . ' LIMIT 1',   /* #1694 — belt-and-braces; callers already resolved a visible song */
                             's', [$songId]
                         );
                         if ($row !== null) { $out['tune'] = $row; }
@@ -2582,6 +2667,8 @@ class SongData
         $params = [$ftQuery];
         $types  = 's';
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[]  = 's.SongbookAbbr = ?';
             $params[] = $songbookId;
@@ -2648,6 +2735,8 @@ class SongData
             $types  = 's';
         }
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[]  = 's.SongbookAbbr = ?';
             $params[] = $songbookId;
@@ -2701,6 +2790,8 @@ class SongData
             $where  = ['SOUNDEX(s.Title) = SOUNDEX(?)'];
             $params = [$query];
             $types  = 's';
+
+            $where[] = $this->_visible();   /* #1694 — hidden songs never match */
 
             if ($songbookId !== null) {
                 $where[]  = 's.SongbookAbbr = ?';
@@ -2908,8 +2999,9 @@ class SongData
                             MATCH(s.Title) AGAINST(? IN BOOLEAN MODE) AS relevance
                      FROM tblSongs s
                      WHERE MATCH(s.Title) AGAINST(? IN BOOLEAN MODE)
+                       AND " . $this->_visible() . "
                      ORDER BY relevance DESC, s.SongbookAbbr, s.Number
-                     LIMIT ?";
+                     LIMIT ?";   /* #1694 — autocomplete must not offer hidden songs */
             $stmt = $this->db->prepare($sql);
             $stmt->bind_param('ssi', $expr, $expr, $limit);
             $stmt->execute();
@@ -2925,8 +3017,9 @@ class SongData
                             s.Language AS language
                      FROM tblSongs s
                      WHERE s.Title LIKE ?
+                       AND " . $this->_visible() . "
                      ORDER BY s.SongbookAbbr, s.Number
-                     LIMIT ?";
+                     LIMIT ?";   /* #1694 — same for the LIKE fallback */
             $stmt = $this->db->prepare($sql);
             $stmt->bind_param('si', $like, $limit);
             $stmt->execute();
@@ -2989,7 +3082,8 @@ class SongData
                        FROM tblSongAlternativeTitles a
                        JOIN tblSongs s ON s.SongId = a.SongId
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                      WHERE a.Title LIKE ?';
+                      WHERE a.Title LIKE ?
+                        AND ' . $this->_visible();   /* #1694 — hidden songs never match */
             $params = [$like];
             $types  = 's';
             if ($songbookId !== null) {
@@ -3057,7 +3151,13 @@ class SongData
                   JOIN tblSongTagMap m ON m.SongId = s.SongId
                   JOIN tblSongTags   t ON t.Id = m.TagId
                   LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                 WHERE t.Name IN (?, ?) OR t.Slug IN (?, ?)";
+                 WHERE (t.Name IN (?, ?) OR t.Slug IN (?, ?))
+                   AND " . $this->_visible();
+        /* #1694 — hidden songs never match. The Name/Slug OR pair is now
+           PARENTHESISED: appended AND clauses used to bind only to the Slug
+           branch (AND binds tighter than OR), which also means the pre-existing
+           `AND s.SongbookAbbr = ?` scope below never applied to Name matches —
+           a latent precedence bug this parenthesisation fixes as a side effect. */
         $types  = 'ssss';
         $params = [$scriptureRef, $book, $slugRef, $slugBook];
 
@@ -3134,8 +3234,9 @@ class SongData
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
              WHERE s.SongbookAbbr = ? AND CAST(s.Number AS CHAR) LIKE ?
+               AND " . $this->_visible() . "
              ORDER BY s.Number"
-        );
+        );   /* #1694 — number search must not surface hidden songs */
         $stmt->bind_param('ss', $songbookId, $likeNumber);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -3173,15 +3274,17 @@ class SongData
             $songs = $this->getSongs($songbookId);
             return empty($songs) ? null : $songs[random_int(0, count($songs) - 1)];
         }
+        /* #1694 — the shuffle pool excludes hidden songs (a random pick that
+           lands on one would 404 downstream when _fetchSongRow filters it). */
         if ($songbookId !== null) {
             $songbookId = strtoupper(trim($songbookId));
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE SongbookAbbr = ? AND " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
             );
             $stmt->bind_param('s', $songbookId);
         } else {
             $stmt = $this->db->prepare(
-                "SELECT SongId FROM tblSongs ORDER BY RAND() LIMIT 1"
+                "SELECT SongId FROM tblSongs WHERE " . $this->_visible('') . " ORDER BY RAND() LIMIT 1"
             );
         }
 
@@ -3259,7 +3362,14 @@ class SongData
     {
         $songbookId = strtoupper(trim($songbookId));
 
-        /* Get all existing song numbers for this songbook */
+        /* Get all existing song numbers for this songbook.
+
+           @deleted-visible: a soft-deleted song's number slot is still
+           OCCUPIED (#1694). The (SongbookAbbr, Number) index is NON-unique, so
+           if this read filtered, a hidden song's number would be listed as
+           "missing", a curator would fill the gap, and restoring the original
+           would produce a duplicate number with nothing to stop it. Physical
+           occupancy is the correct answer here. */
         $stmt = $this->db->prepare(
             "SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
         );
@@ -3343,9 +3453,9 @@ class SongData
                     {$pubSelect}
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-             WHERE s.SongId = ?
+             WHERE s.SongId = ? AND " . $this->_visible() . "
              LIMIT 1"
-        );
+        );   /* #1694 — THE per-record gate: every single-song read funnels here */
         $stmt->bind_param('s', $songId);
         $stmt->execute();
         $result = $stmt->get_result();
@@ -3640,6 +3750,10 @@ class SongData
      *  caller has already gated on _hasPublicIdColumn(). */
     private function _songIdForPublicId(string $publicId): ?string
     {
+        /* @deleted-visible: pure id RESOLVER (#1694) — the follow-up
+           _fetchSongRow() applies the visibility filter, and a deleted song's
+           PublicId must still resolve here or songSoftDeletedHolds() could
+           never recognise it (and the 410 answer would decay to a 404). */
         $stmt = $this->db->prepare('SELECT SongId FROM tblSongs WHERE PublicId = ? LIMIT 1');
         $stmt->bind_param('s', $publicId);
         $stmt->execute();
@@ -4198,6 +4312,8 @@ class SongData
         $params = [$likeQuery, $likeQuery];
         $types = 'ss';
 
+        $where[] = $this->_visible();   /* #1694 — hidden songs never match */
+
         if ($songbookId !== null) {
             $where[] = "s.SongbookAbbr = ?";
             $params[] = $songbookId;
@@ -4363,7 +4479,10 @@ class SongData
                           JOIN tblSongs s ON s.SongId = ws.SongId
                           LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                          WHERE ws.WorkId IN ($ph2)
+                           AND " . $this->_visible() . "
                          ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC";
+                         /* #1694 — membership rows survive a soft delete
+                            (CASCADE-safe); the PANEL just hides them */
             $stmt2 = $this->db->prepare($sql2);
             $types2 = str_repeat('i', count($widList));
             $stmt2->bind_param($types2, ...$widList);
@@ -4546,8 +4665,9 @@ class SongData
                    FROM tblWorkSongs ws
                    JOIN tblSongs s ON s.SongId = ws.SongId
                    LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                  WHERE ws.WorkId = ?
+                  WHERE ws.WorkId = ? AND ' . $this->_visible() . '
                   ORDER BY ws.IsCanonical DESC, s.SongbookAbbr ASC, s.Number ASC'
+                  /* #1694 — the public Work page hides deleted members */
             );
             $stmt->bind_param('i', $wid);
             $stmt->execute();
@@ -4748,8 +4868,9 @@ class SongData
                        FROM {$cfg['table']} c
                        JOIN tblSongs s ON s.SongId = c.SongId
                        LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                      WHERE c.Name = ?
+                      WHERE c.Name = ? AND " . $this->_visible() . "
                       ORDER BY s.SongbookAbbr ASC, s.Number ASC"
+                      /* #1694 — a discography lists visible songs only */
                 );
                 $stmt->bind_param('s', $matchName);
                 $stmt->execute();

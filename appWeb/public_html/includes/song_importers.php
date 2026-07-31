@@ -2,6 +2,10 @@
 
 declare(strict_types=1);
 
+/* #1694 — songVisibleSql() for the SongCount recomputes below (degrades to
+   '1=1' on an un-migrated install, so every funnel stays byte-identical). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+
 /**
  * iHymns - Shared song importers (#1200 Phase 4b)
  *
@@ -426,6 +430,9 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
            prior import) has owned the data; we do not touch it.
            Cheap SELECT before opening a transaction so the no-op path
            doesn't churn the binlog. */
+        /* @deleted-visible: importer identity check (#1694) — "already
+           imported" must MATCH a hidden row (skip, not re-mint), or a
+           re-import would create a duplicate that collides on restore. */
         $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
         $existsStmt->bind_param('s', $songId);
         $existsStmt->execute();
@@ -626,6 +633,9 @@ function _bulkImport_findDuplicateCandidates(\mysqli $db, string $songbookAbbr, 
     if ($norm === '' || $songbookAbbr === '') {
         return [];
     }
+    /* @deleted-visible: importer identity resolver (#1694) — matching a
+       hidden row preserves single identity (the import is flagged against it
+       rather than minting a lookalike that conflicts on restore). */
     $stmt = $db->prepare(
         "SELECT SongId, Title, Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number"
     );
@@ -1469,8 +1479,10 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
        whoever populated those rows previously. */
     foreach ($songbooksCreated as $abbr) {
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
@@ -1752,6 +1764,9 @@ function _bulkImport_nextSongNumberFor(\mysqli $db, string $abbr): int
 {
     try {
         $stmt = $db->prepare(
+            /* @deleted-visible: number MINT SEED (#1694) — a hidden song
+               keeps its number slot reserved; filtering would re-issue it and
+               collide on restore (non-unique index — nothing would stop it). */
             'SELECT COALESCE(MAX(Number), 0) + 1 FROM tblSongs WHERE SongbookAbbr = ?'
         );
         $stmt->bind_param('s', $abbr);
@@ -2055,8 +2070,10 @@ function _bulkImport_processVideoPsalm(string $body, ?string $filenameHint = nul
        same no-overwrite contract as the ZIP path (#664). */
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
@@ -2366,7 +2383,8 @@ function _bulkImport_processChordPro(string $body, ?string $filenameHint = null)
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
-            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+            /* #1694 D1 — visible-count recompute (see the multi-line siblings). */
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ') WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
         $cnt->execute();
@@ -2733,8 +2751,10 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
@@ -3131,8 +3151,10 @@ function _bulkImport_processPro6(string $body, ?string $filenameHint = null): ar
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
@@ -3434,7 +3456,8 @@ function _bulkImport_processEasyWorship(string $tmpPath, string $origName): arra
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
-            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+            /* #1694 D1 — visible-count recompute (see the multi-line siblings). */
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ') WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
         $cnt->execute();
@@ -3574,7 +3597,8 @@ function _bulkImport_processProclaim(string $body, ?string $filenameHint = null)
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
-            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+            /* #1694 D1 — visible-count recompute (see the multi-line siblings). */
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ') WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
         $cnt->execute();
@@ -3767,7 +3791,8 @@ function _bulkImport_processFreeShow(string $body, ?string $filenameHint = null)
 
     if (!empty($songbooksCreated)) {
         $cnt = $db->prepare(
-            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?'
+            /* #1694 D1 — visible-count recompute (see the multi-line siblings). */
+            'UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ') WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);
         $cnt->execute();
@@ -3844,7 +3869,8 @@ function _bulkImport_processPptx(string $path, ?string $filenameHint = null): ar
     }
 
     foreach (array_unique($booksCreated) as $a) {
-        $cnt = $db->prepare('UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?) WHERE Abbreviation = ?');
+        /* #1694 D1 — visible-count recompute (see the multi-line siblings). */
+        $cnt = $db->prepare('UPDATE tblSongbooks SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ') WHERE Abbreviation = ?');
         $cnt->bind_param('ss', $a, $a);
         $cnt->execute();
         $cnt->close();
@@ -4367,8 +4393,10 @@ function _bulkImport_processIHymnsJson(string $body, ?string $filenameHint = nul
        book's count may have been curated by hand and is not ours to restate. */
     foreach ($songbooksCreated as $abbr) {
         $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
             'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
               WHERE Abbreviation = ?'
         );
         $cnt->bind_param('ss', $abbr, $abbr);

@@ -15,6 +15,7 @@ declare(strict_types=1);
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'card_layout.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 
 /* Dashboard is now the single landing page for every management
    surface, so admit any signed-in user who holds at least one
@@ -70,7 +71,15 @@ $totalUsers    = $tryInt('SELECT COUNT(*) FROM tblUsers');
 $activeUsers   = $tryInt('SELECT COUNT(*) FROM tblUsers WHERE IsActive = 1');
 $activeTokens  = $tryInt('SELECT COUNT(*) FROM tblApiTokens WHERE ExpiresAt > ?', [gmdate('c')]);
 $totalSetlists = $tryInt('SELECT COUNT(*) FROM tblUserSetlists');
-$totalSongs    = $tryInt('SELECT COUNT(*) FROM tblSongs');
+/* #1694 D1 — the dashboard's headline count means VISIBLE songs, matching the
+   public tiles; the Deleted-songs screen (commit 5) reports the hidden ones.
+   songVisibleSql() is composed OUTSIDE $tryInt's try, so its (rare) probe
+   failure gets the same degrade-not-blank treatment every stat here enjoys. */
+try {
+    $totalSongs = $tryInt('SELECT COUNT(*) FROM tblSongs WHERE ' . songVisibleSql($db, ''));
+} catch (\Throwable $_e) {
+    $totalSongs = 0;   /* the $tryInt convention: a failed stat reads 0, never a white screen */
+}
 $totalSongbooks= $tryInt('SELECT COUNT(*) FROM tblSongbooks WHERE SongCount > 0');
 $pendingReqs   = $tryInt("SELECT COUNT(*) FROM tblSongRequests WHERE Status = 'pending'");
 $logins24h     = $tryInt('SELECT COUNT(*) FROM tblLoginAttempts WHERE Success = 1 AND AttemptedAt >= (NOW() - INTERVAL 1 DAY)');

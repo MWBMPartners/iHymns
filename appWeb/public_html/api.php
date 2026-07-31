@@ -199,6 +199,12 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
    runs. Every read inside is gated on tblSongs.PublicId existing, so this is
    a no-op on an un-migrated install. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_public_id.php';
+/* #1694 — song soft-delete predicate (songVisibleSql()) + the deleted-probe
+   (songSoftDeletedHolds()). Loaded top-level (not per-case) because a dozen
+   read handlers below embed the visibility predicate into their hand-built
+   SQL; each embed degrades to '1=1' on an un-migrated install, so this is a
+   no-op until the migration card runs. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
 /* #1409 — API token device-metadata helpers (apiTokensDeviceMetaColumnsExist()
    etc). Loaded top-level (not per-case) because slideAuthTokenExpiry() below
    — called on EVERY authenticated request via getAuthenticatedUser() — needs
@@ -1043,6 +1049,22 @@ if ($action !== null) {
                     sendJson(['error' => 'Song removed.', 'gone' => true], 410);
                     break;
                 }
+                /* #1694 D2 — a SOFT-DELETED song answers the same honest 410
+                   as a redirect tombstone, not a "never heard of it" 404.
+
+                   ELI5: "this song was removed" is a different answer from
+                   "this id means nothing", and clients prune on the former.
+
+                   Runs only on requests that already missed twice (filtered
+                   read + redirect resolve), so the hot path pays nothing. The
+                   probe fails OPEN: un-migrated installs and transient probe
+                   failures fall through to the 404 below — today's behaviour —
+                   never the other way round. Status is the contract (rule
+                   #35): clients branch on 410/`gone`, not the sentence. */
+                if ($song === null && songSoftDeletedHolds(getDbMysqli(), $songId)) {
+                    sendJson(['error' => 'Song removed.', 'gone' => true], 410);
+                    break;
+                }
             }
 
             if ($song === null) {
@@ -1232,7 +1254,8 @@ if ($action !== null) {
                     "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, "
                   . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
                   . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
-                  . "WHERE s.`{$col}` = ? ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
+                  . "WHERE s.`{$col}` = ? AND " . songVisibleSql($db, 's')   /* #1694 — hidden songs don't resolve */
+                  . " ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
                 );
                 $stmt->bind_param('s', $idValue);
                 $stmt->execute();
@@ -1350,8 +1373,9 @@ if ($action !== null) {
                            JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                           WHERE l.GroupId = ?
                             AND l.SongId  <> ?
+                            AND ' . songVisibleSql($db, 's') . '
                           ORDER BY s.SongbookAbbr ASC, s.Number ASC'
-                    );
+                    );   /* #1694 — hidden counterparts stay off the panel */
                     $stmt->bind_param('is', $groupId, $songId);
                     $stmt->execute();
                     $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -5976,9 +6000,11 @@ if ($action !== null) {
                  FROM tblSongTranslations t
                  JOIN tblLanguages l ON l.Code = t.TargetLanguage
                  JOIN tblSongs s ON s.SongId = t.TranslatedSongId
-                 WHERE t.SourceSongId = ?
+                 WHERE t.SourceSongId = ? AND ' . songVisibleSql($db, 's') . '
                  ORDER BY l.Name ASC'
-            );
+            );   /* #1694 — a hidden translation target is not offered (the
+                    sibling pass below re-executes THIS statement, so it is
+                    filtered by the same predicate) */
             $forwardId = $translationSongId;
             $stmt->bind_param('s', $forwardId);
             $stmt->execute();
@@ -6009,8 +6035,8 @@ if ($action !== null) {
                                 l.Name AS languageName, l.NativeName AS languageNativeName
                          FROM tblSongs s
                          LEFT JOIN tblLanguages l ON l.Code = s.Language
-                         WHERE s.SongId = ?'
-                    );
+                         WHERE s.SongId = ? AND ' . songVisibleSql($db, 's')
+                    );   /* #1694 — a hidden source song is not offered */
                     $stmtSrc->bind_param('s', $sourceId);
                     $stmtSrc->execute();
                     $src = $stmtSrc->get_result()->fetch_assoc();
@@ -6136,8 +6162,9 @@ if ($action !== null) {
                            FROM tblWorkSongs ws
                            JOIN tblSongs s ON s.SongId = ws.SongId
                            LEFT JOIN tblLanguages l ON l.Code = s.Language
-                          WHERE ws.WorkId IN ($placeholders)"
-                    );
+                          WHERE ws.WorkId IN ($placeholders)
+                            AND " . songVisibleSql($db, 's')
+                    );   /* #1694 — hidden Works members are not offered as translations */
                     $stmt->bind_param($types, ...$allWorkIds);
                     $stmt->execute();
                     $currentLang = '';
@@ -6373,7 +6400,8 @@ if ($action !== null) {
                     $res = $db->query(
                         "SELECT DISTINCT LOWER(SUBSTRING_INDEX(Language, '-', 1)) AS sub
                            FROM tblSongs
-                          WHERE Language IS NOT NULL AND Language <> ''"
+                          WHERE Language IS NOT NULL AND Language <> ''
+                            AND " . songVisibleSql($db, '')   /* #1694 — a hidden song's language mints no chip */
                     );
                     if ($res) {
                         while ($r = $res->fetch_row()) {
@@ -8074,7 +8102,12 @@ if ($action !== null) {
 
             /* The song must exist, or the FK throws 1452 and the caller gets a
                500 that explains nothing. Checked BEFORE the write so the
-               refusal costs one indexed lookup and changes nothing. */
+               refusal costs one indexed lookup and changes nothing.
+
+               @deleted-visible: FK pre-check (#1694) — the question here is
+               "will the INSERT's FK hold?", and a soft-deleted row DOES hold
+               it. Filtering would turn a harmless, restore-preserving write
+               into a bogus 404. */
             $keyExists = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
             $keyExists->bind_param('s', $keySongId);
             $keyExists->execute();
@@ -8662,10 +8695,11 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.ViewedAt > DATE_SUB(NOW(), INTERVAL ? DAY)
+                       AND ' . songVisibleSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY views DESC
                      LIMIT ?'
-                );
+                );   /* #1694 — a public recommendation list must not link a hidden song */
                 $stmt->bind_param('ii', $days, $popLimit);
                 $stmt->execute();
                 $songs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -8730,10 +8764,12 @@ if ($action !== null) {
                      JOIN tblSongs s ON s.SongId = h.SongId
                      LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                      WHERE h.UserId = ?
+                       AND ' . songVisibleSql($db, 's') . '
                      GROUP BY h.SongId, s.Title, s.Number, s.SongbookAbbr, sb.Name, s.Language
                      ORDER BY MAX(h.ViewedAt) DESC
                      LIMIT 50'
-                );
+                );   /* #1694 — hidden songs drop off Recently Viewed (they would 410 on click);
+                        the history ROW survives, so a restore brings them back */
                 $authUserId = (int)$authUser['Id'];
                 $stmt->bind_param('i', $authUserId);
                 $stmt->execute();
@@ -8782,7 +8818,12 @@ if ($action !== null) {
                    the only legitimate interpolation into SQL); values bound. */
                 $ph    = implode(',', array_fill(0, count($existIds), '?'));
                 $types = str_repeat('s', count($existIds));
-                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph)");
+                /* #1694 — filtered: pruning hidden songs is this endpoint's
+                   PURPOSE (#1329). Stated trade-off (plan §2): a device's
+                   localStorage Recently-Viewed entry for a deleted-then-
+                   restored song is silently pruned meanwhile — cosmetic;
+                   server-side favourites survive untouched. */
+                $stmt  = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ph) AND " . songVisibleSql($db, ''));
                 $stmt->bind_param($types, ...$existIds);
                 $stmt->execute();
                 $res = $stmt->get_result();
@@ -9076,9 +9117,9 @@ if ($action !== null) {
                             s.SongbookAbbr AS songbook, s.Number AS number
                      FROM tblSongTagMap tm
                      JOIN tblSongs s ON s.SongId = tm.SongId
-                     WHERE tm.TagId = ?
+                     WHERE tm.TagId = ? AND ' . songVisibleSql($db, 's') . '
                      ORDER BY s.Title ASC'
-                );
+                );   /* #1694 — a theme page lists visible songs only */
                 $stmt->bind_param('i', $tagInfo['id']);
                 $stmt->execute();
                 $tagSongs = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -9450,8 +9491,10 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Verify the source song exists and get its songbook */
-            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ?');
+            /* Verify the source song exists and get its songbook.
+               #1694 — filtered: related-songs FOR a hidden song answers 404,
+               matching the song page itself. */
+            $stmt = $db->prepare('SELECT SongId, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, ''));
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             $sourceSong = $stmt->get_result()->fetch_assoc();
@@ -9471,9 +9514,9 @@ if ($action !== null) {
                  FROM tblSongWriters w1
                  JOIN tblSongWriters w2 ON w2.Name = w1.Name AND w2.SongId != w1.SongId
                  JOIN tblSongs s ON s.SongId = w2.SongId
-                 WHERE w1.SongId = ?
+                 WHERE w1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9492,9 +9535,9 @@ if ($action !== null) {
                  FROM tblSongComposers c1
                  JOIN tblSongComposers c2 ON c2.Name = c1.Name AND c2.SongId != c1.SongId
                  JOIN tblSongs s ON s.SongId = c2.SongId
-                 WHERE c1.SongId = ?
+                 WHERE c1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9514,9 +9557,9 @@ if ($action !== null) {
                  JOIN tblSongTagMap tm2 ON tm2.TagId = tm1.TagId AND tm2.SongId != tm1.SongId
                  JOIN tblSongs s ON s.SongId = tm2.SongId
                  JOIN tblSongTags t ON t.Id = tm1.TagId
-                 WHERE tm1.SongId = ?
+                 WHERE tm1.SongId = ? AND ' . songVisibleSql($db, 's') . '
                  LIMIT 20'
-            );
+            );   /* #1694 — hidden songs are never recommended */
             $stmt->bind_param('s', $songId);
             $stmt->execute();
             foreach ($stmt->get_result()->fetch_all(MYSQLI_ASSOC) as $row) {
@@ -9540,9 +9583,10 @@ if ($action !== null) {
                             s.Number AS number
                      FROM tblSongs s
                      WHERE s.SongbookAbbr = ? AND s.SongId NOT IN ($placeholders)
+                       AND " . songVisibleSql($db, 's') . "
                      ORDER BY RAND()
                      LIMIT " . (int)$remaining
-                );
+                );   /* #1694 — hidden songs are never recommended */
                 $params = array_merge([$sourceSong['SongbookAbbr']], $excludeIds);
                 $stmt->bind_param(str_repeat('s', count($params)), ...$params);
                 $stmt->execute();
@@ -9582,7 +9626,13 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Fetch all songs with writers and composers */
+            /* Fetch all songs with writers and composers.
+
+               @deleted-visible: admin_export deliberately includes soft-deleted
+               rows — owner decision D4 (#1694): a full data export is a backup/
+               audit artefact, and silently omitting hidden rows would make it
+               lie about the database. (D4's optional `IsDeleted` output column
+               ships with the admin surface, #1694 commit 5.) */
             $stmt = $db->prepare(
                 'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName,
                         s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
@@ -9772,8 +9822,10 @@ if ($action !== null) {
                         SUM(HasAudio = 1) AS withAudio,
                         SUM(HasSheetMusic = 1) AS withSheetMusic,
                         SUM(Copyright != \'\') AS withCopyright
-                     FROM tblSongs WHERE SongbookAbbr = ?'
-                );
+                     FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '')
+                );   /* #1694 — health counts describe the VISIBLE catalogue a
+                        curator can act on (missing-numbers below is the
+                        deliberate exception) */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $counts = $stmt->get_result()->fetch_assoc();
@@ -9786,8 +9838,8 @@ if ($action !== null) {
                     'SELECT COUNT(DISTINCT s.SongId)
                      FROM tblSongs s
                      JOIN tblSongWriters w ON w.SongId = s.SongId
-                     WHERE s.SongbookAbbr = ?'
-                );
+                     WHERE s.SongbookAbbr = ? AND ' . songVisibleSql($db, 's')
+                );   /* #1694 — visible songs only, matching totalSongs above */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -9799,15 +9851,22 @@ if ($action !== null) {
                     'SELECT COUNT(DISTINCT s.SongId)
                      FROM tblSongs s
                      JOIN tblSongComposers c ON c.SongId = s.SongId
-                     WHERE s.SongbookAbbr = ?'
-                );
+                     WHERE s.SongbookAbbr = ? AND ' . songVisibleSql($db, 's')
+                );   /* #1694 — visible songs only, matching totalSongs above */
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
                 $stmt->close();
                 $withComposers = (int)($row[0] ?? 0);
 
-                /* Missing numbers: find gaps in the number sequence */
+                /* Missing numbers: find gaps in the number sequence.
+
+                   @deleted-visible: number-slot occupancy is PHYSICAL (#1694)
+                   — a soft-deleted song still holds its number, and listing it
+                   as "missing" would invite a curator to fill the slot and
+                   mint a duplicate number on restore (the index is non-unique;
+                   nothing would stop it). Same reason as
+                   SongData::getMissingSongNumbers(). */
                 $stmt = $db->prepare(
                     'SELECT Number FROM tblSongs WHERE SongbookAbbr = ? ORDER BY Number'
                 );
@@ -11072,8 +11131,10 @@ if ($action !== null) {
             try {
                 $db = getDbMysqli();
 
-                /* The corrected song must exist; grab its Title + songbook. */
-                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* The corrected song must exist AND be visible (#1694 — a
+                   correction can only be filed against a song the public can
+                   see; the current-value read below runs only past this gate). */
+                $stmt = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $stmt->bind_param('s', $cSongId);
                 $stmt->execute();
                 $songRow = $stmt->get_result()->fetch_assoc();
@@ -12147,6 +12208,9 @@ if ($action !== null) {
                     break;
                 }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — the FK on
+                   SongbookAbbr is ON DELETE RESTRICT, so the refusal must count
+                   every row that would block the delete, hidden ones included. */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -12233,6 +12297,9 @@ if ($action !== null) {
                     break;
                 }
 
+                /* @deleted-visible: PHYSICAL row count (#1694) — this number
+                   reports how many rows the cascade DELETE below will destroy,
+                   hidden ones included (they are rows too). */
                 $stmt = $db->prepare('SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?');
                 $stmt->bind_param('s', $abbr);
                 $stmt->execute();
@@ -15916,7 +15983,10 @@ if ($action !== null) {
             /* Reject an unknown songId up front — the CurrentSongId FK would
                otherwise throw 1452 under STRICT → an uncaught 500. */
             if ($songId !== null) {
-                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast
+                   (congregants would poll an id that 410s). An in-flight
+                   session's CurrentSongId is untouched. */
+                $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $chkSong->bind_param('s', $songId);
                 $chkSong->execute();
                 $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -16022,8 +16092,9 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500. */
-            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+            /* Reject an unknown songId before the CurrentSongId FK throws 1452 → 500.
+               #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
+            $chkSong = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
             $chkSong->bind_param('s', $songId);
             $chkSong->execute();
             $songOk = $chkSong->get_result()->fetch_row() !== null;
@@ -16672,7 +16743,8 @@ if ($action !== null) {
             }
 
             if ($songId !== null) {
-                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+                /* #1694 — filtered: a hidden song cannot be NEWLY broadcast. */
+                $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? AND ' . songVisibleSql($db, '') . ' LIMIT 1');
                 $chk->bind_param('s', $songId);
                 $chk->execute();
                 $ok = $chk->get_result()->fetch_row() !== null;

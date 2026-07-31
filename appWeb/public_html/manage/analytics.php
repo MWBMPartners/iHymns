@@ -63,6 +63,9 @@ if ($exportPanel !== '') {
         switch ($exportPanel) {
             case 'top_songs':
                 ihymns_fputcsv($fp, ['SongId', 'Title', 'SongbookAbbr', 'Number', 'Views']);
+                /* @deleted-visible: historical analytics (#1694) — a view that
+                   happened, happened; the tblSongs join only labels/groups it.
+                   Hiding a soft-deleted song here would misstate real usage. */
                 $stmt = $db->prepare(
                     'SELECT h.SongId, s.Title, s.SongbookAbbr, s.Number, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -79,6 +82,9 @@ if ($exportPanel !== '') {
                 break;
             case 'top_books':
                 ihymns_fputcsv($fp, ['SongbookAbbr', 'Views']);
+                /* @deleted-visible: historical analytics (#1694) — a view that
+                   happened, happened; the tblSongs join only labels/groups it.
+                   Hiding a soft-deleted song here would misstate real usage. */
                 $stmt = $db->prepare(
                     'SELECT s.SongbookAbbr, COUNT(*) AS views
                        FROM tblSongHistory h
@@ -122,6 +128,8 @@ if ($exportPanel !== '') {
 /* --- Top songs last $range days --- */
 $topSongs = [];
 try {
+    /* @deleted-visible: historical analytics (#1694) — see the CSV export
+       marker above; same reasoning for the dashboard panels. */
     $stmt = $db->prepare(
         'SELECT h.SongId, COUNT(*) AS views, s.Title, s.SongbookAbbr, s.Number
            FROM tblSongHistory h
@@ -140,6 +148,8 @@ try {
 /* --- Top songbooks --- */
 $topBooks = [];
 try {
+    /* @deleted-visible: historical analytics (#1694) — see the CSV export
+       marker above; same reasoning for the dashboard panels. */
     $stmt = $db->prepare(
         'SELECT s.SongbookAbbr, COUNT(*) AS views
            FROM tblSongHistory h

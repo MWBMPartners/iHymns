@@ -329,6 +329,9 @@ function ed2_runSongbookMaintenance(\mysqli $db, string $context): void {
 
 /** True if the SongId exists. */
 function ed2_songExists(\mysqli $db, string $songId): bool {
+    /* @deleted-visible: write-path existence check (#1694) — "does the row
+       exist?" is an FK/identity question; a soft-deleted row exists, and a
+       write into it is harmless and restore-preserving. */
     $s = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -354,6 +357,11 @@ function ed2_allocateSongId(\mysqli $db, string $abbr): string {
     $regex     = '^' . $abbr . '-[0-9]+$';
     $tailStart = strlen($prefix) + 1;   // 1-based SUBSTRING position
 
+    /* @deleted-visible: id MINT SEED (#1694) — a soft-deleted song keeps its
+       SongId reserved (the row still holds the UNIQUE key), so the sequence
+       seed must see it or the mint would propose a taken id and 500 on the
+       duplicate key. songRelocateIdTaken() below is unfiltered for the same
+       reason. */
     $stmt = $db->prepare(
         'SELECT SongId FROM tblSongs
           WHERE SongbookAbbr = ? AND SongId REGEXP ?
@@ -533,6 +541,10 @@ function ed2_persistComponents(\mysqli $db, string $songId, array $components): 
  * identically. Returns null if the song is gone.
  */
 function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
+    /* @deleted-visible: editor load + revision snapshot (#1694) — a curator
+       repairing or reviewing a hidden song's record must still be able to
+       load it by direct id; discovery goes dark instead (the sidebar's
+       getSongsSlimIndex() is filtered — restore-first workflow). */
     $s = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
     $s->bind_param('s', $songId);
     $s->execute();
@@ -872,6 +884,10 @@ try {
         $redirectTo = trim((string)($body['redirectTo'] ?? ''));
         $db->begin_transaction();
         try {
+            /* @deleted-visible: the DELETE path (#1694) — pre-reads must find
+               the row regardless of visibility (purging an already-soft-deleted
+               song reaches here; commit 4 delegates to songSoftDelete()/
+               songPurge()). */
             $prev = $db->prepare('SELECT Title, SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
             $prev->bind_param('s', $songId);
             $prev->execute();
@@ -2293,6 +2309,9 @@ try {
 
         $ph    = implode(',', array_fill(0, count($skipped), '?'));
         $types = str_repeat('s', count($skipped));
+        /* @deleted-visible: audit CSV (#1694) — a skip happened because the
+           row existed at import time; title resolution must not depend on
+           later visibility. */
         $look = $db->prepare(
             "SELECT s.SongId, s.Title, s.SongbookAbbr, sb.Name AS SongbookName
                FROM tblSongs s LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr

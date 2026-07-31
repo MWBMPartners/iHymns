@@ -313,6 +313,9 @@ return [
         'probe' => static function (\mysqli $db): bool {
             if (!_migProbe_tableExists($db, 'tblWorks')) return false;
             try {
+                /* @deleted-visible: migration probe (#1694) — backfill
+                   completeness is PHYSICAL; a hidden song's ISWC still needs
+                   its Work row so the link is intact on restore. */
                 $r = $db->query(
                     "SELECT 1 FROM tblSongs s
                       WHERE s.Iswc IS NOT NULL AND TRIM(s.Iswc) <> ''
@@ -500,6 +503,8 @@ return [
                 $colB->close();
                 /* Detect any single-language songbook with at least one
                    member whose primary language subtag differs. */
+                /* @deleted-visible: migration probe (#1694) — language
+                   backfill is PHYSICAL; a hidden row still needs the tag. */
                 $res = $db->query(
                     "SELECT 1
                        FROM tblSongs s
@@ -566,6 +571,9 @@ return [
                 /* (a) Pending whenever any row's SongId prefix disagrees with
                    its declared SongbookAbbr. Self-clears once the migration
                    has run. */
+                /* @deleted-visible: migration probe (#1694) — prefix/abbr
+                   agreement is PHYSICAL integrity; a hidden drifted row still
+                   needs the fixup. */
                 $res = $db->query(
                     "SELECT 1 FROM tblSongs
                       WHERE SongbookAbbr IS NOT NULL
@@ -2590,6 +2598,8 @@ return [
            SongId is canonical. Detects real completion from live data (never always-true). */
         'probe' => static function (\mysqli $db): bool {
             try {
+                /* @deleted-visible: migration probe (#1694) — a hidden
+                   draft-id row still needs its canonical id minted. */
                 $r = $db->query("SELECT 1 FROM tblSongs WHERE SongId LIKE 'song-%' LIMIT 1");
                 $pending = ($r && $r->fetch_row() !== null);
                 if ($r) { $r->close(); }

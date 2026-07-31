@@ -180,11 +180,12 @@ $discography = [];
 $totalSongs = 0;
 $matchedSongIds = [];
 foreach ($roleTables as $roleKey => $cfg) {
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
     $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
               FROM {$cfg['table']} c
               JOIN tblSongs s ON s.SongId = c.SongId
-             WHERE c.Name = ?
-             ORDER BY s.SongbookAbbr, s.Number";
+             WHERE c.Name = ? AND " . songVisibleSql($db, 's') . "
+             ORDER BY s.SongbookAbbr, s.Number";   /* #1694 — visible songs only */
     try {
         $stmt = $db->prepare($sql);
         $stmt->bind_param('s', $personName);

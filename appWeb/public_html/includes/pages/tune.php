@@ -43,11 +43,13 @@ if ($tuneSlug !== '') {
            collapse + trim) doesn't have a clean MySQL equivalent that
            handles every Unicode edge case. Pull the distinct TuneName
            list (it's small — a few thousand rows max) and match in PHP. */
+        require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
         $stmt = $tdb->prepare(
             "SELECT DISTINCT TuneName
                FROM tblSongs
-              WHERE TuneName IS NOT NULL AND TuneName <> ''"
-        );
+              WHERE TuneName IS NOT NULL AND TuneName <> ''
+                AND " . songVisibleSql($tdb, '')
+        );   /* #1694 — a tune carried only by hidden songs does not resolve */
         $stmt->execute();
         $allTunes = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'TuneName');
         $stmt->close();
@@ -65,9 +67,9 @@ if ($tuneSlug !== '') {
                 "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
                    FROM tblSongs s
                    LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
-                  WHERE s.TuneName = ?
+                  WHERE s.TuneName = ? AND " . songVisibleSql($tdb, 's') . "
                   ORDER BY s.SongbookAbbr ASC, s.Number ASC, s.Title ASC"
-            );
+            );   /* #1694 — visible songs only */
             $stmt->bind_param('s', $canonicalTune);
             $stmt->execute();
             $tuneRows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);

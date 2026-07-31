@@ -81,6 +81,14 @@ $verifiedMap = [];
 $writersMap  = [];
 if (!empty($songs)) {
     $creditsDb = getDbMysqli();
+    /* @deleted-visible: pure DECORATION of the filtered slim index (#1694) —
+       these rows are keyed by SongId and only ever READ for ids in $songs,
+       which getSongsSlimIndex() has already filtered; a hidden song's row is
+       fetched and never consumed, so no leak is possible. Kept predicate-free
+       deliberately: test-songbook-render-parity.php renders this REAL template
+       against a stub getDbMysqli(), and loading the predicate helper here
+       would drag the real db_mysql.php into that stubbed world (redeclare
+       fatal) for zero behavioural gain. */
     $creditsStmt = $creditsDb->prepare(
         'SELECT s.SongId AS songId, s.Verified AS verified, w.Name AS writerName
            FROM tblSongs s

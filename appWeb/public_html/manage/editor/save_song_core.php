@@ -53,6 +53,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    require_once is idempotent; the move branch keeps its own local require as a
    statement of intent. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -175,6 +176,9 @@ function editorSaveSongCore(): array
            IsOfficial probe) so $isOfficialSongbook and $number are derived from
            the same book the UPSERT will write. */
         if ($songbookAbbr === '') {
+            /* @deleted-visible: write-path state read (#1694) — saving into a
+               hidden row is harmless and restore-preserving; its own book must
+               still be found or the save would silently relabel it Misc. */
             $keep = getDbMysqli()->prepare('SELECT SongbookAbbr FROM tblSongs WHERE SongId = ? LIMIT 1');
             $keep->bind_param('s', $songId);
             $keep->execute();
@@ -389,7 +393,9 @@ function editorSaveSongCore(): array
                 }
             }
 
-            /* Capture previous state for the revision row (#400) */
+            /* Capture previous state for the revision row (#400).
+               @deleted-visible: revision bookkeeping (#1694) — the snapshot
+               must capture the row's real prior state, visible or not. */
             $previousData = null;
             $prevStmt = $db->prepare('SELECT * FROM tblSongs WHERE SongId = ? LIMIT 1');
             $prevStmt->bind_param('s', $songId);
@@ -1153,8 +1159,11 @@ function editorSaveSongCore(): array
                recompute pass. */
             try {
                 $cnt = $db->prepare(
+                    /* #1694 D1 — SongCount counts VISIBLE songs; must agree
+                       with the predicate-aware triggers (trigger-denied hosts
+                       rely on THIS recompute). */
                     'UPDATE tblSongbooks
-                        SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                        SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
                       WHERE Abbreviation = ?'
                 );
                 $cnt->bind_param('ss', $songbookAbbr, $songbookAbbr);
@@ -1169,8 +1178,10 @@ function editorSaveSongCore(): array
                     $prevAbbr = is_array($prev) ? (string)($prev['SongbookAbbr'] ?? '') : '';
                     if ($prevAbbr !== '' && $prevAbbr !== $songbookAbbr) {
                         $cnt = $db->prepare(
+                            /* #1694 D1 — same visible-count recompute for the
+                               OLD book after a move. */
                             'UPDATE tblSongbooks
-                                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ?)
+                                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
                               WHERE Abbreviation = ?'
                         );
                         $cnt->bind_param('ss', $prevAbbr, $prevAbbr);
@@ -1497,6 +1508,10 @@ function editorSaveSongCore(): array
                             $lStm->close();
 
                             $idOk = [];
+                            /* @deleted-visible: write-path FK pre-check (#1694)
+                               — a translation link naming a hidden song must
+                               SURVIVE the save (dropping it would silently
+                               destroy data that comes back on restore). */
                             $ip   = implode(',', array_fill(0, count($wantIds), '?'));
                             $iStm = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId IN ($ip)");
                             $iStm->bind_param(str_repeat('s', count($wantIds)), ...$wantIds);

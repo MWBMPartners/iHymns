@@ -22,6 +22,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 /* Places adoption helper — exposes placeColumnExists() so the
    create / update paths can persist OriginCityId alongside the
@@ -121,16 +122,20 @@ if ($hasSchema
         if ($q === '') {
             $sql = "SELECT SongId, Title, SongbookAbbr, Number
                       FROM tblSongs
+                     WHERE " . songVisibleSql($db, '') . "
                      ORDER BY SongbookAbbr ASC, Number ASC
-                     LIMIT ?";
+                     LIMIT ?";   /* #1694 — hidden songs are not offered for membership */
             $stmt = $db->prepare($sql);
             $stmt->bind_param('i', $limit);
         } else {
+            /* #1694 — the LIKE trio is parenthesised so the visibility
+               predicate applies to every branch (AND binds tighter than OR). */
             $sql = "SELECT SongId, Title, SongbookAbbr, Number
                       FROM tblSongs
-                     WHERE Title LIKE ?
+                     WHERE (Title LIKE ?
                         OR SongId LIKE ?
-                        OR SongbookAbbr LIKE ?
+                        OR SongbookAbbr LIKE ?)
+                       AND " . songVisibleSql($db, '') . "
                      ORDER BY SongbookAbbr ASC, Number ASC
                      LIMIT ?";
             $stmt = $db->prepare($sql);
@@ -487,8 +492,10 @@ if ($hasSchema) {
                         s.Title AS SongTitle, s.SongbookAbbr, s.Number
                    FROM tblWorkSongs ws
                    JOIN tblSongs s ON s.SongId = ws.SongId
+                  WHERE ' . songVisibleSql($db, 's') . '
                   ORDER BY ws.WorkId, ws.SortOrder ASC, s.SongbookAbbr ASC, s.Number ASC'
-            );
+            );   /* #1694 — membership rows survive; the admin panel hides them
+                    while deleted, same as the public Work page */
             while ($row = $stmt->fetch_assoc()) {
                 $wid = (int)$row['WorkId'];
                 $workMembersMap[$wid][] = [

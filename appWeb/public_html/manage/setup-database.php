@@ -906,6 +906,9 @@ function _migProbe_indexExists(\mysqli $db, string $table, string $index): bool
 function _migProbe_hasNullPublicId(\mysqli $db): bool
 {
     if (!_migProbe_columnExists($db, 'tblSongs', 'PublicId')) { return false; }
+    /* @deleted-visible: migration probe (#1694) — backfill completeness is a
+       PHYSICAL property; a hidden row with a NULL PublicId still needs the
+       backfill (its permalink must work on restore). */
     $res = $db->query('SELECT 1 FROM tblSongs WHERE PublicId IS NULL LIMIT 1');
     $has = $res && $res->fetch_row() !== null;
     if ($res) { $res->free(); }

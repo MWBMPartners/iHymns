@@ -29,6 +29,16 @@ declare(strict_types=1);
  *            (`SELECT` / `INSERT` / `UPDATE` / `DELETE` / `REPLACE`). Use it for
  *            every assertion about the SHAPE of a query.
  *
+ *   `comments` — every comment in the unit, verbatim (#1694). The `code` view
+ *            DELIBERATELY erases comments so prose can never satisfy a code
+ *            assertion (failure 1 below) — but a MARKER convention
+ *            (`@deleted-visible:`, the component-json guard's
+ *            `lines-json-fallback`) is the opposite direction: the assertion is
+ *            ABOUT the comment. Collected as its own view rather than leaked
+ *            back into `code`, so the two uses can never contaminate each
+ *            other: a marker can vouch for a unit, and a comment still cannot
+ *            impersonate a call.
+ *
  * WHY `strings` AND `sqlOnly` ARE SEPARATE (A5, 2026-07-31)
  * --------------------------------------------------------
  * `strings` was called `sql`, and the name was a lie that a review turned into a
@@ -128,7 +138,7 @@ function phpUnitsIsSqlStatement(string $value): bool
 /**
  * Split a PHP source into per-function analysis units.
  *
- * @return array<string, array{code:string, strings:list<string>, sqlOnly:list<string>}>
+ * @return array<string, array{code:string, strings:list<string>, sqlOnly:list<string>, comments:list<string>}>
  *         Keys are function names; everything outside any function body is
  *         collected under `(file scope)`.
  */
@@ -139,7 +149,7 @@ function phpSourceUnits(string $src): array
         return [];
     }
 
-    $units   = ['(file scope)' => ['code' => '', 'strings' => []]];
+    $units   = ['(file scope)' => ['code' => '', 'strings' => [], 'comments' => []]];
     $stack   = [];                 // [unitName, braceDepthAtOpen]
     $depth   = 0;
     $awaitFn = false;              // seen `function`, waiting for its body `{`
@@ -158,7 +168,7 @@ function phpSourceUnits(string $src): array
         $t       = $toks[$i];
         $unit    = $stack ? $stack[count($stack) - 1][0] : ($caseName ?? '(file scope)');
         if (!isset($units[$unit])) {
-            $units[$unit] = ['code' => '', 'strings' => []];
+            $units[$unit] = ['code' => '', 'strings' => [], 'comments' => []];
         }
 
         /* ---- structural bookkeeping ------------------------------------- */
@@ -188,7 +198,7 @@ function phpSourceUnits(string $src): array
                    them would re-create exactly the vouching bug this split
                    fixes, so disambiguate rather than reuse. */
                 if (isset($units[$caseName])) { $caseName .= '#' . (++$anon); }
-                $units[$caseName] = ['code' => '', 'strings' => []];
+                $units[$caseName] = ['code' => '', 'strings' => [], 'comments' => []];
                 $unit = $caseName;
             } elseif (!$stack && $t[0] === T_SWITCH) {
                 $switchDepth = $depth + 1;
@@ -204,7 +214,7 @@ function phpSourceUnits(string $src): array
                         $name .= '#' . (++$anon);
                     }
                     $stack[]  = [$name, $depth];
-                    $units[$name] = ['code' => '', 'strings' => []];
+                    $units[$name] = ['code' => '', 'strings' => [], 'comments' => []];
                     $awaitFn  = false;
                     $fnName   = null;
                     $unit     = $name;
@@ -231,7 +241,11 @@ function phpSourceUnits(string $src): array
         /* ---- render into the unit's views ------------------------------- */
         if (is_array($t)) {
             if ($t[0] === T_COMMENT || $t[0] === T_DOC_COMMENT) {
+                /* Erased from `code` (prose must not satisfy a code assertion)
+                   but kept VERBATIM in `comments`, where marker conventions
+                   like `@deleted-visible:` live (#1694 — see the file header). */
                 $units[$unit]['code'] .= ' ';
+                $units[$unit]['comments'][] = $t[1];
                 continue;
             }
             if ($t[0] === T_CONSTANT_ENCAPSED_STRING) {

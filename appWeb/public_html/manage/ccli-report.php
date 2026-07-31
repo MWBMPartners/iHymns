@@ -65,7 +65,13 @@ try {
        the v0.10 PascalCase rename in #407). The earlier query
        referenced s.SongbookId, which doesn't exist — every page
        load 500'd into the catch-all and surfaced the generic
-       "see server logs" banner. (#712) */
+       "see server logs" banner. (#712)
+
+       @deleted-visible: COMPLIANCE reporting (#1694) — a song's period views
+       were real usage of its CCLI number whether or not the song was later
+       soft-deleted; hiding it here would UNDER-report licensed usage, and
+       under-reporting is the direction that violates the licence. (Diverges
+       from the plan's §2 first guess, deliberately.) */
     $stmt = $db->prepare(
         "SELECT s.SongId        AS song_id,
                 s.Title          AS title,
