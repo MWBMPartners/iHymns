@@ -744,24 +744,24 @@ CREATE TABLE IF NOT EXISTS tblUsers (
 
 
 -- ----------------------------------------------------------------------------
--- tblSessions
--- Server-side session records for the admin panel (/manage/).
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1): tblSessions
+-- (admin-panel session records), tblUserPurchases (a guessed 2019-vintage
+-- purchases/monetisation shape), tblUserPermissions (per-user fine-grained
+-- flags), tblMigrations (schema migration tracking). All four were schema.sql-
+-- only — no migrate-*.php ever created them, no app code ever read or wrote
+-- them (`/manage/` sessions are cookie/token-based via tblApiTokens +
+-- PHP's own session store, not this table; migrations are tracked by
+-- migration-registry.php + tblAppSettings sentinel rows, not tblMigrations).
+-- A fresh install created four tables nothing has ever referenced. Owner
+-- decision D2 (remediation-plan-2026-07-30.md §6): default A, drop all four —
+-- a future purchases feature designs its own one-pass schema per rule #20
+-- rather than resurrecting this guessed placeholder. The DROP itself needs no
+-- new migration: the existing generic "Drop Legacy Tables" card
+-- (appWeb/.sql/drop-legacy-tables.php, manage/setup-database.php) diffs the
+-- live database against schema.sql at runtime and offers to drop anything no
+-- longer declared here — manual, type-to-confirm-gated, and deliberately left
+-- UN-RUN on production until the owner nods (D2's veto window).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblSessions (
-    Id              VARCHAR(128)    NOT NULL PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL,
-    IpAddress       VARCHAR(45)     NULL COMMENT 'IPv4 or IPv6',
-    UserAgent       TEXT            NULL,
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    ExpiresAt       TIMESTAMP       NOT NULL,
-
-    INDEX idx_User      (UserId),
-    INDEX idx_Expires   (ExpiresAt),
-
-    CONSTRAINT fk_Sessions_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
@@ -936,34 +936,6 @@ CREATE TABLE IF NOT EXISTS tblAccessTiers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
--- ----------------------------------------------------------------------------
--- tblUserPurchases
--- Tracks one-off purchases or subscription activations per user.
--- Used for premium content unlocks and subscription management.
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPurchases (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL,
-    ProductType     VARCHAR(30)     NOT NULL COMMENT 'tier_upgrade, songbook_unlock, feature_unlock, subscription',
-    ProductId       VARCHAR(50)     NOT NULL DEFAULT '' COMMENT 'Specific product (e.g., songbook abbreviation)',
-    TierGranted     VARCHAR(20)     NOT NULL DEFAULT '' COMMENT 'Access tier granted by this purchase',
-    TransactionId   VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'Payment processor transaction ID',
-    Amount          DECIMAL(10,2)   NULL COMMENT 'Payment amount',
-    Currency        VARCHAR(3)      NOT NULL DEFAULT 'GBP',
-    Status          VARCHAR(20)     NOT NULL DEFAULT 'active' COMMENT 'active, expired, refunded, cancelled',
-    ExpiresAt       TIMESTAMP       NULL DEFAULT NULL COMMENT 'NULL = never expires (one-off purchase)',
-    CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_User      (UserId),
-    INDEX idx_Status    (Status),
-    INDEX idx_Expires   (ExpiresAt),
-
-    CONSTRAINT fk_Purchases_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
 -- ============================================================================
 -- ORGANISATIONS & LICENSING
 -- ============================================================================
@@ -1112,42 +1084,23 @@ CREATE TABLE IF NOT EXISTS tblContentRestrictions (
 
 
 -- ----------------------------------------------------------------------------
--- tblUserGroupMembers
--- Many-to-many user-to-group membership.
+-- REMOVED (remediation X5, 2026-07-30, orphan inventory §2.2/§3.2 #1670):
+-- tblUserGroupMembers. Group membership actually lives on tblUsers.GroupId
+-- (a single FK, not a many-to-many join) — `admin_group_member_add` UPDATEs
+-- that column directly. This table's only reader was the dormant `user_access`
+-- action's UNION arm (api.php), which the fix removed; the action itself
+-- STAYS (content-gating family, dormant by design per rule #28 — fixing its
+-- 500 is not the same as giving it a caller, and it keeps its orphan-guard
+-- allowlist entry).
+--
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1):
+-- tblUserPermissions — schema.sql-only, no migration, no app code ever read
+-- or wrote it (per-user overrides never shipped; role-based gating via
+-- tblUsers.Role + the entitlements system is the live mechanism). See the
+-- longer note by tblUsers above for the drop mechanism (existing generic
+-- "Drop Legacy Tables" card; manual, confirm-gated, left UN-RUN pending
+-- owner decision D2).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserGroupMembers (
-    UserId          INT UNSIGNED    NOT NULL,
-    GroupId         INT UNSIGNED    NOT NULL,
-    AssignedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (UserId, GroupId),
-
-    CONSTRAINT fk_Ugm_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_Ugm_Group
-        FOREIGN KEY (GroupId) REFERENCES tblUserGroups(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-
--- ----------------------------------------------------------------------------
--- tblUserPermissions
--- Fine-grained permission flags per user. NULL = inherit from role.
--- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblUserPermissions (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    UserId          INT UNSIGNED    NOT NULL UNIQUE,
-    CanEditSongs    TINYINT(1)      NULL DEFAULT NULL COMMENT 'NULL = inherit from role',
-    CanManageUsers  TINYINT(1)      NULL DEFAULT NULL,
-    CanViewAdmin    TINYINT(1)      NULL DEFAULT NULL,
-    CanShareSetlists TINYINT(1)     NULL DEFAULT NULL,
-    CanAccessApi    TINYINT(1)      NULL DEFAULT NULL,
-
-    CONSTRAINT fk_Perms_User
-        FOREIGN KEY (UserId) REFERENCES tblUsers(Id)
-        ON DELETE CASCADE ON UPDATE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================================
@@ -1522,14 +1475,14 @@ CREATE TABLE IF NOT EXISTS tblAppSettings (
 
 
 -- ----------------------------------------------------------------------------
--- tblMigrations
--- Schema migration tracking.
+-- REMOVED (remediation X4, 2026-07-30, orphan inventory §3.1 B.1):
+-- tblMigrations. Schema.sql-only, no migrate-*.php ever created it, no app
+-- code ever read or wrote it — this codebase tracks applied migrations via
+-- manage/includes/migration-registry.php's derived probes (each checking the
+-- live schema/data directly) plus sentinel rows in tblAppSettings, not a
+-- migrations-applied ledger table. See the longer note by tblUsers above for
+-- the drop mechanism.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblMigrations (
-    Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    Name            VARCHAR(255)    NOT NULL UNIQUE,
-    AppliedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================================
@@ -1740,12 +1693,12 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'Bot protection: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
-    ('captcha_site_key', '', 'CAPTCHA provider public site key'),
-    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
-    ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
-    ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
-    ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
+    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists anywhere in this codebase today; setting this to anything other than none changes no behaviour. Intended bot-protection provider once built: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
+    ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
+    ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
+    ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
+    ('ads_provider', 'none', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom'),
+    ('ads_publisher_id', '', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built'),
     ('content_gating_enabled', '0', 'Enable content tier gating (0=off, 1=on — all content open when off)'),
     -- NOTE (#1668): `ccli_validation_enabled` used to be seeded here. It was NEVER
     -- read by any code, yet its description called it the CCLI enforcement switch —

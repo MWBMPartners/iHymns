@@ -362,125 +362,17 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * TRANSLATIONS — Manage song translation links (#352)
-     * ----------------------------------------------------------------- */
-
-    /* Get translations for a song */
-    case 'get_translations':
-        $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
-        if ($songId === '') {
-            http_response_code(400);
-            echo json_encode(['error' => 'Song ID is required.']);
-            break;
-        }
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT t.Id AS id, t.TranslatedSongId AS songId,
-                        t.TargetLanguage AS language, t.Translator AS translator,
-                        t.Verified AS verified, s.Title AS title, s.Number AS number
-                 FROM tblSongTranslations t
-                 JOIN tblSongs s ON s.SongId = t.TranslatedSongId
-                 WHERE t.SourceSongId = ?
-                 ORDER BY t.TargetLanguage ASC'
-            );
-            $stmt->bind_param('s', $songId);
-            $stmt->execute();
-            $translations = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-            foreach ($translations as &$tr) {
-                $tr['id'] = (int)$tr['id'];
-                $tr['verified'] = (bool)$tr['verified'];
-                $tr['number'] = (int)$tr['number'];
-            }
-            unset($tr);
-            echo json_encode(['translations' => $translations]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to load translations.']);
-        }
-        break;
-
-    /* Add a translation link */
-    case 'add_translation':
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            echo json_encode(['error' => 'POST method required.']);
-            break;
-        }
-        $body = json_decode(file_get_contents('php://input'), true);
-        $srcId = trim($body['sourceSongId'] ?? '');
-        $tgtId = trim($body['translatedSongId'] ?? '');
-        $lang  = trim($body['language'] ?? '');
-        $translator = trim($body['translator'] ?? '');
-
-        if ($srcId === '' || $tgtId === '' || $lang === '') {
-            http_response_code(400);
-            echo json_encode(['error' => 'sourceSongId, translatedSongId, and language are required.']);
-            break;
-        }
-        if ($srcId === $tgtId) {
-            http_response_code(400);
-            echo json_encode(['error' => 'A song cannot be a translation of itself.']);
-            break;
-        }
-
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare(
-                'INSERT INTO tblSongTranslations (SourceSongId, TranslatedSongId, TargetLanguage, Translator)
-                 VALUES (?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE TranslatedSongId = VALUES(TranslatedSongId),
-                                         Translator = VALUES(Translator)'
-            );
-            $stmt->bind_param('ssss', $srcId, $tgtId, $lang, $translator);
-            $stmt->execute();
-            $stmt->close();
-            echo json_encode(['success' => true]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            error_log('[iHymns Editor] add_translation failed: ' . $e->getMessage());
-            echo json_encode(['error' => 'Failed to add translation link.']);
-        }
-        break;
-
-    /* Remove a translation link */
-    case 'remove_translation':
-        if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-            http_response_code(405);
-            echo json_encode(['error' => 'POST method required.']);
-            break;
-        }
-        $body = json_decode(file_get_contents('php://input'), true);
-        $removeId = (int)($body['id'] ?? 0);
-        if ($removeId <= 0) {
-            http_response_code(400);
-            echo json_encode(['error' => 'Translation link ID is required.']);
-            break;
-        }
-
-        try {
-            $db   = getDbMysqli();
-            $stmt = $db->prepare('DELETE FROM tblSongTranslations WHERE Id = ?');
-            $stmt->bind_param('i', $removeId);
-            $stmt->execute();
-            $deleted = $stmt->affected_rows;
-            $stmt->close();
-            echo json_encode(['success' => true, 'deleted' => $deleted]);
-        } catch (\Throwable $e) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Failed to remove translation link.']);
-        }
-        break;
-
-    /* -----------------------------------------------------------------
      * GET_SONG_LINKS — Cross-book counterparts for one song (#807)
      *
      * Returns every other tblSongs row that shares this song's
      * tblSongLinks.GroupId — i.e. every counterpart appearance of
-     * the same hymn in a different songbook. Distinct from
-     * get_translations (different-language same hymn) and from the
-     * songbook-level parent link (#782 phase D).
+     * the same hymn in a different songbook. The old get_translations/
+     * add_translation/remove_translation v1 trio (#352) was removed by
+     * remediation X1 (2026-07-30): the legacy editor's Translations panel
+     * never called them (#1626 — see test-song-translations-roundtrip.js),
+     * and per-song translation links are now the public `song_translations`
+     * action, which is live. Distinct from the songbook-level parent link
+     * (#782 phase D).
      * ----------------------------------------------------------------- */
     case 'get_song_links':
         $songId = isset($_GET['id']) ? trim($_GET['id']) : '';
@@ -3552,7 +3444,7 @@ switch ($action) {
      * ----------------------------------------------------------------- */
     default:
         http_response_code(400);
-        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_translations, add_translation, remove_translation, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder, delete_song']);
+        echo json_encode(['error' => 'Unknown action. Use: load, save, save_song, save_song_tags, tag_search, credit_search, bulk_tag, list_revisions, restore_revision, get_song_links, add_song_link, remove_song_link, suggest_song_links, dismiss_song_link_suggestion, bulk_import_zip, bulk_import_status, song_media_list, song_media_upload, song_media_delete, song_media_reorder, delete_song']);
         break;
 }
 

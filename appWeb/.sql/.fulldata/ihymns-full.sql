@@ -1446,12 +1446,15 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'Bot protection: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
-    ('captcha_site_key', '', 'CAPTCHA provider public site key'),
-    ('captcha_secret_key', '', 'CAPTCHA provider server-side secret key'),
-    ('ads_enabled', '0', 'Enable advertisement display (0=off, 1=on)'),
-    ('ads_provider', 'none', 'Ad provider: none, adsense, ezoic, mediavine, custom'),
-    ('ads_publisher_id', '', 'Ad provider publisher/client ID'),
+    -- (#1685) captcha_*/ads_* descriptions reworded to RESERVED — see the
+    -- matching note in schema.sql. Nothing in this codebase reads any of
+    -- these six keys.
+    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists anywhere in this codebase today; setting this to anything other than none changes no behaviour. Intended bot-protection provider once built: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
+    ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
+    ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
+    ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
+    ('ads_provider', 'none', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider once built: none, adsense, ezoic, mediavine, custom'),
+    ('ads_publisher_id', '', 'RESERVED — not wired yet (#1685), see ads_enabled. Intended ad provider publisher/client ID once built'),
     -- (#1668) `ccli_validation_enabled` removed: nothing ever read it, and its
     -- description falsely presented it as the CCLI enforcement switch. See the
     -- matching note in schema.sql. Do NOT re-add it.

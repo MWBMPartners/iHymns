@@ -24,9 +24,14 @@ declare(strict_types=1);
  *   POST ?action=upsert  (JSON body = chosen candidate)
  *       Persist a picked candidate into tblPlaces. Returns the
  *       freshly-loaded row (with its database Id).
- *   GET  ?action=get&id=<int>
- *       Fetch a single place row. Used by edit forms that want to
- *       re-render a chip from a stored FK.
+ *
+ * `?action=get&id=<int>` — documented here through remediation X3
+ * (2026-07-30) as "used by edit forms that want to re-render a chip from a
+ * stored FK" — was removed: no edit form ever called it (orphan inventory
+ * §2.9). A curator PHP page that needs a place by id calls
+ * `placesLoadById(mysqli, int)` from includes/places.php directly
+ * (manage/venues.php does exactly this) — no HTTP round trip needed for a
+ * same-process read.
  *
  * Auth: editor+ (read + write). Curators are the only audience.
  */
@@ -188,29 +193,6 @@ try {
             echo json_encode([
                 'error' => 'tblPlaces not available — run the Places Registry migration first.',
             ]);
-            exit;
-        }
-        echo json_encode(['place' => $row]);
-        exit;
-    }
-
-    if ($method === 'GET' && $action === 'get') {
-        $id = (int)($_GET['id'] ?? 0);
-        if ($id <= 0) {
-            http_response_code(400);
-            echo json_encode(['error' => 'id is required.']);
-            exit;
-        }
-        $db = getDbMysqli();
-        if (!$db) {
-            http_response_code(500);
-            echo json_encode(['error' => 'Database connection failed.']);
-            exit;
-        }
-        $row = placesLoadById($db, $id);
-        if ($row === null) {
-            http_response_code(404);
-            echo json_encode(['error' => 'Place not found.']);
             exit;
         }
         echo json_encode(['place' => $row]);

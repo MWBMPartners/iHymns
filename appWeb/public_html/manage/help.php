@@ -1547,7 +1547,7 @@ foreach ($sections as $s) {
                         <li><strong>Organisations + My Organisations</strong> — system-admin updates plus the six org-admin verbs from this surface (PR 2c).</li>
                         <li><strong>Credit People</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
                         <li><strong>Analytics + Diagnostics</strong> — top searches, data health snapshot, schema-audit report, per-migration applied/partial/pending status (PR 2d).</li>
-                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / get_translations / add_translation / remove_translation / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs).</li>
+                        <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs). (The v1 <code>get_translations</code> / <code>add_translation</code> / <code>remove_translation</code> trio was dead code — no caller ever existed — and was removed 2026-07-30; translation links are now the public, live <code>song_translations</code> action.)</li>
                     </ul>
                     <h3 class="h6">OpenAPI spec</h3>
                     <p>

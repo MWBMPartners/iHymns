@@ -2693,6 +2693,59 @@ return [
     ],
 
     /* ----------------------------------------------------------------------
+     * X6 / #1685 — reword the captcha_* / ads_* seed descriptions as RESERVED.
+     * Six tblAppSettings rows described providers/toggles that no code in
+     * this repo has ever read (orphan inventory §6.2) — the same species of
+     * doc-vs-code lie #1668 fixed for ccli_validation_enabled, except these
+     * six describe plausible FUTURE features rather than an actively
+     * misleading security switch, so the remediation plan's default is
+     * REWORD, not delete. schema.sql's INSERT IGNORE seed already carries
+     * the corrected text for fresh installs; only a migration reaches the
+     * Description column on an existing row. Never touches SettingValue —
+     * no operator-set value changes, nothing here can alter behaviour (the
+     * six keys have no reader either way). Not `manual`: safe inside
+     * "Apply all pending".
+     * -------------------------------------------------------------------- */
+    'fix-captcha-ads-descriptions' => [
+        'script' => 'migrate-fix-captcha-ads-descriptions.php',
+        'card' => [
+            'title'  => 'Reword captcha/ads seed descriptions (#1685)',
+            'body'   => 'Rewords the <code>Description</code> of six'
+                      . ' <code>tblAppSettings</code> rows — <code>captcha_provider</code>,'
+                      . ' <code>captcha_site_key</code>, <code>captcha_secret_key</code>,'
+                      . ' <code>ads_enabled</code>, <code>ads_provider</code>,'
+                      . ' <code>ads_publisher_id</code> — to say plainly that nothing reads'
+                      . ' them yet, instead of describing bot-protection / advertisement'
+                      . ' features that do not exist in this codebase. Only the description'
+                      . ' text changes; operator-set values are untouched. Idempotent.',
+            'button' => 'Reword Captcha/Ads Descriptions',
+        ],
+        /* Multi-row probe (rule #19 discipline applied to a data migration —
+           not just DDL): pending while ANY of the six rows still carries text
+           that is not the reworded RESERVED text, so a partial run (e.g. the
+           connection dropped after row 3 of 6) never shows the card green. A
+           fresh install passes trivially because schema.sql already seeds the
+           corrected text; a very old install missing one of the six rows
+           entirely also can't block "applied" — a missing row has nothing
+           misleading to reword. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $keys = ['captcha_provider', 'captcha_site_key', 'captcha_secret_key',
+                     'ads_enabled', 'ads_provider', 'ads_publisher_id'];
+            $placeholders = implode(',', array_fill(0, count($keys), '?'));
+            $stmt = $db->prepare(
+                "SELECT COUNT(*) AS c FROM tblAppSettings"
+                . " WHERE SettingKey IN ({$placeholders})"
+                . " AND Description NOT LIKE 'RESERVED —%'"
+            );
+            $stmt->bind_param(str_repeat('s', count($keys)), ...$keys);
+            $stmt->execute();
+            $row = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            return ((int)($row['c'] ?? 0)) > 0;   /* any non-reworded row → still pending */
+        })($db),
+    ],
+
+    /* ----------------------------------------------------------------------
      * #1661 — setlist tombstones + optional expiry. The storage half of sync
      * protocol 2: deletion becomes something a client SAYS (a tombstone row)
      * rather than something the server INFERS from a setlist being absent

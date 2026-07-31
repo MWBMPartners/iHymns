@@ -216,11 +216,6 @@ return [
          * the entry stale and the guard demands the entry go too, so the
          * endpoint and its allowlist line die in the same commit.
          * --------------------------------------------------------------- */
-        'get_translations'      => 'deliberate temporary — dead v1 editor code, scheduled for deletion by remediation X1 (endpoint + 3 yaml paths). DELETE ENDPOINT AND ENTRY TOGETHER',
-        'add_translation'       => 'deliberate temporary — dead v1 editor code, scheduled for deletion by remediation X1 (endpoint + 3 yaml paths). DELETE ENDPOINT AND ENTRY TOGETHER',
-        'remove_translation'    => 'deliberate temporary — dead v1 editor code, scheduled for deletion by remediation X1 (endpoint + 3 yaml paths). DELETE ENDPOINT AND ENTRY TOGETHER',
-        'setlist_schedule'      => 'deliberate temporary — superseded by the setlist_schedule_set/clear/current/upcoming family; deletion is remediation F8. DELETE ENDPOINT AND ENTRY TOGETHER',
-        'setlist_schedule_save' => 'deliberate temporary — superseded by the setlist_schedule_set/clear/current/upcoming family; deletion is remediation F8. DELETE ENDPOINT AND ENTRY TOGETHER',
         'user_preferences'      => 'deliberate temporary — superseded by user_settings (#1671); deletion is remediation F5. DELETE ENDPOINT AND ENTRY TOGETHER',
         'user_preferences_sync' => 'deliberate temporary — superseded by user_settings (#1671); deletion is remediation F5. DELETE ENDPOINT AND ENTRY TOGETHER',
     ],
@@ -233,7 +228,6 @@ return [
      * ===================================================================== */
     'tables_reader_no_writer' => [
         'tblSongAlternativeTitles' => '#1669 — SongData.php:955/966/2946 reads it; the creating migration has zero INSERTs. Writer is remediation X8',
-        'tblUserGroupMembers'      => '#1670 — read by user_access (api.php:5685); membership actually lives in tblUsers.GroupId. Remediation X5 removes the UNION arm and the table',
         'tblSongArrangements'      => '#1066 one-pass dormant — ?include=arrangements read side shipped, write side is future feature work',
         'tblSongRoyaltyIds'        => '#1066 one-pass dormant — ?include=royaltyIds read side shipped, write side is future feature work',
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',

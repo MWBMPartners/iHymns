@@ -691,6 +691,10 @@ paths:
       description: |
         Look up songs by an industry identifier. `type` is allow-listed and maps
         to a fixed column; `value` is always bound.
+
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The
+        endpoint is live and correct; it simply has no first-party caller yet.
       parameters:
         - name: action
           in: query
@@ -738,6 +742,10 @@ paths:
       description: |
         Look up credit-people by an industry identifier (IPI / ISNI / CAE / …).
         Both `type` and `value` are bound.
+
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The
+        endpoint is live and correct; it simply has no first-party caller yet.
       parameters:
         - name: action
           in: query
@@ -1415,6 +1423,11 @@ paths:
         songbookName/language + media flags only (no lyrics, writers or
         components). The language filter is applied in SQL so pagination is
         correct. Fetch a full record via action=song_detail&id=…
+
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The PWA
+        uses `songs_index` for its lightweight index instead. The endpoint is
+        live and correct; it simply has no first-party caller yet.
       parameters:
         - name: action
           in: query
@@ -2640,6 +2653,11 @@ paths:
       description: |
         Retrieve the authenticated user's per-user custom favourite-tag pool
         (WS-G #1019) — distinct from the curator-managed global song tags.
+
+        Dormant: kept as a deliberate native/API-parity read (remediation F7);
+        only the sync twin `custom_tags_sync` has a web caller
+        (js/modules/user-auth.js). The endpoint is live and correct; it simply
+        has no first-party GET caller yet.
       security:
         - bearerAuth: []
       parameters:
@@ -5482,6 +5500,11 @@ paths:
       operationId: songsByTag
       tags: [Discovery]
       summary: Songs tagged with a given slug
+      description: |
+        Dormant for the web: `?page=tag` (#1637) superseded this for the web
+        client; no web/Apple/Android client calls the JSON action today (orphan
+        inventory §2.5, remediation X7). The endpoint is live and correct; it
+        simply has no first-party caller yet.
       parameters:
         - name: action
           in: query
@@ -6736,106 +6759,11 @@ paths:
         "500":
           description: Save failed (transaction rolled back). Details in server log.
 
-  /manage/editor/api.php?action=get_translations:
-    get:
-      operationId: editorGetTranslations
-      tags: [Editor API]
-      summary: Translation links for one song (#352)
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [get_translations] }
-        - name: id
-          in: query
-          required: true
-          description: Source SongId.
-          schema: { type: string, example: CP-0202 }
-      responses:
-        "200":
-          description: Translations of the source song, sorted by language
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  translations:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:          { type: integer }
-                        songId:      { type: string, description: TranslatedSongId. }
-                        language:    { type: string }
-                        translator:  { type: string, nullable: true }
-                        verified:    { type: boolean }
-                        title:       { type: string }
-                        number:      { type: integer }
-        "400":
-          description: Missing id
-
-  /manage/editor/api.php?action=add_translation:
-    post:
-      operationId: editorAddTranslation
-      tags: [Editor API]
-      summary: Add (or upsert) a translation link
-      description: |
-        INSERT … ON DUPLICATE KEY UPDATE on the unique
-        (`SourceSongId`, `TargetLanguage`) index — re-adding
-        for the same source/language updates the
-        `TranslatedSongId` + `Translator` in place.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [sourceSongId, translatedSongId, language]
-              properties:
-                sourceSongId:     { type: string, example: CP-0202 }
-                translatedSongId: { type: string, example: ZH-0027 }
-                language:         { type: string, description: BCP 47 tag of the translated row. }
-                translator:       { type: string, nullable: true }
-      responses:
-        "200":
-          description: Saved
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success: { type: boolean, example: true }
-        "400":
-          description: Missing fields, or sourceSongId == translatedSongId
-        "405":
-          description: GET issued — POST required
-
-  /manage/editor/api.php?action=remove_translation:
-    post:
-      operationId: editorRemoveTranslation
-      tags: [Editor API]
-      summary: Remove one translation-link row by id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [id]
-              properties:
-                id: { type: integer, description: tblSongTranslations.Id }
-      responses:
-        "200":
-          description: Removed (or already absent)
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  success: { type: boolean, example: true }
-                  deleted: { type: integer, description: Affected rows (0 if id didn't exist). }
-        "400":
-          description: Missing or non-positive id
+  # /manage/editor/api.php?action=get_translations / add_translation / remove_translation
+  # removed in remediation X1 (2026-07-30, orphan inventory §2.8): the legacy editor's
+  # Translations panel never called them (#1626), so they were dead endpoints
+  # documented as live. Per-song translation links are now the public, live
+  # `?action=song_translations` (api.php) — see that path below.
 
   /manage/editor/api.php?action=song_tags:
     get:
@@ -7355,6 +7283,10 @@ paths:
         Lightweight sibling of the editor-only `list_revisions`. Returns
         who/when/action for each revision, without the full before/after
         snapshots (those are editor-only).
+
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The
+        endpoint is live and correct; it simply has no first-party caller yet.
       parameters:
         - name: action
           in: query
@@ -7574,83 +7506,14 @@ paths:
           description: 5+ submissions from this IP in the last 24h
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
-  # ===========================================================================
-  # LEGACY SETLIST ENDPOINTS  (pre-#398; kept for API compatibility)
-  # ===========================================================================
-
-  /api.php?action=setlist_schedule:
-    get:
-      operationId: setlistScheduleLegacy
-      tags: [Setlists — Scheduling]
-      summary: Legacy scheduling lookup (kept for older Apple / Android builds)
-      description: |
-        **Deprecated** — superseded by `setlist_schedule_current` (GET)
-        and `setlist_schedule_set` / `_clear` (POST). Returns the same
-        row via a single call.
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist_schedule] }
-        - name: setlistId
-          in: query
-          required: true
-          schema: { type: string }
-      responses:
-        "200":
-          description: Schedule row or null
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  schedule:
-                    oneOf:
-                      - type: "null"
-                      - type: object
-                        properties:
-                          ScheduledDate: { type: string, format: date }
-                          Notes:         { type: string }
-
-  /api.php?action=setlist_schedule_save:
-    post:
-      operationId: setlistScheduleSaveLegacy
-      tags: [Setlists — Scheduling]
-      summary: Legacy save-or-clear scheduling (Deprecated)
-      description: |
-        **Deprecated** — superseded by `setlist_schedule_set` (upsert)
-        and `setlist_schedule_clear` (delete). This endpoint does both
-        with a nullable date.
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: action
-          in: query
-          required: true
-          schema: { type: string, enum: [setlist_schedule_save] }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [setlistId]
-              properties:
-                setlistId: { type: string }
-                date:
-                  type: string
-                  nullable: true
-                  format: date
-                  description: Null or empty string clears the schedule
-                notes: { type: string }
-      responses:
-        "200":
-          description: Saved or cleared
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/SuccessResponse" }
+  # /api.php?action=setlist_schedule / setlist_schedule_save — the pre-#398
+  # legacy date-range pair — were removed in remediation F8 (2026-07-30,
+  # orphan inventory §2.3): superseded by the live setlist_schedule_set /
+  # _clear / _current / _upcoming family below (same tblSetlistSchedule
+  # table), and this doc entry had already drifted from the code it claimed
+  # to describe (a setlistId + single-row contract, when the actual
+  # endpoints used a from/to date range) — a second, independent doc-vs-code
+  # disagreement on top of having no first-party caller.
 
   /api.php?action=setlist_templates:
     get:
@@ -7779,6 +7642,10 @@ paths:
       operationId: myOrganisations
       tags: [Organisations]
       summary: Organisations the caller belongs to
+      description: |
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The
+        endpoint is live and correct; it simply has no first-party caller yet.
       security:
         - bearerAuth: []
       parameters:

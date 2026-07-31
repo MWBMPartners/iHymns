@@ -5871,24 +5871,25 @@ if ($action !== null) {
 
             $db = getDbMysqli();
 
-            /* Get all groups the user belongs to (primary + additional).
-               $authUserId bound twice — once per `?` position. */
+            /* Get the group the user belongs to. Was a UNION with a second
+               arm reading tblUserGroupMembers (a many-to-many membership
+               table nothing ever wrote) — removed by remediation X5
+               (2026-07-30, orphan inventory §2.2/§3.2, #1670). Group
+               membership actually lives on tblUsers.GroupId, a single FK;
+               that UNION arm threw under STRICT mysqli on any migrated
+               install (the table was schema.sql-only) and this endpoint
+               500'd every time. This action stays dormant-by-design (content-
+               gating family, rule #28) — fixing the 500 does not give it a
+               caller; see tests/php/fixtures/orphan-allowlist.php. */
             $stmt = $db->prepare(
                 'SELECT g.Id AS id, g.Name AS name,
                         g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
                         g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
                  FROM tblUserGroups g
-                 WHERE g.Id = (SELECT GroupId FROM tblUsers WHERE Id = ?)
-                 UNION
-                 SELECT g.Id AS id, g.Name AS name,
-                        g.AccessAlpha AS accessAlpha, g.AccessBeta AS accessBeta,
-                        g.AccessRc AS accessRc, g.AccessRtw AS accessRtw
-                 FROM tblUserGroups g
-                 JOIN tblUserGroupMembers m ON m.GroupId = g.Id
-                 WHERE m.UserId = ?'
+                 WHERE g.Id = (SELECT GroupId FROM tblUsers WHERE Id = ?)'
             );
             $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('ii', $authUserId, $authUserId);
+            $stmt->bind_param('i', $authUserId);
             $stmt->execute();
             $groups = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
             $stmt->close();
@@ -7720,152 +7721,21 @@ if ($action !== null) {
             break;
 
         /* =================================================================
-         * SETLIST SCHEDULING (#300)
-         * ================================================================= */
-
-        /* -----------------------------------------------------------------
-         * Get scheduled setlists within a date range
-         * Parameters: from (date), to (date)
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'setlist_schedule':
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $schedFrom = trim($_GET['from'] ?? '');
-            $schedTo   = trim($_GET['to'] ?? '');
-
-            if ($schedFrom === '' || $schedTo === '') {
-                sendJson(['error' => 'Both from and to date parameters are required.'], 400);
-                break;
-            }
-
-            /* Validate date format (YYYY-MM-DD) */
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedFrom) ||
-                !preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedTo)) {
-                sendJson(['error' => 'Dates must be in YYYY-MM-DD format.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $stmt = $db->prepare(
-                'SELECT s.Id AS id, s.SetlistId AS setlistId,
-                        s.ScheduledDate AS scheduledDate, s.Notes AS notes,
-                        s.OrgId AS orgId, s.CreatedBy AS createdBy,
-                        s.CreatedAt AS createdAt
-                 FROM tblSetlistSchedule s
-                 LEFT JOIN tblOrganisationMembers m ON m.OrgId = s.OrgId AND m.UserId = ?
-                 WHERE s.ScheduledDate BETWEEN ? AND ?
-                   AND (s.CreatedBy = ? OR m.UserId IS NOT NULL)
-                 ORDER BY s.ScheduledDate ASC'
-            );
-            $authUserId = (int)$authUser['Id'];
-            $stmt->bind_param('issi', $authUserId, $schedFrom, $schedTo, $authUserId);
-            $stmt->execute();
-            $schedules = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-
-            foreach ($schedules as &$sched) {
-                $sched['id'] = (int)$sched['id'];
-                $sched['orgId'] = $sched['orgId'] ? (int)$sched['orgId'] : null;
-                $sched['createdBy'] = (int)$sched['createdBy'];
-            }
-            unset($sched);
-
-            sendJson(['schedules' => $schedules]);
-            break;
-
-        /* -----------------------------------------------------------------
-         * Schedule a setlist for a specific date
-         *
-         * POST body (JSON):
-         *   { "setlist_id": "...", "scheduled_date": "2026-04-20",
-         *     "notes": "Sunday morning", "org_id": 1 }
-         * Requires: Bearer token
-         * ----------------------------------------------------------------- */
-        case 'setlist_schedule_save':
-            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-                sendJson(['error' => 'POST method required.'], 405);
-                break;
-            }
-
-            $authUser = getAuthenticatedUser();
-            if (!$authUser) {
-                sendJson(['error' => 'Not authenticated.'], 401);
-                break;
-            }
-
-            $rawBody = file_get_contents('php://input');
-            $body = json_decode($rawBody, true);
-
-            $schedSetlistId = trim($body['setlist_id'] ?? '');
-            $schedDate      = trim($body['scheduled_date'] ?? '');
-            $schedNotes     = mb_substr(trim($body['notes'] ?? ''), 0, 1000);
-            $schedOrgId     = !empty($body['org_id']) ? (int)$body['org_id'] : null;
-
-            if ($schedSetlistId === '') {
-                sendJson(['error' => 'setlist_id is required.'], 400);
-                break;
-            }
-            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $schedDate)) {
-                sendJson(['error' => 'scheduled_date must be in YYYY-MM-DD format.'], 400);
-                break;
-            }
-
-            $db = getDbMysqli();
-            $authUserId = (int)$authUser['Id'];
-
-            /* SECURITY (IDOR — security audit): verify the caller OWNS this setlist
-               before scheduling it (mirrors the sibling setlist_schedule_set).
-               Without this, any authenticated bearer token could schedule a setlist
-               it does not own. */
-            $own = $db->prepare('SELECT 1 FROM tblUserSetlists WHERE UserId = ? AND SetlistId = ? LIMIT 1');
-            $own->bind_param('is', $authUserId, $schedSetlistId);
-            $own->execute();
-            $ownsSetlist = (bool)$own->get_result()->fetch_row();
-            $own->close();
-            if (!$ownsSetlist) {
-                sendJson(['error' => 'Setlist not found or not owned by you.'], 403);
-                break;
-            }
-
-            /* SECURITY (IDOR): an org_id may only be attached if the caller is a
-               member of that org — otherwise a user could tag a schedule onto an
-               arbitrary organisation and have it surface in that org's schedule. */
-            if ($schedOrgId !== null) {
-                $mem = $db->prepare('SELECT 1 FROM tblOrganisationMembers WHERE OrgId = ? AND UserId = ? LIMIT 1');
-                $mem->bind_param('ii', $schedOrgId, $authUserId);
-                $mem->execute();
-                $isMember = (bool)$mem->get_result()->fetch_row();
-                $mem->close();
-                if (!$isMember) {
-                    sendJson(['error' => 'You are not a member of that organisation.'], 403);
-                    break;
-                }
-            }
-
-            /* The column is UserId (the old code named a phantom CreatedBy column
-               that does not exist on tblSetlistSchedule — it threw under STRICT
-               mysqli before this fix). OrgId is nullable. */
-            $stmt = $db->prepare(
-                'INSERT INTO tblSetlistSchedule (SetlistId, ScheduledDate, Notes, OrgId, UserId)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $stmt->bind_param('sssii',
-                $schedSetlistId, $schedDate, $schedNotes, $schedOrgId, $authUserId);
-            $stmt->execute();
-            $newId = (int)$db->insert_id;
-            $stmt->close();
-
-            sendJson(['ok' => true, 'id' => $newId], 201);
-            break;
-
-        /* =================================================================
          * SETLIST TEMPLATES (#301)
-         * ================================================================= */
+         * =================================================================
+         * The old SETLIST SCHEDULING (#300) `setlist_schedule` (date-range
+         * GET) / `setlist_schedule_save` (POST) pair that used to live here
+         * was retired by remediation F8 (2026-07-30, orphan inventory
+         * §2.3): superseded by the live `setlist_schedule_set` /
+         * `_clear` / `_current` / `_upcoming` family below (same
+         * `tblSetlistSchedule` table), and neither had a first-party
+         * caller. NOTE for a future reader: the retired GET's date-range
+         * query also surfaced schedules from every org the caller belongs
+         * to (`LEFT JOIN tblOrganisationMembers`); the live family is
+         * strictly `UserId`-scoped and does not replicate that org-wide
+         * visibility — tracked as #1686. Nothing calls either pair today so
+         * no live behaviour regresses, but an org-scoped schedule view
+         * would need to be rebuilt, not resurrected, if ever wanted. */
 
         /* -----------------------------------------------------------------
          * Get available setlist templates
@@ -7970,8 +7840,9 @@ if ($action !== null) {
             $authUserId = (int)$authUser['Id'];
 
             /* SECURITY (IDOR — #1386 audit): an org_id may only be attached if the
-               caller is a member of that org (mirrors the setlist_schedule_save
-               fix). Otherwise any authenticated user could inject a template into
+               caller is a member of that org (the same org-membership check the
+               retired setlist_schedule_save endpoint used to apply, F8/2026-07-30).
+               Otherwise any authenticated user could inject a template into
                an arbitrary org's list — the setlist_templates read returns
                templates by org membership, so it would surface to that org. */
             if ($tplOrgId !== null) {
