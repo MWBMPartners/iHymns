@@ -31,10 +31,22 @@ declare(strict_types=1);
  *
  * That is why aligning the defaults in code was necessary but not sufficient:
  *
- *   delete_songs      code default WAS ['admin','global_admin'] — the editor
- *                     APIs really admitted editor+ all along. Stored value
- *                     shadows the corrected default → a curator who can delete
- *                     a song today would get a 403 tomorrow.
+ *   delete_songs      ⚠️ THE REASON FOR THIS ONE CHANGED — see #1692 stage 1.
+ *                     Batch 6 established the editor APIs really admitted
+ *                     editor+ all along, and aligned the code default down to
+ *                     match. Establishing that prompted "is a delete
+ *                     recoverable?", and it is not: a hard DELETE FROM tblSongs,
+ *                     no soft-delete column, 38 of 41 FKs cascading including
+ *                     fk_Revisions_Song — the revision history goes with the
+ *                     song and only a database backup brings it back. The owner
+ *                     chose to narrow it to admin+ until soft delete exists.
+ *                     So pruning this key no longer PRESERVES a curator's
+ *                     ability to delete — it ENFORCES the reduction, by clearing
+ *                     any stored value (including a deliberate editor+ one) so
+ *                     the admin-only default applies. An operator who disagrees
+ *                     can re-tick `editor` at /manage/entitlements; that control
+ *                     is real now, which is the point of Batch 6.
+ *                     Stage 2 adds soft delete and this reverts to editor+.
  *   bulk_edit_songs   identical story (remediation plan §4.6 predicted this one).
  *   run_db_backup     code default WAS ['admin','global_admin'] while the only
  *                     page that can take a backup requires `run_db_install`

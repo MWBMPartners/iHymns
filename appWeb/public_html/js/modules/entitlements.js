@@ -21,7 +21,12 @@ export const ENTITLEMENTS = {
        removed a capability curators use today, so the MAP moved to match the
        code rather than the other way round. This file is a MIRROR — copy the
        role list verbatim, never form a second opinion. */
-    delete_songs:         ['editor', 'admin', 'global_admin'],
+    /* Admin-only by owner decision (#1692 stage 1): a song delete is a HARD
+       delete that cascades away the song's components, credits, media links and
+       its entire revision history, with no in-app undo. Interim — stage 2 adds
+       soft delete, after which this returns to editor+. Must stay identical to
+       includes/entitlements.php; test-entitlement-parity.php enforces that. */
+    delete_songs:         ['admin', 'global_admin'],
     bulk_edit_songs:      ['editor', 'admin', 'global_admin'],
     verify_songs:         ['editor', 'admin', 'global_admin'],
 

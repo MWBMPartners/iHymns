@@ -50,8 +50,26 @@ const ENTITLEMENTS = [
        disclosed, api.php:3446 / api2.php:139).
        An operator who WANTS delete to be admin-only can now make that true by
        unticking `editor` at /manage/entitlements — which is exactly the control
-       that did nothing before. */
-    'delete_songs'         => ['editor', 'admin', 'global_admin'],
+       that did nothing before.
+
+       ⚠️ `delete_songs` IS NOW ADMIN-ONLY — owner decision, #1692 stage 1.
+       Establishing the above prompted the question "is a delete recoverable?",
+       and the answer is no. Deletion is a HARD `DELETE FROM tblSongs`; there is
+       no soft-delete column on that table; 38 of the 41 FKs referencing
+       tblSongs(SongId) are ON DELETE CASCADE, and that includes
+       `fk_Revisions_Song` — so a delete destroys the song, its components, its
+       credits, its media links AND its entire revision history. Only the URL
+       survives, as a redirect row. Recovery means restoring a database backup;
+       there is no in-app undo and no revision left to roll back to.
+       Leaving that power at editor+ was an unbounded, permanent exposure, so
+       this is deliberately NOT the "preserve today's behaviour" default the
+       block above argues for — it is a considered privilege reduction, and the
+       one place in this map where behaviour intentionally changes.
+       It is INTERIM: #1692 stage 2 adds real soft delete (IsDeleted/DeletedAt/
+       DeletedBy + a Restore screen + an admin-only purge), and stage 3 hands
+       deletion back to curators once it is recoverable. When stage 2 lands,
+       revisit this line — the reason for it will have gone. */
+    'delete_songs'         => ['admin', 'global_admin'],
     'bulk_edit_songs'      => ['editor', 'admin', 'global_admin'],
     'verify_songs'         => ['editor', 'admin', 'global_admin'],
 

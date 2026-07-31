@@ -283,10 +283,24 @@ $adminPlus  = ['admin', 'global_admin'];
 $gaOnly     = ['global_admin'];
 
 $e1Baseline = [
-    'delete_songs' => [$editorPlus,
-        'replaced the editor APIs\' file-level hasRole($role, "editor") gate '
-        . '(manage/editor/api.php:47, api2.php:135). NOT admin+ — the plan believed delete was '
-        . 'escalated to a raw admin role; it never was.'],
+    /* THE ONE DELIBERATE NON-EQUIVALENCE IN THIS TABLE (#1692 stage 1).
+       Every other row asserts "the wired check answers exactly what the raw gate
+       it replaced answered". This row does not, and that is the point: Batch 6
+       established that delete was gated at editor+, and establishing it prompted
+       the question of whether a delete is recoverable. It is not — a hard
+       DELETE FROM tblSongs, no soft-delete column, 38 of 41 FKs cascading
+       including fk_Revisions_Song, so the song's entire revision history goes
+       with it and only a database backup brings it back. The owner chose to
+       reduce the privilege rather than preserve it.
+       INTERIM: stage 2 adds real soft delete; stage 3 returns deletion to
+       curators once it is recoverable. When that lands, this row goes back to
+       $editorPlus and MUT-6 flips direction again. */
+    'delete_songs' => [$adminPlus,
+        'DELIBERATE REDUCTION, not an equivalence (#1692 stage 1). The gate it replaced was the '
+        . 'editor APIs\' file-level hasRole($role, "editor") (manage/editor/api.php:47, '
+        . 'api2.php:135) — editor+, NOT the admin+ the remediation plan believed. Narrowed to '
+        . 'admin+ by owner decision because a delete is permanent and takes the revision history '
+        . 'with it.'],
     'bulk_edit_songs' => [$editorPlus,
         'same editor-level file gate; wired on api2 bulk_verify / bulk_tag_attach / '
         . 'bulk_tag_detach and on v1 bulk_tag for multi-song calls'],
@@ -447,16 +461,25 @@ ok('MUT-5: rewording comments changes nothing (the guard is narrow enough to kee
    'a comment edit moved an answer, or changed the key set: '
    . implode(' | ', array_diff($m5Diffs, $cellDiffs)));
 
-/* MUT-6 — the E1 baseline must itself be able to fail. */
+/* MUT-6 — the E1 baseline must itself be able to fail.
+   DIRECTION MATTERS, and it flipped with #1692 stage 1. It used to mutate
+   delete_songs to admin-only, because editor+ was then the live default and
+   admin-only was the regression to catch. Admin-only is now the deliberate
+   default, so that mutation is a no-op and the assertion was guarding nothing —
+   the suite said so, loudly, the moment the default moved, which is the whole
+   reason this self-test exists.
+   The regression to catch NOW is the opposite: delete_songs silently widening
+   back to editor+ before soft delete exists. When stage 2 lands and deletion
+   becomes recoverable, this flips back. */
 $m6Saved = $GLOBALS['_ihymns_effective_entitlements'];
 $m6Map = ENTITLEMENTS;
-$m6Map['delete_songs'] = ['admin', 'global_admin'];   /* the pre-alignment value */
+$m6Map['delete_songs'] = ['editor', 'admin', 'global_admin'];  /* the pre-#1692 value */
 $GLOBALS['_ihymns_effective_entitlements'] = $m6Map;
-$m6EditorDenied = userHasEntitlement('delete_songs', 'editor') === false;
+$m6EditorAllowed = userHasEntitlement('delete_songs', 'editor') === true;
 $GLOBALS['_ihymns_effective_entitlements'] = $m6Saved;
-ok('MUT-6: reverting delete_songs to the pre-#1590 admin-only default is visible here',
-   $m6EditorDenied && userHasEntitlement('delete_songs', 'editor') === true,
-   'the E1 baseline block cannot detect a default moving back, so it is not guarding anything');
+ok('MUT-6: delete_songs widening back to editor+ is visible here (#1692 stage 1)',
+   $m6EditorAllowed && userHasEntitlement('delete_songs', 'editor') === false,
+   'the E1 baseline block cannot detect this default moving, so it is not guarding anything');
 
 if ($fail === 0) {
     echo "\nEntitlement maps agree, and userHasEntitlement() answers accordingly.\n";
