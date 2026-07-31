@@ -1714,7 +1714,14 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     -- description here is not a truncation — it aborts the whole seed INSERT on
     -- a fresh install. This row was 269 characters until #1685; the guard that
     -- now measures it is tests/php/test-seed-column-widths.php.
-    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder TEAMID appID. Set on manage/configuration.php — never hard-code it in source.');
+    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder TEAMID appID. Set on manage/configuration.php — never hard-code it in source.'),
+    -- Sentinel, not a setting: nothing reads this value. It exists so the
+    -- setup-database card for migrate-entitlement-truthup.php can tell whether
+    -- the one-off prune has run. Seeded here because a FRESH install has no
+    -- saved entitlement overrides to prune — the migration would be a no-op, so
+    -- the card should show applied from the start rather than sitting pending
+    -- forever on a database that was never affected.
+    ('entitlement_truthup_applied', '1', 'Sentinel (#1590): the entitlement truth-up cleared the stale saved overrides for delete_songs / bulk_edit_songs / run_db_backup. Nothing reads this value; it exists so the setup-database card can tell that the one-off prune has run.');
 
 
 -- Default access tiers (#346)

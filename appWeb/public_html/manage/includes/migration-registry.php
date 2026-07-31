@@ -2818,4 +2818,58 @@ return [
            never a hardcoded static-true. */
         'probe' => static fn(\mysqli $db) => _migProbe_tableExists($db, 'tblSongChords'),
     ],
+
+    /* ----------------------------------------------------------------------
+     * #1590 — entitlement truth-up: clear the three stale saved overrides.
+     *
+     * Nine entitlement checkboxes on /manage/entitlements were decorative —
+     * nothing anywhere called userHasEntitlement() with them, so an operator's
+     * tick changed nothing, silently. Batch 6 wired them all, with defaults
+     * chosen to equal the raw role gates they replace, so that nothing changes
+     * until an operator deliberately overrides.
+     *
+     * That equality holds for the SHIPPED defaults. It does not hold for a
+     * saved override — and `saveEntitlementOverrides()` writes the entire map,
+     * every key, on every save, so an install where the page has ever been
+     * saved carries an explicit stored value for all of them. For the three
+     * keys whose default had to move to match reality, that stale stored value
+     * would start being obeyed the moment the checks went live and would take
+     * away abilities curators use today. This clears exactly those three.
+     *
+     * Data-only: no DDL, so nothing to mirror into schema.sql beyond the
+     * sentinel seed (which is there so a fresh install — which has no stale
+     * override by construction — shows the card already applied).
+     * -------------------------------------------------------------------- */
+    'entitlement-truthup' => [
+        'script' => 'migrate-entitlement-truthup.php',
+        'card' => [
+            'title'  => 'Entitlement truth-up — clear stale overrides (#1590)',
+            'body'   => 'Nine permission checkboxes on <code>/manage/entitlements</code> were'
+                      . ' decorative — nothing read them, so ticking or unticking one changed'
+                      . ' nothing. They are now enforced. This clears the three saved overrides'
+                      . ' whose stored value no longer means what it did —'
+                      . ' <code>delete_songs</code>, <code>bulk_edit_songs</code> and'
+                      . ' <code>run_db_backup</code> — so they fall back to the corrected'
+                      . ' shipped defaults instead of silently removing access curators have'
+                      . ' today. Every other saved permission is left untouched. Idempotent;'
+                      . ' a no-op on an install that has never saved that page.',
+            'button' => 'Clear stale entitlement overrides',
+        ],
+        /* Sentinel probe, deliberately NOT "are the three keys absent?".
+           Re-saving /manage/entitlements legitimately writes all three keys back,
+           so a key-absence probe would flip this card from applied to pending for
+           the rest of time — the "pending counter can never reach zero" failure
+           rule #19 exists to prevent. The sentinel records that the one-off prune
+           HAPPENED, which is the thing that cannot un-happen. It is real evidence
+           read from live data, never a hardcoded `static fn() => true`. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'entitlement_truthup_applied' LIMIT 1"
+            );
+            $stmt->execute();
+            $seen = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$seen;   /* no sentinel row → still pending */
+        })($db),
+    ],
 ];
