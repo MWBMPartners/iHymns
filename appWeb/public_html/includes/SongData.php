@@ -2105,6 +2105,49 @@ class SongData
         if ($song === null && preg_match('/^([A-Z]+)-0*(\d+)$/', $id, $matches)) {
             $prefix = $matches[1];
             $number = (int)$matches[2];
+
+            /* #1689 — A REDIRECT OUTRANKS THIS HEURISTIC.
+             *
+             * ELI5: if we have a forwarding note for this id, use it — don't
+             * hand back whoever happens to have that number now.
+             *
+             * The fallback below exists to be forgiving about drift between a
+             * song's `Number` and the digits in its SongId. But `tblSongs`'
+             * `(SongbookAbbr, Number)` index is NON-UNIQUE and a Number can be
+             * edited independently of the id (v2 `metadata_field_update
+             * field=number`, v1 `#edit-number`), so for a DEAD or MOVED id it
+             * can match whatever now occupies that slot in that book. The
+             * result was HTTP 200 with a DIFFERENT SONG and no `redirectedFrom`
+             * — silently wrong, which is the class this codebase keeps getting
+             * caught by, and it got likelier when #1679 made re-keying a routine
+             * curation action.
+             *
+             * A redirect row is a DEFINITE STATEMENT about where this id went; a
+             * number match is a guess. The definite statement wins.
+             *
+             * Returning NULL rather than resolving the redirect here is
+             * deliberate. Both readers — `api.php`'s song_detail/song_data and
+             * `includes/pages/song.php` — already consult the redirect layer on
+             * a null, and they need to KNOW they redirected so they can emit
+             * `redirectedFrom` (so a client can rewrite what it stored) or the
+             * SPA's [data-song-redirect] marker, and so a tombstone answers 410
+             * rather than 404. Following it silently here would return the right
+             * song while destroying that contract — a subtler regression than
+             * the bug being fixed. So this only ever SUPPRESSES the guess and
+             * lets the existing, correct path answer.
+             *
+             * Cost lands only on requests that already missed twice, and the
+             * probe fails OPEN: an un-migrated install (where no redirect can
+             * exist) and a transient probe failure both degrade to exactly the
+             * pre-#1689 behaviour rather than turning a working page into a 404.
+             */
+            if ($this->db instanceof \mysqli) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_redirects.php';
+                if (songRedirectClaimsId($this->db, $id)) {
+                    return null;
+                }
+            }
+
             return $this->getSongByNumber($prefix, $number);
         }
 
