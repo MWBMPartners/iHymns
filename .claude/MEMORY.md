@@ -338,3 +338,43 @@ browser and remains owner-verified.
   and it outranks every feature.
 - ⚠️ **The Wiki (`iHymns.wiki/`) is NOT in this container**, so standing-task item 4 could not be done
   for any of this work. Tracked, not silently skipped.
+
+## 2026-07-31 — guards that lie, and how to catch them
+
+- ⚠️ **A heuristic scanner MUST have a "did the analysis complete?" check.**
+  `test-api-client-usage.js`'s comment/string stripper had no state for a **regex literal**, so
+  `replace(/"/g, …)` (live in `modules/request.js`) opened a string state that never closed and
+  **blanked the rest of the file** — reported as *zero violations, a clean pass*. **12 files ended the
+  walk broken, 10 already in scope**, for a year (#1701). Fixed with regex handling **plus** the
+  load-bearing half: **a derailed scan is now a build FAILURE**. A heuristic has gaps; that turns every
+  gap into a loud false failure instead of half a file's coverage reading as all of it.
+  🔑 **Its self-tests were GOOD** — they proved comments, strings, `apiFetch(`, `window.fetch(` and
+  `//`-in-URLs were handled — and still missed the one construct that switched the mechanism off.
+  **Mutating the guard's input FILES would never have found this; it needed a mutation against the
+  input GRAMMAR.**
+- **A guard that fails on CORRECT code is the other half of rule #34, and I tripped it three times in
+  one day.** (a) `$r['target'] ?? 'x'` returns `'x'` when the value **IS null** — `??` cannot
+  distinguish an absent key from a present-but-null one; use `array_key_exists`. (b) An assertion
+  requiring a call and its `return null;` to be textually **adjacent** failed on an ordinary named
+  local. (c) Its replacement scanned forward **from** the call, so the `if (` wrapping it — earlier in
+  the file — was outside the window. The fix each time was a **different question**, not a cleverer
+  regex: balanced-paren scanning, then requiring the condition to be the claim **alone**.
+- **A mutation harness must compare against a pre-taken BACKUP, never `git diff` against HEAD**, when
+  the baseline is uncommitted — `git diff` reports the whole working change for a one-line mutation
+  and cannot tell "applied" from "already dirty". And **if the harness can throw, a throw must never
+  be printable as a test result**: that has now produced a false GREEN four times on this branch.
+- **A mutant survives when no SCENARIO reaches it, not only when the assertion is weak.** The
+  five-column lockstep check (`=== 5` → `>= 1`) would have lived if the implementer hadn't noticed
+  mid-work that **no test covered a PARTIAL apply** — which is exactly the state a web-run migration
+  system produces. Ask "what states can this actually be in?" before trusting a green.
+- **Verify agent findings, especially security-shaped ones.** A report flagged the migration scripts
+  as having no auth gate. They need none: **`appWeb/.sql/` is a SIBLING of `public_html/`, outside the
+  web root**, reachable only by `require` from a page gated on `run_db_install`. Two minutes of
+  checking; would have been a wasted issue and a wasted fix.
+- **`songVisibleSqlFor()`'s `'1=1'` degrade** is the pattern for retrofitting a predicate across
+  hand-built SQL: return a VALID fragment when un-migrated, so ~166 call sites append it
+  unconditionally with **zero per-site branching**.
+- **Owner's definition of a public count (#1694 D1):** songbook `SongCount` means *"songs that can
+  IDEALLY be accessed"* — it excludes soft-deleted rows but deliberately does **NOT** account for
+  per-user gating (CCLI/tier). "Ideally accessible", never "accessible to you". Making it per-viewer
+  would also break the shared-cache home fragment (rule #6).
