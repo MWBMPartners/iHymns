@@ -33,6 +33,21 @@ if (!$currentUser || !userHasEntitlement('manage_organisations', $currentUser['r
 }
 $activePage = 'organisations';
 
+/* Can this admin edit the LICENCE fields, as distinct from the organisation
+   itself? (#462's stated intent, wired as a #1590 follow-up.)
+   ELI5: one tick-box decides whether the licence boxes on this page are yours
+   to change; everything else on the page is governed by manage_organisations.
+   Detail: #462 registered `manage_org_licences` "so licence edits can be
+   delegated without granting full org admin", then never wired it — the licence
+   fields live on the same form and the same UPDATE as Name/Slug/Parent, so
+   there was no separate handler to attach it to. Its DEFAULT roles are
+   byte-identical to `manage_organisations` (both admin+), so nobody's access
+   changes today; what changes is that NARROWING it now does something, which is
+   the whole point of the #1590 truth-up. Not to be confused with
+   `manage_own_organisation` — that is the ORG OWNER's path on
+   /manage/my-organisations and deliberately includes plain users. */
+$canEditOrgLicences = userHasEntitlement('manage_org_licences', $currentUser['role'] ?? null);
+
 $error   = '';
 $success = '';
 $db      = getDbMysqli();
@@ -80,6 +95,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($name === '') { $error = 'Name is required.'; break; }
                 $slug = $slugInput !== '' ? $slugify($slugInput) : $slugify($name);
                 if ($slug === '') { $error = 'Slug could not be derived — supply one explicitly.'; break; }
+                /* See the note on the update branch. A new organisation has no
+                   previous licence to preserve, so the un-permitted case is the
+                   unlicensed default rather than a carried-over value. */
+                if (!$canEditOrgLicences) {
+                    $licenceType = 'none';
+                    $licenceNum  = '';
+                }
                 if (!in_array($licenceType, $LICENCE_TYPE_KEYS, true)) { $error = 'Unknown licence type.'; break; }
 
                 $stmt = $db->prepare('SELECT Id FROM tblOrganisations WHERE Slug = ?');
@@ -160,6 +182,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $beforeStmt->execute();
                 $beforeOrg = $beforeStmt->get_result()->fetch_assoc() ?: null;
                 $beforeStmt->close();
+
+                /* #462's intent, finally wired (#1590 follow-up).
+                   ELI5: if you are not allowed to change licences, your edit
+                   keeps whatever licence the organisation already had.
+                   Detail: `manage_org_licences` was registered by #462 alongside
+                   `manage_user_licences` and `view_licence_audit` so that
+                   "licence edits can be delegated without granting full org
+                   admin" — its own words. The other two got endpoints; this one
+                   never did, because the licence fields share ONE form and ONE
+                   UPDATE with Name/Slug/Parent/Description, so there was no
+                   separate handler to hang it on. Splitting the FIELDS rather
+                   than the statement is what makes the entitlement real.
+                   PRESERVE, do not reject: a curator without the licence
+                   permission editing a description must not have their save
+                   refused, and must not silently blank the licence either. The
+                   before-row read just above already has the current values. */
+                if (!$canEditOrgLicences) {
+                    $licenceType = (string)($beforeOrg['LicenceType']   ?? 'none');
+                    $licenceNum  = (string)($beforeOrg['LicenceNumber'] ?? '');
+                }
 
                 $stmt = $db->prepare(
                     'UPDATE tblOrganisations
@@ -579,7 +621,14 @@ $csrf = csrfToken();
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
                         <label class="form-label small">Licence type</label>
-                        <select name="licence_type" class="form-select form-select-sm">
+                        <?php /* Disabled, not hidden, when the admin lacks
+                           manage_org_licences: a control that vanishes teaches
+                           nobody why. A disabled <select> submits nothing, and
+                           the handler independently preserves/defaults the
+                           value, so the UI and the server agree without the
+                           form being the thing enforcing it. */ ?>
+                        <select name="licence_type" class="form-select form-select-sm"
+                                <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
                                         title="<?= htmlspecialchars($info['description']) ?>">
@@ -590,7 +639,8 @@ $csrf = csrfToken();
                     </div>
                     <div class="col-sm-4">
                         <label class="form-label small">Licence number</label>
-                        <input type="text" name="licence_number" class="form-control form-control-sm" maxlength="100">
+                        <input type="text" name="licence_number" class="form-control form-control-sm" maxlength="100"
+                               <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                     </div>
                     <div class="col-sm-4 d-flex align-items-end">
                         <div class="form-check">
@@ -659,7 +709,8 @@ $csrf = csrfToken();
                 <div class="row g-2 mb-2">
                     <div class="col-sm-4">
                         <label class="form-label small">Primary licence</label>
-                        <select name="licence_type" class="form-select form-select-sm">
+                        <select name="licence_type" class="form-select form-select-sm"
+                                <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                             <?php foreach ($LICENCE_TYPES as $key => $info): ?>
                                 <option value="<?= htmlspecialchars($key) ?>"
                                         title="<?= htmlspecialchars($info['description']) ?>"
@@ -672,7 +723,8 @@ $csrf = csrfToken();
                     <div class="col-sm-4">
                         <label class="form-label small">Licence number</label>
                         <input type="text" name="licence_number" class="form-control form-control-sm" maxlength="100"
-                               value="<?= htmlspecialchars($editOrg['LicenceNumber']) ?>">
+                               value="<?= htmlspecialchars($editOrg['LicenceNumber']) ?>"
+                               <?= $canEditOrgLicences ? '' : 'disabled' ?>>
                     </div>
                     <div class="col-sm-4 d-flex align-items-end">
                         <div class="form-check">

@@ -313,32 +313,36 @@ return [
      * control instead of allowlisting it — an entry for a non-orphan would be
      * stale by rule 2 above.
      * ===================================================================== */
+    /* ---------------------------------------------------------------------
+     * ENTITLEMENTS — empty, and that is the interesting part.
+     *
+     * This bucket held ONE entry: `manage_org_licences`, the tenth decorative
+     * permission, invisible to both the orphan inventory and remediation plan
+     * §4.6 because CHECK 4 walks `$ENTITLEMENT_LABELS` keys and this one had no
+     * label. Giving it a label (#1590 E2) is what surfaced it.
+     *
+     * It is now WIRED, so the entry is gone — removed because this list is
+     * count-exact and self-cleaning, and it went red the moment the wiring
+     * landed. That is the mechanism working: an allowlist that must shrink
+     * cannot quietly accumulate excuses.
+     *
+     * The wiring took the intent from the primary source rather than a guess.
+     * #462 (commit 73851b01) registered it alongside `manage_user_licences` and
+     * `view_licence_audit` "so future admin UI can delegate licence edits
+     * without granting full org admin". The other two got endpoints; this one
+     * never did, because on /manage/organisations the licence fields share ONE
+     * form and ONE UPDATE with Name/Slug/Parent/Description — there was no
+     * separate handler to attach it to. Splitting the FIELDS rather than the
+     * statement is what made it real, and its default roles are byte-identical
+     * to `manage_organisations`, so nobody's access changed.
+     *
+     * The earlier reading recorded here — that wiring it would strip org owners
+     * of licence editing — was wrong, and worth keeping on the record. It came
+     * from assuming the target was /manage/my-organisations (the ORG OWNER's
+     * self-service page, gated on `manage_own_organisation`, which deliberately
+     * includes plain users). The intent was always the SITE-ADMIN page. Reading
+     * the originating commit settled in minutes what inference had got backwards.
+     * ------------------------------------------------------------------- */
     'entitlements' => [
-        /* The TENTH decorative entitlement — found by this pass, on neither the
-         * inventory's §6.3 list nor remediation plan §4.6's table of nine.
-         *
-         * It was invisible to both because CHECK 4 above walks the keys of
-         * `$ENTITLEMENT_LABELS`, and `manage_org_licences` had no label. It now
-         * has one (#1590 E2), which is exactly why it surfaces here.
-         *
-         * NOT WIRED, deliberately, because no wiring is a no-op. Its comment in
-         * includes/entitlements.php says it exists so "licence edits can be
-         * delegated without granting full org admin", and its default is admin+.
-         * But the live org-licence editor is /manage/my-organisations.php, gated
-         * on `manage_own_organisation` — which deliberately includes the plain
-         * `user` role, because someone must be able to run their OWN
-         * organisation without a site-wide role. Adding an admin+ AND to that
-         * page would remove licence editing from every org owner who is not a
-         * site admin: a live privilege change, which #1590's governing rule
-         * forbids. Aligning the map DOWN to user+ instead would make the key an
-         * exact synonym for `manage_own_organisation` and delete the separation
-         * it was created for.
-         *
-         * Which surface it should govern — the org-admin self-service editor,
-         * the site-admin /manage/organisations editor, or both with different
-         * defaults — is a product decision, not something derivable from the
-         * code. Tracked as the one open item of #1590 Batch 6.
-         */
-        'manage_org_licences' => 'deliberate — the tenth decorative key, found by #1590 E2 giving it a label. Wiring it to the live editor (/manage/my-organisations, gated on manage_own_organisation which includes plain users) would strip org owners of licence editing; aligning the map down to user+ would make it a synonym of manage_own_organisation. Needs an owner decision on which surface it governs — #1590',
     ],
 ];
