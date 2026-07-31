@@ -25,7 +25,11 @@ declare(strict_types=1);
  * success — the lesson from the client-only `deleteSong()` that lied).
  *
  * Actions:
- *   GET  load_index                                         -> { ok, songs }  (slim sidebar index)
+ *   GET  load_index                                         -> { ok, songs, songbooks }
+ *                               songs = the slim sidebar index; songbooks =
+ *                               [{abbr,name}] for EVERY book incl. empty ones
+ *                               (#1679 A2 — the move target list cannot come
+ *                               from the song index, or a new book is unreachable)
  *   GET  easyworship_export?id=<SongId>|abbr=<BOOK>[&maxLinesPerSlide=N] -> streams an EasyWorship Songs.db (#1059/#1678)
  *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
  *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
@@ -103,6 +107,14 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    would reject; sharing the validator is what makes that structurally true
    rather than a thing two files happen to agree on today. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'arrangement.php';
+/* #1679 — the songbook-move re-key helper, PLUS the two cross-cutting predicates
+   this file needs OUTSIDE the move branch: songRelocateIdTaken() (the shared
+   "is this id claimed by tblSongs OR a live redirect?" check ed2_allocateSongId
+   uses, A9) and songRelocateIsTransactionFatal() (the ONE list of MySQL errors
+   that have already rolled the caller's transaction back, A1). Loaded at module
+   scope rather than lazily inside the move case, because both are wanted by code
+   paths that have nothing to do with a move. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -327,15 +339,18 @@ function ed2_allocateSongId(\mysqli $db, string $abbr): string {
 
     $next = ($row && isset($row['SongId'])) ? ((int)substr((string)$row['SongId'], strlen($prefix)) + 1) : 1;
 
-    /* Skip any already-taken value (a numbered song could occupy the range). */
+    /* Skip any already-taken value (a numbered song could occupy the range).
+       #1679 A9 — "taken" is the SHARED songRelocateIdTaken(), which also asks
+       tblSongRedirects. This loop used to probe tblSongs only, so a brand-new
+       song could be handed an id that a live redirect still forwards away from;
+       getSongById() matches exactly before it consults the redirect layer, so an
+       old bookmark then resolves to a DIFFERENT song — 200 OK with the wrong
+       content, which is worse than the 404 the redirect existed to prevent.
+       The 6-digit tail here (vs the mint's 4) is why the CHECK is shared and the
+       loop is not. */
     for ($i = 0; $i < 8; $i++) {
         $candidate = sprintf('%s-%06d', $abbr, $next);
-        $chk = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-        $chk->bind_param('s', $candidate);
-        $chk->execute();
-        $taken = (bool)$chk->get_result()->fetch_row();
-        $chk->close();
-        if (!$taken) { return $candidate; }
+        if (!songRelocateIdTaken($db, $candidate)) { return $candidate; }
         $next++;
     }
     throw new \RuntimeException('Could not allocate a unique SongId.');
@@ -709,6 +724,16 @@ function ed2_touchRevision(\mysqli $db, string $songId, ?int $userId, string $ac
         $rev->execute();
         $rev->close();
     } catch (\Throwable $_e) {
+        /* #1679 A1 — the ONE exception this must NOT swallow. Every caller runs
+           this INSIDE its own transaction, immediately before commit(); a MySQL
+           error that already rolled that transaction back (deadlock victim) turns
+           the swallow into a FALSE SUCCESS — commit() then succeeds trivially and
+           the endpoint answers ok:true naming a songId that does not exist. The
+           songbook-move case is the sharpest instance: songRelocate() carefully
+           re-throws those codes from its own best-effort step, and this catch,
+           two lines later, ate them again. The test is the shared predicate, not
+           a copy of the code list (rule #35). */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         /* swallow — auditing must not break the edit */
     }
 }
@@ -894,7 +919,9 @@ try {
            writing SongbookAbbr through the generic UPDATE below would leave the
            id claiming the OLD book forever. Branch out to the shared re-key
            helper instead: it mints the new id, cascades every child row, clears
-           Number, rewrites the non-FK content-restriction rows and leaves a
+           Number, rewrites BOTH non-FK soft references (the content-restriction
+           rows and the tblSongbookEntries home row — #1679 F3 found the second
+           one; this comment named only the first until A13d) and leaves a
            tblSongRedirects row so old permalinks keep resolving.
            The generic path opens no transaction (a single UPDATE needs none) —
            a move is several statements, so it gets its own. */
@@ -2555,7 +2582,36 @@ try {
     case 'load_index': {
         require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'SongData.php';
         $songData = new SongData();
-        ed2_respond(['ok' => true, 'songs' => $songData->getSongsSlimIndex()]);
+        /* #1679 A2 — `songbooks` is the REAL catalogue, not the set of books that
+           happen to appear in the song index.
+           WHY: v2's songbook <select> derived its options from the loaded index
+           (sidebar.js songbookList()), so a songbook with ZERO songs contributed
+           no row and could not be chosen — a curator who had just created a book
+           could not move the first song into it. That is a regression against v1,
+           whose own load_index has always returned this exact list
+           (manage/editor/api.php `case 'load_index'`). Same source
+           (SongData::getSongbooks()), no new query.
+           SHAPE: mapped to the {abbr, name} pairs the client actually consumes,
+           rather than shipping the full catalogue row (series, compilers, links,
+           colours…) for a two-field control. `id` is the Abbreviation — which IS
+           the SongId prefix (rule #27), so it is the value that must be POSTed
+           back as `songbook`. DisplayAbbr is deliberately NOT used here: it is
+           display-only and is never a prefix.
+           KEY AGREEMENT: `songbooks[].abbr` / `.name` are read verbatim by
+           sidebar.js's songbookList(); tests/test-v2-songbook-move-ui.js pins the
+           same two names on the client side, so the pair cannot drift silently
+           (rule #35). */
+        $books = [];
+        foreach ($songData->getSongbooks() as $b) {
+            $abbr = (string)($b['id'] ?? '');
+            if ($abbr === '') { continue; }
+            $books[] = ['abbr' => $abbr, 'name' => (string)($b['name'] ?? $abbr)];
+        }
+        ed2_respond([
+            'ok'        => true,
+            'songs'     => $songData->getSongsSlimIndex(),
+            'songbooks' => $books,
+        ]);
         break;
     }
 
@@ -2697,9 +2753,25 @@ try {
     }
 } catch (\Throwable $e) {
     error_log('[editor-v2-api ' . $action . '] ' . $e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine());
-    ed2_respond([
+    $ed2Payload = [
         'ok'           => false,
         'error'        => 'Server error.',
         'error_detail' => $ed2IsAdmin ? ($e->getMessage() . ' @ ' . basename($e->getFile()) . ':' . $e->getLine()) : null,
-    ], 500);
+    ];
+    /* #1679 A8 — a refusal that names the migration to run, shown to EVERY role
+       that can reach this endpoint.
+       WHY A SEPARATE KEY: `error_detail` above is deliberately admin-only (it
+       leaks file paths, line numbers and raw mysqli text). But this endpoint
+       admits the `editor` role while $ed2IsAdmin is computed from `admin`, so a
+       plain editor — the person most likely to trip an un-applied migration —
+       got a bare "Server error." with nothing to act on. The relocate refusal is
+       an environment fault with no sensitive content: it names four FK
+       constraint names and a migration card. So it travels in its own field,
+       ungated, and the admin-only channel is NOT widened.
+       RECOGNISED BY TYPE, never by matching the sentence (rule #35) — the
+       message is user-facing copy and will be reworded; the class will not. */
+    if ($e instanceof SongRelocateEnvironmentException) {
+        $ed2Payload['error_hint'] = $e->getMessage();
+    }
+    ed2_respond($ed2Payload, 500);
 }

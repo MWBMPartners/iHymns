@@ -147,6 +147,13 @@ $move   = $relocate['songRelocate'];
 $mint   = $relocate['songRelocateMintId'] ?? ['code' => '', 'sql' => []];
 $assert = $relocate['songRelocateAssertCascades'] ?? ['code' => '', 'sql' => []];
 $save   = $saveCore['editorSaveSongCore'];
+/* The two predicates the A1/A9 pass extracted OUT of the functions above,
+   precisely so several files could share one copy (rule #35). The properties
+   asserted below did not change — where they are implemented did, so the unit
+   the assertion reads has to follow them or it silently stops checking
+   anything. */
+$taken  = $relocate['songRelocateIdTaken'] ?? ['code' => '', 'sql' => []];
+$fatal  = $relocate['songRelocateIsTransactionFatal'] ?? ['code' => '', 'sql' => []];
 
 /* ------------------------------------------------- H3 — cascade pre-check -- */
 
@@ -178,12 +185,23 @@ ok('filtered to FKs that reference tblSongs(SongId), and reads UPDATE_RULE',
    stripos($fkSql, 'tblSongs') !== false && stripos($fkSql, 'SongId') !== false
    && stripos($fkSql, 'UPDATE_RULE') !== false);
 
-/* RuntimeException, NOT InvalidArgumentException — api2's move handler catches
+/* A RuntimeException, NOT InvalidArgumentException — api2's move handler catches
    InvalidArgumentException to answer 422 "you named a book that doesn't exist",
-   so throwing that here would report an un-migrated ENVIRONMENT as bad typing. */
+   so throwing that here would report an un-migrated ENVIRONMENT as bad typing.
+   #1679 A8 made it a dedicated SUBCLASS: both funnels now have to RECOGNISE this
+   refusal (to copy its message into the ungated `error_hint`), and recognising it
+   by matching the sentence is exactly the prose-coupling rule #35 forbids. The
+   subclass keeps the RuntimeException side of the split intact — hence both
+   halves are asserted, since a subclass of the WRONG parent would sail past a
+   name-only check. */
 ok('the refusal is a RuntimeException (api2 must not report it as a 422 typo)',
-   strpos($assert['code'], 'throw new \\RuntimeException') !== false
+   strpos($assert['code'], 'throw new SongRelocateEnvironmentException') !== false
    && strpos($assert['code'], 'InvalidArgumentException') === false);
+ok('and SongRelocateEnvironmentException extends \\RuntimeException',
+   preg_match('/class\s+SongRelocateEnvironmentException\s+extends\s+\\\\RuntimeException\b/', $relocateRaw) === 1,
+   'a refusal class extending anything else (or \\InvalidArgumentException) would '
+   . 'have api2 answer 422 "you named a book that does not exist" for an install '
+   . 'whose migrations were never run');
 
 /* The one place a PROSE assertion is right: four FKs really do lack the cascade
    on real installs, so this refusal WILL fire, and a refusal that does not name
@@ -204,20 +222,35 @@ ok('the refusal MESSAGE names migrate-songid-prefix-fixup.php (the message IS th
 
 echo "\nM1 — the mint will not re-issue an id a redirect still claims\n";
 
-ok('the mint probes tblSongRedirects.OldSongId',
-   sqlIndex($mint, '/FROM\s+tblSongRedirects\b.*OldSongId/is') !== null,
+/* #1679 A9 — the claim CHECK moved out of the mint into songRelocateIdTaken(),
+   because the mint was never the only one: ed2_allocateSongId(), lyrics_ingest's
+   create path and the canonical-id backfill migration issue ids too, each with a
+   differently-shaped loop, and every one of them probed tblSongs only. The
+   properties below are unchanged; they are now asserted where they live. */
+ok('the mint asks the shared claim check',
+   strpos($mint['code'], 'songRelocateIdTaken(') !== false,
+   'a mint that inlines its own "is this free?" probe is how the redirect half '
+   . 'went missing from four of the five minting sites');
+ok('the claim check probes tblSongRedirects.OldSongId',
+   sqlIndex($taken, '/FROM\s+tblSongRedirects\b.*OldSongId/is') !== null,
    'the seed is MAX(Number)+1 and a move clears Number, so a freed slot can '
    . 're-mint the exact id a live redirect forwards away from — getSongById() '
    . 'matches it exactly and never consults the redirect, so an old bookmark '
    . 'silently serves a DIFFERENT song');
 ok('gated on the EXISTING songRedirectsTableReady() helper, not a second probe',
-   strpos($mint['code'], 'songRedirectsTableReady(') !== false
-   && stripos(implode(' ', $mint['sql']), 'INFORMATION_SCHEMA') === false,
+   strpos($taken['code'], 'songRedirectsTableReady(') !== false
+   && stripos(implode(' ', $taken['sql']), 'INFORMATION_SCHEMA') === false,
    'tblSongRedirects is optional (#1343 may not be migrated here) and an ungated '
    . 'read throws under mysqli STRICT — reuse the one helper, do not fork a probe');
+ok('and it asks that helper in STRICT mode (a broken probe must not read as "free")',
+   preg_match('/songRedirectsTableReady\(\s*\$db\s*,\s*true\s*\)/', $taken['code']) === 1,
+   'the default helper swallows a probe failure and answers false, which here '
+   . 'means "no redirect claims this id" — silently switching the whole check '
+   . 'off. That is #1679 A13b; the same reasoning already produced the separate '
+   . 'non-swallowing songRelocateTableExists()');
 ok('the gate is evaluated before the redirect statement is prepared',
-   ($p = strpos($mint['code'], 'songRedirectsTableReady(')) !== false
-   && ($q = strpos($mint['code'], '@STR@', $p)) !== false);
+   ($p = strpos($taken['code'], 'songRedirectsTableReady(')) !== false
+   && ($q = strpos($taken['code'], '@STR@', $p)) !== false);
 
 /* ------------------------------------------------ F3 — tblSongbookEntries -- */
 
@@ -272,17 +305,51 @@ ok('songRelocate() has exactly ONE try/ block (the SongCount recompute)',
 
 echo "\nF8 — a transaction-fatal error is re-thrown, never logged and ignored\n";
 
-ok('the SongCount recompute catches mysqli_sql_exception specifically',
-   strpos($move['code'], 'catch (\\mysqli_sql_exception') !== false,
+/* #1679 A1 — the test moved from "does this catch name the two codes?" to "does
+   it ask the ONE predicate?", because the codes now live in exactly one place.
+   That was not a refactor for tidiness: the re-throw here only holds if nothing
+   between the relocate and the caller's commit() swallows the same error again,
+   and both funnels have nine more best-effort catches in that span. A copy of
+   the code list in each was the "keep these in sync" comment rule #35 names as
+   the failure rather than the fix. */
+ok('the SongCount recompute asks the shared transaction-fatal predicate',
+   strpos($move['code'], 'songRelocateIsTransactionFatal(') !== false
+   && preg_match('/songRelocateIsTransactionFatal\([^)]*\)\s*\)\s*\{\s*throw /', $move['code']) === 1,
    'a bare catch (\\Throwable) cannot tell "this column is missing on an old '
    . 'install" from "InnoDB just rolled back your entire transaction"');
-ok('deadlock (1213) and lock-wait timeout (1205) are re-thrown',
-   preg_match('/1213/', $move['code']) === 1
-   && preg_match('/1205/', $move['code']) === 1
-   && preg_match('/1213[^;]{0,80}1205[^;]{0,80}throw \$e;|1205[^;]{0,80}1213[^;]{0,80}throw \$e;/', $move['code']) === 1,
-   'both roll back the WHOLE InnoDB transaction, not just the statement — swallowing '
-   . 'them lets execution reach the caller\'s commit(), which commits nothing and '
-   . 'answers {ok:true, songId:<new>} for a song that no longer exists under that id');
+ok('deadlock (1213) and lock-wait timeout (1205) are what that predicate re-throws',
+   preg_match('/1213/', $fatal['code']) === 1
+   && preg_match('/1205/', $fatal['code']) === 1
+   && strpos($fatal['code'], 'mysqli_sql_exception') !== false,
+   'both can roll back the WHOLE InnoDB transaction, not just the statement — '
+   . 'swallowing them lets execution reach the caller\'s commit(), which commits '
+   . 'nothing and answers {ok:true, songId:<new>} for a song that no longer exists '
+   . 'under that id');
+
+/* The re-throw is only worth anything end-to-end. DERIVED, not listed: every
+   `catch (\Throwable $_e) {` inside the save core — probes, revisions, SongCount,
+   external links, works, translations — sits between begin_transaction() and
+   commit(), so each must open with the predicate. A new best-effort catch added
+   later is covered automatically, which a typed list of line numbers would not
+   be (rule #34). Comments are already stripped from the `code` view, so a
+   comment mentioning the predicate cannot satisfy this. */
+$saveCatches = preg_match_all(
+    '/catch\s*\(\s*\\\\Throwable\s+\$_e\s*\)\s*\{/',
+    $save['code'],
+    $_m,
+    PREG_OFFSET_CAPTURE
+);
+$unguarded = 0;
+foreach ($_m[0] as $hit) {
+    $window = substr($save['code'], $hit[1] + strlen($hit[0]), 120);
+    if (strpos($window, 'songRelocateIsTransactionFatal($_e)') === false) { $unguarded++; }
+}
+ok('every best-effort catch in the save core re-throws a transaction-fatal error first',
+   $saveCatches > 0 && $unguarded === 0,
+   $saveCatches . ' catch(\\Throwable $_e) block(s) found, ' . $unguarded . ' without the '
+   . 'guard as their first statement. songRelocate() re-throwing 1213/1205 is undone by '
+   . 'ANY later swallow before commit(): the commit then succeeds trivially and the '
+   . 'endpoint answers ok:true naming a songId that does not exist');
 
 /* ------------------------------------------- M2 — an omitted key is not a move -- */
 

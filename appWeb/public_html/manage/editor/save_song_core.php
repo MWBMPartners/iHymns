@@ -41,6 +41,18 @@ declare(strict_types=1);
    api.php also loads this at module scope; loading it here makes the core
    self-sufficient when called from api2.php (which does NOT pull places.php). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* #1679 — songRelocate() + the two cross-cutting predicates this file needs
+   EVERYWHERE, not just in the move branch:
+     songRelocateIsTransactionFatal() — the ONE list of MySQL errors that have
+       already rolled the caller's transaction back. Every best-effort
+       `catch (\Throwable)` between begin_transaction() and commit() below opens
+       with it (A1), which is why it can no longer be a lazy require inside the
+       move branch;
+     SongRelocateEnvironmentException — recognised by TYPE in the failure handler
+       so an un-applied-migration refusal actually reaches the curator (A8).
+   require_once is idempotent; the move branch keeps its own local require as a
+   statement of intent. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -389,6 +401,53 @@ function editorSaveSongCore(): array
             }
             $action = $prevRow === null ? 'create' : 'edit';
 
+            /* #1679 A13a — ONE snapshot decides the songbook column.
+             *
+             * ELI5: when the save didn't mention a songbook we keep the song
+             * where it is. We read "where it is" twice — once before the
+             * transaction opened and once inside it — so trust the reading taken
+             * inside, and re-do the two things derived from the other one.
+             *
+             * Detail: the M2 fix reads the song's current book BEFORE
+             * begin_transaction() (it has to — $isOfficialSongbook and $number
+             * are computed from it, and the IsOfficial probe is read-only
+             * context). $prevRow is then re-read INSIDE the transaction and
+             * already carries SongbookAbbr. Two snapshots deciding one column is
+             * a race by construction: a concurrent move landing between them
+             * would make this save write the OLD book back over the new one, and
+             * the UPSERT writes SongbookAbbr unconditionally — so the column and
+             * the SongId prefix would disagree, which is #1679's exact defect
+             * arrived at by omission rather than by asking.
+             *
+             * Only for a save that did NOT send `songbook` (one that did is an
+             * explicit instruction and is the relocate branch's business).
+             * $prevRow is null for a create / a freshly-minted draft id, where
+             * the pre-transaction default (the song's book, else 'Misc') stands.
+             *
+             * $isOfficialSongbook / $number are re-derived TOGETHER with it —
+             * fixing the abbreviation alone would just move the inconsistency
+             * into the Number column (an official book numbers its songs, an
+             * unofficial one stores NULL). The re-probe only runs in the rare
+             * case where the two snapshots actually disagreed. */
+            if (!$songbookSent && $prevRow !== null) {
+                $txnBook = trim((string)($prevRow['SongbookAbbr'] ?? ''));
+                if ($txnBook !== '' && $txnBook !== $songbookAbbr) {
+                    $songbookAbbr = $txnBook;
+                    $reProbe = $db->prepare(
+                        'SELECT IsOfficial FROM tblSongbooks WHERE Abbreviation = ? LIMIT 1'
+                    );
+                    $reProbe->bind_param('s', $songbookAbbr);
+                    $reProbe->execute();
+                    $reRow = $reProbe->get_result()->fetch_assoc();
+                    $reProbe->close();
+                    $isOfficialSongbook = (bool)($reRow['IsOfficial'] ?? false);
+                    $number = (!$isOfficialSongbook || $rawNumber === null || $rawNumber === ''
+                               || (int)$rawNumber <= 0)
+                        ? null
+                        : (int)$rawNumber;
+                }
+            }
+
             /* #1679 — SONGBOOK MOVE. `tblSongbooks.Abbreviation` IS the SongId
                prefix (rule #27), so a save that changes an EXISTING song's book
                must re-key the id too; leaving it alone is what produced songs whose
@@ -454,7 +513,21 @@ function editorSaveSongCore(): array
                 $arrProbe->execute();
                 $hasArrangementCol = $arrProbe->get_result()->fetch_row() !== null;
                 $arrProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                /* #1679 A1 — the FIRST statement of every best-effort catch between
+                   begin_transaction() and commit() in this function. Each of these blocks
+                   is correct about what it was written for (a probe / a follow-up must not
+                   cost the curator their edit) and none was written for "the transaction I
+                   am inside may already have been rolled back underneath me". Swallowing
+                   one of those makes commit() below succeed trivially and answers ok:true
+                   for work that no longer exists — and since #1679 that work includes a
+                   songbook MOVE whose songRelocate() carefully re-throws the very same
+                   codes a few frames up. The list lives in ONE predicate rather than being
+                   copied into nine catches (rule #35: cross-file agreement needs a
+                   mechanism, not a "keep these in sync" comment). */
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
+                /* default false */
+            }
 
             /* #1380 FIX 3 — TOCTOU-safe write for a FRESHLY-MINTED canonical id.
                The mint loop above checks "is this id free?" then we INSERT — a
@@ -612,7 +685,10 @@ function editorSaveSongCore(): array
                     $pf1Probe->execute();
                     $pf1HasChords = $pf1Probe->get_result()->fetch_row() !== null;
                     $pf1Probe->close();
-                } catch (\Throwable $_e) { /* default false */ }
+                } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                    /* default false */
+                }
                 $pf1HasLangs = lyricLinesComponentsLangReady($db);
                 if ($pf1HasChords || $pf1HasLangs) {
                     $snapCols = 'Type, Number, LinesJson';
@@ -864,7 +940,10 @@ function editorSaveSongCore(): array
                 $colProbe->execute();
                 $hasComponentLanguage = $colProbe->get_result()->fetch_row() !== null;
                 $colProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* default false */
+            }
 
             /* #1094 — schema-probe for the optional ChordsJson column (#1066).
                When present, manual per-line chords are persisted via a guarded
@@ -881,7 +960,10 @@ function editorSaveSongCore(): array
                 $chProbe->execute();
                 $hasComponentChords = $chProbe->get_result()->fetch_row() !== null;
                 $chProbe->close();
-            } catch (\Throwable $_e) { /* default false */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* default false */
+            }
             $updChords = $hasComponentChords
                 ? $db->prepare('UPDATE tblSongComponents SET ChordsJson = ? WHERE Id = ?')
                 : null;
@@ -1025,7 +1107,10 @@ function editorSaveSongCore(): array
                 $rev->execute();
                 $revisionId = (int)$db->insert_id;
                 $rev->close();
-            } catch (\Throwable $_e) { /* revisions are best-effort */ }
+            } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 */
+                /* revisions are best-effort */
+            }
 
             /* Refresh tblSongbooks.SongCount for every songbook this
                save touched (#791). The home + /songbooks tiles gate
@@ -1074,6 +1159,7 @@ function editorSaveSongCore(): array
                     }
                 }
             } catch (\Throwable $_e) {
+                if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                 error_log('[editor save_song] SongCount recompute failed: ' . $_e->getMessage());
             }
 
@@ -1127,6 +1213,7 @@ function editorSaveSongCore(): array
                         );
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Match the Works-auto-link pattern — link
                        reconciliation must not block the core save.
                        The user's metadata edit is already committed
@@ -1271,6 +1358,7 @@ function editorSaveSongCore(): array
                         }
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Best-effort — Works linkage must never block the
                        core song save. The user's edit is already
                        captured in tblSongs + tblSongRevisions. */
@@ -1473,6 +1561,7 @@ function editorSaveSongCore(): array
                         }
                     }
                 } catch (\Throwable $_e) {
+                    if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                     /* Best-effort, exactly like the Works auto-link above: a
                        translation-link problem must never cost the curator the
                        lyrics/credits edit they actually came here to make. The
@@ -1564,6 +1653,20 @@ function editorSaveSongCore(): array
                message — DB internals are not for general consumption.
                (#759) */
             $payload = ['error' => 'Failed to save song. Check server logs for details.'];
+            /* #1679 A8 — the one failure whose explanation belongs to EVERY role.
+               `error_detail` below is admin-only on purpose (raw mysqli text,
+               file paths, line numbers). The songbook-move refusal is different
+               in kind: an environment fault with no sensitive content, whose
+               entire value is the sentence naming the migration card to run.
+               Both editor funnels admit the `editor` role while that detail
+               channel is gated on `admin`, so without a separate ungated key the
+               person most likely to hit it saw "Failed to save song. Check server
+               logs" — no better than the raw ER_ROW_IS_REFERENCED_2 the refusal
+               replaced. Matched on the exception TYPE, never on its wording
+               (rule #35); the admin-only channel is deliberately NOT widened. */
+            if ($e instanceof SongRelocateEnvironmentException) {
+                $payload['error_hint'] = $e->getMessage();
+            }
             /* The original case body read the module-level $currentUser that
                api.php establishes at file scope. Inside this shared function
                that variable is out of scope, so re-resolve the SAME value via

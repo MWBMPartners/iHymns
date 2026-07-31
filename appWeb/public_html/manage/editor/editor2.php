@@ -335,16 +335,26 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         }
 
         function mountTabs(songId) {
-            /* #1679 H1 — getSongbooks is the sidebar's own distinct-books list
-               (the one the New-song modal already uses), handed to the metadata
-               tab so its songbook control is a closed <select> rather than a
-               free-text box whose every keystroke pause re-keyed the song.
-               Wrapped in an arrow so it resolves at RENDER time: the sidebar's
-               index loads asynchronously, and a direct reference would freeze
-               whatever the list happened to be when the tabs were mounted. */
+            /* #1679 H1 — getSongbooks is the sidebar's songbook list (the one the
+               New-song modal already uses), handed to the metadata tab so its
+               songbook control is a closed <select> rather than a free-text box
+               whose every keystroke pause re-keyed the song. Since #1679 A2 that
+               list is the REAL catalogue from load_index, so a book with no songs
+               yet is still a legal move target.
+
+               whenSongbooksReady is the other half, and the arrow alone was NOT
+               it: an earlier comment here claimed the arrow made the list
+               "resolve at RENDER time", which is true and useless, because
+               render() only runs when the `song` store slice changes and there is
+               exactly ONE production `store.set('song', …)` — immediately before
+               mountTabs(). The sidebar fetches its index in parallel, so a deep
+               link (?song=…) reliably mounted the tabs first and the select froze
+               holding one option. sidebar.whenLoaded() resolves once the index has
+               landed OR failed, and the tab re-fills its options then. */
             const ctx = {
                 store, api: editorApi, songId, toast, onSongIdChange,
                 getSongbooks: () => sidebar.getSongbooks(),
+                whenSongbooksReady: () => sidebar.whenLoaded(),
             };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),

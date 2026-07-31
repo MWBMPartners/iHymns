@@ -248,6 +248,89 @@ async function main() {
     assert(idChanges.length === 1 && idChanges[0][0] === 'MP-0041' && idChanges[0][1] === 'CP-0007',
         'onSongIdChange(previousId, newId) fired so the shell can re-open the song');
 
+    /* ---- 7. a late songbook list re-fills the control ------------------- */
+
+    /* #1679 A2. The tab reads getSongbooks() once per render, and render() only
+       runs when the `song` store slice changes — which in production happens
+       exactly once, immediately before the tabs mount. The sidebar's index is
+       fetched in parallel, so a DEEP LINK (?song=…) routinely mounts the tabs
+       first and the select froze holding one option: the song's own book. The
+       move was then impossible on precisely the entry point a curator follows
+       from /manage/revisions or Missing Numbers — and silently so, because a
+       one-option select looks like a normal control. */
+    console.log('\n--- 7. a songbook list that arrives after mount re-fills the select ---');
+    const dom3 = new JSDOM('<!doctype html><html><body><div id="root3"></div></body></html>');
+    const c3 = dom3.window.document.getElementById('root3');
+    global.window = dom3.window; global.document = dom3.window.document;
+    let lateBooks = [];
+    let releaseIndex;
+    const indexReady = new Promise((r) => { releaseIndex = r; });
+    const store3 = makeStore({ song: { SongbookAbbr: 'MP' } });
+    const down3 = mountMetadataTab(c3, {
+        store: store3, api, songId: 'MP-0041', toast: () => {},
+        getSongbooks: () => lateBooks.slice(),
+        whenSongbooksReady: () => indexReady,
+    });
+    const sel4 = c3.querySelector('#meta-songbook');
+    assert(!!sel4 && Array.from(sel4.options).map((o) => o.value).join(',') === 'MP',
+        "before the index lands the control holds only the song's own book");
+    lateBooks = SONGBOOKS.concat([{ abbr: 'NEW', name: 'Brand New Book' }]);
+    releaseIndex();
+    await flush(20);
+    const lateValues = Array.from(sel4.options).map((o) => o.value).sort().join(',');
+    assert(lateValues === 'CP,MP,NEW',
+        'once the catalogue arrives the same control offers every book (got ' + lateValues + ')');
+    assert(sel4.value === 'MP',
+        "and re-filling did not change which book the control claims the song is in");
+    down3();
+    global.window = window; global.document = window.document;
+
+    /* ---- 8. the payload key the server sends is the one the client reads -- */
+
+    /* #1679 A2 + rule #35. The songbook catalogue crosses THREE files —
+       api2.php's load_index emits it, sidebar.js stores it, metadata-tab.js reads
+       fields off each row — with nothing but agreement holding them together.
+       This repo has broken exactly that shape twice (the X-Requested-With header
+       api2 required and its own client never sent; the two spellings of the
+       language-filter event). Both sides are DERIVED from source here rather than
+       typed as a list, so renaming a field on either side turns this red instead
+       of producing an empty <select> with no error anywhere (rule #34). */
+    console.log('\n--- 8. server payload key + row fields match what the client reads ---');
+    const api2Src    = fs.readFileSync(
+        path.join(__dirname, '..', 'appWeb', 'public_html', 'manage', 'editor', 'api2.php'), 'utf8');
+    const sidebarSrc = fs.readFileSync(
+        path.join(__dirname, '..', 'appWeb', 'public_html', 'manage', 'editor', 'v2', 'sidebar.js'), 'utf8');
+    const metaSrc    = fs.readFileSync(MODULE_PATH, 'utf8');
+
+    /* Bounding the case body on the next bare "case '" TRUNCATED it: the block's
+       own comment cites `manage/editor/api.php case 'load_index'`, so the naive
+       marker matched inside the very comment that documents the fix, and the
+       assertion reported the payload key as missing while it sat six lines below
+       the cut. Anchor on a switch-level case label instead — start of line, the
+       dispatch's four-space indent. (Left recorded because it is the third time
+       in this repo a guard has been wrong-but-confident about where a block ends
+       — rule #34.) */
+    const liStart = api2Src.indexOf("\n    case 'load_index'");
+    const liNext  = liStart === -1 ? -1 : api2Src.slice(liStart + 1).search(/\n {4}case '/);
+    const liBlock = liStart === -1 ? '' : api2Src.slice(liStart, liNext === -1 ? undefined : liStart + 1 + liNext);
+    assert(/'songbooks'\s*=>/.test(liBlock),
+        "api2.php's load_index response carries a `songbooks` key");
+    assert(/res\.songbooks\b/.test(sidebarSrc),
+        'sidebar.js reads res.songbooks off the load_index response');
+
+    const rowLiteral = liBlock.match(/\$books\[\]\s*=\s*\[([^\]]*)\]/);
+    const serverFields = rowLiteral
+        ? Array.from(rowLiteral[1].matchAll(/'(\w+)'\s*=>/g)).map((m) => m[1]).sort()
+        : [];
+    const clientFields = Array.from(new Set(
+        Array.from(metaSrc.matchAll(/\bb\.(\w+)\b/g)).map((m) => m[1])
+    )).sort();
+    assert(serverFields.length > 0,
+        'the songbook row literal was found in api2.php (parsed: ' + JSON.stringify(serverFields) + ')');
+    assert(serverFields.join(',') === clientFields.join(','),
+        'server row fields ' + JSON.stringify(serverFields)
+        + ' are exactly the fields metadata-tab.js reads ' + JSON.stringify(clientFields));
+
     teardown();
 
     console.log('\n' + checks + ' assertion(s), ' + failures + ' failure(s).');

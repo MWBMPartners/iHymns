@@ -143,6 +143,144 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_redirects.php';
 
 /**
+ * "This environment cannot perform the move" — an ENVIRONMENT fault, never bad
+ * user input (#1679 H3/A8).
+ *
+ * ELI5: a special kind of error meaning "the database here is missing a setting
+ * a migration adds", so the editor can show the curator what to run instead of a
+ * blank "Server error."
+ *
+ * Detail: it extends \RuntimeException on purpose, so the existing
+ * RuntimeException-vs-InvalidArgumentException split is untouched — api2's 422
+ * branch catches InvalidArgumentException specifically ("you named a book that
+ * does not exist") and must still not report an un-migrated install as a typo.
+ * The SUBCLASS is what lets the API layer recognise this refusal WITHOUT
+ * regex-matching the sentence the helper wrote (rule #35: cross-file agreement
+ * needs a mechanism; type / HTTP status is the contract, prose is not). That
+ * matters here because the message IS the deliverable — it names the migration
+ * card to run — and it has to survive being routed to a non-admin editor.
+ */
+class SongRelocateEnvironmentException extends \RuntimeException
+{
+}
+
+/**
+ * Is this throwable one that has already rolled back the CALLER'S transaction?
+ *
+ * ELI5: some database errors do not just fail one statement — they throw away
+ * everything you have done since the transaction started. If we swallow one of
+ * those and carry on, we end up cheerfully reporting success for work that no
+ * longer exists.
+ *
+ * WHY THIS IS A SHARED PREDICATE AND NOT AN INLINE `in_array` (#1679 F8/A1)
+ * ------------------------------------------------------------------------
+ * `songRelocate()` re-throws these from its own best-effort SongCount recompute,
+ * but the re-throw only holds if NOTHING between the relocate and the caller's
+ * `commit()` swallows them again — and both funnels have several deliberate
+ * `catch (\Throwable) { error_log(...) }` blocks in exactly that span
+ * (`ed2_touchRevision()` in api2.php; the probe / revision / SongCount /
+ * external-link / works / translation-link blocks in save_song_core.php). Each of
+ * those is CORRECT for what it was written for: a best-effort follow-up must not
+ * cost the curator their edit. None of them was written with "the transaction I
+ * am inside may already be gone" in mind. Copying a two-element error-code list
+ * into ten catch blocks is precisely the "keep these in sync" comment rule #35
+ * names as the failure rather than the fix — so the list lives here, once, and
+ * every one of those catches opens with
+ * `if (songRelocateIsTransactionFatal($e)) { throw $e; }`.
+ *
+ * THE TWO CODES, ACCURATELY
+ * -------------------------
+ *  - 1213 `ER_LOCK_DEADLOCK` — InnoDB picked this transaction as the deadlock
+ *    victim and rolled the WHOLE transaction back. Swallowing this is what makes
+ *    a false success reachable: `commit()` then succeeds trivially (there is
+ *    nothing left to commit) and the endpoint answers `{ok:true, songId:<new>}`
+ *    for a song that does not exist under that id.
+ *  - 1205 `ER_LOCK_WAIT_TIMEOUT` — `innodb_lock_wait_timeout` elapsed. MySQL's
+ *    DEFAULT is `innodb_rollback_on_timeout = OFF`, which rolls back only the
+ *    FAILING STATEMENT, so on a default server this one does NOT by itself
+ *    produce the false success — the transaction is still alive and the commit is
+ *    real. It is treated as fatal anyway because (a) with that variable ON it
+ *    behaves exactly like 1213, and (b) a statement that timed out waiting for a
+ *    row lock in the middle of a multi-statement move is not something to log and
+ *    walk past.
+ *
+ * https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
+ * https://dev.mysql.com/doc/refman/8.0/en/innodb-parameters.html#sysvar_innodb_rollback_on_timeout
+ *
+ * @param  \Throwable $e Anything a `catch` block caught.
+ * @return bool TRUE when the caller must re-throw rather than continue to commit.
+ */
+function songRelocateIsTransactionFatal(\Throwable $e): bool
+{
+    if (!($e instanceof \mysqli_sql_exception)) { return false; }
+
+    return in_array((int)$e->getCode(), [1213, 1205], true);
+}
+
+/**
+ * Is this candidate SongId claimed by ANYTHING — the live corpus or a redirect?
+ *
+ * ELI5: before handing a song a new id, check that nobody is using it AND that
+ * no old bookmark is still being forwarded away from it.
+ *
+ * WHY BOTH TABLES, AND WHY THIS IS SHARED (#1679 M1 / A9)
+ * ------------------------------------------------------
+ * `tblSongs` alone is not the claim set. `_bulkImport_nextSongNumberFor()` seeds
+ * from `MAX(Number) + 1` and a move sets `Number = NULL`, so moving the
+ * highest-numbered song OUT of a book frees its slot again — and the next mint in
+ * that book can re-issue the exact id a live `tblSongRedirects` row still
+ * forwards away from. `getSongById()` resolves an exact match BEFORE it ever
+ * consults the redirect layer, so an old bookmark then gets 200 OK with a
+ * COMPLETELY DIFFERENT SONG. Wrong content is worse than the 404 this feature set
+ * out to remove.
+ *
+ * An earlier revision of this file put that reasoning in `songRelocateMintId()`'s
+ * doc-block and called it "the ONE mint". It was not: `ed2_allocateSongId()`
+ * (api2.php), `lyrics_ingest.php`'s create path, the `_bulkImport_*` importer
+ * family and `migrate-backfill-canonical-songids.php` all issue ids as well, and
+ * every one of them probed `tblSongs` only. The claim CHECK is therefore the
+ * shared thing — the smallest unit that can drift (the rule #36 lesson) — rather
+ * than the whole mint, which each site shapes differently (4-digit vs 6-digit
+ * tails, per-file counters, dry-run ledgers).
+ *
+ * STRICT BY DESIGN: the redirect probe is `songRedirectsTableReady($db, true)`,
+ * so a probe that FAILS throws instead of answering "no table" — a
+ * false-because-the-probe-broke here silently switches the whole check off, which
+ * is the exact failure shape this function exists to remove (#1679 A13b). Callers
+ * are all about to issue a PERMANENT id, so refusing is recoverable and guessing
+ * is not.
+ *
+ * Statements are prepared per call rather than hoisted out of a caller's loop:
+ * those loops normally run once or twice, and a shared helper that hands prepared
+ * statements back and forth would be a lifecycle bug waiting to happen.
+ *
+ * @param  \mysqli $db
+ * @param  string  $songId Candidate id, e.g. `CP-0412`.
+ * @return bool TRUE = taken; pick another.
+ * @throws \RuntimeException when the redirect-table probe itself fails.
+ */
+function songRelocateIdTaken(\mysqli $db, string $songId): bool
+{
+    $live = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+    $live->bind_param('s', $songId);
+    $live->execute();
+    $held = $live->get_result()->fetch_row() !== null;
+    $live->close();
+    if ($held) { return true; }
+
+    /* Strict: "I could not check" must never read as "nothing claims it". */
+    if (!songRedirectsTableReady($db, true)) { return false; }
+
+    $claim = $db->prepare('SELECT 1 FROM tblSongRedirects WHERE OldSongId = ? LIMIT 1');
+    $claim->bind_param('s', $songId);
+    $claim->execute();
+    $claimed = $claim->get_result()->fetch_row() !== null;
+    $claim->close();
+
+    return $claimed;
+}
+
+/**
  * Does an OPTIONAL table exist on THIS environment? Probed once per table, per
  * request (static).
  *
@@ -204,7 +342,8 @@ function songRelocateTableExists(\mysqli $db, string $table): bool
  *
  * @param  \mysqli $db
  * @return void
- * @throws \RuntimeException naming the offending constraint(s) + the migration.
+ * @throws SongRelocateEnvironmentException naming the offending constraint(s)
+ *         and the migration card that fixes them.
  * @see https://dev.mysql.com/doc/refman/8.0/en/information-schema-referential-constraints-table.html
  */
 function songRelocateAssertCascades(\mysqli $db): void
@@ -260,15 +399,25 @@ function songRelocateAssertCascades(\mysqli $db): void
     }
 
     if ($verdict !== '') {
-        /* RuntimeException, not InvalidArgumentException: this is an
+        /* A RuntimeException SUBCLASS, not InvalidArgumentException: this is an
            ENVIRONMENT fault, not bad user input, so api2's 422 branch (which
            catches InvalidArgumentException specifically) must NOT claim the
-           curator typed the wrong book. It surfaces through the v2 API's
-           top-level handler as a 500 whose `error_detail` — admin-only, and the
-           editor is admin-only — carries this sentence verbatim. The MESSAGE is
-           the deliverable here; a bare refusal would be no better than the
-           ER_ROW_IS_REFERENCED_2 it replaces. */
-        throw new \RuntimeException($verdict);
+           curator typed the wrong book.
+
+           #1679 A8 — an earlier revision of this comment claimed the message
+           "surfaces through the v2 API's top-level handler as a 500 whose
+           `error_detail` — admin-only, and the editor is admin-only — carries
+           this sentence verbatim". That was FALSE in both halves: api2.php gates
+           entry on the `editor` role but computes $ed2IsAdmin from the `admin`
+           role, and emits `error_detail` only for an admin — so the plain
+           `editor` who is the likeliest person to hit this saw a bare "Server
+           error.", exactly as uninformative as the raw ER_ROW_IS_REFERENCED_2
+           the refusal replaced. The refusal now travels in its own `error_hint`
+           key, emitted for EVERY role on both the v2 and the legacy funnel, and
+           recognised by TYPE rather than by matching this prose. The message is
+           still the deliverable — it names the migration card to run — so it has
+           to reach the person who ran the save, not only an admin. */
+        throw new SongRelocateEnvironmentException($verdict);
     }
 }
 
@@ -278,26 +427,21 @@ function songRelocateAssertCascades(\mysqli $db): void
  * ELI5: "what's the next free slot in this book?" — and if something already
  * took it, keep counting until we find one that's free.
  *
- * Detail: this is the ONE mint. It was previously inlined in
- * `manage/editor/save_song_core.php` (the #1380 draft-id promotion) and copied
- * again in `appWeb/.sql/migrate-backfill-canonical-songids.php`; the save core
- * now calls this, so the editor's "new song" id and a moved song's id are chosen
- * by the same rule and cannot drift (CLAUDE.md modularity rule). The seed comes
- * from `_bulkImport_nextSongNumberFor()` so the importers agree too.
+ * Detail: this is the mint the EDITOR uses — for a #1380 draft-id promotion
+ * (`manage/editor/save_song_core.php`) and for a #1679 move — so those two agree
+ * by construction rather than by two copies of a loop happening to match (the
+ * copy that was inlined in the save core is gone; CLAUDE.md modularity rule). The
+ * seed comes from `_bulkImport_nextSongNumberFor()` so the importers agree on the
+ * starting slot too.
  *
- * A FREE SLOT IS NOT ENOUGH — THE REDIRECT LAYER ALSO CLAIMS IDS (M1, #1679)
- * -------------------------------------------------------------------------
- * The seed is `MAX(Number) + 1` and `songRelocate()` sets `Number = NULL`, so
- * moving the highest-numbered song OUT of a book frees its slot again. A later
- * mint in that book would then re-issue the exact id a live `tblSongRedirects`
- * row still forwards away from — and `getSongById()` resolves an exact match
- * before it ever consults the redirect layer, so an old bookmark would get
- * **200 OK with a completely different song**. Wrong content is worse than the
- * 404 this feature set out to remove, so a candidate is "taken" if EITHER
- * `tblSongs` holds it OR `tblSongRedirects.OldSongId` claims it.
- * That probe is gated on `songRedirectsTableReady()` — the SAME helper every
- * other redirect reader uses, not a second copy — because the #1343 table is
- * optional and an ungated read of a missing table THROWS under mysqli STRICT.
+ * IT IS **NOT** THE ONLY MINT — that claim was here and was wrong (#1679 A9).
+ * `ed2_allocateSongId()` (api2.php, 6-digit tail for numberless songs),
+ * `lyrics_ingest.php`'s create path, the `_bulkImport_*` importer family and
+ * `appWeb/.sql/migrate-backfill-canonical-songids.php` all issue ids as well,
+ * each with a differently-shaped loop. What they now SHARE is the claim check,
+ * `songRelocateIdTaken()` — which is the part that was actually wrong in all of
+ * them (see that function for the "a redirect claims ids too" reasoning, and this
+ * pass's report for which sites adopted it).
  *
  * The loop is a read-then-write window (TOCTOU): two concurrent mints in one
  * book can both pass the existence check. The UNIQUE index on
@@ -320,30 +464,17 @@ function songRelocateMintId(\mysqli $db, string $abbr): array
     $n         = _bulkImport_nextSongNumberFor($db, $abbr);
     $candidate = sprintf('%s-%04d', $abbr, $n);
 
-    $existsStmt = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-    /* Prepared once, outside the loop, and only where the table exists. */
-    $claimStmt  = songRedirectsTableReady($db)
-        ? $db->prepare('SELECT 1 FROM tblSongRedirects WHERE OldSongId = ? LIMIT 1')
-        : null;
-
-    /** A candidate is free only if NEITHER the live corpus nor a redirect holds it. */
-    $taken = static function (string $id) use ($existsStmt, $claimStmt): bool {
-        $existsStmt->bind_param('s', $id);
-        $existsStmt->execute();
-        if ($existsStmt->get_result()->fetch_row() !== null) { return true; }
-        if ($claimStmt === null) { return false; }
-        $claimStmt->bind_param('s', $id);
-        $claimStmt->execute();
-        return $claimStmt->get_result()->fetch_row() !== null;
-    };
-
-    while ($taken($candidate)) {
+    /* The claim check is the SHARED one (#1679 A9) — live corpus OR redirect.
+       It replaced a private pair of prepared statements here whose redirect half
+       was gated on the SWALLOWING `songRedirectsTableReady($db)`: a probe that
+       failed for any reason answered "no table", which silently disabled the M1
+       check on the one path (a draft promotion via save_song_core.php) that does
+       not even get the cascade pre-check first. The shared helper probes
+       strictly, so an unanswerable probe now aborts the mint instead (A13b). */
+    while (songRelocateIdTaken($db, $candidate)) {
         $n++;
         $candidate = sprintf('%s-%04d', $abbr, $n);
     }
-
-    $existsStmt->close();
-    if ($claimStmt !== null) { $claimStmt->close(); }
 
     return [$candidate, $n];
 }
@@ -373,11 +504,13 @@ function songRelocateMintId(\mysqli $db, string $abbr): array
  * catching that to answer 422 "you named a book that doesn't exist" would also
  * swallow every genuine database failure and report it as bad user input.
  *
- * THROWS `\RuntimeException` when this environment's FKs cannot cascade the
- * re-key (`songRelocateAssertCascades()`, H3). Deliberately the OTHER class, for
- * the same reason: that is an environment fault, not bad input, so api2's 422
- * branch must not claim the curator typed the wrong book. It reaches the curator
- * through the v2 API's admin-only `error_detail`, message intact.
+ * THROWS `SongRelocateEnvironmentException` (a `\RuntimeException` subclass) when
+ * this environment's FKs cannot cascade the re-key (`songRelocateAssertCascades()`,
+ * H3). Deliberately the OTHER branch of the split, for the same reason: that is an
+ * environment fault, not bad input, so api2's 422 branch must not claim the curator
+ * typed the wrong book. Both funnels recognise the TYPE and copy its message into
+ * an `error_hint` field EVERY role can see (#1679 A8) — the sentence names the
+ * migration card to run, so hiding it behind an admin-only channel defeated it.
  *
  * @param  \mysqli  $db
  * @param  string   $oldSongId  The song's CURRENT SongId.
@@ -561,25 +694,19 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
             $cnt->execute();
         }
         $cnt->close();
-    } catch (\mysqli_sql_exception $e) {
-        /* #1679 F8 — "best-effort" must not mean "swallow anything". Two MySQL
-           errors do not fail just the STATEMENT, they roll back the ENTIRE
-           InnoDB transaction — the caller's transaction, containing the move:
-             1213  ER_LOCK_DEADLOCK      — deadlock found; the transaction was
-                                           chosen as the victim and rolled back.
-             1205  ER_LOCK_WAIT_TIMEOUT  — innodb_lock_wait_timeout elapsed;
-                                           with innodb_rollback_on_timeout the
-                                           whole transaction is rolled back.
-           Catching those and continuing lets execution reach the caller's
-           $db->commit(), which commits NOTHING and answers {ok:true,
-           songId:<new>} for a song that no longer exists under that id. Re-throw
-           so the caller rolls back and reports the failure it actually had.
-           https://dev.mysql.com/doc/mysql-errors/8.0/en/server-error-reference.html
-           Anything else (a missing SongCount column on an old install, a
-           permission oddity) really is cosmetic: log and let the move stand. */
-        if (in_array((int)$e->getCode(), [1213, 1205], true)) { throw $e; }
-        error_log('[songRelocate] SongCount recompute failed: ' . $e->getMessage());
     } catch (\Throwable $e) {
+        /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Two
+           MySQL errors do not fail just the STATEMENT, they can roll back the
+           ENTIRE InnoDB transaction — the caller's transaction, containing the
+           move — after which the caller's $db->commit() commits NOTHING and the
+           endpoint answers {ok:true, songId:<new>} for a song that no longer
+           exists under that id. The two codes and the precise conditions live in
+           songRelocateIsTransactionFatal(): ONE list, because the same test has
+           to hold in every catch between the relocate and the commit, and the two
+           funnels have ten more. Anything else (a missing SongCount column on an
+           old install, a permission oddity) really is cosmetic: log and let the
+           move stand. */
+        if (songRelocateIsTransactionFatal($e)) { throw $e; }
         error_log('[songRelocate] SongCount recompute failed: ' . $e->getMessage());
     }
 

@@ -5212,6 +5212,18 @@ function autoSaveSongsPerSong(ids) {
                             if (data.mysqli_code) {
                                 msg += ' [mysqli ' + data.mysqli_code + ']';
                             }
+                        } else if (data.error_hint) {
+                            /* #1679 A8 — the ungated companion to error_detail:
+                               an environment fault whose message tells the user
+                               exactly what to run (today, the songbook move
+                               refusing on an install whose FK cascades were
+                               never migrated). error_detail is admin-only and
+                               this editor admits the `editor` role, so without
+                               this branch the one failure with a precise answer
+                               rendered as a bare "Failed to save song". Second
+                               in the chain, not first: when both are present the
+                               admin detail is the more diagnostic of the two. */
+                            msg += ' — ' + data.error_hint;
                         }
                         failed.push({ id: id, error: msg });
                     }

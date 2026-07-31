@@ -26,8 +26,35 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 
-/** Is tblSongRedirects migrated on THIS env? Probed once per request (static). */
-function songRedirectsTableReady(\mysqli $db): bool
+/**
+ * Is tblSongRedirects migrated on THIS env? Probed once per request (static).
+ *
+ * ELI5: ask the database whether the forwarding-notes table exists yet. `$strict`
+ * is for the one caller that must NOT be told "no" when the honest answer is
+ * "I could not find out".
+ *
+ * Detail (#1679 A13b): the default (`$strict = false`) is right for a READER — a
+ * redirect that cannot be looked up costs a visitor a 404, which is bad but not
+ * corrupting, so the reader degrades quietly. It is WRONG for a WRITER that is
+ * about to issue a permanent id: `songRelocateIdTaken()` treats "no redirect
+ * table" as "no redirect claims this id", so a probe that failed for an unrelated
+ * reason (permissions, a dropped connection) would silently switch the M1 claim
+ * check off and let a mint re-issue an id a live redirect still forwards away
+ * from — 200 OK with the WRONG SONG on an old bookmark. This is the same
+ * reasoning that made `songRelocateTableExists()` (song_relocate.php) a separate,
+ * non-swallowing probe rather than a reuse of this one; `$strict` closes the gap
+ * for the one helper that genuinely needs both behaviours from one memo.
+ *
+ * A FAILED probe is deliberately NOT memoised (only a successful one is): a
+ * transient failure must not disable the redirect layer for the rest of the
+ * request, and a strict caller must be able to fail loudly even if a lenient
+ * caller ran first.
+ *
+ * @param bool $strict TRUE = re-throw the probe failure instead of answering false.
+ * @throws \RuntimeException only when $strict and the probe itself failed.
+ * @see https://dev.mysql.com/doc/refman/8.0/en/information-schema-tables-table.html
+ */
+function songRedirectsTableReady(\mysqli $db, bool $strict = false): bool
 {
     static $ready = null;
     if ($ready !== null) { return $ready; }
@@ -39,7 +66,17 @@ function songRedirectsTableReady(\mysqli $db): bool
         $stmt->execute();
         $ready = $stmt->get_result()->fetch_row() !== null;
         $stmt->close();
-    } catch (\Throwable $e) { $ready = false; }
+    } catch (\Throwable $e) {
+        if ($strict) {
+            throw new \RuntimeException(
+                'songRedirectsTableReady: could not determine whether tblSongRedirects exists — '
+                . $e->getMessage(),
+                0,
+                $e
+            );
+        }
+        return false;   /* NOT memoised — see the doc-block. */
+    }
     return $ready;
 }
 

@@ -7,7 +7,7 @@
  *  and the field keeps the typed value for retry.
  *
  *  mountMetadataTab(container, { store, api, songId, toast, onSongIdChange,
- *                                getSongbooks }) -> teardown fn
+ *                                getSongbooks, whenSongbooksReady }) -> teardown fn
  *  Reads initial values from the store's `song` slice (the tblSongs row, as
  *  returned by api2.php load_song — note the columns are PascalCase).
  * ========================================================================== */
@@ -55,14 +55,29 @@ export function mountMetadataTab(container, opts) {
        no-op so the tab still mounts standalone in a test harness. */
     const onSongIdChange = opts.onSongIdChange || function () {};
     /* #1679 H1 — the songbook options, injected the same way. The shell passes
-       sidebar.getSongbooks(), which derives the distinct books from the loaded
-       slim index — the SAME list the New-song modal offers, so there is one
-       implementation of "which songbooks exist" and no new endpoint (its known
-       limit is that a book with zero songs is not listed; that is inherited from
-       the index, not introduced here). Defaults to an empty list so the tab
-       still mounts standalone. */
+       sidebar.getSongbooks(), the SAME list the New-song modal offers, so there
+       is one implementation of "which songbooks exist".
+       #1679 A2 — that list is now the REAL catalogue (api2 load_index's
+       `songbooks`), not the distinct books present in the loaded song index. The
+       difference is not cosmetic: an index-derived list cannot contain a book
+       with zero songs, so the first song could never be moved INTO a
+       newly-created book — a move v1 has always allowed. Defaults to an empty
+       list so the tab still mounts standalone. */
     const getSongbooks = opts.getSongbooks || function () { return []; };
+    /* #1679 A2 — "tell me when that list is actually populated".
+       ELI5: the song opens straight away, but the list of songbooks arrives a
+       moment later, so we re-fill the dropdown when it does.
+       Detail: getSongbooks() is read ONCE per render, and render() only runs when
+       the `song` store slice changes — which in production happens exactly once,
+       immediately before mountTabs(). The sidebar's index is fetched in parallel,
+       so on a DEEP LINK (?song=…) the tabs routinely mount BEFORE it lands and
+       the select froze holding a single option: the song's own book. The
+       doc-block that claimed the arrow "resolves at render time" was true and
+       irrelevant — nothing re-rendered. The shell passes sidebar.whenLoaded();
+       the default resolves immediately so the tab still mounts standalone. */
+    const whenSongbooksReady = opts.whenSongbooksReady || function () { return Promise.resolve(); };
     const timers = new Map();
+    let disposed = false;     // set by teardown, so a late list can't touch a dead tab
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
 
     /**
@@ -132,21 +147,45 @@ export function mountMetadataTab(container, opts) {
         lab.textContent = label;
 
         const current = song[column] != null ? String(song[column]) : '';
-        const books = (getSongbooks() || []).slice();
-        if (current !== '' && !books.some((b) => b.abbr === current)) {
-            books.unshift({ abbr: current, name: current });
-        }
 
         const sel = document.createElement('select');
         sel.className = 'form-select form-select-sm';
         sel.id = 'meta-' + field;
-        books.forEach((b) => {
-            const o = document.createElement('option');
-            o.value = b.abbr;
-            o.textContent = (b.name && b.name !== b.abbr) ? (b.name + ' (' + b.abbr + ')') : b.abbr;
-            sel.appendChild(o);
-        });
-        sel.value = current;
+
+        /* Options are (re)built from whatever getSongbooks() answers NOW, with
+           the song's own book guaranteed present — a book the index has not
+           listed (empty, or still loading) must never make the control display
+           the wrong songbook. Idempotent, so it can run again when the real
+           catalogue arrives. */
+        function fillOptions() {
+            const books = (getSongbooks() || []).slice();
+            if (current !== '' && !books.some((b) => b.abbr === current)) {
+                books.unshift({ abbr: current, name: current });
+            }
+            sel.innerHTML = '';
+            books.forEach((b) => {
+                const o = document.createElement('option');
+                o.value = b.abbr;
+                o.textContent = (b.name && b.name !== b.abbr) ? (b.name + ' (' + b.abbr + ')') : b.abbr;
+                sel.appendChild(o);
+            });
+            /* Re-assert the selection: replacing the options resets it, and the
+               control must keep showing the book the song is in. */
+            sel.value = current;
+        }
+        fillOptions();
+
+        /* Re-fill once the catalogue lands. Without this a deep-linked song is
+           stuck with the one option it mounted with, i.e. the move is impossible
+           on exactly the entry point a curator follows from /manage/revisions or
+           Missing Numbers. `.catch` swallows deliberately: a failed index already
+           reports itself in the sidebar, and a rejected promise here must not
+           surface as an unhandled rejection. */
+        try {
+            Promise.resolve(whenSongbooksReady())
+                .then(() => { if (!disposed) { fillOptions(); } })
+                .catch(() => {});
+        } catch (_e) { /* a caller that returns a non-thenable: keep the mounted list */ }
 
         const help = document.createElement('div');
         help.className = 'form-text small';
@@ -271,6 +310,7 @@ export function mountMetadataTab(container, opts) {
     render();
 
     return function teardown() {
+        disposed = true;
         off();
         timers.forEach((t) => clearTimeout(t));
         timers.clear();

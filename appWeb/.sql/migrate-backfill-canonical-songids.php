@@ -77,6 +77,10 @@ $dryRun = !$confirm;
 /* Load standalone DB credentials (the migration cannot assume the app bootstrap ran). */
 require_once dirname(__DIR__) . '/public_html/includes/db_mysql.php';
 require_once dirname(__DIR__) . '/public_html/includes/song_importers.php';
+/* #1679 A9 — songRelocateIdTaken(): the ONE definition of "this SongId is
+   already claimed" (tblSongs OR a live tblSongRedirects.OldSongId). This
+   migration mints ids too, and its own probe asked tblSongs only. */
+require_once dirname(__DIR__) . '/public_html/includes/song_relocate.php';
 
 _migBCS_out("");
 _migBCS_out("=== iHymns — Backfill canonical SongIds for draft ids (#1380) ===");
@@ -158,8 +162,9 @@ if (empty($drafts)) {
 }
 _migBCS_out('[scan] ' . count($drafts) . ' draft-id song' . (count($drafts) === 1 ? '' : 's') . ' to process.');
 
-/* Prepared statements reused across songs. */
-$existsStmt    = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
+/* Prepared statements reused across songs. (The old $existsStmt "is this id
+   free?" probe is gone — that question is now songRelocateIdTaken(), which also
+   asks tblSongRedirects; see $mintCanonicalId below. #1679 A9.) */
 $renameStmt    = $db->prepare('UPDATE tblSongs SET SongId = ?, Number = COALESCE(Number, ?) WHERE SongId = ?');
 $restrictStmt  = $db->prepare("UPDATE tblContentRestrictions SET EntityId = ? WHERE EntityType = 'song' AND EntityId = ?");
 /* LIKE candidate-filter narrows the JSON rewrites to rows that actually embed the
@@ -178,17 +183,18 @@ $redirectStmt    = $db->prepare("INSERT IGNORE INTO tblSongRedirects (OldSongId,
    landed before the next mint, so the ledger simply confirms (no double-count). */
 $reservedIds = [];
 
-/* Mint a free canonical id for a draft, walking past ids already taken in tblSongs
-   (UNIQUE backstop) OR already reserved earlier in this run. */
-$mintCanonicalId = static function (string $abbr) use ($db, $existsStmt, &$reservedIds): array {
+/* Mint a free canonical id for a draft, walking past ids already CLAIMED (UNIQUE
+   backstop) OR already reserved earlier in this run.
+   #1679 A9 — "claimed" is the shared songRelocateIdTaken(): tblSongs OR a live
+   tblSongRedirects row. The local probe it replaced asked tblSongs only, so this
+   backfill could hand a draft the exact id an existing redirect still forwards
+   away from — and getSongById() matches exactly before consulting the redirect
+   layer, so the old permalink would then resolve to the WRONG SONG with 200 OK.
+*/
+$mintCanonicalId = static function (string $abbr) use ($db, &$reservedIds): array {
     $n = _bulkImport_nextSongNumberFor($db, $abbr);
     $candidate = sprintf('%s-%04d', $abbr, $n);
-    $takenInDb = static function (string $c) use ($existsStmt): bool {
-        $existsStmt->bind_param('s', $c);
-        $existsStmt->execute();
-        return $existsStmt->get_result()->fetch_row() !== null;
-    };
-    while (isset($reservedIds[$candidate]) || $takenInDb($candidate)) {
+    while (isset($reservedIds[$candidate]) || songRelocateIdTaken($db, $candidate)) {
         $n++;
         $candidate = sprintf('%s-%04d', $abbr, $n);
     }
@@ -341,7 +347,7 @@ foreach ($drafts as $d) {
     }
 }
 
-$existsStmt->close();   $renameStmt->close();    $restrictStmt->close();
+$renameStmt->close();    $restrictStmt->close();
 $setlistScanStmt->close(); $setlistUpdStmt->close();
 $shareScanStmt->close();   $shareUpdStmt->close(); $redirectStmt->close();
 

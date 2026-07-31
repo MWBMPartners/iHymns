@@ -1,9 +1,10 @@
 /* ==========================================================================
  *  sidebar.js — the v2 Song Editor song-list sidebar (#1200, Phase 5)
  *
- *  Loads the lightweight song index (api2.php load_index → SongData slim index)
- *  once, renders a searchable list, and calls onSelect(id) when a song is
- *  clicked. A "Select" mode swaps the rows for checkboxes so the shell can run
+ *  Loads the lightweight song index once (api2.php load_index → SongData's slim
+ *  index, plus the real songbook catalogue), renders a searchable list, and calls
+ *  onSelect(id) when a song is clicked. A "Select" mode swaps the rows for
+ *  checkboxes so the shell can run
  *  bulk ops on a selection (onSelectionChange reports the count). Client-side
  *  filter + a render cap keep a multi-thousand-song corpus responsive.
  *
@@ -22,6 +23,11 @@ export function mountSidebar(container, opts) {
     const toast = opts.toast || function () {};
 
     let songs = [];          // slim index: [{ id, number, title, songbook, songbookName, ... }]
+    /* The AUTHORITATIVE songbook catalogue, straight from load_index (#1679 A2):
+       [{ abbr, name }] for every book, INCLUDING books with no songs. Empty until
+       the index lands — songbookList() falls back to the index-derived set until
+       then, and on any older server that does not send the key. */
+    let books = [];
     let activeId = null;
     let filter = '';
     let bookFilter = '';     // '' = all songbooks (#1628 item 2)
@@ -137,12 +143,14 @@ export function mountSidebar(container, opts) {
             + list.length + (list.length > shownLen ? ' (showing ' + shownLen + ')' : '');
     }
 
-    /* The distinct songbooks present in the loaded index. Hoisted to a local so
-       the filter dropdown and the exported getSongbooks() (which the shell's
-       New-song modal uses) derive from ONE implementation — the alternative was
-       a second copy of this loop, which is the duplication the modularity rule
-       exists to stop. */
-    function songbookList() {
+    /* The distinct songbooks PRESENT IN THE LOADED INDEX. Hoisted to a local so
+       the filter dropdown and songbookList()'s fallback derive from ONE
+       implementation — the alternative was a second copy of this loop, which is
+       the duplication the modularity rule exists to stop. (Until #1679 A2 this
+       WAS the exported getSongbooks(); see songbookList() below for why "books
+       with songs in them" turned out to be the wrong answer to "which songbooks
+       can I move a song into".) */
+    function derivedSongbookList() {
         const seen = Object.create(null);
         const out = [];
         songs.forEach((s) => {
@@ -153,8 +161,33 @@ export function mountSidebar(container, opts) {
         return out;
     }
 
+    /**
+     * "Which songbooks exist?" — the one answer this module gives (#1679 A2).
+     *
+     * ELI5: prefer the real list of books the server sent; if it has not arrived,
+     * fall back to the books the loaded songs happen to belong to.
+     *
+     * Detail: derivedSongbookList() answers a DIFFERENT question — "which books
+     * are represented in the loaded index" — and for the sidebar's own filter
+     * that is exactly right. It is wrong for the Metadata tab's move target and
+     * for the New-song modal, because a book with ZERO songs contributes no row:
+     * a curator who had just created a songbook could not put the first song in
+     * it, which v1 has never had a problem with (its load_index returns the real
+     * catalogue). The fallback is not defensive padding — it is what keeps the
+     * sidebar usable in the window before load_index resolves, and against a
+     * server that predates the `songbooks` key.
+     */
+    function songbookList() {
+        return books.length ? books.slice() : derivedSongbookList();
+    }
+
     /* Rebuild the filter options, preserving the current selection if that book
-       still exists (a deleted song can remove the last member of a book). */
+       still exists (a deleted song can remove the last member of a book).
+       Deliberately derivedSongbookList(), NOT songbookList(): this dropdown
+       filters the list on screen, so offering a book with no songs would only
+       ever produce an empty result. The MOVE target (getSongbooks) is the
+       opposite case and takes the full catalogue — same data, different question
+       (#1679 A2). */
     function renderBookOptions() {
         const previous = bookFilter;
         bookSel.innerHTML = '';
@@ -162,7 +195,7 @@ export function mountSidebar(container, opts) {
         all.value = '';
         all.textContent = 'All Songbooks';
         bookSel.appendChild(all);
-        songbookList().forEach((b) => {
+        derivedSongbookList().forEach((b) => {
             const o = document.createElement('option');
             o.value = b.abbr;
             o.textContent = b.name === b.abbr ? b.abbr : (b.name + ' (' + b.abbr + ')');
@@ -256,6 +289,11 @@ export function mountSidebar(container, opts) {
         try {
             const res = await api.loadIndex();
             songs = Array.isArray(res.songs) ? res.songs : [];
+            /* `songbooks` is the api2 load_index key added in #1679 A2 — the same
+               two field names (abbr/name) the consumers read, so there is exactly
+               one spelling to get right. Guarded rather than assumed: a cached
+               older api2.php simply leaves songbookList() on its fallback. */
+            books = Array.isArray(res.songbooks) ? res.songbooks : [];
             renderBookOptions();
             renderList();
         } catch (e) {

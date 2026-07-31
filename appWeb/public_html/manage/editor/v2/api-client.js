@@ -8,8 +8,9 @@
  *  deleteSong() that toasted "deleted" while the DB kept the song). #1200.
  *
  *  All methods return the parsed `{ ok, ... }` object on success, or throw an
- *  Error whose message is the server's admin error_detail (or error, or HTTP
- *  status). The UI layer turns a throw into a real, visible failure toast +
+ *  Error whose message is the server's admin error_detail (or the all-roles
+ *  error_hint, or error, or HTTP status). The UI layer turns a throw into a
+ *  real, visible failure toast +
  *  leaves the local state untouched — never an optimistic mutation.
  * ========================================================================== */
 
@@ -47,7 +48,21 @@ async function unwrap(res) {
     let data = null;
     try { data = await res.json(); } catch (_e) { /* non-JSON body */ }
     if (!res.ok || !data || data.ok !== true) {
-        const msg = (data && (data.error_detail || data.error)) || ('HTTP ' + res.status);
+        /* Preference order, most specific first (#1679 A8):
+             error_detail — admin-only diagnostics (file, line, raw mysqli text);
+             error_hint   — a refusal that is safe for EVERY role and tells the
+                            user what to do about it (today: "this install is
+                            missing migration X, run it, then move the song
+                            again"). api2 gates entry on the `editor` role but
+                            computes its admin flag from `admin`, so a plain
+                            editor gets no error_detail — and was therefore shown
+                            a bare "Server error." for the one failure that has a
+                            precise, actionable answer;
+             error        — the generic sentence.
+           Note this picks the MESSAGE only; callers that need to distinguish
+           failure KINDS branch on `err.status` below, never on the prose. */
+        const msg = (data && (data.error_detail || data.error_hint || data.error))
+            || ('HTTP ' + res.status);
         const err = new Error(msg);
         err.status = res.status;
         throw err;

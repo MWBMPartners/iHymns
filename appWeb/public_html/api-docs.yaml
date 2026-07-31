@@ -704,11 +704,12 @@ paths:
         "410":
           description: >-
             Song removed — the id resolved to a redirect tombstone (merged or
-            deleted with no replacement). Prune it locally (#1343/#1679).
+            deleted with no replacement). Prune it locally (#1343/#1679). The
+            body carries `gone: true` alongside `error`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Error"
+                $ref: "#/components/schemas/SongGone"
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -1436,9 +1437,24 @@ paths:
           required: true
           description: "Song ID in BOOK-NUMBER format (e.g. CP-0001)"
           schema: { type: string, example: CP-0001 }
+        - name: include
+          in: query
+          required: false
+          description: |
+            (#1099) Opt-in comma-separated enrichment blocks — IDENTICAL to
+            `song_data`'s, because this is the same handler (api.php reads
+            `$_GET['include']` once, in the shared `case 'song_detail':
+            case 'song_data':` body). It was documented only on `song_data`
+            until #1679 A13c, which meant the endpoint `songs_list` actually
+            points callers at was the one whose enrichment parameter was
+            invisible. Omitted = the base payload (back-compatible); unknown
+            blocks are ignored; a block appears only when the song has that data.
+            Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
+            `scriptureRefs`, `vocalParts`, `translations`, `annotations`.
+          schema: { type: string, example: "tune,media,vocalParts,scriptureRefs" }
       responses:
         "200":
-          description: Full song data
+          description: Full song data (plus any requested + available include blocks)
           content:
             application/json:
               schema:
@@ -1462,8 +1478,9 @@ paths:
         "410":
           description: >-
             Song removed — the id resolved to a redirect tombstone (merged or
-            deleted with no replacement). Prune it locally (#1343/#1679).
-          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+            deleted with no replacement). Prune it locally (#1343/#1679). The
+            body carries `gone: true` alongside `error`.
+          content: { application/json: { schema: { $ref: "#/components/schemas/SongGone" } } }
         "429":
           $ref: "#/components/responses/RateLimited"
 
@@ -12775,6 +12792,28 @@ components:
           type: string
           description: Human-readable error message
           example: Something went wrong.
+
+    SongGone:
+      type: object
+      description: >-
+        410 body for a song id that resolved to a redirect TOMBSTONE — a song
+        merged or deleted with no replacement (#1343/#1679). Defined once and
+        referenced from both `song_data` and `song_detail`, which are the SAME
+        handler in api.php. The `gone` flag was emitted from the start
+        (api.php's `sendJson(['error' => …, 'gone' => true], 410)`) and
+        undocumented on both paths until #1679 A13c.
+        Clients should branch on the STATUS (410 = prune it locally, 404 = we
+        have never heard of this id), not on the sentence — the flag is a
+        convenience for callers that only see the parsed body.
+      required: [error, gone]
+      properties:
+        error:
+          type: string
+          example: Song removed.
+        gone:
+          type: boolean
+          description: Always `true` on this response; absent on every other error.
+          example: true
 
     SuccessResponse:
       type: object

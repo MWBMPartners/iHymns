@@ -555,7 +555,19 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
     try {
         /* Generate a unique SongId of the form MISC-NNNN (Misc carries NULL
            Numbers, so derive the suffix from the max existing id). Retry on the
-           rare race. */
+           rare race.
+
+           #1679 A9 — "unique" means unclaimed by tblSongs OR by a live
+           tblSongRedirects row, which is what the shared songRelocateIdTaken()
+           answers. This loop used to ask tblSongs only. Since a songbook move
+           re-keys a song and leaves a permanent redirect behind, an id that no
+           song holds can still be one an old bookmark is being forwarded away
+           from — and getSongById() matches exactly before it consults the
+           redirect layer, so re-issuing it serves that bookmark a DIFFERENT
+           song with 200 OK. Misc is the very book a move is most likely to have
+           emptied a slot in. The seed / retry shape is untouched; only the
+           definition of "taken" is shared. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
         $songId = '';
         for ($try = 0; $try < 5; $try++) {
             $st = $db->prepare("SELECT SongId FROM tblSongs WHERE SongId LIKE ? ORDER BY LENGTH(SongId) DESC, SongId DESC LIMIT 1");
@@ -569,12 +581,7 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
                 $next = (int)$m[1] + 1 + $try;
             }
             $candidate = sprintf('%s-%04d', $abbr, $next);
-            $st = $db->prepare('SELECT 1 FROM tblSongs WHERE SongId = ? LIMIT 1');
-            $st->bind_param('s', $candidate);
-            $st->execute();
-            $taken = $st->get_result()->fetch_row() !== null;
-            $st->close();
-            if (!$taken) { $songId = $candidate; break; }
+            if (!songRelocateIdTaken($db, $candidate)) { $songId = $candidate; break; }
         }
         if ($songId === '') {
             throw new \RuntimeException('could not allocate a SongId');
