@@ -212,9 +212,30 @@ class SongRelocateEnvironmentException extends \RuntimeException
  */
 function songRelocateIsTransactionFatal(\Throwable $e): bool
 {
-    if (!($e instanceof \mysqli_sql_exception)) { return false; }
+    /* WALK THE CAUSE CHAIN — do not just type-check the outermost exception.
+       This function's first version tested `$e instanceof \mysqli_sql_exception`
+       and stopped, and the very same pass that wrote it also added
+       `songRedirectsTableReady($db, true)`, whose strict branch WRAPS whatever
+       it caught in a plain `\RuntimeException` with the original as `previous`.
+       So a deadlock raised inside that probe arrived here as a RuntimeException,
+       this predicate answered "not fatal", the catch swallowed it and the caller
+       committed — reinstating, through a brand-new code path, the exact false
+       success the predicate exists to prevent. Any wrapper anywhere in either
+       funnel would do the same.
 
-    return in_array((int)$e->getCode(), [1213, 1205], true);
+       Depth-bounded because `getPrevious()` chains are attacker-free but not
+       guaranteed acyclic in userland, and a guard must not be the thing that
+       hangs a save. Ten is far beyond any real chain in this codebase.
+       https://www.php.net/manual/en/exception.getprevious.php */
+    for ($depth = 0; $e !== null && $depth < 10; $depth++, $e = $e->getPrevious()) {
+        if ($e instanceof \mysqli_sql_exception
+            && in_array((int)$e->getCode(), [1213, 1205], true)
+        ) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**

@@ -2,6 +2,16 @@
 
 declare(strict_types=1);
 
+/* #1688 A1/§1a — `songRelocateIsTransactionFatal()`.
+   ELI5: the one place that knows which database errors mean "your transaction
+   is already dead, stop pretending it worked".
+   Every catch below asks it, so it has to be loaded before any of them runs; a
+   `function_exists()` fallback would be worse than a require, because the
+   fallback silently reinstates the swallow this include exists to remove.
+   No cycle: song_relocate.php pulls in only db_mysql.php + song_redirects.php,
+   neither of which reaches back here. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_relocate.php';
+
 /**
  * iHymns — tblLyricLines mirror/sync helper (#1235 P1, lyric-line normalisation)
  *
@@ -64,6 +74,16 @@ function lyricLinesSyncReady(\mysqli $db): bool
         $ready = ($row !== null && (int)$row[0] >= 3);
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         $ready = false;
     }
     return $ready;
@@ -91,6 +111,16 @@ function lyricLinesComponentsLangReady(\mysqli $db): bool
         $ready = ($r && $r->fetch_row() !== null);
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         $ready = false;
     }
     return $ready;
@@ -299,6 +329,16 @@ function lyricLinesPartTypeSlug(\mysqli $db, ?string $partType): ?string
                 $r->close();
             }
         } catch (\Throwable $_e) {
+            /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+               transaction already gone. Every catch in this file can run inside the
+               caller's transaction (both save funnels call lyricLinesWriteComponents
+               between begin_transaction() and commit()), so swallowing 1213/1205 here
+               lets the caller commit nothing and still answer ok:true. The code list
+               lives once, in song_relocate.php — a copied list is the "keep these in
+               sync" comment rule #35 calls the failure rather than the fix.
+               A MISSING table still returns false (1146 is not in the fatal set), so
+               the fail-open behaviour on an un-migrated install is unchanged. */
+            if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
             $slugs = [];   // un-migrated install: no vocab table → every slug stays null
         }
     }
@@ -426,6 +466,16 @@ function lyricLinesShadowColumnsPresent(\mysqli $db): array
             $r->close();
         }
     } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         /* leave all false — caller writes a thin row only */
     }
     return $cols;
@@ -923,6 +973,16 @@ function lyricLinesEnrichmentTablesPresent(\mysqli $db): bool
         $present = ($row !== null && (int)$row[0] >= 2);
         if ($r) { $r->close(); }
     } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         $present = false;
     }
     return $present;
@@ -998,6 +1058,16 @@ function lyricLinesSnapshotDeletedEnrichment(\mysqli $db, string $songId, array 
         $logStmt->execute();
         $logStmt->close();
     } catch (\Throwable $_e) {
+        /* #1688 A1/§1a — a deadlock is not "best effort failed", it is the whole
+           transaction already gone. Every catch in this file can run inside the
+           caller's transaction (both save funnels call lyricLinesWriteComponents
+           between begin_transaction() and commit()), so swallowing 1213/1205 here
+           lets the caller commit nothing and still answer ok:true. The code list
+           lives once, in song_relocate.php — a copied list is the "keep these in
+           sync" comment rule #35 calls the failure rather than the fix.
+           A MISSING table still returns false (1146 is not in the fatal set), so
+           the fail-open behaviour on an un-migrated install is unchanged. */
+        if (songRelocateIsTransactionFatal($_e)) { throw $_e; }
         /* Best-effort: never break a save because the snapshot failed. */
     }
 }
