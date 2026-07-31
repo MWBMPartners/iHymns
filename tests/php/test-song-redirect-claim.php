@@ -171,8 +171,59 @@ echo "\n2 — the suppression is actually wired into the read path\n";
    has no runtime handle short of a live database with a drifted Number. The
    BEHAVIOUR of the decision is covered above; what is left is that getSongById()
    consults it, and consults it BEFORE the fallback rather than after. */
-$songData = file_get_contents($root . '/appWeb/public_html/includes/SongData.php');
-ok('SongData.php was read', is_string($songData) && $songData !== '');
+$songDataRaw = file_get_contents($root . '/appWeb/public_html/includes/SongData.php');
+ok('SongData.php was read', is_string($songDataRaw) && $songDataRaw !== '');
+
+/**
+ * Strip PHP comments using PHP'S OWN TOKENIZER, preserving byte offsets.
+ *
+ * ELI5: blank out the comments before searching, so a sentence that merely
+ * MENTIONS a function is never mistaken for a call to it.
+ *
+ * This is not defensive coding, it is a bug that actually happened. The scan
+ * below anchored on the FIRST occurrence of `songRedirectClaimsId(` in the file.
+ * When #1694's sweep added a class doc-block at :231 that MENTIONS the consult in
+ * prose, the anchor jumped ~1,978 lines to that comment, the search region became
+ * almost the whole file, and the scan matched an unrelated `if (...) { return
+ * null; }` — reporting correct code as broken.
+ *
+ * `token_get_all()` is exact where a regex cannot be: it knows a `//` inside a
+ * string is not a comment and a `$` inside a comment is not a variable. Comments
+ * are replaced with spaces of the SAME LENGTH so every subsequent strpos offset
+ * still lines up with the real file.
+ *
+ * @link https://www.php.net/manual/en/function.token-get-all.php
+ */
+function stripPhpComments(string $src): string
+{
+    $out = '';
+    foreach (token_get_all($src) as $tok) {
+        if (is_array($tok)) {
+            $text = $tok[1];
+            if ($tok[0] === T_COMMENT || $tok[0] === T_DOC_COMMENT) {
+                /* Keep newlines so line numbers in any diagnostic stay true. */
+                $out .= preg_replace('/[^\n]/', ' ', $text);
+                continue;
+            }
+            $out .= $text;
+            continue;
+        }
+        $out .= $tok;
+    }
+    return $out;
+}
+
+$songData = stripPhpComments($songDataRaw);
+ok('…and its comments stripped without changing its length',
+   strlen($songData) === strlen($songDataRaw),
+   'offsets would no longer line up with the real file: ' . strlen($songData)
+   . ' vs ' . strlen($songDataRaw));
+ok('…and stripping really removed the prose mention that broke this scan',
+   substr_count($songDataRaw, 'songRedirectClaimsId(') > substr_count($songData, 'songRedirectClaimsId('),
+   'no comment mention was removed, so this guard is not actually protected from the '
+   . 'anchor-jump bug it was written to survive (raw='
+   . substr_count($songDataRaw, 'songRedirectClaimsId(') . ', stripped='
+   . substr_count($songData, 'songRedirectClaimsId(') . ')');
 
 $posClaim    = strpos($songData, 'songRedirectClaimsId(');
 $posFallback = strpos($songData, 'return $this->getSongByNumber($prefix, $number);');
