@@ -69,8 +69,34 @@ $songbooks = $songData->getSongbooks();
              role="tabpanel"
              aria-labelledby="tab-text-search">
 
+            <?php
+                /* The `action`/`method`/`name="q"` here are the NO-JS fallback,
+                   and they matter more than they look.
+
+                   This form has a single text-type field and no submit button,
+                   which is exactly the condition under which the HTML spec's
+                   implicit-submission rules say pressing Enter SUBMITS it:
+                   https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#implicit-submission
+
+                   With no action and no named control, that submitted the page
+                   to its own URL with an empty query string — a full reload of
+                   the SPA that threw away whatever the reader had typed. There
+                   was no handler to stop it: search.js DID intercept Enter, but
+                   only on the header search input that #812 deleted, never on
+                   this one. So the single most natural gesture in a search box
+                   silently wiped the search.
+
+                   Now the native path is correct rather than destructive:
+                   `/search?q=…` is a real, working URL that initSearchPage()
+                   already reads on load. search.js additionally binds a submit
+                   handler that preventDefault()s and searches in place, so with
+                   JS running there is no navigation at all — this is the
+                   fallback, not the normal path.
+                   Guard: tests/test-search-enter-submit.js */
+            ?>
             <!-- Search input -->
-            <form id="page-search-form" role="search" autocomplete="off" class="mb-3">
+            <form id="page-search-form" role="search" autocomplete="off" class="mb-3"
+                  action="/search" method="get">
                 <div class="input-group input-group-lg">
                     <span class="input-group-text" aria-hidden="true">
                         <i class="fa-solid fa-magnifying-glass"></i>
@@ -78,6 +104,7 @@ $songbooks = $songData->getSongbooks();
                     <input type="search"
                            class="form-control"
                            id="page-search-input"
+                           name="q"
                            placeholder="Search by title, lyrics, author..."
                            aria-label="Search songs"
                            autocomplete="off"

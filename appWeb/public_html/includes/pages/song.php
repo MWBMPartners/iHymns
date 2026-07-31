@@ -1682,10 +1682,33 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
     ?>
     <nav class="song-navigation mt-4 pt-3 border-top" aria-label="Song navigation">
         <div class="d-flex justify-content-between">
+            <?php
+                /* `data-song-nav` names each link's DIRECTION so app.js's
+                   ArrowLeft/ArrowRight handler no longer has to infer it from
+                   the link's position among its siblings.
+
+                   It used to infer it, via `.song-navigation a:first-child`
+                   and `a:last-child`, and that silently broke on the last song
+                   of every songbook: with no next link rendered, the single
+                   remaining PREVIOUS link satisfied BOTH selectors, so → sent
+                   the reader backwards. `:last-child` means "last child of its
+                   parent", not "last matching element", and the difference is
+                   invisible until the number of children changes.
+                   https://developer.mozilla.org/docs/Web/CSS/:last-child
+
+                   The empty `<span></span>` in each `else` keeps the flex row's
+                   two slots (justify-content-between puts prev left, next
+                   right) AND keeps the positional fallback correct for
+                   service-worker-cached fragments served from before this fix.
+                   The next slot was the one missing its placeholder — that
+                   asymmetry is exactly what made the bug reachable.
+                   Guard: tests/test-song-nav-direction.js */
+            ?>
             <?php if ($prevSong): ?>
                 <a href="/song/<?= htmlspecialchars($prevSong['id']) ?>"
                    class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
+                   data-song-nav="prev"
                    data-song-id="<?= htmlspecialchars($prevSong['id']) ?>"
                    aria-label="Previous song: <?= htmlspecialchars(toTitleCase($prevSong['title'])) ?>">
                     <i class="fa-solid fa-chevron-left me-1" aria-hidden="true"></i>
@@ -1699,11 +1722,14 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                 <a href="/song/<?= htmlspecialchars($nextSong['id']) ?>"
                    class="btn btn-outline-secondary btn-sm song-toolbar-btn"
                    data-navigate="song"
+                   data-song-nav="next"
                    data-song-id="<?= htmlspecialchars($nextSong['id']) ?>"
                    aria-label="Next song: <?= htmlspecialchars(toTitleCase($nextSong['title'])) ?>">
                     #<?= (int)$nextSong['number'] ?>
                     <i class="fa-solid fa-chevron-right ms-1" aria-hidden="true"></i>
                 </a>
+            <?php else: ?>
+                <span></span>
             <?php endif; ?>
         </div>
     </nav>
