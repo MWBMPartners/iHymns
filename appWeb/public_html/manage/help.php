@@ -593,7 +593,8 @@ foreach ($sections as $s) {
                             destroyed &mdash; it moves to <a href="#deleted-songs">Deleted Songs</a>,
                             keeping its lyrics, credits, media and full revision history, and one click
                             puts it back. Permanent removal is a separate, deliberately harder step on
-                            that page. Deleting still needs <code>delete_songs</code> for now.</li>
+                            that page. Deleting needs <code>delete_songs</code> &mdash; editors and
+                            above (#1695).</li>
                     </ul>
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
@@ -769,6 +770,7 @@ foreach ($sections as $s) {
                 <section id="deleted-songs" class="help-section card-admin mb-4">
                     <h2><i class="bi bi-trash3 me-2"></i>Deleted Songs</h2>
                     <p class="role-badges">
+                        <span class="badge bg-primary">editor</span>
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">global_admin</span>
                     </p>
@@ -800,14 +802,19 @@ foreach ($sections as $s) {
                     </dl>
                     <h3 class="h6">Who can do what</h3>
                     <ul>
-                        <li>Seeing this page and using <strong>Restore</strong> needs <code>delete_songs</code>
-                            &mdash; the same privilege as deleting in the first place.</li>
+                        <li>Seeing this page and using <strong>Restore</strong> needs
+                            <code>delete_songs</code> &mdash; the same privilege as deleting in the first
+                            place, which since <a href="https://github.com/MWBMPartners/iHymns/issues/1695">#1695</a>
+                            is <strong>editors and above</strong>. Deletion was briefly restricted to
+                            admins only while it was still permanent; now that it is recoverable, that
+                            restriction has been lifted.</li>
                         <li><strong>Purge</strong> needs its own separate privilege,
-                            <code>purge_songs</code>. Today both privileges sit with admins and global
-                            admins, so the split looks academic &mdash; it is not. Recoverable deletion is
-                            meant to widen to editors next (#1695), and giving the irreversible purge its
-                            own key is what stops it quietly widening along with it. One key per distinct
-                            power.</li>
+                            <code>purge_songs</code>, which stays with admins and global admins. This is
+                            exactly why the two were split: recoverable deletion could widen to editors
+                            without the irreversible one coming along for the ride.</li>
+                        <li>Every deletion and restore <strong>notifies everyone who can purge</strong>,
+                            so nothing sits in here unnoticed. You are not notified about your own
+                            actions.</li>
                     </ul>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> A deleted song still holds its number.
