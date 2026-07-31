@@ -134,6 +134,25 @@ declare(strict_types=1);
  * `code` view, so prose cannot satisfy them; they are named here so their tick is
  * not read as more than it is.
  *
+ * WHAT #1690 MOVED, AND WHY ONE ASSERTION IS NOW BEHAVIOURAL
+ * ---------------------------------------------------------
+ * `songRelocateAssertCascades()` was split into three layers — a memoised
+ * `songRelocateFkCatalogue()`, and the PURE `songRelocateCascadeGaps()` /
+ * `songRelocateCascadeVerdict()` — so the deciding logic could be CALLED by a
+ * test rather than read out of the source. Four position-sensitive assertions
+ * here had to follow it, exactly as #1679 A1/A9's extraction required:
+ *   - the three query-SHAPE assertions now read the CATALOGUE's `sqlOnly` view
+ *     (plus two new ones: the child COLUMN, and the second COLUMNS read);
+ *   - "the refusal names the migration" is no longer a string scan at all. The
+ *     message is assembled from `SONG_RELOCATE_FIX_MIGRATIONS`, a top-level const
+ *     belonging to no function unit, so the scan would have reported correct code
+ *     as missing — rule #34's second failure mode, which ends in the guard being
+ *     deleted rather than fixed. It CALLS the pure builder instead. That is the
+ *     preference `test-transaction-fatal.php` exists to establish: source
+ *     inspection is for properties with no runtime handle.
+ * The per-song verdict itself is guarded exhaustively, by execution, in
+ * `tests/php/test-song-relocate-cascade-verdict.php`.
+ *
  *   php tests/php/test-song-relocate-hardening.php
  *
  * Exit status 0 = all pass, 1 = a failure.
@@ -144,6 +163,11 @@ declare(strict_types=1);
 
 $ROOT = dirname(__DIR__, 2);
 require_once __DIR__ . '/lib/php_source_units.php';
+/* #1690 — ONE assertion here is behavioural rather than structural (the refusal
+   message), because the function that builds it is pure and calling it is
+   strictly better evidence than reading it. Loading the file is side-effect-free:
+   it declares functions and constants and opens no connection. */
+require_once $ROOT . '/appWeb/public_html/includes/song_relocate.php';
 
 $fail = 0;
 function ok(string $label, bool $cond, string $detail = ''): void
@@ -430,6 +454,13 @@ $move   = $relocate['songRelocate'];
 $mint   = $relocate['songRelocateMintId'] ?? EMPTY_UNIT;
 $assert = $relocate['songRelocateAssertCascades'] ?? EMPTY_UNIT;
 $save   = $saveCore['editorSaveSongCore'];
+/* #1690 split songRelocateAssertCascades() into three layers so the deciding
+   logic could be CALLED by a test instead of read (the regress
+   test-transaction-fatal.php documents). The properties below did not change —
+   WHERE they are implemented did, so the unit each assertion reads has to follow
+   them or it silently stops checking anything. This is the same correction
+   #1679 A1/A9 made when the two predicates were extracted. */
+$catalog = $relocate['songRelocateFkCatalogue'] ?? EMPTY_UNIT;
 /* The two predicates the A1/A9 pass extracted OUT of the functions above,
    precisely so several files could share one copy (rule #35). The properties
    asserted below did not change — where they are implemented did, so the unit
@@ -463,18 +494,62 @@ ok('and calls it BEFORE its first WRITE',
 /* A5 — sqlOnly, NOT the full string view. Read on `strings`, all three of these
    were satisfied by the refusal SENTENCE (which contains "tblSongs(SongId)") plus
    the `$r['UPDATE_RULE']` array subscript, so the query could be deleted outright
-   and H3 stayed green. */
-$fkSql = implode("\n", array_map('phpUnitsNormaliseSql', $assert['sqlOnly']));
+   and H3 stayed green.
+   #1690 — the query itself now lives in the memoised catalogue rather than in the
+   assert function. */
+$fkSql = implode("\n", array_map('phpUnitsNormaliseSql', $catalog['sqlOnly']));
 ok('the pre-check reads REFERENTIAL_CONSTRAINTS joined to KEY_COLUMN_USAGE',
    stripos($fkSql, 'INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS') !== false
    && stripos($fkSql, 'INFORMATION_SCHEMA.KEY_COLUMN_USAGE') !== false,
-   'SQL statements in this function: ' . (count($assert['sqlOnly']) ?: 'NONE'));
+   'SQL statements in this function: ' . (count($catalog['sqlOnly']) ?: 'NONE'));
 ok('scoped to the CURRENT schema (DATABASE()), not every schema on the server',
    stripos($fkSql, 'DATABASE()') !== false);
 ok('filtered to FKs that reference tblSongs(SongId), and reads UPDATE_RULE',
    stripos($fkSql, 'tblSongs') !== false && stripos($fkSql, 'SongId') !== false
    && stripos($fkSql, 'UPDATE_RULE') !== false,
    'the statement(s) read: ' . substr($fkSql, 0, 400));
+/* #1690 — the CHILD COLUMN, without which there is no way to ask "does THIS song
+   have rows behind that constraint" and the check silently reverts to the
+   schema-wide refusal. REFERENTIAL_CONSTRAINTS does not carry it; only the
+   KEY_COLUMN_USAGE side can supply it, which is why the join exists at all. */
+ok('and selects the child COLUMN, not only the child TABLE (#1690)',
+   preg_match('/\bk\.COLUMN_NAME\b/i', $fkSql) === 1,
+   'a per-song verdict needs the column to probe. Statement(s) read: ' . substr($fkSql, 0, 400));
+/* The second read: which expected (table, column) pairs exist here at all. It is
+   what stops "this install never created the table" being reported as drift. */
+ok('and separately resolves whether the EXPECTED columns exist on this install',
+   stripos($fkSql, 'INFORMATION_SCHEMA.COLUMNS') !== false,
+   'without it a missing FK on a table this install has never created reads as a '
+   . 'gap, and a minimal install can never move a song');
+
+/* Memoised, or a bulk move re-reads INFORMATION_SCHEMA once per song INSIDE the
+   caller's transaction. This one belongs in a source scan and not in the
+   behavioural file next door: "it only queried once" needs a live connection to
+   count queries against, and a naive "call it twice and compare" assertion is
+   satisfied by two equal failures — measured, when a mutant deleted the `static`
+   and that assertion stayed green. The `code` view, so a comment cannot satisfy
+   it. */
+ok('the catalogue is memoised for the request (a bulk move must not re-read it per song)',
+   preg_match('/\bstatic\s+\$\w+\s*=/', $catalog['code']) === 1,
+   'the INFORMATION_SCHEMA reads would otherwise run once per song moved, inside '
+   . "the caller's transaction");
+
+/* The layering itself: the assert function must ASK the three layers rather than
+   re-inline any of them. There is no runtime handle for "this function delegates"
+   without a database, so this is the source-inspection class the
+   test-transaction-fatal.php header explicitly allows — "every call site does X".
+   Read on `code`, so a comment naming them cannot satisfy it. */
+foreach ([
+    'songRelocateFkCatalogue('     => 'the memoised INFORMATION_SCHEMA catalogue',
+    'songRelocateCascadeGaps('     => 'the pure gap computation',
+    'songRelocateCascadeVerdict('  => 'the pure per-song verdict',
+    'songRelocateChildRowProbe('   => 'the real child-row probe it injects',
+] as $needle => $what) {
+    ok("the pre-check delegates to $what",
+       strpos($assert['code'], $needle) !== false,
+       "songRelocateAssertCascades() no longer calls $needle — re-inlining a layer "
+       . 'puts the deciding logic back somewhere no test can call');
+}
 
 /* A RuntimeException, NOT InvalidArgumentException — api2's move handler catches
    InvalidArgumentException to answer 422 "you named a book that doesn't exist",
@@ -494,18 +569,30 @@ ok('and SongRelocateEnvironmentException extends \\RuntimeException',
    . 'have api2 answer 422 "you named a book that does not exist" for an install '
    . 'whose migrations were never run');
 
-/* The one place a PROSE assertion is right: four FKs really do lack the cascade
-   on real installs, so this refusal WILL fire, and a refusal that does not name
-   the fix is no more actionable than the raw MySQL error it replaces. Both
-   precedents (migrate-backfill-canonical-songids.php, songbook_maintenance.php)
-   point at the same migration.
-   Scoped to this function's NON-SQL literals: the raw file mentions the migration
-   in its doc-block (that is how this first passed while the message itself no
-   longer named it), and a query is not a message either. */
-$prose = array_values(array_diff($assert['strings'], $assert['sqlOnly']));
+/* Four FKs really do lack the cascade on real installs, so this refusal WILL
+   fire, and one that does not name the fix is no more actionable than the raw
+   MySQL error it replaces. Both precedents
+   (migrate-backfill-canonical-songids.php, songbook_maintenance.php) point at
+   the same migration.
+   #1690 — this WAS a scan of the function's non-SQL string literals, and that no
+   longer works: the message is assembled from SONG_RELOCATE_FIX_MIGRATIONS, a
+   top-level const that belongs to no function unit, so the scan would report a
+   perfectly correct implementation as missing. A guard that fails on correct
+   code gets weakened or deleted rather than fixed (rule #34), and there is a far
+   better option here anyway — the message builder is PURE, so CALL it. That is
+   the whole lesson of test-transaction-fatal.php: source inspection is for
+   properties with no runtime handle, and this one has one.
+   Exhaustively exercised in tests/php/test-song-relocate-cascade-verdict.php;
+   the single case kept here is the tripwire for anyone editing THIS file. */
+$prefixGap = [[
+    'table' => 'tblSongMedia', 'column' => 'SongId', 'constraint' => 'fk_media_song',
+    'kind'  => 'no-cascade',   'rule'   => 'RESTRICT',
+    'fix'   => 'songid-prefix-fixup', 'known' => true,
+]];
+$refusal = songRelocateCascadeVerdict($prefixGap, static fn(string $t, string $c): bool => true);
 ok('the refusal MESSAGE names migrate-songid-prefix-fixup.php (the message IS the fix)',
-   strpos(implode(' ', $prose), 'migrate-songid-prefix-fixup.php') !== false,
-   'message literals read: ' . substr(implode(' ', $prose), 0, 400));
+   is_string($refusal) && strpos($refusal, 'migrate-songid-prefix-fixup.php') !== false,
+   'verdict returned: ' . var_export($refusal, true));
 
 /* -------------------------------------------------------------- M1 — mint -- */
 

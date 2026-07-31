@@ -63,8 +63,8 @@ declare(strict_types=1);
  *    third-party bookmarks. Those are covered by the REDIRECT, which
  *    `?action=song_detail` and the `page=song` fragment both follow.
  *
- * WHAT THE CASCADE ASSUMES — AND WHY THAT IS CHECKED (H3)
- * ------------------------------------------------------
+ * WHAT THE CASCADE ASSUMES — AND WHY THAT IS CHECKED (H3, then #1690)
+ * ------------------------------------------------------------------
  * `schema.sql` declares every FK to `tblSongs(SongId)` `ON UPDATE CASCADE`, so
  * a FRESH install is fine. Four FKs created by MIGRATIONS were not
  * (`fk_link_song`, `fk_alt_song`, `fk_media_song`, `fk_work_song_song`), and
@@ -77,6 +77,42 @@ declare(strict_types=1);
  * refuses BEFORE any write, naming the offending constraints and the migration
  * that fixes them, mirroring the two existing precedents
  * (`migrate-backfill-canonical-songids.php`, `includes/songbook_maintenance.php`).
+ *
+ * WHY THAT CHECK IS NOW PER SONG, AND SEES A *MISSING* FK (#1690)
+ * --------------------------------------------------------------
+ * The first version of that pre-check answered ONE schema-wide question and
+ * memoised it: any non-CASCADE FK anywhere refused EVERY move. That is far
+ * broader than the harm — `fk_media_song` being RESTRICT only endangers a song
+ * that HAS a media row, and on a real catalogue most songs have none. So an
+ * install with one stale constraint could not move a single song, and the only
+ * remedy was a migration the operator might have deliberately not run. The
+ * owner's decision (#1690, option A) is to refuse only when THIS song actually
+ * has rows in the affected child table.
+ *
+ * It was also structurally BLIND to the opposite drift. A column with no FK at
+ * all produces no `INFORMATION_SCHEMA` row, so "every row I found says CASCADE"
+ * is trivially true on an install where `migrate-song-softref-fks.php` (#1064)
+ * never ran — and that migration's columns (`tblSongRevisions.SongId`,
+ * `tblSongRequests.ResolvedSongId`, `tblSongLinkSuggestionsDismissed.SongIdA/B`)
+ * are exactly the ones a re-key silently STRANDS: no error, no rollback, just a
+ * revision history that quietly stops belonging to its song. Absence of evidence
+ * was read as evidence of absence. The fix needs a list of what SHOULD be there
+ * — `SONG_RELOCATE_EXPECTED_SONGID_FKS`, derived from `schema.sql` and pinned to
+ * it by `tests/php/test-song-relocate-cascade-verdict.php`.
+ *
+ * The check is therefore three layers, and only the middle one talks to MySQL:
+ *   1. `songRelocateFkCatalogue()`  — the live FK + column catalogue, memoised
+ *      once per request (a bulk move must not re-read `INFORMATION_SCHEMA` per
+ *      song), fail-CLOSED on a probe error.
+ *   2. `songRelocateCascadeGaps()`  — PURE: catalogue + expectations → the list
+ *      of (table, column) pairs a re-key cannot carry.
+ *   3. `songRelocateCascadeVerdict()` — PURE given an injected `$childHasRows`
+ *      probe: gaps → `null` (move allowed) or the refusal sentence.
+ * Layers 2 and 3 being pure is the point: the properties this pre-check exists
+ * for can be CALLED in a test rather than read out of the source, which is how
+ * the last four guards on this branch were defeated (`test-transaction-fatal.php`
+ * documents the regress). On a healthy install the gap set is empty and the
+ * per-move cost is ZERO extra queries.
  *
  * WHAT DOES *NOT* CHANGE
  * ----------------------
@@ -337,13 +373,538 @@ function songRelocateTableExists(\mysqli $db, string $table): bool
 }
 
 /**
- * REFUSE the move unless every FK referencing `tblSongs(SongId)` cascades on
- * UPDATE (#1679 hardening, H3).
+ * Every foreign key `schema.sql` declares against `tblSongs(SongId)`, and the
+ * migration that retro-fits it on an install that predates the declaration.
+ *
+ * ELI5: the list of everywhere in the database that points at a song's id. It is
+ * what lets the move notice a link that is MISSING, not just one that is set up
+ * wrongly — a missing one leaves no trace in the database's own catalogue, so
+ * without this list there is nothing to compare against.
+ *
+ * SHAPE — one entry per FK, positional so 41 of them stay readable:
+ *   [ child table, child column, constraint name, fix-migration slug | null ]
+ *
+ * The slug is the `manage/includes/migration-registry.php` key of the migration
+ * that CREATES or CORRECTS that constraint, and `null` means "schema.sql is the
+ * only place this is declared", i.e. an install missing it has drifted rather
+ * than merely not run a card. Only two migrations touch this family:
+ *   - `songid-prefix-fixup`  — retro-fits `ON UPDATE CASCADE` onto the four FKs
+ *     that were created without it (#1679 H3).
+ *   - `song-softref-fks`     — creates the four FKs that were soft references
+ *     with no constraint at all (#1064).
+ *
+ * DELIBERATE ABSENCES, so a later reader does not "fix" them by adding a row:
+ *  - `tblSongRedirects.OldSongId` is soft BY DESIGN. It is the address a moved
+ *    song has LEFT, so an FK to the live corpus would be exactly wrong; the
+ *    redirect layer plus `songRelocateIdTaken()` own that column's integrity.
+ *  - `tblContentRestrictions.EntityId` is polymorphic `VARCHAR(50)` (it holds
+ *    song ids, songbook abbreviations, …) and can never carry an FK. Step 5 of
+ *    `songRelocate()` rewrites it by hand, fatally.
+ *  - `tblSongbookEntries.SongbookAbbr` / `SongNumber` / `IsHome` are not
+ *    references to `SongId` at all; step 5b rewrites them.
+ * All three are covered elsewhere in this file — they are not gaps, so listing
+ * them here would refuse moves for a hazard that is already handled.
+ *
+ * DERIVED, NOT TYPED (rule #34). `tests/php/test-song-relocate-cascade-verdict.php`
+ * parses `schema.sql` and asserts this const equals what it finds, so a new FK
+ * added to the schema without a line here fails CI rather than becoming a
+ * silently un-checked stranding path.
+ *
+ * @see appWeb/.sql/schema.sql
+ * @see https://dev.mysql.com/doc/refman/8.0/en/create-table-foreign-keys.html
+ */
+const SONG_RELOCATE_EXPECTED_SONGID_FKS = [
+    ['tblSongbookEntries',             'SongId',          'fk_SongbookEntries_Song', null],
+    ['tblSongWriters',                 'SongId',          'fk_Writers_Song',         null],
+    ['tblSongComposers',               'SongId',          'fk_Composers_Song',       null],
+    ['tblSongArrangers',               'SongId',          'fk_Arrangers_Song',       null],
+    ['tblSongAdaptors',                'SongId',          'fk_Adaptors_Song',        null],
+    ['tblSongTranslators',             'SongId',          'fk_Translators_Song',     null],
+    ['tblSongArtists',                 'SongId',          'fk_Artists_Song',         null],
+    ['tblSongComponents',              'SongId',          'fk_Components_Song',      null],
+    ['tblLyrics',                      'SongId',          'fk_Lyrics_Song',          null],
+    ['tblUserFavorites',               'SongId',          'fk_Favorites_Song',       null],
+    ['tblSongTranslations',            'SourceSongId',    'fk_Trans_Source',         null],
+    ['tblSongTranslations',            'TranslatedSongId','fk_Trans_Target',         null],
+    ['tblSongRequests',                'ResolvedSongId',  'fk_Requests_ResolvedSong','song-softref-fks'],
+    ['tblSongRequests',                'SongId',          'fk_Requests_TargetSong',  null],
+    ['tblSongKeys',                    'SongId',          'fk_SongKeys_Song',        null],
+    ['tblSongRevisions',               'SongId',          'fk_Revisions_Song',       'song-softref-fks'],
+    ['tblSongHistory',                 'SongId',          'fk_History_Song',         null],
+    ['tblSongTagMap',                  'SongId',          'fk_TagMap_Song',          null],
+    ['tblSongLinks',                   'SongId',          'fk_SongLinks_Song',       null],
+    ['tblSongRedirects',               'NewSongId',       'fk_SongRedirect_New',     null],
+    ['tblSongLinkSuggestions',         'SongIdA',         'fk_SongLinkSugg_A',       null],
+    ['tblSongLinkSuggestions',         'SongIdB',         'fk_SongLinkSugg_B',       null],
+    ['tblSongLinkSuggestionsDismissed','SongIdA',         'fk_DismissedSugg_A',      'song-softref-fks'],
+    ['tblSongLinkSuggestionsDismissed','SongIdB',         'fk_DismissedSugg_B',      'song-softref-fks'],
+    ['tblCatalogueSongs',              'SongId',          'fk_CatalogueSongs_Song',  null],
+    ['tblSongExternalLinks',           'SongId',          'fk_link_song',            'songid-prefix-fixup'],
+    ['tblSongAlternativeTitles',       'SongId',          'fk_alt_song',             'songid-prefix-fixup'],
+    ['tblSongLanguages',               'SongId',          'fk_slang_song',           null],
+    ['tblSongMedia',                   'SongId',          'fk_media_song',           'songid-prefix-fixup'],
+    ['tblWorkSongs',                   'SongId',          'fk_work_song_song',       'songid-prefix-fixup'],
+    ['tblSongArrangements',            'SongId',          'fk_SongArrangements_Song',null],
+    ['tblLyricsConflicts',             'SongId',          'fk_Conflict_Song',        null],
+    ['tblLyricsReviewQueue',           'SongId',          'fk_LyricsQueue_Song',     null],
+    ['tblSongIdentityMap',             'SongId',          'fk_IdentityMap_Song',     null],
+    ['tblSongUsageEvents',             'SongId',          'fk_Usage_Song',           null],
+    ['tblSongQualityFindings',         'SongId',          'fk_QualityFinding_Song',  null],
+    ['tblSongEmbeddings',              'SongId',          'fk_Embedding_Song',       null],
+    ['tblLiveFollowSessions',          'CurrentSongId',   'fk_LiveFollow_Song',      null],
+    ['tblSongScriptureRefs',           'SongId',          'fk_ScriptureRefs_Song',   null],
+    ['tblSongRoyaltyIds',              'SongId',          'fk_RoyaltyIds_Song',      null],
+    ['tblPresentationThemeAssignments','SongId',          'fk_PresAssign_Song',      null],
+];
+
+/**
+ * The two migration cards a cascade refusal can point at.
+ *
+ * ELI5: the refusal's whole value is telling the curator which button to press,
+ * so the button's exact wording and the file behind it live here once.
+ *
+ * Detail: the titles are the `card.title` strings in
+ * `manage/includes/migration-registry.php`, and `tests/php/test-song-relocate-cascade-verdict.php`
+ * loads that registry and asserts both halves still agree. That is the mechanism
+ * rule #35 asks for — a comment reading "keep this in step with the registry"
+ * would be the failure, not the fix, and a reworded card title would otherwise
+ * send the curator hunting for a button that no longer exists.
+ */
+const SONG_RELOCATE_FIX_MIGRATIONS = [
+    'songid-prefix-fixup' => [
+        'card'   => 'Re-prefix SongIds whose SongbookAbbr no longer matches',
+        'script' => 'appWeb/.sql/migrate-songid-prefix-fixup.php',
+    ],
+    'song-softref-fks' => [
+        'card'   => 'Harden soft SongId references (FKs) (#1064)',
+        'script' => 'appWeb/.sql/migrate-song-softref-fks.php',
+    ],
+];
+
+/**
+ * The expected FKs a given migration is responsible for — PURE.
+ *
+ * ELI5: "which of these links does THIS migration create or repair?" — so the
+ * migration's own dashboard card can tell whether it still has work to do.
+ *
+ * WHY THIS IS SHARED RATHER THAN RE-TYPED IN THE PROBE (#1690, rule #35)
+ * ---------------------------------------------------------------------
+ * `manage/includes/migration-registry.php`'s pendency probes need exactly these
+ * names, and the failure this fixes was caused by them being derived somewhere
+ * else. `songid-prefix-fixup`'s probe asked only about a PREFIX MISMATCH, so an
+ * install with clean prefixes but RESTRICT FKs showed the card as already
+ * applied, "Apply all pending" skipped it, and the migration whose STEP 1 would
+ * have fixed those very FKs was never offered — while the move refused. A probe,
+ * a refusal and a migration that must agree about four constraint names need a
+ * mechanism, not three copies and a comment.
+ *
+ * The migration SCRIPT keeps its own standalone list, deliberately: it must be
+ * runnable from the CLI on an install where nothing else is loaded. That copy is
+ * asserted to be a subset of this const by
+ * `tests/php/test-song-relocate-cascade-verdict.php`.
+ *
+ * @param  string $slug A `migration-registry.php` key, e.g. 'song-softref-fks'.
+ * @return list<array{0:string,1:string,2:string,3:?string}>
+ */
+function songRelocateFksFixedBy(string $slug): array
+{
+    $out = [];
+    foreach (SONG_RELOCATE_EXPECTED_SONGID_FKS as $entry) {
+        if ($entry[3] === $slug) { $out[] = $entry; }
+    }
+    return $out;
+}
+
+/**
+ * The lookup key for a (table, column) pair — PURE.
+ *
+ * ELI5: one agreed way of writing "this column of this table down", so two
+ * pieces of code comparing the same column always spell it the same.
+ *
+ * Detail: MySQL column names are case-insensitive and table names may or may not
+ * be, depending on `lower_case_table_names` and the host filesystem. Folding
+ * both to lower case here means an `INFORMATION_SCHEMA` row and a
+ * `SONG_RELOCATE_EXPECTED_SONGID_FKS` entry that differ only in capitalisation
+ * still MATCH — otherwise a case-folding server would report every expected FK
+ * as missing and refuse every move on a perfectly healthy install. Extracted as
+ * a function rather than written out at three call sites precisely so the two
+ * sides cannot drift (rule #35).
+ *
+ * @see https://dev.mysql.com/doc/refman/8.0/en/identifier-case-sensitivity.html
+ */
+function songRelocateFkKey(string $table, string $column): string
+{
+    return strtolower($table) . '.' . strtolower($column);
+}
+
+/**
+ * Is this identifier safe to interpolate between backticks? — PURE.
+ *
+ * ELI5: the child-row probe has to name a table in the query text (you cannot
+ * bind a table name to a `?`), so first check the name is boring.
+ *
+ * Detail: CLAUDE.md rule #5 allows exactly two kinds of interpolation into SQL —
+ * (a) hardcoded constants from PHP source, and (b) values validated against an
+ * exact allow-list. Identifiers taken from `SONG_RELOCATE_EXPECTED_SONGID_FKS`
+ * are clause (a): they are literals in this file, unreachable by any request.
+ * Identifiers taken from `INFORMATION_SCHEMA` for an UNKNOWN live FK are clause
+ * (b): they are server metadata rather than user input, but "not user input" is
+ * not a licence to concatenate, so they are charset-validated to
+ * `^[A-Za-z0-9_$]+$` (the unquoted-identifier set MySQL itself documents) and
+ * then backticked. A name that fails is not passed through and not queried — the
+ * caller fails CLOSED, which is the same posture as an unreadable catalogue.
+ *
+ * `\z`, NOT `$`. PCRE's `$` also matches immediately BEFORE a final newline, so
+ * `"tblSongs\n"` passed the first version of this function — caught by
+ * `tests/php/test-song-relocate-cascade-verdict.php` on its very first run. The
+ * consequence there is a broken query rather than an injection, but "the value I
+ * validated is not the value I interpolated" is the whole property this function
+ * claims, and a validator that is not exact does not have it. `D` (PCRE_DOLLAR_ENDONLY)
+ * would do the same job; `\z` says so at the point it matters.
+ *
+ * @see https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
+ * @see https://www.php.net/manual/en/regexp.reference.anchors.php
+ */
+function songRelocateIdentifierSafe(string $identifier): bool
+{
+    return $identifier !== '' && preg_match('/\A[A-Za-z0-9_$]+\z/', $identifier) === 1;
+}
+
+/**
+ * The distinct child tables the expectations name — PURE.
+ *
+ * ELI5: "which tables do I need to ask the database about?", with duplicates
+ * removed (a table can hold two of these columns).
+ *
+ * Detail: extracted from `songRelocateFkCatalogue()` so it can be CALLED by a
+ * test. Everything else in that function needs a live mysqli, which CI does not
+ * have — so without this split the list-building, the de-duplication and the
+ * `array_fill()` placeholder count would ship with no execution behind them at
+ * all, and a typo would first be discovered on a real install mid-save.
+ *
+ * @return list<string>
+ */
+function songRelocateExpectedTables(): array
+{
+    $tables = [];
+    foreach (SONG_RELOCATE_EXPECTED_SONGID_FKS as [$table, , , ]) { $tables[$table] = true; }
+    return array_keys($tables);
+}
+
+/**
+ * The live FK + column catalogue for `tblSongs(SongId)`, memoised per request.
+ *
+ * ELI5: ask the database once "what actually points at a song's id here, and
+ * which of the columns I expect to exist really do?", and remember the answer
+ * for the rest of this request.
+ *
+ * Detail: two `INFORMATION_SCHEMA` reads, both scoped to `DATABASE()`.
+ *  - The FK read is the one `migrate-backfill-canonical-songids.php` performs
+ *    before ITS mass re-key. `REFERENTIAL_CONSTRAINTS` carries `UPDATE_RULE` but
+ *    not the referenced COLUMN, so `KEY_COLUMN_USAGE` is joined in to keep this
+ *    to FKs that really point at `SongId`. `k.COLUMN_NAME` is selected as well as
+ *    `k.TABLE_NAME` (#1690) — without the child COLUMN there is no way to ask
+ *    "does THIS song have rows behind that constraint", and no way to line a live
+ *    row up against an expectation.
+ *  - The COLUMN read answers "does this expected (table, column) pair exist at
+ *    all?". It is what stops a MISSING FK on a table this install has never
+ *    created from reading as a gap: a table with no rows cannot strand any.
+ *
+ * MEMOISED INCLUDING THE FAILURE, deliberately, and this is the opposite choice
+ * from `songRedirectsTableReady()` eight functions up — the reasoning is worth
+ * spelling out because the two look inconsistent. There, a failed probe answers
+ * "no redirect table", which silently switches a check OFF; memoising that would
+ * disable the check for the whole request, so failures are re-probed. Here a
+ * failed probe REFUSES the move, so memoising is fail-closed and merely makes a
+ * bulk move refuse uniformly instead of retrying an `INFORMATION_SCHEMA` read
+ * that just failed, once per song, inside the caller's transaction.
+ *
+ * @return array{error:?string, fks:list<array<string,mixed>>, columns:array<string,bool>}
+ * @see https://dev.mysql.com/doc/refman/8.0/en/information-schema-referential-constraints-table.html
+ * @see https://dev.mysql.com/doc/refman/8.0/en/information-schema-columns-table.html
+ */
+function songRelocateFkCatalogue(\mysqli $db): array
+{
+    static $catalogue = null;
+    if ($catalogue !== null) { return $catalogue; }
+
+    try {
+        $stmt = $db->prepare(
+            "SELECT rc.CONSTRAINT_NAME, rc.UPDATE_RULE, k.TABLE_NAME, k.COLUMN_NAME
+               FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
+               JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
+                 ON k.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
+                AND k.CONSTRAINT_NAME   = rc.CONSTRAINT_NAME
+              WHERE rc.CONSTRAINT_SCHEMA = DATABASE()
+                AND rc.REFERENCED_TABLE_NAME = 'tblSongs'
+                AND k.REFERENCED_COLUMN_NAME = 'SongId'"
+        );
+        $stmt->execute();
+        $fks = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        /* The distinct tables the expectations name. Placeholders are built from
+           a COUNT of PHP-source constants, never from anything a request can
+           reach — rule #5's `array_fill(0, count($values), '?')` idiom. */
+        $tables       = songRelocateExpectedTables();
+        $placeholders = implode(',', array_fill(0, count($tables), '?'));
+        $colStmt = $db->prepare(
+            "SELECT TABLE_NAME, COLUMN_NAME
+               FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME IN ({$placeholders})"
+        );
+        bindParamSafe(
+            'songRelocateFkCatalogue COLUMNS',
+            $colStmt,
+            str_repeat('s', count($tables)),
+            ...$tables
+        );
+        $colStmt->execute();
+        $columns = [];
+        foreach ($colStmt->get_result()->fetch_all(MYSQLI_ASSOC) as $c) {
+            $columns[songRelocateFkKey((string)$c['TABLE_NAME'], (string)$c['COLUMN_NAME'])] = true;
+        }
+        $colStmt->close();
+
+        $catalogue = ['error' => null, 'fks' => $fks, 'columns' => $columns];
+    } catch (\Throwable $e) {
+        /* Fail CLOSED, exactly as the migration does. A move we cannot verify is
+           a move that may silently orphan children; refusing is recoverable, an
+           orphaned graph is not. */
+        $catalogue = ['error' => $e->getMessage(), 'fks' => [], 'columns' => []];
+    }
+
+    return $catalogue;
+}
+
+/**
+ * Which (table, column) pairs can a re-key NOT carry on this install? — PURE.
+ *
+ * ELI5: compare "what the database really has" against "what it should have",
+ * and hand back the places where a rename would break something. No database
+ * access, so a test can hand it a made-up install and check the answer.
+ *
+ * TWO KINDS OF GAP, and the second one is why this function exists (#1690):
+ *  - `no-cascade`  — a live FK whose `UPDATE_RULE` is not `CASCADE`. The re-key
+ *    then throws `ER_ROW_IS_REFERENCED_2` (1451) mid-transaction on RESTRICT /
+ *    NO ACTION, or — worse, because it SUCCEEDS — orphans the children on
+ *    SET NULL. Reported whether or not the constraint is one we expected, since
+ *    a constraint nobody listed still breaks the same statement.
+ *  - `missing-fk`  — an EXPECTED constraint with no live FK row at all, on a
+ *    table and column that DO exist here. The old check could not see this: a
+ *    column with no FK produces no `INFORMATION_SCHEMA` row, so "everything I
+ *    found cascades" was vacuously true and the re-key stranded every row in it
+ *    silently. Gated on the pair existing so an install that simply never
+ *    created the table is not accused of drift — a table that is not there holds
+ *    no rows to strand.
+ *
+ * Matching is on (table, column), NOT on the constraint NAME. A constraint can be
+ * dropped and re-added under a different name — MySQL auto-names one `<tbl>_ibfk_1`
+ * if you do not — and what the re-key actually depends on is that the COLUMN has
+ * a cascading FK, whatever it is called. Name-matching would report a correctly
+ * cascading column as missing.
+ *
+ * @param  list<array<string,mixed>> $liveFkRows   `songRelocateFkCatalogue()['fks']`
+ * @param  array<string,bool>        $liveColumns  `songRelocateFkCatalogue()['columns']`
+ * @param  list<array{0:string,1:string,2:string,3:?string}> $expected
+ * @return list<array{table:string, column:string, constraint:string, kind:string, rule:string, fix:?string, known:bool}>
+ */
+function songRelocateCascadeGaps(array $liveFkRows, array $liveColumns, array $expected): array
+{
+    /* Index the expectations by (table, column) so a live row can find its own
+       entry — that is where the fix-migration slug and the CONSTANT spelling of
+       the identifiers come from. */
+    $expectedByKey = [];
+    foreach ($expected as [$table, $column, $constraint, $fix]) {
+        $expectedByKey[songRelocateFkKey($table, $column)] = [$table, $column, $constraint, $fix];
+    }
+
+    $gaps    = [];
+    $seenKey = [];
+
+    foreach ($liveFkRows as $row) {
+        $liveTable  = (string)($row['TABLE_NAME'] ?? '');
+        $liveColumn = (string)($row['COLUMN_NAME'] ?? '');
+        if ($liveTable === '' || $liveColumn === '') { continue; }
+
+        $key           = songRelocateFkKey($liveTable, $liveColumn);
+        $seenKey[$key] = true;
+
+        if (strtoupper((string)($row['UPDATE_RULE'] ?? '')) === 'CASCADE') { continue; }
+
+        $known = isset($expectedByKey[$key]);
+        $gaps[] = [
+            /* IDENTIFIER PROVENANCE (rule #5): when the pair is one we expect,
+               take the names from the CONST — clause (a), a literal in this
+               file — rather than echoing back what the server said. Only a
+               constraint nobody listed falls through to the I_S spelling, and
+               `known => false` is what tells the probe to charset-validate it. */
+            'table'      => $known ? $expectedByKey[$key][0] : $liveTable,
+            'column'     => $known ? $expectedByKey[$key][1] : $liveColumn,
+            'constraint' => (string)($row['CONSTRAINT_NAME'] ?? ''),
+            'kind'       => 'no-cascade',
+            'rule'       => strtoupper((string)($row['UPDATE_RULE'] ?? '')),
+            'fix'        => $known ? $expectedByKey[$key][3] : null,
+            'known'      => $known,
+        ];
+    }
+
+    foreach ($expected as [$table, $column, $constraint, $fix]) {
+        $key = songRelocateFkKey($table, $column);
+        if (isset($seenKey[$key]))       { continue; }  // the FK is live — fine, or already reported
+        if (!isset($liveColumns[$key]))  { continue; }  // no such table/column here — nothing to strand
+        $gaps[] = [
+            'table'      => $table,
+            'column'     => $column,
+            'constraint' => $constraint,
+            'kind'       => 'missing-fk',
+            'rule'       => '',
+            'fix'        => $fix,
+            'known'      => true,
+        ];
+    }
+
+    return $gaps;
+}
+
+/**
+ * Do any of those gaps actually block THIS song? — PURE, given the probe.
+ *
+ * ELI5: a broken link only matters if the song has something on the other end of
+ * it. Ask, one gap at a time; if the song has nothing there, the move is fine.
+ *
+ * THIS IS #1690 OPTION A. The version it replaces refused EVERY move on an
+ * install with one stale constraint, which is far broader than the harm: a
+ * RESTRICT `fk_media_song` cannot break the re-key of a song with no media row.
+ * The consequence of the old shape was that a single un-run migration froze the
+ * whole feature, and the operator's only remedy was a migration they may have
+ * had good reason not to run. Now the environment fault still refuses — but only
+ * the songs it can actually damage.
+ *
+ * WITHIN A BULK MOVE, SOME SONGS MAY PROCEED WHILE OTHERS REFUSE. That is the
+ * point, and it replaces the old note promising the opposite ("a refusal is
+ * memoised too, so every song in the batch fails the same way"). The CATALOGUE
+ * is still memoised, so the cost of the environment check is unchanged; only the
+ * verdict is per song, and only when a gap exists at all.
+ *
+ * FAIL CLOSED, twice over:
+ *  - a probe that THROWS counts as "the song has rows" — an unverifiable move
+ *    must not proceed, which is the same posture as an unreadable catalogue;
+ *  - EXCEPT for a transaction-fatal error (`songRelocateIsTransactionFatal()`),
+ *    which is re-thrown. By this point InnoDB may have rolled the CALLER's
+ *    transaction back, and swallowing that is how a save reports `ok:true` for
+ *    work that no longer exists — the exact false success #1679 F8/A1 removed.
+ *    Treating it as "fail closed" would be worse than useless: the caller would
+ *    catch a refusal, roll back nothing, and carry on.
+ *
+ * @param  list<array<string,mixed>> $gaps         from `songRelocateCascadeGaps()`
+ * @param  callable(string,string):bool $childHasRows  (table, column) → does this song have rows?
+ * @return string|null NULL = the move may proceed; a string = the refusal message.
+ * @throws \Throwable re-thrown when the probe failure is transaction-fatal.
+ */
+function songRelocateCascadeVerdict(array $gaps, callable $childHasRows): ?string
+{
+    if ($gaps === []) { return null; }
+
+    $blocking = [];
+    foreach ($gaps as $gap) {
+        try {
+            $hasRows = (bool)$childHasRows((string)$gap['table'], (string)$gap['column']);
+        } catch (\Throwable $e) {
+            if (songRelocateIsTransactionFatal($e)) { throw $e; }
+            $hasRows = true;
+        }
+        if ($hasRows) { $blocking[] = $gap; }
+    }
+
+    if ($blocking === []) { return null; }
+
+    $details = [];
+    $slugs   = [];
+    $drifted = false;
+    foreach ($blocking as $gap) {
+        $details[] = $gap['kind'] === 'missing-fk'
+            ? $gap['table'] . '.' . $gap['column'] . ' (no foreign key at all — '
+              . $gap['constraint'] . ' is missing)'
+            : $gap['table'] . '.' . $gap['column'] . ' (' . $gap['constraint']
+              . ' is ON UPDATE ' . $gap['rule'] . ')';
+
+        if ($gap['fix'] !== null && isset(SONG_RELOCATE_FIX_MIGRATIONS[$gap['fix']])) {
+            $slugs[$gap['fix']] = true;
+        } else {
+            $drifted = true;
+        }
+    }
+
+    /* The MESSAGE is the deliverable — this refusal fires on real installs, and
+       one that does not say what to run is no more actionable than the raw
+       ER_ROW_IS_REFERENCED_2 it replaces (#1679 H3). It travels to every role in
+       `error_hint`, so it has to be readable by a non-admin editor. */
+    $actions = [];
+    foreach (array_keys($slugs) as $slug) {
+        $actions[] = 'Run "' . SONG_RELOCATE_FIX_MIGRATIONS[$slug]['card'] . '" ('
+                   . SONG_RELOCATE_FIX_MIGRATIONS[$slug]['script'] . ') on /manage/setup-database';
+    }
+    if ($drifted) {
+        $actions[] = 'Reconcile the remaining constraint(s) against appWeb/.sql/schema.sql '
+                   . '(/manage/schema-audit lists the divergences)';
+    }
+
+    return 'songRelocate: this song has rows behind ' . count($blocking) . ' foreign key(s) to '
+         . 'tblSongs(SongId) that cannot carry a re-key, so moving it would fail mid-save or '
+         . 'silently orphan those rows — ' . implode('; ', array_slice($details, 0, 20)) . '. '
+         . implode('. ', $actions) . ', then move the song again.';
+}
+
+/**
+ * The real `$childHasRows` probe: does THIS song have rows in that child column?
+ *
+ * ELI5: one small "is there anything here?" query per broken link, asked only
+ * about the song being moved.
+ *
+ * Detail: `SELECT 1 … LIMIT 1`, so MySQL stops at the first hit rather than
+ * counting. Only ever called for a gap, so on a healthy install this closure is
+ * built and never invoked — the per-move cost of the whole pre-check stays zero
+ * extra queries.
+ *
+ * The identifiers cannot be bound (`?` binds VALUES, not table or column names),
+ * so they are validated by `songRelocateIdentifierSafe()` and backticked. A name
+ * that fails validation answers TRUE — "assume the song has rows" — because the
+ * one thing we must not do is let an unverifiable pair look harmless. See that
+ * function for which of rule #5's two interpolation clauses applies to which
+ * kind of identifier.
+ *
+ * @param  string $songId The song's CURRENT id — children still reference it.
+ * @return callable(string,string):bool
+ */
+function songRelocateChildRowProbe(\mysqli $db, string $songId): callable
+{
+    return static function (string $table, string $column) use ($db, $songId): bool {
+        if (!songRelocateIdentifierSafe($table) || !songRelocateIdentifierSafe($column)) {
+            return true;
+        }
+        $stmt = $db->prepare(
+            'SELECT 1 FROM `' . $table . '` WHERE `' . $column . '` = ? LIMIT 1'
+        );
+        bindParamSafe('songRelocateChildRowProbe', $stmt, 's', $songId);
+        $stmt->execute();
+        $found = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        return $found;
+    };
+}
+
+/**
+ * REFUSE this song's move when a foreign key referencing `tblSongs(SongId)`
+ * cannot carry the re-key AND this song has rows behind it (#1679 H3, #1690).
  *
  * ELI5: renaming the song's id only drags its verses, media and links along if
- * the database was told to follow. Four of those links are missing that setting
- * on older installs, so check first and say exactly what to run — rather than
- * letting the save blow up half-way and lose the curator's work.
+ * the database was told to follow. Some of those links are missing that setting
+ * on older installs — and some are missing entirely — so check first, and say
+ * exactly what to run, rather than letting the save blow up half-way and lose
+ * the curator's work. Only the songs that really have something at risk are
+ * stopped.
  *
  * Detail: the re-key is ONE `UPDATE tblSongs SET SongId = ?`; every child row
  * follows only because of `ON UPDATE CASCADE`. A `RESTRICT`/`NO ACTION` child FK
@@ -351,75 +912,44 @@ function songRelocateTableExists(\mysqli $db, string $table): bool
  * `songRelocate()` runs inside the CALLER's transaction the whole save is rolled
  * back — the curator sees "Failed to save song" and has no way to learn that the
  * cause is an un-applied migration. `SET NULL` would be worse: it succeeds and
- * orphans the children. So this asks INFORMATION_SCHEMA the same question
- * `migrate-backfill-canonical-songids.php` asks before ITS mass re-key, and
- * points at the same fixup migration `includes/songbook_maintenance.php` points
- * at when its own inline rewrite trips the constraint.
+ * orphans the children. A column with NO FK is worse again: it succeeds, orphans
+ * the children, and leaves nothing in `INFORMATION_SCHEMA` to have warned you.
  *
- * Memoised in a static for the whole request: a bulk move (the editor's
- * per-song save loop, an importer) must not re-query the catalogue per song.
- * A refusal is memoised too, so every song in the batch fails the same way with
- * the same message rather than the first one failing and the rest half-applying.
+ * This function is the thin wiring; the reasoning lives in the three layers it
+ * composes (see the file doc-block). It keeps only two things of its own: the
+ * probe-failure refusal, and the `throw` — both funnels recognise
+ * `SongRelocateEnvironmentException` by TYPE to copy its message into an ungated
+ * `error_hint`, so the throw must stay here where the caller can see it.
  *
  * @param  \mysqli $db
+ * @param  string  $songId The song's CURRENT SongId (children reference it, not
+ *                         the id it is about to be given).
  * @return void
  * @throws SongRelocateEnvironmentException naming the offending constraint(s)
  *         and the migration card that fixes them.
- * @see https://dev.mysql.com/doc/refman/8.0/en/information-schema-referential-constraints-table.html
  */
-function songRelocateAssertCascades(\mysqli $db): void
+function songRelocateAssertCascades(\mysqli $db, string $songId): void
 {
-    /* null = not probed yet; '' = all good; a string = the refusal message. */
-    static $verdict = null;
+    $catalogue = songRelocateFkCatalogue($db);
 
-    if ($verdict === null) {
-        try {
-            /* REFERENTIAL_CONSTRAINTS carries UPDATE_RULE but not the referenced
-               COLUMN, so join KEY_COLUMN_USAGE to keep this to FKs that actually
-               point at SongId (tblSongs is also referenced by … nothing else
-               today, but a future FK on tblSongs.Id must not be mistaken for one
-               the re-key depends on). Same query shape as the migration's. */
-            $stmt = $db->prepare(
-                "SELECT rc.CONSTRAINT_NAME, rc.UPDATE_RULE, k.TABLE_NAME
-                   FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rc
-                   JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE k
-                     ON k.CONSTRAINT_SCHEMA = rc.CONSTRAINT_SCHEMA
-                    AND k.CONSTRAINT_NAME   = rc.CONSTRAINT_NAME
-                  WHERE rc.CONSTRAINT_SCHEMA = DATABASE()
-                    AND rc.REFERENCED_TABLE_NAME = 'tblSongs'
-                    AND k.REFERENCED_COLUMN_NAME = 'SongId'"
-            );
-            $stmt->execute();
-            $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
-            $stmt->close();
-        } catch (\Throwable $e) {
-            /* Fail CLOSED, exactly as the migration does. A move we cannot
-               verify is a move that may silently orphan children; refusing is
-               recoverable, an orphaned graph is not. */
-            $verdict = 'songRelocate: could not verify the ON UPDATE CASCADE foreign keys on '
-                     . 'tblSongs(SongId) — ' . $e->getMessage()
-                     . '. Refusing to move the song; re-try once the database is reachable.';
-        }
-
-        if ($verdict === null) {
-            $bad = [];
-            foreach ($rows as $r) {
-                if (strtoupper((string)$r['UPDATE_RULE']) === 'CASCADE') { continue; }
-                $bad[] = (string)$r['TABLE_NAME'] . '.' . (string)$r['CONSTRAINT_NAME']
-                       . ' = ' . (string)$r['UPDATE_RULE'];
-            }
-            $verdict = $bad === []
-                ? ''
-                : 'songRelocate: ' . count($bad) . ' foreign key(s) referencing tblSongs(SongId) are NOT '
-                . 'ON UPDATE CASCADE, so re-keying this song would fail or orphan its child rows — '
-                . implode('; ', array_slice($bad, 0, 20))
-                . '. Run "Re-prefix SongIds whose SongbookAbbr no longer matches" '
-                . '(appWeb/.sql/migrate-songid-prefix-fixup.php) on /manage/setup-database first — '
-                . 'it adds the missing cascades — then move the song again.';
-        }
+    if ($catalogue['error'] !== null) {
+        throw new SongRelocateEnvironmentException(
+            'songRelocate: could not verify the ON UPDATE CASCADE foreign keys on '
+            . 'tblSongs(SongId) — ' . $catalogue['error']
+            . '. Refusing to move the song; re-try once the database is reachable.'
+        );
     }
 
-    if ($verdict !== '') {
+    $gaps = songRelocateCascadeGaps(
+        $catalogue['fks'],
+        $catalogue['columns'],
+        SONG_RELOCATE_EXPECTED_SONGID_FKS
+    );
+    /* The healthy path: no gaps, so no per-song probe is even built. */
+    if ($gaps === []) { return; }
+
+    $verdict = songRelocateCascadeVerdict($gaps, songRelocateChildRowProbe($db, $songId));
+    if ($verdict !== null) {
         /* A RuntimeException SUBCLASS, not InvalidArgumentException: this is an
            ENVIRONMENT fault, not bad user input, so api2's 422 branch (which
            catches InvalidArgumentException specifically) must NOT claim the
@@ -580,9 +1110,12 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
        AFTER the no-op short-circuits (a save that merely re-sends the current
        book must not pay for an INFORMATION_SCHEMA read) and BEFORE the first
        write, so a drifted install is refused with a fixable message instead of
-       exploding half-way through the caller's transaction. Memoised, so a bulk
-       move asks once. #1679 H3. */
-    songRelocateAssertCascades($db);
+       exploding half-way through the caller's transaction. The schema catalogue
+       is memoised, so a bulk move reads INFORMATION_SCHEMA once; the VERDICT is
+       per song (#1690 option A), so a stale constraint stops only the songs that
+       actually have rows behind it. $oldSongId, not the id about to be minted —
+       the child rows still reference the CURRENT one. #1679 H3. */
+    songRelocateAssertCascades($db, $oldSongId);
 
     /* 3 — mint the new canonical id in the destination book. */
     [$newSongId] = songRelocateMintId($db, $targetAbbr);

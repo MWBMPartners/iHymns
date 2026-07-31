@@ -33,6 +33,74 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
     exit('Access denied.');
 }
 
+/* The FK expectations two of the probes below need (#1690).
+ *
+ * ELI5: the list of "which links to a song's id should exist" lives in one
+ * place; the migration cards that create those links read it from there rather
+ * than each keeping their own copy.
+ *
+ * Detail: `SONG_RELOCATE_EXPECTED_SONGID_FKS` + `songRelocateFksFixedBy()` are
+ * declared in includes/song_relocate.php, which is where the songbook move
+ * consumes them. Sourcing the probes from the same const is what stops a card's
+ * pendency, the move's refusal and the migration's own DDL from drifting apart —
+ * the exact drift that left `songid-prefix-fixup` permanently "already applied"
+ * on an install whose four FKs were still RESTRICT (rule #35).
+ *
+ * Loading is side-effect-free: the file declares functions and constants, and
+ * its own require of db_mysql.php only reads a credentials file if one exists —
+ * it opens no connection. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
+           . DIRECTORY_SEPARATOR . 'song_relocate.php';
+
+/**
+ * Does a live FK constraint exist on this table, and if so is its UPDATE_RULE
+ * something other than CASCADE?
+ *
+ * ELI5: "is this link set up so a rename follows through?" — used by the two
+ * cards that create or repair such links.
+ *
+ * Detail: returns FALSE when the constraint is absent (that is the other
+ * probe's question) and TRUE only for a constraint that is really there and
+ * really not cascading. Names are BOUND, never interpolated (rule #5).
+ */
+function _migProbe_fkUpdateRuleNotCascade(\mysqli $db, string $table, string $constraint): bool
+{
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = DATABASE()
+            AND TABLE_NAME        = ?
+            AND CONSTRAINT_NAME   = ?
+            AND UPDATE_RULE      <> 'CASCADE'
+          LIMIT 1"
+    );
+    $stmt->bind_param('ss', $table, $constraint);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit;
+}
+
+/**
+ * Is a named FK constraint present in the live schema?
+ *
+ * ELI5: "has this link been created yet?"
+ */
+function _migProbe_constraintExists(\mysqli $db, string $table, string $constraint): bool
+{
+    $stmt = $db->prepare(
+        "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
+          WHERE CONSTRAINT_SCHEMA = DATABASE()
+            AND TABLE_NAME        = ?
+            AND CONSTRAINT_NAME   = ?
+          LIMIT 1"
+    );
+    $stmt->bind_param('ss', $table, $constraint);
+    $stmt->execute();
+    $hit = $stmt->get_result()->fetch_row() !== null;
+    $stmt->close();
+    return $hit;
+}
+
 return [
     'account-sync' => [
         'script' => 'migrate-account-sync.php',
@@ -470,9 +538,32 @@ return [
                       . ' Re-runnable.',
             'button' => 'Run SongId Prefix Fixup',
         ],
+        /* TWO reasons to be pending, OR'd (#1690).
+         *
+         * (a) is the data fix the card was written for. (b) is the migration's
+         * STEP 1, which runs unconditionally and adds ON UPDATE CASCADE to four
+         * FKs created without it — and which the probe used to be blind to. On
+         * an install with clean prefixes but RESTRICT FKs, (a) alone answered
+         * "not pending", so the card sat in the collapsed "already applied"
+         * expander, "Apply all pending" skipped it, and the only thing that
+         * would repair those FKs was never offered — while /manage/editor
+         * refused to move any song that had a media row, an external link, an
+         * alternative title or a work membership. A probe must detect actual
+         * completion of everything its migration does (rule #19), not just the
+         * part that named the card.
+         *
+         * The four constraint names come from SONG_RELOCATE_EXPECTED_SONGID_FKS
+         * so the probe, the move's refusal and the migration cannot disagree
+         * about which FKs this card owns. */
         'probe' => static function (\mysqli $db): bool {
+            /* Read OUTSIDE the try, deliberately. `catch (\Throwable)` would also
+               swallow an `Error` from a missing/renamed helper, and this probe's
+               fail-shape is `false` = "already applied" — so a typo would hide
+               the card forever, which is the very failure #1690 fixed. A DB
+               error degrades quietly; a code error must not. */
+            $targets = songRelocateFksFixedBy('songid-prefix-fixup');
             try {
-                /* Pending whenever any row\'s SongId prefix disagrees with
+                /* (a) Pending whenever any row's SongId prefix disagrees with
                    its declared SongbookAbbr. Self-clears once the migration
                    has run. */
                 $res = $db->query(
@@ -484,7 +575,16 @@ return [
                 );
                 $needs = $res && $res->fetch_row() !== null;
                 if ($res) $res->close();
-                return $needs;
+                if ($needs) { return true; }
+
+                /* (b) …or whenever one of the four cascade targets is present
+                   but still not ON UPDATE CASCADE. A constraint that is ABSENT
+                   is not this card's business — the migration only re-ALTERs
+                   existing FKs, and it reports a missing one as [skip]. */
+                foreach ($targets as [$table, , $constraint, ]) {
+                    if (_migProbe_fkUpdateRuleNotCascade($db, $table, $constraint)) { return true; }
+                }
+                return false;
             } catch (\Throwable $_e) {
                 return false;
             }
@@ -1604,14 +1704,34 @@ return [
                       . ' SongId references. Idempotent.',
             'button' => 'Run Soft-Reference FK Hardening',
         ],
-        /* Pending until the representative FK constraint exists in the live schema. */
+        /* A MULTI-OBJECT probe: pending until ALL FOUR constraints exist (#1690).
+         *
+         * It used to ask about the "representative" fk_Revisions_Song alone, so
+         * a PARTIAL apply — the revisions FK added, then one of the dismissed-
+         * suggestion ALTERs failing on dangling data — showed the card green
+         * with two FKs still missing. That is precisely the multi-object case
+         * rule #19 requires an OR-probe for, and it matters more than usual
+         * here: a column with no FK leaves no INFORMATION_SCHEMA row at all, so
+         * a songbook move stranded every row in it SILENTLY.
+         *
+         * Each constraint is gated on its own table+column existing, because
+         * the migration itself only adds an FK to a column that is there — a
+         * minimal install missing tblSongLinkSuggestionsDismissed entirely must
+         * not be reported as pending forever. Names come from
+         * SONG_RELOCATE_EXPECTED_SONGID_FKS (rule #35). */
         'probe' => static function (\mysqli $db): bool {
-            $res = $db->query(
-                "SELECT 1 FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS
-                  WHERE CONSTRAINT_SCHEMA = DATABASE()
-                    AND CONSTRAINT_NAME = 'fk_Revisions_Song' LIMIT 1"
-            );
-            return !($res && $res->num_rows > 0);
+            /* Outside the try — see the songid-prefix-fixup probe for why a code
+               error must not degrade to "already applied". */
+            $targets = songRelocateFksFixedBy('song-softref-fks');
+            try {
+                foreach ($targets as [$table, $column, $constraint, ]) {
+                    if (!_migProbe_columnExists($db, $table, $column))         { continue; }
+                    if (!_migProbe_constraintExists($db, $table, $constraint)) { return true; }
+                }
+                return false;
+            } catch (\Throwable $_e) {
+                return false;
+            }
         },
     ],
 
