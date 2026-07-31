@@ -289,17 +289,12 @@ echo "\n3 — the DB driver keeps the fail-OPEN contract this read path needs\n"
    un-migrated install no redirect can exist, so the honest degradation is the
    pre-#1689 behaviour. This is the OPPOSITE call from songRelocateIdTaken(),
    which is about to mint a permanent id and uses the strict probe — the two
-   contracts are asserted separately in test-optional-table-probes.php. */
-final class ClaimProbeFailingMysqli extends \mysqli
-{
-    public function __construct() {}
+   contracts are asserted separately in test-optional-table-probes.php.
 
-    #[\ReturnTypeWillChange]
-    public function prepare(string $query): mixed
-    {
-        throw new \mysqli_sql_exception('synthetic probe failure', 1146);
-    }
-}
+   ClaimProbeFailingMysqli was born in this file; the song soft-delete suite
+   (#1694) became its second consumer, so it moved verbatim into the shared
+   tests/php/lib/mysqli_doubles.php (modularity rule — extraction, not a copy). */
+require_once __DIR__ . '/lib/mysqli_doubles.php';
 
 $claimThrew = false;
 $claimAnswer = null;

@@ -24,20 +24,30 @@ declare(strict_types=1);
  *   AFTER UPDATE  — when SongbookAbbr changes, refresh both old
  *                   and new (atomic; song moved between books)
  *
+ * THE TRIGGER DDL LIVES IN lib/songcount-triggers.php, NOT HERE (#1694 D1a).
+ * Song soft delete redefines these same three triggers to count only
+ * `IsDeleted = 0` rows, so the DDL was extracted into the shared lib both
+ * migration cards call (modularity rule — the second occurrence is an
+ * extraction, not a copy). The lib probes the LIVE schema per run: on an
+ * install where tblSongs.IsDeleted does not exist yet (a fresh install running
+ * cards in historical order lands here BEFORE the soft-delete card), it emits
+ * the original unfiltered triggers — a trigger referencing a column that is
+ * not there yet would break every subsequent tblSongs write. Re-running this
+ * card AFTER soft delete has migrated keeps the filtered flavour.
+ *
  * Each trigger does a single UPDATE … WHERE Abbreviation = …
  * against an indexed column. ~3-8ms per row on a typical install;
  * acceptable for bulk imports (one-off cost) and free for normal
  * operation.
  *
- * Migration also runs an initial recompute as part of installation,
- * so a curator who installs PR #792 + this PR in either order ends
- * up with a clean cache without running the standalone #791
- * recompute migration.
+ * Migration also runs a recompute as part of installation, so a curator
+ * who installs PR #792 + this PR in either order ends up with a clean
+ * cache without running the standalone #791 recompute migration.
  *
- * Idempotent — DROP TRIGGER IF EXISTS before each CREATE.
+ * Idempotent — DROP TRIGGER IF EXISTS before each CREATE (in the lib).
  *
- * Fallback: some shared hosts disable CREATE TRIGGER. The migration
- * catches the failure, logs it, and exits cleanly — the
+ * Fallback: some shared hosts disable CREATE TRIGGER. The lib classifies
+ * the failure, this card logs it, and exits cleanly — the
  * application-side recompute from PR #792 stays as the safety net,
  * so editor saves still keep the cache correct on those hosts.
  *
@@ -73,6 +83,12 @@ if (PHP_SAPI === 'cli') {
     $isCli = false;
 }
 
+/* The ONE copy of the trigger DDL + recompute, shared with
+   migrate-song-soft-delete.php (#1694 D1a). require_once so a bulk
+   "Apply all" that requires both cards in one request defines the lib
+   functions exactly once. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'lib' . DIRECTORY_SEPARATOR . 'songcount-triggers.php';
+
 function _migSCTrig_out(string $line): void
 {
     global $isCli;
@@ -90,123 +106,14 @@ if (!$db) {
     throw new \RuntimeException('Could not connect to database.');
 }
 
-/* Detect whether a mysqli error message indicates the host has denied
-   trigger creation (typically: SUPER required, binary-logging strict
-   mode, or shared-host policy). Three signals cover the common shapes:
-     - "you do not have the SUPER privilege"
-     - "TRIGGER command denied to user …"
-     - explicit "privilege" / "binary logging" hints. */
-function _migSCTrig_isDenied(string $err): bool
-{
-    return stripos($err, 'super') !== false
-        || stripos($err, 'denied') !== false
-        || stripos($err, 'privilege') !== false
-        || stripos($err, 'binary logging') !== false;
-}
-
-/* PHP 8.1+ defaults mysqli_report to throw mysqli_sql_exception on
-   failure, so $db->query() never returns false on error — it throws.
-   The pre-existing `if (!$db->query(...))` branch was unreachable.
-   This wrapper restores the run-and-classify pattern by catching the
-   exception and surfacing the original error message + denied flag. */
-function _migSCTrig_runQuery(\mysqli $db, string $sql): array
-{
-    try {
-        $ok = $db->query($sql);
-        if ($ok === false) {
-            return ['ok' => false, 'denied' => _migSCTrig_isDenied($db->error), 'err' => $db->error];
-        }
-        return ['ok' => true, 'denied' => false, 'err' => ''];
-    } catch (\mysqli_sql_exception $e) {
-        return ['ok' => false, 'denied' => _migSCTrig_isDenied($e->getMessage()), 'err' => $e->getMessage()];
-    }
-}
-
 /* =========================================================================
- * Step 1 — Drop any existing same-name triggers (idempotency)
+ * Step 1 + 2 — DROP + CREATE the three triggers, in the flavour the live
+ * schema supports (the lib probes tblSongs.IsDeleted itself). Denied hosts
+ * come back {denied: true} and fall through to the recompute safety net.
  * ========================================================================= */
-$triggerNames = [
-    'trg_songs_songcount_ai',
-    'trg_songs_songcount_ad',
-    'trg_songs_songcount_au',
-];
-foreach ($triggerNames as $name) {
-    $r = _migSCTrig_runQuery($db, "DROP TRIGGER IF EXISTS {$name}");
-    if (!$r['ok']) {
-        _migSCTrig_out("WARN: DROP TRIGGER IF EXISTS {$name} failed: {$r['err']}");
-        if ($r['denied']) {
-            /* If the host denies DROP TRIGGER it will also deny CREATE
-               TRIGGER. Skip straight to the recompute fallback so the
-               operator gets a clean run instead of one error per name. */
-            break;
-        }
-    }
-}
-
-/* =========================================================================
- * Step 2 — Create the three triggers
- * ========================================================================= */
-$triggersSql = [
-    'trg_songs_songcount_ai' => "
-        CREATE TRIGGER trg_songs_songcount_ai AFTER INSERT ON tblSongs
-        FOR EACH ROW
-            UPDATE tblSongbooks
-               SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = NEW.SongbookAbbr)
-             WHERE Abbreviation = NEW.SongbookAbbr",
-
-    'trg_songs_songcount_ad' => "
-        CREATE TRIGGER trg_songs_songcount_ad AFTER DELETE ON tblSongs
-        FOR EACH ROW
-            UPDATE tblSongbooks
-               SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = OLD.SongbookAbbr)
-             WHERE Abbreviation = OLD.SongbookAbbr",
-
-    /* The UPDATE trigger is multi-statement so it needs a BEGIN/END
-       block. The mysqli driver doesn't need DELIMITER changes when
-       passing the whole CREATE TRIGGER as a single $db->query(); the
-       BEGIN/END inside the trigger body is parsed as one statement. */
-    'trg_songs_songcount_au' => "
-        CREATE TRIGGER trg_songs_songcount_au AFTER UPDATE ON tblSongs
-        FOR EACH ROW
-        BEGIN
-            IF OLD.SongbookAbbr <> NEW.SongbookAbbr THEN
-                UPDATE tblSongbooks
-                   SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = OLD.SongbookAbbr)
-                 WHERE Abbreviation = OLD.SongbookAbbr;
-                UPDATE tblSongbooks
-                   SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = NEW.SongbookAbbr)
-                 WHERE Abbreviation = NEW.SongbookAbbr;
-            END IF;
-        END",
-];
-
-$triggersCreated = 0;
-$triggersDenied  = false;
-foreach ($triggersSql as $name => $sql) {
-    $r = _migSCTrig_runQuery($db, $sql);
-    if ($r['ok']) {
-        _migSCTrig_out("[add ] {$name}.");
-        $triggersCreated++;
-        continue;
-    }
-    _migSCTrig_out("WARN: CREATE TRIGGER {$name} failed: {$r['err']}");
-    if ($r['denied']) {
-        /* Most-common failure on shared hosts: SUPER privilege required
-           pre-MySQL-8.0, or trigger creation explicitly denied by the
-           hosting policy. Surface a clear hint so the operator knows
-           the application-side recompute from PR #792 is the
-           remaining safety net, then exit clean — failing the migration
-           would block `Apply all` for no benefit. */
-        $triggersDenied = true;
-        _migSCTrig_out('       Hint: this MySQL host disallows CREATE TRIGGER (typically: SUPER privilege, or shared-host policy).');
-        _migSCTrig_out('       Save_song from #791/PR #792 still keeps the cache correct for editor saves; bulk imports recompute via their per-import path. The migration is not failing — the triggers are an optimisation, not a requirement.');
-        break;
-    }
-    /* Non-denial failure (e.g. syntax error, server error). Re-throw so
-       the bulk runner records the failure and stops — this would be a
-       genuine bug in the migration, not a host policy. */
-    throw new \RuntimeException("CREATE TRIGGER {$name} failed: {$r['err']}");
-}
+$install = ihymnsSongCountTriggersInstall($db, '_migSCTrig_out');
+$triggersCreated = $install['created'];
+$triggersDenied  = $install['denied'];
 
 if ($triggersCreated === 0 && !$triggersDenied) {
     _migSCTrig_out('ERROR: no triggers could be created. Cache will rely on application-side recompute (PR #792) only.');
@@ -226,41 +133,12 @@ if ($triggersDenied) {
 /* =========================================================================
  * Step 3 — Initial recompute so the migration leaves a clean cache
  * regardless of whether the standalone #791 recompute migration was
- * run first. Same shape as migrate-recompute-songbook-songcount.php.
+ * run first. The lib applies the SAME visibility predicate the triggers
+ * carry (#1694 D1a), so a trigger-denied host still shows the right number.
  * ========================================================================= */
 _migSCTrig_out('');
 _migSCTrig_out('Running initial recompute…');
-$res = $db->query(
-    "SELECT b.Id, b.Abbreviation, b.SongCount AS cached,
-            COALESCE(s.live_count, 0) AS live
-       FROM tblSongbooks b
-       LEFT JOIN (
-            SELECT SongbookAbbr, COUNT(*) AS live_count
-              FROM tblSongs
-             GROUP BY SongbookAbbr
-       ) s ON s.SongbookAbbr = b.Abbreviation
-      ORDER BY b.Abbreviation"
-);
-if (!$res) {
-    _migSCTrig_out('WARN: initial recompute SELECT failed: ' . $db->error);
-} else {
-    $rows = $res->fetch_all(MYSQLI_ASSOC);
-    $res->close();
-    $upStmt = $db->prepare('UPDATE tblSongbooks SET SongCount = ? WHERE Id = ?');
-    $drifted = 0;
-    foreach ($rows as $r) {
-        $cached = (int)$r['cached'];
-        $live   = (int)$r['live'];
-        if ($cached !== $live) {
-            $id = (int)$r['Id'];
-            $upStmt->bind_param('ii', $live, $id);
-            $upStmt->execute();
-            $drifted++;
-        }
-    }
-    $upStmt->close();
-    _migSCTrig_out("Initial recompute: {$drifted} songbook(s) corrected.");
-}
+ihymnsSongCountRecompute($db, '_migSCTrig_out');
 
 _migSCTrig_out('');
 _migSCTrig_out('SongCount triggers migration finished (#793).');

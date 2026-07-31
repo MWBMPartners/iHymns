@@ -3084,4 +3084,51 @@ return [
             return !$seen;   /* no sentinel row → still pending */
         })($db),
     ],
+
+    /* ---- #1694 (epic #1692) — song soft delete -------------------------------
+       Five columns + one index + one FK on tblSongs so a "deleted" song is
+       HIDDEN and restorable instead of gone: 38 of the 41 FKs referencing
+       tblSongs(SongId) CASCADE, so the old hard delete destroyed components,
+       lyric lines, credits, media, tags and the whole revision history in one
+       irreversible stroke. Additive and DORMANT — nothing reads the columns
+       until the #1694 read-path sweep + write cores land, so applying this
+       card changes the behaviour of zero existing reads (rule #20 one-pass).
+
+       The card also redefines the three SongCount triggers (#793) so the
+       cached per-songbook count means VISIBLE songs (owner decision D1a) —
+       but the triggers are deliberately NOT in this probe: they are
+       host-optional (shared hosts deny CREATE TRIGGER, #815), so a
+       trigger-presence clause would pin this card pending forever on exactly
+       the hosts the friendly-skip path exists for. #793's own card already
+       owns trigger pendency via its sentinel. */
+    'song-soft-delete' => [
+        'script' => 'migrate-song-soft-delete.php',
+        'card' => [
+            'title'  => 'Song soft delete (#1694)',
+            'body'   => 'Adds the soft-delete columns to <code>tblSongs</code>'
+                      . ' (<code>IsDeleted</code>, <code>DeletedAt</code>, <code>DeletedBy</code>,'
+                      . ' <code>DeletedReason</code>, <code>DeleteNote</code>) plus the'
+                      . ' <code>idx_IsDeleted</code> index and the <code>fk_Songs_DeletedBy</code>'
+                      . ' attribution FK, so deleting a song hides it (restorable from the'
+                      . ' forthcoming <code>/manage/deleted-songs</code>) instead of cascading away'
+                      . ' its components, credits, media and revision history. Also redefines the'
+                      . ' SongCount triggers (#793) to count visible songs only, with the same'
+                      . ' friendly skip on trigger-denied hosts. Additive and dormant until the'
+                      . ' #1694 read/write sweep ships. Idempotent — safe to re-run.',
+            'button' => 'Run Song Soft Delete Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): SEVEN separately-guarded objects,
+           so a partial apply (connection dropped between ALTERs) must never
+           show the card green — "Apply all pending" would otherwise skip the
+           half that never ran while songSoftDeleteReady() (which requires all
+           five columns in lockstep) sits false with nothing indicating why. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'IsDeleted')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedAt')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedBy')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeletedReason')
+            || !_migProbe_columnExists($db, 'tblSongs', 'DeleteNote')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_IsDeleted')
+            || !_migProbe_constraintExists($db, 'tblSongs', 'fk_Songs_DeletedBy'),
+    ],
 ];

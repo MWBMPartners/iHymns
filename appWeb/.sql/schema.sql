@@ -193,6 +193,18 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     ArrangementJson     JSON            NULL DEFAULT NULL COMMENT 'Optional int-array of indices into components[] that overrides the stored SortOrder (lets a refrain repeat between verses) (#892)',
     CreatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt           TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    /* Song soft delete (#1694, epic #1692). The row is retained and hidden —
+       38 of the 41 FKs referencing tblSongs(SongId) CASCADE, so a hard delete
+       destroys components, lyric lines, credits, media, tags and the entire
+       revision history irrecoverably; restore must be prevention, not repair.
+       Dormant until the read-path sweep + write cores consume them. The
+       fk_Songs_DeletedBy FK is added via trailing ALTER (tblUsers is defined
+       later in this file — same reason as fk_Songs_Tune). */
+    IsDeleted           TINYINT(1)      NOT NULL DEFAULT 0 COMMENT 'Soft-delete flag (#1694): 1 = hidden from every filtered read, restorable via /manage/deleted-songs. The row is never hard-deleted on this path (38 of 41 inbound FKs CASCADE — restore must be prevention, not repair); purge is the separate, gated hard delete',
+    DeletedAt           DATETIME        NULL DEFAULT NULL COMMENT 'UTC instant of the soft delete (#1694); DATETIME not TIMESTAMP so it is never re-read against a session zone (rule #20). NULL while the song is live',
+    DeletedBy           INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblUsers.Id — who soft-deleted it (#1694). ON DELETE SET NULL so attribution resolves to the account tombstone if the deleter is later erased (#1698)',
+    DeletedReason       VARCHAR(50)     NULL DEFAULT NULL COMMENT 'Why it was deleted (#1694) — app-validated vocabulary from songDeleteReasons() in includes/song_soft_delete.php; VARCHAR not ENUM so the vocabulary grows without an ALTER (rule #20)',
+    DeleteNote          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Free-text curator note accompanying the delete (#1694). Empty string when none — NOT NULL so reads never juggle NULL vs empty',
 
     INDEX idx_Songbook          (SongbookAbbr),
     INDEX idx_SongbookNumber    (SongbookAbbr, Number),
@@ -202,6 +214,7 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
+    INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
     FULLTEXT idx_LyricsFt       (LyricsText),
@@ -2996,6 +3009,15 @@ CREATE TABLE IF NOT EXISTS tblTuneAliases (
 ALTER TABLE tblSongs
     ADD CONSTRAINT fk_Songs_Tune
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Back-reference FK from tblSongs.DeletedBy -> tblUsers (added here rather than
+-- inline for the same reason as fk_Songs_Tune: tblSongs is created before
+-- tblUsers in this file; the columns + index are declared inline in the
+-- tblSongs block above). ON DELETE SET NULL so erasing the deleting curator's
+-- account (#1698) anonymises the attribution without touching the song. (#1694)
+ALTER TABLE tblSongs
+    ADD CONSTRAINT fk_Songs_DeletedBy
+        FOREIGN KEY (DeletedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- ----------------------------------------------------------------------------
 -- tblSongUsageEvents (#1090 P5) — the reportable USE spine: "song X used on
