@@ -70,15 +70,40 @@ foreach ($allSongs as $song) {
     }
 }
 
-/* Handle no results */
+/* Handle no results.
+ *
+ * ELI5: nobody by that name has any songs here — say so in the same card every
+ * other "we couldn't find it" page uses.
+ *
+ * #1705 — this used to hand-roll its own Bootstrap alert plus a button, making it
+ * a SIXTH divergent copy of an error card while `renderErrorFragment()` sat
+ * unused two directories away. That is the modularity rule's exact case ("if a
+ * shared module already exists, reuse it"), and the copy had already drifted:
+ * no theme awareness, a different icon convention, and only one action where the
+ * shared renderer offers a list.
+ *
+ * The `function_exists()` guard mirrors song.php's: this fragment is reachable
+ * through paths that may not have loaded `error_page.php`, and a fatal here would
+ * replace a tidy "not found" with a blank page. The fallback deliberately stays
+ * minimal — it is the last resort, not a second design. */
 if (empty($matchedSongs)) {
     http_response_code(404);
-    echo '<div class="alert alert-warning" role="alert">';
-    echo '<i class="fa-solid fa-circle-exclamation me-2" aria-hidden="true"></i>';
-    echo 'No songs found for: <strong>' . htmlspecialchars($writerName) . '</strong>';
-    echo '</div>';
-    echo '<a href="/songbooks" class="btn btn-primary" data-navigate="songbooks">';
-    echo '<i class="fa-solid fa-arrow-left me-2" aria-hidden="true"></i>Back to Songbooks</a>';
+    if (function_exists('renderErrorFragment')) {
+        echo renderErrorFragment(404, [
+            'title'   => 'No songs found',
+            'message' => 'We couldn\'t find any songs credited to "' . $writerName . '". '
+                       . 'The name may be spelled differently here, or credited as a composer '
+                       . 'rather than a writer.',
+            'fa'      => 'fa-user-pen',
+            'actions' => [
+                ['label' => 'Browse Songbooks', 'href' => '/songbooks', 'navigate' => 'songbooks', 'primary' => true, 'fa' => 'fa-book-open'],
+                ['label' => 'Search',           'href' => '/search',    'navigate' => 'search',    'fa' => 'fa-magnifying-glass'],
+            ],
+        ]);
+    } else {
+        echo '<div class="alert alert-warning" role="alert">No songs found for: <strong>'
+           . htmlspecialchars($writerName) . '</strong></div>';
+    }
     return;
 }
 

@@ -22,6 +22,7 @@ import { userHasEntitlement } from './entitlements.js';
    Page loads (loadPage) and the song/related/translation fetches below are
    exactly the requests that need the language filter applied. */
 import { apiFetch } from '../utils/api-client.js';
+import { shouldRenderErrorBody } from '../utils/error-response.js';
 import {
     STORAGE_FAVORITES,
     STORAGE_SETLISTS,
@@ -489,8 +490,49 @@ export class Router {
                 }
             });
 
+            /* #1705 — AN ERRORED RESPONSE MAY STILL CARRY A REAL EXPLANATION.
+             *
+             * ELI5: if the server said "this song was removed", show that —
+             * don't replace it with "check your connection".
+             *
+             * This used to be `if (!response.ok) throw`, with the body never
+             * read, so the catch block below rendered a generic connection
+             * warning. Six surfaces send a themed, accessible card with a
+             * helpful message and action buttons — song.php (410 for a removed
+             * song, 404 otherwise), songbook.php, person.php, work.php, tag.php
+             * and maintenance.php's 503 — and NOT ONE had ever been seen by a
+             * user. They render perfectly in curl.
+             *
+             * The old fallback was not just generic, it was WRONG: it blamed the
+             * reader's network for a server that had answered clearly. Somebody
+             * following an old link to a merged song was told to check their
+             * wifi.
+             *
+             * The decision is a PURE function (status + content-type + body
+             * length) so a test can call it — never a prose match on the body,
+             * which is the rule #35 anti-pattern. An errored JSON response is
+             * deliberately NOT injected: showing a reader `{"error":"…"}` would
+             * be worse than the alert it replaced. */
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}`);
+                const errorBody = await response.text();
+                if (!shouldRenderErrorBody(
+                    response.status,
+                    response.headers.get('Content-Type'),
+                    errorBody.length
+                )) {
+                    /* Nothing usable came back — fall through to the generic
+                       alert, which for a genuine network or empty-body failure
+                       is the honest answer. */
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                this.app.transitions.completeLoading();
+                content.innerHTML = errorBody;
+                this.app.transitions.pageIn(content);
+                /* Deliberately no afterPageLoad(): an error card has no page
+                   module to hydrate, and running one against a fragment whose
+                   expected data-* attributes are absent is how a cleanup routine
+                   throws on a page that is already failing. */
+                return;
             }
 
             const html = await response.text();
