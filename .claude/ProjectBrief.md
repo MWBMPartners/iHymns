@@ -13,8 +13,25 @@ work lives on **`claude/wave3-fixes`**, ~90 commits ahead of `alpha`, all pushed
 the owner wants ONE PR to `alpha`, created on their word.
 
 ⚠️ **The branch named in the session prompt (`claude/apple-branches-cleanup-export-7mxhpo`) is a
-DIFFERENT, older branch.** Pushing there strands a commit away from its history — it happened once
-this session. Check `git branch -vv` before pushing.
+DIFFERENT, older, DELETED branch.** Pushing there re-creates it on the remote and strands work away
+from its history.
+
+**This warning did not work.** It was written after the first occurrence, sat here in plain sight,
+and the same mistake happened again on 2026-07-31 — the session read the "designated branch" line in
+its own prompt and ran `git push -u origin <that branch>` while checked out on `wave3-fixes`. A
+warning that is read *after* the mistake is a missing mechanism, not a missing note (rule #35).
+
+**The mechanism is now `tools/githooks/pre-push`.** Install it in every fresh container — it is not
+automatic, because `.git/hooks` is not tracked:
+
+```
+git config core.hooksPath tools/githooks
+```
+
+It refuses (a) any push to a known-dead branch, and (b) any push of a local branch that is not the
+one currently checked out — which is the exact shape of the bug, since `git push -u origin <other>`
+silently publishes that other branch's tip. Deletes are always allowed. Bypass, if genuinely
+intended, is `IHYMNS_ALLOW_ANY_PUSH=1` (deliberately not `--no-verify`, which CLAUDE.md forbids).
 
 **Suites: 64 PHP / 37 node.** Both runners glob their directories, so a new suite cannot exist
 without running — except in the `php-compat` matrix, which still hand-lists and therefore runs the
