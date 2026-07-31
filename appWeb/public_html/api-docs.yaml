@@ -6125,6 +6125,13 @@ paths:
         collection posted to `user_setlists_sync` is owner-scoped and runs in
         `replace` mode, so a shared list included there would be written back
         as if the caller owned it.
+
+        **Owner-state fields (#1698).** When the owner's account has been
+        switched off or closed, the entry is still returned — deliberately
+        VISIBLE — but becomes read-only. Branch on **`canWrite`**, which is the
+        same question `setlist_collab_update` answers server-side, so the UI
+        and the server cannot disagree about which rows are editable. Do NOT
+        recompute it from `permission` and `ownerState` yourself.
       security:
         - bearerAuth: []
       parameters:
@@ -6151,6 +6158,34 @@ paths:
                         permission: { type: string, enum: [view, edit] }
                         name:       { type: string }
                         updatedAt:  { type: string, description: Owner-side last-modified timestamp }
+                        ownerState:
+                          type: string
+                          enum: [active, disabled, deleted]
+                          description: >-
+                            State of the owner's account (#1698). `disabled` is
+                            reversible; `deleted` is an anonymised tombstone. A
+                            client that only needs to know whether to grey the
+                            row should read `locked` instead.
+                        locked:
+                          type: boolean
+                          description: >-
+                            True when the owner's account is not active, i.e.
+                            `ownerState !== 'active'`. The entry stays visible;
+                            only writing is withdrawn.
+                        canWrite:
+                          type: boolean
+                          description: >-
+                            Whether the caller may edit this setlist —
+                            `permission === 'edit'` AND the owner is not locked.
+                            Authoritative: `setlist_collab_update` enforces
+                            exactly this. Branch on it rather than recomputing.
+                        lockReason:
+                          type: string
+                          description: >-
+                            Short user-facing sentence explaining the lock, or
+                            `""` when unlocked. Deliberately names no username,
+                            email or admin action — a shared link is readable by
+                            anyone holding the URL.
                         songs:
                           type: array
                           items:
@@ -7767,9 +7802,33 @@ paths:
                         orgId:       { type: integer, nullable: true }
                         createdBy:   { type: integer, nullable: true }
                         createdAt:   { type: string, format: date-time }
+                        ownerState:
+                          type: string
+                          enum: [active, disabled, deleted, absent]
+                          description: >-
+                            State of the template author's account (#1698).
+                            `absent` means the template names no author at all —
+                            an older row whose `createdBy` went NULL under
+                            `ON DELETE SET NULL` before erasure became a
+                            tombstone. All four states other than `active` lock.
+                        ownerLocked:
+                          type: boolean
+                          description: >-
+                            True when the author's account is not active. The
+                            template stays listed and stays applicable; only
+                            renaming and deleting are withdrawn.
                         canEdit:
                           type: boolean
-                          description: True when the caller authored this template.
+                          description: >-
+                            Whether THIS caller may rename or delete THIS
+                            template — true when they authored it, OR when they
+                            hold the `manage_setlist_templates` entitlement
+                            (admin+, the #1698 override that makes an
+                            author-less template manageable again).
+                            Authoritative: `setlist_template_update` and
+                            `setlist_template_delete` enforce exactly this, so
+                            the list can never offer a button the write endpoint
+                            refuses. Do not re-derive it from `createdBy`.
                   slotTypes:
                     type: object
                     additionalProperties: { type: string }
@@ -7815,7 +7874,16 @@ paths:
                       label: { type: string, maxLength: 100 }
                       type:  { type: string, maxLength: 50 }
                 org_id:      { type: integer, nullable: true }
-                is_public:   { type: boolean, default: false }
+                is_public:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Makes the template visible to every user of the app.
+                    Requires the `publish_public_templates` entitlement
+                    (admin+, #1698); without it a `true` here is a 403 and
+                    the template is NOT saved. It is deliberately rejected
+                    rather than silently demoted to private — a demotion
+                    would report success while not doing what was asked.
       responses:
         "201":
           description: Created; returns the new template id
@@ -7828,7 +7896,11 @@ paths:
                   id: { type: integer }
         "400": { description: Template name is required }
         "401": { description: Not authenticated }
-        "403": { description: org_id names an organisation the caller does not belong to }
+        "403":
+          description: >-
+            `org_id` names an organisation the caller does not belong to, OR
+            `is_public` was true without the `publish_public_templates`
+            entitlement (#1698). Nothing is saved in either case.
         "413": { description: Too many slots — nothing was stored }
 
   /api.php?action=setlist_template_update:
@@ -7869,7 +7941,14 @@ paths:
                       id:    { type: string }
                       label: { type: string, maxLength: 100 }
                       type:  { type: string, maxLength: 50 }
-                is_public:   { type: boolean, default: false }
+                is_public:
+                  type: boolean
+                  default: false
+                  description: >-
+                    Requires the `publish_public_templates` entitlement
+                    (admin+, #1698); without it a `true` here is a 403 and
+                    nothing is updated. Same gate, same rejection shape, as
+                    `setlist_template_save`.
       responses:
         "200":
           description: Updated
@@ -7882,7 +7961,13 @@ paths:
                   id: { type: integer }
         "400": { description: Template id and name are required }
         "401": { description: Not authenticated }
-        "403": { description: The caller did not create this template }
+        "403":
+          description: >-
+            The caller neither created this template nor holds the
+            `manage_setlist_templates` entitlement (the #1698 admin override,
+            which is what makes a template whose author's account was erased
+            manageable again) — or `is_public` was true without
+            `publish_public_templates`. Nothing is changed.
         "404": { description: No such template }
         "413": { description: Too many slots — nothing was changed }
 
@@ -7924,7 +8009,13 @@ paths:
                   deleted: { type: integer, description: Rows removed (0 or 1) }
         "400": { description: Template id is required }
         "401": { description: Not authenticated }
-        "403": { description: The caller did not create this template }
+        "403":
+          description: >-
+            The caller neither created this template nor holds the
+            `manage_setlist_templates` entitlement (the #1698 admin override,
+            which is what makes a template whose author's account was erased
+            manageable again) — or `is_public` was true without
+            `publish_public_templates`. Nothing is changed.
         "404": { description: No such template }
 
   # ===========================================================================
@@ -10428,6 +10519,25 @@ paths:
         an already-invalidated token returns 401 (terminal); a narrow
         double-tap race returns the SAME `{"ok":true,"deleted":true}` both
         times (idempotent).
+
+        **Since #1698 this is an anonymised TOMBSTONE, not a row delete.**
+        The observable contract above is unchanged — the caller is still
+        signed out, still cannot sign back in, and the response shape is
+        identical — but `tblUsers` keeps a scrubbed row carrying
+        `Status = 'deleted'` and `IsActive = 0`. Every authenticated path
+        already filters `IsActive = 1`, so the account is as inaccessible as
+        a deleted one. What the tombstone buys is that content this user had
+        **shared with other people** (a set-list share link, a published
+        set-list template) keeps resolving for those people — visible and
+        read-only — instead of vanishing or silently degrading to a
+        months-old frozen snapshot. Which referencing rows are deleted,
+        NULLed or kept is DERIVED from each foreign key's own `ON DELETE`
+        rule rather than a hardcoded table list, so a table added later is
+        covered by its own declaration.
+
+        The erasure is also reachable by an administrator via
+        `admin_user_delete`, through the same core, so the two funnels cannot
+        diverge.
       security:
         - bearerAuth: []
         - cookieAuth: []
@@ -10473,6 +10583,18 @@ paths:
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
         "429":
           description: Too many re-auth attempts from this IP
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "503":
+          description: |
+            The erasure core REFUSED, and the account is completely untouched
+            (#1698). This is an operator condition, not a client error and not
+            a server fault: either the `tblUsers.Status` migration has not been
+            run on this docroot, or the live foreign-key graph contains a rule
+            the erasure has no policy for (`RESTRICT` / `NO ACTION` / an empty
+            clause). It refuses rather than guessing, and never falls back to a
+            hard row delete. Retrying identically will keep returning 503 until
+            an administrator acts, so a client should surface "try again later"
+            rather than looping.
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
 
   # ===========================================================================

@@ -76,7 +76,7 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | Table | Purpose |
 |---|---|
 | `tblUserGroups` | Groups with version channel access flags (Alpha/Beta/RC/RTW) |
-| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified |
+| `tblUsers` | Accounts with role, group link, EmailVerified, LastLoginAt, LoginCount, AccessTier, CcliNumber, CcliVerified, and the `Status` / `StatusChangedAt` lifecycle pair (#1698 — `active` / `disabled` / `deleted`; see [[User Accounts & Roles]]) |
 | `tblSessions` | Server-side admin panel sessions |
 | `tblApiTokens` | Bearer tokens for PWA/native app auth (64-char hex, 30-day expiry) |
 | `tblPasswordResetTokens` | Single-use password reset tokens (48-char hex, 1-hour expiry) |

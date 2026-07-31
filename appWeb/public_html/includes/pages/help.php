@@ -149,13 +149,40 @@ declare(strict_types=1);
                         above instead.
                     </p>
 
+                    <h3 class="h6 mt-3">Switched off vs deleted</h3>
+                    <p>
+                        There are two different things that can happen to an account, and it is worth
+                        knowing which is which.
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Disabled</strong> — an administrator has switched the account off.
+                            You can't sign in, and anything you own becomes read-only, but
+                            <em>nothing is lost</em>. Switching it back on restores everything
+                            immediately, including any set lists that hadn't already reached their own
+                            expiry date.
+                        </li>
+                        <li>
+                            <strong>Deleted</strong> — your personal details are erased and the account
+                            can't be switched back on. This is the one that can't be undone.
+                        </li>
+                    </ul>
+
                     <h3 class="h6 mt-3">Deleting your account</h3>
                     <p>
                         In the iHymns app for iPhone, iPad, or Apple TV, open <strong>Account &rarr; Danger
                         Zone &rarr; Delete Account</strong>. You'll be asked to confirm it's really you (your
                         password, or a one-time code emailed to you) before anything is removed. Deleting your
-                        account permanently removes your account, favourites, and set lists from our servers,
-                        revokes any linked Sign in with Apple grant, and cannot be undone.
+                        account erases your personal details, removes your favourites and your own set lists,
+                        signs out every device, revokes any linked Sign in with Apple grant, and cannot be
+                        undone.
+                    </p>
+                    <p>
+                        <strong>Things you shared with other people keep working for them.</strong> If you
+                        sent someone a set list link, or published a set-list template your church uses, it
+                        stays visible to them &mdash; it simply becomes read-only, and your name is no longer
+                        attached to it. That's deliberate: closing your account shouldn't take a service plan
+                        away from somebody else halfway through a Sunday morning.
                     </p>
                     <p class="small text-muted mb-0">
                         A self-service delete option in the web app is planned; until then, contact us via

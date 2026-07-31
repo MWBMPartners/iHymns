@@ -36,6 +36,11 @@ On a setlist you've already built, open it and tap the **file-lines** icon in th
 
 From the **From Template** dropdown, tap **Manage templates…**. You'll see a numbered list of templates you created, and you can rename or delete one from there. You can only rename or delete templates you made yourself — a template someone has shared with you can be applied, but not changed or removed by you. Deleting a template doesn't touch any setlist already built from it.
 
+Two exceptions worth knowing about:
+
+- **Administrators can manage any template**, not only their own. That is what makes a shared template fixable when the person who wrote it is no longer around to fix it.
+- **If the author's account is switched off or closed, their templates stay usable but become read-only.** You can still apply one to a new setlist exactly as before; nobody can rename or delete it except an administrator. Somebody else closing their account should never take your Sunday-morning service plan away with it.
+
 ---
 
 Copyright &copy; 2026 MWBM Partners Ltd. All rights reserved.
