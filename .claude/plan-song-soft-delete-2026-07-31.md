@@ -313,7 +313,24 @@ letting the guard's tick be over-read.
 
 ---
 
-## Owner decisions
+## Owner decisions — ALL FOUR ANSWERED 2026-07-31
+
+> **D1 = (a) visible.** Owner: *"Song count should be songs visible. It may not be that the user has
+> access to all songs (due to gating such as for CCLI or any other reason), but is meant to indicate
+> the total number of songs that can (ideally) be accessed by users. Song Count should therefore
+> exclude soft-deleted/hidden songs."*
+>
+> ⚠️ Note the nuance, because it constrains any future "improvement": the count is **"ideally
+> accessible"**, NOT "accessible to you". It must NOT be made per-user — entitlement/CCLI gating is
+> deliberately excluded from it. A future change that tried to subtract gated songs per viewer would
+> break the shared-cache home fragment (rule #6) as well as contradicting this decision.
+>
+> **D2 = 410.** Owner: *"If we want to be honest, a deleted song should return a HTTP 410."*
+> **D3 = yes** (add `purge_songs` now). **D4 = yes** (`admin_export` includes soft-deleted rows).
+
+Original framing kept below for the reasoning.
+
+### Owner decisions
 
 **D1 — Trigger redefinition: does `SongCount` mean visible songs or physical rows?** *(blocks
 commit 1 only)* — (a) redefine to count `IsDeleted = 0`: tiles stay truthful, trigger DDL churn on
