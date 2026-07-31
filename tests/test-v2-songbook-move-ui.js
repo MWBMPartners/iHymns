@@ -330,9 +330,46 @@ async function main() {
     assert(/res\.songbooks\b/.test(sidebarSrc),
         'sidebar.js reads res.songbooks off the load_index response');
 
-    const rowLiteral = liBlock.match(/\$books\[\]\s*=\s*\[([^\]]*)\]/);
-    const serverFields = rowLiteral
-        ? Array.from(rowLiteral[1].matchAll(/'(\w+)'\s*=>/g)).map((m) => m[1]).sort()
+    /* #1691 D7 — the row literal is read with a BALANCED-BRACKET scan, not
+       /\[([^\]]*)\]/. That regex stops at the FIRST `]`, and the row's own
+       `name` value contains one (`$b['name']`), so the capture was truncated
+       mid-literal. Both keys happened to sit before the cut — correct BY LUCK,
+       the A12 disease — and a key added after any nested `[...]` would be
+       silently dropped from the server side of the comparison: an under-report
+       whose tick reads as coverage when the client ignores the key, and a red
+       on CORRECT code when the client reads it (rule #34's two failure modes,
+       one truncation). The scan tracks PHP quoting too, so a bracket inside a
+       string value cannot unbalance it — the same lesson jsRedactLiterals()
+       in test-song-relocate-hardening.php learned the hard way. */
+    const phpArrayLiteralAfter = (src, anchorRe) => {
+        const m = src.match(anchorRe);
+        if (!m) { return null; }
+        const open = src.indexOf('[', m.index + m[0].length);
+        if (open === -1) { return null; }
+        let depth = 0;
+        let quote = null;                      // "'" or '"' while inside a PHP string
+        for (let i = open; i < src.length; i++) {
+            const c = src[i];
+            if (quote) {
+                if (c === '\\') { i++; continue; }    // skip the escaped character
+                if (c === quote) { quote = null; }
+                continue;
+            }
+            if (c === "'" || c === '"') { quote = c; continue; }
+            if (c === '[') { depth++; continue; }
+            if (c === ']') {
+                depth--;
+                if (depth === 0) { return src.slice(open + 1, i); }
+            }
+        }
+        return null;                           // unbalanced — report "not found", loudly
+    };
+    /* The anchor deliberately EXCLUDES the opening bracket of the literal:
+       `$books[]` has its own (empty) bracket pair, which the scan must not
+       mistake for the array's. */
+    const rowLiteral = phpArrayLiteralAfter(liBlock, /\$books\[\]\s*=\s*/);
+    const serverFields = rowLiteral !== null
+        ? Array.from(rowLiteral.matchAll(/'(\w+)'\s*=>/g)).map((m) => m[1]).sort()
         : [];
     const clientFields = Array.from(new Set(
         Array.from(metaSrc.matchAll(/\bb\.(\w+)\b/g)).map((m) => m[1])

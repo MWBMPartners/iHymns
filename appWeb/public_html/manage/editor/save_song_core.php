@@ -401,7 +401,8 @@ function editorSaveSongCore(): array
             }
             $action = $prevRow === null ? 'create' : 'edit';
 
-            /* #1679 A13a — ONE snapshot decides the songbook column.
+            /* #1679 A13a — the LATER snapshot decides the songbook column, and
+             * everything derived from it is re-derived together.
              *
              * ELI5: when the save didn't mention a songbook we keep the song
              * where it is. We read "where it is" twice — once before the
@@ -418,6 +419,25 @@ function editorSaveSongCore(): array
              * the UPSERT writes SongbookAbbr unconditionally — so the column and
              * the SongId prefix would disagree, which is #1679's exact defect
              * arrived at by omission rather than by asking.
+             *
+             * WHAT THIS DOES **NOT** ACHIEVE (#1691 §1b — an earlier revision of
+             * this comment claimed "ONE snapshot decides", which overstated it).
+             * $prevRow is a PLAIN `SELECT … LIMIT 1`, not `SELECT … FOR UPDATE`,
+             * so under InnoDB REPEATABLE READ it is a consistent-snapshot read:
+             * a concurrent move that COMMITS after this transaction's first read
+             * is still invisible to it, and this save's unconditional UPSERT
+             * still last-writer-wins over that move. What the re-derivation
+             * actually buys is narrower and real: this save can no longer
+             * disagree with ITSELF — both derived values now come from the same
+             * single read, closing the window between the pre-transaction read
+             * and the transaction (previously open across the mint, the probes
+             * and everything above). Serialising against a genuinely concurrent
+             * move would need a locking read, which is a deliberate non-goal
+             * here: the residual window is commit-vs-commit on the same row,
+             * the loser is a curator racing another curator over the same song
+             * within milliseconds, and the failure is an overwrite both can see
+             * — not the silent self-inconsistency M2 removed.
+             * https://dev.mysql.com/doc/refman/8.0/en/innodb-consistent-read.html
              *
              * Only for a save that did NOT send `songbook` (one that did is an
              * explicit instruction and is the relocate branch's business).

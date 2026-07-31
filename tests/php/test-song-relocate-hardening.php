@@ -134,6 +134,49 @@ declare(strict_types=1);
  * `code` view, so prose cannot satisfy them; they are named here so their tick is
  * not read as more than it is.
  *
+ * WHAT #1691 MOVED OUT OF THIS FILE (D2–D5, 2026-07-31)
+ * -----------------------------------------------------
+ * A second adversarial pass defeated four MORE of this file's guards against
+ * the real tree, all the same disease: source inspection standing in for a
+ * property that could have been CALLED.
+ *
+ *  D2   the save-core catch derivation filtered on the SPELLING `$_e`, so
+ *       renaming one catch to the conventional `$e` dropped it from the
+ *       derived set and its re-throw could be deleted, green. Demonstrated:
+ *       the old assertion PASSED with a swallowing `catch (\Throwable $e)` in
+ *       the transaction. The filter is now POSITIONAL (every catch between
+ *       begin_transaction() and the commit) and the guard must name the
+ *       variable read out of each head; a non-capturing `catch (\Throwable)`
+ *       counts as unguarded because it cannot re-throw what it caught.
+ *  D3   "every gated statement is INSIDE the existence gate" never tested the
+ *       gate's POLARITY — inverting the `if` (block runs only when the table
+ *       is ABSENT) kept containment true and the suite green.
+ *  D4   "the gate SHORT-CIRCUITS" accepted any `return` token between gate
+ *       and statement. HONESTY NOTE — the defeat is narrower than the finding
+ *       stated: with the unrelated `if ($songId === '') { return false; }`
+ *       placed BEFORE the (answer-discarded) gate call, the old window check
+ *       actually went red, because the window started at the gate. Placed
+ *       BETWEEN the gate and the SELECT it passed exactly as reported, with
+ *       the SELECT running ungated. One demonstrable direction is enough —
+ *       and the behavioural replacement catches both placements identically,
+ *       because the double throws 1146 the moment the ungated statement is
+ *       prepared.
+ *  D5   nothing pinned WHICH probe a gate asks — the strict
+ *       songRelocateTableExists() could be swapped for the swallowing
+ *       songRedirectsTableReady() with the suite green, silently skipping the
+ *       restriction rewrite when a probe breaks.
+ *
+ * The conversion (the test-transaction-fatal.php rule — when a property lives
+ * in a function, TEST THE FUNCTION): steps 5/5b were extracted into
+ * songRelocateRewriteRestrictions() / songRelocateRewriteEntries(), whose gate
+ * is an early `return false`, and tests/php/test-song-relocate-gates.php now
+ * drives them — plus songRelocateIdTaken() — with a RECORDING mysqli double
+ * across three settled-memo child processes (absent / present / probe-fails).
+ * Polarity is a return value there, the short-circuit is the recorded
+ * statement stream, and probe identity is the failure contract. What stays
+ * HERE is only what has no runtime handle: the delegation, its ordering, the
+ * call-site non-swallow, and the SQL shapes.
+ *
  * WHAT #1690 MOVED, AND WHY ONE ASSERTION IS NOW BEHAVIOURAL
  * ---------------------------------------------------------
  * `songRelocateAssertCascades()` was split into three layers — a memoised
@@ -237,29 +280,12 @@ function enclosedByHead(string $code, int $pos, string $headRe): bool
     return false;
 }
 
-/**
- * A pattern matching "the answer to this probe" — the CALL itself, plus any
- * variable the unit assigns it to. DERIVED from the unit, never typed.
- *
- * ELI5: `if (tableExists(…))` and `$ready = tableExists(…); if ($ready)` are the
- * same guard written two ways; accept both.
- *
- * Detail: rule #34's second failure mode. Hoisting a probe to a local is an
- * ordinary refactor, and a containment check that only knows the inline form
- * would go red on correct code — after which it gets weakened or deleted rather
- * than fixed. What must stay RED is hoisting the probe and DROPPING the
- * condition, which is a different edit and still has no matching head.
- *
- * @param string $callRe an un-delimited regex for the probe call.
- */
-function probeAcceptors(string $code, string $callRe): string
-{
-    $alts = [$callRe];
-    if (preg_match_all('/(\$\w+)\s*=\s*' . $callRe . '/', $code, $m)) {
-        foreach (array_unique($m[1]) as $v) { $alts[] = preg_quote($v, '/') . '\b'; }
-    }
-    return '/(?:' . implode('|', $alts) . ')/';
-}
+/* NB: a `probeAcceptors()` helper used to live here — it derived "the answer to
+   this probe, or any variable it was hoisted into" for the gate-containment
+   checks. Those checks were the #1691 D3/D4 finding (they ignored the gate's
+   POLARITY), and their properties moved into behavioural assertions in
+   tests/php/test-song-relocate-gates.php, so the helper went with them rather
+   than sitting here unused and reading like coverage. */
 
 /**
  * Is $pos inside a `try`/`catch` that is itself INSIDE the block matching
@@ -628,71 +654,77 @@ ok('and it asks that helper in STRICT mode (a broken probe must not read as "fre
 /* A12 — the assertion this replaces read
    `strpos($taken['code'], '@STR@', $gatePos) !== false`, i.e. "is there any
    opaque string literal later in this function?". That is unconditionally true
-   and could not fail for the ordering it named. Two real properties instead:
-   the statement comes after the gate, AND the gate actually short-circuits. */
+   and could not fail for the ordering it named. The ordering half is kept
+   below; the SHORT-CIRCUIT half is not asserted here any more (#1691 D4) — its
+   structural form ("a `return` token between the gate and the statement") was
+   itself defeatable, because ANY return satisfied it: an unrelated
+   `if ($songId === '') { return false; }` kept it green with the gate's early
+   return deleted and the SELECT running ungated. The short-circuit is a
+   BEHAVIOURAL property with a runtime handle, so it now lives in
+   tests/php/test-song-relocate-gates.php, which CALLS songRelocateIdTaken()
+   against a recording mysqli double and asserts: table absent → false with NO
+   tblSongRedirects statement prepared; probe failure → the strict throw
+   propagates (a swap to the swallowing probe answers false instead and goes
+   red); table present → the claim check really runs. */
 $gateAt      = strpos($taken['code'], 'songRedirectsTableReady(');
 $redirectSql = markerPositions($taken['code'], '/@SQL:SELECT:tblSongRedirects@/');
 ok('the redirect probe is only PREPARED after the table gate has been asked',
    $gateAt !== false && $redirectSql !== [] && $gateAt < $redirectSql[0],
    'gate at ' . var_export($gateAt, true) . ', redirect SELECT at '
    . var_export($redirectSql[0] ?? null, true));
-/* Ordering alone is not enough — a gate whose answer is DISCARDED is decoration,
-   and asking it is exactly what the defeated version confirmed. Two shapes are
-   correct and both are accepted (rule #34): an early return between the gate and
-   the statement (`if (!ready) { return false; }`, what the code does today), or
-   the statement nested inside `if (ready) { … }`. What is rejected is a gate
-   whose answer leads to neither — after which an install without
-   tblSongRedirects reaches the SELECT and throws under mysqli STRICT. */
-$gateReady    = probeAcceptors($taken['code'], 'songRedirectsTableReady\s*\(');
-$betweenGate  = ($gateAt !== false && $redirectSql !== [] && $gateAt < $redirectSql[0])
-    ? substr($taken['code'], $gateAt, $redirectSql[0] - $gateAt)
-    : '';
-ok('and that gate SHORT-CIRCUITS the probe (early return, or the probe nested inside it)',
-   (bool)preg_match('/\breturn\b/', $betweenGate)
-   || ($redirectSql !== [] && enclosedByHead($taken['code'], $redirectSql[0], $gateReady)),
-   'the gate is asked and its answer thrown away, so an install without '
-   . 'tblSongRedirects reaches the SELECT and throws under mysqli STRICT');
 
 /* ------------------------------------------------ F3 — tblSongbookEntries -- */
 
 echo "\nF3 — the move carries the tblSongbookEntries home row with it\n";
 
-ok('songRelocate() writes tblSongbookEntries',
-   sqlHas($move, '/\b(UPDATE|DELETE\s+FROM)\s+tblSongbookEntries\b/i'),
+/* #1691 D3/D5 — steps 5 and 5b were EXTRACTED into boolean-returning helpers
+   (songRelocateRewriteRestrictions / songRelocateRewriteEntries) so the gate
+   decisions could be CALLED instead of read. The containment check this section
+   used to make was defeated two ways an adversarial pass demonstrated: it never
+   looked at the gate's POLARITY (inverting the `if` so the writes ran only when
+   the table was ABSENT stayed green), and nothing pinned WHICH probe the gate
+   asks (swapping the strict songRelocateTableExists() for the swallowing
+   songRedirectsTableReady() was invisible). Both properties now have a runtime
+   handle and are asserted BEHAVIOURALLY, with a recording mysqli double, in
+   tests/php/test-song-relocate-gates.php: table absent → FALSE and no
+   statement issued; present → TRUE and exactly the expected statements; probe
+   failure → the throw PROPAGATES, which the swallowing probe cannot satisfy.
+   What remains here is the source-shaped residue with no runtime handle
+   (the class test-transaction-fatal.php's header allows): that songRelocate()
+   DELEGATES to the helpers, in the right order, unswallowed — and the SHAPE of
+   the SQL inside them. */
+$restrict = $relocate['songRelocateRewriteRestrictions'] ?? EMPTY_UNIT;
+$entries  = $relocate['songRelocateRewriteEntries'] ?? EMPTY_UNIT;
+
+ok('songRelocateRewriteEntries() writes tblSongbookEntries',
+   sqlHas($entries, '/\b(UPDATE|DELETE\s+FROM)\s+tblSongbookEntries\b/i'),
    'without it the junction row reads "(old book, NEW id, old number, IsHome=1)" — '
    . 'it claims the song\'s home is the book it just left, and uq_book_number keeps '
    . 'the vacated slot occupied in a book the song is no longer in');
 ok('it moves the home row into the new book and clears SongNumber',
-   sqlHas($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+SongbookAbbr\s*=\s*\?,\s*SongNumber\s*=\s*NULL/i'));
+   sqlHas($entries, '/UPDATE\s+tblSongbookEntries\s+SET\s+SongbookAbbr\s*=\s*\?,\s*SongNumber\s*=\s*NULL/i'));
 ok('it handles a song that is ALREADY a member of the target book (uq_book_song)',
-   sqlHas($move, '/DELETE\s+FROM\s+tblSongbookEntries/i')
-   && sqlHas($move, '/UPDATE\s+tblSongbookEntries\s+SET\s+IsHome\s*=\s*1/i'),
+   sqlHas($entries, '/DELETE\s+FROM\s+tblSongbookEntries/i')
+   && sqlHas($entries, '/UPDATE\s+tblSongbookEntries\s+SET\s+IsHome\s*=\s*1/i'),
    'multi-book membership is this table\'s whole point, so the target may already '
    . 'hold a row for this song; moving the old home row onto it would abort the '
    . 'entire save on a duplicate key');
 
-/* A12 — CONTAINMENT, not ordering. Every tblSongbookEntries statement must sit
-   INSIDE the existence gate. The version this replaces only checked that the
-   literal 'tblSongbookEntries' appeared in an earlier list entry than the SQL,
-   which survives hoisting the probe to a variable and deleting the `if` — after
-   which, on an install where #1044 never ran, the read throws under mysqli
-   STRICT inside the CALLER's transaction and rolls back the entire song save. */
-$entryStmts = markerPositions($move['code'], '/@SQL:(?:SELECT|UPDATE|DELETE):tblSongbookEntries@/');
-$entryGate  = probeAcceptors($move['code'], "songRelocateTableExists\s*\(\s*\\\$db\s*,\s*'tblSongbookEntries'\s*\)");
-$ungated    = [];
-foreach ($entryStmts as $p) {
-    if (!enclosedByHead($move['code'], $p, $entryGate)) { $ungated[] = $p; }
-}
-ok('every tblSongbookEntries statement is INSIDE the existence gate (migrations are web-run; #1044 may be absent)',
-   $entryStmts !== [] && $ungated === [],
-   count($entryStmts) . ' statement(s) found, ' . count($ungated) . ' outside the '
-   . "songRelocateTableExists(\$db, 'tblSongbookEntries') block");
+/* The delegation itself — a helper nobody calls protects nothing, and a funnel
+   check cannot see it (it asks who calls songRelocate, not what songRelocate
+   does). Read on `code`, so a comment naming the helper cannot satisfy it. */
+$entriesCallAt = strpos($move['code'], 'songRelocateRewriteEntries(');
+ok('songRelocate() delegates step 5b to songRelocateRewriteEntries()',
+   $entriesCallAt !== false,
+   'deleting or re-inlining the call is how the junction rewrite stops running '
+   . 'on a move — and re-inlining also puts the gate back where no test can '
+   . 'call it (#1691 D3)');
 
-/* Ordering, now within ONE view rather than across two differently-populated
-   lists: the re-key marker must precede the first junction statement. */
+/* Ordering: the re-key marker must precede the CALL — the helper reads and
+   writes the junction by the NEW id, which only exists once step 4 cascaded. */
 $rekeyAt = markerPositions($move['code'], '/@SQL:UPDATE:tblSongs@/');
-ok('and it runs AFTER the re-key, so SongId has already cascaded',
-   $rekeyAt !== [] && $entryStmts !== [] && $rekeyAt[0] < $entryStmts[0],
+ok('and calls it AFTER the re-key, so SongId has already cascaded',
+   $rekeyAt !== [] && $entriesCallAt !== false && $rekeyAt[0] < $entriesCallAt,
    're-keying second would leave the entries rows pointing at the dead id');
 
 /* ------------------------------------ M3 — the restriction rewrite is fatal -- */
@@ -700,21 +732,41 @@ ok('and it runs AFTER the re-key, so SongId has already cascaded',
 echo "\nM3 — a restriction that cannot follow the song blocks the move\n";
 
 ok('the content-restriction rewrite is still performed',
-   sqlHas($move, '/UPDATE\s+tblContentRestrictions\s+SET\s+EntityId/i'));
+   sqlHas($restrict, '/UPDATE\s+tblContentRestrictions\s+SET\s+EntityId/i'));
+$restrictCallAt = strpos($move['code'], 'songRelocateRewriteRestrictions(');
+ok('and songRelocate() delegates step 5 to songRelocateRewriteRestrictions()',
+   $restrictCallAt !== false,
+   'the rewrite lives in the helper now (#1691 D3/D5) — a move that never calls '
+   . 'it leaves every restriction on the dead id');
 
 /* A4 — STRUCTURE, not one sentence. The check this replaces was
    `strpos($sql, 'content-restriction rewrite failed') === false`: exactly one
    wording, so the swallow could be restored with the message reworded and the
-   suite stayed green. What actually matters is that the statement is not inside
-   a try/catch — asked of the enclosing block chain, stopping at the function
-   body so the (legitimate) SongCount try later in the function is irrelevant.
+   suite stayed green. Since the #1691 extraction the fatality claim has two
+   halves: the HELPER must not swallow (behaviourally proven — the gates test
+   makes the UPDATE throw and asserts propagation — and pinned structurally here
+   so a red names the exact edit), and the CALL SITE must not wrap it either,
+   which only this file can see. swallowedWithin() walks the enclosing block
+   chain out to the unit body; for the call-site half the (legitimate) SongCount
+   try later in songRelocate() is a SIBLING, so it is never in that chain.
    NB "no `catch` between this statement and the end of the unit" would be the
    wrong test: step 7's cache recompute has one, correctly. */
-$restrictAt = markerPositions($move['code'], '/@SQL:UPDATE:tblContentRestrictions@/');
-ok('the restriction rewrite is not wrapped in a try/catch',
-   $restrictAt !== [] && !swallowedWithin($move['code'], $restrictAt[0], null),
+$restrictAt = markerPositions($restrict['code'], '/@SQL:UPDATE:tblContentRestrictions@/');
+ok('the restriction rewrite is not wrapped in a try/catch inside its helper',
+   $restrictAt !== [] && !swallowedWithin($restrict['code'], $restrictAt[0], null),
    'a restriction left on the dead id stops applying — withheld content becomes '
    . 'readable, the move commits anyway, and error_log is the only trace');
+ok('…and neither rewrite helper contains ANY try block',
+   $restrict['code'] !== '' && $entries['code'] !== ''
+   && phpUnitsCountToken($restrict['code'], T_TRY) === 0
+   && phpUnitsCountToken($entries['code'], T_TRY) === 0,
+   'every statement in both helpers is load-bearing; a catch makes its failure '
+   . 'invisible while the move commits regardless (the original M3 defect)');
+ok('…and songRelocate() does not wrap either CALL in a try/catch',
+   $restrictCallAt !== false && !swallowedWithin($move['code'], $restrictCallAt, null)
+   && $entriesCallAt !== false && !swallowedWithin($move['code'], $entriesCallAt, null),
+   'wrapping the call re-creates M3 one frame up — the helper throws, the '
+   . 'caller logs, the move commits without its restrictions');
 
 /* One try/catch remains in songRelocate: the SongCount recompute (F8 below).
    Counting is blunt but it is the property that matters — re-wrapping any other
@@ -770,31 +822,56 @@ ok('deadlock (1213) and lock-wait timeout (1205) are what that predicate re-thro
    . 'the caller\'s commit(), which commits nothing and answers {ok:true, songId:<new>} '
    . 'for a song that no longer exists under that id');
 
-/* The re-throw is only worth anything end-to-end. DERIVED, not listed: every
-   `catch (\Throwable $_e) {` inside the save core — probes, revisions, SongCount,
-   external links, works, translations — sits between begin_transaction() and
-   commit(), so each must OPEN with the predicate. A new best-effort catch added
-   later is covered automatically, which a typed list of line numbers would not
-   be (rule #34).
-   Bounded by the catch block's own braces (A12): the 120-character window this
-   replaces both truncated a long first statement and, on a short catch, ran into
-   whatever followed the block. */
+/* The re-throw is only worth anything end-to-end. DERIVED, not listed — and
+   derived from STRUCTURE, not from a SPELLING (#1691 D2): the version this
+   replaces filtered the catch list on `strpos($c['head'], '$_e')`, which is a
+   hardcoded list wearing a derivation's clothes. Rename ONE catch to the
+   conventional `catch (\Throwable $e)` — a spelling this very file uses — and
+   that catch left the derived set entirely, so deleting its re-throw stayed
+   green. The set is now positional: EVERY catch that opens between
+   begin_transaction() and the commit — the span where a swallow turns a
+   rolled-back transaction into a reported success — whatever its variable is
+   called. The caught variable is read out of each head and the guard must name
+   THAT variable; a non-capturing `catch (\Throwable)` (legal since PHP 8.0)
+   binds nothing, cannot re-throw what it caught, and is therefore correctly
+   counted as unguarded rather than skipped.
+   The boundaries fail LOUDLY: if begin/commit cannot be located the scope
+   assertion goes red instead of the filter silently matching nothing.
+   Bounded by the catch block's own braces (A12): the 120-character window an
+   earlier version used both truncated a long first statement and, on a short
+   catch, ran into whatever followed the block.
+   https://www.php.net/manual/en/language.exceptions.php (non-capturing catch) */
+$txnBegin  = strpos($save['code'], 'begin_transaction(');
+$txnCommit = strrpos($save['code'], '->commit(');
+ok('the transaction span (begin_transaction … commit) was located in the save core',
+   $txnBegin !== false && $txnCommit !== false && $txnBegin < $txnCommit,
+   'begin at ' . var_export($txnBegin, true) . ', commit at ' . var_export($txnCommit, true)
+   . ' — without both, "every catch inside the transaction" cannot be derived and '
+   . 'this section would be vouching for an empty set');
 $saveCatches = array_values(array_filter(
     phpUnitsCatchBlocks($save['code']),
-    static fn(array $c): bool => strpos($c['head'], '$_e') !== false
+    static fn(array $c): bool =>
+        $txnBegin !== false && $txnCommit !== false
+        && $c['open'] > $txnBegin && $c['open'] < $txnCommit
 ));
 $unguarded = 0;
 foreach ($saveCatches as $c) {
-    if (!preg_match('/^\s*if\s*\(\s*songRelocateIsTransactionFatal\s*\(\s*\$_e\s*\)\s*\)\s*\{?\s*throw\b/', $c['body'])) {
+    /* ELI5: find out what this catch called the exception, then demand the
+       guard re-throws exactly that.
+       Detail: `$vm[1]` is the LAST `$var` before the head's closing paren, so a
+       typed multi-catch (`catch (A | B $e)`) still yields its variable. */
+    $var = preg_match('/(\$\w+)\s*\)\s*\{$/', trim($c['head']), $vm) ? preg_quote($vm[1], '/') : null;
+    if ($var === null
+        || !preg_match('/^\s*if\s*\(\s*songRelocateIsTransactionFatal\s*\(\s*' . $var . '\s*\)\s*\)\s*\{?\s*throw\b/', $c['body'])) {
         $unguarded++;
     }
 }
-ok('every best-effort catch in the save core re-throws a transaction-fatal error FIRST',
+ok('every best-effort catch inside the transaction re-throws a transaction-fatal error FIRST',
    $saveCatches !== [] && $unguarded === 0,
-   count($saveCatches) . ' catch(\\Throwable $_e) block(s) found, ' . $unguarded . ' without the '
-   . 'guard as their first statement. songRelocate() re-throwing 1213/1205 is undone by '
-   . 'ANY later swallow before commit(): the commit then succeeds trivially and the '
-   . 'endpoint answers ok:true naming a songId that does not exist');
+   count($saveCatches) . ' catch block(s) found between begin_transaction() and commit(), '
+   . $unguarded . ' without the guard as their first statement. songRelocate() re-throwing '
+   . '1213/1205 is undone by ANY later swallow before commit(): the commit then succeeds '
+   . 'trivially and the endpoint answers ok:true naming a songId that does not exist');
 
 /* ------------------------------------------- M2 — an omitted key is not a move -- */
 

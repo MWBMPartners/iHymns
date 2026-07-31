@@ -1044,6 +1044,176 @@ function songRelocateMintId(\mysqli $db, string $abbr): array
 }
 
 /**
+ * Step 5 of a move — carry the song's CONTENT RESTRICTIONS to its new id
+ * (#1679 M3, extracted #1691 D3/D5).
+ *
+ * ELI5: rules like "only licensed members may read this song" are filed under
+ * the song's id. The move gives the song a new id, so the filing must move too
+ * — a rule left under the old id silently stops applying.
+ *
+ * WHY THIS IS ITS OWN FUNCTION — A RUNTIME HANDLE, NOT REUSE (#1691 D3/D5)
+ * ------------------------------------------------------------------------
+ * As an inline block inside songRelocate() the two properties that matter here
+ * had only source-inspection guards, and an adversarial pass defeated both:
+ * the "writes are inside the existence gate" check ignored the gate's POLARITY
+ * (inverting the `if` so the block ran only when the table was ABSENT stayed
+ * green), and nothing pinned WHICH probe the gate asks — swapping the strict
+ * `songRelocateTableExists()` for the swallowing `songRedirectsTableReady()`
+ * would "silently skip the content-restriction rewrite, i.e. turn withheld
+ * content readable" (this file's own words) with the suite green. Giving the
+ * gate a boolean return puts both properties where a test can CALL them:
+ * `tests/php/test-song-relocate-gates.php` drives this function with a
+ * recording mysqli double and asserts table-absent → FALSE with no UPDATE
+ * issued, table-present → TRUE with exactly the expected UPDATE, and
+ * probe-failure → the throw PROPAGATES (which the swallowing probe cannot
+ * satisfy). It also removes the choice of probe from every call site — the
+ * structural fix `test-optional-table-probes.php`'s tail note asked for:
+ * "reach the gate through one named helper, so there is no call site left to
+ * swap".
+ *
+ * DELIBERATELY FATAL (#1679 M3) — no try/catch on this path, here or around
+ * the call. This used to be wrapped in `try { … } catch (\Throwable) {
+ * error_log(…); }`, on the reasoning that a cache-ish follow-up must never
+ * roll back a legitimate curation action. That reasoning does not survive
+ * reading what the row IS: `checkContentAccess()` looks EntityId up directly
+ * and never follows redirects, so a restriction left on a dead id stops
+ * applying — withheld content silently becomes readable and the only trace is
+ * error_log. A move that cannot carry its restrictions must not commit; the
+ * caller's transaction rolls it back.
+ *
+ * @param  \mysqli $db
+ * @param  string  $oldSongId The id the restriction rows still name.
+ * @param  string  $newSongId The id they must name once the move commits.
+ * @return bool TRUE = the rewrite ran; FALSE = tblContentRestrictions does not
+ *              exist on this install (nothing to carry — a minimal install has
+ *              no restrictions to lose).
+ * @throws \mysqli_sql_exception when the probe or the UPDATE fails — the
+ *         caller's transaction must roll the move back, never commit without
+ *         the rewrite.
+ */
+function songRelocateRewriteRestrictions(\mysqli $db, string $oldSongId, string $newSongId): bool
+{
+    /* ELI5: if this install never created the restrictions table, there is
+       nothing to carry — say so and stop.
+       Detail: the table is optional (migrations are web-run) and mysqli STRICT
+       throws on a missing table (the #1228 lesson) — so the write is gated on
+       the STRICT probe, which re-throws a probe failure rather than answering
+       "absent". A false-because-the-probe-broke would skip the one
+       security-relevant step of the move. The early return IS the gate: the
+       UPDATE below is unreachable unless the probe answered "present". */
+    if (!songRelocateTableExists($db, 'tblContentRestrictions')) { return false; }
+
+    /* ELI5: re-file every "who may see this song" rule under the new id.
+       Detail: EntityId is polymorphic VARCHAR with no FK (schema.sql), so the
+       step-4 cascade cannot reach it; parameter ORDER is load-bearing — SET to
+       the NEW id, matched on the OLD one. The recording double in
+       test-song-relocate-gates.php pins that order behaviourally. */
+    $rs = $db->prepare(
+        "UPDATE tblContentRestrictions SET EntityId = ? WHERE EntityType = 'song' AND EntityId = ?"
+    );
+    $rs->bind_param('ss', $newSongId, $oldSongId);
+    $rs->execute();
+    $rs->close();
+
+    return true;
+}
+
+/**
+ * Step 5b of a move — re-home the song's tblSongbookEntries junction row
+ * (#1679 F3, extracted #1691 D3/D5 — same reasoning as
+ * songRelocateRewriteRestrictions() above: the gate's polarity and probe
+ * identity needed a runtime handle, so the gate became an early return whose
+ * boolean a test can assert).
+ *
+ * ELI5: the membership table still says the song's home is the book it just
+ * left. Point the home row at the new book — and if the song was already a
+ * member of the new book, promote that row instead of colliding with it.
+ *
+ * Detail: `tblSongbookEntries.SongId` cascaded with everything else in step 4,
+ * but `SongbookAbbr` / `SongNumber` / `IsHome` are not reachable from a SongId
+ * change, so without this the home row reads "(old book, NEW id, old number,
+ * IsHome=1)": the junction claims the song's home is the book it just left,
+ * and `uq_book_number` keeps the vacated slot occupied in a book the song is
+ * no longer in. The table is documented "not yet read by the app", which makes
+ * the damage LATENT rather than harmless — once something does read it there
+ * is no way to tell a stale home entry from a genuine multi-book membership.
+ *
+ * `SongNumber` follows `tblSongs.Number` to NULL (the move policy in the file
+ * doc-block); multiple NULLs coexist happily under a MySQL UNIQUE index, so
+ * `uq_book_number` cannot be tripped by the clear.
+ * https://dev.mysql.com/doc/refman/8.0/en/create-index.html
+ *
+ * `uq_book_song (SongbookAbbr, SongId)` CAN be tripped, though: multi-book
+ * membership is this table's whole point, so the song may already have a
+ * (non-home) row in the TARGET book. Moving the old home row on top of it
+ * would abort the whole save on a duplicate key. So that case is detected and
+ * handled the other way round — delete the stale old-book home row and promote
+ * the row that is already in the target book. Both branches leave exactly one
+ * row in the target with IsHome=1 and none in the old book, which is what "the
+ * song moved" means for a junction whose old-book row was, by uq_book_song,
+ * necessarily the home row.
+ *
+ * Existence-gated (migrations are web-run; #1044 may not have been applied
+ * here) but NOT try/catch'd — the invariant is the point, and a rewrite that
+ * cannot run must roll the move back with it.
+ *
+ * @param  \mysqli $db
+ * @param  string  $targetAbbr The destination book (already validated by the
+ *                             caller against tblSongbooks).
+ * @param  string  $newSongId  The song's NEW id — step 4 has already cascaded
+ *                             the junction's SongId column to it.
+ * @return bool TRUE = the rewrite ran; FALSE = tblSongbookEntries does not
+ *              exist on this install.
+ * @throws \mysqli_sql_exception when the probe or any statement fails — the
+ *         caller's transaction rolls the move back.
+ */
+function songRelocateRewriteEntries(\mysqli $db, string $targetAbbr, string $newSongId): bool
+{
+    /* Same gate discipline as the restrictions rewrite: STRICT probe, early
+       return, no statement reachable on an un-migrated install. */
+    if (!songRelocateTableExists($db, 'tblSongbookEntries')) { return false; }
+
+    /* ELI5: is the song already a member of the destination book?
+       Detail: probed FIRST because the answer picks between two write shapes —
+       moving the home row versus promoting an existing membership row. */
+    $tgt = $db->prepare('SELECT Id FROM tblSongbookEntries WHERE SongbookAbbr = ? AND SongId = ? LIMIT 1');
+    $tgt->bind_param('ss', $targetAbbr, $newSongId);
+    $tgt->execute();
+    $tgtRow = $tgt->get_result()->fetch_assoc();
+    $tgt->close();
+
+    if ($tgtRow === null) {
+        /* No membership row in the target yet — the home row simply moves. */
+        $se = $db->prepare(
+            'UPDATE tblSongbookEntries SET SongbookAbbr = ?, SongNumber = NULL
+              WHERE SongId = ? AND IsHome = 1'
+        );
+        $se->bind_param('ss', $targetAbbr, $newSongId);
+        $se->execute();
+        $se->close();
+    } else {
+        /* The song is already a member of the target book. Drop the row that
+           made the OLD book its home first (so uq_book_song is free), then
+           promote the existing target row. Order matters: promoting first
+           would leave two IsHome=1 rows in flight. */
+        $del = $db->prepare(
+            'DELETE FROM tblSongbookEntries WHERE SongId = ? AND IsHome = 1 AND SongbookAbbr <> ?'
+        );
+        $del->bind_param('ss', $newSongId, $targetAbbr);
+        $del->execute();
+        $del->close();
+
+        $promoteId = (int)$tgtRow['Id'];
+        $pr = $db->prepare('UPDATE tblSongbookEntries SET IsHome = 1, SongNumber = NULL WHERE Id = ?');
+        $pr->bind_param('i', $promoteId);
+        $pr->execute();
+        $pr->close();
+    }
+
+    return true;
+}
+
+/**
  * Move a song into another songbook, re-keying its SongId and leaving a
  * permalink redirect behind (#1679).
  *
@@ -1143,90 +1313,20 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
     $mv->close();
 
     /* 5 — the first soft reference the cascade cannot reach and the redirect
-       cannot cover: content restrictions are looked up by EntityId directly
-       (includes/content_access.php), so leaving them on the dead id silently
-       DROPS the restriction. Existence-probed because the table is optional on
-       a minimal install and mysqli STRICT would throw (the #1228 lesson).
+       cannot cover: content restrictions (#1679 M3). Deliberately FATAL and
+       deliberately NOT try/catch'd here either — the gate, the write and the
+       full reasoning live in songRelocateRewriteRestrictions() above, where
+       tests/php/test-song-relocate-gates.php can CALL them (#1691 D3/D5).
+       The return value ("did the table exist?") is not consulted: a minimal
+       install with no restrictions table has nothing to carry, which is not a
+       condition the move needs to react to. */
+    songRelocateRewriteRestrictions($db, $oldSongId, $newSongId);
 
-       DELIBERATELY FATAL (#1679 M3). This used to be wrapped in
-       `try { … } catch (\Throwable) { error_log(…); }`, on the reasoning that a
-       cache-ish follow-up must never roll back a legitimate curation action.
-       That reasoning does not survive reading what the row IS: a restriction
-       left on a dead id stops applying, so the ONE security-relevant step in
-       this function was the one made non-fatal — withheld content silently
-       becomes readable and the only trace is error_log. A move that cannot
-       carry its restrictions must not commit. */
-    if (songRelocateTableExists($db, 'tblContentRestrictions')) {
-        $rs = $db->prepare(
-            "UPDATE tblContentRestrictions SET EntityId = ? WHERE EntityType = 'song' AND EntityId = ?"
-        );
-        $rs->bind_param('ss', $newSongId, $oldSongId);
-        $rs->execute();
-        $rs->close();
-    }
-
-    /* 5b — the SECOND soft reference (#1679 F3). `tblSongbookEntries.SongId`
-       cascaded with everything else in step 4, but `SongbookAbbr` / `SongNumber`
-       / `IsHome` did not, so without this the home row reads "(old book, NEW id,
-       old number, IsHome=1)": the junction says the song's home is the book it
-       just left, and `uq_book_number` keeps the vacated slot occupied in a book
-       the song is no longer in. The table is documented "not yet read by the
-       app", which makes the damage LATENT rather than harmless — once something
-       does read it there is no way to tell a stale home entry from a genuine
-       multi-book membership.
-
-       `SongNumber` follows `tblSongs.Number` to NULL (the move policy above);
-       multiple NULLs coexist happily under a MySQL UNIQUE index, so
-       `uq_book_number` cannot be tripped by the clear.
-       https://dev.mysql.com/doc/refman/8.0/en/create-index.html
-
-       `uq_book_song (SongbookAbbr, SongId)` CAN be tripped, though: multi-book
-       membership is this table's whole point, so the song may already have a
-       (non-home) row in the TARGET book. Moving the old home row on top of it
-       would abort the whole save on a duplicate key. So that case is detected
-       and handled the other way round — delete the stale old-book home row and
-       promote the row that is already in the target book. Both branches leave
-       exactly one row in the target with IsHome=1 and none in the old book,
-       which is what "the song moved" means for a junction whose old-book row
-       was, by uq_book_song, necessarily the home row.
-
-       Existence-gated (migrations are web-run; #1044 may not have been applied
-       here) but NOT try/catch'd — the invariant is the point. */
-    if (songRelocateTableExists($db, 'tblSongbookEntries')) {
-        $tgt = $db->prepare('SELECT Id FROM tblSongbookEntries WHERE SongbookAbbr = ? AND SongId = ? LIMIT 1');
-        $tgt->bind_param('ss', $targetAbbr, $newSongId);
-        $tgt->execute();
-        $tgtRow = $tgt->get_result()->fetch_assoc();
-        $tgt->close();
-
-        if ($tgtRow === null) {
-            /* No membership row in the target yet — the home row simply moves. */
-            $se = $db->prepare(
-                'UPDATE tblSongbookEntries SET SongbookAbbr = ?, SongNumber = NULL
-                  WHERE SongId = ? AND IsHome = 1'
-            );
-            $se->bind_param('ss', $targetAbbr, $newSongId);
-            $se->execute();
-            $se->close();
-        } else {
-            /* The song is already a member of the target book. Drop the row that
-               made the OLD book its home first (so uq_book_song is free), then
-               promote the existing target row. Order matters: promoting first
-               would leave two IsHome=1 rows in flight. */
-            $del = $db->prepare(
-                'DELETE FROM tblSongbookEntries WHERE SongId = ? AND IsHome = 1 AND SongbookAbbr <> ?'
-            );
-            $del->bind_param('ss', $newSongId, $targetAbbr);
-            $del->execute();
-            $del->close();
-
-            $promoteId = (int)$tgtRow['Id'];
-            $pr = $db->prepare('UPDATE tblSongbookEntries SET IsHome = 1, SongNumber = NULL WHERE Id = ?');
-            $pr->bind_param('i', $promoteId);
-            $pr->execute();
-            $pr->close();
-        }
-    }
+    /* 5b — the SECOND soft reference (#1679 F3): the tblSongbookEntries home
+       row. Same extraction, same reasons — see
+       songRelocateRewriteEntries() above. Runs AFTER step 4 so the junction's
+       SongId column has already cascaded to $newSongId. */
+    songRelocateRewriteEntries($db, $targetAbbr, $newSongId);
 
     /* 6 — the forwarding note. 'move' is new vocabulary for the VARCHAR Reason
        column (rule #20: a growable vocabulary is VARCHAR, so adding a value
