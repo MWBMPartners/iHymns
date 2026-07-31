@@ -1090,6 +1090,77 @@ function validateCsrf(string $token): bool
 }
 
 /**
+ * Split a Host-header authority into [host, port] — PURE. (#1709)
+ *
+ * ELI5: turns `example.com:8080` into "example.com" plus the number 8080, and
+ * `example.com` into "example.com" plus "no port given".
+ *
+ * Detail: this is the counterpart of `parse_url(..., PHP_URL_HOST/PORT)` for a
+ * value that is an AUTHORITY rather than a URL — `$_SERVER['HTTP_HOST']` cannot
+ * be handed to parse_url() reliably (with no scheme, `example.com:8080` parses
+ * as scheme `example.com` with path `8080`). Extracted as its own function so
+ * `tests/php/test-csrf-same-origin.php` can drive it through the caller with no
+ * MySQL and no session.
+ *
+ * IPv6 literals are handled explicitly: a bracketed host may itself contain
+ * colons (`[::1]:8080`), so the port can only be the colon AFTER the closing
+ * bracket. Splitting on the last colon without this check would turn `[::1]`
+ * into host `[:` — a silent corruption that then fails every comparison.
+ * parse_url() keeps the brackets on the host component (verified), so this
+ * keeps them too and the two sides compare equal.
+ *
+ * The host is lower-cased; the port is an int, or NULL when none was stated.
+ * A non-numeric trailing `:segment` is treated as part of the host rather than
+ * as a port, so a malformed value fails the caller's comparison instead of
+ * being silently reinterpreted.
+ *
+ * @param  string $authority Raw Host-header value, e.g. `example.com:8080`.
+ * @return array{0:string,1:int|null} [lower-cased host, port or null]
+ * @link https://datatracker.ietf.org/doc/html/rfc3986#section-3.2
+ */
+function _csrfSplitAuthority(string $authority): array
+{
+    $authority = trim($authority);
+    if ($authority === '') {
+        return ['', null];
+    }
+
+    /* IPv6 literal — the host is everything up to and including `]`. */
+    if ($authority[0] === '[') {
+        $close = strpos($authority, ']');
+        if ($close === false) {
+            return ['', null];              // malformed; caller rejects
+        }
+        $hostPart = substr($authority, 0, $close + 1);
+        $rest     = substr($authority, $close + 1);
+        $port     = null;
+        if ($rest !== '' && $rest[0] === ':') {
+            $digits = substr($rest, 1);
+            if ($digits !== '' && ctype_digit($digits)) {
+                $port = (int)$digits;
+            } else {
+                return ['', null];          // garbage after the bracket
+            }
+        } elseif ($rest !== '') {
+            return ['', null];
+        }
+        return [strtolower($hostPart), $port];
+    }
+
+    $colon = strrpos($authority, ':');
+    if ($colon === false) {
+        return [strtolower($authority), null];
+    }
+    $digits = substr($authority, $colon + 1);
+    if ($digits !== '' && ctype_digit($digits)) {
+        return [strtolower(substr($authority, 0, $colon)), (int)$digits];
+    }
+    /* A colon that isn't a port (malformed) — keep it in the host so the
+       comparison fails rather than silently matching a truncated host. */
+    return [strtolower($authority), null];
+}
+
+/**
  * Robust CSRF check for same-origin AJAX writes — fixes the SPORADIC "CSRF error"
  * on long-lived editor pages (merge / delete / save).
  *
@@ -1130,17 +1201,85 @@ function validateCsrfRequest(?string $token = null): bool
         return false;
     }
 
-    /* If Origin / Referer is present it MUST match this host. */
+    /* If Origin / Referer is present it MUST match this host AND port (#1709).
+     *
+     * ELI5: the browser writes our address two different ways in two different
+     * headers — one keeps the port number, the other splits it off. Comparing
+     * them as plain text therefore never matched on any site not running on the
+     * standard port, and every save was refused.
+     *
+     * Detail: `$_SERVER['HTTP_HOST']` is the Host header VERBATIM, so it keeps
+     * the port (`example.com:8080`). `parse_url($origin, PHP_URL_HOST)` returns
+     * the host COMPONENT, which by definition excludes the port. The previous
+     * `strcasecmp($h, $host)` compared `example.com` against `example.com:8080`
+     * and could never be equal — so on a non-default port this whole
+     * same-origin route was dead and every rule-#29 caller (the editor save,
+     * duplicate-songs merge/delete, places-api, the legacy editor POST gate)
+     * fell back to needing the baked session token that route exists to stop
+     * depending on.
+     *
+     * It also silently dropped the port from the comparison ENTIRELY, so a
+     * genuinely different origin on the same host — `https://example.com:9090`
+     * against a site on 443 — was accepted. Port is part of an origin
+     * (RFC 6454 §4), so that was a real, if narrow, same-origin-policy hole.
+     * Both are fixed by comparing host AND port.
+     *
+     * The request's port is resolved against the SCHEME THE HEADER STATES, not
+     * against a scheme we infer for ourselves. That matters: behind a
+     * TLS-terminating proxy this process cannot reliably tell http from https
+     * (the very ambiguity `initSession()` above has to paper over with
+     * X-Forwarded-Proto), and guessing wrong here would reject every legitimate
+     * write. A browser builds Host and Origin from the SAME URL, so it omits
+     * the port from both or from neither — making "explicit port, else this
+     * scheme's default" an exact comparison on both sides rather than a guess.
+     *
+     * Consequence stated plainly: a cross-SCHEME origin (`http://example.com`
+     * against an https deployment) still matches, because both reduce to the
+     * same host and each side's own default port. That is deliberate — it is
+     * same-SITE, HSTS is sent site-wide, and rejecting it would mean inferring
+     * the request scheme, which is the proxy-fragile thing above. Pinned as
+     * case 17 of tests/php/test-csrf-same-origin.php so changing it is a
+     * conscious decision rather than a drift.
+     *
+     * https://datatracker.ietf.org/doc/html/rfc6454#section-4
+     * https://www.php.net/manual/en/function.parse-url.php
+     */
     $host    = (string)($_SERVER['HTTP_HOST'] ?? '');
     $sawHost = false;
     foreach (['HTTP_ORIGIN', 'HTTP_REFERER'] as $hdr) {
-        if (!empty($_SERVER[$hdr])) {
-            $h = parse_url((string)$_SERVER[$hdr], PHP_URL_HOST);
-            if ($h === null || $h === false || strcasecmp((string)$h, $host) !== 0) {
-                return false;
-            }
-            $sawHost = true;
+        if (empty($_SERVER[$hdr])) {
+            continue;
         }
+        $raw    = (string)$_SERVER[$hdr];
+        $h      = parse_url($raw, PHP_URL_HOST);
+        /* Unparseable / relative value → no positive same-origin evidence. */
+        if ($h === null || $h === false || $h === '') {
+            return false;
+        }
+        $scheme = parse_url($raw, PHP_URL_SCHEME);
+        $port   = parse_url($raw, PHP_URL_PORT);
+
+        /* Default port for the scheme the header itself declares. NULL for any
+           other scheme means "no default to fall back on", so an explicit port
+           is then required on both sides to agree. */
+        $defaultPort = match (strtolower((string)$scheme)) {
+            'https' => 443,
+            'http'  => 80,
+            default => null,
+        };
+
+        [$reqHost, $reqPort] = _csrfSplitAuthority($host);
+        if ($reqHost === '') {
+            return false;
+        }
+
+        $headerPort  = ($port !== null && $port !== false) ? (int)$port : $defaultPort;
+        $requestPort = $reqPort ?? $defaultPort;
+
+        if (strcasecmp((string)$h, $reqHost) !== 0 || $headerPort !== $requestPort) {
+            return false;
+        }
+        $sawHost = true;
     }
 
     /* (c) #1388 — BOTH absent is no longer enough on its own.
