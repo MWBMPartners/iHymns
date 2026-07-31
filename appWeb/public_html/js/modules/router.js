@@ -15,7 +15,7 @@
 
 import { toTitleCase } from '../utils/text.js';
 import { announce } from '../utils/announce.js';
-import { escapeHtml, verifiedBadge } from '../utils/html.js';
+import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 /* #1031 — shared client: attaches X-Preferred-Languages + X-Requested-With
    on every same-origin request, replacing the old global fetch monkey-patch.
@@ -29,7 +29,6 @@ import {
     STORAGE_HISTORY,
     STORAGE_SEARCH_HISTORY,
     STORAGE_RECENT_SONGBOOKS,
-    songbookLabel,
     EVT_AUTH_CHANGED,
 } from '../constants.js';
 
@@ -163,7 +162,6 @@ export class Router {
      */
     async handleCurrentRoute(opts = {}) {
         const path = window.location.pathname || '/';
-        const previousPath = this.currentPath;
         this.currentPath = path;
 
         /* Parse the route into an API request */

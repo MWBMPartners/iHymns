@@ -372,7 +372,11 @@ export class Audio {
         if (String.fromCharCode(...data.slice(0, 4)) !== 'MThd') return notes;
         pos = 4;
         readInt(4); /* header length */
-        const format = readInt(2);
+        readInt(2); /* format (0/1/2) — unused: every track is merged anyway.
+                       The CALL must stay: readInt() ADVANCES the cursor, so
+                       deleting it silently shifts every subsequent field and
+                       corrupts the whole parse. Same bare-call idiom as the
+                       header-length read above. */
         const trackCount = readInt(2);
         let ticksPerBeat = readInt(2);
 
@@ -408,7 +412,10 @@ export class Audio {
                     if (statusByte < 0xF0) runningStatus = statusByte;
                 }
 
-                const channel = statusByte & 0x0F;
+                /* A MIDI status byte packs the message type in the high
+                   nibble and the channel in the low one. This parser merges
+                   every channel into one note list, so only the type is read;
+                   the channel is deliberately not extracted. */
                 const msgType = statusByte & 0xF0;
 
                 if (msgType === 0x90) {

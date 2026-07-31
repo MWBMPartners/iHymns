@@ -127,40 +127,25 @@ jobs:
 
       # -----------------------------------------------------------------------
       # Step 4: Run ESLint on JavaScript files
-      # Checks for a local ESLint config first. If none exists, runs ESLint
-      # with a sensible default configuration via npx.
+      #
+      # HISTORY — THIS STEP LINTED NOTHING FOR ITS ENTIRE LIFE (2026-07-31).
+      # It probed for an ESLint config, found none (there never was one, in
+      # either format), and took an `else` branch that ran config-less
+      # `eslint@latest` — which does not lint, it CRASHES, because ESLint >= 9
+      # requires a flat config. That crash was then swallowed by
+      # `|| { echo "::warning::"; exit 0; }`, so the job went green.
+      #
+      # A step named "Lint JavaScript (ESLint)" reported success while
+      # executing zero checks. Same species as every other silent no-op this
+      # branch has been fixing: the tick reads as coverage.
+      #
+      # `eslint.config.js` now exists and `eslint` is a declared devDependency,
+      # so this runs for real and FAILS the build on error. The config-less
+      # fallback is deleted rather than repaired — a lint step that cannot fail
+      # is worse than no lint step, because nobody goes looking for it.
       # -----------------------------------------------------------------------
       - name: Lint JavaScript (ESLint)
-        run: |
-          JS_DIR="appWeb/public_html/js"
-
-          # Check if there are any JS files to lint
-          JS_FILES=$(find "$JS_DIR" -name '*.js' -type f 2>/dev/null || true)
-          if [ -z "$JS_FILES" ]; then
-            echo "No JavaScript files found in $JS_DIR. Skipping ESLint."
-            exit 0
-          fi
-
-          # Check for local ESLint configuration
-          HAS_CONFIG=false
-          for config in .eslintrc .eslintrc.js .eslintrc.cjs .eslintrc.json .eslintrc.yml eslint.config.js eslint.config.mjs eslint.config.cjs; do
-            if [ -f "$config" ]; then
-              HAS_CONFIG=true
-              break
-            fi
-          done
-
-          if [ "$HAS_CONFIG" = true ]; then
-            echo "ESLint config found. Running ESLint with project config."
-            npx eslint "$JS_DIR" --no-error-on-unmatched-pattern
-          else
-            echo "No ESLint config found. Running ESLint with default config via npx."
-            npx eslint@latest "$JS_DIR" --no-error-on-unmatched-pattern || {
-              echo "::warning::ESLint exited with errors. Review the output above."
-              # Don't fail the build if there's no config — this is advisory
-              exit 0
-            }
-          fi
+        run: npm run lint:js
 
       # -----------------------------------------------------------------------
       # Step 4b: Node unit tests

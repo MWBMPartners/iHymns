@@ -13,7 +13,6 @@
  *   localStorage['ihymns_auth_user']   — Cached user info (JSON)
  */
 
-import { escapeHtml } from '../utils/html.js';
 import { userHasEntitlement } from './entitlements.js';
 import { offlineQueue } from './offline-queue.js';
 import {

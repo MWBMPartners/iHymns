@@ -14,9 +14,7 @@
     "dev": "php -S localhost:8000 -t appWeb/public_html",
     "preview": "php -S localhost:8080 -t dist/web",
     "lint:js": "eslint appWeb/public_html/js/",
-    "lint:css": "stylelint appWeb/public_html/css/**/*.css",
-    "lint:html": "htmlhint appWeb/public_html/**/*.html",
-    "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
+    "lint": "npm run lint:js",
     "format": "prettier --write appWeb/public_html/",
     "test": "node tools/run-node-tests.js",
     "test:php": "find appWeb -name '*.php' -exec php -l {} \\;",
@@ -39,6 +37,7 @@
     "npm": ">=10.0.0"
   },
   "devDependencies": {
+    "eslint": "^10.1.0",
     "jsdom": "^30.0.1",
     "protobufjs": "^8.5.0"
   }
