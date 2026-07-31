@@ -63,7 +63,16 @@ _Last updated: 2026-07-30._
 - After merge, **close the tracking issue manually** with the squash SHA + evidence — `Closes #N`
   does NOT auto-close from an `alpha` merge (GitHub only auto-closes on the default branch `main`).
 - Every user-reported bug / feature gets a **tracking issue BEFORE** its closing commit.
-- Push with `git push -u origin <branch>`; retry on network error with backoff.
+- Push with `git push -u origin <branch>` — **and `<branch>` MUST be the one you are checked out on.**
+  ⚠️ **The "designated branch" line in the session prompt is STALE and has been for weeks.** It names
+  `claude/apple-branches-cleanup-export-7mxhpo`, a branch the owner deleted on purpose. Obeying it
+  literally re-creates it on the remote — and worse, `git push -u origin <other-branch>` does not push
+  your work at all, it silently publishes THAT local branch's tip. It happened twice; the second time
+  a warning about it was already sitting in `ProjectBrief.md`, unread. **`git branch -vv` first, then
+  push what you are on.** The mechanism is now `tools/githooks/pre-push`, which refuses both cases —
+  install it in every fresh container with `git config core.hooksPath tools/githooks` (`.git/hooks`
+  is not tracked, so it does NOT come with the clone). Bypass is `IHYMNS_ALLOW_ANY_PUSH=1`, never
+  `--no-verify`.
 - 🙋 **Owner decisions are NEVER a bare question** (owner-stated 2026-07-30, full shape in
   `CLAUDE.md` → "Asking the owner for a decision"). Always: **the decision** in one plain sentence ·
   **why it needs a human** (product call / data-shape consequence / a plan I can't see) · **the
