@@ -500,6 +500,14 @@ function songSoftDelete(\mysqli $db, string $songId, ?int $userId, ?string $reas
            back too; see the helper for the trigger-less-host reasoning. */
         _songSoftDeleteRecountSongbook($db, (string)($state['songbookAbbr'] ?? ''));
         $db->commit();
+        /* #1695 — AFTER the commit, never inside it. The notification is the
+           safeguard that makes curator-level deletion defensible, but it must
+           not be able to roll back or fail a delete that has already
+           succeeded; songSoftDeleteNotify() swallows everything for that
+           reason. Fired from the core so no present or future funnel can
+           forget it. */
+        songSoftDeleteNotify($db, 'deleted', $songId,
+            (string)($state['title'] ?? ''), $userId);
         return $verdict + [
             'title'    => (string)($state['title'] ?? ''),
             'songbook' => (string)($state['songbookAbbr'] ?? ''),
@@ -557,6 +565,12 @@ function songRestore(\mysqli $db, string $songId, ?int $userId): array
            mirror-image of the delete's recompute (D1). */
         _songSoftDeleteRecountSongbook($db, (string)($state['songbookAbbr'] ?? ''));
         $db->commit();
+        /* #1695 — a restore is notified too. A curator quietly undoing a
+           colleague's deletion (a copyright takedown, say) is exactly as
+           worth knowing about as the deletion was; notifying only one
+           direction would make the queue look self-clearing. */
+        songSoftDeleteNotify($db, 'restored', $songId,
+            (string)($state['title'] ?? ''), $userId);
         return $verdict + [
             'title'    => (string)($state['title'] ?? ''),
             'songbook' => (string)($state['songbookAbbr'] ?? ''),
@@ -709,5 +723,114 @@ function songPurge(\mysqli $db, string $songId, ?int $userId, ?string $redirectT
     } catch (\Throwable $e) {
         $db->rollback();
         throw $e;   /* a failed purge is FATAL to the caller, never a fake success */
+    }
+}
+
+/**
+ * Who should be told that a song was deleted or restored?
+ *
+ * ELI5: the people who can permanently destroy a song are the people who need
+ * to know one is sitting in the bin.
+ *
+ * PURE — takes the roles that hold the entitlement and the candidate users, and
+ * returns the ids to notify. No database, no globals, so the rule that decides
+ * who gets told is testable on its own.
+ *
+ * The actor is EXCLUDED: telling somebody about their own action is noise, and
+ * noise is how a safety notification gets muted. If the actor is the only
+ * eligible recipient the result is empty, which is correct — a lone
+ * administrator deleting a song does not need to be informed of it.
+ *
+ * @param string[]                                  $reviewerRoles roles holding purge_songs
+ * @param list<array{id:int, role:string}>          $users         candidate users
+ * @param int|null                                  $actorId       whoever acted
+ * @return list<int> user ids to notify, in input order, no duplicates
+ */
+function songSoftDeleteNotifyTargets(array $reviewerRoles, array $users, ?int $actorId): array
+{
+    $roles = array_flip(array_values(array_filter($reviewerRoles, 'is_string')));
+    $out   = [];
+    foreach ($users as $u) {
+        $id   = (int)($u['id'] ?? 0);
+        $role = (string)($u['role'] ?? '');
+        if ($id <= 0 || !isset($roles[$role])) { continue; }
+        if ($actorId !== null && $id === $actorId) { continue; }
+        $out[$id] = true;
+    }
+    return array_map('intval', array_keys($out));
+}
+
+/**
+ * Tell every `purge_songs` holder that a song changed deleted-state.
+ *
+ * ELI5: send the "a song was deleted" message to the people who review deletions.
+ *
+ * WHY THIS LIVES IN THE WRITE CORE, NOT IN THE ENDPOINTS (#1695)
+ * --------------------------------------------------------------
+ * This notification is not a nicety. It is the safeguard that makes handing
+ * recoverable deletion to every curator defensible — the reviewer's only signal
+ * that something is waiting. A safeguard invoked by CALLERS is a safeguard that
+ * a future caller forgets: #1694 found the delete cascade duplicated across two
+ * endpoints, and the same shape would recur here the moment a third funnel
+ * (an importer, a bulk action, an API key) grows the ability to delete.
+ * Calling it from inside songSoftDelete()/songRestore() means every present and
+ * future funnel gets it for free.
+ *
+ * BEST-EFFORT, POST-COMMIT, AND NEVER FATAL. It runs after the transaction has
+ * committed and swallows everything: a notification failure must not roll back
+ * or fail a delete that already succeeded, and must not turn a working editor
+ * into a 500 because the notifications table is missing on an un-migrated
+ * install. A missed notification is a degraded safeguard; a failed delete with
+ * a confusing error is a broken feature.
+ *
+ * @param \mysqli  $db
+ * @param string   $event  'deleted' | 'restored'
+ * @param string   $songId
+ * @param string   $title
+ * @param int|null $actorId
+ * @return int how many notifications were written (0 is a normal outcome)
+ */
+function songSoftDeleteNotify(\mysqli $db, string $event, string $songId, string $title, ?int $actorId): int
+{
+    try {
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'entitlements.php';
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'notifications.php';
+        if (!function_exists('notifyUser') || !function_exists('effectiveEntitlements')) {
+            return 0;
+        }
+
+        /* Roles come from the LIVE map, so an operator who re-aims purge_songs
+           at /manage/entitlements changes the audience with no second list. */
+        $map           = effectiveEntitlements();
+        $reviewerRoles = $map['purge_songs'] ?? ['admin', 'global_admin'];
+
+        $res = $db->query('SELECT Id, Role FROM tblUsers WHERE IsActive = 1');
+        $users = [];
+        while ($row = $res->fetch_assoc()) {
+            $users[] = ['id' => (int)$row['Id'], 'role' => (string)$row['Role']];
+        }
+
+        $targets = songSoftDeleteNotifyTargets($reviewerRoles, $users, $actorId);
+        if ($targets === []) { return 0; }
+
+        $label   = $title !== '' ? $title : $songId;
+        $isDel   = $event === 'deleted';
+        $subject = $isDel ? 'Song deleted: ' . $label : 'Song restored: ' . $label;
+        $body    = $isDel
+            ? 'It is hidden from the app but fully recoverable. Review it on Deleted songs.'
+            : 'It is visible again in the catalogue.';
+
+        $sent = 0;
+        foreach ($targets as $uid) {
+            /* ONE spelling of the event, shared with the push kind in
+               webPushKinds() — the cross-file agreement rule #35 is about. */
+            if (notifyUser($db, $uid, 'song_' . $event, $subject, $body, '/manage/deleted-songs')) {
+                $sent++;
+            }
+        }
+        return $sent;
+    } catch (\Throwable $_e) {
+        /* Deliberately swallowed — see the doc block. */
+        return 0;
     }
 }

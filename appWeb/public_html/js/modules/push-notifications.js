@@ -64,6 +64,7 @@ import { escapeHtml } from '../utils/html.js';
 import { announce } from '../utils/announce.js';
 import { apiFetch } from '../utils/api-client.js';
 import { EVT_AUTH_CHANGED } from '../constants.js';
+import { userHasEntitlement } from './entitlements.js';
 
 /* ==========================================================================
  * PURE HELPERS — imported and CALLED by tests/test-push-helpers.js
@@ -194,7 +195,7 @@ export function pushCardState(state) {
  * even if the kind list cannot be read.
  *
  * @param {string} json
- * @returns {Array<{key: string, label: string, description: string, default: boolean}>}
+ * @returns {Array<{key: string, label: string, description: string, default: boolean, requires: (string|null)}>}
  */
 export function parsePushKinds(json) {
     let parsed;
@@ -205,7 +206,42 @@ export function parsePushKinds(json) {
         label: String(parsed[key]?.label ?? key),
         description: String(parsed[key]?.description ?? ''),
         default: parsed[key]?.default === true,
+        /* #1695 — the entitlement a user must hold to RECEIVE this kind, or
+           null for "everyone". The server states the requirement; the filter is
+           applied here because the settings fragment cannot resolve the viewer
+           (see the comment in includes/pages/settings.php). */
+        requires: typeof parsed[key]?.requires === 'string' ? parsed[key].requires : null,
     }));
+}
+
+/**
+ * Drop the kinds this viewer could never actually be sent.
+ *
+ * ELI5: don't show somebody a switch for a message they will never get.
+ *
+ * Detail: `song_deleted` only goes to people who can purge songs, so offering
+ * a regular user that checkbox advertises something the app will never deliver.
+ * A kind with `requires: null` is universal and always kept, which is why the
+ * existing kinds needed no change.
+ *
+ * FAIL CLOSED on the restricted kinds and OPEN on the universal ones: if we
+ * cannot determine the role (signed out, or the entitlements module is
+ * unavailable), a restricted kind is hidden rather than shown. Hiding a switch
+ * from someone who should see it is a visible, reportable annoyance; showing a
+ * switch that silently does nothing is the failure this codebase keeps finding.
+ *
+ * @param {Array<{requires: (string|null)}>} kinds
+ * @param {string|null} role         the viewer's role, or null when signed out
+ * @param {(ent: string, role: string) => boolean} [can]  entitlement check
+ * @returns {Array} the kinds this viewer may receive
+ */
+export function filterPushKindsForViewer(kinds, role, can) {
+    if (!Array.isArray(kinds)) { return []; }
+    return kinds.filter((k) => {
+        if (!k || !k.requires) { return true; }        // universal
+        if (!role || typeof can !== 'function') { return false; }
+        try { return can(k.requires, role) === true; } catch { return false; }
+    });
 }
 
 /**
@@ -257,6 +293,10 @@ export function pushErrorForStatus(status, serverMessage = '') {
 
 let boundCard = null;
 let authListener = null;
+/* #1695 — the viewer's role, learned from EVT_AUTH_CHANGED's payload rather
+   than by importing user-auth (see the listener below). null = signed out or
+   not yet known, which makes the restricted kinds fail CLOSED. */
+let viewerRole = null;
 
 /**
  * Entry point — call after the settings fragment is in the DOM.
@@ -283,7 +323,15 @@ export function bootPushCard() {
            accumulates one listener per visit, each holding a detached card —
            the same species as the #1533 stranded playback bar. */
         if (authListener) { document.removeEventListener(EVT_AUTH_CHANGED, authListener); }
-        authListener = () => syncVisibility(card);
+        /* #1695 — capture the role from the event that ALREADY fires here.
+           `EVT_AUTH_CHANGED` carries `detail.user` (user-auth.js), so the kind
+           filter needs no import of user-auth and cannot re-create the
+           api-client ⇄ user-auth load-order cycle rule #31 documents. */
+        authListener = (e) => {
+            const r = e?.detail?.user?.role;
+            viewerRole = typeof r === 'string' && r !== '' ? r : null;
+            syncVisibility(card);
+        };
         document.addEventListener(EVT_AUTH_CHANGED, authListener);
     }
 
@@ -346,7 +394,12 @@ async function refresh(card) {
 async function renderKinds(card, subscribed) {
     const host = card.querySelector('#push-kinds');
     if (!host) { return; }
-    const kinds = parsePushKinds(card.getAttribute('data-push-kinds'));
+    /* #1695 — the server lists every kind and states which entitlement each
+       needs; the viewer filter happens HERE because the settings fragment
+       cannot resolve the current user. Signed-out or unknown role → the
+       restricted kinds are dropped (fail closed). */
+    const allKinds = parsePushKinds(card.getAttribute('data-push-kinds'));
+    const kinds = filterPushKindsForViewer(allKinds, viewerRole, userHasEntitlement);
     if (kinds.length === 0 || !subscribed) { host.innerHTML = ''; return; }
 
     let prefs = {};

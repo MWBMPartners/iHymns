@@ -400,9 +400,32 @@ declare(strict_types=1);
            configured" instead of throwing inside a fragment. */
         require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'web_push.php';
         $pushVapidPublic = (string)(getAppSetting('webpush_vapid_public', '') ?? '');
+        /* #1695 — a kind may name an entitlement its recipients must hold
+           (`song_deleted` needs `purge_songs`), because offering a regular user
+           a switch for a notification they can never receive is a promise the
+           app cannot keep.
+
+           ⚠️ THE FILTER IS APPLIED CLIENT-SIDE, DELIBERATELY. This fragment
+           CANNOT resolve the viewer: `api.php` never sets `$currentUser`, so
+           every `$currentUser` reference in this file is undefined — which is
+           also why the language-sync paragraph below still says "Sign in to
+           sync" to users who are already signed in (a pre-existing bug, tracked
+           separately; not fixed here because it is unrelated and this is not
+           the commit to change auth plumbing in).
+           Filtering here on a variable that is always null would have hidden
+           the switch from EVERYONE, admins included — shipping a control nobody
+           can ever see, which is the silent-no-op class rule #30 exists about.
+           So the server states the REQUIREMENT and the client, which does know
+           the auth state, applies it (push-notifications.js). */
         $pushKindsJson   = (string)json_encode(
             array_map(
-                static fn(array $k): array => ['label' => $k[0], 'description' => $k[1], 'default' => (bool)$k[2]],
+                static fn(array $k): array => [
+                    'label'       => $k[0],
+                    'description' => $k[1],
+                    'default'     => (bool)$k[2],
+                    /* null = everyone; a string = the entitlement required. */
+                    'requires'    => $k[3] ?? null,
+                ],
                 webPushKinds()
             ),
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES

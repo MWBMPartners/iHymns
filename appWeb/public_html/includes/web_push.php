@@ -148,6 +148,26 @@ function webPushKinds(): array
             'Delivery tests you or an administrator send to your own devices.',
             true,
         ],
+        /* #1695 — the safeguard that makes editor+ song deletion defensible.
+           Stage 3 hands recoverable deletion back to curators; this is how the
+           people who can PERMANENTLY destroy a song find out one is waiting for
+           review. It is not decoration — it is the load-bearing half of that
+           decision, which is why it fires from inside the write core rather
+           than from a caller that a future funnel could forget.
+
+           NOTE THE FOURTH ELEMENT. Every kind above is offered to everyone,
+           because everyone can meaningfully receive it. This one cannot: a
+           regular user will never be sent it, so offering them the checkbox
+           advertises a notification they can never get. The audience is stated
+           as an ENTITLEMENT rather than a role list so it tracks whatever the
+           operator has configured — the same reason `purge_songs` is a key and
+           not a hardcoded role check. */
+        'song_deleted' => [
+            'Song deletions',
+            'When a song is deleted or restored, so it can be reviewed or purged.',
+            true,
+            'purge_songs',
+        ],
     ];
 }
 
@@ -155,6 +175,39 @@ function webPushKinds(): array
 function webPushKindValid(string $kind): bool
 {
     return array_key_exists($kind, webPushKinds());
+}
+
+/**
+ * The kinds a given role may actually receive.
+ *
+ * ELI5: only show somebody the notification switches that could ever apply to
+ * them. Offering a switch for something you will never be sent is a promise the
+ * app cannot keep.
+ *
+ * Detail: a kind with no fourth element is universal (the historical shape, so
+ * existing entries need no edit). A kind WITH one names an entitlement, and the
+ * role must hold it. `userHasEntitlement()` reads the live map, so an operator
+ * who re-aims `purge_songs` at /manage/entitlements changes who is offered this
+ * automatically — no second list to keep in step (rule #35: a mechanism, not a
+ * comment saying "keep these in sync").
+ *
+ * @param string|null $role the viewer's role, or null for anonymous
+ * @return array<string, array{0:string,1:string,2:bool,3?:string}>
+ */
+function webPushKindsForRole(?string $role): array
+{
+    $out = [];
+    foreach (webPushKinds() as $key => $meta) {
+        $needs = $meta[3] ?? null;
+        if ($needs !== null) {
+            if ($role === null || !function_exists('userHasEntitlement')
+                || !userHasEntitlement($needs, $role)) {
+                continue;
+            }
+        }
+        $out[$key] = $meta;
+    }
+    return $out;
 }
 
 /**

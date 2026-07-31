@@ -224,6 +224,84 @@ if (!file_exists($sock)) {
     $db->close();
 }
 
+/* ======================================================================
+ * §3 — who gets told (#1695 notification targeting)
+ * ====================================================================== */
+
+echo "\n== §3: songSoftDeleteNotifyTargets() ==\n";
+
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/song_soft_delete.php';
+
+$roles = ['admin', 'global_admin'];
+$users = [
+    ['id' => 1, 'role' => 'user'],
+    ['id' => 2, 'role' => 'editor'],
+    ['id' => 3, 'role' => 'admin'],
+    ['id' => 4, 'role' => 'global_admin'],
+];
+
+$t = songSoftDeleteNotifyTargets($roles, $users, null);
+r_ok('only reviewer roles are notified', $t === [3, 4],
+    'got: [' . implode(', ', $t) . '] — a curator or a plain user being notified is noise');
+
+$t = songSoftDeleteNotifyTargets($roles, $users, 3);
+r_ok('the ACTOR is excluded from their own notification', $t === [4],
+    'telling somebody about their own action is how a safety notification gets muted');
+
+$t = songSoftDeleteNotifyTargets($roles, [['id' => 3, 'role' => 'admin']], 3);
+r_ok('a lone admin deleting a song notifies NOBODY', $t === []);
+
+$t = songSoftDeleteNotifyTargets($roles, [], null);
+r_ok('no users at all is empty, not an error', $t === []);
+
+$t = songSoftDeleteNotifyTargets([], $users, null);
+r_ok('an entitlement held by NO role notifies nobody', $t === []);
+
+/* The audience follows the LIVE entitlement map, so an operator re-aiming
+   purge_songs changes who is told with no second list to maintain. */
+$t = songSoftDeleteNotifyTargets(['global_admin'], $users, null);
+r_ok('a narrowed purge_songs narrows the audience', $t === [4]);
+$t = songSoftDeleteNotifyTargets(['editor', 'admin', 'global_admin'], $users, null);
+r_ok('a widened purge_songs widens the audience', $t === [2, 3, 4]);
+
+$t = songSoftDeleteNotifyTargets($roles, [
+    ['id' => 3, 'role' => 'admin'], ['id' => 3, 'role' => 'admin'],
+], null);
+r_ok('a duplicated user is notified once', $t === [3]);
+
+$t = songSoftDeleteNotifyTargets($roles, [
+    ['id' => 0, 'role' => 'admin'], ['id' => -5, 'role' => 'admin'],
+], null);
+r_ok('invalid user ids are dropped', $t === []);
+
+/* ======================================================================
+ * §4 — the push kind is offered only to those who can receive it
+ * ====================================================================== */
+
+echo "\n== §4: push-kind audience (#1695) ==\n";
+
+require_once dirname(__DIR__, 2) . '/appWeb/public_html/includes/web_push.php';
+
+$kinds = webPushKinds();
+r_ok('the song_deleted kind is registered', array_key_exists('song_deleted', $kinds));
+r_ok('…and names purge_songs as its audience',
+    ($kinds['song_deleted'][3] ?? null) === 'purge_songs',
+    'without the 4th element every user is offered a switch they can never use');
+r_ok('the pre-existing kinds stay UNIVERSAL (no 4th element)',
+    !isset($kinds['announcement'][3]) && !isset($kinds['test'][3]),
+    'adding an audience to an existing kind would silently hide it from users who have it on');
+
+r_ok('an admin is offered the restricted kind',
+    array_key_exists('song_deleted', webPushKindsForRole('admin')));
+r_ok('a plain user is NOT offered it',
+    !array_key_exists('song_deleted', webPushKindsForRole('user')));
+r_ok('…but still gets the universal kinds',
+    array_key_exists('announcement', webPushKindsForRole('user')));
+r_ok('an anonymous viewer gets only the universal kinds',
+    !array_key_exists('song_deleted', webPushKindsForRole(null))
+        && array_key_exists('announcement', webPushKindsForRole(null)),
+    'fail CLOSED on restricted kinds when the role is unknown');
+
 echo "\n";
 echo $fail === 0
     ? "All #1695 re-widen assertions passed ($pass).\n"
