@@ -93,7 +93,7 @@ if (!$mysqli) {
    the migration's single source of truth for the new text, and schema.sql's
    INSERT IGNORE block must read the same six strings verbatim (rule #19). */
 $descriptions = [
-    'captcha_provider'   => 'RESERVED — not wired yet (#1685). No captcha code exists anywhere in this codebase today; setting this to anything other than none changes no behaviour. Intended bot-protection provider once built: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha',
+    'captcha_provider'   => 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.',
     'captcha_site_key'   => 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built',
     'captcha_secret_key' => 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built',
     'ads_enabled'        => 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)',

@@ -1693,7 +1693,7 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     ('motd', '', 'Message of the day shown on home page (empty = disabled)'),
     ('email_service', 'none', 'Email service: none, sendmail, ms365, google_workspace, signula'),
     ('email_from', '', 'Sender email address for system emails'),
-    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists anywhere in this codebase today; setting this to anything other than none changes no behaviour. Intended bot-protection provider once built: none, recaptcha_v2, recaptcha_v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha'),
+    ('captcha_provider', 'none', 'RESERVED — not wired yet (#1685). No captcha code exists in this codebase; changing this alters no behaviour. Intended providers once built: recaptcha_v2/v3, turnstile, hcaptcha, friendly, altcha, mtcaptcha.'),
     ('captcha_site_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider public site key once built'),
     ('captcha_secret_key', '', 'RESERVED — not wired yet (#1685), see captcha_provider. Intended CAPTCHA provider server-side secret key once built'),
     ('ads_enabled', '0', 'RESERVED — not wired yet (#1685). No ad code exists anywhere in this codebase today; setting this to 1 changes no behaviour. Intended toggle for advertisement display once built (0=off, 1=on)'),
@@ -1710,7 +1710,11 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     -- Existing installs have the row deleted by migrate-remove-ccli-validation-setting.php.
     -- Do NOT re-add it.
     ('audio_signing_enabled', '0', 'Sign /audio MP3 URLs so gated audio streams via the gated route (#1358); 0=off (serve static /data/audio literal), 1=on (mint signed /audio URLs). Requires content_gating_enabled=1 AND the AUDIO_SIGNING_KEY constant.'),
-    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder "TEAMID" appID. Set via manage/configuration.php "Apple native app" card — never hard-code in source.');
+    -- NOTE: Description is VARCHAR(255) and MySQL runs STRICT, so an over-long
+    -- description here is not a truncation — it aborts the whole seed INSERT on
+    -- a fresh install. This row was 269 characters until #1685; the guard that
+    -- now measures it is tests/php/test-seed-column-widths.php.
+    ('apple_team_id', '', 'Apple Developer Team ID for the app.ihymns bundle (#1401). Embedded into /.well-known/apple-app-site-association for Universal Links; empty = AASA serves a placeholder TEAMID appID. Set on manage/configuration.php — never hard-code it in source.');
 
 
 -- Default access tiers (#346)
