@@ -73,6 +73,14 @@ declare(strict_types=1);
  * @package iHymns
  */
 
+/* The account-lifecycle state helpers (#1698). Required at FILE scope, not
+   inside the one function that needs a database, so that the PURE
+   `setlistCollabApplyOwnerLock()` below can be called on its own — by a test, or
+   by any future caller that already knows the owner's state. A `require_once`
+   buried in a DB-touching branch would make the pure function fatal in exactly
+   the context it exists to serve. */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'user_status.php';
+
 /**
  * The complete permission vocabulary. Anything outside this list is refused.
  *
@@ -256,13 +264,72 @@ function setlistCollabResolveAccess(
         return $denied;
     }
 
-    return [
+    $resolvedOwnerId = (int)$rows[0]['SetlistOwnerId'];
+
+    $access = [
         'role'       => 'collaborator',
-        'ownerId'    => (int)$rows[0]['SetlistOwnerId'],
+        'ownerId'    => $resolvedOwnerId,
         'permission' => $permission,
         'canRead'    => true,
         'canWrite'   => ($permission === 'edit'),
     ];
+
+    /* --- 3. THE OWNER-STATE LOCK (#1698). --------------------------------
+     * ELI5: if the person who owns this set list has closed or lost their
+     * account, you can still see it — you just cannot change it any more.
+     *
+     * This is the ONE derive-at-read gate the account-lifecycle work needed.
+     * Every OTHER path a disabled or deleted user's data is reachable by is
+     * already closed, because `getAuthenticatedUser()` filters `IsActive = 1`
+     * and thirteen more checks in manage/includes/auth.php do the same — a
+     * locked user simply cannot authenticate. The collaborator is the one
+     * caller who is a DIFFERENT, perfectly active person writing to a locked
+     * owner's row, so it is the one place a new check belongs.
+     *
+     * Only asked on the COLLABORATOR branch, deliberately: the owner branch
+     * above returns for the authenticated caller themselves, who is active by
+     * construction, so asking would be one wasted primary-key SELECT per read.
+     */
+    return setlistCollabApplyOwnerLock($access, userOwnerState($db, $resolvedOwnerId));
+}
+
+/**
+ * Apply the owner's account state to a resolved access array — PURE.
+ *
+ * ELI5: "you may still read it, you may no longer write to it" — and say why.
+ *
+ * VISIBLE BUT LOCKED is the owner's stated rule, and this is where it is
+ * written down: `canRead` is untouched, `canWrite` is forced false, and an
+ * `ownerState` key is added so the response can tell a client WHY the edit
+ * affordance is gone. Removing read access instead would punish the innocent
+ * collaborator for somebody else's account closing, which is precisely the
+ * outcome the decision rules out.
+ *
+ * PURE, taking the state as a string rather than looking it up, for the same
+ * reason `setlistTemplateCanEdit()` is pure: `tests/php/test-account-lifecycle.php`
+ * CALLS it. A gate whose only evidence is that its file contains the right
+ * words is a gate this branch has already shipped four times while it was
+ * broken (`tests/php/test-transaction-fatal.php` documents the regress).
+ *
+ * An ACTIVE owner returns the array UNTOUCHED except for the new key — asserted
+ * in the test, because "the lock works" and "the lock is always on" produce the
+ * same result on the locked cases and only the second is a bug.
+ *
+ * @param array  $access     Output of setlistCollabResolveAccess()'s resolution.
+ * @param string $ownerState 'active' | 'disabled' | 'deleted' | 'absent'.
+ * @return array Same shape, plus 'ownerState' and (when locked) 'lockReason'.
+ */
+function setlistCollabApplyOwnerLock(array $access, string $ownerState): array
+{
+    $access['ownerState'] = $ownerState;
+
+    if (!userContentLocked($ownerState)) {
+        return $access;
+    }
+
+    $access['canWrite']   = false;
+    $access['lockReason'] = userStateLockReason($ownerState);
+    return $access;
 }
 
 /**

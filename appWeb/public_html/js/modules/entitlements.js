@@ -49,6 +49,16 @@ export const ENTITLEMENTS = {
     run_db_restore:       ['global_admin'],
     drop_legacy_tables:   ['global_admin'],
 
+    /* Set-list templates (#301 / #1698). `manage_setlist_templates` is the admin
+       override on the owner-only edit rule (a template whose author's account was
+       erased is otherwise editable by nobody); `publish_public_templates` gates
+       `is_public = 1`, which makes a template visible to every user of the app.
+       Role lists copied VERBATIM from includes/entitlements.php — this map is a
+       MIRROR, never a second opinion; test-entitlement-parity.php (both halves)
+       fails the build if they diverge in either direction. */
+    manage_setlist_templates: ['admin', 'global_admin'],
+    publish_public_templates: ['admin', 'global_admin'],
+
     /* Content moderation */
     review_song_requests: ['editor', 'admin', 'global_admin'],
 

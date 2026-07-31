@@ -15,6 +15,12 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* Account lifecycle (#1698) — the three-state classifier, its badge presentation
+   and the erase type-to-confirm comparison. Required at the TOP, not beside the
+   list query further down: the POST handler runs FIRST and calls
+   userEraseConfirmMatches(), so a require placed with the read path would fatal
+   on the one action that most needs to work correctly. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'user_status.php';
 requireAuth();
 
 $currentUser = getCurrentUser();
@@ -180,8 +186,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Cannot modify a user at or above your role level.';
                 } else {
                     $newState = !$target['is_active'];
-                    setUserActive($targetId, $newState);
-                    $success = 'User ' . ($newState ? 'activated' : 'deactivated') . ' successfully.';
+                    /* #1698 — setUserActive() REFUSES to reactivate an erased
+                       account (its identity is gone), and says so by returning
+                       false. Reporting success regardless would be the
+                       silent-no-op class: the admin clicks Enable, the page says
+                       "activated", and nothing changed. */
+                    if (setUserActive($targetId, $newState)) {
+                        $success = 'User ' . ($newState ? 'enabled' : 'disabled') . ' successfully.';
+                    } else {
+                        $error = 'That account has been erased and cannot be re-enabled — '
+                               . 'its username, email and personal data are gone. Create a new account instead.';
+                    }
                 }
                 break;
 
@@ -270,19 +285,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 break;
 
-            /* ----- Delete user ----- */
+            /* ----- Erase user (anonymised tombstone, #1698) ----- */
             case 'delete':
                 $targetId = (int)($_POST['user_id'] ?? 0);
                 $target   = getUserById($targetId);
+                /* Type-to-confirm, the #1218 §2 pattern, decided by the shared
+                   PURE `userEraseConfirmMatches()` rather than inline — the
+                   comparison has a case-folding subtlety worth stating once and
+                   testing once, and an inline `!==` here had no runtime handle
+                   at all (a mutant that replaced it with `false` went entirely
+                   unnoticed by the guard). */
+                $typed = (string)($_POST['confirm_username'] ?? '');
                 if (!$target) {
                     $error = 'User not found.';
                 } elseif ($targetId === $currentUser['id']) {
-                    $error = 'Cannot delete your own account.';
+                    $error = 'Cannot erase your own account.';
                 } elseif (roleLevel($target['role']) >= roleLevel($currentUser['role']) && $currentUser['role'] !== 'global_admin') {
-                    $error = 'Cannot delete a user at or above your role level.';
+                    $error = 'Cannot erase a user at or above your role level.';
+                } elseif (!userEraseConfirmMatches($typed, (string)$target['username'])) {
+                    $error = 'Type the username exactly to confirm the erasure.';
                 } else {
-                    deleteUser($targetId);
-                    $success = 'User "' . $target['username'] . '" deleted permanently.';
+                    try {
+                        deleteUser($targetId);
+                        $success = 'Account "' . $target['username'] . '" erased. Its personal data is gone'
+                                 . ' and its private content deleted; anything it had already shared stays'
+                                 . ' visible but locked. This cannot be undone.';
+                    } catch (\Throwable $e) {
+                        /* An unrun migration or a drifted FK graph is a refusal,
+                           NOT a silent fall-back to the old hard delete — see
+                           includes/account_lifecycle.php. The message names the
+                           card to run, and the reader of this page is exactly
+                           the person who can run it. mysqli under STRICT throws
+                           rather than returning false (CLAUDE.md red flag), so
+                           without this catch the page would white-screen. */
+                        $error = $e->getMessage();
+                    }
                 }
                 break;
         }
@@ -297,9 +334,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ========================================================================= */
 
 $db = getDbMysqli();
+/* #1698 — the lifecycle state comes from the columns this query already reads
+   plus `Status`, which is SELECT-gated: migrations here are web-run from
+   /manage/setup-database and three docroots share ONE MySQL, so "it is in
+   schema.sql" is not "it exists here", and mysqli under STRICT would THROW on an
+   absent column rather than returning false. On an un-migrated install the NULL
+   falls back to IsActive inside userStateFromRow() and this page reads exactly
+   as it did before. (user_status.php is required at the top of this file.) */
+$userStatusCol = userStatusColumnReady($db) ? 'Status' : 'NULL';
 $stmt = $db->prepare(
     'SELECT Id AS id, Username AS username, DisplayName AS display_name, Email AS email,
-            Role AS role, IsActive AS is_active, AccessTier AS access_tier, CreatedAt AS created_at
+            Role AS role, IsActive AS is_active, ' . $userStatusCol . ' AS status,
+            AccessTier AS access_tier, CreatedAt AS created_at
        FROM tblUsers
       ORDER BY CreatedAt ASC'
 );
@@ -450,11 +496,28 @@ function canManage(array $target, array $actor): bool {
                                 <?php endif; ?>
                             </td>
                             <td>
-                                <?php if ($u['is_active']): ?>
-                                    <span class="text-success small"><i class="bi bi-circle-fill" style="font-size:0.5rem"></i> Active</span>
-                                <?php else: ?>
-                                    <span class="text-danger small"><i class="bi bi-circle-fill" style="font-size:0.5rem"></i> Disabled</span>
-                                <?php endif; ?>
+                                <?php
+                                /* #1698 — THREE states, clearly distinguished. Before this,
+                                   "not active" rendered as "Disabled" whether the account had
+                                   been switched off (reversible) or erased (a tombstone that
+                                   can never come back). An admin looking at the list could not
+                                   tell which, which is precisely the distinction the owner asked
+                                   for. Derived from the row already fetched — no extra query. */
+                                $uState = userStateFromRow(
+                                    $u['is_active'] !== null ? (int)$u['is_active'] : null,
+                                    $u['status']    !== null ? (string)$u['status'] : null
+                                );
+                                /* Colour, label and tooltip come from the ONE shared
+                                   presentation helper, so the next admin surface that shows
+                                   account state cannot invent a fourth vocabulary — and so a
+                                   test can CALL the mapping instead of grepping this file. */
+                                $uStateMeta = userStateBadge($uState);
+                                ?>
+                                <span class="<?= $uStateMeta[0] ?> small"
+                                      title="<?= htmlspecialchars($uStateMeta[2]) ?>">
+                                    <i class="bi bi-circle-fill" style="font-size:0.5rem" aria-hidden="true"></i>
+                                    <?= htmlspecialchars($uStateMeta[1]) ?>
+                                </span>
                             </td>
                             <td class="text-end user-actions">
                                 <?php if ($manageable): ?>
@@ -489,24 +552,45 @@ function canManage(array $target, array $actor): bool {
                                             onclick="openPasswordModal(<?= (int)$u['id'] ?>, '<?= htmlspecialchars($u['username'], ENT_QUOTES) ?>')">
                                         <i class="bi bi-key"></i>
                                     </button>
-                                    <!-- Toggle Active (not for self) -->
-                                    <?php if (!$isSelf): ?>
-                                    <form method="POST" class="d-inline" onsubmit="return confirm('<?= $u['is_active'] ? 'Deactivate' : 'Activate' ?> user <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>?')">
+                                    <!-- Disable / Enable (not for self).
+                                         #1698 — an ERASED account is a tombstone with no identity
+                                         left, so setUserActive() refuses to re-enable it. The
+                                         button is hidden here to match: offering a control the
+                                         server will refuse is the promise-the-server-won't-keep
+                                         shape this codebase keeps removing. -->
+                                    <?php if (!$isSelf && $uState !== 'deleted'): ?>
+                                    <form method="POST" class="d-inline" onsubmit="return confirm('<?= $u['is_active'] ? 'Disable' : 'Enable' ?> user <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>?<?= $u['is_active'] ? ' They will be signed out everywhere and cannot sign in until re-enabled. Nothing is deleted.' : '' ?>')">
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action" value="toggle_active">
                                         <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
                                         <button class="btn <?= $u['is_active'] ? 'btn-outline-warning' : 'btn-outline-success' ?>"
-                                                title="<?= $u['is_active'] ? 'Deactivate' : 'Activate' ?>">
-                                            <i class="bi <?= $u['is_active'] ? 'bi-pause-circle' : 'bi-play-circle' ?>"></i>
+                                                title="<?= $u['is_active'] ? 'Disable (reversible)' : 'Enable' ?>"
+                                                aria-label="<?= $u['is_active'] ? 'Disable' : 'Enable' ?> <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>">
+                                            <i class="bi <?= $u['is_active'] ? 'bi-pause-circle' : 'bi-play-circle' ?>" aria-hidden="true"></i>
                                         </button>
                                     </form>
-                                    <!-- Delete -->
-                                    <form method="POST" class="d-inline" onsubmit="return confirm('PERMANENTLY delete user <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>? This cannot be undone.')">
+                                    <?php endif; ?>
+                                    <!-- Erase (not for self; not twice).
+                                         DELIBERATELY NOT LABELLED "delete": what it does is
+                                         anonymise. The confirm names the three consequences the
+                                         admin is actually choosing between, and the server ALSO
+                                         requires the username typed into the field below (#1218
+                                         §2) — a JS confirm() is dismissible and is an affordance,
+                                         never the gate. -->
+                                    <?php if (!$isSelf && $uState !== 'deleted'): ?>
+                                    <form method="POST" class="d-inline"
+                                          onsubmit="return confirm('Erase account <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>?\n\nThis anonymises the account and deletes its private data (set lists, favourites, tokens, subscriptions). Content it already published stays visible but locked. It CANNOT be undone — to switch the account off reversibly, use Disable instead.')">
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf) ?>">
                                         <input type="hidden" name="action" value="delete">
                                         <input type="hidden" name="user_id" value="<?= (int)$u['id'] ?>">
-                                        <button class="btn btn-outline-danger" title="Delete user">
-                                            <i class="bi bi-trash"></i>
+                                        <label class="visually-hidden" for="confirm-erase-<?= (int)$u['id'] ?>">Type <?= htmlspecialchars($u['username']) ?> to confirm erasure</label>
+                                        <input type="text" class="form-control form-control-sm d-inline-block user-erase-confirm"
+                                               id="confirm-erase-<?= (int)$u['id'] ?>" name="confirm_username"
+                                               style="width:9rem" autocomplete="off" spellcheck="false"
+                                               placeholder="type username">
+                                        <button class="btn btn-outline-danger" title="Erase account (irreversible)"
+                                                aria-label="Erase account <?= htmlspecialchars($u['username'], ENT_QUOTES) ?>">
+                                            <i class="bi bi-trash" aria-hidden="true"></i>
                                         </button>
                                     </form>
                                     <?php endif; ?>

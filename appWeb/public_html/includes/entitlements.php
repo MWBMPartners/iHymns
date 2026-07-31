@@ -132,6 +132,32 @@ const ENTITLEMENTS = [
     /* Duplicate-songs review + merge (#1064) — destructive merge, so admin+. */
     'manage_duplicate_songs' => ['admin', 'global_admin'],
 
+    /* Set-list templates (#301 / #1698).
+     *
+     * `manage_setlist_templates` — an ADMIN OVERRIDE on the owner-only edit
+     * rule. `setlistTemplateCanEdit()` is deliberately author-only (org
+     * membership is a VISIBILITY grant in `setlist_templates`, and reusing it as
+     * an EDIT grant would hand every member of a church destructive power over a
+     * colleague's template). That leaves the #1698 orphan: `fk_Template_User` is
+     * `ON DELETE SET NULL`, so a template outlives its author with
+     * `CreatedBy = NULL` and is then editable by NOBODY — and a PUBLIC one in
+     * that state could only be removed with direct database access. The same
+     * applies to a template whose author is now a disabled account or an erased
+     * tombstone. This entitlement is the manageability answer; it does not widen
+     * ordinary editing by one user.
+     *
+     * `publish_public_templates` — who may set `is_public = 1`. A public
+     * template is visible to EVERY user of the app, signed in or not, so
+     * publishing is a broadcast, not a save. Defaulting to admin+ mirrors
+     * `manage_notifications` (the other "this reaches everybody" capability).
+     * ⚠ This default is a JUDGEMENT, flagged as trivially changeable: an
+     * operator who wants curators publishing templates ticks `editor` at
+     * /manage/entitlements and nothing else changes. Note the request is
+     * REJECTED rather than silently demoted to private — a silent demotion is
+     * the no-op class this codebase keeps paying for (rule #30). */
+    'manage_setlist_templates' => ['admin', 'global_admin'],
+    'publish_public_templates' => ['admin', 'global_admin'],
+
     /* Content moderation */
     'review_song_requests' => ['editor', 'admin', 'global_admin'],
 

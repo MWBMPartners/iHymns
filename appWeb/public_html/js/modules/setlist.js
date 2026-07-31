@@ -24,6 +24,34 @@ import { STORAGE_SETLISTS, STORAGE_SETLISTS_DELETED, STORAGE_OWNER_ID, STORAGE_A
 import { apiFetch } from '../utils/api-client.js';
 import { announce } from '../utils/announce.js';
 
+/**
+ * May the viewer WRITE to this shared set list? (#1638 / #1698)
+ *
+ * ELI5: ask the server's answer, and only work it out ourselves if the server
+ * is an older one that did not send one.
+ *
+ * The server states `canWrite` explicitly because the decision now has TWO
+ * inputs — the collaborator's own permission AND the owner's account state —
+ * and a client that re-derived it from `permission` alone would draw edit
+ * buttons for a list `setlist_collab_update` will refuse with a 403. That is
+ * rule #35's failure shape: two places computing one policy with nothing making
+ * them agree, and the copy that draws the buttons being the wrong one.
+ *
+ * The `permission` fallback is not a second opinion — it is what to do when the
+ * server did not express one at all. A response cached by the service worker
+ * before this shipped has no `canWrite` key, and treating a missing key as
+ * `false` would silently strip edit access from every collaborator until the
+ * cache turned over.
+ *
+ * @param {{permission?:string, canWrite?:boolean}} shared One `shared` entry.
+ * @returns {boolean}
+ */
+function sharedCanWrite(shared) {
+    if (!shared) return false;
+    if (typeof shared.canWrite === 'boolean') return shared.canWrite;
+    return shared.permission === 'edit';
+}
+
 export class SetList {
     /**
      * @param {object} app Reference to the main iHymnsApp instance
@@ -649,14 +677,20 @@ export class SetList {
      * whose list this is and whether they can change it before they open it.
      * Same pattern as the language / unofficial-songbook badges elsewhere.
      *
-     * @param {{ownerId:number, ownerName:string, setlistId:string, permission:string, name:string, songs:Array}} s
+     * @param {{ownerId:number, ownerName:string, setlistId:string, permission:string, name:string, songs:Array, canWrite?:boolean, locked?:boolean}} s
      * @returns {string} HTML
      * @private
      */
     _sharedRowHtml(s) {
         const count = Array.isArray(s.songs) ? s.songs.length : 0;
-        const canEdit = s.permission === 'edit';
-        const permLabel = canEdit ? 'Can edit' : 'View only';
+        const canEdit = sharedCanWrite(s);
+        const locked = s.locked === true;
+        /* Three states now, not two (#1698): a locked owner's list is neither
+           "can edit" nor plain "view only" — the difference matters, because a
+           collaborator WAS granted edit and would otherwise assume the button
+           had simply moved. */
+        const permLabel = locked ? 'Read-only' : (canEdit ? 'Can edit' : 'View only');
+        const badgeCls = locked ? 'text-bg-warning' : (canEdit ? 'text-bg-success' : 'text-bg-secondary');
         return `
             <div class="list-group-item list-group-item-action d-flex align-items-center gap-3 shared-setlist-item"
                  data-owner-id="${escapeHtml(String(s.ownerId))}"
@@ -665,7 +699,7 @@ export class SetList {
                  aria-label="${escapeHtml(s.name)}, shared by ${escapeHtml(s.ownerName)}, ${permLabel}">
                 <div class="flex-grow-1">
                     <strong>${escapeHtml(s.name)}</strong>
-                    <span class="badge ${canEdit ? 'text-bg-success' : 'text-bg-secondary'} ms-2"
+                    <span class="badge ${badgeCls} ms-2"
                           style="font-size:0.65rem">${permLabel}</span>
                     <small class="text-muted d-block">
                         ${count} song${count !== 1 ? 's' : ''}
@@ -752,7 +786,8 @@ export class SetList {
         /* Work on a COPY. Edits are staged locally and pushed explicitly, so
            an abandoned reorder never half-writes to the owner's list. */
         const songs = Array.isArray(shared.songs) ? shared.songs.map(s => ({ ...s })) : [];
-        const canEdit = shared.permission === 'edit';
+        const canEdit = sharedCanWrite(shared);
+        const locked = shared.locked === true;
 
         const rowsHtml = songs.length === 0
             ? `<div class="text-center text-muted py-4"><p>This set list has no songs yet.</p></div>`
@@ -809,15 +844,19 @@ export class SetList {
             </div>
             <p class="text-muted small mb-3">
                 Shared by <strong>${escapeHtml(shared.ownerName)}</strong>
-                &middot; <span class="badge ${canEdit ? 'text-bg-success' : 'text-bg-secondary'}"
-                               style="font-size:0.65rem">${canEdit ? 'Can edit' : 'View only'}</span>
+                &middot; <span class="badge ${locked ? 'text-bg-warning' : (canEdit ? 'text-bg-success' : 'text-bg-secondary')}"
+                               style="font-size:0.65rem">${locked ? 'Read-only' : (canEdit ? 'Can edit' : 'View only')}</span>
                 &middot; ${songs.length} song${songs.length !== 1 ? 's' : ''}
             </p>
-            ${!canEdit ? `
+            ${locked ? `
+            <div class="alert alert-warning py-2 px-3 small" role="note">
+                <i class="fa-solid fa-lock me-1" aria-hidden="true"></i>
+                ${escapeHtml(shared.lockReason || 'The owner’s account is unavailable. This is read-only.')}
+            </div>` : (!canEdit ? `
             <div class="alert alert-secondary py-2 px-3 small" role="note">
                 <i class="fa-solid fa-eye me-1" aria-hidden="true"></i>
                 You have view-only access. Ask ${escapeHtml(shared.ownerName)} for edit access to make changes.
-            </div>` : ''}
+            </div>` : '')}
             ${rowsHtml}
             <div id="shared-save-status" class="small mt-2" aria-live="polite"></div>`;
 

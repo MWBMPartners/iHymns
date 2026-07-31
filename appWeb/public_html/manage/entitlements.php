@@ -78,6 +78,10 @@ $groups = [
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications', 'view_diagnostics', 'view_activity_log'],
     'Content moderation' => ['review_song_requests'],
+    /* #1698 — both are about SOMEBODY ELSE'S set-list template: the admin
+       override that makes an authorless template manageable again, and the gate
+       on publishing one to every user of the app. */
+    'Set-list templates' => ['manage_setlist_templates', 'publish_public_templates'],
     /* #1590 E2 — the curation surfaces that shipped after this grouping was
        written landed in the catch-all "Other" bucket, so an operator looking for
        "who can manage Works?" had to scan an unsorted list. Grouped here with
@@ -126,6 +130,8 @@ $ENTITLEMENT_LABELS = [
     'run_db_restore'            => ['Restore database from backup',  'Overwrite the live DB from a snapshot'],
     'drop_legacy_tables'        => ['Drop legacy tables',            'Retire obsolete tables — Global Admin only'],
     'review_song_requests'      => ['Review song requests',          'Triage submissions from the public queue'],
+    'manage_setlist_templates'  => ['Manage any set-list template',  'Edit or delete a template you did not create — including one whose author’s account has closed'],
+    'publish_public_templates'  => ['Publish public templates',      'Mark a set-list template public, so every user of the app can see it'],
     'manage_songbooks'          => ['Manage songbooks',              'CRUD over the songbook catalogue'],
     'manage_user_groups'        => ['Manage user groups',            'CRUD over groups + channel-access toggles'],
     'manage_organisations'      => ['Manage organisations',          'CRUD over orgs + licence metadata + members'],
