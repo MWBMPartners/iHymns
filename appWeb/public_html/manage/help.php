@@ -576,12 +576,21 @@ foreach ($sections as $s) {
                             right (Metadata, Structure, Credits, Links, Tags, Media,
                             Preview).</li>
                         <li>Use <strong>Multi-select</strong> mode for bulk operations
-                            (verify, tag, move to another songbook, export, delete).</li>
+                            (verify, tag, move to another songbook, export, delete).
+                            <br><strong>Deleting a song is admin-only</strong> (#1692). It is a
+                            permanent removal that also takes the song's revision history with it,
+                            so it sits with administrators until recoverable (soft) deletion ships.
+                            Editors keep every other bulk operation.</li>
                     </ul>
                     <h3 class="h6">The eight tabs</h3>
                     <dl class="actions">
                         <dt>Metadata</dt>
-                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.</dd>
+                        <dd>Title, song number, songbook, CCLI number, Tune Name (e.g. <em>HYFRYDOL</em>), ISWC, language, region.
+                            <p class="mt-2 mb-0"><strong>Musical key</strong> (#298) — the original key,
+                            tempo in BPM and time signature. These show as a badge on the public song
+                            page and give Transpose its starting point, so a musician can see what a
+                            song is actually in before they play it. Tempo accepts 20–400 BPM; the key
+                            and time-signature lists are fixed, so a typo cannot be saved.</p></dd>
                         <dt>Structure</dt>
                         <dd>
                             The actual lyrics, broken into sections: verses, choruses, bridges, and so on. Drag to reorder; auto-resizing text areas grow as you type.
