@@ -3095,6 +3095,46 @@ return [
         })($db),
     ],
 
+    /* ---- #1695 (epic #1692 stage 3) — let the re-widened default take effect --
+       A DATA-ONLY card: no DDL, no new object. It exists because widening
+       `delete_songs` back to editor+ in PHP is a SILENT NO-OP on any install
+       where /manage/entitlements has ever been saved — a stored override
+       replaces the code default outright, and saveEntitlementOverrides() writes
+       the whole map. Conditional by design: it prunes ONLY the exact stage-1
+       interim value, because in the database that is byte-identical to a
+       deliberate operator lockdown, and blanket-clearing would silently WIDEN a
+       privilege on a site that had decided otherwise. */
+    'delete-songs-rewiden' => [
+        'script' => 'migrate-delete-songs-rewiden.php',
+        'card' => [
+            'title'  => 'Re-widen song deletion to curators (#1695)',
+            'body'   => 'Deleting a song is now recoverable (#1694), so <code>delete_songs</code>'
+                      . ' returns to editor+ — the interim admin-only restriction existed only'
+                      . ' because deletion used to be permanent. The permissions screen stores its'
+                      . ' own copy of every rule, and a stored copy beats the shipped default, so'
+                      . ' this clears the remembered interim value. <strong>Only</strong> if it is'
+                      . ' exactly the value we shipped: a deliberate lockdown you chose yourself'
+                      . ' is preserved untouched. Idempotent; a no-op on an install that has never'
+                      . ' saved that page.',
+            'button' => 'Apply the re-widened delete permission',
+        ],
+        /* Sentinel probe, for the same reason as #1590's: re-saving
+           /manage/entitlements legitimately writes the key back, so a
+           key-absence probe would flip this card pending again forever (rule
+           #19's un-reachable-zero failure). The sentinel records that the
+           one-off prune HAPPENED — real evidence from live data, never a
+           hardcoded `static fn() => true`. */
+        'probe' => static fn(\mysqli $db) => (function (\mysqli $db): bool {
+            $stmt = $db->prepare(
+                "SELECT 1 FROM tblAppSettings WHERE SettingKey = 'delete_songs_rewiden_applied' LIMIT 1"
+            );
+            $stmt->execute();
+            $seen = $stmt->get_result()->fetch_row() !== null;
+            $stmt->close();
+            return !$seen;   /* no sentinel row → still pending */
+        })($db),
+    ],
+
     /* ---- #1694 (epic #1692) — song soft delete -------------------------------
        Five columns + one index + one FK on tblSongs so a "deleted" song is
        HIDDEN and restorable instead of gone: 38 of the 41 FKs referencing

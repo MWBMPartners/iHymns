@@ -52,24 +52,37 @@ const ENTITLEMENTS = [
        unticking `editor` at /manage/entitlements — which is exactly the control
        that did nothing before.
 
-       ⚠️ `delete_songs` IS NOW ADMIN-ONLY — owner decision, #1692 stage 1.
-       Establishing the above prompted the question "is a delete recoverable?",
-       and the answer is no. Deletion is a HARD `DELETE FROM tblSongs`; there is
-       no soft-delete column on that table; 38 of the 41 FKs referencing
-       tblSongs(SongId) are ON DELETE CASCADE, and that includes
-       `fk_Revisions_Song` — so a delete destroys the song, its components, its
-       credits, its media links AND its entire revision history. Only the URL
-       survives, as a redirect row. Recovery means restoring a database backup;
-       there is no in-app undo and no revision left to roll back to.
-       Leaving that power at editor+ was an unbounded, permanent exposure, so
-       this is deliberately NOT the "preserve today's behaviour" default the
-       block above argues for — it is a considered privilege reduction, and the
-       one place in this map where behaviour intentionally changes.
-       It is INTERIM: #1692 stage 2 adds real soft delete (IsDeleted/DeletedAt/
-       DeletedBy + a Restore screen + an admin-only purge), and stage 3 hands
-       deletion back to curators once it is recoverable. When stage 2 lands,
-       revisit this line — the reason for it will have gone. */
-    'delete_songs'         => ['admin', 'global_admin'],
+       `delete_songs` IS BACK AT EDITOR+ — #1692 stage 3 (#1695), 2026-07-31.
+
+       It was reduced to admin-only in stage 1 for one stated reason, recorded
+       here at the time: a delete was a HARD `DELETE FROM tblSongs`, and 38 of
+       the 41 FKs referencing tblSongs(SongId) cascade — including
+       `fk_Revisions_Song`, so a delete destroyed the song, its components, its
+       credits, its media links AND its entire revision history. Recovery meant
+       restoring a database backup. That comment closed by saying the reduction
+       was INTERIM and to revisit this line once deletion became recoverable.
+
+       Stage 2 (#1694) made it recoverable, so the reason is gone and the line
+       is duly revisited. `delete_songs` now gates a SOFT delete: the song is
+       hidden everywhere but wholly intact, and one click on
+       /manage/deleted-songs restores it losslessly. The irreversible cascade
+       moved to `purge_songs` below — which is the entire point of that key
+       existing separately, and why THIS widening cannot drag the permanent
+       delete along with it.
+
+       Two safeguards make editor+ safe rather than merely defensible:
+       every soft delete notifies every `purge_songs` holder from inside the
+       write core (so no future funnel can forget to), and an operator who
+       disagrees can re-narrow this key at /manage/entitlements — a control
+       that is real, not theoretical.
+
+       ⚠️ Changing this line ALONE may be a no-op on a live install. A stored
+       `entitlements_overrides` row replaces the code default outright, and
+       `saveEntitlementOverrides()` writes the WHOLE map — so any install where
+       that screen has ever been saved keeps the stage-1 value regardless of
+       what is written here. `.sql/migrate-delete-songs-rewiden.php` is the
+       other half of this change. */
+    'delete_songs'         => ['editor', 'admin', 'global_admin'],
     /* `purge_songs` — the IRREVERSIBLE half of #1694's two-step delete (owner
        decision D3: add it now, separately from delete_songs). `delete_songs`
        now gates the RECOVERABLE soft delete (and the /manage/deleted-songs
@@ -561,4 +574,85 @@ function userIsOrgAdminOf(?int $userId): array
 function userHasOwnOrganisation(?int $userId): bool
 {
     return !empty(userIsOrgAdminOf($userId));
+}
+
+/**
+ * Conditionally drop one key from a saved entitlement-overrides map.
+ *
+ * ELI5: the permissions screen remembers every tick box, not just the ones you
+ * changed. If it is still remembering the exact answer we shipped by mistake,
+ * forget that one answer so the corrected default applies. If somebody has
+ * since chosen something different on purpose, leave their choice alone.
+ *
+ * WHY THIS EXISTS (#1695, epic #1692 stage 3)
+ * -------------------------------------------
+ * `effectiveEntitlements()` lets a STORED key replace the code default
+ * outright, and `saveEntitlementOverrides()` writes the WHOLE map on every
+ * save — not a delta. So on any install where `/manage/entitlements` has ever
+ * been saved, changing a default in PHP is a **silent no-op**: the code says
+ * editor+, the database says admin+, and the database wins. The feature ships,
+ * looks correct in review, and changes nothing for the operator.
+ *
+ * That is the trap #1695's own scope missed entirely, and it is the same class
+ * `migrate-entitlement-truthup.php` (#1590) was written for.
+ *
+ * WHY CONDITIONAL, NOT A BLANKET CLEAR — the load-bearing decision
+ * ----------------------------------------------------------------
+ * The stage-1 narrowing of `delete_songs` to admin-only and a deliberate
+ * operator lockdown to admin-only are, in the database, THE SAME BYTES. Nothing
+ * records which one wrote them.
+ *
+ * A blanket clear would therefore silently overrule an operator who had made a
+ * considered choice — handing song deletion to every curator on a site that had
+ * explicitly decided otherwise. That is a worse failure than the no-op it fixes,
+ * because it is invisible AND it widens a privilege.
+ *
+ * So the prune fires ONLY when the stored value is byte-for-byte the value we
+ * shipped ($expected). Anything else — `global_admin` only, a custom set, a
+ * value already widened — is treated as intentional and preserved. The cost is
+ * that an operator who happened to choose exactly the interim value keeps it;
+ * that is the safe direction, and it is one tick box away from being changed.
+ *
+ * PURE — no database, no globals, no I/O. Comparison is order-insensitive but
+ * exact on membership, because ['admin','global_admin'] and
+ * ['global_admin','admin'] are the same permission and JSON key order is not
+ * something a caller controls.
+ *
+ * @param array<string, mixed> $stored   the decoded overrides map as saved
+ * @param string               $key      the entitlement to consider pruning
+ * @param string[]             $expected the exact stored value that means
+ *                                       "this is ours, not the operator's"
+ * @return array{0: array<string, mixed>, 1: bool} the map, and whether it changed
+ */
+function entitlementOverridesPruneIfEquals(array $stored, string $key, array $expected): array
+{
+    /* Absent key: nothing shadows the default, so there is nothing to do. This
+       is the common case on an install that has never saved the page, and it
+       must be a clean no-op rather than an error. */
+    if (!array_key_exists($key, $stored)) {
+        return [$stored, false];
+    }
+
+    $value = $stored[$key];
+    if (!is_array($value)) {
+        /* A non-array value cannot be the map we shipped, so by the rule above
+           it is not ours to remove. Leave it; effectiveEntitlements() already
+           ignores a non-array override defensively. */
+        return [$stored, false];
+    }
+
+    /* Normalise both sides: strings only, de-duplicated, sorted. Order and
+       duplicates are storage noise, not meaning. */
+    $norm = static function (array $roles): array {
+        $r = array_values(array_unique(array_filter($roles, 'is_string')));
+        sort($r);
+        return $r;
+    };
+
+    if ($norm($value) !== $norm($expected)) {
+        return [$stored, false];      // the operator's choice — preserve it
+    }
+
+    unset($stored[$key]);
+    return [$stored, true];
 }

@@ -1737,7 +1737,13 @@ INSERT IGNORE INTO tblAppSettings (SettingKey, SettingValue, Description) VALUES
     -- saved entitlement overrides to prune — the migration would be a no-op, so
     -- the card should show applied from the start rather than sitting pending
     -- forever on a database that was never affected.
-    ('entitlement_truthup_applied', '1', 'Sentinel (#1590): the entitlement truth-up cleared the stale saved overrides for delete_songs / bulk_edit_songs / run_db_backup. Nothing reads this value; it exists so the setup-database card can tell that the one-off prune has run.');
+    ('entitlement_truthup_applied', '1', 'Sentinel (#1590): the entitlement truth-up cleared the stale saved overrides for delete_songs / bulk_edit_songs / run_db_backup. Nothing reads this value; it exists so the setup-database card can tell that the one-off prune has run.'),
+    -- Same reasoning as the row above: a FRESH install has never saved
+    -- /manage/entitlements, so there is no stored delete_songs override to
+    -- shadow the shipped editor+ default and nothing for the #1695 prune to do.
+    -- Seeding the sentinel means the card shows applied from the start instead
+    -- of sitting pending forever on a database that was never affected.
+    ('delete_songs_rewiden_applied', '1', 'Sentinel (#1695): the stage-3 re-widen considered the saved delete_songs override. Nothing reads this value; it exists so the setup-database card can tell the one-off prune has run.');
 
 
 -- Default access tiers (#346)

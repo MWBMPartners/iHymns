@@ -21,12 +21,16 @@ export const ENTITLEMENTS = {
        removed a capability curators use today, so the MAP moved to match the
        code rather than the other way round. This file is a MIRROR — copy the
        role list verbatim, never form a second opinion. */
-    /* Admin-only by owner decision (#1692 stage 1): a song delete is a HARD
-       delete that cascades away the song's components, credits, media links and
-       its entire revision history, with no in-app undo. Interim — stage 2 adds
-       soft delete, after which this returns to editor+. Must stay identical to
-       includes/entitlements.php; test-entitlement-parity.php enforces that. */
-    delete_songs:         ['admin', 'global_admin'],
+    /* Back at editor+ — #1692 stage 3 (#1695). The stage-1 comment here said
+       this was interim and would return to editor+ once stage 2 added soft
+       delete; stage 2 (#1694) landed, so it has. A delete is now RECOVERABLE:
+       the song is hidden but wholly intact, and Restore on
+       /manage/deleted-songs brings it back losslessly. The irreversible
+       cascade lives behind `purge_songs` below, which is precisely why this
+       widening cannot drag the permanent delete along with it.
+       Must stay identical to includes/entitlements.php;
+       test-entitlement-parity.php (both halves) enforces that. */
+    delete_songs:         ['editor', 'admin', 'global_admin'],
     /* #1694 — the IRREVERSIBLE half of the two-step delete: `delete_songs` is
        now the recoverable soft delete; this alone gates the destructive Purge
        on /manage/deleted-songs. Separate key so #1695's re-widening of
