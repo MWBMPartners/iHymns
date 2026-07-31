@@ -554,6 +554,16 @@ function songRelocateFkKey(string $table, string $column): string
  * then backticked. A name that fails is not passed through and not queried — the
  * caller fails CLOSED, which is the same posture as an unreadable catalogue.
  *
+ * ⚠ THE REGEX ITSELF MOVED (#1698). The account-erasure core needs this exact
+ * property for the exact same reason — it enumerates the FKs referencing
+ * `tblUsers(Id)` out of `INFORMATION_SCHEMA` and then writes
+ * `DELETE FROM \`<that table>\`` — so per the modularity rule the second
+ * occurrence is an extraction, not a copy. The one implementation now lives in
+ * `includes/sql_identifier.php` as `ihymnsSqlIdentifierSafe()`; this function
+ * keeps its name and its behaviour because `test-song-relocate-cascade-verdict.php`
+ * calls it by name and asserts its exact truth table (including the `\z` case
+ * below). Behaviour is unchanged — the body is a delegation, nothing more.
+ *
  * `\z`, NOT `$`. PCRE's `$` also matches immediately BEFORE a final newline, so
  * `"tblSongs\n"` passed the first version of this function — caught by
  * `tests/php/test-song-relocate-cascade-verdict.php` on its very first run. The
@@ -562,12 +572,15 @@ function songRelocateFkKey(string $table, string $column): string
  * claims, and a validator that is not exact does not have it. `D` (PCRE_DOLLAR_ENDONLY)
  * would do the same job; `\z` says so at the point it matters.
  *
+ * @see appWeb/public_html/includes/sql_identifier.php
  * @see https://dev.mysql.com/doc/refman/8.0/en/identifiers.html
  * @see https://www.php.net/manual/en/regexp.reference.anchors.php
  */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'sql_identifier.php';
+
 function songRelocateIdentifierSafe(string $identifier): bool
 {
-    return $identifier !== '' && preg_match('/\A[A-Za-z0-9_$]+\z/', $identifier) === 1;
+    return ihymnsSqlIdentifierSafe($identifier);
 }
 
 /**
