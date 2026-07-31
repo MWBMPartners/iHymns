@@ -271,10 +271,13 @@ return [
      * silently — the same species as #1587's nav-vs-page mismatch. What
      * actually gates these operations today is a raw ROLE test.
      *
-     * There is no live privilege hole right now (the default maps coincide
-     * with the roles), which is exactly why remediation E1 must wire the
-     * checks with defaults that MATCH the current role gates — any other
-     * default is a live privilege change.
+     * NINE ENTRIES WERE REMOVED HERE BY THE #1590 TRUTH-UP (Batch 6, E1):
+     * `delete_songs`, `bulk_edit_songs`, `edit_users`, `change_user_roles`,
+     * `assign_global_admin`, `delete_users`, `run_db_migrate`, `run_db_backup`
+     * and `run_db_restore` are now checked at their real enforcement points, so
+     * an entry for any of them would be reported stale by CHECK 4's companion
+     * assertion. They are gone rather than reworded — that is the self-cleaning
+     * property working as designed.
      *
      * NOT here, deliberately: `access_alpha` / `access_beta`. The inventory
      * listed them as decorative; they are not. They are checked at
@@ -285,14 +288,31 @@ return [
      * stale by rule 2 above.
      * ===================================================================== */
     'entitlements' => [
-        'delete_songs'        => 'deliberate temporary — gated by a raw `admin` ROLE today (editor/api.php:3541, api2.php:125). Wiring is remediation E1, default map admin+ga already matches. DELETE THIS ENTRY when E1 lands',
-        'bulk_edit_songs'     => 'deliberate temporary — gated by a raw `editor` ROLE today; the map claims admin-only, so E1 must ALIGN THE MAP to reality (editor+) before wiring, or working curators lose access mid-flight',
-        'edit_users'          => 'deliberate temporary — manage/users.php gates the whole page on view_users with no per-action check. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
-        'change_user_roles'   => 'deliberate temporary — manage/users.php gates the whole page on view_users with no per-action check. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
-        'assign_global_admin' => 'deliberate temporary — enforced by role-comparison logic inside the role-change handler. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
-        'delete_users'        => 'deliberate temporary — manage/users.php gates the whole page on view_users with no per-action check. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
-        'run_db_migrate'      => 'deliberate temporary — setup-database.php:191 tests the raw global_admin ROLE. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
-        'run_db_backup'       => 'deliberate temporary — setup-database.php tests a raw ROLE; E1 must check whether the live gate is ga or admin and align the map first',
-        'run_db_restore'      => 'deliberate temporary — setup-database.php:459 tests the raw global_admin ROLE. Wiring is remediation E1. DELETE THIS ENTRY when E1 lands',
+        /* The TENTH decorative entitlement — found by this pass, on neither the
+         * inventory's §6.3 list nor remediation plan §4.6's table of nine.
+         *
+         * It was invisible to both because CHECK 4 above walks the keys of
+         * `$ENTITLEMENT_LABELS`, and `manage_org_licences` had no label. It now
+         * has one (#1590 E2), which is exactly why it surfaces here.
+         *
+         * NOT WIRED, deliberately, because no wiring is a no-op. Its comment in
+         * includes/entitlements.php says it exists so "licence edits can be
+         * delegated without granting full org admin", and its default is admin+.
+         * But the live org-licence editor is /manage/my-organisations.php, gated
+         * on `manage_own_organisation` — which deliberately includes the plain
+         * `user` role, because someone must be able to run their OWN
+         * organisation without a site-wide role. Adding an admin+ AND to that
+         * page would remove licence editing from every org owner who is not a
+         * site admin: a live privilege change, which #1590's governing rule
+         * forbids. Aligning the map DOWN to user+ instead would make the key an
+         * exact synonym for `manage_own_organisation` and delete the separation
+         * it was created for.
+         *
+         * Which surface it should govern — the org-admin self-service editor,
+         * the site-admin /manage/organisations editor, or both with different
+         * defaults — is a product decision, not something derivable from the
+         * code. Tracked as the one open item of #1590 Batch 6.
+         */
+        'manage_org_licences' => 'deliberate — the tenth decorative key, found by #1590 E2 giving it a label. Wiring it to the live editor (/manage/my-organisations, gated on manage_own_organisation which includes plain users) would strip org owners of licence editing; aligning the map down to user+ would make it a synonym of manage_own_organisation. Needs an owner decision on which surface it governs — #1590',
     ],
 ];

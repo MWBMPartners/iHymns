@@ -34,8 +34,25 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'db_mysql.php';
 const ENTITLEMENTS = [
     /* Song data */
     'edit_songs'           => ['editor', 'admin', 'global_admin'],
-    'delete_songs'         => ['admin', 'global_admin'],
-    'bulk_edit_songs'      => ['admin', 'global_admin'],
+    /* MAP ALIGNED TO REALITY, NOT THE OTHER WAY ROUND (#1590, entitlement truth-up).
+       ELI5: these two used to say "admins only" while the code let every curator
+       do it. Now that something actually CHECKS them, saying "admins only" would
+       have quietly taken the ability away from curators who use it every day.
+       Detail: both keys were decorative until this pass — nothing anywhere called
+       userHasEntitlement() with them. What really gated a delete and a bulk edit
+       was the editor APIs' file-level `hasRole($role, 'editor')` (manage/editor/
+       api.php:47, api2.php:135), i.e. editor+. Wiring the check with the OLD
+       admin+ list would have been a live privilege REMOVAL disguised as a
+       de-orphaning fix. The remediation plan's §4.6 predicted this for
+       `bulk_edit_songs`; verification found `delete_songs` in the same state (the
+       plan believed delete was escalated to a raw `admin` role — it is not; the
+       only `hasRole(…,'admin')` near delete decides whether the ERROR DETAIL is
+       disclosed, api.php:3446 / api2.php:139).
+       An operator who WANTS delete to be admin-only can now make that true by
+       unticking `editor` at /manage/entitlements — which is exactly the control
+       that did nothing before. */
+    'delete_songs'         => ['editor', 'admin', 'global_admin'],
+    'bulk_edit_songs'      => ['editor', 'admin', 'global_admin'],
     'verify_songs'         => ['editor', 'admin', 'global_admin'],
 
     /* User management */
@@ -50,7 +67,14 @@ const ENTITLEMENTS = [
     'view_analytics'       => ['admin', 'global_admin'],
     'run_db_install'       => ['global_admin'],
     'run_db_migrate'       => ['global_admin'],
-    'run_db_backup'        => ['admin', 'global_admin'],
+    /* ALIGNED to the gate that actually decides this (#1590). /manage/setup-
+       database.php — the ONLY page that can run a backup — gates its whole load
+       on `run_db_install` (setup-database.php:57), whose default is
+       ['global_admin']. So an `admin` has never been able to take a backup; the
+       admin tick here advertised a capability the page denied one line earlier.
+       Listing `global_admin` alone changes nothing observable and stops the map
+       claiming otherwise. */
+    'run_db_backup'        => ['global_admin'],
     'run_db_restore'       => ['global_admin'],
     'drop_legacy_tables'   => ['global_admin'],
     /* System configuration — email service, system-wide flags, etc.

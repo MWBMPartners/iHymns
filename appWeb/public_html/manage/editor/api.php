@@ -960,6 +960,27 @@ switch ($action) {
         $songIds = array_values(array_filter(array_map('strval', $payload['songIds']), function ($id) {
             return $id !== '' && preg_match('/^[A-Za-z0-9_-]{1,32}$/', $id);
         }));
+        /* `bulk_edit_songs` entitlement — but ONLY for a genuinely bulk call
+           (#1590, entitlement truth-up E1).
+           ELI5: tagging one song is not a bulk edit, so the "Bulk-edit songs"
+           permission should not decide whether you can do it.
+           Detail: this endpoint is shaped for many songs, but the legacy editor's
+           only two callers (editor.js addSongTag / removeSongTag) pass a SINGLE
+           id — it is how a curator adds one tag chip to the song in front of
+           them. Gating that on `bulk_edit_songs` would mean an operator revoking
+           bulk editing also silently broke single-song tagging, i.e. the
+           checkbox would not do what its label says. The >1 test keeps the gate
+           honest, and is a no-op for both shipped callers.
+           EQUIVALENCE: the file-level gate at :47 requires editor+, and the
+           default `bulk_edit_songs` map is now exactly {editor, admin,
+           global_admin} (aligned to reality — see includes/entitlements.php), so
+           no role loses access today. */
+        if (count($songIds) > 1
+            && !userHasEntitlement('bulk_edit_songs', $currentUser['role'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['error' => 'The bulk_edit_songs entitlement is required to tag more than one song at a time.']);
+            break;
+        }
         $addTags = is_array($payload['add'] ?? null) ? $payload['add'] : [];
         $remTags = is_array($payload['remove'] ?? null) ? $payload['remove'] : [];
         /* Tag normalisation (#762):
@@ -3371,6 +3392,27 @@ switch ($action) {
         if (!validateCsrf((string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ''))) {
             http_response_code(403);
             echo json_encode(['ok' => false, 'error' => 'Invalid or missing CSRF token.']);
+            break;
+        }
+        /* `delete_songs` entitlement (#1590, entitlement truth-up E1).
+           ELI5: /manage/entitlements has a "Delete songs" checkbox. Until now
+           nothing looked at it, so ticking or unticking it did nothing at all.
+           This is the line that makes it mean something.
+           Placed AFTER the CSRF check on purpose: request authenticity is
+           established first, so a request that fails both is told about the
+           forgery rather than about the permission map.
+           EQUIVALENCE (no live behaviour change): the file-level gate at :47
+           already requires `hasRole($role, 'editor')`, i.e. exactly
+           {editor, admin, global_admin}. The default map for `delete_songs` is
+           now the same three roles (it was admin+ only, which described the
+           REVIEW page's wish rather than this endpoint's behaviour — see the
+           note in includes/entitlements.php). So every role that reached this
+           line yesterday still reaches it today; the only new outcome is that an
+           operator who UNTICKS a role now gets what they asked for.
+           @see appWeb/public_html/includes/entitlements.php */
+        if (!userHasEntitlement('delete_songs', $currentUser['role'] ?? null)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'The delete_songs entitlement is required.']);
             break;
         }
         $delBody   = json_decode(file_get_contents('php://input') ?: '', true);

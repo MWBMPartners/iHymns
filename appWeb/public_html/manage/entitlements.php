@@ -76,9 +76,17 @@ $effective = effectiveEntitlements();
 $groups = [
     'Song data' => ['edit_songs', 'delete_songs', 'bulk_edit_songs', 'verify_songs'],
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
-    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications', 'view_diagnostics'],
+    'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications', 'view_diagnostics', 'view_activity_log'],
     'Content moderation' => ['review_song_requests'],
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_credit_people', 'manage_languages', 'manage_tags'],
+    /* #1590 E2 — the curation surfaces that shipped after this grouping was
+       written landed in the catch-all "Other" bucket, so an operator looking for
+       "who can manage Works?" had to scan an unsorted list. Grouped here with
+       the surfaces they sit beside in the admin nav. */
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_credit_people', 'manage_languages', 'manage_tags', 'manage_works', 'manage_external_link_types', 'manage_duplicate_songs'],
+    'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_feature_gating'],
+    'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
+    'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
+    'Personalisation'    => ['manage_default_card_layout', 'customise_own_card_layout'],
     'Channel access'     => ['access_alpha', 'access_beta'],
     'Meta' => ['manage_entitlements'],
 ];
@@ -99,10 +107,14 @@ foreach (ENTITLEMENTS as $n => $_) {
 $ENTITLEMENT_LABELS = [
     'edit_songs'                => ['Edit songs',                    'Create + edit songs, metadata, arrangements'],
     'delete_songs'              => ['Delete songs',                  'Permanently remove a song'],
-    'bulk_edit_songs'           => ['Bulk-edit songs',               'Multi-select → tag / move / verify / export'],
+    /* Descriptions corrected in the #1590 truth-up: each one now names what the
+       checkbox actually decides, because as of this pass they decide something.
+       A description that overstates a permission is the same species of lie the
+       whole batch is fixing. */
+    'bulk_edit_songs'           => ['Bulk-edit songs',               'Tag or verify many songs at once from a multi-select'],
     'verify_songs'              => ['Verify songs',                  'Mark a song as editorially reviewed'],
     'view_users'                => ['View users',                    'Open the Users page'],
-    'edit_users'                => ['Edit users',                    'Change profile / display name / email'],
+    'edit_users'                => ['Edit users',                    'Change a user\'s profile, username, password or active state'],
     'change_user_roles'         => ['Change user roles',             'Promote or demote another user (below own level)'],
     'assign_global_admin'       => ['Assign Global Admin',           'Grant the highest role — Global Admin only'],
     'delete_users'              => ['Delete users',                  'Permanently remove a user account'],
@@ -133,6 +145,38 @@ $ENTITLEMENT_LABELS = [
     'manage_notifications'      => ['Manage notifications',          'Compose & broadcast in-app notifications — Global Admin only (#813)'],
     'view_diagnostics'          => ['View SQL Diagnostics',           'SELECT-only read access to tblSongs/tblSongbooks/etc — Global Admin only'],
     'view_api_docs'             => ['View API docs',                  'Browse the OpenAPI spec via Swagger UI at /manage/api-docs'],
+
+    /* ---------------------------------------------------------------------
+     * #1590 E2 — the eleven keys that were ENFORCED but had no label.
+     *
+     * ELI5: the code was already checking these permissions, but this page had
+     * no friendly name for them, so they rendered as a machine key with no
+     * explanation. An operator could not tell what they were turning off.
+     *
+     * WHY IT MATTERED MORE THAN IT LOOKS: this is the mirror image of the
+     * decorative-entitlement problem the rest of this batch fixes. There, the
+     * label existed and the check did not; here, the check existed and the
+     * label did not. Both leave the operator unable to reason about the map —
+     * and the unlabelled direction is also invisible to
+     * tests/php/test-orphan-inventory.php, whose CHECK 4 walks the KEYS OF THIS
+     * ARRAY. An enforced-but-unlabelled key is simply not examined, which is how
+     * `manage_org_licences` (decorative, and not on the remediation plan's list
+     * of nine) stayed unnoticed until this pass.
+     *
+     * Friendly wording only — CLAUDE.md rule #10 keeps technical detail behind
+     * the global_admin "Technical notes" disclosure above, not in these strings.
+     * ------------------------------------------------------------------- */
+    'manage_works'              => ['Manage works',                   'Group songs into a composition and edit its details (#840)'],
+    'manage_external_link_types'=> ['Manage external-link types',     'Curate the providers behind every "Find this elsewhere" panel'],
+    'manage_duplicate_songs'    => ['Merge duplicate songs',          'Review suggested duplicates and permanently merge two songs'],
+    'manage_own_organisation'   => ['Manage your own organisation',   'Administer an organisation you own or admin, without a site-wide role'],
+    'manage_feature_gating'     => ['Define gateable features',       'Create the capabilities that access tiers switch on and off'],
+    'manage_org_licences'       => ['Manage organisation licences',   'Add, change or remove an organisation\'s CCLI / streaming licences'],
+    'manage_user_licences'      => ['Manage user licences',           'Attach or remove a licence held by an individual user'],
+    'view_licence_audit'        => ['View licence audit',             'See how a user\'s effective licences were worked out'],
+    'view_ccli_report'          => ['View CCLI usage report',         'Export the annual song-usage return as CSV (#317)'],
+    'request_api_keys'          => ['Request an API key',             'Ask for a machine-to-machine key; a Global Admin approves it'],
+    'manage_api_keys'           => ['Manage API keys',                'Mint, approve and revoke machine-to-machine API keys'],
 ];
 
 $entLabel = static function (string $key) use ($ENTITLEMENT_LABELS): array {

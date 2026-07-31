@@ -138,6 +138,34 @@ if (!$currentUser || !hasRole((string)($currentUser['role'] ?? ''), 'editor')) {
 $ed2UserId  = isset($currentUser['id']) ? (int)$currentUser['id'] : null;
 $ed2IsAdmin = hasRole((string)($currentUser['role'] ?? ''), 'admin');
 
+/**
+ * Refuse the request unless the signed-in role holds $key (#1590, E1).
+ *
+ * ELI5: /manage/entitlements has checkboxes for "Delete songs" and "Bulk-edit
+ * songs". Nothing used to read them, so ticking or unticking one did nothing.
+ * This is the function that makes those two checkboxes real on this API.
+ *
+ * WHY A HELPER RATHER THAN FOUR INLINE `if`s: four copies of a gate are four
+ * chances for one of them to drift (CLAUDE.md's modularity rule; the same
+ * reasoning that produced ed2_respond()). One place to read, one place to fix.
+ *
+ * EQUIVALENCE — this adds NO live restriction. The guard above already requires
+ * `hasRole($role, 'editor')`, i.e. exactly {editor, admin, global_admin}, and
+ * the default maps for both `delete_songs` and `bulk_edit_songs` are now that
+ * same set (aligned to reality this pass — see includes/entitlements.php). The
+ * only new behaviour is that an operator's REVOCATION is finally honoured.
+ *
+ * @param string $key Entitlement key, e.g. 'delete_songs'
+ * @see appWeb/public_html/includes/entitlements.php
+ */
+function ed2_requireEntitlement(string $key): void
+{
+    global $currentUser;
+    if (!userHasEntitlement($key, $currentUser['role'] ?? null)) {
+        ed2_respond(['ok' => false, 'error' => 'The ' . $key . ' entitlement is required.'], 403);
+    }
+}
+
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $action = (string)($_REQUEST['action'] ?? '');
 $body   = [];
@@ -835,6 +863,7 @@ try {
     /* ---- delete_song (POST) — single cascade delete (verified: all 40 inbound
            FKs CASCADE/SET NULL) ---- */
     case 'delete_song': {
+        ed2_requireEntitlement('delete_songs');
         $songId = trim((string)($body['songId'] ?? $body['id'] ?? ''));
         if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'songId is required.'], 400); }
         /* #1343 — optional relink: where should the deleted song's permalink point?
@@ -2295,6 +2324,7 @@ try {
            transaction. Activity-logged once (no per-song revision: a bulk flag
            flip is audited via the log, not the per-song content history). ---- */
     case 'bulk_verify': {
+        ed2_requireEntitlement('bulk_edit_songs');
         $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
         $ids = [];
         foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
@@ -2318,6 +2348,7 @@ try {
     /* ---- bulk_tag_attach (POST) — attach one tag (auto-created) to many songs in
            one transaction. INSERT IGNORE skips already-tagged or missing songs. ---- */
     case 'bulk_tag_attach': {
+        ed2_requireEntitlement('bulk_edit_songs');
         $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
         $ids = [];
         foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }
@@ -2375,6 +2406,7 @@ try {
      * standard theme because it briefly had no songs would silently prune the
      * vocabulary and orphan its children. ---- */
     case 'bulk_tag_detach': {
+        ed2_requireEntitlement('bulk_edit_songs');
         $rawIds = is_array($body['songIds'] ?? null) ? $body['songIds'] : [];
         $ids = [];
         foreach ($rawIds as $x) { $s = trim((string)$x); if ($s !== '') { $ids[] = $s; } }

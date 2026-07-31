@@ -43,8 +43,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $token  = $_POST['csrf_token'] ?? '';
     $action = $_POST['action'] ?? 'create';
 
+    /* Per-action entitlements (#1590, entitlement truth-up E1).
+     *
+     * ELI5: /manage/entitlements has separate checkboxes for editing users,
+     * changing their roles and deleting them. Until now this page only checked
+     * the "view users" one, so unticking any of the other three changed nothing
+     * — an operator who took "Delete users" away from admins still had admins
+     * able to delete users, silently.
+     *
+     * WHY A MAP RATHER THAN AN `if` PER CASE: the switch below is long and the
+     * gate has to be impossible to forget on a new action. Declaring it once,
+     * beside the action names it applies to, means adding a case without a gate
+     * is visible in one place instead of buried 150 lines down (CLAUDE.md's
+     * "hard-coded list that already exists in a central map" red flag applies to
+     * the ROLE lists, not to this action→entitlement routing, which exists
+     * nowhere else).
+     *
+     * EQUIVALENCE — no live behaviour change. Reaching this file at all already
+     * requires `view_users` (line 29), whose default is exactly
+     * ['admin','global_admin']; `edit_users`, `change_user_roles` and
+     * `delete_users` default to that identical pair. So the added condition is
+     * true for every role that could previously get here. The per-target role
+     * hierarchy checks inside each case are untouched and still apply.
+     *
+     * `create` is deliberately absent: there is no `create_users` entitlement to
+     * check, and inventing one by reusing `edit_users` would make that
+     * checkbox's label ("Change profile / display name / email") untrue. Its
+     * promote-to-Global-Admin branch IS gated below, on `assign_global_admin`.
+     *
+     * `change_tier` keeps its own inline `assign_user_tier` check (it predates
+     * this pass and is checked after the target is resolved, so it can report
+     * "user not found" vs "not permitted" in the existing order).
+     *
+     * @see appWeb/public_html/includes/entitlements.php
+     */
+    $ACTION_ENTITLEMENTS = [
+        'change_role'    => 'change_user_roles',
+        'toggle_active'  => 'edit_users',
+        'reset_password' => 'edit_users',
+        'update_profile' => 'edit_users',
+        'rename_user'    => 'edit_users',
+        'delete'         => 'delete_users',
+    ];
+    $requiredEntitlement = $ACTION_ENTITLEMENTS[$action] ?? null;
+
     if (!validateCsrf($token)) {
         $error = 'Invalid form submission. Please try again.';
+    } elseif ($requiredEntitlement !== null
+              && !userHasEntitlement($requiredEntitlement, $currentUser['role'] ?? null)) {
+        /* No htmlspecialchars here — the single render site (line ~359 below)
+           escapes $error itself, and double-escaping would print &amp;. */
+        $error = 'You do not have permission to perform that action ('
+               . $requiredEntitlement . ').';
     } else {
         switch ($action) {
 
@@ -64,7 +114,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $error = 'Passwords do not match.';
                 } elseif (!in_array($role, allRoles(), true)) {
                     $error = 'Invalid role.';
-                } elseif ($role === 'global_admin' && $currentUser['role'] !== 'global_admin') {
+                /* `assign_global_admin` (#1590, E1) replaces the raw role
+                   comparison that used to live here.
+                   ELI5: the "Assign Global Admin" checkbox on
+                   /manage/entitlements now decides this, instead of a rule
+                   hardcoded in this file that no operator could change.
+                   EQUIVALENCE: the old test was `role !== 'global_admin'`, i.e.
+                   permit exactly the global_admin role. The default map for
+                   `assign_global_admin` is `['global_admin']` — the same single
+                   role, and userHasEntitlement() does an exact in_array() match
+                   (not a hasRole() level comparison), so the sets are identical.
+                   The message stays role-shaped because that is what the
+                   operator sees; the RULE is now the entitlement. */
+                } elseif ($role === 'global_admin'
+                          && !userHasEntitlement('assign_global_admin', $currentUser['role'] ?? null)) {
                     $error = 'Only Global Admin can assign the Global Admin role.';
                 } elseif (roleLevel($role) > roleLevel($currentUser['role'])) {
                     $error = 'Cannot assign a role higher than your own.';
@@ -82,6 +145,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             case 'change_role':
                 $targetId = (int)($_POST['user_id'] ?? 0);
                 $newRole  = $_POST['new_role'] ?? '';
+                /* Promoting TO global_admin is its own entitlement (#1590, E1) —
+                   the same rule the `create` branch above now applies. Checked
+                   here rather than inside updateUserRole() because that helper
+                   is shared with the api.php admin surface, which has its own
+                   gate; putting the check at both call sites keeps each
+                   surface's refusal in its own house style, and the helper's
+                   own `$actingUser['role'] !== 'global_admin'` test (auth.php
+                   ~:893) stays as defence in depth.
+                   EQUIVALENCE: default map is ['global_admin'] — identical to
+                   the helper's exact-role test, so nothing changes today. */
+                if ($newRole === 'global_admin'
+                    && !userHasEntitlement('assign_global_admin', $currentUser['role'] ?? null)) {
+                    $error = 'Only Global Admin can assign the Global Admin role.';
+                    break;
+                }
                 try {
                     updateUserRole($targetId, $newRole, $currentUser);
                     $success = 'Role updated successfully.';

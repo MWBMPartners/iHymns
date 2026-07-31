@@ -14,8 +14,15 @@
 export const ENTITLEMENTS = {
     /* Song data */
     edit_songs:           ['editor', 'admin', 'global_admin'],
-    delete_songs:         ['admin', 'global_admin'],
-    bulk_edit_songs:      ['admin', 'global_admin'],
+    /* editor+ since #1590 — see the long note beside the same two keys in
+       includes/entitlements.php. Short version: nothing checked either key, and
+       what really gated a delete / bulk edit was the editor APIs' editor-level
+       role gate. Wiring the checks with the old admin-only list would have
+       removed a capability curators use today, so the MAP moved to match the
+       code rather than the other way round. This file is a MIRROR — copy the
+       role list verbatim, never form a second opinion. */
+    delete_songs:         ['editor', 'admin', 'global_admin'],
+    bulk_edit_songs:      ['editor', 'admin', 'global_admin'],
     verify_songs:         ['editor', 'admin', 'global_admin'],
 
     /* User management */
@@ -30,7 +37,10 @@ export const ENTITLEMENTS = {
     view_analytics:       ['admin', 'global_admin'],
     run_db_install:       ['global_admin'],
     run_db_migrate:       ['global_admin'],
-    run_db_backup:        ['admin', 'global_admin'],
+    /* global_admin only since #1590 — /manage/setup-database gates its whole
+       page load on run_db_install (global_admin), so an admin could never reach
+       the backup button regardless of what this said. Mirror of the PHP map. */
+    run_db_backup:        ['global_admin'],
     run_db_restore:       ['global_admin'],
     drop_legacy_tables:   ['global_admin'],
 

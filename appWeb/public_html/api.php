@@ -11867,9 +11867,20 @@ if ($action !== null) {
             }
             /* Hierarchy gate (mirrors users.php). Only global_admin can
                assign global_admin; nobody can promote above their own
-               level. */
+               level.
+               #1590 E1: the "only global_admin can assign global_admin" half is
+               now the `assign_global_admin` entitlement rather than a rule
+               hardcoded here that no operator could see or change — the same
+               swap made in /manage/users.php's `create` and `change_role`
+               branches and in admin_user_role_change below.
+               EQUIVALENCE: the old test permitted exactly the `global_admin`
+               role; the default map is ['global_admin'] and
+               userHasEntitlement() matches exactly (in_array, not a role-level
+               comparison), so the admitted set is unchanged. The "cannot promote
+               above your own level" rule below is a HIERARCHY invariant, not a
+               capability, and deliberately stays a role comparison. */
             $actingRole = (string)$authUser['Role'];
-            if ($role === 'global_admin' && $actingRole !== 'global_admin') {
+            if ($role === 'global_admin' && !userHasEntitlement('assign_global_admin', $actingRole)) {
                 sendJson(['error' => 'Only Global Admin can assign the Global Admin role.'], 403);
                 break;
             }
@@ -11915,6 +11926,35 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, entitlement truth-up E1).
+             *
+             * ELI5: the manage page and this API do the same job, so revoking a
+             * permission has to stop BOTH. Gating only the page would leave the
+             * API as an open side door and make the operator's revocation look
+             * like it worked when it had not.
+             *
+             * WHY IT IS HERE AND NOT ONLY IN manage/users.php: §4.6 of the
+             * remediation plan named only the manage page, having recorded the
+             * enforcement point as "users.php gates the page on view_users".
+             * That is true and incomplete — these seven admin_user_* actions are
+             * a second, independently-gated write surface for the same six
+             * operations (#719's deliberate API-first family). A truth-up that
+             * covered one and not the other would be worse than none, because
+             * the entitlements page would then tell a half-truth.
+             *
+             * EQUIVALENCE — no live behaviour change. The raw gate immediately
+             * above admits exactly ['admin','global_admin']; the default map for
+             * `edit_users`, `change_user_roles` and `delete_users` is that same
+             * pair. The raw check is deliberately KEPT rather than replaced: it
+             * also establishes $authUser, and leaving it makes this an AND of
+             * two conditions that agree today.
+             *
+             * @see appWeb/public_html/includes/entitlements.php
+             */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -11974,6 +12014,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -12044,6 +12093,15 @@ if ($action !== null) {
                 sendJson(['error' => 'Admin access required.'], 403);
                 break;
             }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('change_user_roles', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The change_user_roles entitlement is required.'], 403);
+                break;
+            }
 
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'manage' . DIRECTORY_SEPARATOR
                        . 'includes'  . DIRECTORY_SEPARATOR . 'auth.php';
@@ -12054,6 +12112,21 @@ if ($action !== null) {
 
             if ($targetId <= 0 || $newRole === '') {
                 sendJson(['error' => 'user_id and new_role required.'], 400);
+                break;
+            }
+
+            /* Promoting TO Global Admin is its own entitlement (#1590, E1) — the
+               same gate /manage/users.php now applies to its `change_role` and
+               `create` branches. updateUserRole()'s own
+               `$actingUser['role'] !== 'global_admin'` test (manage/includes/
+               auth.php ~:893) stays as defence in depth; this makes the
+               /manage/entitlements checkbox the RULE rather than a decoration.
+               EQUIVALENCE: default map is ['global_admin'] and
+               userHasEntitlement() matches the role exactly (not by level), so
+               the admitted set is identical to the helper's test. */
+            if ($newRole === 'global_admin'
+                && !userHasEntitlement('assign_global_admin', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Only Global Admin can assign Global Admin role.'], 403);
                 break;
             }
 
@@ -12097,6 +12170,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -12158,6 +12240,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('edit_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The edit_users entitlement is required.'], 403);
                 break;
             }
 
@@ -12254,6 +12345,15 @@ if ($action !== null) {
             $authUser = getAuthenticatedUser();
             if (!$authUser || !in_array($authUser['Role'], ['admin', 'global_admin'])) {
                 sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+            /* Per-action entitlement (#1590, E1) — see the note on
+               `admin_user_update` above. Default map is the same
+               ['admin','global_admin'] the raw gate allows, so no role loses
+               access; an operator's revocation is now honoured on the API too,
+               not just on /manage/users. */
+            if (!userHasEntitlement('delete_users', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'The delete_users entitlement is required.'], 403);
                 break;
             }
 
