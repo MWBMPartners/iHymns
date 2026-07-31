@@ -116,7 +116,7 @@ The Apple app is a single Universal purchase (bundle `app.ihymns`) spanning ever
 
 - **Magic-link sign-in** — primary auth path (email + 6-digit code); password sign-in available as a fallback (#395).
 - **Cross-subdomain cookie** — `HttpOnly`, `SameSite=Lax`, `Secure` auth cookie on `.ihymns.app` with 30-day sliding expiry survives iOS ITP (#390).
-- **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin. Song deletion is Admin+ only (#1692 stage 1) — irreversible until soft-delete lands.
+- **Roles** — Global Admin, Admin, Editor, User; capability-based entitlements editable at runtime by a global admin. Song deletion (`delete_songs`, Editor+) is now a recoverable soft delete (#1694/#1695, epic #1692) — deleted songs are hidden from every read surface but listed with **Restore** at `/manage/deleted-songs`; the old cascade delete survives only as the separate, irreversible **Purge** action, gated by its own `purge_songs` entitlement and reachable only from the deleted state.
 - **Signed-in devices** (#1409 / #1511) — Settings → Account & Profile lists every device signed in to your account and lets you sign out any other one remotely.
 - **Channel gating** — alpha / beta subdomains require the relevant access entitlement.
 - **Content access tiers** — public, free, CCLI, premium, pro with organisation licensing (#640).
@@ -171,6 +171,7 @@ Every write on these pages is CSRF-protected via `validateCsrfRequest()` — a r
 git clone https://github.com/MWBMPartners/iHymns.git
 cd iHymns
 npm install
+git config core.hooksPath tools/githooks
 ```
 
 ### 2. Generate song-import data

@@ -495,6 +495,10 @@ Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migra
 git clone https://github.com/MWBMPartners/iHymns.git
 cd iHymns
 
+# Install the repo's git hooks (tools/githooks/pre-push guards against
+# resurrecting a deleted branch or pushing the wrong local branch)
+git config core.hooksPath tools/githooks
+
 # Parse song data (generates data/songs.json)
 npm run parse-songs
 
