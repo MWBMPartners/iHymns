@@ -49,6 +49,11 @@ $_adminLinks = [
        (edit_songs) for Link/Dismiss; the destructive Merge is gated per-action
        in-page (manage_duplicate_songs). */
     ['duplicate-songs',      '/manage/duplicate-songs',        'bi-git-compare',     'Duplicates & Links',    'edit_songs',                  'Songs'      ],
+    /* Deleted songs (#1694) — the soft-delete queue: restore or (admin-only,
+       per-action purge_songs gate in-page) permanently purge. Nav entitlement
+       matches the page's own gate — test-admin-gate-parity.php derives this
+       pairing and fails the build if they drift (#1587 class). */
+    ['deleted-songs',        '/manage/deleted-songs',          'bi-trash3',          'Deleted Songs',         'delete_songs',                'Songs'      ],
 
     /* Catalogue — collection / metadata surfaces (#819) */
     ['songbooks',            '/manage/songbooks',              'bi-book',            'Songbooks',             'manage_songbooks',            'Catalogue'  ],

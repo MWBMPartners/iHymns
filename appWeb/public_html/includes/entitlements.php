@@ -70,6 +70,19 @@ const ENTITLEMENTS = [
        deletion back to curators once it is recoverable. When stage 2 lands,
        revisit this line — the reason for it will have gone. */
     'delete_songs'         => ['admin', 'global_admin'],
+    /* `purge_songs` — the IRREVERSIBLE half of #1694's two-step delete (owner
+       decision D3: add it now, separately from delete_songs). `delete_songs`
+       now gates the RECOVERABLE soft delete (and the /manage/deleted-songs
+       Restore); this key alone gates the destructive Purge — the cascade
+       DELETE that takes the song, its components, credits, media links AND
+       its entire revision history, with no in-app undo.
+       WHY A SEPARATE KEY: #1695 (stage 3) re-widens `delete_songs` back to
+       editor+ once deletion is recoverable. Without this key, the purge would
+       silently widen with it — or need a hardcoded role check, which the
+       review red-flag list bans. One key per distinct power, so the operator
+       can hand curators the recoverable delete while keeping the permanent
+       one at admin+. */
+    'purge_songs'          => ['admin', 'global_admin'],
     'bulk_edit_songs'      => ['editor', 'admin', 'global_admin'],
     'verify_songs'         => ['editor', 'admin', 'global_admin'],
 

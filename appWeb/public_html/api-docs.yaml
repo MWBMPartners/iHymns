@@ -6706,6 +6706,75 @@ paths:
         "500":
           description: Save failed; details in server log
 
+  /manage/editor/api.php?action=delete_song:
+    post:
+      operationId: editorDeleteSong
+      tags: [Editor API]
+      summary: SOFT-delete one song — hidden and restorable, never destroyed (#1694)
+      description: |
+        **Semantics changed in #1694 (stage 2 of #1692).** This action used to
+        perform the irreversible cascade `DELETE`; it now sets
+        `tblSongs.IsDeleted = 1` (plus who/when/why) and the song disappears
+        from every read surface while its components, credits, media, tags and
+        full revision history stay intact. An admin restores — or permanently
+        purges — it from `/manage/deleted-songs`; purge is reachable **only**
+        from the deleted state and requires the separate `purge_songs`
+        entitlement.
+
+        `redirectTo` is **accepted and ignored** (kept so older clients do not
+        break; the response carries a `notice` naming the fact). No
+        `tblSongRedirects` row is written at soft-delete time — a redirect
+        repoint cannot be un-written, so writing one would stop restore being a
+        no-op. The relink choice is made at purge, where the old redirect dance
+        runs unchanged.
+
+        Served identically by the v2 editor API
+        (`/manage/editor/api2.php?action=delete_song`, the default editor's
+        backend). Requires the `delete_songs` entitlement and the editor CSRF
+        gate (`X-CSRF-Token` here; `X-Requested-With` on api2). Clients branch
+        on the **HTTP status**, never the error prose.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [songId]
+              properties:
+                songId:     { type: string, example: CP-0202 }
+                reason:
+                  type: string
+                  nullable: true
+                  description: Optional `songDeleteReasons()` key (`duplicate`, `copyright`, `data-error`, `requested`, `other`). Unknown values refuse with 422.
+                note:       { type: string, description: Optional free-text note (clamped to 255 chars) }
+                redirectTo: { type: string, description: Accepted and IGNORED (#1694) — the relink happens at purge }
+      responses:
+        "200":
+          description: Song moved to Deleted songs (restorable)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:          { type: boolean }
+                  deleted:     { type: integer, description: Back-compat — 1 song left the catalogue }
+                  softDeleted: { type: boolean, description: Always true — the row survives, hidden }
+                  songId:      { type: string }
+                  redirectTo:  { type: string, nullable: true, description: Always null — no redirect is written at soft-delete time }
+                  notice:      { type: string, description: Present only when a redirectTo was supplied, explaining that it was ignored }
+        "400":
+          description: songId missing/empty
+        "403":
+          description: CSRF failure, or the delete_songs entitlement is missing
+        "404":
+          description: No such song
+        "409":
+          description: The soft-delete migration has not been applied on this install (the endpoint REFUSES rather than falling back to a hard delete), or the song is already deleted
+        "422":
+          description: Unknown delete reason (not in the allow-list)
+        "500":
+          description: Delete failed; details in server log (admins get error_detail)
+
   /manage/editor/api.php?action=bulk_tag:
     post:
       operationId: editorBulkTag

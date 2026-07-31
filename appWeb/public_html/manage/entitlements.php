@@ -74,7 +74,7 @@ $effective = effectiveEntitlements();
 /* Group entitlements for readability. Anything not in a listed group
    falls into "Other" so newly-added entitlements still appear. */
 $groups = [
-    'Song data' => ['edit_songs', 'delete_songs', 'bulk_edit_songs', 'verify_songs'],
+    'Song data' => ['edit_songs', 'delete_songs', 'purge_songs', 'bulk_edit_songs', 'verify_songs'],
     'User management' => ['view_users', 'edit_users', 'change_user_roles', 'assign_global_admin', 'delete_users'],
     'Database & operations' => ['view_admin_dashboard', 'view_analytics', 'run_db_install', 'run_db_migrate', 'run_db_backup', 'run_db_restore', 'drop_legacy_tables', 'manage_configuration', 'manage_notifications', 'view_diagnostics', 'view_activity_log'],
     'Content moderation' => ['review_song_requests'],
@@ -110,7 +110,13 @@ foreach (ENTITLEMENTS as $n => $_) {
    is non-fatal — but every existing one should have a label here. */
 $ENTITLEMENT_LABELS = [
     'edit_songs'                => ['Edit songs',                    'Create + edit songs, metadata, arrangements'],
-    'delete_songs'              => ['Delete songs',                  'Permanently remove a song'],
+    /* #1694 — deletion split in two: delete_songs is now the RECOVERABLE soft
+       delete (and the Restore on /manage/deleted-songs); the irreversible
+       purge has its own key below. The old description ("Permanently remove")
+       would overstate this checkbox — the same species of lie the #1590
+       truth-up removed from this list. */
+    'delete_songs'              => ['Delete songs',                  'Move a song to Deleted songs (hidden, restorable) — and restore it'],
+    'purge_songs'               => ['Purge deleted songs',           'Permanently destroy a soft-deleted song and its whole history — irreversible'],
     /* Descriptions corrected in the #1590 truth-up: each one now names what the
        checkbox actually decides, because as of this pass they decide something.
        A description that overstates a permission is the same species of lie the

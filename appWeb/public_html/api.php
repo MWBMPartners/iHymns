@@ -9631,12 +9631,17 @@ if ($action !== null) {
                @deleted-visible: admin_export deliberately includes soft-deleted
                rows — owner decision D4 (#1694): a full data export is a backup/
                audit artefact, and silently omitting hidden rows would make it
-               lie about the database. (D4's optional `IsDeleted` output column
-               ships with the admin surface, #1694 commit 5.) */
+               lie about the database. The `IsDeleted` output column marks them
+               (json/csv/xml only — OpenSong and VideoPsalm are FOREIGN format
+               contracts whose consumers would choke on an invented field).
+               Column-existence-gated (#1228): on an un-migrated install the
+               SELECT omits the column and the emitters omit the field, so the
+               export is byte-identical to before the migration existed. */
+            $exportHasDeleted = songSoftDeleteReady($db);
             $stmt = $db->prepare(
                 'SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName,
                         s.Language, s.Copyright, s.Ccli, s.Verified, s.HasAudio, s.HasSheetMusic,
-                        s.LyricsText
+                        s.LyricsText' . ($exportHasDeleted ? ', s.IsDeleted' : '') . '
                  FROM tblSongs s
                  LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
                  ORDER BY s.SongbookAbbr, s.Number'
@@ -9679,7 +9684,11 @@ if ($action !== null) {
                             'verified'  => (bool)$s['Verified'],
                             'hasAudio'  => (bool)$s['HasAudio'],
                             'hasSheetMusic' => (bool)$s['HasSheetMusic'],
-                        ];
+                        ] + ($exportHasDeleted ? [
+                            /* D4 (#1694): mark, never omit, soft-deleted rows.
+                               Key absent entirely pre-migration (gate above). */
+                            'isDeleted' => (bool)$s['IsDeleted'],
+                        ] : []);
                     }
                     header('Content-Type: application/json; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.json"');
@@ -9690,9 +9699,15 @@ if ($action !== null) {
                     header('Content-Type: text/csv; charset=UTF-8');
                     header('Content-Disposition: attachment; filename="ihymns-export.csv"');
                     $out = fopen('php://output', 'w');
-                    fputcsv($out, ['id', 'number', 'title', 'songbook', 'writers', 'composers', 'copyright', 'language']);
+                    /* D4 (#1694): the is_deleted column exists only once the
+                       migration has run — header and rows stay in lockstep so
+                       an un-migrated export is byte-identical to before. */
+                    fputcsv($out, array_merge(
+                        ['id', 'number', 'title', 'songbook', 'writers', 'composers', 'copyright', 'language'],
+                        $exportHasDeleted ? ['is_deleted'] : []
+                    ));
                     foreach ($songs as $s) {
-                        fputcsv($out, [
+                        fputcsv($out, array_merge([
                             $s['SongId'],
                             $s['Number'],
                             $s['Title'],
@@ -9701,7 +9716,7 @@ if ($action !== null) {
                             implode('; ', $composerMap[$s['SongId']] ?? []),
                             $s['Copyright'],
                             $s['Language'],
-                        ]);
+                        ], $exportHasDeleted ? [(int)$s['IsDeleted']] : []));
                     }
                     fclose($out);
                     break;
@@ -9713,6 +9728,11 @@ if ($action !== null) {
                     foreach ($songs as $s) {
                         $node = $xml->addChild('song');
                         $node->addAttribute('id', $s['SongId']);
+                        /* D4 (#1694): attribute present only post-migration —
+                           an un-migrated export stays byte-identical. */
+                        if ($exportHasDeleted) {
+                            $node->addAttribute('isDeleted', (string)(int)$s['IsDeleted']);
+                        }
                         $node->addChild('number', (string)$s['Number']);
                         $node->addChild('title', htmlspecialchars($s['Title'], ENT_XML1));
                         $node->addChild('songbook', $s['SongbookAbbr']);

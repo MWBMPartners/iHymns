@@ -27,6 +27,13 @@ export const ENTITLEMENTS = {
        soft delete, after which this returns to editor+. Must stay identical to
        includes/entitlements.php; test-entitlement-parity.php enforces that. */
     delete_songs:         ['admin', 'global_admin'],
+    /* #1694 — the IRREVERSIBLE half of the two-step delete: `delete_songs` is
+       now the recoverable soft delete; this alone gates the destructive Purge
+       on /manage/deleted-songs. Separate key so #1695's re-widening of
+       delete_songs to editor+ cannot drag the permanent delete along with it.
+       Role list copied VERBATIM from includes/entitlements.php — this map is
+       a MIRROR, never a second opinion (test-entitlement-parity, both halves). */
+    purge_songs:          ['admin', 'global_admin'],
     bulk_edit_songs:      ['editor', 'admin', 'global_admin'],
     verify_songs:         ['editor', 'admin', 'global_admin'],
 
