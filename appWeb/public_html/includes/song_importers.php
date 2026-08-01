@@ -2774,6 +2774,244 @@ function _bulkImport_processOpenLp(string $body, ?string $filenameHint = null): 
     ];
 }
 
+/**
+ * Synchronous single-file OpenSong import (#882).
+ *
+ * ELI5: someone uploaded ONE OpenSong `<song>` XML file (not a zip of many);
+ * this reads it, files it under a catch-all "OpenSong Import" songbook, and
+ * saves it — the exact same job _bulkImport_processOpenLp() does for a lone
+ * OpenLyrics file, just for the other XML dialect.
+ *
+ * Detail — before this function existed, a single OpenSong .xml had NO
+ * single-file processor at all: _bulkImport_parseOpenSong() (the parser)
+ * was reachable only from the ZIP-import loop, which supplies the
+ * abbreviation/songbook-name/number-hint it needs from the ZIP's
+ * "<Title> [<ABBR>]/<#> …" folder+filename convention. A lone upload has no
+ * such folder, so unlike OpenLyrics (whose <songbook name="…" entry="N"/>
+ * is self-describing) OpenSong XML carries no songbook metadata of its own
+ * — the file is therefore parked under a fixed "OpenSong Import" (abbr
+ * "OS") songbook, the same fixed-name convention
+ * _bulkImport_processProclaim() (abbr "PC") and _bulkImport_processFreeShow()
+ * (name "FreeShow Import") already use for their own metadata-less
+ * single-file formats. Number resolution mirrors the ZIP loop's own
+ * priority chain (song_importers.php's OpenSong branch): the XML's own
+ * <hymn_number> wins if present, else the upload filename's leading
+ * digits (same `preg_match('/^(\d{1,5})/', …)` the ZIP loop uses), else a
+ * fresh per-songbook auto-increment — all three are folded into
+ * _bulkImport_parseOpenSong()'s own priority logic via its $numberHint /
+ * $autoNumber parameters, so this function only has to compute those two
+ * inputs, not re-implement the ordering.
+ *
+ * Contract is byte-identical in SHAPE to _bulkImport_processOpenLp(): same
+ * summary keys, same "ok=false only on parse failure, save failures land as
+ * ok=true + songs_failed>0" contract, and the same #1694 D1 SongCount
+ * recompute block on songbook creation. Invoked from the shared XML
+ * auto-router (_bulkImport_processXmlAuto()) and, once wired, an explicit
+ * format=opensong single-file upload.
+ *
+ * @param string      $body         Raw XML.
+ * @param string|null $filenameHint Original upload filename — used only for
+ *                                  the leading-digits number hint and error
+ *                                  reporting, never for songbook naming.
+ * @return array  Same summary shape as _bulkImport_processOpenLp().
+ */
+function _bulkImport_processOpenSong(string $body, ?string $filenameHint = null): array
+{
+    $abbr     = 'OS';
+    $bookName = 'OpenSong Import';
+
+    /* Leading digits in the upload filename are a NUMBER HINT ONLY — the
+       XML's own <hymn_number> (checked inside _bulkImport_parseOpenSong())
+       always wins over this. Mirrors the identical extraction the ZIP
+       loop performs on the archive entry's filename. */
+    $numberHint = 0;
+    if ($filenameHint !== null) {
+        $leaf = (string)preg_replace('#^.*/#', '', $filenameHint);
+        if (preg_match('/^(\d{1,5})/', $leaf, $m)) {
+            $numberHint = (int)$m[1];
+        }
+    }
+
+    $db         = getDbMysqli();
+    $autoNumber = _bulkImport_nextSongNumberFor($db, $abbr);
+    [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $numberHint, $autoNumber);
+    if ($song === null) {
+        return [
+            'ok'                     => false,
+            'error'                  => $reason ?: 'OpenSong parse failed',
+            'songbooks_created'      => [],
+            'songbooks_existing'     => [],
+            'songs_created'          => 0,
+            'songs_skipped_existing' => 0,
+            'songs_failed'           => 0,
+            'parsed_by_format'       => ['opensong' => 0],
+            'errors'                 => [],
+        ];
+    }
+
+    $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
+    $songbooksCreated  = ($state === 'created')  ? [$abbr] : [];
+    $songbooksExisting = ($state === 'existing') ? [$abbr] : [];
+
+    $songsCreated = 0;
+    $songsSkipped = 0;
+    $songsFailed  = 0;
+    $errors       = [];
+    [$action, $saveErr] = _bulkImport_saveSong($db, $song);
+    if ($action === 'create') {
+        $songsCreated = 1;
+    } elseif ($action === 'skipped') {
+        $songsSkipped = 1;
+    } else {
+        $songsFailed = 1;
+        $errors[]    = [
+            'entry' => ($filenameHint ?? 'opensong') . ': ' . ($song['id'] ?? '?'),
+            'error' => 'save failed: ' . $saveErr,
+        ];
+    }
+
+    if (!empty($songbooksCreated)) {
+        $cnt = $db->prepare(
+            /* #1694 D1 — SongCount counts VISIBLE songs (agrees with the
+               predicate-aware triggers; trigger-denied hosts rely on this). */
+            'UPDATE tblSongbooks
+                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
+              WHERE Abbreviation = ?'
+        );
+        $cnt->bind_param('ss', $abbr, $abbr);
+        $cnt->execute();
+        $cnt->close();
+    }
+
+    return [
+        'ok'                     => true,
+        'songbooks_created'      => $songbooksCreated,
+        'songbooks_existing'     => $songbooksExisting,
+        'songs_created'          => $songsCreated,
+        'songs_skipped_existing' => $songsSkipped,
+        'songs_failed'           => $songsFailed,
+        'parsed_by_format'       => ['opensong' => $songsCreated + $songsSkipped],
+        'errors'                 => $errors,
+    ];
+}
+
+/**
+ * Pure routing decision for a single .xml upload of UNKNOWN dialect (#882).
+ *
+ * ELI5: peeks at the file and guesses "OpenLyrics" or "OpenSong" — no
+ * database, no parsing, just a guess so the caller knows which parser to
+ * try first.
+ *
+ * Detail — the ONE discriminator is _bulkImport_looksLikeOpenLyrics(), the
+ * same function the ZIP-import loop already uses to sort .xml entries
+ * (song_importers.php's ZIP walker) — sharing it means a single-file auto
+ * decision and a ZIP-entry decision can never disagree about the same file
+ * (CLAUDE.md rule #35: one mechanism, not two independent guesses).
+ * Extracted as its own pure function so _bulkImport_processXmlAuto()'s
+ * try-both fallback logic can be tested without a database connection
+ * (see tests/php/test-xml-import-routing.php).
+ *
+ * @param string $body Raw XML.
+ * @return string 'openlp' or 'opensong'.
+ */
+function _bulkImport_xmlAutoPrimary(string $body): string
+{
+    return _bulkImport_looksLikeOpenLyrics($body) ? 'openlp' : 'opensong';
+}
+
+/**
+ * Single-file XML auto-router for an UNKNOWN OpenLyrics-vs-OpenSong upload
+ * (#882) — the fix for "OpenSong single-file import has never worked".
+ *
+ * ELI5: tries the parser the sniff thinks is right; if that one says the
+ * file isn't valid, tries the OTHER parser once before giving up — so a
+ * single .xml upload of either dialect lands correctly without the curator
+ * having to know which one it is.
+ *
+ * Detail — before this function existed, EVERY single .xml upload (both
+ * editors, `format=auto` and the only dropdown option that existed) was
+ * hard-routed to _bulkImport_processOpenLp() alone, so an OpenSong file
+ * always failed with OpenLyrics' own "no <title> element" error (OpenSong's
+ * <title> lives at the XML root; OpenLyrics looks for
+ * properties/titles/title) — a confusing, wrong-format error rather than
+ * a clear "not recognised" message. This router:
+ *   1. Picks a PRIMARY format via the one shared discriminator
+ *      _bulkImport_xmlAutoPrimary() (never a second, parallel guess).
+ *   2. Tries the primary parser. Both _bulkImport_processOpenLp() and
+ *      _bulkImport_processOpenSong() return `ok=false` ONLY on a parse
+ *      failure — neither touches the database before that check — so a
+ *      primary miss is always safe to retry with the other parser.
+ *   3. On primary success (`ok=true`, even if the save itself later fails
+ *      and songs_failed>0), stamps the RESOLVED format into the result and
+ *      returns immediately — no second parse attempted.
+ *   4. On primary failure, tries the secondary parser ONCE. Success there
+ *      returns with the resolved format stamped. This makes auto-detect
+ *      strictly MORE capable than either parser picked in isolation — e.g.
+ *      a namespace-less OpenLyrics export with unnamed <verse> elements
+ *      fails the cheap sniff (which looks for `<verse name=`) but still
+ *      parses fine once actually tried.
+ *   5. If BOTH fail, returns ONE combined error naming both formats and
+ *      both underlying reasons — never a misleading single-format error,
+ *      and never silently picks a "winner" between two failures.
+ *   Explicit format picks (format=openlp or format=opensong from the UI)
+ *   bypass this router entirely and call the single parser directly — an
+ *   operator who asserted the format gets THAT format's real error, not a
+ *   combined guess (matches the #1633 JSON-sniff precedent: sniffing never
+ *   overrides an explicit choice).
+ *
+ * @param string      $body         Raw XML.
+ * @param string|null $filenameHint Original upload filename, passed through
+ *                                  to whichever single-format processor runs.
+ * @return array  Same summary shape as _bulkImport_processOpenLp(), plus a
+ *                'format' key naming the format that actually parsed
+ *                ('openlp' or 'opensong'; absent/null when both failed).
+ */
+function _bulkImport_processXmlAuto(string $body, ?string $filenameHint = null): array
+{
+    $primary   = _bulkImport_xmlAutoPrimary($body);
+    $secondary = $primary === 'openlp' ? 'opensong' : 'openlp';
+
+    $run = static function (string $format, string $body, ?string $filenameHint): array {
+        return $format === 'openlp'
+            ? _bulkImport_processOpenLp($body, $filenameHint)
+            : _bulkImport_processOpenSong($body, $filenameHint);
+    };
+
+    $primaryResult = $run($primary, $body, $filenameHint);
+    if ($primaryResult['ok'] ?? false) {
+        $primaryResult['format'] = $primary;
+        return $primaryResult;
+    }
+
+    $secondaryResult = $run($secondary, $body, $filenameHint);
+    if ($secondaryResult['ok'] ?? false) {
+        $secondaryResult['format'] = $secondary;
+        return $secondaryResult;
+    }
+
+    /* Both failed — name BOTH formats and BOTH real reasons rather than
+       reporting only the primary guess's (potentially misleading) error. */
+    $errorFor = static function (string $format) use ($primary, $primaryResult, $secondaryResult): string {
+        $result = ($format === $primary) ? $primaryResult : $secondaryResult;
+        return (string)($result['error'] ?? 'parse failed');
+    };
+    $openlpError   = $errorFor('openlp');
+    $opensongError = $errorFor('opensong');
+
+    return [
+        'ok'                     => false,
+        'error'                  => "not recognised as OpenLyrics ({$openlpError}) or OpenSong ({$opensongError})",
+        'songbooks_created'      => [],
+        'songbooks_existing'     => [],
+        'songs_created'          => 0,
+        'songs_skipped_existing' => 0,
+        'songs_failed'           => 0,
+        'parsed_by_format'       => ['openlp' => 0, 'opensong' => 0],
+        'errors'                 => [],
+        'format'                 => null,
+    ];
+}
+
 /* ===========================================================================
  *  ProPresenter 6 import (#1057)
  * ---------------------------------------------------------------------------
