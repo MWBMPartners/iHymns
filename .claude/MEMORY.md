@@ -507,3 +507,51 @@ durable parts, so they survive independently of that directory:
 "prefers to push to GitHub manually (commit but don't push)". The owner's
 standing instruction for these sessions is the opposite — commit **and push**
 to the working branch after every task. Follow the standing instruction.
+
+## Wave 4 (2026-08-01) — what shipped, and the one lesson behind all of it
+
+Branch `claude/wave3-fixes`, ~20 commits. **88 PHP + 45 node green, eslint clean.**
+
+| Issue | Was | Now |
+|---|---|---|
+| **#1735** | `bulk_songs` 500'd whenever gating was OFF — the default. Offline download 100% dead for PWA + native, 4 weeks | fixed `b1376004` |
+| **#1677** | v2 bulk importer 403'd on every upload; its guard named 2 functions in 1 file and was green throughout | fixed `5f152f8e` + tree-derived guard |
+| **#722** | Schema Audit's 21 "orphans" were the AUDITOR's parser bug | fixed `0b5ee3a0` + parser test |
+| **#882** | OpenSong single-file import never worked; only the ZIP half did | fixed `dc1cef1e`→`388bcde2` |
+| **#1608** | v2 had no song-link surface at all; closed with zero comments and no code | ported `28cee4f9`→`6b1c334e` |
+| **#960** | v2 never populated `tblCreditPeople` — v2 doesn't call `save_song` | fixed `3f505b86`→`3513e93e` |
+| **#1725** | — | IntAppsAPI dormant foundation, 6 commits, `49aff51f`→`3af2f7e7` |
+
+### The one lesson, stated once
+
+**Nearly every defect above was a confidently-worded claim that nothing exercised.**
+
+- `bulk_songs` had a comment promising the header was a "NO-OP while gating is off" — being off is exactly what made it crash.
+- The #1677 guard asserted `['postJson','postForm']` — two names in one file — and stayed green for weeks beside a second broken client.
+- #882's close cited "`_bulkImport_parseOpenSong()` exists". **A grep cannot distinguish "exists" from "reachable".**
+- `test-xml-import-routing.php` said "DELIBERATELY DB-FREE" and justified it with a symmetry between two processors that was true of one and false of the other.
+- #722's own acceptance criterion was unmeetable because the tool doing the measuring was broken.
+
+The counter-practice that actually worked, every time: **derive the list from the tree, then break the thing and watch it go red.** Guards written this wave were wrong-but-green on first run **twice** — the api2 client scan found 1 of 3 clients (proximity-matching missed a URL built from a constant), and the credit-promote guard passed its own prescribed mutation (file-level substring, while `api2.php` has two legitimate call sites). Both were caught only by mutation-testing, and the second by a **vacuity check** that fails when a scan finds nothing.
+
+### Incidental finds — the good ones are always incidental
+
+- **#1739** — v1's `add_song_link` binds `'issiisis'` where columns need `'issiissi'`. Positions 7–8 transposed, so **every counterpart note ever saved via v1 was stored as `"0"`**. `bind_param` can't catch it: arity is right, types are swapped, mysqli coerces.
+- **#1736** — the importers parse writers/composers and then **drop them**; `_bulkImport_saveSong()` writes no credit tables. So #882's E2E passes on a file with two authors while both are discarded.
+- `import_file` returned **HTTP 200 on parse failure** (rule #35: status is the contract).
+- **#1740** — `processOpenSong` connects before parsing; its sibling doesn't.
+
+### Two subagent failure modes worth remembering
+
+Both were locally sensible and broke an invariant the agent couldn't see:
+
+1. **Raw agent output concatenated into a committed doc.** A harness SECURITY WARNING ended up inside `.claude/wave4-prelaunch-plan.md`, where a later agent correctly read it as possible prompt injection and refused to act. Fence or strip agent output before it becomes repo content.
+2. **A second handoff file.** The Block D agent wrote `2026-08-01-HANDOFF.md` beside the existing one. Reasonable convention, wrong here — the owner's standing rule is exactly ONE.
+
+### IntAppsAPI — the state that matters
+
+Entirely dormant and **proven so**: `remoteFeatures` key ABSENT (not empty) from `app_status`, zero `tblIntAppsSync` in the query log. The **D1 blocker** (enabled-but-un-migrated → mysqli STRICT throw on the PUBLIC HOME PAGE) was reproduced live and fixed; re-verified by enabling the channel, renaming the table away, and getting 200 on `page=home`/`app_status`/`song_detail`.
+
+⚠️ **The HMAC signer has never touched the real gateway.** `api.mwbmpartners.ltd` is unreachable here — proxy 403s CONNECT for the whole domain, which is a NETWORK POLICY fact, **not** evidence it is down (`ihymns.app`, certainly live, fails identically). Signer and stub descend from the same reading of `HmacValidator.php@6816ed8`; a shared misreading would pass locally and fail live. **#1726 gates enablement.** Flip `intappsapi_enabled_channels` to `alpha` ONLY first — three docroots, one MySQL.
+
+Filed upstream on the gateway: **MWBM-intAppsAPI#120** (all five bundled client examples sign the wrong canonical string, so every documented mutating request 403s) and **#121** (`ApiException::internal()`/`::forbidden()` undefined at five call sites).
