@@ -356,6 +356,16 @@ export function mountSidebar(container, opts) {
         },
         getSelectedIds() { return Array.from(selected); },
         clearSelection() { selected.clear(); notifySelection(); renderList(); },
+        /* getAllSongs() (#1608) — the raw slim index, unfiltered/unsorted, for a
+         * tab that needs "every song, as an id->label lookup" rather than
+         * anything about what's currently on screen in THIS sidebar. First
+         * consumer: counterparts-panel.js's add-by-SongId datalist, mirroring
+         * v1's own datalist source (editor.js:3269 iterated `songData.songs`,
+         * the legacy editor's equivalent whole-corpus client array). Returns
+         * the live array reference's shallow copy so a caller can never mutate
+         * this module's internal `songs` state by accident.
+         */
+        getAllSongs() { return songs.slice(); },
         teardown() { container.innerHTML = ''; },
     };
 }

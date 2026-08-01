@@ -189,7 +189,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 <div class="tab-pane fade show active" id="pane-structure"><div id="v2-structure"></div><div id="v2-arrangement" class="mt-4"></div></div>
                 <div class="tab-pane fade" id="pane-metadata"><div id="v2-metadata"></div></div>
                 <div class="tab-pane fade" id="pane-credits"><div id="v2-credits"></div></div>
-                <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div></div>
+                <div class="tab-pane fade" id="pane-links"><div id="v2-links"></div><div id="v2-counterparts" class="mt-4"></div></div>
                 <div class="tab-pane fade" id="pane-tags"><div id="v2-tags"></div></div>
                 <div class="tab-pane fade" id="pane-media"><div id="v2-media"></div></div>
                 <div class="tab-pane fade" id="pane-preview"><div id="v2-preview"></div></div>
@@ -270,6 +270,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
         import { mountMetadataTab }  from './v2/metadata-tab.js';
         import { mountCreditsTab }   from './v2/credits-tab.js';
         import { mountLinksTab }     from './v2/links-tab.js';
+        import { mountCounterpartsPanel } from './v2/counterparts-panel.js';
         import { mountTagsTab }      from './v2/tags-tab.js';
         import { mountMediaTab }     from './v2/media-tab.js';
         import { mountPreviewTab }   from './v2/preview-tab.js';
@@ -355,6 +356,11 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 store, api: editorApi, songId, toast, onSongIdChange,
                 getSongbooks: () => sidebar.getSongbooks(),
                 whenSongbooksReady: () => sidebar.whenLoaded(),
+                /* #1608 — the counterparts panel's add-by-SongId datalist reads
+                   the sidebar's already-loaded slim index rather than fetching
+                   its own copy (mirrors getSongbooks() above; sidebar.js's
+                   getAllSongs() is the read-only accessor). */
+                getSongs: () => sidebar.getAllSongs(),
             };
             teardowns = [
                 mountStructureTab(byId('v2-structure'), ctx),
@@ -365,6 +371,12 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
                 mountMetadataTab(byId('v2-metadata'), ctx),
                 mountCreditsTab(byId('v2-credits'), ctx),
                 mountLinksTab(byId('v2-links'), ctx),
+                /* #1608 — counterparts (cross-book "same hymn" links + fuzzy
+                   suggestions) mounts INTO the same Links pane, below the
+                   external-links editor — one tab for "everything that
+                   connects this song to other things", per the plan; no new
+                   nav-tabs entry. */
+                mountCounterpartsPanel(byId('v2-counterparts'), ctx),
                 mountTagsTab(byId('v2-tags'), ctx),
                 mountMediaTab(byId('v2-media'), ctx),
                 mountPreviewTab(byId('v2-preview'), ctx),
