@@ -133,6 +133,7 @@ Every soft delete, restore, and purge notifies every `purge_songs` holder, fired
 | `tblActivityLog` | Audit trail for admin actions (edits, logins, imports) |
 | `tblAppSettings` | Key-value runtime configuration store |
 | `tblMigrations` | Schema migration version tracking |
+| `tblIntAppsSync` | MWBM-IntAppsAPI gateway local snapshot + refresh bookkeeping (Epic #1725) — one dormant table, keyed `(Scope, Channel, AppSlug)`; empty/unread until an admin enables the integration on `/manage/configuration`. See [[Architecture]] § External integrations. |
 
 ---
 

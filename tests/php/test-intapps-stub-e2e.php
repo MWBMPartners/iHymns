@@ -129,12 +129,15 @@ if (!is_resource($proc)) {
 stream_set_blocking($pipes[1], false);
 stream_set_blocking($pipes[2], false);
 
-/* Poll /v1/status until the server answers or we give up. */
+/* Poll /v1/status until the server answers or we give up. Generous budget
+   (100 x 100ms = up to 10s) — this suite is one of ~90 sequential processes
+   `tools/run-php-tests.php` spawns, and a tighter budget was observed to
+   flake under the CPU contention of that full run (never in isolation). */
 $ready = false;
-for ($i = 0; $i < 50; $i++) {
+for ($i = 0; $i < 100; $i++) {
     usleep(100000); /* 100ms */
     $ch = curl_init("http://127.0.0.1:{$port}/v1/status");
-    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 1, CURLOPT_CONNECTTIMEOUT => 1]);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 2, CURLOPT_CONNECTTIMEOUT => 2]);
     $body = curl_exec($ch);
     $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
@@ -365,7 +368,13 @@ setStubScenario($scenarioFile, 'hang');
 $hangStart = microtime(true);
 $hangResult = intappsForceRefresh($db, 'features');
 $hangElapsed = microtime(true) - $hangStart;
-check('hang scenario: the call returns in well under the stub\'s 10s sleep (bounded by CURLOPT_TIMEOUT=3s)', $hangElapsed < 6.0);
+/* Bound loosened from an earlier 6.0s: this suite runs as one of ~90
+   sequential processes under tools/run-php-tests.php, and CPU contention
+   from that full run (never seen in isolation) can add real scheduling
+   delay on top of curl's own 3s CURLOPT_TIMEOUT. 9s still proves the
+   client did NOT wait out the stub's full 10s sleep, which is the actual
+   property under test. */
+check('hang scenario: the call returns well under the stub\'s 10s sleep (bounded by CURLOPT_TIMEOUT=3s, plus scheduling slack)', $hangElapsed < 9.0);
 check('hang scenario: fetch is NOT ok', $hangResult['ok'] === false);
 $rowAfterHang = intappsSyncRow($db, 'features');
 check(
@@ -377,9 +386,10 @@ check(
    the remainder of that window even though OUR client already gave up at
    3s. Calling the stub again before that sleep(10) actually finishes
    would queue behind it and time out too — not a client bug, a fixture-
-   server concurrency limit. Wait out the remainder (with margin) before
-   trusting the stub to answer promptly again. */
-$hangRemaining = 10.5 - $hangElapsed;
+   server concurrency limit. Wait out the remainder (with generous margin,
+   widened alongside the bound above for the same reason) before trusting
+   the stub to answer promptly again. */
+$hangRemaining = 13.0 - $hangElapsed;
 if ($hangRemaining > 0) {
     usleep((int)($hangRemaining * 1_000_000));
 }

@@ -4305,6 +4305,36 @@ paths:
                       native app's bundle id (used as the SIWA client id)
                       is.
                     example: app.ihymns.web
+                  remoteFeatures:
+                    type: object
+                    description: >-
+                      MWBM-IntAppsAPI gateway feature-flag kill switches
+                      (Epic #1725), keyed by feature key. **Emitted ONLY
+                      when the gateway integration is enabled** for this
+                      channel — the key is ABSENT (not an empty object)
+                      when dormant, which is the shipped default on every
+                      environment. These are operational build-behaviour
+                      switches only; they never gate content access, which
+                      stays entirely local (`TIER_CAPS`/`checkTierAccess`/
+                      `contentGatingApply`). Native clients are the primary
+                      consumer — they never talk to the gateway directly,
+                      only through this proxied field. Cache-only: this
+                      never blocks or delays the response, and a gateway
+                      that is slow, lying or unreachable makes this field
+                      identical to it being absent.
+                    additionalProperties:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                        metadata:
+                          type: object
+                          nullable: true
+                          description: Gateway-supplied, feature-specific metadata (arbitrary shape, or null).
+                    example:
+                      web.sotd_card:
+                        enabled: true
+                        metadata: null
 
   /api.php?action=ccli_validate:
     post:

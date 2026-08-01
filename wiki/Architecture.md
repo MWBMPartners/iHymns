@@ -183,6 +183,65 @@ See [[Database & Migrations]] for the full schema breakdown.
 
 ---
 
+## External integrations
+
+### MWBM-IntAppsAPI gateway (Epic #1725)
+
+A server-proxied, cache-first, fail-open client for MWBM's shared feature-flag
+gateway — an operational build-behaviour kill switch, structurally separate from
+content gating (it never feeds `TIER_CAPS`/`checkTierAccess()`/
+`contentGatingApply()`/`gatingRulesApply()`/`checkContentAccess()`, and a
+tree-derived, mutation-tested guard — `tests/php/test-intapps-guards.php` —
+enforces that separation on every commit).
+
+- **Client:** `includes/intapps_client.php`. Loading it has no side effect;
+  every function degrades to the caller's compiled-in default the instant the
+  module is disabled, the credential set is incomplete, the cache table is
+  absent, or the gateway is unreachable/slow/lying. Nothing in it ever throws
+  into a page render.
+- **Cache:** one table, `tblIntAppsSync`, keyed `(Scope, Channel, AppSlug)` —
+  `Scope` is `'features'` today with `'updates'`/`'notifications'`/`'status'`
+  reserved; `Channel` is the 3-docroot discriminator (default operation uses
+  only the shared `''` row); `AppSlug` reserves a second registered gateway
+  app. A failed or malformed fetch never overwrites the last-known-good
+  snapshot.
+- **Enablement:** a per-channel allow-list,
+  `tblAppSettings.intappsapi_enabled_channels` — the same mechanism
+  `apple_web_login_enabled` already uses — so alpha can canary the
+  integration without touching production on the shared database. **Ships
+  with no row at all**, which is a verified byte-identical no-op: zero HTTP,
+  zero `tblIntAppsSync` access, `app_status` output unchanged.
+- **The signer.** `hex(HMAC-SHA256(rawBody . '.' . unixTimestamp, secret))`,
+  implemented directly against the gateway's own `HmacValidator.php` source —
+  its five bundled client examples sign a DIFFERENT, wrong string
+  (`METHOD|PATH|TIMESTAMP|BODY`, filed upstream as MWBM-intAppsAPI#120) and
+  must never be copied.
+- **Refresh:** request-piggybacked off `api.php`'s `app_status` handler,
+  scheduled to run AFTER the response is already on the wire
+  (`fastcgi_finish_request()` where available), with an atomic
+  seed-INSERT-then-conditional-UPDATE single-flight lock so at most one
+  request per TTL window pays the cost of a live fetch.
+- **Consumption seams:** (a) `app_status.remoteFeatures` — a keyed object,
+  emitted only when enabled, the primary channel for native clients; (b)
+  server-side `intappsFlag($db, $key, $default)` calls in cosmetic,
+  non-gating code — the shipped example is the Song-of-the-Day card's
+  presence on the home page.
+- **Local stub gateway:** `tests/php/fixtures/intapps-stub-gateway.php` is a
+  line-for-line port of the gateway's own auth + HMAC verification (pinned
+  commit `6816ed8`), used by `tests/php/test-intapps-stub-e2e.php` to prove
+  the real signer over real loopback HTTP. It lives outside every directory
+  the deploy workflow mirrors and cannot accidentally ship.
+- **What is NOT proven by any of the above:** acceptance by the REAL
+  gateway (`api.mwbmpartners.ltd`), which needs the owner-only liveness +
+  app-registration prerequisite (Epic #1725's Issue A) before any channel is
+  enabled on a real environment.
+
+Admin surfaces: the credentials + enablement card on `/manage/configuration`,
+and the read-only snapshot/diagnostic viewer at `/manage/intapps-status`
+(both gated `manage_configuration`).
+
+---
+
 ## Security summary
 
 - Content Security Policy with per-request nonces; enforcing (`script-src 'self' 'nonce-…'`, no `'unsafe-inline'`) — see the SPA fragment constraint above.

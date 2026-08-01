@@ -1549,6 +1549,85 @@ Works.
 
 ---
 
+## 🔌 MWBM-IntAppsAPI gateway integration (Epic #1725)
+
+Server-proxied, cache-first, fail-open client for the MWBM-IntAppsAPI
+gateway — an operational feature-flag kill switch, structurally
+separate from content gating (`TIER_CAPS`/`checkTierAccess()`/
+`contentGatingApply()`/`gatingRulesApply()`/`checkContentAccess()`
+never consult it, and vice versa). Shipped **entirely dormant**:
+`tblAppSettings.intappsapi_enabled_channels` ships with no row at all,
+and with it absent the whole integration is a byte-identical no-op —
+proved against the real local instance (merge-base vs branch tip,
+`/api.php?action=app_status` + five other endpoints, empty diff; zero
+`tblIntAppsSync` references in MySQL's general query log across the
+same requests; three mutations — forcing `remoteFeatures` to emit
+unconditionally, removing the `intappsEnabled()` guard on the cache
+read, and pointing a capture at extensionless `/api` — each proven to
+turn the relevant check red before being reverted).
+
+**Where things live:** `includes/intapps_client.php` (the whole
+client — signer, single-flight cache, fail-open transport),
+`tblIntAppsSync` (one dormant cache/bookkeeping table, migration
+`appWeb/.sql/migrate-add-intapps-sync.php`), the admin surfaces
+(`/manage/configuration`'s IntAppsAPI card + `/manage/intapps-status`),
+the one shipped consumer (`includes/pages/home.php`'s
+`intappsFlag($db, 'web.sotd_card', true)`), and the local stub gateway
+fixture + e2e suite (`tests/php/fixtures/intapps-stub-gateway.php` +
+`tests/php/test-intapps-stub-e2e.php`) — see that fixture's own
+docblock for why it can never accidentally deploy.
+
+**THE SIGNER.** Verified against the gateway's own source
+(`web/src/Helpers/HmacValidator.php`, `mwbm-intappsapi` repo, pinned
+commit `6816ed880c8b37b5814a6a5321c7992d0ee6c007`): the canonical
+string is `rawBody . '.' . unixTimestamp`, hex-HMAC-SHA256'd. The
+gateway's own five bundled client examples sign
+`METHOD|PATH|TIMESTAMP|BODY` instead — **all five are wrong** (filed
+upstream as MWBM-intAppsAPI#120). `intappsSign()` is implemented
+against the source, never the examples, and the stub-gateway e2e suite
+proves the examples' wrong string is rejected by a verifier ported
+line-for-line from the same source.
+
+**Enablement is a per-channel allow-list** (`intappsapi_enabled_channels`
+— comma-separated `alpha`/`beta`/`production`/`all`), the same
+mechanism `apple_web_login_enabled` already uses, so alpha can canary
+without touching production — all three docroots share ONE MySQL.
+
+**Accepted residuals (recorded here, not silently assumed away):**
+
+1. **Stub drift (N2).** The local stub gateway certifies the signer
+   against gateway commit `6816ed8` only. If the deployed gateway has
+   since diverged from that commit, the stub's green result says
+   nothing about the live server. No cross-repo CI can enforce this —
+   Issue A / #1726's acceptance criteria include recording the live
+   `GET /v1/status` version and confirming `HmacValidator.php` is
+   unchanged since that SHA before any real channel is enabled.
+2. **Per-SAPI winner-pays-3s fallback.** The single-flight refresh is
+   scheduled to run AFTER the response is already on the wire —
+   `fastcgi_finish_request()` on PHP-FPM, `ignore_user_abort(true)` +
+   `flush()` elsewhere. On a SAPI with neither (the built-in `php -S`
+   server used for local verification is one), the lock-winning
+   request pays its own ≤3s HTTP timeout before the process exits. This
+   is a documented, accepted worst case, not a bug — it affects at most
+   one request per 300s TTL window per channel.
+3. **Real gateway acceptance is unproven.** `api.mwbmpartners.ltd` is
+   unreachable from this development container (the proxy answers 403
+   to CONNECT for the whole domain — a network-policy fact, not
+   evidence about deployment status). The stub verifier and the
+   client's signer descend from the SAME source reading; a shared
+   misreading, a deployed server that has diverged from `6816ed8`, or
+   an env-overridden `HMAC_MAX_AGE_SECONDS` would all pass locally and
+   could still fail live. Phase 1 is GET-only so this does not block
+   enablement; no write-scoped consumer may trust the signer against
+   the real gateway until Issue A (#1726, owner-only) closes and one
+   live signed POST succeeds there.
+
+Full design: `.claude/intappsapi-integration-plan.md`. Pre-launch
+delta + stress test + commit-by-commit plan:
+`.claude/wave4-prelaunch-plan.md` §4–§6.
+
+---
+
 > **Platform status:** Web/PWA is the active production app. Apple is
 > **Phase 1 + Phase 2 code-complete** (iHymnsKit SwiftPM package; watch relay,
 > tvOS projector, Live Activities, App Intents) — consolidated and CI-compiled
