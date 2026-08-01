@@ -33,7 +33,13 @@ declare(strict_types=1);
  *   GET  easyworship_export?id=<SongId>|abbr=<BOOK>[&maxLinesPerSlide=N] -> streams an EasyWorship Songs.db (#1059/#1678)
  *   POST bulk_verify            { songIds:[...], verified? }  -> { ok, count, verified }
  *   POST bulk_tag_attach        { songIds:[...], name }       -> { ok, tag, attached, count }
- *   GET  load_song?id=<SongId>                              -> { ok, song }
+ *   GET  load_song?id=<SongId>                              -> { ok, song, components, credits, tags, links, media, … }
+ *                               credits[role][] now carries first/surname/suffix
+ *                               alongside {id,name} (#960 plan §4 item 3) — the
+ *                               registry's curated parts when known, else a
+ *                               server-side decomposePersonName() fallback; never
+ *                               decomposed client-side (creditPeopleNamePartsColumnsExist()-
+ *                               gated, so an un-migrated install still gets {id,name} only).
  *   POST create_song            { songbook, title? }        -> { ok, songId }
  *   POST delete_song            { songId, reason?, note? }  -> { ok, deleted, softDeleted }
  *                               SOFT delete since #1694 — hides the song
@@ -620,14 +626,69 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
     $components = ed2_currentComponents($db, $songId);
 
     $credits = [];
+    $creditNames = [];   // distinct names credited on this song, any role
     foreach (ED2_CREDIT_TABLES as $role => $table) {
         $credits[$role] = [];
         $q = $db->prepare("SELECT Id, Name FROM `{$table}` WHERE SongId = ? ORDER BY Id ASC");
         $q->bind_param('s', $songId);
         $q->execute();
         $qr = $q->get_result();
-        while ($row = $qr->fetch_assoc()) { $credits[$role][] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name']]; }
+        while ($row = $qr->fetch_assoc()) {
+            $credits[$role][] = ['id' => (int)$row['Id'], 'name' => (string)$row['Name']];
+            $creditNames[(string)$row['Name']] = true;
+        }
         $q->close();
+    }
+
+    /* #960 (plan §4 item 3, closing the gap left by e430dfbc) — attach
+       first/surname/suffix to every credit BEFORE it reaches the client.
+       ELI5: when the editor opens a song, each Writer/Composer/etc. name
+       needs to arrive already split into its three boxes — the browser is
+       never allowed to guess the split itself.
+       DETAILED / WHY: credit_upsert (the SAVE path) has returned the
+       registry's authoritative parts since e430dfbc, but this function
+       (the LOAD path — load_song AND the revision-snapshot builder) still
+       emitted {id, name} only. A v2 UI built to "never decompose a name in
+       JS, only display what the server sends" (the explicit #960 design —
+       see credit_people_helpers.php's doc-block) would therefore render
+       every EXISTING credit's First/Surname/Suffix fields blank on open,
+       which is indistinguishable from data loss to a curator. One batch
+       SELECT covers every distinct name credited on this song (rule #5:
+       placeholders built via array_fill, never string-interpolated
+       values); a registry row with any non-empty curated part wins,
+       otherwise decomposePersonName() — the SAME heuristic
+       creditEntryNormalise() already applies to a flat-name credit_upsert
+       — supplies a same-shaped fallback split, never a second drifting
+       client-side copy of that maths. Gated on
+       creditPeopleNamePartsColumnsExist() so an un-migrated install keeps
+       emitting {id, name} exactly as before this change. */
+    if ($creditNames && creditPeopleNamePartsColumnsExist($db)) {
+        $names        = array_keys($creditNames);
+        $placeholders = implode(',', array_fill(0, count($names), '?'));
+        $rp = $db->prepare("SELECT Name, FirstNames, Surname, Suffix FROM tblCreditPeople WHERE Name IN ({$placeholders})");
+        $rp->bind_param(str_repeat('s', count($names)), ...$names);
+        $rp->execute();
+        $rpr = $rp->get_result();
+        $registryParts = [];
+        while ($row = $rpr->fetch_assoc()) {
+            $registryParts[(string)$row['Name']] = [
+                (string)($row['FirstNames'] ?? ''),
+                (string)($row['Surname']    ?? ''),
+                (string)($row['Suffix']     ?? ''),
+            ];
+        }
+        $rp->close();
+        foreach ($credits as $role => $list) {
+            foreach ($list as $i => $c) {
+                $reg = $registryParts[$c['name']] ?? null;
+                [$first, $surname, $suffix] = ($reg !== null && ($reg[0] !== '' || $reg[1] !== '' || $reg[2] !== ''))
+                    ? $reg
+                    : decomposePersonName($c['name']);
+                $credits[$role][$i]['first']   = $first;
+                $credits[$role][$i]['surname'] = $surname;
+                $credits[$role][$i]['suffix']  = $suffix;
+            }
+        }
     }
 
     $tags = [];

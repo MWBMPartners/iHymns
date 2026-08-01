@@ -195,7 +195,17 @@ export const editorApi = {
     upsertLineAnnotation:  (songId, annotation)  => postJson('line_annotation_upsert', { songId: songId, annotation: annotation }),
     deleteLineAnnotation:  (songId, id)          => postJson('line_annotation_delete', { songId: songId, id: id }),
 
-    /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists */
+    /* Credits — role is one of writers/composers/arrangers/adaptors/translators/artists.
+       `credit` is EITHER the structured {id?, first?, surname?, suffix?} shape
+       credits-tab.js sends per keystroke, or the flat back-compat {id?, name}
+       shape (e.g. adopting an autocomplete suggestion pick) — api2.php's
+       credit_upsert normalises either one server-side via the shared
+       creditEntryNormalise() and ALWAYS responds with the REGISTRY's
+       {name, first, surname, suffix} (#960 D2): the backfill that fills those
+       columns never overwrites an existing curated value, so echoing the
+       caller's own input back would show a silent no-op as if it had saved.
+       credits-tab.js adopts this response into the three boxes rather than
+       trusting what it sent. */
     upsertCredit:      (songId, role, credit)    => postJson('credit_upsert', { songId: songId, role: role, credit: credit }),
     deleteCredit:      (songId, role, creditId)  => postJson('credit_delete', { songId: songId, role: role, creditId: creditId }),
     searchCredits:     (q, kind)                 => getJson('credit_search', { q: q || '', kind: kind || 'any', limit: 12 }),
