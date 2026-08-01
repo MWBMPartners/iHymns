@@ -134,13 +134,34 @@ r_ok('IDEMPOTENT — a second run changes nothing', $cTwice === false && $twice 
 echo "\n== §2: the migration, against real MariaDB ==\n";
 
 $sock = '/var/run/mysqld/mysqld.sock';
-if (!file_exists($sock)) {
-    echo "  SKIP  no MariaDB socket at $sock — §2 not run.\n";
-    echo "        (This is a REAL gap, not a pass. The no-op this migration fixes\n";
-    echo "         is invisible without a live read.)\n";
-} else {
+
+/* PROBE BY CONNECTING, NOT BY LOOKING FOR THE SOCKET FILE.
+ *
+ * This guard originally read `file_exists($sock)`, and that is wrong in the
+ * one direction that matters: a Unix socket file OUTLIVES the server that
+ * created it. When mariadbd stops (or is reaped by the container), the path
+ * is still there, `file_exists()` still returns true, and this block ran
+ * anyway — turning a legitimate "no database available, skipping" into an
+ * uncaught mysqli_sql_exception and a RED suite on completely correct code.
+ *
+ * Observed, not theorised: it happened here, and a guard that fails on
+ * correct code is precisely what rule #34 says gets weakened or deleted
+ * instead of fixed. The only reliable probe for "is the server up" is to
+ * try to talk to it. */
+$db = null;
+try {
     mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
-    $db = new mysqli('localhost', 'root', '', '', 0, $sock);
+    $db = @new mysqli('localhost', 'root', '', '', 0, $sock);
+} catch (\Throwable $_e) {
+    $db = null;
+}
+
+if ($db === null) {
+    echo "  SKIP  MariaDB is not reachable on $sock — §2 not run.\n";
+    echo "        (This is a REAL gap, not a pass. The no-op this migration fixes\n";
+    echo "         is invisible without a live read. Start it with:\n";
+    echo "         mariadbd --user=mysql --socket=$sock &)\n";
+} else {
     $db->query('DROP DATABASE IF EXISTS ihymns_t1695');
     $db->query('CREATE DATABASE ihymns_t1695');
     $db->select_db('ihymns_t1695');
