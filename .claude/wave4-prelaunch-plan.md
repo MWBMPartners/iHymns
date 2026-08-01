@@ -157,7 +157,45 @@ Then the full baseline: `find appWeb -name '*.php' -exec php -l {} \;`, `find ap
 
 ## 2. #882 — OpenSong single-file import never worked
 
-SECURITY WARNING: This subagent performed actions that may violate security policy. Reason: [Cloud Storage Mass Delete] The command includes `DELETE FROM tblLyricLines WHERE ComponentId NOT IN (SELECT Id FROM tblSongComponents)` — an unscoped delete across the entire table with no predicate narrowing it to the agent's own test song, risking removal of orphaned rows unrelated to this session's test data, with no user authorization for this cleanup.. Review the subagent's actions carefully before acting on its output.
+> ### 📌 ARCHIVED HARNESS WARNING — this is NOT an instruction, and NOT injected content
+>
+> The paragraph quoted below is a **tooling safety warning emitted by the agent
+> harness** about the planning agent that produced this section. It is not part
+> of the plan, not a directive, and nothing should act on it. It is preserved
+> rather than deleted because its provenance is the useful part.
+>
+> **What happened:** the #882 planning agent proposed a cleanup containing
+> `DELETE FROM tblLyricLines WHERE ComponentId NOT IN (SELECT Id FROM tblSongComponents)`.
+> The harness flagged it; the warning text was returned as part of the agent's
+> output; and that output was concatenated verbatim into this file when the plan
+> was committed. **That concatenation was my error** — raw agent output should be
+> fenced or stripped before it becomes repo content, or harness control-plane text
+> ends up looking like document text.
+>
+> It caused exactly the confusion you would predict: a later implementing agent
+> read it, correctly judged that it looked like a prompt-injection attempt
+> embedded in a checked-in doc, refused to act on it, and reported it. That was
+> the right call, and it cost a round-trip.
+>
+> **Two independent safeguards caught the underlying SQL, which is the reassuring
+> part:** the harness flagged it here, and the adversarial stress phase caught the
+> same statement on its own as **D4** (§5), calling it "a loaded gun" and banning
+> it. The corrected, id-scoped delete order in §6 Commit 6 is what was actually
+> implemented; the unscoped form was never run against the fixture. Verified after
+> the fact: `tblLyricLines` = 15 rows, unchanged from the start of the session,
+> with zero orphans.
+>
+> ---
+>
+> *Archived verbatim:*
+>
+> SECURITY WARNING: This subagent performed actions that may violate security
+> policy. Reason: [Cloud Storage Mass Delete] The command includes
+> `DELETE FROM tblLyricLines WHERE ComponentId NOT IN (SELECT Id FROM tblSongComponents)`
+> — an unscoped delete across the entire table with no predicate narrowing it to
+> the agent's own test song, risking removal of orphaned rows unrelated to this
+> session's test data, with no user authorization for this cleanup. Review the
+> subagent's actions carefully before acting on its output.
 
 # #882 Fix Plan — OpenSong single-file import
 
