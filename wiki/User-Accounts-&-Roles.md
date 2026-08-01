@@ -245,6 +245,8 @@ A valid CCLI licence may unlock additional content usage rights depending on the
 | MIDI audio playback | — | Tier 2+ | Tier 2+ | Tier 2+ | Yes |
 | PDF sheet music | — | Tier 3+ | Tier 3+ | Tier 3+ | Yes |
 | Song editor | — | — | Yes | Yes | Yes |
+| Delete songs (recoverable — see [[Database & Migrations]]) | — | — | Yes | Yes | Yes |
+| Purge songs (permanent, irreversible) | — | — | — | Yes | Yes |
 | User management | — | — | — | Yes | Yes |
 | Activity log | — | — | — | Yes | Yes |
 | App settings | — | — | — | — | Yes |

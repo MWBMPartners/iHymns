@@ -181,3 +181,4 @@ See [[User Accounts & Roles]] for full details.
 - **Colour contrast** — automated badge contrast via relative luminance calculation
 - **Colourblind-safe palette** — Wong 2011 CVD-safe colours
 - **Keyboard shortcuts** — full keyboard navigation without mouse
+- **Card reorder without dragging** — Move up / Move down buttons alongside drag-and-drop for the admin dashboard and home page card layout, meeting WCAG 2.2 SC 2.5.7 (#1151)

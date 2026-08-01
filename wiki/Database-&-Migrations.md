@@ -66,10 +66,25 @@ The full schema is defined in `appWeb/.sql/schema.sql`.
 | Table | Purpose |
 |---|---|
 | `tblSongbooks` | Songbook definitions (30+ songbooks, e.g. CP, JP, MP, SDAH, CH — see the live list at `/songbooks`) |
-| `tblSongs` | Core song metadata + `LyricsText` for full-text search |
+| `tblSongs` | Core song metadata + `LyricsText` for full-text search. Carries the soft-delete columns `IsDeleted` / `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` (#1694 — see below) |
 | `tblSongWriters` | Song lyricist credits (many-to-one) |
 | `tblSongComposers` | Song composer credits (many-to-one) |
 | `tblSongComponents` | Verses, choruses with lyrics as JSON lines array |
+
+### Song Deletion — Recoverable (#1694 / #1695, epic #1692)
+
+Deleting a song is a **soft delete**, not a row removal — deliberately, because 38 of the 41 foreign keys elsewhere in the schema that reference `tblSongs(SongId)` are `ON DELETE CASCADE`, so a hard delete used to take the song's components, credits, media links and its *entire revision history* with it, recoverable only from a database backup.
+
+`tblSongs.IsDeleted` hides the song from every filtered read; the row (and everything cascading from it) stays intact. `DeletedAt` / `DeletedBy` / `DeletedReason` / `DeleteNote` record when, who, and why — `DeletedReason` is `VARCHAR`, app-validated against `songDeleteReasons()` in `includes/song_soft_delete.php` rather than an `ENUM` (rule #20). `/manage/deleted-songs` lists deleted songs with **Restore** and **Purge** actions; visiting a soft-deleted song's URL now returns HTTP 410 Gone (not a generic 404) — see [[Architecture]].
+
+Two separate entitlements gate the two actions, so the recoverable delete can be handed to curators without also handing them the irreversible one:
+
+| Entitlement | Grants | Default roles |
+|---|---|---|
+| `delete_songs` | Soft-delete and restore | `editor`, `admin`, `global_admin` |
+| `purge_songs` | The irreversible purge — the cascade delete, reachable only from the deleted state | `admin`, `global_admin` |
+
+Every soft delete, restore, and purge notifies every `purge_songs` holder, fired from inside the write core so no future funnel can forget to. The one lifecycle module is `includes/song_soft_delete.php`. Because `saveEntitlementOverrides()` writes the whole entitlements map on every save, any install where `/manage/entitlements` has ever been saved keeps its own stored `delete_songs` value regardless of the code default — the data-only `migrate-delete-songs-rewiden.php` migration clears a stale admin-only override left over from before deletion was recoverable, without touching an operator's own deliberate choice.
 
 ### User & Access Control Tables
 

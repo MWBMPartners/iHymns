@@ -28,6 +28,12 @@ cd iHymns
 # Install Node.js dependencies
 npm install
 
+# Point git at the repo's own hooks (not automatic — .git/hooks isn't
+# tracked). Currently installs a pre-push guard that blocks pushing a
+# branch other than the one you have checked out, and re-creating a
+# deliberately-deleted branch.
+git config core.hooksPath tools/githooks
+
 # Parse song data (generates data/songs.json — a one-time DB migration
 # input, not a runtime file; the app itself reads live MySQL)
 npm run parse-songs
@@ -83,6 +89,7 @@ Ensure `appWeb/.auth/db_credentials.php` is configured (see [[Database & Migrati
 - `import`/`export` syntax, no CommonJS
 - All state in the central `iHymnsApp` class
 - Use `escapeHtml()` from `js/utils/html.js` for all dynamic content
+- Linted by ESLint (flat config, `eslint.config.js` at the repo root; `eslint` is a declared devDependency). Run locally with `npm run lint:js`. This is a real, enforced check (#1711) — CI's "Lint JavaScript (ESLint)" step used to find no config, fall through to a config-less `eslint@latest` that crashes rather than lints, and swallow that crash with `|| exit 0`, so the step stayed green while linting nothing. It now runs for real and fails the build on error.
 
 ### CSS
 

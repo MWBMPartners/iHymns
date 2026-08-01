@@ -27,6 +27,8 @@ Authenticated endpoints require a `Authorization: Bearer <token>` header. Tokens
 
 These return HTML fragments loaded into the SPA content area. Several (`home`, `song`, `songbook`, `whats-new`, …) are served from a shared HTTP cache — see [[Architecture]] for why that means they can never carry a per-request nonce or an inline `<script>`.
 
+A not-found or removed entity (`song`, `songbook`, `person`, `work`, `tag`) answers with a themed HTML error fragment and a truthful status — 404, or 410 for a song that's gone for good (soft-deleted or merged with no live replacement) — rather than a generic failure; `router.js` renders that fragment instead of discarding it (#1705). See [[Architecture]] for the fragment/error-page pattern.
+
 | Parameter | Description |
 | --- | --- |
 | `?page=home` | Home page |
