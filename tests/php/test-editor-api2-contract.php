@@ -225,6 +225,232 @@ if ($orphans !== []) {
    server-only actions would punish exactly the parity work epic #1601 exists to
    do. Orphaned endpoints are tracked as issues, not as build failures. */
 
+/* =============================================================================
+ * 3. v1 -> v2 ACTION PARITY LEDGER (#1608)
+ * =============================================================================
+ *
+ * ELI5
+ * ----
+ * Section 2 above checks "does every name the v2 CLIENT asks for exist on the
+ * v2 SERVER". That is a different question from this one: "did every action
+ * v1's server used to answer make it into v2's server, in SOME form". A v1
+ * action nobody ports is invisible to section 2 (the client never asks for it,
+ * so there is nothing to fail on) — which is exactly the shape #1608 was: five
+ * whole actions (get_song_links / add_song_link / remove_song_link /
+ * suggest_song_links / dismiss_song_link_suggestion), a working panel in v1,
+ * ZERO trace in v2, and no test anywhere that could have said so.
+ *
+ * WHAT IT ASSERTS
+ *   For EVERY action api.php's `switch ($action)` dispatches, exactly one of:
+ *     (a) the SAME name exists as a `case` in api2.php's `switch ($action)`, or
+ *     (b) it is in the RENAMED map below, and every one of its listed v2
+ *         target(s) is verified (mechanically) to be a real api2.php case, or
+ *     (c) it is in the RETIRED map below, and carries a non-empty issue
+ *         citation + a non-empty one-line reason (verified mechanically).
+ *   Anything matching none of the three is reported by name as an unexplained
+ *   gap and fails the suite — the exact check that would have caught #1608 at
+ *   the moment `manage/editor/index.php` flipped its redirect to v2-by-default.
+ *
+ * WHY A TYPED MAP HERE IS NOT THE rule #34 "HARDCODED LIST" ANTI-PATTERN
+ * -----------------------------------------------------------------------
+ * Rule #34 bans a guard whose CHECKED SET is typed by hand (the thing being
+ * verified). Here the checked set — both action lists — is fully DERIVED via
+ * dispatchParserCasesForSwitch(), the same token-walker section 2 above and
+ * test-orphan-inventory.php / test-openapi-actions-exist.php already share
+ * (never a second copy of the switch-walk, CLAUDE.md's modularity rule).
+ * $RENAMED / $RETIRED are not the checked set — they are the DISPOSITION of
+ * each derived item, which is a human decision no parser can discover ("was
+ * get_song_links renamed, or silently dropped?" looks identical to a scanner).
+ * The guard against this decision-data becoming a rubber stamp is that every
+ * rename target is itself mechanically verified to exist, and every
+ * retirement's citation is mechanically verified to be non-empty — an entry
+ * that just says "it's fine, retired" with nothing else fails exactly as
+ * loudly as one missing from both maps. This is the SAME shape as section 2's
+ * `$api2PostClients` scan (derived set) feeding fixed, structural assertions.
+ *
+ * VERIFIED BEFORE FILING (per .claude/standing-tasks.md §2a's own warning that
+ * "of 34 apparent v1->v2 API differences, 19 were renames and 8 collapsed into
+ * one generic handler; only 6 were real"): every RENAMED/RETIRED entry below
+ * was checked against the actual v2 source or an actual closed GitHub issue
+ * before being classified — not assumed from the name alone. songbook_export
+ * and load_songs both already had dedicated, INVESTIGATED parity issues
+ * (#1607, #1610, both closed `completed`) reachable from Epic #1601; both are
+ * cited verbatim rather than re-litigated here.
+ *
+ * MUTATION-TESTED (rule #34) — transcript in this commit's body:
+ *   (a) comment out `case 'song_link_add':` in api2.php           -> RED
+ *   (b) add a bogus `case 'zzz_probe':` to api.php's action switch -> RED
+ *   (c) blank the 'why' on the songbook_export retirement entry    -> RED
+ *   each reverted afterward -> GREEN.
+ * ============================================================================= */
+
+require_once __DIR__ . '/lib/dispatch_parser.php';
+
+$v1DispatchFile = $editor . '/api.php';
+$v2DispatchFile = $editor . '/api2.php';
+
+echo "\n#1608 — v1 api.php -> v2 api2.php action parity ledger\n\n";
+
+/* Self-skip once v1 is deleted (the eventual end-state of Epic #1601): this
+   section exists to guard a MIGRATION IN PROGRESS, not to demand api.php
+   exist forever. Without this, deleting api.php as #1601's last step would
+   fail a test whose entire purpose was to unblock that deletion — the same
+   "guard the correct end-state too" carve-out section 2's header describes
+   for the parity work in general. */
+if (!is_file($v1DispatchFile)) {
+    echo "  (skipped — api.php no longer exists; v1 has been fully retired, #1601)\n";
+} else {
+    $v1Actions = dispatchParserCasesForSwitch($v1DispatchFile, '$action');
+    $v2Actions = dispatchParserCasesForSwitch($v2DispatchFile, '$action');
+
+    /* Vacuity gate FIRST (rule #34: "a scanner that under-reports is worse
+       than no scanner"). If the token-walker ever silently derives nothing
+       from either file, every assertion below would pass vacuously — so this
+       must be provably able to fail, and it runs before anything else in this
+       section trusts either list. */
+    check('derived at least one v1 api.php action (vacuity check)', count($v1Actions) > 0);
+    check('derived at least one v2 api2.php action (vacuity check)', count($v2Actions) > 0);
+    check('parsed a plausible number of v1 actions (>= 20)', count($v1Actions) >= 20);
+    check('parsed a plausible number of v2 actions (>= 20)', count($v2Actions) >= 20);
+
+    $v2Set = array_flip($v2Actions);
+
+    /* RENAMES — v1 action name => the v2 action name(s) that carry its
+       capability forward. A multi-target entry means the v1 action's job was
+       SPLIT across more than one v2 action (bulk_tag); a multi-SOURCE,
+       one-target shape means several v1 actions collapsed into one generic
+       v2 handler (the eight bulk_import_* formats -> import_file). Every
+       target is mechanically verified against $v2Set below — this array
+       supplies the CLAIM, not the proof. */
+    $RENAMED = [
+        /* #1608 (this branch, Block C, commit 8) — the five song-link /
+           counterpart actions this parity ledger exists to guard. */
+        'get_song_links'               => ['song_links'],
+        'add_song_link'                => ['song_link_add'],
+        'remove_song_link'             => ['song_link_remove'],
+        'suggest_song_links'           => ['song_link_suggestions'],
+        'dismiss_song_link_suggestion' => ['song_link_suggestion_dismiss'],
+
+        /* Async ZIP import pipeline (#676 job tracking). */
+        'bulk_import_zip'         => ['import_zip'],
+        'bulk_import_status'      => ['import_zip_status'],
+        'bulk_import_skipped_csv' => ['import_zip_skipped_csv'],
+
+        /* Eight per-format single-file import actions collapsed into ONE
+           generic handler (`import_file`, format=<name> in the request body)
+           — verified against api2.php's own doc-block and $bodyFormats/match
+           arms (#882's commit 6 wiring), not assumed from the name shape. */
+        'bulk_import_chordpro'    => ['import_file'],
+        'bulk_import_easyworship' => ['import_file'],
+        'bulk_import_freeshow'    => ['import_file'],
+        'bulk_import_openlp'      => ['import_file'],
+        'bulk_import_pptx'        => ['import_file'],
+        'bulk_import_pro6'        => ['import_file'],
+        'bulk_import_proclaim'    => ['import_file'],
+        'bulk_import_videopsalm'  => ['import_file'],
+
+        /* v1's single `bulk_tag` action carried BOTH add[] and remove[]
+           arrays; v2 split it into two granular actions — bulk_tag_attach
+           landed first, bulk_tag_detach followed in 33f583e1 once #1628 item
+           3 flagged the add-only gap. Both must exist for this to count as
+           parity (checked below, not assumed). */
+        'bulk_tag' => ['bulk_tag_attach', 'bulk_tag_detach'],
+
+        'list_revisions'   => ['revision_list'],
+        'restore_revision' => ['revision_restore'],
+
+        'song_media_list'    => ['media_list'],
+        'song_media_upload'  => ['media_upload'],
+        'song_media_update'  => ['media_update'],
+        'song_media_delete'  => ['media_delete'],
+        'song_media_reorder' => ['media_reorder'],
+
+        'song_tags' => ['tag_list'],
+
+        /* v1's OWN dispatcher already retired the whole-corpus `save` action
+           behind a 410 stub whose body names `save_song` as the replacement
+           ("the whole-corpus save endpoint has been retired (#1016). Use
+           save_song for per-record writes.") — treated as a rename to its
+           own documented successor rather than a second retirement entry. */
+        'save' => ['save_song'],
+    ];
+
+    /* RETIREMENTS — v1 actions with NO v2 replacement at all, each an
+       INVESTIGATED, RECORDED product decision, not a shrug. Every entry MUST
+       carry both a real-looking issue citation and a non-empty one-line
+       reason (enforced below) — an entry that is just "retired" with nothing
+       else fails exactly as loudly as an action missing from both maps,
+       which is what stops this from decaying into a rubber stamp over time. */
+    $RETIRED = [
+        'songbook_export' => [
+            'issue' => '#1607',
+            'why'   => 'Owner decision (#1607, closed completed): the v2 editor stays '
+                     . 'single-song export by design; whole-songbook export lives on the '
+                     . 'public /songbooks list and /songbook/<ABBR> page instead (landed 9078f761).',
+        ],
+        'load_songs' => [
+            'issue' => '#1610',
+            'why'   => 'Confirmed (#1610, closed completed): v2\'s sidebar lists songs via '
+                     . 'the slim getSongsSlimIndex() path (load_index) — a narrower, DB-direct '
+                     . 'read (rule #17), not v1\'s whole-corpus batch-full-record fetch, which '
+                     . 'existed only to feed a client-side bulk-edit shape v2 does server-side.',
+        ],
+    ];
+
+    $unexplained = [];
+    foreach ($v1Actions as $v1Action) {
+        if (isset($v2Set[$v1Action])) { continue; }     /* verbatim match — no ledger entry needed */
+        if (isset($RENAMED[$v1Action])) { continue; }   /* target(s) verified below */
+        if (isset($RETIRED[$v1Action])) { continue; }   /* citation verified below */
+        $unexplained[] = $v1Action;
+    }
+    check(
+        'every v1 api.php action is present in v2 verbatim, renamed (target verified), or a cited '
+            . 'retirement (' . count($v1Actions) . ' v1 actions checked)',
+        $unexplained === []
+    );
+    if ($unexplained !== []) {
+        foreach ($unexplained as $u) {
+            echo "       v1 action '{$u}' has no v2 case, no \$RENAMED entry and no \$RETIRED entry"
+                . " — an UNEXPLAINED GAP (this is exactly how #1608 hid)\n";
+        }
+    }
+
+    /* Every RENAME target must be a REAL api2.php case. This is the
+       mechanical proof behind the $RENAMED claim above — remove or typo a
+       target here and this is what goes red, not the summary assertion. */
+    foreach ($RENAMED as $v1Action => $targets) {
+        foreach ($targets as $target) {
+            check(
+                "renamed action '{$v1Action}' -> '{$target}' exists as a real api2.php case",
+                isset($v2Set[$target])
+            );
+        }
+    }
+
+    /* Every RETIREMENT must cite a real-shaped issue number and a non-empty
+       reason. This is what stops a future `'some_action' => []` from being a
+       silent rubber stamp — the citation-enforcement rule the plan (and
+       .claude/standing-tasks.md §2a) both call for explicitly. */
+    foreach ($RETIRED as $v1Action => $info) {
+        check(
+            "retired action '{$v1Action}' cites an issue number",
+            isset($info['issue']) && preg_match('/^#\d+$/', (string)$info['issue']) === 1
+        );
+        check(
+            "retired action '{$v1Action}' carries a non-empty reason",
+            isset($info['why']) && trim((string)$info['why']) !== ''
+        );
+    }
+
+    /* Reverse direction deliberately NOT asserted here either, for the same
+       reason section 2 doesn't: api2.php legitimately serves actions with no
+       v1 counterpart at all (credit_upsert's structured shape, the
+       line_translation_upsert / line_annotation_upsert pair,
+       arrangement_update, …) — v2-only growth is the point of the cutover,
+       not a gap to fail on. */
+}
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
