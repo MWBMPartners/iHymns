@@ -210,6 +210,22 @@ export const editorApi = {
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
 
+    /* Song-link / counterpart group (#1608) — five actions ported from the
+       legacy v1 editor's inline "Suggested counterparts" panel onto the SAME
+       api2.php cases described in that file's doc-block. No client-side
+       similarity maths lives here or anywhere in this tree (CLAUDE.md rule
+       #22) — song_link_suggestions only ever reads the server's pre-scored
+       table. err.status carries the failure KIND (409 = the two songs are
+       already in different groups) per rule #35 — counterparts-panel.js
+       branches on that, never on err.message. */
+    songLinks:                (songId)                     => getJson('song_links', { id: songId }),
+    songLinkAdd:               (sourceSongId, targetSongId, note) =>
+        postJson('song_link_add', { sourceSongId: sourceSongId, targetSongId: targetSongId, note: note || '' }),
+    songLinkRemove:            (songId)                     => postJson('song_link_remove', { songId: songId }),
+    songLinkSuggestions:       (songId)                     => getJson('song_link_suggestions', { id: songId }),
+    songLinkSuggestionDismiss: (songIdA, songIdB, reason)   =>
+        postJson('song_link_suggestion_dismiss', { songIdA: songIdA, songIdB: songIdB, reason: reason || '' }),
+
     /* Media — file metadata reads; upload is multipart; only annotation is mutable. */
     listMedia:         (songId)                  => getJson('media_list', { id: songId }),
     uploadMedia:       (songId, kind, file, annotation) => {

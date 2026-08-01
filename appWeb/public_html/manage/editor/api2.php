@@ -69,6 +69,42 @@ declare(strict_types=1);
  *   POST tag_attach             { songId, name }             -> { ok, tag, attached }
  *   POST tag_detach             { songId, tagId }            -> { ok, removed }
  *   POST link_save_all          { songId, links:[{typeId,url,note?,verified?}] } -> { ok, count, links }
+ *   GET  song_links?id=<SongId>                              -> { ok, groupId, links }
+ *                               Cross-book counterpart group ("same hymn, different
+ *                               songbook, different number") — ported from the
+ *                               legacy get_song_links (#1608). groupId=0 means the
+ *                               song isn't grouped yet; `links` lists every OTHER
+ *                               member of the group.
+ *   POST song_link_add          { sourceSongId, targetSongId, note? }
+ *                               -> { ok, groupId, created? | extended? | noop? }
+ *                               Mints a new group / extends an existing one / no-ops
+ *                               if already linked. 409 when the two songs are
+ *                               already in DIFFERENT groups (unlink one first, or
+ *                               use the Merge tool at /manage/duplicate-songs, which
+ *                               stays the ONLY merge surface — this endpoint never
+ *                               grows one). Entitlement: edit_songs.
+ *   POST song_link_remove       { id?, songId? }              -> { ok, deleted }
+ *                               Drops one song from its counterpart group; a
+ *                               resulting singleton group is cleaned up too.
+ *                               Already-gone -> {ok:true, deleted:0}, not an error
+ *                               (idempotent double-click, matches v1). Entitlement:
+ *                               edit_songs.
+ *   GET  song_link_suggestions?id=<SongId>                   -> { ok, suggestions, tableMissing? }
+ *                               Up to 5 highest-scoring PENDING pairs involving this
+ *                               song, read from the pre-scored tblSongLinkSuggestions
+ *                               table the offline batch build-song-link-suggestions.php
+ *                               fills — that batch is the ONLY consumer of
+ *                               includes/song_similarity.php's scorer; this endpoint
+ *                               never scores live (CLAUDE.md rule #22).
+ *                               tableMissing:true on an un-migrated install (empty
+ *                               suggestions, not a 500).
+ *   POST song_link_suggestion_dismiss { songIdA, songIdB, reason? } -> { ok }
+ *                               Canonicalises (SongIdA < SongIdB) server-side, records
+ *                               a permanent dismissal in tblSongLinkSuggestionsDismissed
+ *                               — the SAME table /manage/duplicate-songs writes, so a
+ *                               dismissal from either surface suppresses the pair in
+ *                               both — and drops the matching pending suggestion row.
+ *                               Entitlement: edit_songs.
  *   GET  media_list?id=<SongId>                              -> { ok, media }
  *   POST media_upload  (MULTIPART: songId, kind, annotation?, file) -> { ok, media }
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
@@ -1690,6 +1726,469 @@ try {
         logActivity('song.external_links', 'song', $songId, ['count' => $count]);
         $saved = loadExternalLinksForRow($db, 'tblSongExternalLinks', 'SongId', $songId);
         ed2_respond(['ok' => true, 'count' => $count, 'links' => $saved]);
+        break;
+    }
+
+    /* =====================================================================
+     * SONG-LINK / COUNTERPART actions (#1608) — five cases ported verbatim
+     * (matching v1's behaviour + response shape) from the legacy
+     * manage/editor/api.php: get_song_links (:381), add_song_link (:459),
+     * remove_song_link (:599), suggest_song_links (:676),
+     * dismiss_song_link_suggestion (:772).
+     *
+     * ELI5: this is the "these are the same hymn, just in a different
+     * songbook" feature. A curator can link e.g. MP-0031 (Amazing Grace) to
+     * CH-0376 (also Amazing Grace) so the app can point between them, and
+     * can accept/dismiss the computer's own guesses about which songs might
+     * be the same.
+     *
+     * WHY THIS EXISTS HERE, NOW (#1608): v1's inline "Suggested counterparts"
+     * panel in the editor sidebar was the ONLY place these five actions were
+     * reachable, but `manage/editor/index.php` has 302-redirected every editor
+     * visit to this v2 API's UI since #1601 landed — so the panel, and these
+     * actions, have been LIVE-BUT-UNREACHABLE (the #1565/#1580 "looks alive,
+     * isn't" class) for as long as v2 has been the default. #1220 explicitly
+     * decided to keep the panel when the standalone suggestions PAGE was
+     * absorbed into /manage/duplicate-songs (#1215) — the panel is a
+     * complementary PUSH surface (surfaced the moment a curator has a song
+     * open, with the most context) to duplicate-songs' PULL review queue, not
+     * a duplicate of it. This commit is the "port the panel" resolution
+     * recorded in .claude/wave4-prelaunch-plan.md §3/§6 Block C.
+     *
+     * RULE #22 (song_similarity.php is the ONE scorer): NONE of these five
+     * actions call includes/song_similarity.php. suggest_song_links only ever
+     * READS the PRE-SCORED tblSongLinkSuggestions table that the offline batch
+     * `build-song-link-suggestions.php` fills (that batch is the scorer's only
+     * caller) — so this file adds zero scoring maths, by construction.
+     *
+     * ENTITLEMENTS (per the plan + duplicate-songs.php's existing precedent,
+     * duplicate-songs.php:34-42): page view rides the file-level editor-role
+     * gate (same as v1); Link/Remove/Dismiss = edit_songs. The destructive
+     * Merge action stays ONLY on /manage/duplicate-songs under
+     * manage_duplicate_songs — this file never grows a merge case.
+     *
+     * No ed2_touchRevision() call anywhere below: tblSongLinks isn't part of
+     * the song record (scalars/components/credits/tags/links-the-external-
+     * kind) that a revision snapshot restores, matching v1's add/remove_song_link
+     * exactly — neither of those wrote a revision row either.
+     * ===================================================================== */
+
+    /* ---- song_links (GET) — this song's cross-book counterpart group.
+           Port of get_song_links (api.php:381).
+           D10 (wave4-prelaunch-plan.md §5 defect list): v1 reads tblSongLinks
+           UNPROBED — no INFORMATION_SCHEMA existence check — because the table
+           ships in the SAME migration as tblSongLinkSuggestions/…Dismissed
+           (#1216/#1219) and every install that has run any of #1608's sibling
+           features already has it. Matched here exactly rather than inventing
+           a new degrade v1 never had; only suggest_song_links (below) probes,
+           because ITS table is the newer, separately-added
+           tblSongLinkSuggestions from the fuzzy-match batch (#1219), which an
+           older-but-still-#1216-migrated install could plausibly lack. ---- */
+    case 'song_links': {
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+
+        $stmt = $db->prepare('SELECT GroupId FROM tblSongLinks WHERE SongId = ? LIMIT 1');
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        $groupId = $row ? (int)$row['GroupId'] : 0;
+
+        $links = [];
+        if ($groupId > 0) {
+            /* #1694 — songVisibleSql() keeps a soft-deleted counterpart off
+               this panel, the same guard v1 already had (api.php:420). */
+            $stmt = $db->prepare(
+                'SELECT l.Id           AS id,
+                        l.SongId       AS songId,
+                        l.Note         AS note,
+                        l.Verified     AS verified,
+                        s.Title        AS title,
+                        s.Number       AS number,
+                        s.SongbookAbbr AS songbook,
+                        sb.Name        AS songbookName,
+                        s.Language     AS language
+                   FROM tblSongLinks l
+                   JOIN tblSongs s      ON s.SongId = l.SongId
+                   JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
+                  WHERE l.GroupId = ?
+                    AND l.SongId  <> ?
+                    AND ' . songVisibleSql($db, 's') . '
+                  ORDER BY s.SongbookAbbr ASC, s.Number ASC'
+            );
+            $stmt->bind_param('is', $groupId, $songId);
+            $stmt->execute();
+            $links = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+            $stmt->close();
+            foreach ($links as &$ln) {
+                $ln['id']       = (int)$ln['id'];
+                $ln['verified'] = (bool)$ln['verified'];
+                $ln['number']   = ($ln['number'] === null) ? null : (int)$ln['number'];
+            }
+            unset($ln);
+        }
+        ed2_respond(['ok' => true, 'groupId' => $groupId, 'links' => $links]);
+        break;
+    }
+
+    /* ---- song_link_add (POST) — link two songs as cross-book counterparts.
+           Port of add_song_link (api.php:459). Body: { sourceSongId,
+           targetSongId, note? }.
+
+           Group-merge semantics, UNCHANGED from v1:
+             - neither song grouped   -> mint a new GroupId, add both
+             - exactly one grouped    -> add the other to it
+             - both in the SAME group -> no-op (note refreshed if supplied)
+             - both in DIFFERENT groups -> refuse; the curator must unlink
+               one side first (rule #35: this is a STATUS code, 409, not a
+               string the client pattern-matches). ---- */
+    case 'song_link_add': {
+        ed2_requireEntitlement('edit_songs');
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $srcId = trim((string)($body['sourceSongId'] ?? ''));
+        $tgtId = trim((string)($body['targetSongId'] ?? ''));
+        $note  = trim((string)($body['note'] ?? ''));
+        if ($srcId === '' || $tgtId === '') {
+            ed2_respond(['ok' => false, 'error' => 'sourceSongId and targetSongId are required.'], 400);
+        }
+        if ($srcId === $tgtId) {
+            ed2_respond(['ok' => false, 'error' => 'A song cannot be linked to itself.'], 400);
+        }
+
+        /* Validate both songs exist AND are visible before mutating anything
+           — cheaper than an FK failure, and #1694-consistent: a hidden song
+           cannot be linked to (it's offered nowhere, so a stale request
+           naming one should read as not-found, not silently succeed). */
+        $probe = $db->prepare(
+            'SELECT SongId FROM tblSongs WHERE SongId IN (?, ?) AND ' . songVisibleSql($db, '')
+        );
+        $probe->bind_param('ss', $srcId, $tgtId);
+        $probe->execute();
+        $found = [];
+        $res = $probe->get_result();
+        while ($r = $res->fetch_assoc()) { $found[] = $r['SongId']; }
+        $probe->close();
+        if (count($found) < 2) {
+            ed2_respond(['ok' => false, 'error' => 'One or both songs were not found.'], 404);
+        }
+
+        $lookup = $db->prepare('SELECT SongId, GroupId FROM tblSongLinks WHERE SongId IN (?, ?)');
+        $lookup->bind_param('ss', $srcId, $tgtId);
+        $lookup->execute();
+        $existing = [];
+        $res = $lookup->get_result();
+        while ($r = $res->fetch_assoc()) { $existing[$r['SongId']] = (int)$r['GroupId']; }
+        $lookup->close();
+
+        $srcGroup  = $existing[$srcId] ?? 0;
+        $tgtGroup  = $existing[$tgtId] ?? 0;
+        $createdBy = $ed2UserId;
+
+        if ($srcGroup > 0 && $tgtGroup > 0 && $srcGroup === $tgtGroup) {
+            if ($note !== '') {
+                $db->begin_transaction();
+                try {
+                    $upd = $db->prepare('UPDATE tblSongLinks SET Note = ? WHERE SongId = ?');
+                    $upd->bind_param('ss', $note, $tgtId);
+                    $upd->execute();
+                    $upd->close();
+                    $db->commit();
+                } catch (\Throwable $e) {
+                    $db->rollback();
+                    throw $e;
+                }
+            }
+            ed2_respond(['ok' => true, 'groupId' => $srcGroup, 'noop' => true]);
+        }
+        if ($srcGroup > 0 && $tgtGroup > 0) {
+            /* Different groups. The 409 status IS the contract the client
+               branches on (rule #35) — the sentence is free to reword. */
+            ed2_respond([
+                'ok'    => false,
+                'error' => 'Both songs are already in different counterpart groups. Unlink one before linking, or use the merge tool.',
+            ], 409);
+        }
+
+        $db->begin_transaction();
+        try {
+            if ($srcGroup === 0 && $tgtGroup === 0) {
+                /* Neither grouped — mint a new GroupId. MAX(GroupId)+1 is fine:
+                   tblSongLinks is small + curator-edited, and an AUTO_INCREMENT
+                   GroupId would complicate a future merge-groups op (matches
+                   v1's reasoning verbatim, api.php:546-553). Wrapped in the
+                   transaction (v1 was not) so two concurrent first-links can't
+                   race onto the same minted id — a strict safety IMPROVEMENT
+                   over v1, not a behaviour change any caller can observe. */
+                $r = $db->query('SELECT COALESCE(MAX(GroupId), 0) + 1 AS NextId FROM tblSongLinks');
+                $newGroup = $r ? (int)$r->fetch_assoc()['NextId'] : 1;
+                if ($r) { $r->close(); }
+
+                $ins = $db->prepare(
+                    'INSERT INTO tblSongLinks (GroupId, SongId, Note, CreatedBy)
+                     VALUES (?, ?, ?, ?), (?, ?, ?, ?)'
+                );
+                $emptyNote = '';
+                /* CORRECTED type string, NOT a verbatim port of this one line:
+                   v1 (api.php:561) binds this same 8-value pair as
+                   'issiisis' — positions 7-8 swap $note's 's' and
+                   $createdBy's 'i', so mysqli coerces the non-numeric $note
+                   string to (int) 0 on every brand-new counterpart group,
+                   silently discarding whatever text the curator typed. Caught
+                   by this commit's own behavioural verification (a POSTed
+                   note came back as the literal string "0" on re-GET) — a
+                   type-string transposition bind_param()'s signature can't
+                   catch (rule #5 talks about placeholder/VALUE COUNT
+                   mismatches via bindParamSafe(); this is a same-count
+                   type mismatch, a different failure shape). Fixing a
+                   verbatim port would ship a KNOWN, freshly-discovered data-
+                   loss bug into new code, so this one line intentionally
+                   diverges from v1: 'issiissi' below is i,s,s,i,i,s,s,i —
+                   note stays 's', createdBy stays 'i'. Filed as its own v1
+                   bug report (does not block this port; v1 is scheduled for
+                   retirement under #1601). */
+                $ins->bind_param(
+                    'issiissi',
+                    $newGroup, $srcId, $emptyNote, $createdBy,
+                    $newGroup, $tgtId, $note,      $createdBy
+                );
+                $ins->execute();
+                $ins->close();
+                $groupId = $newGroup;
+                $extra   = ['created' => true];
+            } else {
+                /* Exactly one side already grouped — extend it. */
+                $joinGroup = $srcGroup > 0 ? $srcGroup : $tgtGroup;
+                $newSongId = $srcGroup > 0 ? $tgtId    : $srcId;
+                $ins = $db->prepare(
+                    'INSERT INTO tblSongLinks (GroupId, SongId, Note, CreatedBy)
+                     VALUES (?, ?, ?, ?)'
+                );
+                $ins->bind_param('issi', $joinGroup, $newSongId, $note, $createdBy);
+                $ins->execute();
+                $ins->close();
+                $groupId = $joinGroup;
+                $extra   = ['extended' => true];
+            }
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.link', 'song', $srcId, ['groupId' => $groupId, 'target' => $tgtId] + $extra);
+        ed2_respond(['ok' => true, 'groupId' => $groupId] + $extra);
+        break;
+    }
+
+    /* ---- song_link_remove (POST) — drop one song from its counterpart
+           group. Port of remove_song_link (api.php:599). Body:
+           { id?: int, songId?: string } — either identifier works.
+
+           A resulting group of <2 members is meaningless (a "counterpart"
+           of nobody), so it's cleaned up too — matches v1 verbatim.
+           Already-gone -> {ok:true, deleted:0}, NOT a 404: a double-click on
+           the Unlink button must not surface a spurious error. ---- */
+    case 'song_link_remove': {
+        ed2_requireEntitlement('edit_songs');
+        $removeId = (int)($body['id'] ?? 0);
+        $songId   = trim((string)($body['songId'] ?? ''));
+        if ($removeId <= 0 && $songId === '') {
+            ed2_respond(['ok' => false, 'error' => 'id or songId is required.'], 400);
+        }
+
+        if ($removeId > 0) {
+            $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE Id = ?');
+            $stmt->bind_param('i', $removeId);
+        } else {
+            $stmt = $db->prepare('SELECT Id, GroupId FROM tblSongLinks WHERE SongId = ?');
+            $stmt->bind_param('s', $songId);
+        }
+        $stmt->execute();
+        $row = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$row) {
+            ed2_respond(['ok' => true, 'deleted' => 0]);
+        }
+
+        $groupId = (int)$row['GroupId'];
+        $rowId   = (int)$row['Id'];
+
+        $db->begin_transaction();
+        try {
+            $del = $db->prepare('DELETE FROM tblSongLinks WHERE Id = ?');
+            $del->bind_param('i', $rowId);
+            $del->execute();
+            $deleted = $del->affected_rows;
+            $del->close();
+
+            /* Fewer than two members left in the group? Drop the remainder
+               — a singleton group is meaningless and would otherwise occupy
+               a slot forever showing "no counterparts". */
+            $r = $db->prepare('SELECT COUNT(*) AS n FROM tblSongLinks WHERE GroupId = ?');
+            $r->bind_param('i', $groupId);
+            $r->execute();
+            $remaining = (int)$r->get_result()->fetch_assoc()['n'];
+            $r->close();
+            if ($remaining < 2) {
+                $cleanup = $db->prepare('DELETE FROM tblSongLinks WHERE GroupId = ?');
+                $cleanup->bind_param('i', $groupId);
+                $cleanup->execute();
+                $cleanup->close();
+            }
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.link.remove', 'song', $songId !== '' ? $songId : (string)$rowId, ['groupId' => $groupId, 'deleted' => (int)$deleted]);
+        ed2_respond(['ok' => true, 'deleted' => (int)$deleted]);
+        break;
+    }
+
+    /* ---- song_link_suggestions (GET) — up to 5 highest-scoring pending
+           counterpart suggestions involving this song. Port of
+           suggest_song_links (api.php:676).
+
+           RULE #22: this reads the PRE-SCORED tblSongLinkSuggestions table —
+           built offline by build-song-link-suggestions.php, the ONE consumer
+           of includes/song_similarity.php's ihymns_sim_score(). No scoring
+           maths lives here or anywhere in this file.
+
+           Probed (unlike song_links above — see that case's D10 comment):
+           an install can have run #1216's original tblSongLinks migration
+           without yet having run #1219's later tblSongLinkSuggestions
+           addition, so an un-migrated read here degrades to an empty list +
+           tableMissing:true rather than a mysqli-STRICT throw (matches v1
+           exactly, api.php:686-700). ---- */
+    case 'song_link_suggestions': {
+        require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+
+        $probe = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE()
+                AND TABLE_NAME   = 'tblSongLinkSuggestions' LIMIT 1"
+        );
+        $hasTable = $probe && $probe->fetch_row() !== null;
+        if ($probe) { $probe->close(); }
+        if (!$hasTable) {
+            ed2_respond(['ok' => true, 'suggestions' => [], 'tableMissing' => true]);
+        }
+
+        $stmt = $db->prepare(
+            'SELECT s.Id          AS id,
+                    s.SongIdA     AS songIdA,
+                    s.SongIdB     AS songIdB,
+                    s.Score       AS score,
+                    s.TitleScore  AS titleScore,
+                    s.LyricsScore AS lyricsScore,
+                    a.Title       AS titleA,
+                    a.Number      AS numberA,
+                    a.SongbookAbbr AS songbookA,
+                    b.Title       AS titleB,
+                    b.Number      AS numberB,
+                    b.SongbookAbbr AS songbookB
+               FROM tblSongLinkSuggestions s
+               JOIN tblSongs a ON a.SongId = s.SongIdA AND ' . songVisibleSql($db, 'a') . '
+               JOIN tblSongs b ON b.SongId = s.SongIdB AND ' . songVisibleSql($db, 'b') . '
+              WHERE (s.SongIdA = ? OR s.SongIdB = ?)
+                AND NOT EXISTS (
+                    SELECT 1 FROM tblSongLinkSuggestionsDismissed d
+                     WHERE d.SongIdA = s.SongIdA AND d.SongIdB = s.SongIdB
+                )
+                /* Skip pairs already in the same counterpart group — already linked. */
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM tblSongLinks la
+                      JOIN tblSongLinks lb ON la.GroupId = lb.GroupId
+                     WHERE la.SongId = s.SongIdA AND lb.SongId = s.SongIdB
+                )
+              ORDER BY s.Score DESC
+              LIMIT 5'
+        );
+        $stmt->bind_param('ss', $songId, $songId);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        /* Normalise so the "other side" is always in a single `other` field,
+           regardless of which slot the current song was found in. */
+        $suggestions = [];
+        foreach ($rows as $r) {
+            $isA = ($r['songIdA'] === $songId);
+            $suggestions[] = [
+                'id'          => (int)$r['id'],
+                'score'       => (float)$r['score'],
+                'titleScore'  => (float)$r['titleScore'],
+                'lyricsScore' => (float)$r['lyricsScore'],
+                'other' => [
+                    'songId'   => $isA ? $r['songIdB']   : $r['songIdA'],
+                    'title'    => $isA ? $r['titleB']    : $r['titleA'],
+                    'number'   => $isA ? $r['numberB']   : $r['numberA'],
+                    'songbook' => $isA ? $r['songbookB'] : $r['songbookA'],
+                ],
+            ];
+        }
+        ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
+    }
+
+    /* ---- song_link_suggestion_dismiss (POST) — curator says "no, different
+           hymns". Port of dismiss_song_link_suggestion (api.php:772). Body:
+           { songIdA, songIdB, reason? } — canonical order (SongIdA < SongIdB
+           lexicographically) is enforced server-side so callers needn't
+           pre-sort, matching the build-script invariant.
+
+           Writes tblSongLinkSuggestionsDismissed — the SAME table
+           /manage/duplicate-songs's `dismiss` action writes (CLAUDE.md rule
+           #22: "a cluster is suppressed only when ALL its pairs are
+           dismissed"), so a dismissal from this panel and a dismissal on
+           duplicate-songs are two views of ONE workflow, never two
+           divergent stores. ---- */
+    case 'song_link_suggestion_dismiss': {
+        ed2_requireEntitlement('edit_songs');
+        $a      = trim((string)($body['songIdA'] ?? ''));
+        $b      = trim((string)($body['songIdB'] ?? ''));
+        $reason = trim((string)($body['reason'] ?? ''));
+        if ($a === '' || $b === '' || $a === $b) {
+            ed2_respond(['ok' => false, 'error' => 'songIdA and songIdB are required and must differ.'], 400);
+        }
+        if ($a > $b) { [$a, $b] = [$b, $a]; }
+
+        $db->begin_transaction();
+        try {
+            $dismissedBy = $ed2UserId;
+            $stmt = $db->prepare(
+                'INSERT INTO tblSongLinkSuggestionsDismissed (SongIdA, SongIdB, DismissedBy, Reason)
+                 VALUES (?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE Reason = VALUES(Reason),
+                                         DismissedBy = VALUES(DismissedBy),
+                                         DismissedAt = CURRENT_TIMESTAMP'
+            );
+            $stmt->bind_param('ssis', $a, $b, $dismissedBy, $reason);
+            $stmt->execute();
+            $stmt->close();
+
+            /* Drop the matching pending suggestion so it disappears from
+               every consumer immediately (this panel AND duplicate-songs). */
+            $del = $db->prepare(
+                'DELETE FROM tblSongLinkSuggestions WHERE SongIdA = ? AND SongIdB = ?'
+            );
+            $del->bind_param('ss', $a, $b);
+            $del->execute();
+            $del->close();
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.link.dismiss', 'song', $a, ['other' => $b, 'reason' => $reason]);
+        ed2_respond(['ok' => true]);
         break;
     }
 
