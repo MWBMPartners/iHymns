@@ -3181,4 +3181,35 @@ return [
             || !_migProbe_indexExists($db, 'tblSongs', 'idx_IsDeleted')
             || !_migProbe_constraintExists($db, 'tblSongs', 'fk_Songs_DeletedBy'),
     ],
+
+    /* ---- #1725/#1727 — MWBM-IntAppsAPI gateway sync cache ---------------
+       ONE dormant table. Nothing in the tree reads or writes it until the
+       client module (includes/intapps_client.php, a later commit in this
+       same batch) ships AND an admin lists the current channel in
+       tblAppSettings.intappsapi_enabled_channels — so applying this card
+       changes the behaviour of zero existing reads (rule #20 one-pass:
+       Scope/Channel/AppSlug are all reserved-multiplicity columns baked in
+       up front, so a second scope, a per-channel gateway app, or a second
+       registered app slug is a data change, never a second migration). See
+       .claude/intappsapi-integration-plan.md §4 for the full design and
+       .claude/wave4-prelaunch-plan.md §6 Block D for the pre-launch delta
+       this card is part of. */
+    'intapps-sync' => [
+        'script' => 'migrate-add-intapps-sync.php',
+        'card' => [
+            'title'  => 'IntAppsAPI Gateway Sync Cache (#1725/#1727)',
+            'body'   => 'Creates <code>tblIntAppsSync</code>, the local snapshot +'
+                      . ' refresh-bookkeeping table for the MWBM-IntAppsAPI gateway'
+                      . ' integration (server-proxied feature-flag kill switches).'
+                      . ' Entirely dormant until an admin lists the current channel'
+                      . ' in the IntAppsAPI card on <code>/manage/configuration</code>'
+                      . ' — until then this card being applied or pending changes'
+                      . ' nothing observable anywhere in the app. Idempotent — safe'
+                      . ' to re-run.',
+            'button' => 'Create IntApps Sync Table',
+        ],
+        /* Single-object probe (one CREATE TABLE, nothing else) — a real
+           live-schema check, never a `true`-returning stub (rule #19). */
+        'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblIntAppsSync'),
+    ],
 ];

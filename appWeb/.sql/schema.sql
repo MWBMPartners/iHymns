@@ -4625,6 +4625,35 @@ CREATE TABLE IF NOT EXISTS tblGatingRules (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Admin-defined enforcement rules (#1481 P2, schema created in P1 one-pass per rule #20) -- cap-to-behaviour-kind mapping; DORMANT until P2 ships the enforcement loop and both feature flags are on.';
 
+-- ----------------------------------------------------------------------------
+-- tblIntAppsSync (#1725/#1727). MWBM-IntAppsAPI gateway local snapshot +
+-- refresh bookkeeping. Dormant until tblAppSettings.intappsapi_enabled_channels
+-- names the current channel AND includes/intapps_client.php is live; fail-open
+-- contract (a failed/malformed fetch never overwrites PayloadJson/FetchedAt)
+-- lives entirely in that module, not here. One-pass DDL (rule #20): the UNIQUE
+-- key (Scope, Channel, AppSlug) reserves multiplicity for future scopes
+-- ('updates'/'notifications'/'status'), per-docroot channels, and a second
+-- registered gateway app/slug, so none of those become a second migration.
+-- DDL is byte-identical to appWeb/.sql/migrate-add-intapps-sync.php (rule #19).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblIntAppsSync (
+    Id                  BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT 'Surrogate PK',
+    Scope               VARCHAR(30)  NOT NULL COMMENT 'Gateway data family this row caches: features|updates|notifications|status. App-validated vocabulary (rule #20: VARCHAR, never ENUM); only "features" is read today',
+    Channel             VARCHAR(20)  NOT NULL DEFAULT '' COMMENT 'Docroot discriminator (serviceMode_channel/ihymns_environment value); empty string = shared across all three docroots. Reserved multiplicity per rule #20/#26; default operation uses only the empty-string row',
+    AppSlug             VARCHAR(50)  NOT NULL DEFAULT '' COMMENT 'Gateway app slug this row caches; empty string = the primary ihymns app. Reserved multiplicity for a second registered gateway app, per-platform or per-env (rule #20); default operation uses only the empty-string value',
+    PayloadJson         JSON         NULL COMMENT 'Last-known-GOOD decoded gateway envelope data. Never overwritten by a failed or malformed fetch',
+    FetchedAt           DATETIME     NULL COMMENT 'UTC time of last SUCCESSFUL fetch. NULL = cold. DATETIME not TIMESTAMP (house rule, #1066)',
+    AttemptedAt         DATETIME     NULL COMMENT 'UTC time of last attempt, success or failure -- drives exponential backoff',
+    RefreshLockedUntil  DATETIME     NULL COMMENT 'Single-flight lock: a request that wins the conditional UPDATE owns the refresh until this UTC time; stale locks self-expire',
+    LastHttpStatus      SMALLINT UNSIGNED NULL COMMENT 'HTTP status of the last attempt; NULL = transport-level failure (no answer at all)',
+    LastErrorCode       VARCHAR(50)  NULL COMMENT 'Gateway envelope error.code of the last failure (ACCESS_DENIED, RATE_LIMITED, BAD_SHAPE, ...) for the admin status card; never the message prose',
+    ConsecutiveFailures INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Failure streak since the last success; backoff = LEAST(300*2^n, 3600) seconds',
+
+    PRIMARY KEY (Id),
+    UNIQUE KEY uq_IntAppsSync_ScopeChannelApp (Scope, Channel, AppSlug)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='IntAppsAPI gateway local snapshot + refresh bookkeeping (#1725/#1727). Dormant until tblAppSettings.intappsapi_enabled_channels names the current channel; fail-open contract lives in includes/intapps_client.php.';
+
 -- =====================================================================
 -- DEFERRED FOREIGN KEYS (#1708)
 --
