@@ -18,6 +18,30 @@ declare(strict_types=1);
  * discriminate same-host providers (MusicBrainz /work/ vs /recording/
  * vs /artist/).
  *
+ * NON-DESTRUCTIVE: creates one table and seeds it. Nothing is dropped or
+ * rewritten, and the JS rule list it supersedes stays in place as the
+ * fallback (external-link-detect.js keeps its bundled RULES constant for
+ * installs where this migration hasn't run — rule #11). Recovery from an
+ * unwanted run is therefore just `DROP TABLE tblExternalLinkPatterns`: the
+ * client falls back to RULES and detection carries on working.
+ *
+ * IDEMPOTENT — two guards, one per step:
+ *   1. The CREATE is wrapped in a tableExists() probe, so a second run prints
+ *      "[skip] … already present" rather than erroring. (Deliberately not
+ *      `CREATE TABLE IF NOT EXISTS`: the probe is what lets the operator SEE
+ *      which half of the migration actually did something.)
+ *   2. The seed uses `INSERT … WHERE NOT EXISTS` on
+ *      (LinkTypeId, Host, COALESCE(PathPrefix,'')) — see the note above the
+ *      prepare() below for why the COALESCE is load-bearing, and why a guard
+ *      rather than a UNIQUE key.
+ *
+ * SCHEMA MIRROR (rule #19): the CREATE TABLE below is a byte-identical twin of
+ * the tblExternalLinkPatterns block in appWeb/.sql/schema.sql. A fresh install
+ * reads schema.sql; a long-running install gets this. If the two drift — even
+ * by a COMMENT — the two populations diverge structurally and the Schema Audit
+ * page (#518) starts reporting differences nobody chose. Change one, change
+ * the other, in the same commit.
+ *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-external-link-patterns.php
  *   Web: /manage/setup-database → "External-Link URL Patterns (#845)"
@@ -123,6 +147,17 @@ if (_migExtPat_tableExists($mysqli, 'tblExternalLinkPatterns')) {
  * en.wikipedia.org, de.wikipedia.org and wikipedia.org itself.
  *
  * Each tuple: [slug, host, path-prefix-or-null, match-subdomains, priority, note?]
+ *
+ * PRIORITY IS THE ONLY ORDERING — the order of this PHP array is not.
+ * external_link_helpers.php reads the table `ORDER BY Priority ASC, Host ASC`
+ * and external-link-detect.js re-sorts by priority client-side, so the fact
+ * that e.g. `discogs` (160) sits below `audiomack` (350) in the source has no
+ * effect. The numbers are hand-assigned in loose bands with gaps left for
+ * insertions; they are NOT unique, and the relative order of two rules sharing
+ * a priority is undefined. That only matters when two rules could match the
+ * same URL — which is precisely why the genuinely conflicting pairs
+ * (music.youtube.com vs youtube.com; the three MusicBrainz path rules vs any
+ * future bare musicbrainz.org) are given distinct, deliberately low numbers.
  * ---------------------------------------------------------------------- */
 $seedRows = [
     /* MusicBrainz path-discriminated — must beat any later musicbrainz.org host */
@@ -237,7 +272,13 @@ $seedRows = [
     ['secondhandsongs',       'secondhandsongs.com', null,      1, 38,  'Database of cover versions, originals, releases'],
 ];
 
-/* Resolve slugs to LinkTypeIds in one query. */
+/* Resolve slugs to LinkTypeIds in one query.
+   A slug with no row here is COUNTED and SKIPPED rather than fatal (see
+   $missing below): this migration seeds patterns for providers whose types
+   come from migrate-external-links.php (#833), and on an install where that
+   ran before the newer providers were added to its seed list some slugs are
+   legitimately absent. Reporting the count tells the operator to re-run #833
+   first; throwing would strand the patterns that CAN be seeded. */
 $slugToId = [];
 $res = $mysqli->query('SELECT Id, Slug FROM tblExternalLinkTypes');
 while ($row = $res->fetch_assoc()) {
@@ -249,6 +290,18 @@ $inserted = 0;
 $skipped  = 0;
 $missing  = 0;
 
+/* The idempotency guard. tblExternalLinkPatterns carries no UNIQUE key
+   (curators may legitimately want two rows differing only by Note or
+   Priority), so INSERT IGNORE / ON DUPLICATE KEY have nothing to key on and
+   this NOT EXISTS test is the only thing standing between a re-run and a
+   duplicated seed. FROM DUAL is MySQL's no-table dummy source — a SELECT
+   needs a FROM before it can carry a WHERE.
+
+   COALESCE on both sides of the PathPrefix comparison is essential rather
+   than tidy: SQL's `NULL = NULL` is NULL, not TRUE, so without it every
+   host-only rule (the overwhelming majority below) would fail to recognise
+   its own existing copy and every re-run would insert the whole seed again.
+   https://dev.mysql.com/doc/refman/8.0/en/working-with-null.html */
 $insert = $mysqli->prepare(
     'INSERT INTO tblExternalLinkPatterns
          (LinkTypeId, Host, PathPrefix, MatchSubdomains, Priority, Note)

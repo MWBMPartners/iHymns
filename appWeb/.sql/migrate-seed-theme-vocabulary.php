@@ -33,6 +33,36 @@ declare(strict_types=1);
  * themelist (the same taxonomy as CCLI SongSelect); seeding them is low-risk.
  * Source recorded here per #1152's licensing note.
  *
+ * NON-DESTRUCTIVE. Three ADD COLUMNs, two ADD INDEXes, one ADD FOREIGN KEY and
+ * a vocabulary seed — nothing is dropped, renamed or rewritten. Existing
+ * curator tags keep their rows and their song mappings; the only thing that
+ * can change on an existing row is `Source` flipping from 'curator' to
+ * 'ccli-openlyrics' (the "promotion" described above), which is metadata, not
+ * content. There is accordingly no recovery script: an unwanted run is undone
+ * by an UPDATE resetting Source, not by restoring anything.
+ *
+ * IDEMPOTENCY — the part to read before editing, because a re-run is routine:
+ *   - DDL: each helper probes first (SHOW COLUMNS / SHOW INDEX /
+ *     information_schema.TABLE_CONSTRAINTS) and prints "[SKIP]" if the object
+ *     is already there. `ADD COLUMN` has no IF NOT EXISTS in MySQL, so the
+ *     probe is the only thing making a second run survivable.
+ *   - Data: `INSERT … ON DUPLICATE KEY UPDATE … Id = LAST_INSERT_ID(Id)` — see
+ *     the detailed note at Phase 1. The upsert is keyed on tblSongTags' UNIQUE
+ *     constraints, so an existing theme is adopted rather than duplicated.
+ *   - Because the whole thing converges, the number of standard theme nodes
+ *     reported in the summary is stable across runs — that count is what the
+ *     setup-database probe reads to decide the card is applied.
+ *
+ * SCHEMA MIRROR (rule #19): the three column DDL strings below are
+ * byte-identical to their declarations inside the tblSongTags CREATE TABLE in
+ * appWeb/.sql/schema.sql, COMMENT text included. That is not stylistic — a
+ * fresh install builds the table from schema.sql and a long-running one from
+ * these ALTERs, so any difference (even a comma in a COMMENT) makes the two
+ * populations structurally distinct and the Schema Audit page (#518) starts
+ * flagging divergence. Note that `tests/php/test-schema-coverage.php` compares
+ * PRESENCE only — it will not catch a COMMENT that drifts, so the two have to
+ * be edited together by hand, in one commit.
+ *
  * @migration-adds tblSongTags.ParentId
  * @migration-adds tblSongTags.CcliThemeId
  * @migration-adds tblSongTags.Source
@@ -57,7 +87,18 @@ function _migThemes_output(string $msg): void {
     if (!$isCli) flush();
 }
 
+/* The three _migThemes_add* helpers all follow the same shape: probe, skip if
+   present, otherwise ALTER. `$table` / `$col` / `$idx` / `$fk` are interpolated
+   rather than bound because they are identifiers, which prepared statements
+   cannot parameterise — every call site below passes a hardcoded literal from
+   this file, which is case (a) of the interpolation exemption in rule #5. Never
+   route a request value through these. */
 function _migThemes_addCol(\mysqli $db, string $table, string $col, string $ddl): void {
+    /* SHOW COLUMNS … LIKE treats the pattern as a LIKE pattern, so `_` is a
+       single-character wildcard. Harmless for the three names used here (none
+       contains one), but a future column named e.g. `Ccli_Theme_Id` would
+       match loosely and could report a different column as "already present".
+       https://dev.mysql.com/doc/refman/8.0/en/show-columns.html */
     $r = $db->query("SHOW COLUMNS FROM {$table} LIKE '{$col}'");
     if ($r && $r->num_rows > 0) { _migThemes_output("  [SKIP] {$table}.{$col} already present."); return; }
     $db->query("ALTER TABLE {$table} ADD COLUMN {$ddl}");
@@ -266,6 +307,13 @@ try {
         "ParentId INT UNSIGNED NULL DEFAULT NULL COMMENT 'Self-FK to tblSongTags.Id for the 2-level CCLI/OpenLyrics theme hierarchy (#1152); NULL = top-level' AFTER Description");
     _migThemes_addCol($mysql, 'tblSongTags', 'CcliThemeId',
         "CcliThemeId INT UNSIGNED NULL DEFAULT NULL COMMENT 'CCLI SongSelect theme number for import id-match (#1152); NULL until known' AFTER ParentId");
+    /* Source is VARCHAR + an app-level allow-list, never an ENUM (rule #20):
+       provenance is a growable vocabulary — a future SongSelect import or a
+       partner feed is a new value — and adding an ENUM member costs an ALTER,
+       which is exactly the second migration the one-pass rule exists to avoid.
+       The DEFAULT 'curator' is what makes the ADD COLUMN safe on a populated
+       table: every pre-existing tag is correctly labelled curator-authored
+       without a backfill pass. */
     _migThemes_addCol($mysql, 'tblSongTags', 'Source',
         "Source VARCHAR(50) NOT NULL DEFAULT 'curator' COMMENT 'Provenance: curator | ccli-openlyrics (seeded standard vocab) (#1152)' AFTER CcliThemeId");
     _migThemes_addIdx($mysql, 'tblSongTags', 'idx_ParentId', 'ParentId');
@@ -280,6 +328,12 @@ try {
         $line = trim($line);
         if ($line === '') { continue; }
         if (str_contains($line, ' / ')) {
+            /* Split on the FIRST ' / ' only (limit 2). The taxonomy is two
+               levels by definition, so a hypothetical three-level line would
+               fold its tail into the leaf name ("A / B / C" → parent "A", leaf
+               "B / C") rather than silently losing it — and would then fail
+               loudly on the VARCHAR(50) Name if it were long. Deliberate: the
+               2-level shape is the contract, not an accident of parsing. */
             [$p, $leaf] = array_map('trim', explode(' / ', $line, 2));
             $topLevel[$p] = true;       // ensure the parent category node exists
             $children[]   = [$p, $leaf];
@@ -293,7 +347,29 @@ try {
 
     /* Phase 1 — upsert every top-level node; capture id (LAST_INSERT_ID trick
        returns the existing row's id on a duplicate-key hit). Any existing
-       same-named curator tag is promoted to the standard vocabulary. */
+       same-named curator tag is promoted to the standard vocabulary.
+
+       ELI5 — `Id = LAST_INSERT_ID(Id)`: an INSERT tells you the id of the row
+       it just created, but an upsert that hit an EXISTING row normally tells
+       you nothing. Assigning the row's own Id back to itself through
+       LAST_INSERT_ID() is MySQL's documented way of saying "and report that
+       id", so `$mysql->insert_id` below is the right id in BOTH cases — which
+       is what lets Phase 2 look parents up in $idOf without a second SELECT
+       per theme. https://dev.mysql.com/doc/refman/8.0/en/information-functions.html#function_last-insert-id
+
+       DETAIL — what the upsert keys on: tblSongTags declares UNIQUE on BOTH
+       Name and Slug. Either can trigger the duplicate branch, which is what
+       makes "adopt the curator's existing 'Grace' tag" work. It also means two
+       DIFFERENTLY-named themes whose slugs collide would be folded into one
+       row; the current themelist has no such pair, but a future addition
+       differing only in punctuation would need checking.
+
+       DETAIL — what the UPDATE clause deliberately does NOT set: `ParentId`.
+       An existing tag keeps whatever parent it had (normally none). That is
+       the "promote, never re-parent" policy from the doc-block — a curator's
+       flat "Christmas" tag becomes standard vocabulary without being silently
+       moved underneath "Seasonal", where every existing song mapping would
+       start displaying differently. */
     $idOf = [];
     $insTop = $mysql->prepare(
         "INSERT INTO tblSongTags (Name, Slug, Source) VALUES (?, ?, 'ccli-openlyrics')
@@ -319,6 +395,13 @@ try {
     );
     $childCount = 0;
     foreach ($children as [$p, $leaf]) {
+        /* $idOf holds every top-level node from Phase 1 PLUS every leaf already
+           created in this loop, so this one test covers two collisions at once:
+           a leaf that duplicates a flat theme (Grace, Love, Mercy, …) and a
+           leaf that appears under two different parents. Both resolve to the
+           first/canonical node. The check is against the in-memory map rather
+           than the database on purpose — it makes the outcome a function of
+           the themelist alone, identical on every run and every install. */
         if (isset($idOf[$leaf])) {           /* collision with a top-level theme */
             $promote->bind_param('s', $leaf);
             $promote->execute();

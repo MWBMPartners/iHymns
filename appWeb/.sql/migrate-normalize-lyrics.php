@@ -21,14 +21,40 @@ declare(strict_types=1);
  *   tblLyricWords  — one row per word, for word/syllable timing (TTML, LRC-A,
  *                    karaoke). Starts empty; populated by timed imports.
  *
- * STRICTLY ADDITIVE + NON-DESTRUCTIVE: tblSongComponents.LinesJson stays the
- * authoritative source the editor + readers use today; this migration BACKFILLS
- * the new tables from it (one "ihymns" primary tblLyrics per song + its lines)
- * but switches NO read path. A later, separately-verified step moves readers
- * over. IDEMPOTENT: tblLyrics is keyed UNIQUE(SongId, Source) and only lyrics
- * with zero lines are line-backfilled, so re-running is a no-op.
+ * STRICTLY ADDITIVE + NON-DESTRUCTIVE: this migration creates three tables and
+ * copies data INTO them. It drops nothing, rewrites nothing, and switches no
+ * read path — so there is no recovery script, because there is nothing to
+ * recover. Re-running it on a healthy install changes nothing at all.
+ *
+ * ⚠️ THE DIRECTION OF TRAVEL HAS SINCE REVERSED — read this before trusting
+ * the paragraph above's original wording. When #1047 shipped,
+ * tblSongComponents.LinesJson was authoritative and tblLyricLines was the new,
+ * unread mirror. As of the #1235 P4 cutover (CLAUDE.md rule #25) that is the
+ * other way round: **tblLyricLines is the source of truth for lyric lines**,
+ * with exactly one read path (includes/lyric_lines_read.php) and one write path
+ * (lyricLinesWriteComponents() in includes/lyric_lines_sync.php); the four
+ * tblSongComponents JSON columns are a gated shadow that the C6 migration
+ * retires. This file is therefore a HISTORICAL bootstrap: it still creates the
+ * tables a fresh-ish install needs, and Step 3's backfill is now guarded to
+ * skip entirely once LinesJson is gone (see the guard there). Do not read the
+ * "tblSongComponents stays authoritative" line in the summary output as current
+ * fact — it describes the state at the time of writing, in 2026-05.
+ *
+ * IDEMPOTENT — three separate guards, one per step:
+ *   1. `CREATE TABLE IF NOT EXISTS` ×3.
+ *   2. `INSERT IGNORE … SELECT FROM tblSongs`, deduplicated by the UNIQUE
+ *      (SongId, Source) key — so every song gets exactly one 'ihymns' master
+ *      however many times this runs.
+ *   3. The line backfill only considers lyrics rows with ZERO lines
+ *      (`NOT EXISTS`), so a song whose lines are already present — including
+ *      every song written by the modern lyricLinesWriteComponents() path — is
+ *      untouched. That check is the one thing standing between a re-run and a
+ *      duplicated corpus of lines, since tblLyricLines has no unique key.
  *
  * Works on MySQL 5.7+ (no JSON_TABLE dependency — lines are expanded in PHP).
+ * That is a deliberate portability choice, not a stylistic one: JSON_TABLE
+ * arrived in MySQL 8.0, and expanding LinesJson in PHP keeps the migration
+ * runnable on the 5.7 installs this project still supports.
  *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-normalize-lyrics.php
@@ -71,7 +97,33 @@ try {
 }
 _migNormLyrics_output("Connected to MySQL: " . DB_NAME);
 
-/* ---- Step 1: tables ------------------------------------------------------- */
+/* ---- Step 1: tables -------------------------------------------------------
+ *
+ * SCHEMA MIRROR (rule #19): these three CREATE TABLE blocks have counterparts
+ * in appWeb/.sql/schema.sql, which is what a fresh install reads. Two
+ * differences there are intentional and worth knowing before "fixing" either
+ * side:
+ *
+ *   - schema.sql carries later additions this file predates — HasSyllableTiming
+ *     on tblLyrics, PartTypeSlug / MetaJson / ChordsJson / Note on
+ *     tblLyricLines, MetaJson on tblLyricWords — all added by subsequent
+ *     migrations (#141, #1235 P1). A long-running install acquires them from
+ *     those migrations, not from here.
+ *
+ *   - the two user-referencing foreign keys below (fk_Lyrics_SubmittedBy,
+ *     fk_Lyrics_ApprovedBy) appear in schema.sql as DEFERRED `ALTER TABLE …
+ *     ADD CONSTRAINT` statements near the end of the file rather than inline,
+ *     because schema.sql defines tblLyrics before tblUsers exists. Same two
+ *     constraints, same names, same ON DELETE SET NULL — different position.
+ *
+ * Everything else must stay byte-identical, COMMENT text included.
+ *
+ * One column shape not to copy into new work: `tblLyrics.Status` is an ENUM.
+ * CLAUDE.md's red-flag list names it explicitly as grandfathered. A moderation
+ * vocabulary written today would be VARCHAR + an app-level allow-list (rule
+ * #20), because adding a state to an ENUM costs an ALTER — the second
+ * migration the one-pass rule exists to prevent.
+ */
 _migNormLyrics_output("");
 _migNormLyrics_output("--- Step 1: create tblLyrics / tblLyricLines / tblLyricWords ---");
 try {
@@ -185,7 +237,16 @@ try {
         return;
     }
 
-    /* Only ihymns-primary lyrics that have NO lines yet (idempotent). */
+    /* Only ihymns-primary lyrics that have NO lines yet (idempotent).
+
+       tblLyricLines has no unique key — nothing at the database level would
+       stop a second run appending a whole duplicate set of lines under the
+       same LyricsId — so this NOT EXISTS is the entire idempotency guarantee
+       for Step 3. Note the one place it is imperfect rather than wrong: a song
+       whose components legitimately produce ZERO lines never gains a
+       tblLyricLines row, so it re-enters this list on every run. That costs a
+       few queries and inserts nothing; it is not a correctness problem, but it
+       is why "songs done" does not fall to zero on a converged install. */
     $todo = $mysql->query(
         "SELECT ly.Id AS LyricsId, ly.SongId
            FROM tblLyrics ly
@@ -212,7 +273,20 @@ try {
         $compStmt->execute();
         $comps = $compStmt->get_result()->fetch_all(MYSQLI_ASSOC);
 
+        /* SortOrder is GLOBAL across the song, not per-component: $order starts
+           at 0 once per song and keeps climbing through every component, so the
+           lines of verse 2 sort after the lines of the chorus that precedes it.
+           That is what lets a reader reconstruct the sung order from
+           tblLyricLines alone, without joining back to tblSongComponents —
+           which is the whole point of normalising. The component ordering it
+           inherits comes from the `ORDER BY SortOrder, Id` on $compStmt. */
         $order = 0;
+        /* One transaction PER SONG rather than one for the whole backfill: a
+           single 14k-song transaction would hold locks and undo log for the
+           entire run and lose everything on one bad row, whereas this way a
+           malformed LinesJson costs exactly one song (rolled back, warned
+           about, loop continues) and the song stays in the "no lines yet" set
+           for a later re-run to retry. */
         $mysql->begin_transaction();
         try {
             foreach ($comps as $c) {

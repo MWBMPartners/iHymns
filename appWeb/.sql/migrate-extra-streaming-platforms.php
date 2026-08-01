@@ -157,6 +157,9 @@ $typesUpdated = 0;
 foreach ($seedTypes as $t) {
     [$slug, $name, $cat, $applies, $multi, $icon, $order] = $t;
     $upsert->bind_param('ssssisi', $slug, $name, $cat, $applies, $multi, $icon, $order);
+    /* The `@` here is vestigial (copied from migrate-external-links.php): the
+       DB layer runs mysqli under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT,
+       and error suppression does not suppress a thrown exception. */
     @$upsert->execute();
     /* MySQL's INSERT … ON DUPLICATE KEY UPDATE reports affected_rows as
        1 = inserted, 2 = an existing row was changed, 0 = the row already
@@ -235,7 +238,7 @@ $res->close();
    defensive noise: in SQL, `NULL = NULL` evaluates to NULL (not TRUE), so a
    host-only rule — every row in this file has a NULL PathPrefix — would never
    match its own existing copy, the guard would pass on every run, and each
-   re-run would insert a fresh duplicate of all 29 patterns.
+   re-run would insert a fresh duplicate of every pattern below.
    https://dev.mysql.com/doc/refman/8.0/en/working-with-null.html */
 $insert = $mysqli->prepare(
     'INSERT INTO tblExternalLinkPatterns

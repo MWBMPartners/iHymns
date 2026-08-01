@@ -99,9 +99,11 @@
 -- the role tables still store free-text names; see tblCreditPeople).
 --
 -- tblSongs is the hub of the whole schema: 41 foreign keys across this file
--- reference tblSongs(SongId) — the human-readable string id, not the surrogate
+-- point at tblSongs.SongId — the human-readable string id, not the surrogate
 -- Id — and 37 of them ON DELETE CASCADE. That fan-out is why song deletion is
--- a SOFT delete (#1694); see the note on tblSongs.IsDeleted.
+-- a SOFT delete (#1694); see the note on tblSongs.IsDeleted. (Only four are
+-- SET NULL: the two on tblSongRequests, tblSongRedirects.NewSongId, and
+-- tblLiveFollowSessions.CurrentSongId.)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -153,6 +155,20 @@ CREATE TABLE IF NOT EXISTS tblPlaces (
 -- ----------------------------------------------------------------------------
 -- tblSongbooks
 -- Stores the songbook/collection definitions (CP, JP, MP, SDAH, CH, Misc).
+--
+-- `Abbreviation` is the load-bearing one and the reason this table is here so
+-- early: it is not a label, it is the PREFIX of every SongId in the book
+-- ("MP" in MP-1008), parsed as <letters>-<digits> by the PWA router, the
+-- OG-image generator and several API validators, and it is the FK target that
+-- tblSongs and tblSongbookEntries point at. Loosening its charset would re-key
+-- ~14k songs and break every existing URL, bookmark and shared image. When a
+-- richer user-facing label is wanted (punctuation, spaces), that is what the
+-- optional `DisplayAbbr` is for — display only, never in a URL or an id.
+--
+-- `IsOfficial` = 0 does NOT mean second-class: unofficial books are curated
+-- groupings that appear alongside published hymnals everywhere, just badged.
+-- Filtering them out of a listing is a bug (rule #24). It drives ranking,
+-- whether song numbers are shown, and the shared "Unofficial" badge.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbooks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -890,6 +906,19 @@ CREATE TABLE IF NOT EXISTS tblUsers (
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    /* Three separate axes live on this row and are routinely confused:
+         Role ....... what you may DO in the admin panel (global_admin > admin
+                      > editor > user). A plain string with no lookup table —
+                      the ladder is a PHP constant, not data.
+         AccessTier . what CONTENT you may see. Echoes tblAccessTiers.Name but
+                      carries no foreign key, so a tier renamed there leaves
+                      users pointing at a name that no longer resolves; the
+                      resolver treats an unknown tier as the fallback matrix.
+         GroupId .... which RELEASE CHANNEL builds you can reach (alpha/beta/
+                      rc/rtw). The only one of the three that is a real FK, and
+                      it is SET NULL so deleting a group demotes members to the
+                      default rather than deleting the accounts.
+       Email is indexed but NOT unique — Username carries the uniqueness. */
     INDEX idx_Role      (Role),
     INDEX idx_Email     (Email),
     INDEX idx_Group     (GroupId),
@@ -1068,13 +1097,36 @@ CREATE TABLE IF NOT EXISTS tblEmailVerificationTokens (
 
 
 -- ============================================================================
--- ACCESS TIERS & PURCHASES
+-- ACCESS TIERS
+-- (Historically "ACCESS TIERS & PURCHASES" — the purchases half was
+-- tblUserPurchases, a guessed 2019-vintage monetisation shape that no code
+-- ever touched, removed in the 2026-07-30 orphan remediation. See the note by
+-- tblUsers. A real purchases feature designs its own one-pass schema.)
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblAccessTiers
 -- Defines available content access tiers. Each tier unlocks specific
 -- content types. Higher tiers include all lower tier access.
+--
+-- This is the storage behind the TIER_CAPS registry in
+-- includes/access_tier_validation.php, and the split between the columns
+-- below is the thing to understand (rule #28):
+--
+--   * The seven Can*/Requires* TINYINT columns are FROZEN. The camelCase keys
+--     they emit (canViewLyrics, canPlayAudio, …) are the published native-app
+--     API contract, so they keep dedicated columns and are never re-homed
+--     into JSON.
+--   * EVERY new capability goes inside the single `Capabilities` JSON column
+--     instead. Adding a gateable feature is ONE line in TIER_CAPS plus running
+--     its migration card — never a new column here, and never a hardcoded
+--     tier->capability matrix in PHP. A column per feature is precisely the
+--     ALTER-per-tweak pattern rule #20 forbids.
+--
+-- The rows are seeded further down (under DEFAULT DATA) and are editable at
+-- /manage/tiers, so the LIVE row is the source of truth at runtime — the
+-- matrix that still exists in checkTierAccess() survives only as the fallback
+-- for an un-migrated install or an unknown tier name.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblAccessTiers (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -1705,7 +1757,17 @@ CREATE TABLE IF NOT EXISTS tblAppSettings (
 
 
 -- ============================================================================
--- FEATURE TABLES (Song Keys, Chords, Scheduling, Templates, Collaboration, etc.)
+-- FEATURE TABLES (#298–#313) — song keys, scheduling, templates,
+-- collaboration, revision history, push subscriptions.
+--
+-- A batch of small per-feature tables added together. Two of the original
+-- members are gone and their headstones are left in place below rather than
+-- deleted, because a reader who finds them referenced in an old commit,
+-- migration or issue needs to know where they went: tblSongChords (#299,
+-- dropped #1613 — chords are now per-line on tblLyricLines.ChordsJson) and
+-- tblUserPreferences (#310, dropped #1671 — it was an un-namespaced duplicate
+-- of tblUsers.Settings). Both drops are separate, self-guarded,
+-- confirm-gated migrations; neither runs automatically.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -2002,9 +2064,25 @@ CREATE TABLE IF NOT EXISTS tblSongHistory (
 
 -- ----------------------------------------------------------------------------
 -- tblSongTags
--- User-defined tags/categories for songs (e.g., "Easter", "Communion",
--- "Wedding", "Funeral"). Tags are shared across all users. Songs can
--- have multiple tags, and tags can apply to multiple songs.
+-- Curator-managed tags/categories for songs (e.g., "Easter", "Communion",
+-- "Wedding", "Funeral"). Shared across all users — NOT the same thing as
+-- tblUserCustomTags, which is a private per-account pool. Songs can have
+-- multiple tags and tags can apply to multiple songs, via tblSongTagMap.
+--
+-- Since #1152 this table also holds the STANDARD theme vocabulary — the
+-- CCLI / SongSelect taxonomy shipped with OpenLyrics — seeded by
+-- migrate-seed-theme-vocabulary.php, which is what ParentId, CcliThemeId and
+-- Source are for. Two consequences worth knowing before writing to it:
+--
+--   * ParentId gives a TWO-LEVEL hierarchy, and `Name` holds the LEAF only.
+--     A theme filed as "Jesus Christ/Second Coming" is stored as the leaf
+--     "Second Coming" with ParentId pointing at "Jesus Christ" — never as the
+--     slash-joined path. Name is VARCHAR(50) and UNIQUE, so writing the path
+--     would both collide and truncate.
+--   * Source distinguishes 'curator' from 'ccli-openlyrics'. Curator variants
+--     are folded into a standard theme by the canonicalisation merge on
+--     /manage/tags, which is irreversible (the variant row is deleted). Grow
+--     the vocabulary through the migration's source data, never ad hoc.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongTags (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -2262,6 +2340,15 @@ CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
     SongIdA         VARCHAR(20)  NOT NULL COMMENT 'Always lexicographically <= SongIdB',
     SongIdB         VARCHAR(20)  NOT NULL,
     Score           DECIMAL(4,3) NOT NULL COMMENT 'Composite similarity, 0.000-1.000',
+    /* The next two columns look like they contradict each other — one ENUM,
+       one VARCHAR, both added by the same #1066 change, with the VARCHAR one
+       explaining itself as "not ENUM so a new value needs no ALTER". They do
+       not. Confidence is a CLOSED triage ladder: high / medium / low is the
+       whole idea, and a fourth rung would be a redesign, not an addition.
+       Signal names the DETECTION METHOD, and every new matching technique
+       adds one — which is precisely the growable case rule #20 is about.
+       Judge a vocabulary by whether it grows, not by how many values it has
+       today. */
     Confidence      ENUM('high','medium','low') NOT NULL DEFAULT 'low' COMMENT 'Triage tier so curators sort by confidence, not raw blend: strong-key match (ISRC/MBID) => high; fuzzy+author => medium; title-only => low (#1066 Theme D)',
     `Signal`        VARCHAR(50)  NOT NULL DEFAULT 'fuzzy' COMMENT 'Detection method: fuzzy | shared-isrc | shared-musicbrainz | shared-spotify | shared-genius. VARCHAR (not ENUM) so a new signal type needs no ALTER (#1066 Theme D). Backtick-quoted — SIGNAL is a reserved word in MySQL 8',
     TitleScore      DECIMAL(4,3) NOT NULL DEFAULT 0.000,
@@ -2323,12 +2410,31 @@ CREATE TABLE IF NOT EXISTS tblSearchQueries (
 
 
 -- ============================================================================
--- Tables added by migrations (sync target for the schema-audit page).
--- Each table below was originally introduced via an appWeb/.sql/migrate-*.php
--- script; the definitions are mirrored here so schema.sql remains the
--- canonical source of truth for what the live database is expected to hold.
--- Adding a new table that ships via a migration? Append the matching
--- CREATE TABLE block here so the schema-audit page (#518) stays clean.
+-- MIGRATION-ORIGIN FAMILIES (sync target for the schema-audit page)
+--
+-- This is a PROVENANCE boundary, not a subject boundary: everything from here
+-- to the #1066 banner was originally introduced by an appWeb/.sql/migrate-*.php
+-- script and mirrored back here so schema.sql stays the canonical description
+-- of what a live database should hold. Adding a new table that ships via a
+-- migration? Append its CREATE TABLE block here so the schema-audit page
+-- (#518) and tests/php/test-schema-coverage.php both stay clean.
+--
+-- Because the ordering is historical, unrelated subjects sit next to each
+-- other. The `-- ==== FAMILY:` banners below re-impose the subject grouping:
+--   FAMILY: COLLECTIONS · EXTERNAL LINKS · CREDIT-PEOPLE SATELLITES ·
+--   ALTERNATIVE TITLES & PER-ENTITY LANGUAGES · SONGBOOK SERIES & COMPILERS ·
+--   SONG MEDIA · WORKS
+-- ============================================================================
+
+
+-- ============================================================================
+-- FAMILY: COLLECTIONS (#941)
+-- Curatorial groupings ORTHOGONAL to the songbook hierarchy — a song lives in
+-- exactly one songbook but can appear in any number of collections. Note the
+-- vocabulary split (rule #24): these are called "Collections" in the UI and
+-- "Catalogues" everywhere internal — table names, the /manage/catalogues
+-- route, the admin.catalogues.* log keys and the 'catalogue' entity type all
+-- stay as they are. Renaming them is an explicitly rejected change.
 -- ============================================================================
 
 
@@ -2374,6 +2480,25 @@ CREATE TABLE IF NOT EXISTS tblCatalogueSongs (
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- ============================================================================
+-- FAMILY: EXTERNAL LINKS (#833 / #845)
+--
+-- One provider registry plus ONE LINK TABLE PER ENTITY —
+-- tblSong/tblSongbook/tblCreditPerson/tblWork ExternalLinks — rather than a
+-- single polymorphic table with an EntityType column. That looks like
+-- duplication and is the deliberate choice (rule #15): each link table gets a
+-- REAL foreign key to its own parent, so links cascade away with the thing
+-- they describe. tblContentRestrictions above shows the alternative, where a
+-- polymorphic key means nothing can cascade at all.
+--
+-- The provider FK runs the other way: every link table declares its
+-- LinkTypeId ON DELETE RESTRICT, so a provider that is still in use cannot be
+-- deleted out from under the links pointing at it. Deactivate it (IsActive=0)
+-- instead. tblExternalLinkPatterns holds the URL -> provider match rules that
+-- js/modules/external-link-detect.js reads, which is why no provider list is
+-- ever hard-coded in PHP or JS (rule #11/#12).
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblExternalLinkTypes (#833) — controlled vocabulary of link providers
@@ -2501,6 +2626,14 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: CREDIT-PEOPLE SATELLITES
+-- Everything that hangs off tblCreditPeople and arrived after it: alternative
+-- names, and group -> member composition. The identifier tables
+-- (tblCreditPersonIPI / tblCreditPersonIdentifiers) and the person link
+-- tables live earlier in the file, with the registry itself.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblCreditPersonAliases — AKA / alternative names for searchability.
 -- MusicBrainz-style alias model: one row per (person, name) with a Type
@@ -2564,6 +2697,17 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Group/band/collective -> individual member people (#1502).';
 
+
+-- ============================================================================
+-- FAMILY: ALTERNATIVE TITLES & PER-ENTITY LANGUAGES (#832 / #778)
+--
+-- Two pairs of parallel song/songbook tables. Both exist for the same reason:
+-- the singular column that came first (Title, Language) could hold exactly one
+-- value, and real hymnals need several — an "also known as" title per source,
+-- a language per section of a bilingual book. The singular columns are kept as
+-- the display default rather than dropped, with IsPrimary=1 in the chip-list
+-- mirroring them, so no read path had to change when these landed.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblSongAlternativeTitles (#832) — multiple "also known as" titles per song.
@@ -2646,6 +2790,19 @@ CREATE TABLE IF NOT EXISTS tblSongLanguages (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: SONGBOOK SERIES & COMPILERS (#782 / #831)
+--
+-- Two songbook-level relationships that are easy to confuse with each other
+-- and with tblSongbooks.ParentSongbookId declared at the top of this file:
+--   ParentSongbookId ..... VERTICAL. This book is a translation / edition /
+--                          abridgement OF that one. Self-FK, SET NULL.
+--   tblSongbookSeries .... HORIZONTAL. These books are peers in a set
+--                          (Songs of Fellowship 1, 2, 3). Many-to-many.
+--   tblSongbookCompilers . credits the PEOPLE who assembled a hymnal, as
+--                          opposed to the per-song credit tables.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongbookSeries (#782) — peer-to-peer songbook collections (Songs of
 -- Fellowship volumes, themed compilations).
@@ -2705,6 +2862,17 @@ CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- FAMILY: SONG MEDIA (#853)
+-- The one table in this schema that stores FILE BYTES. Note the hybrid split
+-- below and the reason for it: small, cacheable, rights-sensitive files (PDF,
+-- MIDI, MusicXML) go in the MEDIUMBLOB so they inherit the database's backup
+-- and transaction story, while audio — large, streamed, range-requested —
+-- stays on disk with only its path here. StorageBackend records which, and a
+-- row is meaningless without it. Sha256 is indexed so a re-upload of the same
+-- file is detectable rather than silently duplicated.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongMedia (#853) — per-song accompanying files (audio / sheet-music /
 -- midi / musicxml). Hybrid storage: PDF / MIDI / MusicXML → MEDIUMBLOB,
@@ -2735,6 +2903,21 @@ CREATE TABLE IF NOT EXISTS tblSongMedia (
         FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+
+-- ============================================================================
+-- FAMILY: WORKS (#840) — the composition above the songs
+--
+-- The third grouping axis, and the one people mix up with the other two.
+--   tblSongLinks .. "these ROWS are the same hymn in different books" — flat,
+--                   curator-asserted, one group per song.
+--   tblWorks ...... "these songs are renderings of one COMPOSITION" — a real
+--                   entity with its own identity (ISWC, MusicBrainz Work MBID),
+--                   its own page at /work/<slug>, and self-nesting via
+--                   ParentWorkId for suites and movements.
+--   tblTunes ...... (further down, #1090) the MELODY, which is a different
+--                   composition again — one tune carries many texts.
+-- A song can sit in all three at once and that is not a contradiction.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblWorks (#840) — composition grouping. Mirrors MusicBrainz Work ↔
@@ -2822,6 +3005,36 @@ CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
 -- timed-lyrics ingest pipeline, API-key hardening, and cross-system identity.
 -- Tables are additive + dormant until the consuming features land; shipping
 -- them together avoids a second migration round as those features are built.
+--
+-- ----------------------------------------------------------------------------
+-- READ THIS BEFORE DELETING ANYTHING IN THIS BATCH — or in the #1088, #1090,
+-- presentation-theme (#1168) or gating (#1481) batches that follow.
+--
+-- These tables have no rows, no reader and no writer. That is not rot; it is
+-- the design (CLAUDE.md rule #20). When a feature FAMILY needs schema, the
+-- final shape is worked out up front, stress-tested against "what would force
+-- a second migration?", and shipped as ONE additive, idempotent, dormant
+-- batch — instead of dribbling out an ALTER every time the feature is tweaked.
+-- An empty table is the cheap half of that trade; the expensive half was
+-- already paid in design.
+--
+-- So the honest state of a table here is "waiting", not "abandoned", and the
+-- usual dead-code test — grep for callers, find none, delete — gives exactly
+-- the wrong answer. Each block below says which feature it is waiting for.
+-- If that feature is genuinely cancelled, removing the table is a decision
+-- with an issue attached, not a tidy-up.
+--
+-- The same reasoning explains the shapes you will see repeatedly:
+--   * every growable vocabulary is VARCHAR with an app-level allow-list, never
+--     ENUM, because adding an ENUM value IS the second migration;
+--   * a discriminator column sits inside a UNIQUE key before anything needs it
+--     (tblApiKeyUsage.Scope, tblGatingRules.Scope), so per-scope limits later
+--     cost nothing;
+--   * a (Source, SourceRef) UNIQUE makes external re-import idempotent, and
+--     because MySQL treats NULLs as distinct, manually-created rows coexist;
+--   * TTLs are DATETIME, never TIMESTAMP, so they are never reinterpreted
+--     against a session time zone.
+-- ----------------------------------------------------------------------------
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -3030,6 +3243,16 @@ CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
     SpotifyTrackId           VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Spotify track id/URI',
     GeniusTrackId            VARCHAR(50)  NULL DEFAULT NULL COMMENT 'Genius track id',
     IsrcCode                 VARCHAR(15)  NULL DEFAULT NULL COMMENT 'Denorm of tblSongs.Isrc for join-free lookups (app keeps both in sync)',
+    /* ⚠ These two are ENUMs inside the very batch that codified "growable
+       vocabulary is VARCHAR, never ENUM" — the exception is not explained
+       anywhere, and SourceOfTruth in particular clearly grows: adding the
+       next external system (Apple Music, Hymnary, Discogs) means an ALTER,
+       which is exactly the second migration rule #20 exists to avoid.
+       Compare tblSongLinkSuggestions.Signal a few hundred lines up, which
+       enumerates the SAME kind of thing as a VARCHAR and says why. Treat this
+       as a known inconsistency to converge, not as precedent — and note that
+       converging it is a paired schema.sql + migration change, since the
+       column definitions here must stay byte-identical to their mirror. */
     SourceOfTruth            ENUM('ihymns','ilyricsdb','musicbrainz','spotify','genius','manual') NOT NULL DEFAULT 'ihymns',
     MappingStatus            ENUM('pending','verified','conflict','deprecated') NOT NULL DEFAULT 'pending',
     VerifiedAt               DATETIME     NULL DEFAULT NULL,
@@ -3289,6 +3512,19 @@ CREATE TABLE IF NOT EXISTS tblSongUsageEvents (
     MetaJson     JSON         NULL DEFAULT NULL,
     CreatedAt    TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* idx_OrgDate is (OrgId, UsedAt) in that order because the only query that
+       matters is "everything this ORG used between these two DATES" — org
+       first narrows to one tenant, the date range then scans a contiguous
+       slice of the index rather than filtering a whole-corpus date sweep.
+
+       Note the delete semantics carefully before this table goes live: the
+       song FK is ON DELETE CASCADE, so removing a song erases the record that
+       it was ever used — the substrate of a licence report. Every other FK
+       here (Org, User, Schedule, Licence) is SET NULL precisely so the EVENT
+       survives its context. Song deletion being soft (#1694) is what keeps
+       that from mattering in practice; a hard purge still takes the
+       reporting history with it, which is a property to weigh rather than
+       discover. */
     INDEX idx_Song     (SongId),
     INDEX idx_OrgDate  (OrgId, UsedAt),
     INDEX idx_Context  (UsageContext),
@@ -3403,6 +3639,23 @@ CREATE TABLE IF NOT EXISTS tblSongEmbeddings (
 -- tblLiveFollowSessions (#1090 P7) — ephemeral broadcast state for the native
 -- "Live Follow" feature: a leader's current song/slide that congregants mirror
 -- on their own devices (short-code join). A cleanup job prunes past ExpiresAt.
+--
+-- ⚠ ONE TABLE, TWO DIFFERENT FEATURES — confusing them is what once made Live
+-- Follow look permanently broken (rule #26). SessionKind is the discriminator:
+--   'host'    = Live Follow (#1268). Any authenticated user starts one. No
+--               venue, no schedule, no organisation — OrgId is left NULL.
+--   'service' = Service Mode (#1335). Requires a venue, an occurrence date and
+--               org-admin rights, and is joined through the rotating codes in
+--               tblLiveFollowJoinCodes rather than the SessionCode column.
+-- The nullable HostUserId / VenueId / ScheduleId / OccurrenceDate columns are
+-- not optional extras; they are how the two shapes coexist in one table.
+--
+-- ⚠ `Channel` is the 3-docroot environment discriminator, and it MUST appear
+-- in the WHERE clause of EVERY join / poll / broadcast / gate / prune query.
+-- An unfiltered query is a cross-environment leak. The visible consequence of
+-- it working correctly is that a session hosted on one docroot can never be
+-- joined from another — so the natural "desktop on dev, phone on www" test
+-- always fails with a generic wrong-code message and looks like a bug.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLiveFollowSessions (
     Id                   INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -3937,6 +4190,29 @@ CREATE TABLE IF NOT EXISTS tblPresentationFormatFidelity (
     CONSTRAINT fk_PresFidelity_Component FOREIGN KEY (ComponentId) REFERENCES tblSongComponents(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Round-trip fidelity carrier for source styling with no first-class column; (Source,SourceRef) UNIQUE = idempotent re-import (rule #20) (#1168).';
+
+-- ============================================================================
+-- SERVICE MODE VENUES & SCHEDULES + EXTERNAL-SYSTEM INTEGRATION (#1325/#1327)
+--
+-- Service Mode's tables are spread across this file by arrival order, which
+-- makes the feature hard to see whole. The full set, in file order:
+--   tblLiveFollowSessions ..... the session spine (SessionKind='service')
+--   tblLiveFollowJoinCodes .... the rotating venue join codes
+--   tblServicePresence ........ anonymous congregant presence + gate token
+--   tblServicePollCounters .... per-session poll budget
+--   tblOrgVenues .............. (here) the physical places
+--   tblOrgServiceSchedules .... (here) the recurring service times
+--
+-- The two below are Phase 1: they describe WHERE and WHEN, and nothing else
+-- depends on them being populated. A service OCCURRENCE is not stored — it is
+-- computed at read time as (ScheduleId, date), which is why the sessions table
+-- carries those two columns rather than an occurrence FK.
+--
+-- Note what lat/lng/radius are NOT: they are a map pin and a convenience
+-- geofence, never the presence gate. Geolocation is spoofable; the proof that
+-- somebody is in the room is that they can read the rotating code off the
+-- screen in front of them.
+-- ============================================================================
 
 -- ----------------------------------------------------------------------------
 -- tblOrgVenues (#1325) — org physical venues for "Service Mode" (#1323). lat/lng
