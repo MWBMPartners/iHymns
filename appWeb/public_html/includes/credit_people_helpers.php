@@ -1024,6 +1024,160 @@ function registerCreditPersonByName(
 }
 
 /**
+ * iHymns — normalise one credit-entry payload into a uniform shape (#960).
+ *
+ * ELI5: a credit (a writer/composer/arranger/… name) can arrive from the
+ * client as either a plain string ("John Newton") or a structured object
+ * with separate first-names/surname/suffix boxes. This is the ONE place
+ * that turns either shape into the same four-field array, so every
+ * caller downstream — the role-table INSERT, the registry promote —
+ * only ever has to handle one shape.
+ *
+ * DETAILED / WHY: extracted verbatim from the `$normaliseCreditEntry`
+ * closure that used to live inline inside `editorSaveSongCore()`
+ * (`manage/editor/save_song_core.php`, the legacy whole-song save) so the
+ * v2 editor's granular `credit_upsert` endpoint (`manage/editor/api2.php`)
+ * and other per-credit write paths can share the EXACT same
+ * decompose/compose behaviour instead of re-forking it. This is the
+ * "(c)" half of the #960 fix: the v2 editor's flat text-only credit UI
+ * saved via `credit_upsert`, which read only `$credit['name']` and wrote
+ * only the role table — it never ran this normalisation, so a curator's
+ * `{first, surname, suffix}` payload (once the v2 UI is ported) had
+ * nowhere to be reassembled server-side. Centralising it here means PHP
+ * stays the single source of truth for the name maths (the browser-side
+ * mirror lives in `editor.js`'s `composePersonNameJs`/`decomposePersonNameJs`,
+ * which is retired with the legacy editor per #1601 scope 3 — see
+ * `.claude/CLAUDE.md`'s modularity rule: extract first, reuse everywhere).
+ *
+ * Body is a byte-for-byte move of the `$normaliseCreditEntry` closure —
+ * no logic changes, only closure → named function.
+ *
+ * @param mixed $v Either a trimmed name string, or an array shaped
+ *                  {name?, first?, surname?, suffix?} (a JSON-decoded
+ *                  request body, or a PHP array built server-side).
+ * @return array{name:string,first:string,surname:string,suffix:string}|null
+ *               null when the entry normalises to an empty name.
+ */
+function creditEntryNormalise(mixed $v): ?array
+{
+    if (is_string($v)) {
+        $name = trim($v);
+        if ($name === '') return null;
+        [$first, $surname, $suffix] = decomposePersonName($name);
+        return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
+    }
+    if (!is_array($v)) return null;
+    $first   = trim((string)($v['first']   ?? ''));
+    $surname = trim((string)($v['surname'] ?? ''));
+    $suffix  = trim((string)($v['suffix']  ?? ''));
+    /* Prefer a client-composed `name` for byte-equal
+       round-tripping; otherwise compose from parts. If
+       parts are empty and the only thing the client
+       sent is a `name` string, decompose it. */
+    $name = trim((string)($v['name'] ?? ''));
+    if ($name === '') {
+        $name = composePersonName($first, $surname, $suffix);
+    } elseif ($first === '' && $surname === '' && $suffix === '') {
+        [$first, $surname, $suffix] = decomposePersonName($name);
+    }
+    if ($name === '') return null;
+    return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
+}
+
+/**
+ * iHymns — idempotent registry promote + never-overwrite parts backfill (#960).
+ *
+ * ELI5: whenever a credit name (writer, composer, arranger…) is saved
+ * anywhere in the app, this is the ONE function that makes sure that name
+ * also exists as a row in the `tblCreditPeople` registry — the table that
+ * powers the public `/people/<slug>` page, aliases, identifiers and
+ * links. Call it with a name (and, if you have them, the first/surname/
+ * suffix parts) and it either finds the existing row or creates one, then
+ * quietly fills in any BLANK structured-name columns. It never
+ * overwrites a value a curator already typed on `/manage/credit-people`.
+ *
+ * DETAILED / WHY: before #960 this promote-and-backfill pairing lived
+ * only inline inside `editorSaveSongCore()` (the whole-song save reached
+ * by the legacy v1 editor, and by `api2.php`'s back-compat `save_song`
+ * action). The v2 editor's granular per-credit endpoints (`credit_upsert`,
+ * the `revision_restore` credits loop) and `includes/lyrics_ingest.php`'s
+ * `tblSongArtists` insert never called into that code, so a credit saved
+ * through any of THOSE paths wrote only the role-table (`tblSongWriters`
+ * etc.) `Name` column and silently left the registry unpopulated — no
+ * slug, no `/people/<slug>` page, nowhere to attach identifiers/links.
+ * `credit_search` autocomplete still worked (it unions the role tables
+ * directly), so the gap was invisible until someone tried to open the
+ * person's page — the rule #30 "silent no-op" failure class. Extracting
+ * this into a single callable closes the gap at every call site at once
+ * instead of re-forking the promote+backfill pairing per site (project
+ * modularity rule, `.claude/CLAUDE.md`).
+ *
+ * The backfill UPDATE is intentionally `COALESCE(NULLIF(col,''),?)` — it
+ * fills a column ONLY when the existing value is NULL or empty string,
+ * so a curator's hand-edited FirstNames/Surname/Suffix on
+ * `/manage/credit-people` can never be silently clobbered by an
+ * auto-promote from a song save (that guarantee is why #960's fix
+ * requires callers to echo back the REGISTRY's parts, not the caller's
+ * input, in any API response — see `manage/editor/api2.php`'s
+ * `credit_upsert`). Gated on `creditPeopleNamePartsColumnsExist()` so an
+ * un-migrated install (PR #935's columns not yet added) degrades to the
+ * plain Name-only `registerCreditPersonByName()` insert, exactly as the
+ * legacy whole-song save did.
+ *
+ * Body is a byte-for-byte move of the promote-loop-body + the
+ * `COALESCE(NULLIF(` backfill UPDATE from `save_song_core.php`, reshaped
+ * from "loop over many names at once" (whole-song save has a batch of
+ * credits) to "one name per call" (every per-credit endpoint only ever
+ * has one name at a time) — the SQL text and the never-overwrite
+ * semantics are unchanged.
+ *
+ * @param \mysqli $db    Live connection (see `includes/db_mysql.php::getDbMysqli()`).
+ * @param string  $name  The composed display name — becomes
+ *                        `tblCreditPeople.Name`.
+ * @param array{first?:string,surname?:string,suffix?:string} $parts
+ *                        Structured name parts, when known. Missing or
+ *                        empty parts are treated as "nothing to backfill".
+ * @return int The person's `tblCreditPeople.Id` (existing row, or the
+ *             newly inserted row). 0 only when $name is empty (mirrors
+ *             `registerCreditPersonByName()`'s own contract).
+ */
+function creditPersonPromote(\mysqli $db, string $name, array $parts = []): int
+{
+    $partsCols = creditPeopleNamePartsColumnsExist($db);
+    $personId  = registerCreditPersonByName($db, $name, $partsCols ? $parts : null);
+
+    $first   = trim((string)($parts['first']   ?? ''));
+    $surname = trim((string)($parts['surname'] ?? ''));
+    $suffix  = trim((string)($parts['suffix']  ?? ''));
+
+    if ($partsCols && ($first !== '' || $surname !== '' || $suffix !== '')) {
+        /* Existing registry rows may already exist
+           without FirstNames/Surname/Suffix populated;
+           backfill those (only when currently empty)
+           so a song-save also enriches pre-existing
+           Name-only registry rows. The helper above
+           only sets parts for BRAND NEW inserts; this
+           handles the existing-row case. Never
+           overwrites a curated value. */
+        $stmtParts = $db->prepare(
+            'UPDATE tblCreditPeople
+                SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
+                    Surname    = COALESCE(NULLIF(Surname,    ""), ?),
+                    Suffix     = COALESCE(NULLIF(Suffix,     ""), ?)
+              WHERE Name = ?'
+        );
+        $firstBind   = $first   !== '' ? $first   : null;
+        $surnameBind = $surname !== '' ? $surname : null;
+        $suffixBind  = $suffix  !== '' ? $suffix  : null;
+        $stmtParts->bind_param('ssss', $firstBind, $surnameBind, $suffixBind, $name);
+        $stmtParts->execute();
+        $stmtParts->close();
+    }
+
+    return $personId;
+}
+
+/**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
  * migrate-credit-people-flags.php; detecting one is sufficient to

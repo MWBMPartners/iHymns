@@ -791,30 +791,13 @@ function editorSaveSongCore(): array
                uniform array shape up front. */
             require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
             $regParts = []; /* keyed by composed Name → ['first'=>…,'surname'=>…,'suffix'=>…] */
-            $normaliseCreditEntry = static function ($v) {
-                if (is_string($v)) {
-                    $name = trim($v);
-                    if ($name === '') return null;
-                    [$first, $surname, $suffix] = decomposePersonName($name);
-                    return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
-                }
-                if (!is_array($v)) return null;
-                $first   = trim((string)($v['first']   ?? ''));
-                $surname = trim((string)($v['surname'] ?? ''));
-                $suffix  = trim((string)($v['suffix']  ?? ''));
-                /* Prefer a client-composed `name` for byte-equal
-                   round-tripping; otherwise compose from parts. If
-                   parts are empty and the only thing the client
-                   sent is a `name` string, decompose it. */
-                $name = trim((string)($v['name'] ?? ''));
-                if ($name === '') {
-                    $name = composePersonName($first, $surname, $suffix);
-                } elseif ($first === '' && $surname === '' && $suffix === '') {
-                    [$first, $surname, $suffix] = decomposePersonName($name);
-                }
-                if ($name === '') return null;
-                return ['name' => $name, 'first' => $first, 'surname' => $surname, 'suffix' => $suffix];
-            };
+            /* #960 — normalisation itself now lives in creditEntryNormalise()
+               (includes/credit_people_helpers.php) so the v2 editor's granular
+               credit_upsert endpoint shares the exact same decompose/compose
+               behaviour instead of re-forking it. This whole-song save keeps
+               only what's genuinely whole-save-specific: the richest-parts
+               accumulation loop below (a name typed differently across two
+               role lists picks the more complete entry for the registry). */
 
             foreach ($creditInserts as $key => $sql) {
                 $stmt = $db->prepare($sql);
@@ -823,7 +806,7 @@ function editorSaveSongCore(): array
                    credit list many times over. Case-insensitive, first wins. */
                 $seenCredit = [];
                 foreach ($song[$key] ?? [] as $raw) {
-                    $entry = $normaliseCreditEntry($raw);
+                    $entry = creditEntryNormalise($raw);
                     if ($entry === null) continue;
                     $dedupKey = function_exists('mb_strtolower') ? mb_strtolower($entry['name']) : strtolower($entry['name']);
                     if (isset($seenCredit[$dedupKey])) continue;
@@ -856,45 +839,14 @@ function editorSaveSongCore(): array
                edit on the /manage/credit-people page never gets
                overwritten by an auto-promote from the editor.
                Pre-migration installs fall back to the legacy
-               Name-only INSERT IGNORE path. */
-            if (!empty($regParts)) {
-                $partsCols = creditPeopleNamePartsColumnsExist($db);
-                /* Route every auto-promote through the shared registry
-                   helper. It computes a collision-safe Slug for the
-                   new row and idempotently no-ops when Name already
-                   exists — which means the orphan empty-Slug row
-                   that the IGNORE+UPDATE hotfix had to dodge can't
-                   block legit promotes anymore once
-                   migrate-credit-people-slug-rebackfill.php has run. */
-                foreach ($regParts as $regName => $p) {
-                    registerCreditPersonByName($db, $regName, $partsCols ? $p : null);
-                }
-
-                if ($partsCols) {
-                    /* Existing registry rows may already exist
-                       without FirstNames/Surname/Suffix populated;
-                       backfill those (only when currently empty)
-                       so a song-save also enriches pre-existing
-                       Name-only registry rows. The helper above
-                       only sets parts for BRAND NEW inserts; this
-                       handles the existing-row case. Never
-                       overwrites a curated value. */
-                    $stmtParts = $db->prepare(
-                        'UPDATE tblCreditPeople
-                            SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
-                                Surname    = COALESCE(NULLIF(Surname,    ""), ?),
-                                Suffix     = COALESCE(NULLIF(Suffix,     ""), ?)
-                          WHERE Name = ?'
-                    );
-                    foreach ($regParts as $regName => $p) {
-                        $first   = $p['first']   !== '' ? $p['first']   : null;
-                        $surname = $p['surname'] !== '' ? $p['surname'] : null;
-                        $suffix  = $p['suffix']  !== '' ? $p['suffix']  : null;
-                        $stmtParts->bind_param('ssss', $first, $surname, $suffix, $regName);
-                        $stmtParts->execute();
-                    }
-                    $stmtParts->close();
-                }
+               Name-only path. The promote-and-backfill pairing itself
+               now lives in creditPersonPromote() (credit_people_helpers.php)
+               so every credit write path — this whole-song save, v2's
+               credit_upsert/revision_restore, and lyrics_ingest.php's
+               artist insert — shares one implementation instead of
+               re-forking it (#960; project modularity rule). */
+            foreach ($regParts as $regName => $p) {
+                creditPersonPromote($db, $regName, $p);
             }
 
             if ($ll_syncReady) {
