@@ -186,6 +186,11 @@ $formats = [
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/manage/editor/api2.php?action=import_zip', true);
             xhr.withCredentials = true;
+            /* api2.php gates EVERY POST on this header and has no X-CSRF-Token
+               fallback (#1677), so without it the upload 403s before any import
+               logic runs. XMLHttpRequest does NOT add it by itself — that is
+               jQuery — so it must be set explicitly. */
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
             xhr.setRequestHeader('X-CSRF-Token', csrf());
             xhr.setRequestHeader('Accept', 'application/json');
             xhr.upload.onprogress = (e) => {
@@ -228,7 +233,13 @@ $formats = [
             fetch('/manage/editor/api2.php?action=import_file', {
                 method: 'POST',
                 credentials: 'same-origin',
-                headers: { 'Accept': 'application/json', 'X-CSRF-Token': csrf() },
+                /* X-Requested-With is what api2.php actually gates on (#1677);
+                   X-CSRF-Token alone is not accepted. See the XHR above. */
+                headers: {
+                    'Accept': 'application/json',
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'X-CSRF-Token': csrf(),
+                },
                 body: fd,
             }).then((res) => res.json().catch(() => ({ ok: false, error: 'HTTP ' + res.status })))
               .then((data) => {

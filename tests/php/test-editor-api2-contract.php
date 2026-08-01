@@ -105,6 +105,76 @@ foreach (['postJson', 'postForm'] as $fn) {
     );
 }
 
+/* ---------------------------------------------------------------------------
+   THE ASSERTION ABOVE WAS NOT ENOUGH, AND ITS FAILURE IS THE POINT.
+
+   `['postJson', 'postForm']` is a hardcoded two-name list inside ONE file. It
+   went green for weeks while manage/editor/import2.php — a SECOND api2 POST
+   client, with its own hand-written XHR and fetch — sent X-CSRF-Token and no
+   X-Requested-With, so every v2 bulk import 403'd before any import logic ran
+   (including the #1633 iHymns interchange format). The guard did not miss a
+   subtlety; it was never looking at that file.
+
+   That is rule #34 verbatim: derive the list from the tree, or the tick is not
+   coverage. api2.php's own gate comment made the same mistake in prose — it
+   names "editor.js ed2EnrichApi, which already sends it" as though enumerating
+   the clients, and import2.php is simply absent from the sentence.
+
+   So: find every file that POSTs to api2.php by SCANNING, and require each to
+   send the header. A new POST client anywhere under manage/editor/ is covered
+   the moment it exists.
+   --------------------------------------------------------------------------- */
+
+$api2PostClients = [];
+$scanDir = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($editor));
+foreach ($scanDir as $entry) {
+    if (!$entry->isFile()) { continue; }
+    $path = $entry->getPathname();
+    if (!preg_match('/\.(js|php)$/', $path)) { continue; }
+    /* api2.php IS the server; save_song_core.php is included BY it. Neither is
+       a browser client, and both legitimately mention the filename. */
+    $base = basename($path);
+    if ($base === 'api2.php' || $base === 'save_song_core.php') { continue; }
+
+    $src = (string)file_get_contents($path);
+    $noComments = $stripJs($src);
+
+    /* A POST client = names api2.php ANYWHERE, and POSTs somewhere.
+       Deliberately NOT a proximity match. The first version of this scan
+       required `api2.php` within 400 chars of `method: 'POST'`, and found only
+       import2.php — because v2/api-client.js builds its URL from
+       `const ENDPOINT = '/manage/editor/api2.php'` (:17) and the literal never
+       appears near the verb. Proximity is a heuristic about formatting; "this
+       file talks to api2 and this file POSTs" is the actual property.
+
+       The cost of the looser test is a file that mentions api2.php and happens
+       to POST elsewhere getting checked too. That is a harmless extra
+       assertion — and cheap next to missing a real client, which is the exact
+       way this guard failed before. */
+    $isPostClient =
+        str_contains($noComments, 'api2.php')
+        && (preg_match('#method\s*:\s*[\'"]POST[\'"]#i', $noComments)
+            || preg_match('#\.open\(\s*[\'"]POST[\'"]#i', $noComments));
+
+    if ($isPostClient) { $api2PostClients[] = $path; }
+}
+
+/* If the scan finds nothing, the regexes have rotted and every assertion below
+   would vacuously pass — the "scanner that under-reports is worse than no
+   scanner" failure. Fail loudly instead. */
+check(
+    'derived at least 2 api2.php POST clients from the tree (a scan finding none would pass vacuously)',
+    count($api2PostClients) >= 2
+);
+
+foreach ($api2PostClients as $path) {
+    $rel = str_replace($root . '/', '', $path);
+    check(
+        "{$rel} sends X-Requested-With — api2.php 403s every POST without it (#1677)",
+        str_contains($stripJs((string)file_get_contents($path)), 'X-Requested-With')
+    );
+}
+
 /* The server side of the same pair: assert the gate is still THERE. If a future
    change removes it, assertion (1) above would still pass while silently
    guarding nothing — so pin both ends, not just the client. */
