@@ -6294,6 +6294,12 @@ if ($action !== null) {
                sign-in button can gate on ONE flag instead of re-deriving
                the services-id + channel-allow-list logic client-side. */
             require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'apple_siwa.php';
+            /* #1725/#1730 — MWBM-IntAppsAPI gateway client. Loading this file
+               has NO side effect (no DB, no HTTP — see its own docblock), so
+               requiring it unconditionally here is safe even while the whole
+               module is dormant (the default, shipped state: no channel is
+               listed in intappsapi_enabled_channels). */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'intapps_client.php';
 
             $db = getDbMysqli();
             /* Only fetch public-safe settings — never expose internal config.
@@ -6328,6 +6334,32 @@ if ($action !== null) {
                a concern getAppSetting()'s per-request memoization already
                closes off, but computing it twice would be needless work). */
             $appleWebEnabledForStatus = appleWebLoginEnabledForChannel();
+
+            /* #1725/#1730 — IntAppsAPI gateway feature flags. `remoteFeatures`
+               is emitted ONLY when intappsEnabled() — the shipped default has
+               no channel in the allow-list, so this whole block is a no-op
+               and the key is ABSENT, not empty (rule #28's dormancy bar:
+               byte-identical to a build with no gateway integration at all).
+               Cache-only read (intappsCachedScope() never performs HTTP), so
+               this can never delay the response. Native clients (design §9)
+               are the primary consumer; a native-app kill switch is read
+               here rather than compiled into a store binary. */
+            $intAppsStatusPayload = [];
+            if (intappsEnabled()) {
+                $intAppsFeatures = [];
+                $intAppsCached = intappsCachedScope($db, 'features');
+                foreach (($intAppsCached['payload']['features'] ?? []) as $f) {
+                    if (!is_array($f) || !isset($f['feature_key'])) {
+                        continue;
+                    }
+                    $intAppsFeatures[(string)$f['feature_key']] = [
+                        'enabled'  => (bool)($f['enabled'] ?? false),
+                        'metadata' => is_array($f['metadata'] ?? null) ? $f['metadata'] : null,
+                    ];
+                }
+                $intAppsStatusPayload['remoteFeatures'] = $intAppsFeatures;
+            }
+
             sendJson([
                 'maintenance'         => $inMaintenance,
                 'maintenanceMessage'  => ($inMaintenance && function_exists('maintenanceMessage')) ? maintenanceMessage() : '',
@@ -6359,7 +6391,32 @@ if ($action !== null) {
                 'appleSiwaServicesId' => $appleWebEnabledForStatus
                     ? (string)(getAppSetting('apple_siwa_services_id', '') ?? '')
                     : null,
-            ]);
+            ] + $intAppsStatusPayload);
+
+            /* #1725/#1730 — the gateway refresh happens AFTER the response is
+               already on the wire, never on this endpoint's critical path.
+               app_status is a background poll every client makes at startup
+               (and is user-awaited when the sign-in modal opens — stress-test
+               remedy 6), so a slow-or-dead gateway must not add latency here.
+               fastcgi_finish_request() (PHP-FPM) lets the script keep running
+               after the client has the bytes; ignore_user_abort() + explicit
+               flush() is the best-effort fallback on SAPIs without it (e.g.
+               the built-in `php -S` server used for local verification) — on
+               those, the single-flight lock winner pays its ≤3s HTTP timeout
+               before the process exits, an accepted residual documented in
+               DEV_NOTES.md. intappsRefreshIfDue() itself never throws and is
+               a true no-op when the module is dormant. */
+            if (function_exists('fastcgi_finish_request')) {
+                fastcgi_finish_request();
+            } else {
+                ignore_user_abort(true);
+                if (function_exists('flush')) {
+                    flush();
+                }
+            }
+            if (intappsEnabled()) {
+                intappsRefreshIfDue($db, 'features');
+            }
             break;
 
         /* -----------------------------------------------------------------

@@ -462,6 +462,17 @@ function secretSettingKeys(): array
            listing a non-secret would make secretInventory() report a false
            exposure every time it is read. */
         'webpush_vapid_private',
+        /* #1725/#1728/#1729 — MWBM-IntAppsAPI gateway credentials. Registered
+           the moment the /manage/configuration card can write them, so both
+           are encrypted at rest from their very first save, mirroring the
+           apple_siwa_private_key / webpush_vapid_private custody pattern
+           exactly. `intappsapi_api_key` verifies the X-API-Key header;
+           `intappsapi_hmac_secret` signs POST/PATCH/DELETE bodies
+           (includes/intapps_client.php::intappsSign()). Both are read back
+           transparently decrypted via getAppSetting() — intapps_client.php
+           never touches the encryption layer directly. */
+        'intappsapi_api_key',
+        'intappsapi_hmac_secret',
     ];
 }
 
