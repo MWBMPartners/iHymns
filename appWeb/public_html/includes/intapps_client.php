@@ -611,7 +611,17 @@ function intappsRequest(string $method, string $path, ?string $rawBody = null): 
     curl_close($ch);
     $result['durationMs'] = round((microtime(true) - $start) * 1000, 2);
 
-    if ($overCap) {
+    /* Two independent triggers can report an oversized body, and curl's
+       OWN CURLOPT_MAXFILESIZE enforcement (errno 63, CURLE_FILESIZE_EXCEEDED)
+       fires FIRST in practice — verified empirically: for a response with a
+       declared Content-Length over the cap, libcurl aborts the transfer via
+       its own accounting the moment the cap is reached, before the
+       write-callback's manual `$overCap` flag (set from INSIDE that same
+       callback) is ever consulted here. Both paths must map to the SAME
+       'OVERSIZED' outcome — treating only one of them as oversized would
+       silently reclassify most real oversized responses as generic
+       'unreachable' with no errorCode at all. */
+    if ($overCap || $errno === CURLE_FILESIZE_EXCEEDED) {
         $result['transport']    = 'answered';
         $result['httpStatus']   = $httpStatus > 0 ? $httpStatus : null;
         $result['errorCode']    = 'OVERSIZED';
@@ -649,12 +659,23 @@ function intappsRequest(string $method, string $path, ?string $rawBody = null): 
 
 /**
  * ELI5: after a fetch attempt, write down what happened — but NEVER erase
- * the last good answer just because this attempt failed.
+ * the last good answer just because this attempt failed. Also let go of
+ * the single-flight lock immediately, rather than making the next caller
+ * wait out its full hold time.
  * WHY: the fail-open invariant lives here in one place. A shape-invalid or
  * unsuccessful `$result` bumps `ConsecutiveFailures` and records the
  * status/error code; it NEVER touches `PayloadJson`/`FetchedAt`. Only a
  * genuinely successful, shape-valid result replaces the snapshot and resets
  * the failure streak. D1-guarded like every other table access here.
+ * `RefreshLockedUntil = NULL` on BOTH branches releases the lock the moment
+ * the attempt (success or failure) finishes: `INTAPPS_LOCK_SECONDS` bounds
+ * the WORST case (a fetch that never returns — curl's own timeout caps
+ * that at `INTAPPS_CURL_TIMEOUT`, well under the lock's 10s), not the
+ * NORMAL case. Leaving the lock held for the full 10s after a fetch that
+ * completed in milliseconds would make `intappsForceRefresh()` ("Refresh
+ * now") report "another refresh in flight" for up to 10 seconds after an
+ * operator's own PREVIOUS click already finished — a self-inflicted false
+ * busy signal, not genuine contention.
  */
 function _intappsCommitFetchResult(\mysqli $db, string $scope, string $channel, string $appSlug, array $result): void
 {
@@ -665,7 +686,8 @@ function _intappsCommitFetchResult(\mysqli $db, string $scope, string $channel, 
             $stmt = $db->prepare(
                 'UPDATE tblIntAppsSync
                     SET PayloadJson = ?, FetchedAt = UTC_TIMESTAMP(),
-                        LastHttpStatus = ?, LastErrorCode = NULL, ConsecutiveFailures = 0
+                        LastHttpStatus = ?, LastErrorCode = NULL, ConsecutiveFailures = 0,
+                        RefreshLockedUntil = NULL
                   WHERE Scope = ? AND Channel = ? AND AppSlug = ?'
             );
             $stmt->bind_param('sisss', $json, $status, $scope, $channel, $appSlug);
@@ -679,7 +701,8 @@ function _intappsCommitFetchResult(\mysqli $db, string $scope, string $channel, 
         $errorCode = $result['ok'] ? 'BAD_SHAPE' : $result['errorCode'];
         $stmt = $db->prepare(
             'UPDATE tblIntAppsSync
-                SET LastHttpStatus = ?, LastErrorCode = ?, ConsecutiveFailures = ConsecutiveFailures + 1
+                SET LastHttpStatus = ?, LastErrorCode = ?, ConsecutiveFailures = ConsecutiveFailures + 1,
+                    RefreshLockedUntil = NULL
               WHERE Scope = ? AND Channel = ? AND AppSlug = ?'
         );
         $stmt->bind_param('issss', $status, $errorCode, $scope, $channel, $appSlug);
