@@ -769,6 +769,115 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 error_log('[manage configuration save_editor_default] ' . $e->getMessage());
                 $saveError = 'Save failed: ' . $e->getMessage();
             }
+        } elseif ($action === 'save_intappsapi') {
+            /* #1725/#1728/#1732 — MWBM-IntAppsAPI gateway credentials + the
+               per-channel enablement allow-list. Requires intapps_client.php
+               for the setting-key constants (rule #35 — one source of truth
+               for the literal key names) and for the post-save
+               intappsEnabled()/intappsConfig() re-read that drives the
+               stress-test remedy 8 warning below. */
+            require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'intapps_client.php';
+            try {
+                /* Channel allow-list — IDENTICAL validation to
+                   apple_web_login_enabled above (same token set, same
+                   normalise-to-lowercase-on-save), because it is the SAME
+                   per-channel-canary mechanism (stress-test remedy 2): a
+                   typo'd token would look "saved" but silently never match
+                   any real channel. */
+                $enabledChannelsVal = trim((string)($_POST[INTAPPS_SETTING_ENABLED_CHANNELS] ?? ''));
+                if ($enabledChannelsVal !== '') {
+                    $validChannelTokens = ['alpha', 'beta', 'production', 'all'];
+                    $intappsChannelTokens = array_values(array_filter(array_map('trim', explode(',', $enabledChannelsVal)), static fn(string $t): bool => $t !== ''));
+                    foreach ($intappsChannelTokens as $tok) {
+                        if (!in_array(strtolower($tok), $validChannelTokens, true)) {
+                            throw new \RuntimeException('IntAppsAPI enabled channels must be a comma-separated list of "alpha", "beta", "production", or "all" — "' . $tok . '" is none of those.');
+                        }
+                    }
+                    $enabledChannelsVal = implode(',', array_map('strtolower', $intappsChannelTokens));
+                }
+
+                /* base_url — https:// ONLY from this admin form (stress-test
+                   remedy 10). The http://127.0.0.1 loopback carve-out that
+                   makes the local stub-gateway fixture testable is a
+                   SEPARATE tblAppSettings row (intappsapi_allow_loopback)
+                   that this page deliberately never exposes a control for —
+                   it is set directly by the test fixture / a local operator
+                   via SQL, never a checkbox a production admin could tick by
+                   mistake. */
+                $baseUrlVal = trim((string)($_POST[INTAPPS_SETTING_BASE_URL] ?? ''));
+                if ($baseUrlVal === '') {
+                    $baseUrlVal = INTAPPS_DEFAULT_BASE_URL;
+                }
+                if (!str_starts_with($baseUrlVal, 'https://')) {
+                    throw new \RuntimeException('IntAppsAPI base URL must start with "https://" (this form never accepts http://).');
+                }
+
+                $appSlugVal = trim((string)($_POST[INTAPPS_SETTING_APP_SLUG] ?? ''));
+                if ($appSlugVal === '') {
+                    $appSlugVal = INTAPPS_DEFAULT_APP_SLUG;
+                }
+                if (!preg_match('/^[A-Za-z0-9_-]{1,50}$/', $appSlugVal)) {
+                    throw new \RuntimeException('IntAppsAPI app slug must be 1-50 letters/digits/hyphen/underscore.');
+                }
+
+                $appUuidVal = trim((string)($_POST[INTAPPS_SETTING_APP_UUID] ?? ''));
+                if ($appUuidVal !== '' && !preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $appUuidVal)) {
+                    throw new \RuntimeException('IntAppsAPI app UUID must be a standard UUID (e.g. "11111111-2222-3333-4444-555555555555"), or left blank.');
+                }
+
+                /* Secrets — blank means "leave the existing value alone",
+                   the SAME convention every other secret field on this page
+                   uses (SMTP password, SIWA/APNs private keys, ...). */
+                $apiKeyRaw = trim((string)($_POST[INTAPPS_SETTING_API_KEY] ?? ''));
+                $hmacSecretRaw = trim((string)($_POST[INTAPPS_SETTING_HMAC_SECRET] ?? ''));
+
+                $changedKeys = [INTAPPS_SETTING_ENABLED_CHANNELS, INTAPPS_SETTING_BASE_URL, INTAPPS_SETTING_APP_SLUG, INTAPPS_SETTING_APP_UUID];
+                $saveSetting($db, INTAPPS_SETTING_ENABLED_CHANNELS, $enabledChannelsVal);
+                $saveSetting($db, INTAPPS_SETTING_BASE_URL, $baseUrlVal);
+                $saveSetting($db, INTAPPS_SETTING_APP_SLUG, $appSlugVal);
+                $saveSetting($db, INTAPPS_SETTING_APP_UUID, $appUuidVal);
+                if ($apiKeyRaw !== '') {
+                    $changedKeys[] = INTAPPS_SETTING_API_KEY;
+                    $saveSetting($db, INTAPPS_SETTING_API_KEY, $apiKeyRaw);
+                }
+                if ($hmacSecretRaw !== '') {
+                    $changedKeys[] = INTAPPS_SETTING_HMAC_SECRET;
+                    $saveSetting($db, INTAPPS_SETTING_HMAC_SECRET, $hmacSecretRaw);
+                }
+
+                if (function_exists('logActivity')) {
+                    logActivity(
+                        'app_setting.update',
+                        'app_setting',
+                        INTAPPS_SETTING_ENABLED_CHANNELS,
+                        ['keys' => $changedKeys], /* key NAMES only — secret VALUES never logged */
+                        'success'
+                    );
+                }
+                $saveSuccess = 'IntAppsAPI gateway settings saved.';
+
+                /* Stress-test remedy 8 — an admin who lists a channel but
+                   leaves a required field blank (or whose secret save fails
+                   closed) must NOT be told "saved" with no further signal:
+                   the module then LOOKS enabled but every consumer behaves
+                   disabled. This re-reads via the SAME intappsEnabled()/
+                   intappsConfig() every consumer calls, so the warning can
+                   never disagree with actual runtime behaviour. */
+                if ($enabledChannelsVal !== '' && intappsConfig() === null) {
+                    $missing = [];
+                    if ($appUuidVal === '') { $missing[] = 'App UUID'; }
+                    if ($apiKeyRaw === '' && ((string)(getAppSetting(INTAPPS_SETTING_API_KEY, '') ?? '')) === '') { $missing[] = 'API key'; }
+                    if ($hmacSecretRaw === '' && ((string)(getAppSetting(INTAPPS_SETTING_HMAC_SECRET, '') ?? '')) === '') { $missing[] = 'HMAC secret'; }
+                    $saveWarning = 'A channel is listed in the enabled-channels field, but the'
+                        . ' credential set is still incomplete (' . implode(', ', $missing !== [] ? $missing : ['unknown field'])
+                        . ') — the integration will behave EXACTLY as if it were still disabled'
+                        . ' until every field is set. This is not an error; it is the documented'
+                        . ' fail-open default.';
+                }
+            } catch (\Throwable $e) {
+                error_log('[manage configuration save_intappsapi] ' . $e->getMessage());
+                $saveError = 'Save failed: ' . $e->getMessage();
+            }
         }
     }
 }
@@ -842,6 +951,22 @@ $contentGatingEnabledVal       = getAppSetting('content_gating_enabled', '0') ==
    exists once somebody has deliberately turned it OFF. */
 $editorV2DefaultVal            = getAppSetting('editor_v2_default', '1') !== '0';
 $featureGatingRulesEnabledVal  = getAppSetting('feature_gating_rules_enabled', '0') === '1';
+
+/* #1725/#1732 — MWBM-IntAppsAPI gateway. Non-secret fields are echoed back
+   as-typed (matches the Apple Services ID / channel-allow-list convention
+   above — an admin editing this form needs to see exactly what is stored).
+   Secret VALUES are never read into a form-echoable variable, only whether
+   each is SET, for the status badge. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'intapps_client.php';
+$intappsEnabledChannelsVal = (string)(getAppSetting(INTAPPS_SETTING_ENABLED_CHANNELS, '') ?? '');
+$intappsBaseUrlVal         = (string)(getAppSetting(INTAPPS_SETTING_BASE_URL, INTAPPS_DEFAULT_BASE_URL) ?? INTAPPS_DEFAULT_BASE_URL);
+$intappsAppSlugVal         = (string)(getAppSetting(INTAPPS_SETTING_APP_SLUG, INTAPPS_DEFAULT_APP_SLUG) ?? INTAPPS_DEFAULT_APP_SLUG);
+$intappsAppUuidVal         = (string)(getAppSetting(INTAPPS_SETTING_APP_UUID, '') ?? '');
+$intappsApiKeySet          = ((string)(getAppSetting(INTAPPS_SETTING_API_KEY, '') ?? '')) !== '';
+$intappsHmacSecretSet      = ((string)(getAppSetting(INTAPPS_SETTING_HMAC_SECRET, '') ?? '')) !== '';
+/* Resolved runtime state — the SAME function every consumer calls, so this
+   badge can never disagree with actual behaviour (rule #35). */
+$intappsResolvedEnabled    = intappsEnabled();
 
 require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head-favicon.php';
 ?>
@@ -1069,6 +1194,94 @@ require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'head
                 <button type="submit" class="btn btn-primary">
                     <i class="bi bi-save me-1"></i>Save editor setting
                 </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ===========================
+         INTAPPSAPI GATEWAY SECTION (#1725/#1732) — dormant by design
+         =========================== -->
+    <div class="card bg-dark border-secondary mb-4">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <h2 class="h5 mb-0">
+                <i class="bi bi-broadcast-pin me-2"></i>IntAppsAPI Gateway
+            </h2>
+            <span class="badge <?= $intappsResolvedEnabled ? 'bg-success' : 'bg-secondary' ?>">
+                <?= $intappsResolvedEnabled ? 'Active' : 'Dormant' ?>
+            </span>
+        </div>
+        <div class="card-body">
+            <p class="small text-secondary mb-3">
+                Credentials + per-channel enablement for the MWBM-IntAppsAPI gateway — a
+                server-proxied, cache-first, fail-open feature-flag kill switch (never a source
+                of content-access decisions; those stay entirely local). <strong>Dormant by
+                design</strong> — with no channel listed below, this integration performs zero
+                HTTP calls and zero database reads beyond this page, byte-identical to a build
+                with no gateway integration at all. Full status + snapshot viewer:
+                <a href="/manage/intapps-status" class="link-light">IntApps Gateway status</a>.
+            </p>
+            <?php if (!$intappsAppUuidVal && !$intappsApiKeySet && !$intappsHmacSecretSet): ?>
+                <p class="small text-body-secondary border-start border-secondary border-3 ps-2 mb-3">
+                    <i class="bi bi-info-circle me-1"></i><strong>Dormant — awaiting gateway
+                    registration (#1726).</strong> Nothing below is an error; it is the expected
+                    state until the owner-only gateway-registration prerequisite closes and
+                    real credentials are pasted here.
+                </p>
+            <?php endif; ?>
+            <form method="post" class="row g-3 align-items-end mb-2">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrf, ENT_QUOTES, 'UTF-8') ?>">
+                <input type="hidden" name="action" value="save_intappsapi">
+                <div class="col-md-6">
+                    <label for="intappsapi_enabled_channels" class="form-label">Enabled channels</label>
+                    <input type="text" name="intappsapi_enabled_channels" id="intappsapi_enabled_channels"
+                           class="form-control" placeholder="e.g. alpha  (leave blank to stay fully dormant)"
+                           value="<?= htmlspecialchars($intappsEnabledChannelsVal, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Comma-separated: <code>alpha</code>, <code>beta</code>,
+                        <code>production</code>, or <code>all</code>. Empty = dormant everywhere
+                        (the shipped default). Canary on <code>alpha</code> first — this is the
+                        <strong>only</strong> per-environment brake, since all three docroots share
+                        one database.</div>
+                </div>
+                <div class="col-md-6">
+                    <label for="intappsapi_base_url" class="form-label">Gateway base URL</label>
+                    <input type="text" name="intappsapi_base_url" id="intappsapi_base_url"
+                           class="form-control" placeholder="<?= htmlspecialchars(INTAPPS_DEFAULT_BASE_URL, ENT_QUOTES, 'UTF-8') ?>"
+                           value="<?= htmlspecialchars($intappsBaseUrlVal, ENT_QUOTES, 'UTF-8') ?>">
+                    <div class="form-text">Must start with <code>https://</code>.</div>
+                </div>
+                <div class="col-md-4">
+                    <label for="intappsapi_app_slug" class="form-label">App slug</label>
+                    <input type="text" name="intappsapi_app_slug" id="intappsapi_app_slug"
+                           class="form-control" placeholder="<?= htmlspecialchars(INTAPPS_DEFAULT_APP_SLUG, ENT_QUOTES, 'UTF-8') ?>"
+                           value="<?= htmlspecialchars($intappsAppSlugVal, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="col-md-8">
+                    <label for="intappsapi_app_uuid" class="form-label">App UUID</label>
+                    <input type="text" name="intappsapi_app_uuid" id="intappsapi_app_uuid"
+                           class="form-control" placeholder="11111111-2222-3333-4444-555555555555"
+                           value="<?= htmlspecialchars($intappsAppUuidVal, ENT_QUOTES, 'UTF-8') ?>">
+                </div>
+                <div class="col-md-6">
+                    <label for="intappsapi_api_key" class="form-label">
+                        API key <?= $intappsApiKeySet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <input type="password" name="intappsapi_api_key" id="intappsapi_api_key"
+                           class="form-control" autocomplete="off"
+                           placeholder="<?= $intappsApiKeySet ? '(unchanged — leave blank to keep)' : '' ?>">
+                </div>
+                <div class="col-md-6">
+                    <label for="intappsapi_hmac_secret" class="form-label">
+                        HMAC secret <?= $intappsHmacSecretSet ? '<span class="badge bg-success">set</span>' : '<span class="badge bg-secondary">not set</span>' ?>
+                    </label>
+                    <input type="password" name="intappsapi_hmac_secret" id="intappsapi_hmac_secret"
+                           class="form-control" autocomplete="off"
+                           placeholder="<?= $intappsHmacSecretSet ? '(unchanged — leave blank to keep)' : '' ?>">
+                </div>
+                <div class="col-12">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save me-1"></i>Save IntAppsAPI settings
+                    </button>
+                </div>
             </form>
         </div>
     </div>

@@ -111,6 +111,11 @@ $_adminLinks = [
     ['diagnostics',          '/manage/diagnostics',            'bi-terminal',        'SQL Diagnostics',       'view_diagnostics',            'Operations' ],
     ['setup-database',       '/manage/setup-database',         'bi-database-gear',   'Database Setup',        'run_db_install',              'Operations' ],
     ['configuration',        '/manage/configuration',          'bi-sliders',         'Configuration',         'manage_configuration',        'Operations' ],
+    /* #1725/#1732 — status/snapshot viewer for the (dormant-by-default)
+       IntAppsAPI gateway integration. Gated on the SAME entitlement as
+       the credentials card above (manage_configuration) — rule: a page's
+       own gate and its nav entry must agree (#1587). */
+    ['intapps-status',       '/manage/intapps-status',          'bi-broadcast-pin',   'IntApps Gateway',       'manage_configuration',        'Operations' ],
     ['notifications',        '/manage/notifications',          'bi-bell',            'Notifications',         'manage_notifications',        'Operations' ],
     ['api-keys',             '/manage/api-keys',               'bi-key',             'API Keys',              'request_api_keys',            'Operations' ],
 
