@@ -685,6 +685,16 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
     /* Artists → tblSongArtists add-if-absent. */
     $artist = trim((string)($payload['artist'] ?? ''));
     if ($artist !== '') {
+        /* #960 — this ingest path wrote tblSongArtists directly and never
+           touched the tblCreditPeople registry, one of the two sibling gaps
+           found alongside the v2 editor regression (the other being v2's
+           credit_upsert, fixed in api2.php). Same fix here: promote every
+           artist name into the registry right after the role-table write.
+           No parts (the payload's `artist` field is a raw, possibly
+           multi-name string split on separators — not a structured
+           first/surname/suffix entry) so this is a Name-only registration/
+           backfill, same as registerCreditPersonByName($db, $name) alone. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
         foreach (preg_split('/\s*[\/&,;]\s*/u', $artist) as $a) {
             $a = trim((string)$a);
             if ($a === '') { continue; }
@@ -697,6 +707,7 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
             $st->execute();
             $added += $st->affected_rows;
             $st->close();
+            creditPersonPromote($db, $a, []);
         }
     }
 

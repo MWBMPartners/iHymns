@@ -50,7 +50,16 @@ declare(strict_types=1);
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
  *   POST components_replace     { songId, components:[...], mode? } -> { ok, count, components }
- *   POST credit_upsert          { songId, role, credit:{id?,name} } -> { ok, creditId }
+ *   POST credit_upsert          { songId, role, credit:{id?, name?, first?, surname?, suffix?} }
+ *                               -> { ok, creditId, name, first, surname, suffix, registryPersonId }
+ *                               Accepts EITHER the legacy flat {name} shape (what the current
+ *                               UI still sends) OR the structured {first,surname,suffix} shape
+ *                               (creditEntryNormalise() reassembles/decomposes either way).
+ *                               Promotes the name into tblCreditPeople in the SAME transaction
+ *                               as the role-table write (#960) — the response echoes back the
+ *                               REGISTRY's parts, never the caller's input (D2: the backfill
+ *                               never overwrites a curated value, so echoing input would show a
+ *                               silent no-op as if it had saved).
  *   POST credit_delete          { songId, role, creditId }  -> { ok }
  *   GET  credit_search?q=&kind=&limit=                       -> { ok, suggestions }
  *   GET  user_search?q=&limit=                                -> { ok, suggestions }  (#1629 — Content Restrictions picker, NOT an editor feature; ported off v1)
@@ -122,6 +131,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    scope rather than lazily inside the move case, because both are wanted by code
    paths that have nothing to do with a move. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+/* #960 — creditEntryNormalise() / creditPersonPromote(): the shared
+   normalise-and-registry-promote pair every credit write path (this file's
+   credit_upsert + revision_restore, the legacy whole-song save, and
+   lyrics_ingest.php) now delegates to, so v2's granular credit saves stop
+   silently skipping tblCreditPeople (the #960 regression). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -696,10 +711,21 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
             if ($roleList) {
                 $ci = $db->prepare("INSERT INTO `{$table}` (SongId, Name) VALUES (?, ?)");
                 foreach ($roleList as $credit) {
-                    $name = mb_substr(trim((string)($credit['name'] ?? '')), 0, 255);
-                    if ($name === '') { continue; }
+                    /* #960 — normalise + promote, same as every other credit
+                       write path (credit_upsert, save_song). A restore can
+                       resurrect a name whose registry row was since merged
+                       or deleted away; without this the role table comes
+                       back but the person page/registry stays gone. */
+                    $entry = creditEntryNormalise($credit);
+                    if ($entry === null) { continue; }
+                    $name = mb_substr($entry['name'], 0, 255);
                     $ci->bind_param('ss', $songId, $name);
                     $ci->execute();
+                    creditPersonPromote($db, $name, [
+                        'first'   => $entry['first'],
+                        'surname' => $entry['surname'],
+                        'suffix'  => $entry['suffix'],
+                    ]);
                 }
                 $ci->close();
             }
@@ -1372,7 +1398,7 @@ try {
         break;
     }
 
-    /* ---- credit_upsert (POST) — { role, credit:{id?, name} } ---- */
+    /* ---- credit_upsert (POST) — { role, credit:{id?, name?, first?, surname?, suffix?} } ---- */
     case 'credit_upsert': {
         $songId = trim((string)($body['songId'] ?? ''));
         $role   = (string)($body['role'] ?? '');
@@ -1381,10 +1407,18 @@ try {
             ed2_respond(['ok' => false, 'error' => 'songId + a known role + credit are required.'], 400);
         }
         if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
-        $table   = ED2_CREDIT_TABLES[$role];     // from the allow-list constant only
+        $table    = ED2_CREDIT_TABLES[$role];     // from the allow-list constant only
         $creditId = isset($credit['id']) ? (int)$credit['id'] : 0;
-        $name    = mb_substr(trim((string)($credit['name'] ?? '')), 0, 255);
-        if ($name === '') { ed2_respond(['ok' => false, 'error' => 'credit name is required.'], 400); }
+
+        /* #960 — accept EITHER shape: the legacy/flat {name} the current UI
+           still sends, or the structured {name?,first?,surname?,suffix?}
+           shape a future 3-field UI sends. creditEntryNormalise() is the
+           SAME function the whole-song save uses (includes/credit_people_
+           helpers.php) — this endpoint never re-forks the decompose/compose
+           logic. */
+        $entry = creditEntryNormalise($credit);
+        if ($entry === null) { ed2_respond(['ok' => false, 'error' => 'credit name is required.'], 400); }
+        $name = mb_substr($entry['name'], 0, 255);
 
         $db->begin_transaction();
         try {
@@ -1400,14 +1434,60 @@ try {
                 $creditId = (int)$db->insert_id;
                 $i->close();
             }
+            /* #960 — the ACTUAL regression fix: promote the name into the
+               tblCreditPeople registry in the SAME transaction as the
+               role-table write, so a v2 credit save can never leave the two
+               out of sync (the pre-#960 bug: this endpoint wrote Name-only
+               to the role table and never touched the registry at all). */
+            $registryPersonId = creditPersonPromote($db, $name, [
+                'first'   => $entry['first'],
+                'surname' => $entry['surname'],
+                'suffix'  => $entry['suffix'],
+            ]);
             ed2_touchRevision($db, $songId, $ed2UserId, 'credit');
             $db->commit();
         } catch (\Throwable $e) {
             $db->rollback();
             throw $e;
         }
+
+        /* D2 — echo the REGISTRY's parts, never the caller's normalised
+           input. creditPersonPromote()'s backfill is
+           COALESCE(NULLIF(col,''),?) — it NEVER overwrites an existing
+           curated value, so when the registry already held different parts
+           than this request sent, the write above was a silent no-op for
+           those columns. Echoing the input back would show the curator
+           their own text while the DB kept the old value, and the very next
+           load would silently revert it — a rule #30 "looks alive, isn't"
+           failure. Gated on creditPeopleNamePartsColumnsExist(): on an
+           un-migrated install there are no registry parts to read back, so
+           fall back to the entry's own (decompose-derived) parts — there is
+           no curated value that fallback could ever shadow. */
+        if (creditPeopleNamePartsColumnsExist($db)) {
+            $reg = $db->prepare('SELECT FirstNames, Surname, Suffix FROM tblCreditPeople WHERE Id = ?');
+            $reg->bind_param('i', $registryPersonId);
+            $reg->execute();
+            $regRow = $reg->get_result()->fetch_assoc() ?: [];
+            $reg->close();
+            $first   = (string)($regRow['FirstNames'] ?? '');
+            $surname = (string)($regRow['Surname']    ?? '');
+            $suffix  = (string)($regRow['Suffix']     ?? '');
+        } else {
+            $first   = $entry['first'];
+            $surname = $entry['surname'];
+            $suffix  = $entry['suffix'];
+        }
+
         logActivity('song.credit', 'song', $songId, ['role' => $role, 'creditId' => $creditId]);
-        ed2_respond(['ok' => true, 'creditId' => $creditId]);
+        ed2_respond([
+            'ok'               => true,
+            'creditId'         => $creditId,
+            'name'             => $name,
+            'first'            => $first,
+            'surname'          => $surname,
+            'suffix'           => $suffix,
+            'registryPersonId' => $registryPersonId,
+        ]);
         break;
     }
 
