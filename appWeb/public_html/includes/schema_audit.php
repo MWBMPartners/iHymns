@@ -87,33 +87,45 @@ function schemaAuditParseSchema(string $schemaSql): array
            declarations. (#722) */
         $body = preg_replace('/\/\*.*?\*\//s', '', $body);
 
-        /* Strip `--` line comments from the body BEFORE splitting at
-           commas. SQL `--` comments often contain prose with commas
-           ("VARCHAR(48), which silently truncated", "the defence is
-           single-use, all enforced by …"). Without this strip, the
-           comma inside the comment splits the segment, and whatever
-           word follows the comma in the comment becomes a phantom
-           column name (the column-extraction regex matches `^[A-Za-z_]
-           [A-Za-z0-9_]*\s+`). Pre-stripping `--` to end-of-line means
-           every comma in a comment vanishes alongside the comment. */
-        $body = preg_replace('/--[^\n]*/', '', $body);
+        /* ORDER IS LOAD-BEARING: COMMENT '…' clauses come out FIRST, then
+           `--` line comments. These two strips used to run the other way
+           round, and that silently ate real columns (#722).
 
-        /* Strip COMMENT '…' clauses BEFORE the comma-split. SQL column
-           comments routinely contain commas, apostrophes, parentheses,
-           and the occasional `\'`-style backslash-escape that MySQL
-           accepts but the per-char string-state tracker below doesn't
-           recognise. Pre-stripping the whole `COMMENT '…'` segment
-           sidesteps every one of those edge cases — comments don't
-           carry column-identity information so dropping them entirely
-           is safe. The regex matches non-greedy up to the next `'`
-           that's NOT preceded by `\` or doubled — handles both
-           `'foo''s bar'` (SQL-standard `''` escape) and `'foo\'s bar'`
-           (MySQL backslash extension). */
+           Why: a DDL COMMENT is a quoted string, and 18 of them in
+           schema.sql contain a literal `--` as prose, e.g.
+
+               EventName VARCHAR(64) NOT NULL COMMENT 'app-level allow-listed
+                 event name, e.g. song_opened -- VARCHAR not ENUM per rule #20',
+
+           Strip `--`-to-end-of-line first and that comment loses its CLOSING
+           QUOTE. The COMMENT regex below then runs from the surviving opening
+           quote to the next quote FURTHER DOWN THE TABLE BODY, deleting every
+           column declaration in between.
+
+           The damage was quiet and precisely proportional: the Schema Audit
+           page reported those swallowed columns as "Orphan in DB" — present in
+           MySQL, absent from schema.sql — when schema.sql declared them
+           perfectly well. 21 columns across 3 of 136 tables, which is exactly
+           the orphan count the page showed. #722's acceptance was "zero
+           non-OK rows", so the tracker recorded a schema problem that did not
+           exist while the actual defect was in the auditor.
+
+           Doing COMMENT first is correct in both directions: a `--` inside a
+           quoted comment leaves with the whole clause, and a genuine `--` line
+           comment is untouched by the COMMENT regex (no `COMMENT '` prefix) and
+           is removed by the pass below. */
         $body = preg_replace(
             "/\\bCOMMENT\\s+'(?:[^'\\\\]|\\\\.|'')*'/i",
             '',
             $body
         ) ?? $body;
+
+        /* NOW the `--` line comments, with every quoted string already gone.
+           Still needed before the comma-split: `--` prose routinely contains
+           commas ("VARCHAR(48), which silently truncated"), and the comma would
+           split the segment so the next word became a phantom column name (the
+           extraction regex matches `^[A-Za-z_][A-Za-z0-9_]*\s+`). */
+        $body = preg_replace('/--[^\n]*/', '', $body);
 
         /* Split into top-level segments at commas, ignoring commas
            inside parentheses (so ENUM('success','failure','error')
