@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RVPresentationDocument CCLISongTitle="Probe Pro6 Song" CCLIAuthor="Test Author" CCLISongNumber="12345">
+  <array>
+    <RVSlideGrouping name="Verse 1">
+      <array>
+        <RVDisplaySlide>
+          <array>
+            <RVTextElement RTFData="e1xydGYxIFByb2JlIHBybzYgbGluZSBvbmVccGFyIFByb2JlIHBybzYgbGluZSB0d299"/>
+          </array>
+        </RVDisplaySlide>
+      </array>
+    </RVSlideGrouping>
+  </array>
+</RVPresentationDocument>
