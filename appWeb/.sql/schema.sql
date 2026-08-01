@@ -94,8 +94,9 @@
 --
 -- Everything from here down to the LYRICS STORAGE banner is the catalogue
 -- itself: the geographic registry other tables FK into, the songbooks, the
--- central tblSongs, the five free-text credit-role tables, and the
--- tblCreditPeople registry that sits ALONGSIDE those five (not above them —
+-- central tblSongs, the SIX free-text credit-role tables (Writers, Composers,
+-- Arrangers, Adaptors, Translators, Artists — an earlier draft said five), and
+-- the tblCreditPeople registry that sits ALONGSIDE those six (not above them —
 -- the role tables still store free-text names; see tblCreditPeople).
 --
 -- tblSongs is the hub of the whole schema: 41 foreign keys across this file
@@ -1680,8 +1681,11 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
        The only FK here is UserId, and it is SET NULL so an erased account
        leaves the actions behind, unattributed.
 
-       RequestPath and Query are indexed on a 191-character PREFIX. That is
-       not a guess at a useful length: an InnoDB index column is capped at 3072
+       RequestPath is indexed on a 191-character PREFIX (idx_RequestPath).
+       (An earlier draft said "RequestPath and Query" — tblActivityLog has NO
+       Query column; idx_Query(191) belongs to tblSearchQueries, ~700 lines
+       below. The reasoning that follows is right, the column list was not.)
+       191 is not a guess at a useful length: an InnoDB index column is capped at 3072
        bytes and utf8mb4 costs up to 4 bytes per character, so 191*4 = 764
        fits the old 767-byte limit that legacy row formats still impose.
        Anything wider simply refuses to build on some installs. */
@@ -3010,8 +3014,25 @@ CREATE TABLE IF NOT EXISTS tblWorkExternalLinks (
 -- READ THIS BEFORE DELETING ANYTHING IN THIS BATCH — or in the #1088, #1090,
 -- presentation-theme (#1168) or gating (#1481) batches that follow.
 --
--- These tables have no rows, no reader and no writer. That is not rot; it is
--- the design (CLAUDE.md rule #20). When a feature FAMILY needs schema, the
+-- These tables were shipped AHEAD of the code that uses them. That is not
+-- rot; it is the design (CLAUDE.md rule #20).
+--
+-- ⚠️ READ THE NEXT SENTENCE BEFORE TRUSTING THIS BLOCK. An earlier draft said
+-- these batches have "no rows, no reader and no writer" FULL STOP, and that is
+-- FALSE for four of the five named above — #1088 has full CRUD in
+-- includes/line_enrichment.php plus a shipped editor panel, #1066's
+-- tblApiKeyUsage is read and written by includes/api_keys.php, #1090's
+-- tblTunes is JOINed in SongData.php, and #1481's tblGatingRules is read by
+-- includes/gating_rules.php behind /manage/feature-gating.
+--
+-- That wrong sentence was worse than no comment, because this block's whole
+-- argument is "grep for callers, find none, delete — that test misleads you
+-- here". A reader who greps WILL find callers, and a comment insisting they
+-- will not simply destroys its own credibility at the moment it matters.
+--
+-- The honest form: a batch is dormant UNTIL its consuming feature lands, and
+-- several of these have since landed. Check the specific table before
+-- concluding anything about it. When a feature FAMILY needs schema, the
 -- final shape is worked out up front, stress-tested against "what would force
 -- a second migration?", and shipped as ONE additive, idempotent, dormant
 -- batch — instead of dribbling out an ALTER every time the feature is tweaked.
@@ -4570,11 +4591,16 @@ CREATE TABLE IF NOT EXISTS tblGatingCapabilities (
   COMMENT='Admin-defined gating capabilities (#1481 P1) -- unioned into TIER_CAPS by tierCapsEffective(); a code-key collision (case-insensitive, incl. camelCase) is ignored (code wins).';
 
 -- ----------------------------------------------------------------------------
--- tblGatingRules (#1481 P2 schema — created now per rule #20; the enforcement
--- loop that reads this table is a SEPARATE, not-yet-built change). Maps a
--- DB-defined capability to a behaviour-kind + kind-specific JSON params. Rows
--- are born Enabled=0; entirely DORMANT until P2 ships AND both
--- content_gating_enabled + feature_gating_rules_enabled are '1'.
+-- tblGatingRules (#1481 P2). Maps a DB-defined capability to a behaviour-kind
+-- + kind-specific JSON params. Rows are born Enabled=0; entirely DORMANT until
+-- BOTH content_gating_enabled and feature_gating_rules_enabled are '1'.
+--
+-- (This header used to end "the enforcement loop that reads this table is a
+-- SEPARATE, not-yet-built change". P2 HAS since shipped: the loop is
+-- gatingRulesApply() in includes/gating_rules.php, invoked from
+-- contentGatingApply() in includes/content_gating.php, with the rules CRUD UI
+-- at /manage/feature-gating. Dormant-by-flag and not-yet-written are very
+-- different states and this comment was asserting the wrong one.)
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblGatingRules (
     Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
