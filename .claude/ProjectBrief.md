@@ -33,7 +33,7 @@ one currently checked out — which is the exact shape of the bug, since `git pu
 silently publishes that other branch's tip. Deletes are always allowed. Bypass, if genuinely
 intended, is `IHYMNS_ALLOW_ANY_PUSH=1` (deliberately not `--no-verify`, which CLAUDE.md forbids).
 
-**Suites: 64 PHP / 37 node.** Both runners glob their directories, so a new suite cannot exist
+**Suites: 80 PHP / 45 node** (re-derived 2026-08-01 — the previous "64 / 37" was stale; `ls tests/php/test-*.php | wc -l` and `ls tests/test-*.js | wc -l` are the source, never a remembered number). Both runners glob their directories, so a new suite cannot exist
 without running — except in the `php-compat` matrix, which still hand-lists and therefore runs the
 newest guards on one interpreter (#1682).
 

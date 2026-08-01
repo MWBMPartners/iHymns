@@ -41,8 +41,9 @@ _Last updated: 2026-07-30._
   scope item 2, `/manage/editor/` now 302-redirects to the **v2 Song Editor** by default (`?legacy=1`
   or `tblAppSettings.editor_v2_default='0'` reverts to v1, which is deliberately NOT retired). See
   "Recent landings — wave 3" below; do not assume any branch name above still describes HEAD.
-- **Verified counts** (re-derived 2026-07-28 — most docs disagreed with all of these): **142** tables
-  in `schema.sql`; **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
+- **Verified counts** (re-derived **2026-08-01**; the 07-28 figures had already drifted, which is the
+  point — derive, never quote): **136** tables in `schema.sql`
+  (`grep -c '^CREATE TABLE' appWeb/.sql/schema.sql`; the old "142" was wrong); **38** admin nav destinations in `admin-links.php` (Dashboard + 6 groups);
   **14** workflows in `.github/workflows/`; **8** guides in `help/`; **≈195** real API actions.
 - **Apple programme:** Phase-2 code-complete but **never compiled as a merged whole** — the
   consolidation was done in a Linux container with no Swift toolchain. Audit-B security gate, device
