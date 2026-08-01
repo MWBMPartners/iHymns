@@ -21,8 +21,35 @@ declare(strict_types=1);
  * the bigger migrations (whose probes are satisfied as soon as the
  * tables exist, so the dashboard wouldn't prompt to re-run them).
  *
- * Idempotent: link types upsert by Slug, patterns guard on
- * (LinkTypeId, Host, PathPrefix) before inserting.
+ * NON-DESTRUCTIVE, DATA-ONLY: no CREATE, no ALTER, no DROP — it seeds rows
+ * into two tables other migrations own. That is why it carries no
+ * `@migration-adds` doctag and needs no `schema.sql` mirror: rule #19's
+ * byte-identical-DDL requirement binds migrations that create structure, and
+ * there is none here. Recovery from an unwanted run is a manual DELETE of the
+ * twelve slugs (and their patterns, which cascade via fk_linkpat_type).
+ *
+ * IDEMPOTENT — two different mechanisms, because the two tables are shaped
+ * differently:
+ *
+ *  - Link TYPES have a UNIQUE key on Slug (uq_slug), so the seed is an
+ *    `INSERT … ON DUPLICATE KEY UPDATE`. A re-run refreshes the label / icon /
+ *    ordering but deliberately never lists `IsActive` in the UPDATE clause —
+ *    that column is curator-controlled, and a provider somebody switched off
+ *    must stay off across re-runs.
+ *
+ *  - Link PATTERNS have NO unique key at all (only plain indexes — see
+ *    tblExternalLinkPatterns in schema.sql), so neither INSERT IGNORE nor an
+ *    upsert is available. The `INSERT … SELECT … FROM DUAL WHERE NOT EXISTS`
+ *    guard below IS the uniqueness rule. It is advisory rather than enforced:
+ *    two concurrent runs could both pass the guard and both insert. Acceptable
+ *    because migrations are single-operator, one-at-a-time from
+ *    /manage/setup-database — but it is why a curator can still create a
+ *    duplicate pattern by hand from /manage/external-link-types.
+ *
+ * The setup-database card's probe is anchored on a SINGLE sentinel slug
+ * ('tidal'), not all twelve — see migration-registry.php. An OR-chain over
+ * every slug would let one curator-deleted provider keep the card stuck on
+ * "pending" for ever.
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-extra-streaming-platforms.php
@@ -131,6 +158,11 @@ foreach ($seedTypes as $t) {
     [$slug, $name, $cat, $applies, $multi, $icon, $order] = $t;
     $upsert->bind_param('ssssisi', $slug, $name, $cat, $applies, $multi, $icon, $order);
     @$upsert->execute();
+    /* MySQL's INSERT … ON DUPLICATE KEY UPDATE reports affected_rows as
+       1 = inserted, 2 = an existing row was changed, 0 = the row already
+       matched the seed exactly. The 0 case is counted as neither, so a fully
+       up-to-date re-run correctly prints "0 inserted, 0 updated".
+       https://dev.mysql.com/doc/refman/8.0/en/insert-on-duplicate.html */
     $ar = $mysqli->affected_rows;
     if ($ar === 1)      $typesAdded++;
     elseif ($ar === 2)  $typesUpdated++;
@@ -181,6 +213,11 @@ $seedRows = [
     ['audiomack',     'audiomack.com',       null, 1, 350],
 ];
 
+/* Read the slug → Id map AFTER Step 1, never before: the twelve providers this
+   migration exists to add usually don't have rows yet on the first run, and a
+   map built earlier would miss every one of them — each pattern would then be
+   counted as "link type missing" and skipped, leaving the auto-detect silently
+   unwired while the card still reported success. */
 $slugToId = [];
 $res = $mysqli->query('SELECT Id, Slug FROM tblExternalLinkTypes');
 while ($row = $res->fetch_assoc()) {
@@ -188,6 +225,18 @@ while ($row = $res->fetch_assoc()) {
 }
 $res->close();
 
+/* `INSERT … SELECT … FROM DUAL WHERE NOT EXISTS` is the standard way to say
+   "insert this row unless one like it is already there" when the table has no
+   unique key to hang INSERT IGNORE / ON DUPLICATE KEY off. FROM DUAL is
+   MySQL's no-table dummy source, needed because a SELECT can't carry a WHERE
+   without a FROM. https://dev.mysql.com/doc/refman/8.0/en/select.html
+
+   COALESCE on BOTH sides of the PathPrefix comparison is load-bearing, not
+   defensive noise: in SQL, `NULL = NULL` evaluates to NULL (not TRUE), so a
+   host-only rule — every row in this file has a NULL PathPrefix — would never
+   match its own existing copy, the guard would pass on every run, and each
+   re-run would insert a fresh duplicate of all 29 patterns.
+   https://dev.mysql.com/doc/refman/8.0/en/working-with-null.html */
 $insert = $mysqli->prepare(
     'INSERT INTO tblExternalLinkPatterns
          (LinkTypeId, Host, PathPrefix, MatchSubdomains, Priority, Note)
@@ -218,6 +267,11 @@ foreach ($seedRows as $r) {
     }
     $typeId = $slugToId[$slug];
 
+    /* Nine placeholders for six logical values: the INSERT's SELECT list takes
+       all six, then the NOT EXISTS guard re-takes type/host/path. Prepared
+       statements have no named parameters here, so the repeat is unavoidable —
+       keep the two groups visually separated on their own lines so a future
+       edit doesn't drop one and silently shift the whole binding. */
     $insert->bind_param(
         'issiisiss',
         $typeId, $host, $path, $matchSd, $prio, $note,

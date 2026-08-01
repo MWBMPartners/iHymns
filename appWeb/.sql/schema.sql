@@ -23,6 +23,85 @@
 --
 -- ENGINE:  InnoDB (transactional, foreign key support)
 -- CHARSET: utf8mb4 (full Unicode — emoji, curly quotes, em dashes)
+--
+-- ----------------------------------------------------------------------------
+-- SECTION MAP — the `-- ====` banners below, in file order. 136 tables is too
+-- many to scroll blind; find your family here first.
+--
+--   SONG CATALOGUE CORE ............ places, songbooks, tblSongs, credit people
+--   LYRICS STORAGE ................. components + line/word/syllable model
+--   USER ACCOUNTS & AUTHENTICATION . users, groups, tokens, device codes
+--   ACCESS TIERS & PURCHASES ....... tblAccessTiers (the TIER_CAPS backing store)
+--   ORGANISATIONS & LICENSING ...... orgs, members, licences, restrictions
+--   USER DATA ...................... setlists, favourites, custom tags
+--   LANGUAGE & TRANSLATION SUPPORT . BCP 47 subtag registries + song translations
+--   SONG REQUESTS & COMMUNITY ...... tblSongRequests (missing-song + correction)
+--   AUDIT & ANALYTICS .............. activity log, IP reputation, app settings
+--   FEATURE TABLES ................. keys, scheduling, revisions, push
+--   DEFAULT DATA ................... the seed INSERTs a bare install needs
+--   ENGAGEMENT & ANALYTICS ......... history, tags, bulk import, notifications
+--   IN-PLACE MIGRATIONS ............ two idempotent ALTER/UPDATE statements
+--   SONG RELATIONSHIPS & DEDUP ..... links, redirects, similarity suggestions
+--   MIGRATION-ORIGIN FAMILIES ...... collections, external links, media, works…
+--   INTERCHANGE + INGEST + IDENTITY  the one-pass #1066 batch
+--   PER-LINE LYRIC ENRICHMENT ...... the one-pass #1088 batch
+--   ENHANCEMENT FOUNDATION ......... the one-pass #1090 batch
+--   SCHEMA-COMPLETENESS BATCH ...... vocal parts, part types, scripture, PROs
+--   PRESENTATION THEMES ............ projection/casting styling groundwork
+--   SERVICE MODE VENUES + EXTERNAL SYSTEMS
+--   PRINT TEMPLATES / RATE LIMIT / ANALYTICS INGEST
+--   AUTH PROVIDERS ................. Sign in with Apple
+--   ADMIN-CONFIGURABLE FEATURE GATING
+--   DEFERRED FOREIGN KEYS .......... the FKs that could not be declared inline
+--
+-- ----------------------------------------------------------------------------
+-- THREE RULES GOVERN EDITS TO THIS FILE. All three were learned the hard way.
+--
+-- 1. DECLARATION ORDER IS LOAD-BEARING. InnoDB resolves an inline FOREIGN KEY
+--    at CREATE time, so a table must appear BEFORE anything that inline-FKs
+--    into it. That is why tblPlaces sits at the very top, and why the handful
+--    of constraints that could not be re-ordered live in the DEFERRED FOREIGN
+--    KEYS block at the very bottom (#1708 — before that fix a fresh install
+--    died at errno 150 after creating 16 of 136 tables, and nobody noticed
+--    for a long time because long-running installs are built incrementally by
+--    migration cards and never execute this file end to end).
+--
+-- 2. DDL HERE MUST BE BYTE-IDENTICAL TO ITS MIGRATION MIRROR, COMMENT TEXT
+--    INCLUDED (CLAUDE.md rule #19). A fresh install reads THIS file; a
+--    long-running install is built by appWeb/.sql/migrate-*.php. If the two
+--    drift, the Schema Audit page (#518) reports divergence nobody introduced
+--    deliberately. Practical consequence when annotating:
+--        * `--` prose comments (like this block) are stripped by the parser,
+--          never reach the database, and may be edited freely.
+--        * a `COMMENT '...'` clause on a column / index / table is DDL. Editing
+--          one here alone de-syncs fresh installs from migrated ones — and
+--          tests/php/test-schema-coverage.php compares PRESENCE only (which
+--          tables and columns exist), never COMMENT text, so CI will not catch
+--          it. Changing a COMMENT means changing schema.sql AND its migration
+--          in the same commit.
+--
+-- 3. NEW GROWABLE VOCABULARY IS VARCHAR, NEVER ENUM (rule #20) — adding an
+--    ENUM value is an ALTER, i.e. the second migration the one-pass batches
+--    exist to avoid. The ENUMs still present in this file (tblLyrics.Status,
+--    tblActivityLog.Result, tblCatalogues.Visibility, tblExternalLinkTypes
+--    .Category, tblCreditPersonAliases.Type, …) predate the rule and are
+--    grandfathered. Do not read them as precedent.
+-- ============================================================================
+
+
+-- ============================================================================
+-- SONG CATALOGUE CORE — places, songbooks, songs, and the credit registry
+--
+-- Everything from here down to the LYRICS STORAGE banner is the catalogue
+-- itself: the geographic registry other tables FK into, the songbooks, the
+-- central tblSongs, the five free-text credit-role tables, and the
+-- tblCreditPeople registry that sits ALONGSIDE those five (not above them —
+-- the role tables still store free-text names; see tblCreditPeople).
+--
+-- tblSongs is the hub of the whole schema: 41 foreign keys across this file
+-- reference tblSongs(SongId) — the human-readable string id, not the surrogate
+-- Id — and 37 of them ON DELETE CASCADE. That fan-out is why song deletion is
+-- a SOFT delete (#1694); see the note on tblSongs.IsDeleted.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
@@ -221,6 +300,22 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     FULLTEXT idx_TitleLyricsFt  (Title, LyricsText),
     FULLTEXT ft_LyricsTextFolded (LyricsTextFolded),
 
+    /* Why the FK targets Abbreviation and not tblSongbooks.Id: SongbookAbbr IS
+       the SongId prefix ("MP" in MP-1008), so the natural key is what every
+       read path and URL already carries — a surrogate Id here would mean a
+       JOIN on every song read for no gain.
+
+       ON DELETE RESTRICT (not CASCADE) is deliberate and is the ONLY inbound
+       delete rule on a songbook that blocks: deleting a songbook that still
+       holds songs is refused outright rather than silently destroying its
+       whole hymnal. Empty the book first.
+
+       ON UPDATE CASCADE re-keys this column when an Abbreviation is renamed —
+       but note it does NOT rewrite the abbreviation embedded in
+       tblSongs.SongId, which is a plain string. A rename therefore leaves
+       MP-1008 sitting in a book now called something else; re-keying songs is
+       a deliberate application operation (includes/song_relocate.php, #1679),
+       not a side effect of this constraint. */
     CONSTRAINT fk_Songs_Songbook
         FOREIGN KEY (SongbookAbbr) REFERENCES tblSongbooks(Abbreviation)
         ON DELETE RESTRICT ON UPDATE CASCADE,
@@ -246,6 +341,12 @@ CREATE TABLE IF NOT EXISTS tblSongbookEntries (
     IsHome        TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = the song''s home/primary songbook (the one its SongId is prefixed from); kept in sync with tblSongs.SongbookAbbr',
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* uq_book_number enforces "one song per number per book" — but only for
+       numbered books. MySQL treats every NULL as distinct inside a UNIQUE key,
+       so the whole unnumbered Misc collection coexists here without collision.
+       That NULL-permits-duplicates behaviour is used deliberately in several
+       places in this file (uk_OsmRef on tblPlaces, the (Source, SourceRef)
+       idempotency keys); it is a feature, not an oversight. */
     UNIQUE KEY uq_book_song   (SongbookAbbr, SongId),
     UNIQUE KEY uq_book_number (SongbookAbbr, SongNumber),
     INDEX idx_SongId   (SongId),
@@ -533,6 +634,24 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
+-- ============================================================================
+-- LYRICS STORAGE — components + the normalised line / word / syllable model
+--
+-- Two layers that used to be one. tblSongComponents is now THIN metadata
+-- (which verse, what order, what language); the actual words live in
+--     tblLyrics -> tblLyricLines -> tblLyricWords -> tblLyricSyllables
+-- one level per timing granularity, so an untimed hymn stops at tblLyricLines
+-- and an Apple-Music TTML import fills all four.
+--
+-- WHY THIS MATTERS FOR EVERY LATER TABLE: tblLyricLines.Id (BIGINT) is the
+-- anchor that per-line enrichment hangs off throughout the rest of this file —
+-- tblLyricLineTranslations and tblLyricLineAnnotations (#1088), the vocal-part
+-- assignment tables (#1137), tblSongScriptureRefs (#1112) and the presentation
+-- slide overrides (#1168) all point here. Anchoring on an index into a JSON
+-- array instead is the regression rule #21 exists to prevent: array positions
+-- shift when a line is inserted, row ids do not.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongComponents (THIN metadata, #1235 P4/C6)
 -- A component is now thin metadata only: Type / Number / SortOrder / Language.
@@ -582,6 +701,10 @@ CREATE TABLE IF NOT EXISTS tblLyrics (
     HasTiming     TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = line-level timing present',
     HasWordTiming TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '1 = word-level timing present (TTML/LRC-A)',
     HasSyllableTiming TINYINT(1)  NOT NULL DEFAULT 0 COMMENT '1 = syllable-level timing present (TTML/karaoke) (#141)',
+    /* Grandfathered ENUM — predates rule #20 and is explicitly exempted by it.
+       Its later siblings tblLyricLineTranslations.Status and
+       tblLyricLineAnnotations.Status carry the SAME five values as an
+       app-validated VARCHAR; those are the shape to copy for anything new. */
     Status        ENUM('draft','pending_review','approved','rejected','archived') NOT NULL DEFAULT 'approved',
     SubmittedBy   INT UNSIGNED    NULL DEFAULT NULL,
     ApprovedBy    INT UNSIGNED    NULL DEFAULT NULL,
@@ -617,6 +740,18 @@ CREATE TABLE IF NOT EXISTS tblLyricLines (
     CreatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt     TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    /* idx_Lyrics is (LyricsId, SortOrder) in that order because every read is
+       "give me the lines of ONE lyrics version, in order" — the leading column
+       narrows to the version, the trailing one lets InnoDB return them already
+       sorted instead of filesorting a whole song's worth of rows.
+
+       ComponentId is INDEXED BUT NOT FOREIGN-KEYED, unlike the ComponentId on
+       the three presentation tables further down this file, which do CASCADE.
+       Its column COMMENT frames it as transitional traceability — but the
+       read path (includes/lyric_lines_read.php) now groups lines by it, so it
+       is load-bearing, and nothing at the database level stops a component
+       being deleted out from under the lines that name it. Reparenting and
+       cleanup are the writer's job (lyricLinesWriteComponents(), rule #25). */
     INDEX idx_Lyrics    (LyricsId, SortOrder),
     INDEX idx_Component (ComponentId),
 
@@ -664,6 +799,14 @@ CREATE TABLE IF NOT EXISTS tblLyricSyllables (
 -- (e.g. MeedyaDL #907 pushing TTML to the lyrics-ingest endpoint). The raw key
 -- is shown once at creation and never stored; only its SHA-256 hash lives here.
 -- Space-separated Scope authorises each endpoint (e.g. "lyrics:ingest").
+--
+-- Filed at the end of the catalogue section rather than under USER ACCOUNTS
+-- because this is a MACHINE identity, not a person's — it authenticates the
+-- ingest side of the lyrics pipeline above, and has no tblUsers row of its
+-- own (CreatedBy only records which admin minted it). Its three satellite
+-- tables — tblApiKeyUsage (rate-limit counters), tblApiKeyIdempotency (retry
+-- cache) and tblApiKeyRequests (self-serve requests) — ship with the #1066
+-- batch much further down, since they arrived later.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblApiKeys (
     Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -1092,6 +1235,20 @@ CREATE TABLE IF NOT EXISTS tblContentRestrictions (
     Reason          VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Human-readable reason for restriction',
     CreatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    /* This table has NO foreign keys at all, which is unusual here and
+       intentional: both (EntityType, EntityId) and (TargetType, TargetId) are
+       POLYMORPHIC pairs. EntityId holds a SongId, a songbook abbreviation or
+       a bare feature name depending on EntityType, so there is no single
+       table to point at. The cost is that nothing cascades — a restriction
+       row survives the song or songbook it names, and evaluation has to
+       tolerate rows whose entity no longer exists.
+
+       The index pairs mirror the two ways the evaluator reads: "what applies
+       to THIS entity" and "what applies to THIS audience". Never query this
+       table directly from a page or endpoint — go through
+       includes/content_access.php::checkContentAccess() (rule #8), which also
+       applies the Priority / deny-beats-allow resolution the columns imply
+       but the schema cannot enforce. */
     INDEX idx_Entity    (EntityType, EntityId),
     INDEX idx_Target    (TargetType, TargetId),
     INDEX idx_Priority  (Priority)
@@ -1195,6 +1352,14 @@ CREATE TABLE IF NOT EXISTS tblSharedSetlists (
     UpdatedAt       TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     ViewCount       INT UNSIGNED    NOT NULL DEFAULT 0 COMMENT 'Incremented on retrieval for share-link analytics',
 
+    /* Both user FKs are ON DELETE SET NULL rather than CASCADE, and that is
+       the whole design: a share URL handed to a congregation must not 404
+       because the person who created it later deleted their account. Nulling
+       OwnerUserId degrades a LIVE share (which re-resolves the owner's
+       current setlist through idx_LiveSource) into the frozen `Data`
+       snapshot it already carries — the link keeps working, it just stops
+       tracking. SourceSetlistId is a client-generated string with no FK of
+       its own, so the pair is resolved by lookup, not by constraint. */
     INDEX idx_CreatedBy (CreatedBy),
     INDEX idx_CreatedAt (CreatedAt),
     KEY idx_LiveSource (OwnerUserId, SourceSetlistId),
@@ -1337,6 +1502,24 @@ CREATE TABLE IF NOT EXISTS tblSongTranslations (
     CONSTRAINT fk_Trans_Target
         FOREIGN KEY (TranslatedSongId) REFERENCES tblSongs(SongId)
         ON DELETE CASCADE ON UPDATE CASCADE,
+    /* uq_Translation is (SourceSongId, TargetLanguage): ONE translation per
+       language per source song. A second Spanish rendering of the same hymn
+       is not an additional row here — it is a separate tblSongs record, and
+       which one is "the" Spanish counterpart is a curatorial choice.
+
+       fk_Trans_Lang is the ONLY hard foreign key to tblLanguages in this
+       file, and it is the outlier: every other language column in the schema
+       (tblSongs.Language, tblLyricLines.LanguageCode, tblSongLanguages
+       .Language, the whole #1088 pair) is deliberately free-text with NO FK,
+       precisely so a BCP 47 tag carrying a script or region subtag can never
+       RESTRICT-fail an import (rule #21). tblLanguages is seeded from the
+       IANA registry's `Type: language` records only — bare primary subtags —
+       so a translation tagged zh-Hans or pt-BR cannot be recorded through
+       this constraint even though the column is VARCHAR(35) and shaped for
+       exactly those tags. Do not "fix" that by widening the seed — it would
+       turn tblLanguages from a subtag registry into a tag table. Dropping
+       this one constraint to match the rest of the schema is the change that
+       would need discussing. */
     CONSTRAINT fk_Trans_Lang
         FOREIGN KEY (TargetLanguage) REFERENCES tblLanguages(Code)
         ON DELETE RESTRICT ON UPDATE CASCADE
@@ -1435,6 +1618,21 @@ CREATE TABLE IF NOT EXISTS tblActivityLog (
     Country         CHAR(2)         NULL DEFAULT NULL COMMENT 'ISO-3166-1 alpha-2 country resolved from IpAddress AT log time (snapshot; geo resolver #1208 populates it)',
     CreatedAt       TIMESTAMP(6)    NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT 'Microsecond precision (#1287) — logActivity writes NOW(6); the Id PK is the tiebreaker for same-instant rows (#1285)',
 
+    /* (EntityType, EntityId) is polymorphic and un-FK'd on purpose — and here
+       that is a FEATURE, not the compromise it is on tblContentRestrictions.
+       An audit trail that CASCADE-deleted with the thing it audits would
+       erase exactly the evidence you need after a deletion. Contrast
+       tblSongRevisions, which DOES cascade with its song: revisions are the
+       song's own history and go with it (part of why deleting a song had to
+       become soft, #1694), whereas this table is the record of who did it.
+       The only FK here is UserId, and it is SET NULL so an erased account
+       leaves the actions behind, unattributed.
+
+       RequestPath and Query are indexed on a 191-character PREFIX. That is
+       not a guess at a useful length: an InnoDB index column is capped at 3072
+       bytes and utf8mb4 costs up to 4 bytes per character, so 191*4 = 764
+       fits the old 767-byte limit that legacy row formats still impose.
+       Anything wider simply refuses to build on some installs. */
     INDEX idx_User              (UserId),
     INDEX idx_Action            (Action),
     INDEX idx_Entity            (EntityType, EntityId),
@@ -1539,6 +1737,15 @@ CREATE TABLE IF NOT EXISTS tblSongKeys (
 -- ----------------------------------------------------------------------------
 -- tblSetlistSchedule (#300)
 -- Calendar scheduling for setlists.
+--
+-- NOTE ON `SetlistId` — here, on tblSetlistCollaborators, on tblSongUsageEvents
+-- and on tblLiveFollowSessions it is a VARCHAR(100) SOFT link with no foreign
+-- key, matching tblUserSetlists.SetlistId. That column is a CLIENT-generated
+-- id (the app mints setlists offline and syncs later), so it is unique only
+-- per user — (UserId, SetlistId) is the real key, which is why tblUserSetlists
+-- puts its UNIQUE there. A single-column FK could not express that, so nothing
+-- cascades: a deleted setlist leaves its schedule rows behind, and deletion is
+-- propagated explicitly through tblUserSetlistTombstones instead (#1661).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSetlistSchedule (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -1916,6 +2123,14 @@ CREATE TABLE IF NOT EXISTS tblNotifications (
 -- tblLoginAttempts
 -- Rate limiting for authentication attempts. Tracks failed logins per IP
 -- to prevent brute force attacks.
+--
+-- The name undersells it: this is the GENERIC rate-limit counter for the whole
+-- app (includes/rate_limit.php::checkRateLimit()), and callers that have
+-- nothing to do with logging in — the analytics ingest endpoint among them —
+-- reuse it by putting an ACTION NAME in the `Username` column. So a row here
+-- does not necessarily describe a login, and Username is a free string with no
+-- FK to tblUsers (account_lifecycle.php deletes by that string on erasure).
+-- Keep that in mind before reading COUNT(*) on this table as a login figure.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblLoginAttempts (
     Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -1944,6 +2159,27 @@ ALTER TABLE tblSongs MODIFY Number INT UNSIGNED NULL DEFAULT NULL;
 -- Zero out any existing Misc song numbers (historic placeholders).
 UPDATE tblSongs SET Number = NULL WHERE SongbookAbbr = 'Misc' AND Number IS NOT NULL;
 
+-- ============================================================================
+-- SONG RELATIONSHIPS, PERMALINK CONTINUITY & DUPLICATE DETECTION
+--
+-- Four different answers to "these two rows are about the same hymn", kept
+-- deliberately apart because they mean different things:
+--
+--   tblSongLinks ............ same hymn, DIFFERENT SONGBOOK (Amazing Grace as
+--                             MP-031 / CH-376 / SDAH-108). A curator assertion.
+--   tblSongTranslations ..... same hymn, DIFFERENT LANGUAGE (declared earlier,
+--                             under LANGUAGE & TRANSLATION SUPPORT).
+--   tblSongRedirects ........ a DEAD SongId whose shared permalink must still
+--                             resolve. Not a relationship — a tombstone.
+--   tblSongLinkSuggestions .. a MACHINE GUESS awaiting a curator's yes/no,
+--                             with tblSongLinkSuggestionsDismissed as the "no".
+--
+-- Only the first two assert anything about the catalogue. Promoting a
+-- suggestion writes a tblSongLinks row; it never edits the suggestion into
+-- truth. Scoring lives in includes/song_similarity.php — the ONE scorer
+-- (rule #22), never re-forked.
+-- ============================================================================
+
 -- ----------------------------------------------------------------------------
 -- tblSongLinks (#807) — cross-book counterparts.
 -- All rows sharing a GroupId represent the same hymn in different songbooks
@@ -1965,6 +2201,12 @@ CREATE TABLE IF NOT EXISTS tblSongLinks (
     CreatedBy    INT UNSIGNED  NULL DEFAULT NULL
                  COMMENT 'tblUsers.Id of the curator who linked this row, if signed in',
     CreatedAt    TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    /* uk_song makes SongId UNIQUE, so a song belongs to AT MOST ONE link
+       group. That is the load-bearing constraint of this table: groups are
+       equivalence classes, not tags, and merging two groups means re-stamping
+       GroupId on every member rather than adding a second row. GroupId itself
+       is a bare INT with no parent table — there is no tblSongLinkGroups; the
+       group exists only as the set of rows sharing the value. */
     UNIQUE KEY uk_song (SongId),
     KEY idx_GroupId (GroupId),
     CONSTRAINT fk_SongLinks_Song
@@ -2004,9 +2246,16 @@ CREATE TABLE IF NOT EXISTS tblSongRedirects (
 
 -- ----------------------------------------------------------------------------
 -- tblSongLinkSuggestions (#808) — pre-computed pairwise similarity scores.
--- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php; consumed by the
--- /manage/song-link-suggestions admin page. Pairs are stored canonically
--- with SongIdA < SongIdB so each unordered pair has at most one row.
+-- Populated by appWeb/public_html/includes/tools/build-song-link-suggestions.php.
+-- Reviewed at /manage/duplicate-songs — the standalone /manage/song-link-
+-- suggestions page this comment used to name was ABSORBED into that unified
+-- review UI in #1215 and is now only a 302 redirect (rule #22).
+--
+-- Pairs are stored canonically with SongIdA < SongIdB so each unordered pair
+-- has at most one row: without that normalisation (A,B) and (B,A) would both
+-- insert past uk_pair and the same duplicate would be offered to the curator
+-- twice. The builder is responsible for the ordering — the database cannot
+-- express "sorted pair" as a constraint.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongLinkSuggestions (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
