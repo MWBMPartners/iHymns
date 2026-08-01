@@ -27,6 +27,47 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (table existence guarded).
  *
+ * NOT DESTRUCTIVE. Two new tables, nothing altered, nothing dropped. Both are
+ * DORMANT on arrival — no ingest writes them and no read path selects them
+ * until the follow-up feature work lands — so applying this migration is a
+ * verified no-op for every existing page.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED: one _migLineEnrich_tableExists() guard per
+ * CREATE, so a re-run is two SHOW TABLES probes and two [SKIP] lines. The
+ * registry probe is the multi-table OR form — pending while EITHER table is
+ * missing — so a run that created the first table and threw on the second
+ * leaves the card correctly pending and a re-run completes it (CLAUDE.md
+ * rule #19).
+ *
+ * PREREQUISITE: both tables FK to tblLyricLines(Id), which is created by
+ * migrate-lyric-lines-mirror.php. That migration sits earlier in the registry
+ * order, so the dashboard's "Apply all pending" runs them in the right
+ * sequence; running THIS script standalone on an install without
+ * tblLyricLines fails on the foreign key ("failed to open the referenced
+ * table") and the card stays pending — a loud, recoverable failure, not a
+ * silent one.
+ *
+ * DATA-SHAPING DECISIONS NOT VISIBLE IN THE SQL:
+ *  · Language tags are free-text VARCHAR(35), NOT an FK to tblLanguages. TTML
+ *    and LRC carry script/region subtags ("ja-Latn", "zh-Hans-CN") that are not
+ *    rows in tblLanguages, and a RESTRICT-ing FK would reject the ingest of a
+ *    perfectly valid file. 35 is the BCP 47 practical maximum
+ *    (https://www.rfc-editor.org/rfc/rfc5646).
+ *  · Every growable vocabulary (Kind / TranslationType / Status /
+ *    AnnotationType / BodyFormat / Source) is VARCHAR app-validated against a
+ *    central map, never ENUM — adding a value to an ENUM is an ALTER, i.e. the
+ *    second migration CLAUDE.md rule #20 exists to prevent.
+ *  · Offsets are UTF-8 CODE POINT indices, not byte or UTF-16 offsets, so
+ *    readers must slice with mb_substr() / Array.from() (rule #21). A byte
+ *    offset would split a multi-byte character; a UTF-16 offset would
+ *    disagree with PHP for anything outside the BMP.
+ *
+ * SCHEMA MIRROR: both CREATE TABLE statements are mirrored in
+ * appWeb/.sql/schema.sql, which is what a FRESH install reads instead of
+ * running this script. They must stay byte-identical — COMMENT strings
+ * included — or a fresh install differs structurally from a migrated one and
+ * the Schema Audit page (#518) reports drift (CLAUDE.md rule #19).
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-line-enrichment.php
  *   Web:  /manage/setup-database → "Per-line lyric enrichment (translations + annotations)" button
@@ -79,6 +120,31 @@ try {
     if (_migLineEnrich_tableExists($mysql, 'tblLyricLineTranslations')) {
         _migLineEnrich_output("  [SKIP] tblLyricLineTranslations already present.");
     } else {
+        /* The two UNIQUE keys do different jobs and both are load-bearing:
+
+           uq_Line_Lang_Kind_Source (LineId, TargetLanguage, Kind, Source) is
+           the NATURAL key — "one English meaning-translation of this line from
+           Apple Music". Source is IN the key deliberately: two providers may
+           legitimately disagree about the same line in the same language, and
+           we want to hold both and let IsPrimary choose, not to have the second
+           import clobber the first.
+
+           uq_SourceRef (Source, SourceRef) is the RE-IMPORT key. Re-running an
+           Apple TTML import must update rather than duplicate. SourceRef is
+           NULLable and MySQL treats NULLs as distinct in a unique index
+           (https://dev.mysql.com/doc/refman/8.0/en/create-index.html), so any
+           number of hand-written rows — which have no external id — coexist
+           happily under the same Source. This is the (Source, SourceRef)
+           pattern CLAUDE.md rule #20 prescribes for every externally-sourced
+           table.
+
+           LyricsId is a DENORM of tblLyricLines.LyricsId, not a second source
+           of truth: it exists so "fetch every translation for this lyrics
+           version" is one indexed query instead of a join through every line.
+           The COMMENT says the app MUST derive it from the line rather than
+           trust a caller-supplied value — nothing in the schema enforces that
+           agreement, so a writer that gets it wrong silently orphans rows from
+           the idx_Lyrics path while the FK still passes. */
         $mysql->query(
             "CREATE TABLE tblLyricLineTranslations (
                 Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -128,6 +194,31 @@ try {
     if (_migLineEnrich_tableExists($mysql, 'tblLyricLineAnnotations')) {
         _migLineEnrich_output("  [SKIP] tblLyricLineAnnotations already present.");
     } else {
+        /* The span model, which is the only genuinely subtle part of this table.
+           An annotation covers a RANGE: from (StartLineId, StartOffset) to
+           (EndLineId ?? StartLineId, EndOffset). Both Line ids are real FKs, so
+           the range is anchored to rows, not to positions in a JSON array —
+           re-ordering or inserting a verse cannot silently re-point an existing
+           annotation at different words (that fragility is exactly why rule #21
+           forbids anchoring this on tblSongComponents.LinesJson indices).
+
+           Each of the three "optional" halves means "extend to the natural
+           boundary": EndLineId NULL = single-line span; StartOffset NULL =
+           from the start of the line; EndOffset NULL = to the end of the line.
+           So a whole-line annotation is (StartLineId, NULL, NULL, NULL) and
+           needs no special casing by the writer.
+
+           Both line FKs CASCADE on delete, which is the right call for a gloss:
+           if the line the annotation is about is gone, the gloss is meaningless.
+           Note this means deleting the END line of a multi-line span deletes the
+           annotation outright rather than shrinking it — deliberate, since a
+           silently-shortened annotation would mis-attribute commentary.
+
+           IsVerified is intentionally SEPARATE from Status: Status is the
+           moderation state (did a reviewer let this through), IsVerified is a
+           trust badge (staff / artist-cosigned). Collapsing them would make it
+           impossible to have an approved-but-unverified community annotation,
+           which is the common case. */
         $mysql->query(
             "CREATE TABLE tblLyricLineAnnotations (
                 Id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

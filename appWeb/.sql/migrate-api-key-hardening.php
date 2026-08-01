@@ -19,6 +19,39 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (column/table existence guarded).
  *
+ * NOT DESTRUCTIVE. Two NULLable columns and two new tables; no existing key,
+ * column or row is touched. The new quotas default to NULL = unlimited, so
+ * applying this changes the behaviour of exactly nothing until an admin sets a
+ * number. The "undo" is DROP the two tables and the two columns.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED — four independent guards, one per object:
+ * _migApiHard_addCol() SHOW COLUMNS-probes before each ALTER, and
+ * _migApiHard_tableExists() probes before each CREATE. A re-run prints four
+ * [SKIP] lines. The guards must stay per-object rather than one guard around
+ * the lot, because these four steps land independently: a run that added the
+ * columns and then failed on a CREATE has to be resumable.
+ *
+ * ⚠ NOTE ON THE REGISTRY PROBE: the card's probe is single-object —
+ * `!columnExists('tblApiKeys','RateLimitPerMin')` (migration-registry.php) —
+ * and RateLimitPerMin is the FIRST thing this script creates. So a run that
+ * added the columns and then threw creating tblApiKeyUsage would flip the card
+ * to APPLIED with two of the four objects missing. Everything downstream is
+ * dormant, so nothing breaks today, but per CLAUDE.md rule #19 a migration
+ * creating several objects should carry the multi-object OR-probe form (compare
+ * the 'line-enrichment' and 'song-identity-map' entries, which do). Widening it
+ * is a registry change, not a change to this file.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "API-key hardening — rate limits
+ * + idempotency (#1066)" → button "Run API-Key Hardening Migration". A first run
+ * prints four [OK] lines; a repeat prints four [SKIP]s.
+ *
+ * SCHEMA MIRROR: the two columns and both CREATE TABLEs are mirrored in
+ * appWeb/.sql/schema.sql (what a FRESH install reads instead of running this).
+ * They must stay byte-identical, COMMENT text included, or fresh and migrated
+ * installs diverge and the Schema Audit page (#518) flags it (rule #19). The
+ * `\"\"` in the Scope COMMENT below is only PHP double-quote escaping — the SQL
+ * that reaches MySQL carries plain `""`, matching schema.sql exactly.
+ *
  * @migration-adds tblApiKeys.RateLimitPerMin
  * @migration-adds tblApiKeys.RateLimitPerDay
  *
@@ -91,6 +124,26 @@ try {
     if (_migApiHard_tableExists($mysql, 'tblApiKeyUsage')) {
         _migApiHard_output("  [SKIP] tblApiKeyUsage already present.");
     } else {
+        /* The forward-looking bit of this DDL is `Scope` (CLAUDE.md rule #20's
+           "reserve a discriminator in the UNIQUE key when multiplicity is
+           foreseeable"). Today every counter is global and Scope is ''. The
+           moment someone wants "100 ingest writes/min but 5 000 reads/min",
+           that is a new value in an existing column — no ALTER, no migration,
+           no re-keying of live counter rows. Leaving Scope out and adding it
+           later would mean altering a UNIQUE KEY on a hot table.
+
+           It is NOT NULL DEFAULT '' rather than NULLable precisely because it
+           is part of uq_KeyWindow: MySQL treats NULLs in a unique index as
+           distinct, so a NULLable Scope would let the same global window be
+           counted twice and quietly under-enforce the limit.
+
+           WindowStart is DATETIME, not TIMESTAMP — TIMESTAMP is stored as UTC
+           and re-rendered in the session time zone, so a server whose zone
+           changes would shift every historical window
+           (https://dev.mysql.com/doc/refman/8.0/en/datetime.html). idx_Window
+           on WindowStart alone exists for the cleanup sweep that deletes
+           expired windows across all keys, which cannot use uq_KeyWindow
+           (wrong leading column). */
         $mysql->query(
             "CREATE TABLE tblApiKeyUsage (
                 Id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -117,6 +170,25 @@ try {
     if (_migApiHard_tableExists($mysql, 'tblApiKeyIdempotency')) {
         _migApiHard_output("  [SKIP] tblApiKeyIdempotency already present.");
     } else {
+        /* This table is what makes a retried POST safe: the client sends an
+           Idempotency-Key header, the server caches the response against it,
+           and a retry replays the cached response instead of doing the work
+           twice (the Stripe/IETF pattern —
+           https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/).
+
+           RequestHash is in the UNIQUE KEY alongside the client's key, which is
+           the security-relevant part: reusing an idempotency key with a
+           DIFFERENT body must not silently return the old response. Including
+           the SHA-256 makes the mismatch visible as a distinct row rather than
+           a false cache hit. CHAR(64) is exactly the hex length of SHA-256 —
+           fixed-width, so no length prefix and no padding surprises.
+
+           ExpiresAt is DATETIME, not TIMESTAMP, for two reasons: TIMESTAMP tops
+           out in 2038, and MySQL applies implicit-default/ON UPDATE magic to
+           the first TIMESTAMP column in a table, which would silently rewrite a
+           TTL on unrelated updates (rule #20 calls this out by name). It is a
+           plain column, so nothing expires on its own — a cleanup sweep using
+           idx_Expires has to delete the rows. */
         $mysql->query(
             "CREATE TABLE tblApiKeyIdempotency (
                 Id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

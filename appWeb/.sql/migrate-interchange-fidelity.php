@@ -20,6 +20,45 @@ declare(strict_types=1);
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (column/table existence guarded).
  *
+ * ⚠ HALF OF THIS MIGRATION IS NOW HISTORY — READ BEFORE TOUCHING IT.
+ * The two tblSongComponents columns it was written to add were RETIRED by
+ * the #1235 P4/C6 cutover (migrate-retire-component-lines-json.php), which
+ * made tblLyricLines the single source of truth for lyric lines and
+ * dropped the parallel JSON payload columns. On any install past that
+ * cutover, the LinesJson guard below fires and the ChordsJson/NotesJson
+ * half of this file does nothing — running the card would otherwise
+ * RESURRECT two retired columns. Only tblSongArrangements is still
+ * created. The file is kept rather than deleted because installs that
+ * have not yet run the C6 drop still need the columns to reach it.
+ *
+ * NOT DESTRUCTIVE. Two ADD COLUMNs (conditionally) and one CREATE TABLE;
+ * nothing is dropped or rewritten and no existing row is touched.
+ * tblSongs.ArrangementJson is left in place — soft-deprecated, no
+ * backfill, no drop — so rolling back is DROP TABLE tblSongArrangements
+ * and the older code path still works.
+ *
+ * IDEMPOTENCY. Three independent probes, none of which shares state:
+ * SHOW COLUMNS for each of the two columns (via _migFidelity_addCol) and
+ * SHOW TABLES for tblSongArrangements. A second run prints [SKIP] for
+ * each. The registry probe on the dashboard is compound —
+ * `LinesJson present AND ChordsJson absent` — so the card is pending only
+ * during the window where the work is both possible and outstanding.
+ *
+ * SCHEMA MIRROR. tblSongArrangements is mirrored in appWeb/.sql/schema.sql
+ * (the "#1066 Theme E" section), which is what a FRESH install reads; per
+ * rule #19 the two must stay byte-identical, COMMENT text included.
+ * ChordsJson/NotesJson deliberately have NO mirror any more — schema.sql
+ * documents tblSongComponents as thin post-cutover metadata — and the
+ * schema-coverage test tolerates that because the retirement migration
+ * carries `@migration-drops` tags for both.
+ *
+ * The two doctags below are LOAD-BEARING here, unlike in most migrations.
+ * _migFidelity_addCol() builds its statement as
+ * "ALTER TABLE {$table} ADD COLUMN {$ddl}", so the scanner's literal-ALTER
+ * regex ("Signal 1") sees an interpolated variable, not a table name, and
+ * matches nothing. These tags are the only way it learns what this file
+ * adds — exactly the dynamic-ALTER case rule #19 describes.
+ *
  * @migration-adds tblSongComponents.ChordsJson
  * @migration-adds tblSongComponents.NotesJson
  *
@@ -43,6 +82,24 @@ function _migFidelity_output(string $msg): void {
     if (!$isCli) flush();
 }
 
+/**
+ * Add one column unless it is already there.
+ *
+ * Takes the column NAME (for the probe) and the full DDL fragment
+ * separately, because the fragment carries the type, COMMENT and AFTER
+ * clause and there is no reliable way to recover just the name from it.
+ * Both arguments are hardcoded constants from this file's source, so the
+ * interpolation into SQL is the "constants from PHP source" case rule #5
+ * permits — never pass caller input through here.
+ *
+ * SHOW COLUMNS … LIKE takes a LIKE *pattern*: `_` matches any single
+ * character and `%` any run. ChordsJson and NotesJson contain neither, so
+ * the pattern is an exact match, but a snake_case column name would
+ * over-match and this probe would report a neighbour as "already
+ * present". The INFORMATION_SCHEMA + bind_param probe used elsewhere in
+ * this directory has no such caveat.
+ * https://dev.mysql.com/doc/refman/8.0/en/show-columns.html
+ */
 function _migFidelity_addCol(\mysqli $db, string $table, string $col, string $ddl): void {
     $r = $db->query("SHOW COLUMNS FROM {$table} LIKE '{$col}'");
     if ($r && $r->num_rows > 0) {
@@ -91,6 +148,17 @@ try {
        LinesJson is gone (the canonical "JSON era over" signal). Do NOT re-add ChordsJson/
        NotesJson — that would RESURRECT retired columns; tblLyricLines is authoritative.
        tblSongArrangements (below) is unrelated and still created. */
+    /* LinesJson is used as the era sentinel rather than ChordsJson itself
+       because it is the column whose presence defines "the JSON era is
+       still running": the C6 drop removes all four payload columns
+       together, so its absence is an unambiguous signal that this half of
+       the migration has been superseded. Probing ChordsJson instead would
+       be ambiguous — absent could mean "not yet added" OR "added and then
+       retired", and the second reading is the one that must not lead to
+       an ALTER. Note the ALTERs below position their columns with
+       `AFTER Language` and, unlike migrate-activity-log-expand.php, this
+       file has no fallback that drops the clause: tblSongComponents.
+       Language (#858) must exist or the ALTER fails outright. */
     if (!_migFidelity_columnExists($mysql, 'tblSongComponents', 'LinesJson')) {
         _migFidelity_output("  [SKIP] retired era (tblSongComponents.LinesJson gone) — not re-adding ChordsJson/NotesJson (#1235 P4/C6).");
     } else {
@@ -102,6 +170,29 @@ try {
 
     _migFidelity_output("");
     _migFidelity_output("--- tblSongArrangements ---");
+    /* Unaffected by the C6 retirement above — an arrangement is a
+       component ORDERING, not lyric content — so this half runs on every
+       install and is mirrored in schema.sql for fresh ones.
+
+       Two things the DDL doesn't say:
+
+       - ComponentOrderJson holds component INDICES, not tblSongComponents
+         .Id values: [0,1,1,2,3] means "first component, second, second
+         again, third, fourth". Repetition is the whole feature, so a set
+         of ids would not do — but positional references are only stable
+         while the component list is, which is the same index-fragility
+         rule #21 calls out for lyric enrichment. Reordering or deleting a
+         component silently re-points every arrangement for that song.
+
+       - uk_SongName stops one song having two arrangements of the same
+         name, but NOTHING here stops it having two rows with IsDefault=1.
+         idx_SongDefault makes "find the default" fast, it does not make
+         it unique; the single-default invariant is the app's to keep, and
+         a reader who assumes the schema enforces it will be wrong.
+
+       KeySignature and CapoFret are dormant on arrival — reserved in this
+       one-pass batch (rule #20) so the future transpose/chord-display
+       work needs no second ALTER. */
     if (_migFidelity_tableExists($mysql, 'tblSongArrangements')) {
         _migFidelity_output("  [SKIP] tblSongArrangements already present.");
     } else {
@@ -138,8 +229,21 @@ try {
     _migFidelity_output("");
     _migFidelity_output("Migration complete.");
 } catch (\Throwable $e) {
+    /* Swallowed on purpose: the script prints [ERROR] and then returns
+       normally, so the dashboard sees a completed run. That is why
+       setup-database.php re-evaluates the registry probe afterwards and
+       reports "ran but is STILL PENDING" when the objects are missing —
+       the [ERROR] line, not the absence of an exception, is the signal
+       that the DDL did not land. */
     _migFidelity_output("  [ERROR] " . $e->getMessage());
 }
 
+/* Safe because the connection above is this script's own `new mysqli`,
+   not the getDbMysqli() singleton the dashboard's bulk runner hands to
+   every subsequent migration in the same request. */
 $mysql->close();
+/* `return`, not `exit` — the dashboard `require`s this file inside an
+   ob_start() block and wraps the captured output in a STATUS:/ACTION:/
+   ELAPSED_MS: envelope. exit() would end the request before that header
+   is written and the runner would report a failure with no output. */
 return;

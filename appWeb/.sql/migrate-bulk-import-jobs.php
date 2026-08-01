@@ -13,10 +13,41 @@ declare(strict_types=1);
  * progress (live percentage + summary) instead of sitting on a
  * blocked HTTP request for several minutes.
  *
- * @migration-adds tblBulkImportJobs
+ * NOT DESTRUCTIVE. A single guarded CREATE TABLE; nothing existing is
+ * dropped, altered or read. Rolling back is DROP TABLE, and the only
+ * loss is the progress/summary record of past imports — the songs the
+ * imports created live in tblSongs and are unaffected.
  *
  * Idempotent — re-running is safe; the INFORMATION_SCHEMA probe
  * skips the CREATE if the table is already present.
+ *
+ * OPERATOR VIEW. Card "Bulk Import Jobs Tracking (#676)" on
+ * /manage/setup-database; the registry probe is
+ * !tableExists('tblBulkImportJobs'), which matches this migration's one
+ * object exactly.
+ *
+ * ⚠ THIS FILE IS THE ORIGINAL #676 SHAPE AND MUST STAY THAT WAY.
+ * appWeb/.sql/schema.sql — which is what a FRESH install reads — declares
+ * tblBulkImportJobs with three columns that are deliberately absent here:
+ * SkippedSongIdsJson, PerSongbookJson (#906) and PhaseLabel (#907). Each
+ * arrived later and has its OWN migration
+ * (migrate-bulk-import-skipped-songids.php, -per-songbook.php,
+ * -phase-label.php) with its own dashboard card and its own probe. Adding
+ * them to the CREATE above would make those three cards report "already
+ * applied" on an install that has only ever run this one, so the columns'
+ * real migrations would be skipped and any future change to them would
+ * land on the wrong install. Long-running installs converge on the
+ * schema.sql shape by running all four cards, not by widening this one.
+ *
+ * Note on the doctag: the schema-coverage scanner
+ * (includes/schema_audit.php, "Signal 3") requires the tag to name a
+ * table AND a column, dot-separated. The tag below names a table only,
+ * so it matches nothing and is inert documentation. Coverage for this
+ * table is supplied by the scanner's "Signal 2", which parses the
+ * literal CREATE TABLE block. Rule #19's byte-identity requirement still
+ * applies to every column declaration this file DOES carry.
+ *
+ * @migration-adds tblBulkImportJobs
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-bulk-import-jobs.php
@@ -85,6 +116,34 @@ if (!$mysqli) {
 if (_migBulkJobs_tableExists($mysqli, 'tblBulkImportJobs')) {
     _migBulkJobs_out('[skip] tblBulkImportJobs already present.');
 } else {
+    /* Shape notes for a reader who hasn't seen the async import flow:
+
+       This table exists because the ZIP import outlives an HTTP request.
+       bulk_import_zip moves the upload aside, writes its path to
+       TempPath, INSERTs a 'queued' row, returns {job_id} to the browser,
+       calls fastcgi_finish_request() to release the connection, and then
+       keeps working in the freed PHP worker — bumping ProcessedEntries
+       as it goes. The row IS the progress channel; the browser polls
+       bulk_import_status, which reads it. That is why the counters are
+       columns and not, say, a summary written once at the end: a value
+       nobody can read until the job finishes would defeat the purpose.
+
+       UserId is NULLable and carries no foreign key. NULL covers a
+       global_admin running the import from the CLI, where there is no
+       session user; the absent FK means a deleted user leaves their old
+       job rows behind rather than cascading them away, which is the
+       right trade for what is an operational audit record.
+
+       Status is an ENUM, which predates rule #20 (VARCHAR + an app-side
+       allow-list for any vocabulary that might grow) and is
+       grandfathered. The cost is real: adding 'cancelled' or 'paused'
+       would require an ALTER TABLE — the second migration rule #20
+       exists to prevent. Do not copy this into a new table.
+
+       The two indexes serve the two access patterns and nothing else:
+       idx_user_status for the polling endpoint (always scoped to one
+       user and a set of live statuses), idx_status_updated for the
+       ops-side "what has been running for over an hour" sweep. */
     $sql = "CREATE TABLE tblBulkImportJobs (
         Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
         UserId                   INT UNSIGNED NULL,

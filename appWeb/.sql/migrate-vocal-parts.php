@@ -21,6 +21,29 @@ declare(strict_types=1);
  * TTML->first-class back-fill is follow-on feature work, so the tables ship
  * empty. STRICTLY ADDITIVE + IDEMPOTENT (table existence guarded).
  *
+ * NOT DESTRUCTIVE. Nothing is dropped, altered or rewritten — the migration
+ * only ever issues CREATE TABLE for tables it has just confirmed are absent.
+ * There is therefore no recovery path to document: the "undo" is DROP TABLE on
+ * three tables that ship empty, and re-running the card recreates them.
+ *
+ * IDEMPOTENCY. Each of the three CREATEs is fronted by its own
+ * _migVP_tableExists() probe, so a second run prints three [SKIP] lines and
+ * touches nothing. Note the probes are INDEPENDENT — the migration resumes
+ * mid-way if an earlier run died after creating one or two of the three.
+ *
+ * OPERATOR VIEW. The setup-database card is "Vocal / singing parts (#1137)"
+ * and its registry probe (manage/includes/migration-registry.php) reports the
+ * card pending on `!tableExists('tblVocalParts')` alone.
+ *
+ * SCHEMA MIRROR. All three CREATE TABLE blocks are mirrored in
+ * appWeb/.sql/schema.sql (the "VOCAL / SINGING PARTS (#1137)" section), which
+ * is what a FRESH install reads. Rule #19 of .claude/CLAUDE.md requires the two
+ * to stay byte-identical — including COMMENT text — so an install built by
+ * migrations is structurally indistinguishable from one built from schema.sql.
+ * CI (tests/php/test-schema-coverage.php) only checks that the tables/columns
+ * are PRESENT in both, so drift in a COMMENT is invisible to it and shows up
+ * later on /manage/schema-audit (#518) instead.
+ *
  * USAGE:
  *   CLI:  php appWeb/.sql/migrate-vocal-parts.php
  *   Web:  /manage/setup-database → "Vocal / singing parts" button
@@ -35,8 +58,26 @@ if (!$isCli && !defined('IHYMNS_SETUP_DASHBOARD')) {
     header('Cache-Control: no-store');
 }
 function _migVP_output(string $m): void { global $isCli; echo $m . ($isCli ? "\n" : "<br>\n"); if (!$isCli) flush(); }
+/* ELI5: "does this table already exist?" — the check that makes re-running safe.
+   Detail: SHOW TABLES LIKE takes a LIKE *pattern*, not a literal, so `_` means
+   "any one character" and `%` means "any run". Every name passed here is a
+   hardcoded constant from this file's source with neither character in it, so
+   the pattern degenerates to an exact match — and, being source constants, the
+   string interpolation carries no injection risk (rule #5 allows exactly this
+   case). A future table name containing an underscore would silently over-match;
+   the INFORMATION_SCHEMA + bind_param probe used by the other migrations in this
+   directory (e.g. migrate-bulk-import-jobs.php) has no such caveat.
+   https://dev.mysql.com/doc/refman/8.0/en/show-tables.html */
 function _migVP_tableExists(\mysqli $db, string $t): bool { $r = $db->query("SHOW TABLES LIKE '{$t}'"); return (bool)($r && $r->num_rows > 0); }
 
+/* This migration opens its OWN connection straight from the credentials file
+   rather than going through includes/db_mysql.php::getDbMysqli(). That is the
+   deliberate split among the scripts in this directory: the ones that connect
+   directly are runnable on an install whose public_html/ bootstrap isn't
+   loadable, and — because the handle is theirs alone — they may safely $mysql->
+   close() at the end. The getDbMysqli() variants must NOT close, because the
+   dashboard's bulk runner hands the same singleton to every later migration in
+   the request (see the closing note in migrate-credit-people-slug.php). */
 $credFile = dirname(__DIR__) . DIRECTORY_SEPARATOR . '.auth' . DIRECTORY_SEPARATOR . 'db_credentials.php';
 if (!file_exists($credFile)) { _migVP_output("ERROR: MySQL credentials not found. Run install.php first."); return; }
 require_once $credFile;
@@ -51,6 +92,29 @@ try {
 _migVP_output("Connected to MySQL: " . DB_NAME);
 
 try {
+    /* Three data-shaping decisions in the DDL below that the SQL does not say
+       out loud:
+
+       1. PartKind is VARCHAR(30), not an ENUM of the fifteen values its COMMENT
+          lists. Rule #20 of .claude/CLAUDE.md: a vocabulary that can grow must
+          never be an ENUM, because adding "vocal-percussion" to an ENUM is an
+          ALTER TABLE — i.e. a second migration for what should be a one-line
+          change to the app-side allow-list. Same reasoning for Gender.
+
+       2. uq_Lyrics_Agent is (LyricsId, TtmlAgentId) where TtmlAgentId is
+          NULLable. In SQL a UNIQUE index does not constrain NULLs — two rows
+          with the same LyricsId and a NULL agent are both accepted. That is the
+          point: the key makes the TTML back-fill idempotent (re-importing the
+          same <ttm:agent v1> can only ever update the one row it created) while
+          leaving curators free to hand-add as many un-sourced parts as they
+          like. This is the (Source, SourceRef) pattern rule #20 describes.
+          https://dev.mysql.com/doc/refman/8.0/en/create-index.html
+
+       3. The two foreign keys deliberately differ on delete. Losing the lyrics
+          version must take its parts with it (CASCADE) — a part has no meaning
+          without the lines it annotates. Losing a person must NOT: SET NULL
+          demotes a named-singer row back to an anonymous one, leaving SingerName
+          and the line assignments intact. */
     if (_migVP_tableExists($mysql, 'tblVocalParts')) {
         _migVP_output("  [SKIP] tblVocalParts already present.");
     } else {
@@ -81,6 +145,14 @@ try {
         _migVP_output("  [OK] Created tblVocalParts.");
     }
 
+    /* Why a join table rather than a VocalPartId column on tblLyricLines: a duet
+       or a unison line is sung by more than one part AT ONCE, and a lead line
+       with a backing echo is two parts on one line distinguished only by
+       IsBackground. A single FK column could represent neither. The LyricsId
+       column is a denormalised copy of the line's own LyricsId — carried so the
+       common "every part assignment in this lyrics version" query (idx_Lyrics)
+       needs no join back through tblLyricLines. The app derives it from the
+       line; it is never taken from the caller. */
     if (_migVP_tableExists($mysql, 'tblLyricLineVocalParts')) {
         _migVP_output("  [SKIP] tblLyricLineVocalParts already present.");
     } else {
@@ -106,6 +178,13 @@ try {
         _migVP_output("  [OK] Created tblLyricLineVocalParts.");
     }
 
+    /* The word-level twin of the table above, for karaoke-grade sources (TTML /
+       LRC-A) where a single line changes voice part-way through. The read rule
+       lives in the app, not the schema: a word WITH rows here overrides its
+       line's parts; a word with none inherits them. Structurally identical to
+       the line table apart from the anchor, which is tblLyricWords.Id — per
+       rule #21, enrichment anchors on a normalised row id, never on an index
+       into a parallel JSON array. */
     if (_migVP_tableExists($mysql, 'tblLyricWordVocalParts')) {
         _migVP_output("  [SKIP] tblLyricWordVocalParts already present.");
     } else {
@@ -133,6 +212,18 @@ try {
 
     _migVP_output("  Tables ship empty; the TTML ttm:agent -> first-class back-fill is follow-on feature work.");
     _migVP_output("Migration complete.");
+/* This catch SWALLOWS the failure: it prints an [ERROR] line and then falls
+   through to a normal return, so from the dashboard's point of view the script
+   completed. That is intentional and is why setup-database.php re-runs the
+   registry probe after every migration — a script that "finished" but left its
+   objects uncreated is reported as "ran but is STILL PENDING". Read the [ERROR]
+   line, not the absence of an exception, to know whether the DDL landed. */
 } catch (\Throwable $e) { _migVP_output("  [ERROR] " . $e->getMessage()); }
+/* Safe here only because the connection above is this script's own (see the
+   note at $credFile). Never add this line to a getDbMysqli() migration. */
 $mysql->close();
+/* `return`, not `exit` — the dashboard `require`s this file inside an ob_start()
+   block and frames the captured output with a STATUS:/ACTION:/ELAPSED_MS:
+   header. exit() would end the request before that header is written, and the
+   bulk runner's parseEnvelope() would report a failure with no output to show. */
 return;

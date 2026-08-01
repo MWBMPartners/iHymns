@@ -19,9 +19,37 @@ declare(strict_types=1);
  *
  * @migration-adds tblCreditPeople.Slug
  *
- * Idempotent — re-running is safe; the column-exists check skips the
- * ALTER, the backfill only touches rows whose Slug is empty, and
- * collisions get a numeric suffix so the unique key holds.
+ * NOT DESTRUCTIVE, but it is the only migration in this family that
+ * WRITES DATA as well as changing shape. No column is dropped and no
+ * existing value is overwritten — the backfill's WHERE clause restricts
+ * it to rows whose Slug is still empty, so a curator who has hand-edited
+ * a slug keeps it. Rolling back means DROP INDEX uk_Slug + DROP COLUMN
+ * Slug, which loses the slugs but nothing else; re-running regenerates
+ * them from Name.
+ *
+ * IDEMPOTENT — re-running is safe, via THREE independent guards rather
+ * than one: an INFORMATION_SCHEMA.COLUMNS probe skips the ALTER, the
+ * backfill's `WHERE Slug = '' OR Slug IS NULL` selects nothing on a
+ * second pass, and an INFORMATION_SCHEMA.STATISTICS probe skips the
+ * unique key. Each step is separately resumable, so a run interrupted
+ * between them picks up where it left off.
+ *
+ * STEP ORDER IS LOAD-BEARING. Slug arrives as `NOT NULL DEFAULT ''`,
+ * which means the ALTER instantly gives EVERY existing row the same
+ * value. Adding the UNIQUE key at that point would fail on the second
+ * row. Hence: add the column (step 2), fill it (step 3), and only then
+ * constrain it (step 4). Reordering these breaks the migration on any
+ * install with more than one credit person.
+ *
+ * OPERATOR VIEW. Card "Credit People Slug + public page (#588)" on
+ * /manage/setup-database; the registry probe keys on the presence of
+ * tblCreditPeople.Slug — i.e. on step 2 only, so a run that added the
+ * column but died during the backfill still shows the card as applied.
+ *
+ * SCHEMA MIRROR. tblCreditPeople.Slug and uk_Slug are declared in
+ * appWeb/.sql/schema.sql, which is what a FRESH install reads; per rule
+ * #19 the two declarations must stay byte-identical so a migrated
+ * install and a fresh one are the same shape.
  *
  * USAGE:
  *   Web:  /manage/setup-database → Apply all pending migrations
@@ -30,11 +58,8 @@ declare(strict_types=1);
 
 if (PHP_SAPI === 'cli') {
     /* Guarded require — see #652. The dashboard has already loaded
-
        db_mysql.php via auth.php's bootstrap, so the function already
-
        exists at this point in dashboard mode; the guard skips the
-
        re-open that some hosts block from outside public_html/. */
 
     if (!function_exists('getDbMysqli')) {
@@ -44,13 +69,16 @@ if (PHP_SAPI === 'cli') {
     }
     $isCli = true;
 } else {
+    /* Standalone web invocation (someone hitting this .php directly rather
+       than going through the dashboard) has no auth behind it, so the file
+       gates itself: global_admin only. IHYMNS_SETUP_DASHBOARD means the
+       caller is setup-database.php, which has already run a stricter check
+       (the run_db_install entitlement) — re-running it here would be the
+       duplicated-gate the modularity rule forbids. */
     if (!defined('IHYMNS_SETUP_DASHBOARD')) {
         /* Guarded: dashboard mode pre-loads auth.php transitively. The
-
            guard also avoids re-opening the file from outside public_html/,
-
            which some hosts (open_basedir / php-fpm chroot) refuse even
-
            though the file is otherwise reachable (#652). */
 
         if (!function_exists('isAuthenticated')) {
@@ -69,11 +97,8 @@ if (PHP_SAPI === 'cli') {
         }
     }
     /* Guarded require — see #652. The dashboard has already loaded
-
        db_mysql.php via auth.php's bootstrap, so the function already
-
        exists at this point in dashboard mode; the guard skips the
-
        re-open that some hosts block from outside public_html/. */
 
     if (!function_exists('getDbMysqli')) {
@@ -116,6 +141,30 @@ function _migCpSlug_columnExists(mysqli $db, string $table, string $column): boo
  * Frances Humphreys Alexander" becomes "cecil-frances-humphreys-alexander".
  * Non-letter/digit characters become hyphens; consecutive hyphens
  * collapse; leading/trailing hyphens are trimmed.
+ *
+ * The mirroring is the whole point and the whole risk: /people/<slug>
+ * looks the row up by the STORED slug, so if this function and the
+ * renderer's copy ever diverge, the links the site generates stop
+ * resolving to the rows this migration wrote. There is nothing enforcing
+ * the agreement (rule #35 — a comment is not a mechanism), so treat any
+ * edit here as a change to both.
+ *
+ * On the transformations, in order:
+ *   - mb_strtolower, not strtolower: the byte-wise version mangles the
+ *     accented names that are common in this table.
+ *   - Normalizer::FORM_KD then stripping \p{M} decomposes "é" into "e"
+ *     plus a combining acute and discards the accent, so "Fauré" yields
+ *     "faure" rather than losing the character entirely to the class
+ *     filter below. Guarded by class_exists because ext-intl is not
+ *     universally installed — without it accented letters survive as
+ *     themselves, which is still a valid \p{L} and still slugs cleanly,
+ *     just to a different (percent-encoded) URL. That divergence is why
+ *     the extension matters on a host that serves the public pages.
+ *     https://www.php.net/manual/en/class.normalizer.php
+ *   - [^\p{L}\p{N}]+ collapses each RUN of non-alphanumerics to a single
+ *     hyphen, so "Smith, John (Jr.)" gives "smith-john-jr" with no
+ *     doubled separators to clean up afterwards.
+ *     https://www.php.net/manual/en/regexp.reference.unicode.php
  */
 function _migCpSlug_slugify(string $name): string
 {
@@ -179,7 +228,17 @@ $res->close();
 if (empty($toUpdate)) {
     _migCpSlug_out('[seed] no rows needed slug backfill.');
 } else {
-    /* Pre-load existing slugs so we can avoid collisions. */
+    /* Pre-load existing slugs so we can avoid collisions.
+
+       Two distinct collision sources have to be covered, and the second
+       is the one that is easy to miss: a slug already stored on a row
+       this run isn't touching (loaded here), and two rows INSIDE this
+       run that slugify to the same string — two people both recorded as
+       "J. Smith". $taken is therefore seeded from the database and then
+       ADDED TO as each candidate is claimed, so the second J. Smith sees
+       the first one's claim even though it was never committed at the
+       time of the check. Doing this in PHP rather than leaning on the
+       unique key is what lets step 4 succeed at all. */
     $taken = [];
     $res2 = $mysqli->query("SELECT Slug FROM tblCreditPeople WHERE Slug <> ''");
     while ($row2 = $res2->fetch_assoc()) {
@@ -191,8 +250,18 @@ if (empty($toUpdate)) {
     $filled = 0;
     foreach ($toUpdate as $entry) {
         $base = _migCpSlug_slugify($entry['name']);
+        /* A name made entirely of characters the slugifier strips — CJK
+           without ext-intl, or a row whose Name is punctuation — would
+           otherwise produce '', which the NOT NULL DEFAULT '' column
+           treats as "not yet backfilled" and every later run would try
+           again. 'person' gives it a real slug; the collision loop then
+           turns the second such row into person-2. */
         if ($base === '') $base = 'person';
         $candidate = $base;
+        /* Starts at 1 but is PRE-incremented, so the first duplicate
+           becomes "-2" rather than "-1" — the original keeps the bare
+           slug and the suffix reads as "the second John Smith", which is
+           how a human numbers them. */
         $suffix = 1;
         while (isset($taken[$candidate])) {
             $suffix++;
@@ -208,7 +277,20 @@ if (empty($toUpdate)) {
 }
 
 /* Step 4: enforce UNIQUE on Slug. Done after the backfill so we don't
-   trip over duplicate empty strings. */
+   trip over duplicate empty strings.
+
+   The key is what makes the slug a usable primary lookup for
+   /people/<slug>: without it the page would have to cope with two rows
+   answering one URL, and the "slug on every insert" paths added later
+   would have nothing stopping them writing a duplicate.
+
+   Caveat on the WARN branch below: `$mysqli->query()` here runs under
+   MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT (set by getDbMysqli()), so
+   a failing ALTER THROWS mysqli_sql_exception instead of returning
+   false. The graceful "a duplicate slipped through" warning is therefore
+   unreachable on a strict connection — that case surfaces as an
+   uncaught exception the dashboard catches and reports instead. Left as
+   found; changing it is a code change, not an annotation. */
 $idxRes = $mysqli->query(
     "SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS
       WHERE TABLE_SCHEMA = DATABASE()

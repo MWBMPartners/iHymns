@@ -23,8 +23,34 @@ declare(strict_types=1);
  * install; this supplementary migration brings already-deployed installs
  * in line via the dashboard.
  *
- * Idempotent: link types upsert by Slug, patterns guard on
- * (LinkTypeId, Host, PathPrefix) before inserting.
+ * THIS IS A DATA MIGRATION, NOT DDL. It creates no table and adds no
+ * column — it seeds rows into two tables that
+ * migrate-external-links.php (#833) and migrate-external-link-patterns.php
+ * (#845) already created. That is why there is no `@migration-adds`
+ * doctag and nothing to mirror into appWeb/.sql/schema.sql: rule #19's
+ * byte-identity requirement applies to schema declarations, and seed
+ * DATA has no schema.sql counterpart. Fresh installs get these six
+ * providers from the seed lists in those two migrations instead; this
+ * file exists purely to bring already-deployed installs level.
+ *
+ * NOT DESTRUCTIVE — no DELETE, no DROP, no ALTER. But see the
+ * idempotency note below: a re-run is not quite a no-op for link TYPES.
+ *
+ * IDEMPOTENCY — two different mechanisms, and the asymmetry matters:
+ *   - Link TYPES use INSERT … ON DUPLICATE KEY UPDATE keyed on the Slug
+ *     unique index. A re-run therefore REWRITES Name / Category /
+ *     AppliesTo / AllowMultiple / IconClass / DisplayOrder back to the
+ *     values in $seedTypes below. If a curator has renamed "Muzikum.eu"
+ *     or re-ordered it on /manage/external-link-types, re-running this
+ *     card silently reverts that edit. Safe, but not inert.
+ *   - URL PATTERNS use INSERT … WHERE NOT EXISTS. A re-run leaves every
+ *     existing pattern row exactly as it is, including curator edits to
+ *     Priority or MatchSubdomains.
+ *
+ * OPERATOR VIEW. Card "MusicBrainz-Parity External Links" on
+ * /manage/setup-database. Its registry probe is a single sentinel — it
+ * looks for the 'allmusic' slug only — so the card flips to applied as
+ * soon as the type seed has run, whether or not the pattern seed did.
  *
  * USAGE:
  *   CLI: php appWeb/.sql/migrate-musicbrainz-style-links.php
@@ -122,7 +148,22 @@ $typesUpdated = 0;
 foreach ($seedTypes as $t) {
     [$slug, $name, $cat, $appliesTo, $multi, $icon, $order] = $t;
     $upsert->bind_param('ssssisi', $slug, $name, $cat, $appliesTo, $multi, $icon, $order);
+    /* The `@` is vestigial. getDbMysqli() puts the connection into
+       MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT, under which a failed
+       execute() raises mysqli_sql_exception rather than a PHP warning —
+       and the error-suppression operator does not suppress exceptions.
+       So a genuine failure here propagates out of the file regardless. */
     @$upsert->execute();
+    /* affected_rows has THREE meaningful values after ON DUPLICATE KEY
+       UPDATE, and the third is the one that surprises people:
+         1 → the row was inserted,
+         2 → the row existed and at least one column CHANGED,
+         0 → the row existed and every column already matched.
+       A second run of an unmodified install therefore reports "0
+       inserted, 0 updated" — which is correct and means "all six are
+       already exactly right", not "nothing happened because something
+       went wrong". Do not read these counters as a completeness check.
+       https://dev.mysql.com/doc/refman/8.0/en/insert-on-duplicate.html */
     $ar = $mysqli->affected_rows;
     if ($ar === 1)      $typesAdded++;
     elseif ($ar === 2)  $typesUpdated++;
@@ -134,6 +175,14 @@ _migMbLinks_out("[seed] {$typesAdded} link type" . ($typesAdded === 1 ? '' : 's'
 /* ----------------------------------------------------------------------
  * Step 2 — Seed URL patterns
  * ---------------------------------------------------------------------- */
+/* Priority is ASCENDING-wins, which is worth stating because the column
+   name suggests the opposite: external_link_helpers.php reads the pattern
+   table `ORDER BY Priority ASC, Host ASC` and takes the first host match,
+   so a LOWER number is tried EARLIER. The numbers below are not a
+   sequence of their own — they are positions interleaved into the single
+   global ladder seeded by migrate-external-link-patterns.php (#845), so
+   changing one here changes where that provider sits relative to every
+   pattern in that file, not just relative to these six. */
 $seedRows = [
     /* [slug, host, path-prefix-or-null, match-subdomains, priority, note?] */
     ['myspace',     'myspace.com',      null, 1, 224, 'Legacy social network'],
@@ -144,6 +193,14 @@ $seedRows = [
     ['muzikum',     'muzikum.eu',       null, 1, 37,  'Lyrics + translations'],
 ];
 
+/* Re-read the slug → Id map from the database rather than trusting
+   insert_id from step 1: on a re-run most of the six were UPDATEs, which
+   yield no insert_id at all, and the pattern rows need the Id that
+   already exists. Loading the WHOLE table (not just the six) also lets
+   the $pMissing counter below distinguish "the type seed didn't take"
+   from "this pattern's provider was never seeded" — in normal operation
+   step 1 has just guaranteed all six are present, so a non-zero
+   $pMissing is a signal that something upstream failed silently. */
 $slugToId = [];
 $res = $mysqli->query('SELECT Id, Slug FROM tblExternalLinkTypes');
 while ($row = $res->fetch_assoc()) {
@@ -151,6 +208,30 @@ while ($row = $res->fetch_assoc()) {
 }
 $res->close();
 
+/* The pattern seed's idempotency guard, and the one subtlety in this file
+   that is easy to get wrong.
+
+   ELI5: "insert this row, but only if an identical one isn't there
+   already" — written as a SELECT with a WHERE, because plain INSERT has
+   no such conditional form.
+
+   Detail on the two pieces:
+   - `FROM DUAL` is MySQL's one-row dummy table. It exists so a SELECT
+     that produces constants can still carry a WHERE clause, which is
+     what turns this into a conditional INSERT.
+     https://dev.mysql.com/doc/refman/8.0/en/select.html
+   - `COALESCE(PathPrefix, "") = COALESCE(?, "")` rather than
+     `PathPrefix = ?` is load-bearing. Every one of the six rows below
+     has a NULL path prefix, and in SQL `NULL = NULL` evaluates to NULL,
+     not TRUE — so a direct comparison would never find the existing row,
+     NOT EXISTS would always be true, and every re-run would insert six
+     more duplicates. Folding NULL to '' on both sides makes the
+     comparison work for the NULL-vs-NULL case that is the norm here.
+     https://dev.mysql.com/doc/refman/8.0/en/working-with-null.html
+
+   The nine bound parameters are the six INSERT values followed by the
+   three the NOT EXISTS re-checks; typeId, host and path are each bound
+   twice because a placeholder cannot be referenced more than once. */
 $insert = $mysqli->prepare(
     'INSERT INTO tblExternalLinkPatterns
          (LinkTypeId, Host, PathPrefix, MatchSubdomains, Priority, Note)

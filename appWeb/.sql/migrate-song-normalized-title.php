@@ -15,11 +15,55 @@ declare(strict_types=1);
  *
  *   - tblSongs.NormalizedTitle VARCHAR(500) NOT NULL DEFAULT '' + idx_NormalizedTitle.
  *
- * It is a PLAIN column (not GENERATED) deliberately. The migration BACKFILLS
- * every existing row using the canonical PHP normalizer; write paths keep it in
- * sync on create/edit (follow-up feature work).
+ * It is a PLAIN column (not GENERATED) deliberately: a GENERATED column would
+ * have to be expressible in SQL, and MySQL 8 cannot reproduce
+ * ihymns_normalize_title() (iconv ASCII//TRANSLIT + a \p{L}\p{N} Unicode-
+ * property strip). The migration BACKFILLS every existing row using the
+ * canonical PHP normalizer; write paths keep it in sync on create/edit.
  *
  * STRICTLY ADDITIVE + IDEMPOTENT (column existence guarded; backfill re-runnable).
+ *
+ * NOT DESTRUCTIVE — with one thing worth knowing. Nothing is dropped, and the
+ * new column is NOT NULL DEFAULT '' so no existing row is invalidated. The
+ * BACKFILL, however, does UPDATE every row of tblSongs: it recomputes
+ * NormalizedTitle from Title and overwrites whatever was there. That is safe
+ * because the column is a derived fold with no independent authority — nothing
+ * a human types lives in it — but it does mean the run is O(all songs) of
+ * UPDATE traffic each time, not a no-op.
+ *
+ * HOW IDEMPOTENCY IS ACHIEVED — three separately-guarded steps:
+ *   1. The column: SHOW COLUMNS probe, skipped if present.
+ *   2. The index:  SHOW INDEX … WHERE Key_name probe, skipped if present.
+ *   3. The backfill: NOT guarded, and deliberately so. It recomputes every row
+ *      from the same pure function, so a second run converges on exactly the
+ *      same values — idempotent by being deterministic rather than by being
+ *      skipped. Re-running is the supported REPAIR for rows whose fold has gone
+ *      stale (see the note below), which is why the transcript reports both
+ *      "processed" and "updated" counts: a healthy repeat run shows N processed
+ *      and 0 updated.
+ *
+ * REPAIR CASE THIS MIGRATION IS THE ANSWER TO: not every path that inserts into
+ * tblSongs sets NormalizedTitle (as of this writing the v2 editor API does;
+ * includes/song_importers.php and includes/lyrics_ingest.php do not), so
+ * imported songs can sit on the DEFAULT ''. Nothing breaks — the one consumer,
+ * /manage/duplicate-songs, falls back to computing the fold in PHP when the
+ * column is empty — but those songs lose the indexed pre-filter this column
+ * exists to provide. Re-running this card repopulates them.
+ *
+ * OPERATOR VIEW: /manage/setup-database → card "NormalizedTitle dedup column
+ * (#1066)" → button "Run NormalizedTitle Migration". Progress ticks every 500
+ * rows. On a ~14k-song corpus expect tens of seconds, which is why the run
+ * lifts PHP's execution limits below.
+ *
+ * SCHEMA MIRROR: the column + idx_NormalizedTitle are mirrored in
+ * appWeb/.sql/schema.sql, which a FRESH install reads instead of running this
+ * script (a fresh install has no songs, so there is nothing to backfill and the
+ * column-existence probe correctly reads as applied). The declarations must
+ * stay byte-identical, COMMENT text included — CLAUDE.md rule #19. ⚠ They are
+ * NOT identical today: schema.sql carries a much longer COMMENT and omits the
+ * explicit `COLLATE utf8mb4_unicode_ci` this ALTER states. Reconciling that is
+ * a paired schema.sql + migration edit, deliberately not done as part of a
+ * comment-only pass.
  *
  * @migration-adds tblSongs.NormalizedTitle
  *
@@ -139,12 +183,27 @@ try {
         _migNormTitle_output("         Re-run this migration once the normalizer path is confirmed to populate");
         _migNormTitle_output("         NormalizedTitle for existing rows.");
     } else {
+        /* Row-by-row rather than set-based, because the fold is a PHP function
+           MySQL cannot express — that is the same reason the column is plain and
+           not GENERATED. $sel is a BUFFERED result (the mysqli default), so the
+           whole id+title list is client-side before the UPDATE loop starts and
+           the two statements do not contend on one connection
+           (https://www.php.net/manual/en/mysqli.query.php). Only Id + Title are
+           selected, never LyricsText — pulling full song rows here would be the
+           whole-corpus materialisation CLAUDE.md rule #17 forbids. */
         $sel = $mysql->query("SELECT Id, Title FROM tblSongs");
         $upd = $mysql->prepare("UPDATE tblSongs SET NormalizedTitle = ? WHERE Id = ?");
         $count = 0;
         $changed = 0;
         while ($row = $sel->fetch_assoc()) {
             $norm = ihymns_normalize_title((string)$row['Title']);
+            /* Truncate by CHARACTER, not byte — mysqli runs under
+               MYSQLI_REPORT_STRICT, so an over-length value would THROW rather
+               than silently truncate, aborting the whole backfill on one long
+               title. Cutting the fold short is harmless: this column is only an
+               indexed pre-filter and the exact compare still happens in PHP
+               against the full Title, so a truncated prefix can widen the
+               candidate set but can never produce a wrong match. */
             if (mb_strlen($norm) > 500) {
                 $norm = mb_substr($norm, 0, 500);
             }
