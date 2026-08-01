@@ -47,7 +47,7 @@ function _channelGateCurrentRole(): ?string
               WHERE t.Token = ? AND t.ExpiresAt > ? AND u.IsActive = 1'
         );
         $tokenHash = hash('sha256', $token);
-        $now       = gmdate('c');
+        $now       = gmdate('Y-m-d H:i:s');
         $stmt->bind_param('ss', $tokenHash, $now);
         $stmt->execute();
         $row = $stmt->get_result()->fetch_assoc();

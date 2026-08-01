@@ -69,7 +69,7 @@ $tryInt = function (string $sql, array $params = []) use ($db): int {
 
 $totalUsers    = $tryInt('SELECT COUNT(*) FROM tblUsers');
 $activeUsers   = $tryInt('SELECT COUNT(*) FROM tblUsers WHERE IsActive = 1');
-$activeTokens  = $tryInt('SELECT COUNT(*) FROM tblApiTokens WHERE ExpiresAt > ?', [gmdate('c')]);
+$activeTokens  = $tryInt('SELECT COUNT(*) FROM tblApiTokens WHERE ExpiresAt > ?', [gmdate('Y-m-d H:i:s')]);
 $totalSetlists = $tryInt('SELECT COUNT(*) FROM tblUserSetlists');
 /* #1694 D1 — the dashboard's headline count means VISIBLE songs, matching the
    public tiles; the Deleted-songs screen (commit 5) reports the hidden ones.

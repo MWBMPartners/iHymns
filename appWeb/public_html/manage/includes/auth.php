@@ -197,7 +197,7 @@ function adoptApiTokenSession(): bool
     try {
         $db          = getDbMysqli();
         $hashedToken = hash('sha256', $token);
-        $now         = gmdate('c');
+        $now         = gmdate('Y-m-d H:i:s');
         $stmt        = $db->prepare(
             'SELECT u.Id        AS id,
                     u.Username  AS username,
@@ -244,7 +244,7 @@ function adoptApiTokenSession(): bool
                 $stmt = $db->prepare(
                     'UPDATE tblApiTokens SET ExpiresAt = ? WHERE Token = ? AND ExpiresAt < ?'
                 );
-                $newCap = gmdate('c', $newCapTs);
+                $newCap = gmdate('Y-m-d H:i:s', $newCapTs);
                 $stmt->bind_param('sss', $newCap, $hashedToken, $newCap);
                 $stmt->execute();
                 $stmt->close();
@@ -648,7 +648,7 @@ function mintCrossSurfaceAuthToken(int $userId): void
         $rawToken    = bin2hex(random_bytes(32));
         $tokenHash   = hash('sha256', $rawToken);
         $expiresAtTs = time() + 30 * 86400;            /* 30 days — see docblock. */
-        $expiresAt   = gmdate('c', $expiresAtTs);
+        $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
 
         /* Bound INSERT — UserId is an int, Token/ExpiresAt are strings, mirroring
            the 'sis' bind api.php uses for the same statement. */
@@ -954,7 +954,7 @@ function generatePasswordResetToken(string $usernameOrEmail): ?array
 
     /* Generate a secure token (48 chars hex = 24 random bytes) */
     $token = bin2hex(random_bytes(24));
-    $expiresAt = gmdate('c', time() + 3600); /* 1 hour */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 3600); /* 1 hour */
 
     /* Invalidate any existing tokens for this user */
     $userIdInt = (int)$user['Id'];
@@ -988,7 +988,7 @@ function validatePasswordResetToken(string $token): ?array
 {
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
     $stmt = $db->prepare(
         'SELECT t.UserId, u.Username
          FROM tblPasswordResetTokens t
@@ -1881,7 +1881,7 @@ function generateEmailLoginToken(string $email, string $clientIp = ''): ?array
     $token = bin2hex(random_bytes(24));
     $tokenHash = hash('sha256', $token);
     $code  = str_pad((string)random_int(0, 999999), 6, '0', STR_PAD_LEFT);
-    $expiresAt = gmdate('c', time() + 600); /* 10 minutes */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 600); /* 10 minutes */
 
     /* Invalidate any previous unused tokens for this email */
     $stmt = $db->prepare(
@@ -2155,7 +2155,7 @@ function _completeEmailLoginTxn(\mysqli $db, string $email, ?int $userId): array
 
     /* Generate API bearer token (30-day expiry) */
     $token = bin2hex(random_bytes(32));
-    $expiresAt = gmdate('c', time() + 30 * 86400);
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 30 * 86400);
     $tokenHash = hash('sha256', $token);
     $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
     $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -2211,7 +2211,7 @@ function generateEmailVerificationToken(int $userId): ?array
     /* 48-char hex (24 random bytes) raw token; SHA-256 hash on disk. */
     $token = bin2hex(random_bytes(24));
     $tokenHash = hash('sha256', $token);
-    $expiresAt = gmdate('c', time() + 86400); /* 24 hours */
+    $expiresAt = gmdate('Y-m-d H:i:s', time() + 86400); /* 24 hours */
 
     /* Drop any prior outstanding tokens for this user. Single-token
        invariant matches the password-reset table's
@@ -2248,7 +2248,7 @@ function consumeEmailVerificationToken(string $token): ?array
 
     $db = getDbMysqli();
     $tokenHash = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
     $stmt = $db->prepare(
         'SELECT t.UserId, t.Email AS TokenEmail, u.Email AS CurrentEmail
            FROM tblEmailVerificationTokens t

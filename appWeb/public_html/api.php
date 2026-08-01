@@ -2521,7 +2521,7 @@ if ($action !== null) {
             /* Generate API token (64-character hex string, 30-day expiry) */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -2829,7 +2829,7 @@ if ($action !== null) {
             /* Generate API token */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userIdInt, $expiresAt);
@@ -3241,7 +3241,7 @@ if ($action !== null) {
                itself is gone — $serverRows is read directly below. */
             $payloadIds = [];
 
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
 
             /* Upsert each local setlist. The (UserId, SetlistId) pair
                has a UNIQUE constraint on tblUserSetlists, so
@@ -4533,7 +4533,7 @@ if ($action !== null) {
                auth_login (api.php ~2151). */
             $token = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash   = hash('sha256', $token);
             $stmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $stmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -4854,7 +4854,7 @@ if ($action !== null) {
             $currentToken = getAuthBearerToken();
             $currentHash  = $currentToken !== null ? hash('sha256', $currentToken) : '';
 
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
             $stmt = $db->prepare(
                 'SELECT Token, DeviceName, Platform, AppVersion, LastSeenAt, CreatedAt, ExpiresAt
                    FROM tblApiTokens WHERE UserId = ? AND ExpiresAt > ?
@@ -7156,7 +7156,7 @@ if ($action !== null) {
                auth_login (api.php ~2216) / auth_apple (api.php ~3286). */
             $token       = bin2hex(random_bytes(32));
             $expiresAtTs = time() + 30 * 86400;
-            $expiresAt   = gmdate('c', $expiresAtTs);
+            $expiresAt   = gmdate('Y-m-d H:i:s', $expiresAtTs);
             $tokenHash   = hash('sha256', $token);
             $tstmt = $db->prepare('INSERT INTO tblApiTokens (Token, UserId, ExpiresAt) VALUES (?, ?, ?)');
             $tstmt->bind_param('sis', $tokenHash, $userId, $expiresAt);
@@ -10109,7 +10109,7 @@ if ($action !== null) {
             }
 
             $db = getDbMysqli();
-            $now = gmdate('c');
+            $now = gmdate('Y-m-d H:i:s');
 
             /* Expired API tokens */
             $stmt = $db->prepare('DELETE FROM tblApiTokens WHERE ExpiresAt < ?');
@@ -18336,8 +18336,8 @@ function slideAuthTokenExpiry(string $rawToken): void
     try {
         $hashedToken  = hash('sha256', $rawToken);
         $newExpiresTs = time() + 30 * 86400;
-        $newExpiresAt = gmdate('c', $newExpiresTs);
-        $threshold    = gmdate('c', time() + 29 * 86400);
+        $newExpiresAt = gmdate('Y-m-d H:i:s', $newExpiresTs);
+        $threshold    = gmdate('Y-m-d H:i:s', time() + 29 * 86400);
 
         $db = getDbMysqli();
         /* #1409 — LastSeenAt piggybacks on this SAME already-throttled
@@ -18390,7 +18390,7 @@ function getAuthenticatedUser(): ?array
 
     $db = getDbMysqli();
     $hashedToken = hash('sha256', $token);
-    $now = gmdate('c');
+    $now = gmdate('Y-m-d H:i:s');
 
     /* AvatarService (#616) is selected only when the column exists, so
        a partly-migrated install keeps working. The check is cached for

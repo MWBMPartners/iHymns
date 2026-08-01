@@ -320,8 +320,12 @@ if (!function_exists('userSyncNow')) {
      * tblUserCustomTags.CreatedAt are written by MySQL itself (DEFAULT
      * CURRENT_TIMESTAMP), so they share this watermark's frame exactly. But
      * tblUserSetlists.UpdatedAt is written by the APP — the setlists upsert
-     * binds PHP's gmdate('c') — and neither PHP nor the mysqli session sets an
-     * explicit time zone in this codebase. If the DB session runs ahead of UTC,
+     * binds a PHP-generated UTC timestamp — and neither PHP nor the mysqli
+     * session sets an explicit time zone in this codebase. (That value used to
+     * be gmdate('c'); it is now gmdate('Y-m-d H:i:s'), because the ISO-8601
+     * OFFSET form is rejected outright by MariaDB and MySQL 5.7 — see the fix
+     * for the sign-in 500. Same instant, same skew caveat below; only the
+     * literal's syntax changed.) If the DB session runs ahead of UTC,
      * setlist rows can therefore read as slightly OLDER than a watermark minted
      * at the same instant, and guard (3) will let them be deleted.
      *
