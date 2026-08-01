@@ -1732,6 +1732,24 @@ if ($action !== null) {
                a time, so this caps a scraper looping every songbook without
                ever blocking a normal offline sync. Fail-open. */
             enforceReadRateLimitKeyed('bulk', 60);
+            /* This handler calls contentGatingEnabled() when it sets
+               Cache-Control below, so the module that DEFINES it has to be
+               loaded here — unconditionally, at the top of the case.
+
+               It was not, and the consequence was total: every OTHER
+               require_once of content_gating.php in this file sits inside a
+               DIFFERENT case block (917 / 1094 / 1217) or physically below this
+               one (1893), and includes/pages/song.php loads it only inside
+               `if (content_gating_enabled === '1')`. So with gating OFF — the
+               DEFAULT, i.e. production — nothing had loaded the function by the
+               time line ~1817 called it, and the whole endpoint fatalled with
+               "Call to undefined function contentGatingEnabled()". The failure
+               was perfectly INVERTED from the comment beside that header, which
+               promises the header is a no-op while gating is off.
+
+               A dormant feature is supposed to make a caller do nothing. Here,
+               being dormant is what made the caller CRASH. */
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'content_gating.php';
             $bulkSongbook = isset($_GET['songbook']) ? trim($_GET['songbook']) : '';
             /* #1010 / CLAUDE.md rule #17 — bulk_songs MUST be scoped to a
                single songbook. The old unscoped fallback materialised AND
