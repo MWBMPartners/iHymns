@@ -4,7 +4,7 @@
 >
 > **Status:** PLANNING COMPLETE (awaiting owner approval to begin execution). Passes: [1] Foundation & Architecture ✅ · [2] Features/UX/Native-enhanced/Remote ✅ · [3] Distribution/Security/Roadmap/dev-team process ✅. Planned 2026-07-04 with Fable 5 (3 sequential passes).
 >
-> Companion docs: `.claude/apple-native-handoff.md` (crash-safe resume), context brief (scratchpad). Paired with `.claude/CLAUDE.md` (repo rules), `api-docs.yaml` (the backend contract).
+> Companion docs: `.claude/apple-native-status.md` (the Apple programme's state record — NOT the session handoff, which is the single `.claude/sessions/<date>-HANDOFF.md`), context brief (scratchpad). Paired with `.claude/CLAUDE.md` (repo rules), `api-docs.yaml` (the backend contract).
 
 ## 0. Ground rules (owner-set)
 - **One Apple Universal app**, all platforms, single App Store purchase/download.

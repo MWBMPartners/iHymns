@@ -1,6 +1,6 @@
 # Apple Native App — Phase 2 Implementation Plan (Live + LAN Remote)
 
-> **STATUS: PLAN (Fable 5, 2026-07-10).** Grounded in `apple-native-strategy.md` §2.4 (owner-corrected 2026-07-06 LAN-direct design) + §3.4, `live-observability-strategy.md` §2.4/§2.5, issues #1405–#1410 / #1420–#1429, and a code-level audit of `api.php`/`iHymnsKit`/`project.yml`/CI. Sibling of `apple-native-strategy.md`; link from its §3.4 + `apple-native-handoff.md`.
+> **STATUS: PLAN (Fable 5, 2026-07-10).** Grounded in `apple-native-strategy.md` §2.4 (owner-corrected 2026-07-06 LAN-direct design) + §3.4, `live-observability-strategy.md` §2.4/§2.5, issues #1405–#1410 / #1420–#1429, and a code-level audit of `api.php`/`iHymnsKit`/`project.yml`/CI. Sibling of `apple-native-strategy.md`; link from its §3.4 + `apple-native-status.md`.
 
 ## 0. Ground-truth corrections (verified vs code — reshape sequencing)
 1. **`stateVersion` already exists** — `tblLiveFollowSessions.StateRevision` is monotonic, bumped on every broadcast, emitted as `revision`. #1405's stateVersion is a **naming/contract decision, not a build** (native DTO maps `revision`).

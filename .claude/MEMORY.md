@@ -476,3 +476,34 @@ browser and remains owner-verified.
   what is unfinished**, and state the CONSEQUENCE ("nothing can set IsDeleted, so a delete is still
   permanent"), not merely the status ("3 of 6"). Status reads as progress; consequence reads as a
   blocker.
+
+## The owner-preference files nothing loads (found 2026-08-01)
+
+`.claude/projects/-Users-lance-manasse-…-iHymns-iHymns/memory/` holds 15 tracked
+`.md` files — `user_profile.md`, `project_ihymns.md` and twelve `feedback_*.md`
+notes — committed once on 2026-07-07 (`3adc4875`) and untouched since.
+
+They are Claude Code's **per-project auto-memory directory**, and the directory
+name is that machine's absolute project path. Auto-memory is keyed by the path
+of the machine actually running, so on any other checkout — including every
+container session — the key is different and **not one of these files is ever
+loaded**. They read like live memory and behave like an archive. That is the
+whole trap: a future session that opens them will believe it has found current
+preferences, and a future session that doesn't open them will never see the
+preferences at all.
+
+They were NOT deleted: the content is genuine owner preference, not rot. The
+durable parts, so they survive independently of that directory:
+
+- **Extremely detailed code annotations** — ideally line-by-line. (This is the
+  origin of the two-register ELI5 + detailed annotation standard, and of #1158.)
+- **Modular architecture** and **documentation updated after every change** —
+  now CLAUDE.md's modularity rule and the standing-tasks checklist.
+- Well-formatted markdown; GitHub Issues for task tracking.
+- Copyright **MWBM Partners Ltd**; paid Apple Developer Programme account.
+- Dev environments: VS Code, Xcode on macOS, Windows, Raspberry Pi.
+
+⚠️ One entry is **superseded and must not be followed**: `user_profile.md` says
+"prefers to push to GitHub manually (commit but don't push)". The owner's
+standing instruction for these sessions is the opposite — commit **and push**
+to the working branch after every task. Follow the standing instruction.
