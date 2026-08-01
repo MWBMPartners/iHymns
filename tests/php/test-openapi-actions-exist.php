@@ -142,19 +142,69 @@ foreach ($EXEMPT as $a => $why) {
         in_array($a, $documented, true) && !isset($realActions[$a]));
 }
 
-/* Deliberately NOT asserted in reverse. Plenty of real actions are internal and
-   need no public documentation, and failing on those would push people to
-   document internals just to get the build green. The orphan guard covers
-   actions-without-callers; this file only guarantees the published contract is
-   honest. */
+/* ---- 3. the reverse, but ONLY for the PUBLIC dispatcher ------------------- */
+
+/* This file used to end here, with a note explaining that the reverse is
+   deliberately not asserted: plenty of real actions are internal, and failing on
+   those would push people to document internals just to get the build green.
+   That reasoning is right, and it is preserved — but it was about ALL FOUR
+   dispatchers (260 actions, most of them editor/admin internals).
+
+   Scoped to the PUBLIC api.php alone the picture is different, and was measured
+   before this assertion was written (2026-08-01): every one of its actions is
+   already documented, so this locks in a property the code has today rather than
+   demanding new work. It matters because api.php IS the native-app contract —
+   iOS/iPadOS/tvOS and Android read this spec to discover what the server offers.
+   An undocumented public action is invisible to them: not broken, just never
+   built against. That is the silent-no-op shape this codebase keeps paying for,
+   one step earlier in the chain.
+
+   The editor + places dispatchers are still deliberately exempt from this
+   direction — they are internal surfaces, and the original reasoning stands. */
+
+$publicActions = $casesForSwitch($pub . '/api.php', '$action');
+
+/* Same self-cleaning contract as $EXEMPT above: an entry must say WHY, and is
+   itself asserted to still be necessary, so the list cannot quietly become a
+   dumping ground for things somebody could not be bothered to document. */
+$UNDOCUMENTED_OK = [
+    /* (empty — every public action is documented, and the assertion below is
+       what keeps it that way. Add an entry ONLY for an action that genuinely
+       must not appear in the published contract, with the reason.) */
+];
+
+$undocumented = [];
+foreach ($publicActions as $a) {
+    if (in_array($a, $documented, true) || isset($UNDOCUMENTED_OK[$a])) { continue; }
+    $undocumented[] = $a;
+}
+
+ok('every PUBLIC api.php action is documented in api-docs.yaml ('
+    . count($publicActions) . ' public actions)',
+    $undocumented === []);
+foreach ($undocumented as $a) {
+    echo "       api.php dispatches ?action={$a} — absent from api-docs.yaml;\n";
+    echo "       a native-app developer reading the spec cannot discover it\n";
+}
+
+foreach ($UNDOCUMENTED_OK as $a => $why) {
+    ok("undocumented-exemption '{$a}' is still needed ({$why})",
+        in_array($a, $publicActions, true) && !in_array($a, $documented, true));
+}
 
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";
     foreach ($failures as $f) { echo "  - {$f}\n"; }
-    echo "\nA documented endpoint that does not exist is worse than an undocumented one:\n";
-    echo "Swagger UI's try-it-out fails in an admin's face, and an external integrator\n";
-    echo "ships broken code with our own spec as evidence it should have worked.\n";
+    echo "\nBoth directions of this file matter, and they fail differently.\n\n";
+    echo "DOCUMENTED BUT ABSENT is the loud one: Swagger UI's try-it-out fails in an\n";
+    echo "admin's face, and an external integrator ships broken code with our own spec\n";
+    echo "as evidence it should have worked.\n\n";
+    echo "PRESENT BUT UNDOCUMENTED is the quiet one, and it is the reason the second\n";
+    echo "check exists: api.php IS the native-app contract. iOS/iPadOS/tvOS and Android\n";
+    echo "read api-docs.yaml to discover what the server offers, so an undocumented\n";
+    echo "public action is not broken — it is invisible, and simply never gets built\n";
+    echo "against. Either document it, or add it to \$UNDOCUMENTED_OK with a reason.\n";
     exit(1);
 }
 echo "\nAll documented API actions exist.\n";
