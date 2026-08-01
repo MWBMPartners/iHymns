@@ -82,6 +82,50 @@ _Last updated: 2026-07-30._
   A sub-question the owner didn't answer gets a stated default, not a stall.
   **And if later investigation undermines your own recommendation, say so unprompted** (#1679).
 
+## The 2026-07-31 pre-release sweeps — what four independent audits all found
+
+Four sweeps (correctness, security, accessibility, lint) run against a codebase being prepped for
+public release. They were scoped separately and found the SAME SHAPE each time, which is why it is
+recorded here rather than in four issue bodies:
+
+**A thing that looks like it works, is cited as working, and has never once run.**
+
+- The CI step named "Lint JavaScript (ESLint)" had **never linted anything** — no config existed,
+  so it ran config-less eslint (a crash since ESLint 9) and `|| exit 0` swallowed it. Green tick,
+  zero checks, for its entire life.
+- `/` and Ctrl+K were advertised as "Open search" in the shortcuts overlay AND on /help, and did
+  nothing — bound to ids #812 deleted.
+- Search autocomplete (#307) is fully implemented, endpoint included, reachable from nowhere —
+  **and its test has always passed, because the test builds its own `<input>` and calls the
+  function directly.** A green test over unreachable code is the most misleading artefact in this
+  repo.
+- `card-layout.js`'s doc-comment claimed "Move up/down" buttons existed. `git log -p`: they never
+  did. A comment describing a feature that has never existed is worse than no comment — it stops
+  the next reader checking.
+
+**THE METHOD THAT KEEPS WORKING:** derive the list from the tree, then break the thing and watch
+the check go red. In this session FIVE new guards were wrong-but-green on their first run, and
+every one was caught by mutation, never by review:
+  - two were satisfied **by their own explanatory comments** (the comment contained the literals
+    the guard grepped for);
+  - one analysed function bodies and silently skipped `js/utils/html.js` — the canonical escaper
+    **16 modules import** — because its table lives in a module-scope const;
+  - one returned "0 dead buttons" while a planted dead button sat in front of it (`.btn`
+    substring-matched everything);
+  - one flagged three correct functions, i.e. failed on correct code, which is how guards get
+    deleted rather than fixed.
+
+**CONFIDENT NEGATIVES ARE THE DANGEROUS OUTPUT.** Four times this session a tool said "nothing
+there" and was wrong: a `[^;]*?` window truncated by a semicolon INSIDE a quoted string; a zero-hit
+grep for a remembered identifier that had shipped hours earlier under a different name
+(`webPushKinds`, not `PUSH_KINDS`); a `minimal_output` flag that silently STRIPPED the field being
+audited; and `grep "search-input"` matching `page-search-input` as a substring. **If a scan returns
+zero, sanity-check the scan against known-present source before believing it.**
+
+**MECHANICAL PROOF BEATS REVIEW where one exists.** For a comments-only annotation pass, `php -w`
+strips comments — so identical `php -w | md5sum` before and after PROVES zero behaviour change. Look
+for that kind of gate before reaching for a reviewer.
+
 ## Gotchas (hard-won — read before debugging a blank/odd/silent page)
 - **An inline `<script>` in an SPA fragment NEVER runs** (rule #30, #1565). Enforcing nonce CSP
   (#117) + shared-cache fragments (rule #6) = the browser silently refuses it. **No exception, no
