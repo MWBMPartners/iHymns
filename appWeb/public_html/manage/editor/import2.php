@@ -41,9 +41,20 @@ $formats = [
     'ihymns'      => 'iHymns interchange (.json)',
     'videopsalm'  => 'VideoPsalm (.json)',
     'openlp'      => 'OpenLP / OpenLyrics (.xml)',
+    /* #882 — auto-detect on a .xml/.opensong upload already tries BOTH
+       OpenLyrics and OpenSong (_bulkImport_processXmlAuto()); this entry
+       lets an operator pick OpenSong explicitly when they know the format
+       and want to skip the sniff (or override a sniff that guessed wrong —
+       same #1633 precedent as the iHymns/VideoPsalm .json pair above). */
+    'opensong'    => 'OpenSong (.xml)',
     'pro6'        => 'ProPresenter 6 (.pro6)',
     'freeshow'    => 'FreeShow (.show)',
     'proclaim'    => 'Proclaim (.txt)',
+    /* #1264 — ChordPro was already accepted by api2.php's import_file
+       (auto-mapped from .cho/.chopro/.crd/.chord/.pro) but had no dropdown
+       entry and was excluded from the file picker's `accept` list, so an
+       operator could never actually reach it from this page. */
+    'chordpro'    => 'ChordPro (.cho, .chopro, .crd, .chord, .pro)',
     'pptx'        => 'PowerPoint (.pptx)',
     'easyworship' => 'EasyWorship (.db)',
 ];
@@ -90,7 +101,7 @@ $formats = [
             <div class="card-body">
                 <div class="mb-3">
                     <label class="form-label small mb-1" for="imp-file">File</label>
-                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.pro6,.show,.txt,.pptx,.db,.zip">
+                    <input type="file" id="imp-file" class="form-control" accept=".json,.xml,.opensong,.pro6,.show,.txt,.cho,.chopro,.crd,.chord,.pro,.pptx,.db,.zip">
                 </div>
                 <div class="row g-3">
                     <div class="col-12 col-sm-7">

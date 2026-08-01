@@ -2129,17 +2129,41 @@ switch ($action) {
         break;
 
     /* -----------------------------------------------------------------
-     * BULK_IMPORT_OPENLP — single OpenLyrics (.xml) song import (#1052).
+     * BULK_IMPORT_OPENLP — single OpenLyrics OR OpenSong (.xml) song
+     * import (#1052, auto-routing added #882).
      *
      * POST /manage/editor/api?action=bulk_import_openlp
-     *   multipart field "openlp" = one OpenLyrics .xml document.
+     *   multipart field "openlp" = one OpenLyrics or OpenSong .xml
+     *   document. The action name and the "openlp" field name predate
+     *   #882 and are KEPT as-is — editor.js's .xml upload branch and any
+     *   other caller already point here (CLAUDE.md rule #33: a URL/field
+     *   name other code links to is a contract, not a naming mistake to
+     *   "fix" out from under them).
+     *
+     * #882 fix: this used to call _bulkImport_processOpenLp() directly,
+     * which only ever tries the OpenLyrics parser — so a real OpenSong
+     * file (no OpenLyrics <properties>/<songbooks> structure) always
+     * failed with OpenLyrics' own confusing "no <title> element" error.
+     * It now calls the shared _bulkImport_processXmlAuto() router
+     * (includes/song_importers.php), which content-sniffs the body via
+     * _bulkImport_looksLikeOpenLyrics() — the SAME discriminator the ZIP
+     * import loop already uses for its own .xml entries, so this
+     * single-file path and a ZIP entry can never disagree about the same
+     * file — and tries the other parser once if the sniffed-primary one
+     * fails to parse. The resolved format rides back in the summary's
+     * `parsed_by_format` key exactly as it did before.
      *
      * OpenLP "Export songs" writes one OpenLyrics .xml per song, each
-     * carrying its own <songbook name="…" entry="N"/> — so the songbook
-     * is derived from the file, not a folder convention. A whole FOLDER
-     * of OpenLyrics files exported as a .zip goes through the normal
-     * bulk_import_zip endpoint, which now content-sniffs .xml entries and
-     * routes OpenLyrics ones to the same parser (no folder convention).
+     * carrying its own <songbook name="…" entry="N"/> — so for OpenLyrics
+     * the songbook is derived from the file, not a folder convention.
+     * OpenSong XML carries no songbook metadata of its own, so a lone
+     * OpenSong file is filed under a fixed "OpenSong Import" (abbr "OS")
+     * songbook (see _bulkImport_processOpenSong()'s doc-block). A whole
+     * FOLDER of either dialect exported as a .zip goes through the
+     * normal bulk_import_zip endpoint, which already content-sniffs
+     * .xml entries via the same discriminator (no folder convention
+     * required for OpenLyrics; OpenSong ZIP entries still need the
+     * "<Title> [<ABBR>]/" folder convention for their songbook name).
      *
      * Insert-only — existing rows report as "skipped (existing)". Honours
      * the #1051 dedupeMode flag. Returns the same summary shape as
@@ -2165,12 +2189,12 @@ switch ($action) {
             break;
         }
 
-        /* A single OpenLyrics song is a few KiB; cap at the same 5 MiB
-           ceiling the other single-file path uses. */
+        /* A single OpenLyrics/OpenSong song is a few KiB; cap at the same
+           5 MiB ceiling the other single-file paths use. */
         $sizeBytes = (int)($_FILES['openlp']['size'] ?? 0);
         if ($sizeBytes > 5 * 1024 * 1024) {
             http_response_code(413);
-            echo json_encode(['error' => 'Uploaded OpenLyrics file exceeds the 5 MiB import limit.']);
+            echo json_encode(['error' => 'Uploaded file exceeds the 5 MiB import limit.']);
             break;
         }
 
@@ -2183,7 +2207,10 @@ switch ($action) {
                 echo json_encode(['error' => 'Uploaded file is empty.']);
                 break;
             }
-            $summary = _bulkImport_processOpenLp($body, $origName);
+            /* #882 — routed through the shared auto-router so a real
+               OpenSong file no longer dies against the OpenLyrics-only
+               parser. See _bulkImport_processXmlAuto()'s doc-block. */
+            $summary = _bulkImport_processXmlAuto($body, $origName);
             if (!($summary['ok'] ?? false)) {
                 http_response_code(400);
             } elseif (($summary['songs_created'] ?? 0) > 0) {

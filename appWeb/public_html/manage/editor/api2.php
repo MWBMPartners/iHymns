@@ -74,7 +74,12 @@ declare(strict_types=1);
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
  *   POST media_delete           { mediaId }                  -> { ok, deleted, songId }
  *   POST media_reorder          { songId, kind, ids:[...] }  -> { ok, reordered }
- *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|pro6|proclaim|freeshow|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
+ *   POST import_file   (MULTIPART: file, format=auto|videopsalm|openlp|opensong|pro6|proclaim|freeshow|chordpro|pptx|easyworship, dedupeMode?) -> { ok, songs_created, ... }
+ *     format=auto on a .xml/.opensong upload resolves via the shared XML
+ *     auto-router (_bulkImport_processXmlAuto(), #882) — it sniffs
+ *     OpenLyrics vs OpenSong and tries the other parser once on a primary
+ *     parse failure; the response's top-level `format` echoes back the
+ *     format that actually parsed.
  *   POST import_zip    (MULTIPART: file=.zip, dedupeMode?)    -> { ok, async, job_id, poll_url } (async) | { ok, songs_created, ... } (sync fallback / EasyWorship)
  *   GET  import_zip_status?job_id=<n>                         -> { ok, job }
  *   GET  import_zip_skipped_csv?job_id=<n>                    -> text/csv
@@ -2043,7 +2048,14 @@ try {
         if ($format === 'auto' || $format === '') {
             $format = match ($ext) {
                 'json'  => 'videopsalm',
-                'xml'   => 'openlp',       // processOpenLp content-sniffs OpenLyrics vs OpenSong
+                /* #882 — both .xml (OpenLyrics' native extension) and
+                   .opensong resolve to the shared 'xmlauto' TARGET, which
+                   routes through _bulkImport_processXmlAuto() below —
+                   that function, not this map, is what actually tells
+                   OpenLyrics and OpenSong apart (it content-sniffs via
+                   _bulkImport_looksLikeOpenLyrics(), the same discriminator
+                   the ZIP import loop uses for its own .xml entries). */
+                'xml', 'opensong' => 'xmlauto',
                 'pro6'  => 'pro6',
                 'show'  => 'freeshow',
                 'pptx'  => 'pptx',
@@ -2058,9 +2070,9 @@ try {
                #1633 — the extension map above cannot separate them: VideoPsalm
                claimed `.json` first, and the iHymns interchange format
                (tests/fixtures/songs.schema.json) uses the same extension. Sniffing
-               the CONTENT is the established answer here — `'xml' => 'openlp'` on
-               the line above relies on _bulkImport_looksLikeOpenLyrics() downstream
-               for exactly the same reason.
+               the CONTENT is the established answer here — `'xml', 'opensong' =>
+               'xmlauto'` above uses exactly the same content-sniff strategy, just
+               via _bulkImport_processXmlAuto() downstream instead of inline.
                The sniff is CONSERVATIVE BY DESIGN and only ever REDIRECTS AWAY from
                videopsalm when the body is unambiguously ours (all three iHymns
                top-level keys present AND VideoPsalm's "Songs" key absent), so no
@@ -2078,7 +2090,12 @@ try {
         /* Configure the dedup mode for every _bulkImport_saveSong() this request makes. */
         _bulkImport_dedupeMode($dedupe);
 
-        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
+        /* #882 — 'xmlauto' is the internal auto-resolution target reached
+           only via format=auto on a .xml/.opensong extension (never offered
+           directly in the UI dropdown); 'opensong' is also explicitly
+           pickable so an operator can override a sniff that guessed wrong
+           (same #1633 precedent as the iHymns-vs-VideoPsalm JSON override). */
+        $bodyFormats = ['videopsalm', 'ihymns', 'openlp', 'opensong', 'xmlauto', 'pro6', 'proclaim', 'freeshow', 'chordpro'];
         $summary = null;
         try {
             if (in_array($format, $bodyFormats, true)) {
@@ -2088,6 +2105,8 @@ try {
                     'videopsalm' => _bulkImport_processVideoPsalm($content, $origName),
                     'ihymns'     => _bulkImport_processIHymnsJson($content, $origName),  // #1633
                     'openlp'     => _bulkImport_processOpenLp($content, $origName),
+                    'opensong'   => _bulkImport_processOpenSong($content, $origName),    // #882
+                    'xmlauto'    => _bulkImport_processXmlAuto($content, $origName),     // #882
                     'pro6'       => _bulkImport_processPro6($content, $origName),
                     'proclaim'   => _bulkImport_processProclaim($content, $origName),
                     'freeshow'   => _bulkImport_processFreeShow($content, $origName),
@@ -2117,13 +2136,28 @@ try {
         if ((int)($summary['songs_created'] ?? 0) > 0) {
             ed2_runSongbookMaintenance($db, 'import_file');
         }
+        /* #882 — the auto-router (format 'xmlauto') stamps its own resolved
+           'format' ('openlp' or 'opensong') into $summary; every other
+           branch's $summary carries no 'format' key, so this falls back to
+           the format that was actually used to parse. Same value feeds
+           both the activity log and the response so they can't disagree. */
+        $resolvedFormat = (string)($summary['format'] ?? $format);
         logActivity('song.import_file', 'import', $origName, [
-            'format'  => $format,
+            'format'  => $resolvedFormat,
             'created' => (int)($summary['songs_created'] ?? 0),
             'skipped' => (int)($summary['songs_skipped_existing'] ?? 0),
             'failed'  => (int)($summary['songs_failed'] ?? 0),
         ]);
-        ed2_respond(array_merge(['ok' => true, 'format' => $format], $summary));
+        /* #882 — every single-file processor's contract is "ok=false ⇔ parse
+           failed" (a save failure lands as ok=true + songs_failed>0
+           instead); a parse failure is a genuine client error (bad/wrong
+           file), so it belongs on 400, not 200 — CLAUDE.md rule #35: the
+           HTTP status is the failure-kind contract, not the error prose.
+           This endpoint previously always answered 200 regardless of
+           $summary['ok'], which the #882 negative-path verification
+           (auto-detect on a file that is neither dialect) surfaced. */
+        $httpStatus = ($summary['ok'] ?? false) ? 200 : 400;
+        ed2_respond(array_merge(['ok' => true, 'format' => $resolvedFormat], $summary), $httpStatus);
         break;
     }
 

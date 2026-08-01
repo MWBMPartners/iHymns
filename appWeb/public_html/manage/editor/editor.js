@@ -4245,7 +4245,7 @@ function exportCurrentSong() {
 function importJSON() {
     var input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.json,.zip,.xml,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
+    input.accept = '.json,.zip,.xml,.opensong,.pro6,.show,.db,.rtf,.txt,.pptx,.ppt,.cho,.chopro,.crd,.chord,.pro,application/json,application/zip,text/xml,application/xml,application/rtf,text/plain,application/vnd.openxmlformats-officedocument.presentationml.presentation';
 
     input.addEventListener('change', function () {
         if (!input.files || !input.files[0]) return; // user cancelled
@@ -4256,9 +4256,13 @@ function importJSON() {
             importBulkZip(file);
         } else if (lower.endsWith('.json')) {
             importJsonCorpus(file);
-        } else if (lower.endsWith('.xml')) {
-            /* OpenLyrics / OpenLP single-song export (#1052). A folder of
-               these exported as a .zip uses the ZIP path above instead. */
+        } else if (lower.endsWith('.xml') || lower.endsWith('.opensong')) {
+            /* OpenLyrics OR OpenSong single-song export (#1052, OpenSong
+               single-file routing added #882) — the server-side handler
+               auto-detects which dialect this is (_bulkImport_processXmlAuto()
+               in includes/song_importers.php), so both extensions share this
+               one client-side branch. A folder of either exported as a .zip
+               uses the ZIP path above instead. */
             importOpenLp(file);
         } else if (lower.endsWith('.pro6')) {
             /* ProPresenter 6 single-song export (#1057). A folder of .pro6
@@ -4296,8 +4300,8 @@ function importJSON() {
             showToast(
                 'Unsupported file type. Choose a .json corpus, a .zip archive ' +
                 '(.SourceSongData / OpenSong / OpenLyrics / ProPresenter 6 / ' +
-                'FreeShow / EasyWorship), an OpenLyrics .xml, a ProPresenter ' +
-                '.pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
+                'FreeShow / EasyWorship), an OpenLyrics or OpenSong .xml/.opensong, ' +
+                'a ProPresenter .pro6, a FreeShow .show, an EasyWorship Songs.db, a ' +
                 'Proclaim .txt/.rtf, or a ChordPro .cho/.pro/.chopro/.crd/.chord.',
                 'danger'
             );
@@ -4448,11 +4452,16 @@ function importPptx(file) {
 }
 
 /**
- * importOpenLp(file) — OpenLyrics / OpenLP single-song .xml import (#1052).
- * Each OpenLyrics file carries its own <songbook> metadata, so the server
- * derives the songbook from the file. A whole exported FOLDER of OpenLyrics
- * files goes through importBulkZip() instead (the ZIP path content-sniffs
- * .xml entries and routes OpenLyrics ones to the same parser).
+ * importOpenLp(file) — OpenLyrics/OpenLP OR OpenSong single-song .xml
+ * import (#1052; OpenSong single-file routing added #882). The action
+ * name and field name predate #882 and are KEPT (they're the same
+ * bulk_import_openlp/openlp contract manage/editor/api.php documents) even
+ * though the server now auto-detects EITHER XML dialect — an OpenLyrics
+ * file carries its own <songbook> metadata so the server derives the
+ * songbook from the file; an OpenSong file carries none, so it's filed
+ * under a fixed "OpenSong Import" songbook instead. A whole exported
+ * FOLDER of either dialect goes through importBulkZip() instead (the ZIP
+ * path content-sniffs .xml entries the same way).
  */
 function importOpenLp(file) {
     importSingleFileFormat(file, {
