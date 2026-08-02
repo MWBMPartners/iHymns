@@ -9,8 +9,18 @@
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
 
 ⚠️ **The 07-30 note below says "both `claude/*` branches are now deleted". That is STALE.** Active
-work lives on **`claude/wave3-fixes`**, ~90 commits ahead of `alpha`, all pushed. **No PR exists** —
-the owner wants ONE PR to `alpha`, created on their word.
+work lives on **`claude/wave3-fixes`**, **~226 commits ahead of `alpha`** (2026-08-02), all pushed.
+**No PR exists** — the owner wants ONE PR to `alpha`, created on their word.
+
+**State as of 2026-08-02 (pre-release pass, final dev items):** the pre-release sweeps + IntAppsAPI
+integration + wave-3/4 reopened-issue fixes are all landed. This session closed the last three
+pre-merge dev items: **#1740** (`processOpenSong` parses before connecting — `071983b6`), **#1742**
+(v2 `create_song` recomputes `tblSongbooks.SongCount` — shared-host prod bug — `ee326b31`) and the
+**#1158** pre-merge pass (convention decision + the `test-annotation-coverage.php` baseline guard
+`d01d0c5a`; the program stays open for the giant-file backfill, post-merge). 90 PHP + 45 node suites
+green. Remaining before the PR: this final documentation sweep. **Post-merge:** epic **#1741**
+(Musicians/Works/Tunes/Songs catalogue expansion) then the demoted comprehensive OpenAPI pass
+(#1201). Owner-only gate still open: **#1726** (IntAppsAPI gateway liveness + credentials).
 
 ⚠️ **The branch named in the session prompt (`claude/apple-branches-cleanup-export-7mxhpo`) is a
 DIFFERENT, older, DELETED branch.** Pushing there re-creates it on the remote and strands work away

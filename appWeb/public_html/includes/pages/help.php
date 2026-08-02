@@ -19,7 +19,12 @@
  *
  * Loaded via AJAX: api.php?page=help
  *
- * Last updated: 2026-07-31 — covered five features that shipped with
+ * Last updated: 2026-08-02 — added "Also appears in — the same hymn in
+ * other songbooks" under "Find a hymn elsewhere & Works", covering the
+ * public cross-book counterparts feature (#807, editor side #1608) and
+ * drawing the distinction from Works (same composition) and
+ * translations (same hymn, other language).
+ * Previous update 2026-07-31 — covered five features that shipped with
  * server support but had no in-app help: musical key / tempo / time
  * signature (#298, wired #1671 F3) added to Reading a Song; setlist
  * templates & service plans (#301, wired #1671 F4) added under
@@ -316,6 +321,16 @@ declare(strict_types=1);
                         <li>On any song page, the "Part of work" panel lists sibling versions you can jump to</li>
                         <li>Works can be <strong>nested</strong> — an original Work can have child Works for derivative arrangements / translations / choral versions, with unlimited depth</li>
                         <li>The optional <strong>ISWC</strong> (International Standard Musical Work Code) cross-references the Work to external royalty / catalogue platforms</li>
+                    </ul>
+
+                    <!-- Cross-book counterparts (#807 / #1608). Distinct from Works:
+                         a counterpart is the SAME hymn appearing in more than one
+                         songbook, not the "same composition" grouping a Work models. -->
+                    <h3 class="h6 mt-3">Also appears in — the same hymn in other songbooks</h3>
+                    <p>Many hymns appear in more than one songbook under their own number — <em>Amazing Grace</em> might be MP&#8209;031 in one book, SDAH&#8209;108 in another. When a curator has linked those entries as <strong>counterparts</strong>, a song page shows an <strong>“Also appears in”</strong> list so you can jump straight to the same hymn in whichever book you use.</p>
+                    <ul>
+                        <li>This is different from a <strong>Work</strong> (above): a Work groups <em>versions and arrangements</em> of a composition, while counterparts are the <em>same hymn</em> in different songbooks.</li>
+                        <li>It is also different from a <strong>translation</strong>, which is the same hymn in another language and stays a separate song entry.</li>
                     </ul>
                 </div>
             </div>

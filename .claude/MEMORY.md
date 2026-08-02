@@ -555,3 +555,35 @@ Entirely dormant and **proven so**: `remoteFeatures` key ABSENT (not empty) from
 ⚠️ **The HMAC signer has never touched the real gateway.** `api.mwbmpartners.ltd` is unreachable here — proxy 403s CONNECT for the whole domain, which is a NETWORK POLICY fact, **not** evidence it is down (`ihymns.app`, certainly live, fails identically). Signer and stub descend from the same reading of `HmacValidator.php@6816ed8`; a shared misreading would pass locally and fail live. **#1726 gates enablement.** Flip `intappsapi_enabled_channels` to `alpha` ONLY first — three docroots, one MySQL.
 
 Filed upstream on the gateway: **MWBM-intAppsAPI#120** (all five bundled client examples sign the wrong canonical string, so every documented mutating request 403s) and **#121** (`ApiException::internal()`/`::forbidden()` undefined at five call sites).
+
+## 2026-08-02 — pre-merge dev items closed + doc sweep
+
+The last three pre-merge dev items landed, each independently verified (not trusting agent reports):
+
+- **#1740 DONE** (`071983b6`) — `_bulkImport_parseOpenSong()`'s 5th arg is now a lazy
+  `callable $autoNumberProvider`, so an unparseable OpenSong file is rejected with no DB connection.
+  Proven with MariaDB **stopped**: all 15 `test-xml-import-routing.php` assertions pass DB-free.
+- **#1742 DONE** (`ee326b31`) — v2 `create_song` recomputes `tblSongbooks.SongCount`. Extracted the
+  ONE shared `songbookRecomputeSongCount()` (`includes/songbook_count.php`, `songVisibleSql()`-aware,
+  caller owns the transaction-fatal policy) and routed all three funnels through it (`save_song_core`,
+  `song_relocate`, and the previously-missing `create_song`). Guard `test-songbook-count-recompute.php`
+  (double-based + tree-derived wiring), mutation-tested 4 ways by me. **Live drop-triggers before/after
+  proof** on `ihymns_live`: bare insert → cache stale 0 vs real 1; helper → corrects to 1 with no
+  trigger; fixture + triggers restored.
+- **#1158 pre-merge pass DONE; issue STAYS OPEN** — convention decided (accept "plain summary +
+  detailed why" as compliant; net-new only, NOT a 50%-tree relabel — the anti-mass-rewrite default),
+  durable guard `test-annotation-coverage.php` (`d01d0c5a`, mutation-proven, 100% head-doc-block
+  baseline over 208 files, advisory labelled-register % = 45), and a tier assessment that found the
+  render pages ALREADY compliant (home.php) or template shells (search/setlist) — the real bulk is the
+  giant logic files (SongData.php, api.php), post-merge batches.
+
+⚠️ **PROCESS LESSON (cost me a scare):** mutation-testing uncommitted agent work with
+`git checkout <file>` reverts to **HEAD**, silently wiping the agent's *unstaged* fix. Use `cp`
+backup/restore (or `git add` first) when the base state is uncommitted. Caught immediately (the grep
+after checkout showed the call count drop to 0) and re-applied from the diff I'd already read.
+
+**Doc sweep (this turn):** CHANGELOG `[unreleased]` gained #1740/#1742/#960/#882/#1608/#1158-guard;
+`help.php` gained the public "Also appears in" counterparts topic; ProjectBrief + MEMORY current.
+⚠️ **Deferred WITH the demoted OpenAPI work (NOT skipped):** the wiki `API-Reference.md` per-action
+entries for the v2 editor surfaces (song_links/#1608, create_song, #882 import) ride with the
+comprehensive OpenAPI/#1201 pass, which the owner demoted to AFTER #1741 reshapes those APIs.
