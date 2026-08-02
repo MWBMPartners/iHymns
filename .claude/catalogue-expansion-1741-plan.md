@@ -252,6 +252,95 @@ new probe helpers. At implementation time the exact COMMENT wording + column POS
 to house style by re-reading the live `schema.sql` block for each table (anchor by table name); do NOT
 rely on any ephemeral agent transcript.
 
-## §3 — Rename blast-radius plan + alias resolver + phased implementation sequence (Phase 3 — TO FOLLOW)
+## §3 — Rename blast-radius + alias resolver + phased sequence (Phase 3, Fable 5, 2026-08-02)
 
-_(Fable 5, after §2.)_
+> **⚠ finding that shrinks decision D2:** the shipped native contract is **Apple-only** —
+> `grep -rn credit_person appAndroid --include=*.kt` = **0 hits**. Only `appApple/Packages/iHymnsKit`
+> consumes `action=credit_person` / the `{"person":…}` envelope / `/person/*` (AASA + `CanonicalURL`).
+> So the "frozen contract" a rename must not break is one Swift package; Android has nothing to freeze.
+> Entitlements are code-only (PHP map + JS mirror, no DB rows). The service worker has no person-route
+> special-casing.
+
+### A — Musicians full rename
+**Map:** 7 tables → `tblMusicians` + `tblMusician{Identifiers,ExternalLinks,Aliases,Relations,Links,IPI}`
+(`tblCreditPersonMembers`→`tblMusicianRelations` because §2.1 M3 made it a `member|portrays` relation
+table). `CreditPersonId`→`MusicianId` on all 8 FK tables (incl. `tblSongbookCompilers`, `tblVocalParts`,
++ the §2 rider `tblTuneCredits`); `GroupPersonId`/`MemberPersonId`→`SubjectMusicianId`/`ObjectMusicianId`.
+Routes `/people//person//writer/`→canonical `/musician/<slug>` (old kept as aliases + 301). Actions
+`credit_person`→`musician`, `person_by_identifier`→`musician_by_identifier`, `admin_credit_person_*`→
+`admin_musician_*`. Log keys → `admin.musicians.*` / `api.admin.musician.*`; entity type `credit_person`→
+`musician` (history NEVER rewritten; viewer maps old↔new via one shared constant). Entitlement
+`manage_credit_people`→`manage_musicians` (code-only, one atomic commit, no alias). `AppliesTo` `'person'`
+token→`'musician'` (rides §2.3's SET→VARCHAR). Internal PHP/JS (`credit_people_helpers.php`→
+`musician_helpers.php`, `getCreditPerson()`→`getMusician()`, `person.php`→`musician.php`) renamed with NO
+aliases.
+**Back-compat (what must NOT break):** `action=credit_person`/`person_by_identifier` stay as **alias
+dispatches returning the byte-identical OLD envelope** (action-determines-shape, NOT dual keys) —
+indefinite; shipped Apple binaries never change. AASA keeps `/person/*` AND adds `/musician/*`; `/people//person/` 301 to `/musician/` for non-fragment loads; router keeps SPA-internal aliases. `page=person/writer`
+alias `page=musician` (normalised before the cache key). `api-docs.yaml` marks old endpoints `deprecated`.
+**Migration mechanics (`migrate-musicians-rename.php`):** precondition-gate that all 4 §2 cards are green
+(else abort — an FK to a soon-to-be-view is illegal); atomic `RENAME TABLE` (7); `RENAME COLUMN`
+(metadata-only, FKs auto-update in MySQL 8); `RENAME INDEX` + `DROP/ADD` for constraint names (no RENAME
+for FK names) + `MODIFY` for COMMENT prose; **updatable compat VIEWs with explicit old-name column
+aliases** (the 3-docroot skew shield — old code keeps working: views are insert/update/delete-able and
+show in INFORMATION_SCHEMA so existence-probes pass); AppliesTo token rewrite; byte-identical schema.sql
+mirror INCLUDING the views; real multi-object OR-probe. **Deploy order: run migration first, then code**
+(new code reads only new names; views make old-code+new-schema safe). Views dropped later by a
+`'manual'`+`confirm=1` cleanup card (rule #25 pattern). CI guard `test-musician-rename-guard.php`:
+**bidirectional count-exact** (a new old-name reference fails high; a deleted back-compat alias fails low)
++ a tree-derived `schema.sql` assertion; mutation-tested.
+**Recommendation (A.5): do the rename in THIS epic, EARLY — as P2, straight after the schema batch.**
+Deferring GROWS the surface (every later phase writes new `creditPerson` code); the scary parts are
+decomposed away (Apple frozen behind aliases; skew shielded by views; stragglers caught by the
+bidirectional guard). Splitting to a follow-up epic = the rule-#24 "UI-only halfway state" the owner
+rejected. Only D2 reversal justifies deferral.
+
+### B — Shared alias resolver + Tune live-search
+`includes/identifier_normalize.php` — a facade DELEGATING to existing write-side canonicalisers (one fold
+per scheme, rule-#22 lesson): `iswc` EXTRACTED from works.php:72 (**kills the duplicate in iswc.php:30**,
+§1 bug), `ipi`/`isni` delegate to `credit_people_helpers.php`'s folds, `ccli`/`isrc` new; plus the
+`IHYMNS_ID_SCHEMES` registry constant everything derives from. `includes/identifier_resolve.php` maps
+normalised→(entity,target), per-scheme precedence (iswc/ccli: Work-first then song multi-match; isrc:
+`tblSongs.Isrc` non-unique, never the UNIQUE identity-map key; ipi/isni: `tblMusicianIdentifiers` — the
+dormant `person_by_identifier`'s first real consumer, delegated). Routing: `index.php` 301 layer for
+single-match (bots/shared links) + a cacheable SPA fragment `includes/pages/identifier.php` that
+**absorbs iswc.php** (route/page aliases kept), single-match-in-SPA handled by a router-wired ES module
+`identifier-page.js` reading `data-*` (rule #30/#6). **⚠ §2.4 amendment to file:** add an ISRC-canonicalise
+backfill to the `song-identity-fields` card (parallels the ISWC one) so `/isrc/` gets an indexed exact
+match — one line now vs the forbidden second migration.
+**Tune live-search:** api2 `tune_search` (mirrors `tag_search`, JOINed through `tblTuneAliases` so spelling
+variants surface the canonical tune — the actual dedup mechanism; `meterCode` rides along; NO fuzzy scorer
+in v1) + `song_tune_set` (the ONE funnel keeping `TuneId`+`TuneName` in lockstep, find-or-creates by name;
+**retire `tuneName` from `metadata_field_update`** — today it strands `TuneId`, the drift this fixes).
+Client: **generalise `place-search.js`** (add `parseResults` + `pickMode` options, defaults unchanged) —
+NOT fork it, NOT the credits-tab dropdown (that picks name-strings, no FK). Meter-matching via one
+`ihymns_meter_normalize()` (CM/LM/… → digit form) in new `includes/tune_helpers.php`; a "matching meter"
+editor toggle re-runs `tune_search?meter=` (the swap-lyrics-between-tunes affordance); tune-page "Tunes
+with this meter" section.
+
+### C — Phased implementation sequence (single branch `claude/wave3-fixes`, single PR)
+| # | Phase | Depends on | Owner-decision gate |
+|---|---|---|---|
+| **P1** | Additive schema batch (§2) + ISRC-backfill amendment + 2 probe helpers | — | none |
+| **P2** | Musicians rename (A) — schema (RENAME+views), routes, actions, log keys, entitlement, guard | P1 | **D2** (confirm A.5) |
+| **P2b** | Manual cleanup card: drop compat views once all docroots run renamed code | P2 | none |
+| **P3** | Identifier normalise/resolve + `/ipi//isni//iswc//ccli//isrc/`, iswc.php absorbed | P1 (indexes), P2 (new names) | none |
+| **P4a** | Musician profile page (type/bio/disambig/portrayed-by/id-chips) | P2, P3 | **D4** (writer-consolidation slice only) |
+| **P4b** | Work page + admin (CCLI/tune/subtitle/year/copyright) | P1, P2 | none |
+| **P4c** | Tune page on registry + meter section | P1, P2 | none |
+| **P5** | Editor: tune typeahead + ISRC/subtitle/disambig/year/copyright fields | P1, P2, B.2 | **D3** noted, non-blocking |
+| **P6** | Docs / API spec / native + debt follow-up filing | all | none |
+Sequential: P1→P2→P3→rest. Parallelisable (human): P4a ∥ P4b ∥ P4c ∥ P5. Sub-issues to file under
+#1741: one per phase (P2b folded into P2). **D3 blocks nothing** (the `tblTuneCredits.MusicianId` reserved
+column absorbs either answer; the profile ships name-matched like today). **D4** gates only the P4a writer
+slice; the rest of P4a proceeds regardless.
+
+### Remaining owner decisions (D1 resolved)
+- **D2 — Musicians rename scope** — gates P2. Recommend A.5: full WEB rename now (early), Apple wire
+  contract frozen behind action aliases indefinitely (Android has nothing to freeze — verified). One-word confirm.
+- **D3 — credits name-string vs FK-ify** — gates NOTHING in this epic (reserved column). No-rush.
+- **D4 — writer/person page consolidation** — gates only P4a's writer slice. Recommend consolidate
+  (`/writer/` survives as a 301-alias). Confirm before that slice; rest of P4a unaffected.
+
+**Planning COMPLETE.** Implementation begins with P1 (unblocked). Full Part-A/B/C detail regenerates from
+this summary + a live `schema.sql`/route read at build time; do not rely on any ephemeral agent transcript.
