@@ -393,7 +393,7 @@ $formatParsers = [
         /* Reuses the repo's real #882 OpenSong fixture directory. */
         'fixture' => $fixtureDir . '/opensong/be-thou-my-vision.xml',
         'check'   => static function (string $body): bool {
-            [$song] = _bulkImport_parseOpenSong($body, 'OS', 'OpenSong Import', 0, 1);
+            [$song] = _bulkImport_parseOpenSong($body, 'OS', 'OpenSong Import', 0, static fn (): int => 1);
             return $song !== null;
         },
     ],

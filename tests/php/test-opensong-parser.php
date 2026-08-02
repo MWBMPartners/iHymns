@@ -61,6 +61,32 @@ function assertTrue($actual, string $label): void
     assertEq((bool)$actual, true, $label);
 }
 
+/**
+ * _bulkImport_parseOpenSong()'s 5th parameter is a lazy auto-number
+ * PROVIDER (#1740), not a plain int — invoked only when the document
+ * carries neither <hymn_number> nor a filename-hint number. Returns a
+ * closure that always yields $n, for fixtures where a number IS expected
+ * to be requested.
+ */
+function autoNumberOf(int $n): callable
+{
+    return static fn (): int => $n;
+}
+
+/**
+ * A provider that fails the test loudly if invoked at all — used to prove
+ * (not just assert) that a document which already has its own number
+ * (or fails to parse before number-resolution) never asks for an
+ * auto-number, mirroring the real caller's "never opens a DB connection
+ * it doesn't need" contract (#1740).
+ */
+function autoNumberMustNotBeCalled(): callable
+{
+    return static function (): int {
+        throw new \RuntimeException('auto-number provider invoked when it should not have been');
+    };
+}
+
 $fixtureDir = __DIR__ . '/fixtures/opensong';
 
 /* -------------------------------------------------------------------- */
@@ -68,7 +94,8 @@ $fixtureDir = __DIR__ . '/fixtures/opensong';
 /* -------------------------------------------------------------------- */
 echo "fixture: be-thou-my-vision.xml\n";
 $body  = file_get_contents("$fixtureDir/be-thou-my-vision.xml");
-[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, 1);
+/* Has its own <hymn_number> — the auto-number provider must never fire (#1740). */
+[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, autoNumberMustNotBeCalled());
 assertEq($err,                    null,                  'no parse error');
 assertTrue(is_array($song),                              'song dict returned');
 assertEq($song['title'],          'Be Thou My Vision',   'title');
@@ -93,7 +120,8 @@ assertEq(count($song['components'][0]['lines']), 2,      'V1 has exactly 2 lyric
 /* -------------------------------------------------------------------- */
 echo "fixture: no-number.xml\n";
 $body  = file_get_contents("$fixtureDir/no-number.xml");
-[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, 42);
+/* No <hymn_number>, no hint — the provider MUST fire and its value is used (#1740). */
+[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, autoNumberOf(42));
 assertEq($err,             null,                'no parse error');
 assertEq($song['number'],  42,                  'number falls back to auto-increment');
 assertEq($song['id'],      'TST-0042',          'songId uses auto-increment');
@@ -104,7 +132,11 @@ assertEq($song['writers'], ['Anon'],            'single writer, no split');
 /* -------------------------------------------------------------------- */
 echo "fixture: malformed.xml\n";
 $body  = file_get_contents("$fixtureDir/malformed.xml");
-[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, 1);
+/* Rejected before number-resolution is ever reached — the provider must
+   never fire. This is the behavioural proof for #1740: an unparseable
+   OpenSong document never asks for an auto-number (and therefore, in the
+   real caller, never opens a DB connection). */
+[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 0, autoNumberMustNotBeCalled());
 assertEq($song,            null,                'malformed XML returns null song');
 assertTrue(is_string($err) && str_starts_with($err, 'invalid XML'), 'error message starts with "invalid XML"');
 
@@ -113,7 +145,8 @@ assertTrue(is_string($err) && str_starts_with($err, 'invalid XML'), 'error messa
 /* -------------------------------------------------------------------- */
 echo "filename-hint precedence:\n";
 $body  = file_get_contents("$fixtureDir/no-number.xml");
-[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 17, 99);
+/* Filename hint present — the provider must never fire (#1740). */
+[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 17, autoNumberMustNotBeCalled());
 assertEq($song['number'],  17,                  'filename hint beats auto-increment when XML has no number');
 
 /* -------------------------------------------------------------------- */
@@ -121,7 +154,8 @@ assertEq($song['number'],  17,                  'filename hint beats auto-increm
 /* -------------------------------------------------------------------- */
 echo "<hymn_number> precedence:\n";
 $body  = file_get_contents("$fixtureDir/be-thou-my-vision.xml");
-[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 17, 99);
+/* <hymn_number> present — the provider must never fire (#1740). */
+[$song, $err] = _bulkImport_parseOpenSong($body, 'TST', 'Test Hymnal', 17, autoNumberMustNotBeCalled());
 assertEq($song['number'],  123,                 '<hymn_number> wins over hint and auto-increment');
 
 /* -------------------------------------------------------------------- */

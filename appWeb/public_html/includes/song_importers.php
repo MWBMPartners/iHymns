@@ -1414,7 +1414,14 @@ function _bulkImport_processZip(string $zipPath, ?\mysqli $jobDb = null, ?int $j
             if (!isset($songbookCounters[$abbr])) {
                 $songbookCounters[$abbr] = _bulkImport_nextSongNumberFor($db, $abbr);
             }
-            [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $songNum, $songbookCounters[$abbr]);
+            /* #1740 — _bulkImport_parseOpenSong() now takes a callable so a
+               single-file caller can defer the DB hit; the ZIP loop already
+               has $db connected for the whole archive and needs the counter
+               resolved up front regardless (so a second numberless entry in
+               the same songbook doesn't collide), so this just wraps the
+               already-resolved value — no behaviour change here. */
+            $zipAutoNumber = $songbookCounters[$abbr];
+            [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $songNum, static fn (): int => $zipAutoNumber);
             if ($song !== null) {
                 /* Bump the auto-counter to whatever number landed so a
                    second OpenSong file in the same songbook doesn't
@@ -1584,14 +1591,21 @@ function _bulkImport_openSongComponentTypeFor(string $letter): string
  * @param string $body         Raw XML (UTF-8; BOM tolerated).
  * @param string $abbrev       Songbook abbreviation from the folder.
  * @param string $songbook     Songbook display name from the folder.
- * @param int    $numberHint   Number derived from the filename's
- *                             leading digits (0 if none).
- * @param int    $autoNumber   Per-songbook auto-increment fallback when
- *                             neither the XML nor the filename supply
- *                             a number.
+ * @param int      $numberHint          Number derived from the filename's
+ *                                      leading digits (0 if none).
+ * @param callable $autoNumberProvider  Zero-arg closure returning the
+ *                                      per-songbook auto-increment fallback
+ *                                      (int) when neither the XML nor the
+ *                                      filename supply a number. Invoked
+ *                                      LAZILY (#1740) — only when actually
+ *                                      needed — so a caller whose provider
+ *                                      hits the database never pays for
+ *                                      that query on a document that
+ *                                      already has a number, or that fails
+ *                                      to parse before number-resolution.
  * @return array{0: ?array, 1: ?string}  [songObject, errorReason]
  */
-function _bulkImport_parseOpenSong(string $body, string $abbrev, string $songbook, int $numberHint, int $autoNumber): array
+function _bulkImport_parseOpenSong(string $body, string $abbrev, string $songbook, int $numberHint, callable $autoNumberProvider): array
 {
     /* Strip a UTF-8 BOM so SimpleXML doesn't choke. */
     $body = preg_replace('/^\xEF\xBB\xBF/', '', $body);
@@ -1624,14 +1638,21 @@ function _bulkImport_parseOpenSong(string $body, string $abbrev, string $songboo
     /* Number resolution priority: <hymn_number> in XML → filename
        leading digits → per-songbook auto-increment. The auto-increment
        guarantees a unique SongId even for OpenSong corpora that don't
-       carry numbers at all (which is most non-hymnal song libraries). */
+       carry numbers at all (which is most non-hymnal song libraries).
+       $autoNumberProvider is invoked LAZILY (#1740) — only when neither
+       of the first two sources supplied a number — so a caller whose
+       provider hits the database (_bulkImport_processOpenSong()'s
+       per-songbook MAX(Number) lookup) never opens that connection for
+       a document that already carries its own number, and never opens
+       it at all for a document that fails to parse (every return above
+       this point happens before we get here). */
     $hymnNumberRaw = trim((string)($xml->hymn_number ?? ''));
     $hymnNumber    = ($hymnNumberRaw !== '' && ctype_digit($hymnNumberRaw))
         ? (int)$hymnNumberRaw
         : 0;
     $number = $hymnNumber > 0
         ? $hymnNumber
-        : ($numberHint > 0 ? $numberHint : $autoNumber);
+        : ($numberHint > 0 ? $numberHint : (int)$autoNumberProvider());
     if ($number <= 0) {
         return [null, 'could not determine song number'];
     }
@@ -2832,9 +2853,22 @@ function _bulkImport_processOpenSong(string $body, ?string $filenameHint = null)
         }
     }
 
-    $db         = getDbMysqli();
-    $autoNumber = _bulkImport_nextSongNumberFor($db, $abbr);
-    [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $numberHint, $autoNumber);
+    /* #1740 — parse FIRST, connect only if the parser actually asks for an
+       auto-number (i.e. the document has neither <hymn_number> nor a
+       filename hint). Mirrors _bulkImport_processOpenLp()'s parse-then-
+       connect shape: an unparseable file, or one that already carries its
+       own number, never opens a database connection. $db is captured by
+       reference so the closure's connection (if any) is reused below
+       rather than reconnecting for the save/upsert that follows a
+       successful parse. */
+    $db = null;
+    $autoNumberProvider = function () use (&$db, $abbr): int {
+        if ($db === null) {
+            $db = getDbMysqli();
+        }
+        return _bulkImport_nextSongNumberFor($db, $abbr);
+    };
+    [$song, $reason] = _bulkImport_parseOpenSong($body, $abbr, $bookName, $numberHint, $autoNumberProvider);
     if ($song === null) {
         return [
             'ok'                     => false,
@@ -2847,6 +2881,10 @@ function _bulkImport_processOpenSong(string $body, ?string $filenameHint = null)
             'parsed_by_format'       => ['opensong' => 0],
             'errors'                 => [],
         ];
+    }
+
+    if ($db === null) {
+        $db = getDbMysqli();
     }
 
     $state             = _bulkImport_upsertSongbook($db, $abbr, $bookName, null);
@@ -2942,15 +2980,15 @@ function _bulkImport_xmlAutoPrimary(string $body): string
  *      a primary miss is always safe to retry with the other parser (the retry
  *      is idempotent: a failed parse writes nothing).
  *
- *      ⚠️ An earlier version of this line added "neither touches the database
- *      before that check". That is TRUE of processOpenLp and FALSE of
- *      processOpenSong, which calls getDbMysqli() +
- *      _bulkImport_nextSongNumberFor() BEFORE parsing, because $autoNumber is
- *      a parse ARGUMENT (parseOpenSong's 5th parameter). So a retry is safe,
- *      but it is not free: rejecting an unparseable OpenSong file still opens
- *      a connection and runs a MAX(Number) query. Tracked as #1740; it is also
- *      why tests/php/test-xml-import-routing.php is not the "DB-free" suite it
- *      once claimed to be.
+ *      Neither touches the database before that check (#1740): processOpenSong
+ *      used to call getDbMysqli() + _bulkImport_nextSongNumberFor() BEFORE
+ *      parsing (because $autoNumber was a plain int parse ARGUMENT), so
+ *      rejecting an unparseable OpenSong file still opened a connection and
+ *      ran a MAX(Number) query. It now takes a callable $autoNumberProvider
+ *      that _bulkImport_parseOpenSong() only invokes lazily, from inside the
+ *      parser, if the document actually lacks both <hymn_number> and a
+ *      filename hint — so a retry here is both safe (idempotent) and free
+ *      (no connection) for any document that fails to parse.
  *   3. On primary success (`ok=true`, even if the save itself later fails
  *      and songs_failed>0), stamps the RESOLVED format into the result and
  *      returns immediately — no second parse attempted.

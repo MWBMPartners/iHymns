@@ -22,32 +22,27 @@ declare(strict_types=1);
  * a ZIP-entry decision can never disagree (CLAUDE.md rule #35) — and, on a
  * primary parse failure, trying the OTHER parser once before giving up.
  *
- * ⚠️ THIS SUITE IS PARTLY DB-DEPENDENT. An earlier version of this doc-block
- * claimed it was "DELIBERATELY DB-FREE" because "`$db = getDbMysqli()` in
- * _bulkImport_processOpenLp()/_bulkImport_processOpenSong() comes AFTER the
- * parse-failure early return". **That is true of processOpenLp and FALSE of
- * processOpenSong** — a symmetry that was asserted rather than checked.
+ * THIS SUITE IS DB-FREE (#1740). An earlier version of this doc-block
+ * claimed that too, then had to walk it back: `_bulkImport_processOpenSong()`
+ * used to call `getDbMysqli()` + `_bulkImport_nextSongNumberFor()` BEFORE
+ * parsing (unlike its sibling `_bulkImport_processOpenLp()`, which parses
+ * first), because `$autoNumber` was a plain int parse ARGUMENT — so even
+ * REJECTING an unparseable OpenSong document opened a connection and ran a
+ * `MAX(Number)` query, and the "both formats failed" assertions below fataled
+ * with `mysqli_sql_exception: Connection refused` on a machine whose MySQL
+ * was down (it never failed in CI because .github/workflows/test.yml supplies
+ * a `mariadb:11` service, which is exactly why the false "no DB needed" claim
+ * survived — the only person it misled was someone running the suite
+ * locally). #1740 fixed the asymmetry: `_bulkImport_parseOpenSong()`'s 5th
+ * parameter is now a `callable $autoNumberProvider` invoked LAZILY, from
+ * inside the parser, only when the document actually lacks both
+ * `<hymn_number>` and a filename-hint number — so both processors now share
+ * the same parse-first, connect-only-if-needed shape, and every assertion in
+ * this file (including "both formats failed", which never gets far enough
+ * into either parser to need a number) runs with no database at all.
  *
- *   _bulkImport_processOpenLp():    parse -> early-return on failure -> getDbMysqli()
- *   _bulkImport_processOpenSong():  getDbMysqli() -> parse -> early-return on failure
- *
- * processOpenSong connects first because it must call
- * _bulkImport_nextSongNumberFor($db, …) to obtain `$autoNumber`, which is a
- * PARSE ARGUMENT (parseOpenSong's 5th parameter) — so the connection is not
- * gratuitous, it is a genuine data dependency of the parse itself. The
- * asymmetry is tracked separately; restructuring it is not this test's job.
- *
- * Consequence: the "both formats failed" assertions below DO open a
- * connection, and this suite fataled with `mysqli_sql_exception: Connection
- * refused` the first time it ran on a machine whose MySQL was down. It never
- * failed in CI because .github/workflows/test.yml supplies a `mariadb:11`
- * service — which is exactly why a false "no DB needed" claim could survive:
- * the only person it misleads is someone running the suite locally.
- *
- * The pure routing assertions (_bulkImport_xmlAutoPrimary()) ARE DB-free and
- * always run. The process-level assertions are skipped, loudly, when no
- * database is reachable. The SUCCESS path (a song actually landing in
- * tblSongs) is verified behaviourally over HTTP per the #882 plan, not here.
+ * The SUCCESS path (a song actually landing in tblSongs) is verified
+ * behaviourally over HTTP per the #882 plan, not here.
  *
  *   php tests/php/test-xml-import-routing.php
  *
@@ -133,42 +128,12 @@ aEq(_bulkImport_xmlAutoPrimary($openLyricsNoNs), 'openlp', 'routes to openlp: na
 /* -------------------------------------------------------------------- */
 /* 3. Both-formats-fail path: a document that is neither dialect names   */
 /*    BOTH formats and BOTH real per-format reasons in one error — never */
-/*    a misleading single-format error. Parse-only (no DB — see header). */
+/*    a misleading single-format error. Genuinely DB-free (#1740): both  */
+/*    _bulkImport_processOpenLp() and _bulkImport_processOpenSong() now  */
+/*    reject an unparseable document before either would open a         */
+/*    connection, so this runs with no database reachable at all — no   */
+/*    skip guard needed. */
 /* -------------------------------------------------------------------- */
-/* Is a database actually reachable? ATTEMPT A CONNECTION — do not test for a
-   socket file. A socket inode outlives the server that created it, so
-   file_exists() reports "yes" against a dead mysqld and the skip guard fails
-   to skip. (That exact mistake was made and fixed in
-   test-delete-songs-rewiden.php earlier on this branch; repeating it here
-   would be a second instance of the same bug in a guard.) */
-$dbReachable = (static function (): bool {
-    try {
-        /* getDbMysqli() is the project's ONE connection helper (rule #5) and is
-           already reachable here via song_importers.php's include chain. Under
-           MYSQLI_REPORT_STRICT a failed connect THROWS rather than returning
-           false, so the try/catch IS the probe. */
-        $probe = getDbMysqli();
-        return $probe instanceof mysqli;
-    } catch (\Throwable) {
-        return false;
-    }
-})();
-
-if (!$dbReachable) {
-    echo "\n  ⚠️  SKIPPED: the process-level assertions need a database.\n";
-    echo "      They are NOT DB-free — see this file's header: processOpenSong\n";
-    echo "      connects before it parses, because \$autoNumber is a parse\n";
-    echo "      argument. Start MySQL/MariaDB to run them.\n";
-    echo "      The pure routing assertions above DID run and are reported below.\n";
-    if ($failed === 0) {
-        echo "\nAll DB-free XML import routing assertions passed ($passed); "
-           . "process-level assertions skipped.\n";
-        exit(0);
-    }
-    fwrite(STDERR, "\n$failed assertion(s) failed.\n");
-    exit(1);
-}
-
 $neither = '<notasong/>';
 $autoResult = _bulkImport_processXmlAuto($neither, 'not-a-song.xml');
 aEq($autoResult['ok'] ?? true, false, 'both-fail: ok is false');
