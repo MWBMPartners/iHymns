@@ -344,6 +344,15 @@ slice; the rest of P4a proceeds regardless.
 - **D3 — credits name-string vs FK-ify** — gates NOTHING in this epic (reserved column). No-rush.
 - **D4 — writer/person page consolidation** — gates only P4a's writer slice. Recommend consolidate
   (`/writer/` survives as a 301-alias). Confirm before that slice; rest of P4a unaffected.
+- **D5 — additional external/catalogue IDs (owner request 2026-08-02, per Luminate Data's "External
+  IDs" KB article).** Fold into #1741's identifier model. ⚠️ The article is WebFetch-403 (Luminate portal
+  bot-block, not the proxy) — do NOT implement a guessed list. Architectural fit: because the identifier
+  types are VARCHAR + central-map-validated (rule #20), most new IDs are **central-map + resolver entries,
+  NOT schema** (musician IDs → the `CREDIT_IDENTIFIER_TYPES` registry [→ `musician_helpers.php` after P2];
+  recording/release IDs → `tblSongIdentityMap`/`tblSongRoyaltyIds` which are already VARCHAR-keyed; work
+  IDs → `tblWorks`). Only a genuinely new-shape ID (e.g. a release/product entity iHymns doesn't model)
+  would need schema. Sequenced AFTER P2 (the registries live in files P2 renames). Owner to confirm the
+  exact list — proposed starting set + fit recorded on #1741. Blocks nothing now.
 
 **Planning COMPLETE.** Implementation begins with P1 (unblocked). Full Part-A/B/C detail regenerates from
 this summary + a live `schema.sql`/route read at build time; do not rely on any ephemeral agent transcript.
