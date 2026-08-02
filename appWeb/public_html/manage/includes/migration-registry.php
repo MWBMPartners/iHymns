@@ -18,8 +18,9 @@ declare(strict_types=1);
  * consistent and that schema.sql mirrors every migration-created table.
  *
  * Required helpers (defined in setup-database.php at include time):
- *   _migProbe_tableExists, _migProbe_columnExists,
- *   _migProbe_columnIsNullable, _migProbe_triggerExists
+ *   _migProbe_tableExists, _migProbe_columnExists, _migProbe_indexExists,
+ *   _migProbe_columnIsNullable, _migProbe_triggerExists,
+ *   _migProbe_columnDataType (#1741 P1 — ENUM/SET->VARCHAR widening probes)
  *
  * Required globals (set by setup-database.php at include time):
  *   $hasCredentials  — used by the IANA card's extra_html block
@@ -1928,6 +1929,145 @@ return [
         'probe' => static fn(\mysqli $db) =>
             !_migProbe_tableExists($db, 'tblTunes')
             || !_migProbe_columnExists($db, 'tblSongs', 'TuneId'),
+    ],
+
+    /* ----------------------------------------------------------------------
+     * Epic #1741 P1 — additive/idempotent/dormant schema batch for the
+     * MusicBrainz-shaped catalogue expansion (Musicians/Works/Tunes/Songs).
+     * Four cards, one per entity family, per
+     * .claude/catalogue-expansion-1741-plan.md §2. Nothing reads or writes
+     * any of these new columns/tables yet — zero behaviour change until the
+     * later phases (P2 rename, P3 resolver, P4 pages, P5 editor) consume
+     * them. 'works-identity' and 'tune-enrichment' both FK to tblTunes, so
+     * they are placed AFTER 'tunes-entity' above; each also tolerates being
+     * run before it (skip-and-warn on the FK / whole script respectively)
+     * rather than erroring, so out-of-order clicks are safe.
+     * -------------------------------------------------------------------- */
+    'musician-profile' => [
+        'script' => 'migrate-musician-profile.php',
+        'card' => [
+            'title'  => 'Musician profile schema (#1741 P1)',
+            'body'   => 'Adds <code>tblCreditPeople.Type/Disambiguation/Biography</code>'
+                      . ' (entity-type vocabulary + bio field, backfilled from'
+                      . ' <code>IsGroup</code>/<code>IsSpecialCase</code>/<code>Notes</code> — Notes is'
+                      . ' copied, not cleared, so the live bio on <code>/people/&lt;slug&gt;</code> keeps'
+                      . ' working unchanged), extends <code>tblCreditPersonMembers</code> with a dated'
+                      . ' <code>RelationType</code> (member | portrays) and re-keys its UNIQUE constraint,'
+                      . ' and widens <code>tblCreditPersonAliases.Type</code> from ENUM to VARCHAR.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Musician Profile Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until every column, the
+           re-keyed UNIQUE (new one present AND old one gone), and the
+           widened alias Type all agree the migration fully landed. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblCreditPeople', 'Type')
+            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblCreditPeople', 'Biography')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'RelationType')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFrom')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateFromPrecision')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateTo')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'DateToPrecision')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'Note')
+            || !_migProbe_columnExists($db, 'tblCreditPersonMembers', 'UpdatedAt')
+            || !_migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member_rel')
+            || _migProbe_indexExists($db, 'tblCreditPersonMembers', 'uq_group_member')
+            || _migProbe_columnDataType($db, 'tblCreditPersonAliases', 'Type') !== 'varchar',
+    ],
+
+    'works-identity' => [
+        'script' => 'migrate-works-identity.php',
+        'card' => [
+            'title'  => 'Works identity schema (#1741 P1)',
+            'body'   => 'Adds <code>tblWorks.Ccli</code> (+ <code>uq_ccli</code>),'
+                      . ' <code>Subtitle</code>, <code>Disambiguation</code>,'
+                      . ' <code>TuneName</code>/<code>TuneId</code> (+ <code>idx_TuneId</code> and the'
+                      . ' trailing <code>fk_Works_Tune</code> FK), <code>FirstPublishedYear</code>, and'
+                      . ' <code>CopyrightYears</code>/<code>CopyrightHolder</code> — the Work side of the'
+                      . ' catalogue-identity expansion, mirroring the tblSongs/tblTunes shapes. The FK'
+                      . ' needs <code>tblTunes</code> to exist first (run &ldquo;Tune + meter entity&rdquo;'
+                      . ' above if this card warns about it); every other column applies regardless.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Works Identity Migration',
+        ],
+        /* Multi-object OR-probe. fk_Works_Tune can never exist before
+           tblTunes does, so — correctly — this card stays pending on an
+           install that hasn't run 'tunes-entity' yet, even though every
+           column this script CAN apply already has been; the registry
+           ORDER (this entry after 'tunes-entity') is what resolves that
+           for "Apply all pending". */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'Ccli')
+            || !_migProbe_columnExists($db, 'tblWorks', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblWorks', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblWorks', 'TuneName')
+            || !_migProbe_columnExists($db, 'tblWorks', 'TuneId')
+            || !_migProbe_columnExists($db, 'tblWorks', 'FirstPublishedYear')
+            || !_migProbe_columnExists($db, 'tblWorks', 'CopyrightYears')
+            || !_migProbe_columnExists($db, 'tblWorks', 'CopyrightHolder')
+            || !_migProbe_indexExists($db, 'tblWorks', 'idx_TuneId')
+            || !_migProbe_indexExists($db, 'tblWorks', 'uq_ccli')
+            || !_migProbe_constraintExists($db, 'tblWorks', 'fk_Works_Tune'),
+    ],
+
+    'tune-enrichment' => [
+        'script' => 'migrate-tune-enrichment.php',
+        'card' => [
+            'title'  => 'Tune enrichment schema (#1741 P1)',
+            'body'   => 'Adds <code>tblTunes.Subtitle</code>/<code>Disambiguation</code>, creates'
+                      . ' <code>tblTuneCredits</code> (Role-discriminated composer/arranger/harmoniser/'
+                      . 'source credits, with a reserved dormant <code>CreditPersonId</code> FK) and'
+                      . ' <code>tblTuneExternalLinks</code> (mirrors'
+                      . ' <code>tblWorkExternalLinks</code>), and widens'
+                      . ' <code>tblExternalLinkTypes.Category</code> (ENUM) and'
+                      . ' <code>.AppliesTo</code> (SET) to VARCHAR so a future <code>tune</code> value never'
+                      . ' needs its own ALTER. Requires <code>tblTunes</code> to exist — run &ldquo;Tune +'
+                      . ' meter entity&rdquo; above first if this card warns about it. Additive, idempotent,'
+                      . ' dormant — safe to re-run.',
+            'button' => 'Run Tune Enrichment Migration',
+        ],
+        /* Multi-object OR-probe. The whole script is gated on tblTunes
+           existing (unlike works-identity, every object here either ALTERs
+           tblTunes or FKs to it), so — correctly — this stays pending until
+           'tunes-entity' has run; the registry order resolves that. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblTunes', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblTunes', 'Disambiguation')
+            || !_migProbe_tableExists($db, 'tblTuneCredits')
+            || !_migProbe_tableExists($db, 'tblTuneExternalLinks')
+            || _migProbe_columnDataType($db, 'tblExternalLinkTypes', 'Category') !== 'varchar'
+            || _migProbe_columnDataType($db, 'tblExternalLinkTypes', 'AppliesTo') !== 'varchar',
+    ],
+
+    'song-identity-fields' => [
+        'script' => 'migrate-song-identity-fields.php',
+        'card' => [
+            'title'  => 'Song identity fields (#1741 P1)',
+            'body'   => 'Adds <code>tblSongs.Subtitle</code>, <code>Disambiguation</code>,'
+                      . ' <code>CopyrightYears</code>/<code>CopyrightHolder</code> (legacy'
+                      . ' <code>Copyright</code> kept as-is, not auto-parsed), and'
+                      . ' <code>FirstPublishedYear</code>; canonicalises existing'
+                      . ' <code>Iswc</code> (to <code>T-NNN.NNN.NNN-C</code>) and <code>Isrc</code> (to a'
+                      . ' bare 12-character code) values in place, then adds'
+                      . ' <code>idx_Iswc</code>/<code>idx_Ccli</code> so the future /iswc/ and /ccli/'
+                      . ' resolvers get an indexed exact match. Unparseable identifier values are left'
+                      . ' untouched and logged, never guessed at. Additive, idempotent, dormant — safe'
+                      . ' to re-run.',
+            'button' => 'Run Song Identity Fields Migration',
+        ],
+        /* Multi-object OR-probe. The two indexes are created LAST in the
+           migration (after both backfills), so their presence is the
+           probe's proof the backfills also completed — rule #19 step
+           order. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblSongs', 'Subtitle')
+            || !_migProbe_columnExists($db, 'tblSongs', 'Disambiguation')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightYears')
+            || !_migProbe_columnExists($db, 'tblSongs', 'CopyrightHolder')
+            || !_migProbe_columnExists($db, 'tblSongs', 'FirstPublishedYear')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_Iswc')
+            || !_migProbe_indexExists($db, 'tblSongs', 'idx_Ccli'),
     ],
 
     'usage-events' => [

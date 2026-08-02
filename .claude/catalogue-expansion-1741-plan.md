@@ -179,8 +179,11 @@ pubyear/copyright added to Songs-not-Works.
   `IsGroup`/`IsSpecialCase` demoted to **derived mirrors** written only by `creditPersonTypeApply()`
   (Phase 3) — `IsGroup = Type IN ('group','orchestra')`, `IsSpecialCase = Type IN ('character','other')`.
   Backfill flags→Type (WHERE-guarded). CI guard bans direct flag writes outside the helper (rule #34/#35).
-- **M2 `Biography MEDIUMTEXT`** — MOVE legacy `Notes` content in (Notes→curator-internal); person.php
-  reads Biography via INFORMATION_SCHEMA-gated select with a `notes-as-bio-fallback` branch.
+- **M2 `Biography MEDIUMTEXT`** — **P1 shipped this as a COPY, not a move** (`Biography = Notes` where
+  `Biography IS NULL`; Notes UNTOUCHED): `person.php:549` still reads Notes as the live public bio, so
+  clearing Notes in P1 would blank every bio immediately (a behaviour change P1 forbids). **The
+  read-path switch (person.php→Biography via an INFORMATION_SCHEMA-gated select + a `notes-as-bio-fallback`
+  branch) and the Notes→curator-internal repurposing move to P4a.** Documented in the migration + schema.sql.
 - **M3 "Portrayed by" EXTENDS tblCreditPersonMembers** (+`RelationType` VARCHAR `member|portrays`,
   `DateFrom/DateFromPrecision/DateTo/DateToPrecision`, `Note`, `UpdatedAt`); re-key
   `uq_group_member`→`uq_group_member_rel (GroupPersonId,MemberPersonId,RelationType,DateFrom)` (ADD new

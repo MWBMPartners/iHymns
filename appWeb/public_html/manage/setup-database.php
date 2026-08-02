@@ -929,6 +929,24 @@ function _migProbe_columnIsNullable(\mysqli $db, string $table, string $column):
     return $row && strtoupper((string)$row['IS_NULLABLE']) === 'YES';
 }
 
+/** Returns $table.$column's current INFORMATION_SCHEMA DATA_TYPE, lowercased
+ *  ('varchar', 'enum', 'set', …), or '' when the column doesn't exist. Used by
+ *  the #1741 P1 ENUM/SET->VARCHAR widening probes (musician-profile,
+ *  tune-enrichment) so a card only reports "applied" once the MODIFY has
+ *  actually landed, not merely because the column is present (#1741 P1). */
+function _migProbe_columnDataType(\mysqli $db, string $table, string $column): string
+{
+    $stmt = $db->prepare(
+        'SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS
+          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1'
+    );
+    $stmt->bind_param('ss', $table, $column);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return $row ? strtolower((string)$row['DATA_TYPE']) : '';
+}
+
 /** Returns true when an INFORMATION_SCHEMA TRIGGERS row exists for $trigger. */
 function _migProbe_triggerExists(\mysqli $db, string $trigger): bool
 {

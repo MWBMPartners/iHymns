@@ -262,9 +262,14 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     Number              INT UNSIGNED    NULL DEFAULT NULL COMMENT 'Song number within its songbook; NULL for Misc (unstructured collection)',
     Title               VARCHAR(500)    NOT NULL,
     NormalizedTitle     VARCHAR(500)    NOT NULL DEFAULT '' COMMENT 'App-maintained fold of Title (iconv ASCII//TRANSLIT + mb_strtolower + unicode-property strip via ihymns_normalize_title()) for a fast indexed dedup/match pre-filter; the exact compare still runs in PHP. Plain column (not GENERATED) because MySQL 8 cannot reproduce the PHP normalizer. Backfilled on migrate; kept in sync on create/edit (#1066 Theme D)',
+    Subtitle            VARCHAR(500)    NULL DEFAULT NULL COMMENT 'Optional song subtitle (#1741 P1)',
+    Disambiguation      VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named songs (#1741 P1)',
     SongbookAbbr        VARCHAR(10)     NOT NULL COMMENT 'FK to tblSongbooks.Abbreviation; the songbook NAME is read live via JOIN to tblSongbooks.Name (de-normalised SongbookName dropped in WS-E #1013 ph2)',
     Language            VARCHAR(35)     NOT NULL DEFAULT 'en' COMMENT 'IETF BCP 47 tag (language[-script][-region]); widened from VARCHAR(10) to fit script + region subtags (#681)',
     Copyright           VARCHAR(500)    NOT NULL DEFAULT '',
+    CopyrightYears      VARCHAR(100)    NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1); Copyright stays as the legacy as-printed denorm string and is NOT auto-parsed into this + CopyrightHolder',
+    CopyrightHolder     VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1); see CopyrightYears comment re: the legacy Copyright column',
+    FirstPublishedYear  SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymns predate it. Same column added to tblWorks in the same P1 batch (Song AND Work editors both need it, rule #20)',
     /* Composition / first-performance origin (places sweep #2). The
        VARCHAR mirror keeps reads JOIN-free; the FK lets the future
        country/region report group across the catalogue. */
@@ -310,6 +315,8 @@ CREATE TABLE IF NOT EXISTS tblSongs (
     INDEX idx_OriginCityId      (OriginCityId),
     INDEX idx_Genre             (Genre),
     INDEX idx_Isrc              (Isrc),
+    INDEX idx_Iswc              (Iswc),
+    INDEX idx_Ccli              (Ccli),
     INDEX idx_IsDeleted         (IsDeleted, DeletedAt),
     UNIQUE KEY uniq_PublicId    (PublicId),
     FULLTEXT idx_TitleFt        (Title),
@@ -524,6 +531,13 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
        Founded/Disbanded when group). */
     IsSpecialCase   TINYINT(1)      NOT NULL DEFAULT 0,
     IsGroup         TINYINT(1)      NOT NULL DEFAULT 0,
+    /* Entity-type vocabulary (#1741 P1) — wider than the two flags above.
+       Authoritative once Phase 3 lands (creditPersonTypeApply() flips
+       IsGroup/IsSpecialCase to derived mirrors); until then the flags stay
+       the read/write source of truth and Type only carries the P1
+       backfill from their current values. */
+    Type            VARCHAR(20)     NOT NULL DEFAULT 'person' COMMENT 'person | group | character | orchestra | other (app-validated; VARCHAR not ENUM, rule #20). Authoritative once Phase 3 lands; IsGroup/IsSpecialCase stay the read/write source until then (#1741 P1)',
+    Disambiguation  VARCHAR(255)    NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named musicians, e.g. "(the elder)" (#1741 P1)',
     /* Structured-name parts (#934). Backfilled from Name on first run
        of migrate-credit-people-name-parts.php; new inserts populate
        these alongside the canonical Name string. Group / special-case
@@ -533,6 +547,7 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
     MaidenSurname   VARCHAR(100)    NULL DEFAULT NULL COMMENT 'Optional birth surname, when different from the current Surname (#1501)',
     Suffix          VARCHAR(64)     NULL,
     Notes           TEXT            NULL,
+    Biography       MEDIUMTEXT      NULL DEFAULT NULL COMMENT 'Musician biography (#1741 P1). Backfilled once from legacy Notes (copy, not move — Notes stays the live read path on person.php until Phase 4a switches over); new writes go here once that phase ships',
     BirthPlace      VARCHAR(255)    NULL,
     /* FK into tblPlaces; nullable for legacy / free-text rows where
        no canonical place was picked from the geocoder. BirthPlace
@@ -2513,14 +2528,12 @@ CREATE TABLE IF NOT EXISTS tblExternalLinkTypes (
     Id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Slug          VARCHAR(60)  NOT NULL,
     Name          VARCHAR(120) NOT NULL,
-    Category      ENUM(
-                      'information', 'listen', 'watch', 'read',
-                      'sheet-music', 'purchase', 'authority',
-                      'official', 'social', 'other'
-                  ) NOT NULL DEFAULT 'other',
+    Category      VARCHAR(20)  NOT NULL DEFAULT 'other'
+                  COMMENT 'information | listen | watch | read | sheet-music | purchase | authority | official | social | other (app-validated; widened from ENUM, rule #20, #1741 P1)',
     UrlPattern    VARCHAR(255) NULL,
     IconClass     VARCHAR(60)  NULL,
-    AppliesTo     SET('song','songbook','person','work') NOT NULL DEFAULT 'song,songbook,person',
+    AppliesTo     VARCHAR(255) NOT NULL DEFAULT 'song,songbook,person'
+                  COMMENT 'CSV of applicable entity types: song | songbook | person | work | tune (app-validated via FIND_IN_SET; widened from SET so a new entity type never needs an ALTER, rule #20, #1741 P1)',
     AllowMultiple TINYINT(1)   NOT NULL DEFAULT 1,
     IsActive      TINYINT(1)   NOT NULL DEFAULT 1,
     DisplayOrder  INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2652,9 +2665,8 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
     CreditPersonId  INT UNSIGNED NOT NULL,
     Name            VARCHAR(255) NOT NULL COMMENT 'Display form of the alias',
     SortName        VARCHAR(255) NULL COMMENT 'Surname-first sortable form; NULL = derive from Name',
-    Type            ENUM('legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other')
-                                 NOT NULL DEFAULT 'other'
-                                 COMMENT 'MusicBrainz-style alias classification',
+    Type            VARCHAR(20)  NOT NULL DEFAULT 'other'
+                                 COMMENT 'legal | artist | pseudonym | nickname | maiden | search-hint | misspelling | other (app-validated; widened from ENUM, rule #20, #1741 P1)',
     Locale          VARCHAR(35)  NULL COMMENT 'Optional IETF BCP 47 tag for transliterations (ja, ru-Latn, zh-Hans, …)',
     IsPrimary       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '1 = preferred display form in this Locale',
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2687,10 +2699,27 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
     Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     GroupPersonId  INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — the Group/band/collective person',
     MemberPersonId INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — an individual member of the group',
+    /* Relation generalisation (#1741 P1 M3) — 'member' today, 'portrays'
+       for a person credited as portraying a historical figure in a
+       dramatisation. Dated so the same pair can legitimately repeat under
+       a different relation or date range (e.g. left and later rejoined). */
+    RelationType   VARCHAR(30)  NOT NULL DEFAULT 'member' COMMENT 'member | portrays (app-validated; VARCHAR not ENUM, rule #20) — portrays models e.g. a person credited as portraying a historical figure in a dramatisation (#1741 P1)',
+    DateFrom            DATE         NULL DEFAULT NULL COMMENT 'Start of this relation (member-since / portrayed-from); partial-date precision in DateFromPrecision (#1741 P1)',
+    DateFromPrecision   VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of DateFrom is real: year | month | day (partial historical dates) (#1741 P1)',
+    DateTo              DATE         NULL DEFAULT NULL COMMENT 'End of this relation (member-until / portrayed-until); NULL = ongoing/current (#1741 P1)',
+    DateToPrecision     VARCHAR(5)   NULL DEFAULT NULL COMMENT 'How much of DateTo is real: year | month | day (partial historical dates) (#1741 P1)',
+    Note                VARCHAR(255) NULL DEFAULT NULL COMMENT 'Free-text curator note about this relation (#1741 P1)',
     SortOrder      INT UNSIGNED NOT NULL DEFAULT 0 COMMENT 'Admin-controlled display order within the group; append-order by default',
     CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_group_member (GroupPersonId, MemberPersonId),
+    /* uq_group_member_rel supersedes the original uq_group_member
+       (#1741 P1) — DateFrom sits inside the key and is nullable; MySQL/
+       MariaDB treat every NULL as distinct inside a UNIQUE key (the same
+       pattern as tblSongbookEntries.uq_book_number), so undated relations
+       still collide on (Group,Member,RelationType) alone while multiple
+       DATED relations for the same pair+type coexist. */
+    UNIQUE KEY uq_group_member_rel (GroupPersonId, MemberPersonId, RelationType, DateFrom),
     INDEX      idx_group  (GroupPersonId),
     INDEX      idx_member (MemberPersonId),
 
@@ -2935,6 +2964,18 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     MusicBrainzWorkMBID VARCHAR(50) NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID (composition identity). Lives on the work, NOT the recording-level identity map, so work-dedup has one home (#1066 Theme D / stress-C2)',
     Title         VARCHAR(255) NOT NULL,
     Slug          VARCHAR(80)  NOT NULL,
+    /* Identity + descriptive fields (#1741 P1 §2.2). Ccli is NULL (not '')
+       so absent values coexist under uq_ccli — every NULL is distinct.
+       TuneName/TuneId mirror the tblSongs pair; fk_Works_Tune is a
+       trailing ALTER below (tblTunes is declared later in this file). */
+    Ccli          VARCHAR(50)  NULL DEFAULT NULL COMMENT 'CCLI Work Number (#1741 P1) — the future /ccli/ resolver''s Work-first lookup key. NULL rather than empty string so absent values coexist under uq_ccli (every NULL is distinct)',
+    Subtitle      VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional work subtitle (#1741 P1)',
+    Disambiguation VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named works (#1741 P1)',
+    TuneName      VARCHAR(120) NULL DEFAULT NULL COMMENT 'Traditional tune name mirror (#1741 P1); denorm display string, same pattern as tblSongs.TuneName. Canonical entity is tblTunes via TuneId',
+    TuneId        INT UNSIGNED NULL DEFAULT NULL COMMENT 'FK to tblTunes.Id (#1741 P1); mirrors tblSongs.TuneId. FK added via trailing ALTER — tblTunes is defined later in this file (same reason as fk_Songs_Tune)',
+    FirstPublishedYear SMALLINT UNSIGNED NULL DEFAULT NULL COMMENT 'Year of first publication (#1741 P1); SMALLINT not MySQL YEAR — YEAR starts 1901 and hymn works predate it. Same column added to tblSongs in the same P1 batch (Song AND Work editors both need it, rule #20)',
+    CopyrightYears VARCHAR(100) NOT NULL DEFAULT '' COMMENT 'As-printed copyright year(s), free text e.g. "1978, 1987, 2011" (#1741 P1)',
+    CopyrightHolder VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Copyright holder name (#1741 P1)',
     Notes         TEXT         NULL,
     /* Composition origin — VARCHAR mirror + FK into tblPlaces. */
     OriginCity    VARCHAR(255) NULL,
@@ -2945,9 +2986,11 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_slug   (Slug),
     UNIQUE KEY uq_iswc   (Iswc),
     UNIQUE KEY uq_mbwork (MusicBrainzWorkMBID),
+    UNIQUE KEY uq_ccli   (Ccli),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
+    INDEX      idx_TuneId (TuneId),
 
     CONSTRAINT fk_work_parent
         FOREIGN KEY (ParentWorkId) REFERENCES tblWorks(Id) ON DELETE SET NULL,
@@ -3465,6 +3508,8 @@ CREATE TABLE IF NOT EXISTS tblTunes (
     Id                  INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     Name                VARCHAR(120) NOT NULL COMMENT 'Canonical tune name, e.g. HYFRYDOL',
     Slug                VARCHAR(140) NOT NULL COMMENT 'URL-safe handle',
+    Subtitle            VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional tune subtitle (#1741 P1)',
+    Disambiguation      VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named tunes (#1741 P1)',
     MeterCode           VARCHAR(60)  NULL DEFAULT NULL COMMENT 'Hymn metre, e.g. 87.87 D | CM | LM | 86.86 (VARCHAR not ENUM)',
     MusicBrainzWorkMBID VARCHAR(50)  NULL DEFAULT NULL COMMENT 'MusicBrainz Work MBID — a tune is a composition (mirrors tblWorks)',
     HymnaryTuneId       VARCHAR(64)  NULL DEFAULT NULL COMMENT 'Hymnary.org tune identifier for enrichment cross-link',
@@ -3497,10 +3542,73 @@ CREATE TABLE IF NOT EXISTS tblTuneAliases (
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ----------------------------------------------------------------------------
+-- tblTuneCredits (#1741 P1) — composer/arranger/harmoniser/source credits.
+-- ONE Role-discriminated table, NOT six per-role clones like the legacy
+-- tblSongWriters/tblSongComposers/… family. Name is a plain name-string
+-- (matching every other credit table in this schema); CreditPersonId is a
+-- RESERVED, nullable, dormant FK to tblCreditPeople so the "credits:
+-- name-strings vs FK-ify" open question costs zero ALTER either way.
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblTuneCredits (
+    Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    TuneId          INT UNSIGNED NOT NULL,
+    Role            VARCHAR(20)  NOT NULL COMMENT 'composer | arranger | harmoniser | source (app-validated; VARCHAR not ENUM, rule #20)',
+    Name            VARCHAR(255) NOT NULL COMMENT 'Credited name-string, matching the tblSong*/tblWork credit-table pattern (no FK to tblCreditPeople by default)',
+    CreditPersonId  INT UNSIGNED NULL DEFAULT NULL COMMENT 'Reserved FK to tblCreditPeople.Id (#1741 P1) — nullable/dormant so the credits name-string-vs-FK decision costs zero ALTER either way; unused until that decision lands',
+    SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
+    CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_tune           (TuneId),
+    INDEX idx_role           (Role),
+    INDEX idx_CreditPersonId (CreditPersonId),
+
+    CONSTRAINT fk_TuneCredits_Tune
+        FOREIGN KEY (TuneId)         REFERENCES tblTunes(Id)       ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_TuneCredits_Person
+        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE SET NULL ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Tune composer/arranger/harmoniser/source credits (#1741 P1), Role-discriminated per plan §2.3.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblTuneExternalLinks (#1741 P1) — per-tune external-link rows. Mirrors
+-- tblWorkExternalLinks exactly (rule #15: a new external-links entity gets
+-- its own tbl<Entity>ExternalLinks table, never a generic FK column).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblTuneExternalLinks (
+    Id          INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    TuneId      INT UNSIGNED NOT NULL,
+    LinkTypeId  INT UNSIGNED NOT NULL,
+    Url         VARCHAR(2048) NOT NULL,
+    Note        VARCHAR(255) NULL,
+    SortOrder   INT UNSIGNED NOT NULL DEFAULT 0,
+    Verified    TINYINT(1)   NOT NULL DEFAULT 0,
+    CreatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    INDEX idx_tune (TuneId),
+    INDEX idx_type (LinkTypeId),
+
+    CONSTRAINT fk_link_tune
+        FOREIGN KEY (TuneId)     REFERENCES tblTunes(Id)             ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_tune
+        FOREIGN KEY (LinkTypeId) REFERENCES tblExternalLinkTypes(Id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Back-reference FK from tblSongs.TuneId -> tblTunes (added here, after tblTunes
 -- exists; the column + index are declared inline in the tblSongs block above).
 ALTER TABLE tblSongs
     ADD CONSTRAINT fk_Songs_Tune
+        FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- Back-reference FK from tblWorks.TuneId -> tblTunes (#1741 P1; added here for
+-- the same reason as fk_Songs_Tune immediately above: tblWorks is declared
+-- before tblTunes in this file, so the FK cannot be inline. The column +
+-- index are declared inline in the tblWorks block above).
+ALTER TABLE tblWorks
+    ADD CONSTRAINT fk_Works_Tune
         FOREIGN KEY (TuneId) REFERENCES tblTunes(Id) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- Back-reference FK from tblSongs.DeletedBy -> tblUsers (added here rather than
