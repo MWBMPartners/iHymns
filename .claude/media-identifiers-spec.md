@@ -73,7 +73,35 @@ beatgrid, MIK, stems — **correctly NOT in iHymns**.
   schema cost; GRid/LC/DPID wait for release/label features). "All relevant IDs" per owner = implement every ID
   with a home + reserve the rest; the Luminate list, when available, slots in as slug additions, no schema impact.
 
-## 5. Buildable next steps (once Q1/Q5 confirmed)
+## 4b. AUTHORITATIVE Luminate taxonomy (owner supplied the article 2026-08-02 — supersedes "STD/guessed")
+Luminate's entity model: **Artist · Song · Recording · Musical Work · Release Group · Release · Product**
+(Song→Recording/ISRC; Release Group→Release→Product/ICPN; Artist→ISNI; Musical Work→ISWC/BOWI/IPI).
+- **Industry IDs** (each dashboard lists ≥1): **ISRC** (recording), **ICPN** (product barcode umbrella — UPC/EAN),
+  **ISNI** (artist/name), **ISWC** (work), **BOWI** — *Best Open Work Identifier*, Luminate's open work-ID
+  alternative to ISWC (**NEW to this spec** — add to iHymns work vocabulary + `tblWorks`), **IPI** (interested
+  party), **GRID/GRid** (release bundle — now confirmed a real industry ID, not STD-only).
+- **Provider (DSP) IDs:** Apple, Spotify, Sirius XM, YouTube, Amazon, Deezer, SoundCloud, Anghami (MENA),
+  Melon (KR), FLO (KR), Beatport, Tencent, Epic.
+- **Database IDs:** Gracenote, TMS, Discogs, MusicBrainz/MBID, Wikidata, IMDb, Mediabase, SoundExchange,
+  AllMusic, RateYourMusic.
+- **Legacy IDs:** MC_RECORDING, MC_RECORDING_GROUP, MC_RELEASE, MC_RELEASE_GROUP, MC_SONG, MC_PRODUCT,
+  Nielsen, BDS, SoundScan. Plus **Luminate's own per-entity ID** (in the dashboard URL).
+This is the load-bearing confirmation for **Q5=yes**: ~13 DSP + ~10 database + legacy IDs attach at
+recording/song/artist grain — a column-per-provider table cannot absorb that (rule #28); a key/value store can.
+
+## 4c. DECISIONS ADOPTED (owner delegated "all relevant IDs" + supplied the list; recommendations taken, reversible)
+- **A (release entity) = (c)** recording-identity rows carry release-context (ICPN/GRid/UPC/catalog#/MC_PRODUCT
+  as fields/rows on the recording-map grain). Rationale: iHymns is a hymn-lyrics catalogue, not a commercial
+  release DB — product-grain IDs are marginally relevant here; MeedyaSuite-core (which HAS `Album`) models them
+  first-class for the Meedya file-management/conversion apps where they ARE central. Reversible → (b) `tblReleases`
+  if a release-grain feature ever lands.
+- **B (recording-ID storage) = yes** — key/value successor to `tblSongIdentityMap`; the 4 existing columns become
+  grandfathered reads. One migration absorbs all DSP+database IDs.
+- **Relevance judgement per repo** (owner's "relevant"): iHymns implements work/party/recording IDs fully +
+  reserves product/release slugs; the Meedya repos (media files) implement release/product fully via core's `Album`.
+- Q2/Q3/Q4 (shared artifact, `#[non_exhaustive]`, MM key convergence) applied in the Meedya phase.
+
+## 5. Buildable next steps (Q1=c, Q5=yes ADOPTED)
 - **iHymns D5 (folds into #1741 P3):** party IDs = `CREDIT_IDENTIFIER_TYPES` lines (+IPN +any Luminate); work IDs
   = `tblSongRoyaltyIds` authorities (+HFA); recording IDs = the Q5 key/value shape + the P3 `/isrc/` resolver;
   release IDs per Q1. The shared identifier normaliser/resolver (plan §3.B) consumes this vocabulary.
