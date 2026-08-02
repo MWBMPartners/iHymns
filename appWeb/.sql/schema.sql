@@ -83,9 +83,10 @@
 -- 3. NEW GROWABLE VOCABULARY IS VARCHAR, NEVER ENUM (rule #20) — adding an
 --    ENUM value is an ALTER, i.e. the second migration the one-pass batches
 --    exist to avoid. The ENUMs still present in this file (tblLyrics.Status,
---    tblActivityLog.Result, tblCatalogues.Visibility, tblExternalLinkTypes
---    .Category, tblCreditPersonAliases.Type, …) predate the rule and are
---    grandfathered. Do not read them as precedent.
+--    tblActivityLog.Result, tblCatalogues.Visibility, …) predate the rule and
+--    are grandfathered. Do not read them as precedent. (tblExternalLinkTypes
+--    .Category and tblMusicianAliases.Type were both widened to VARCHAR by
+--    #1741 P1 — no longer examples of the exception.)
 -- ============================================================================
 
 
@@ -96,8 +97,9 @@
 -- itself: the geographic registry other tables FK into, the songbooks, the
 -- central tblSongs, the SIX free-text credit-role tables (Writers, Composers,
 -- Arrangers, Adaptors, Translators, Artists — an earlier draft said five), and
--- the tblCreditPeople registry that sits ALONGSIDE those six (not above them —
--- the role tables still store free-text names; see tblCreditPeople).
+-- the tblMusicians registry (renamed from tblCreditPeople, #1741 P2 — see the
+-- back-compat VIEWs family below) that sits ALONGSIDE those six (not above
+-- them — the role tables still store free-text names; see tblMusicians).
 --
 -- tblSongs is the hub of the whole schema: 41 foreign keys across this file
 -- point at tblSongs.SongId — the human-readable string id, not the surrogate
@@ -237,7 +239,7 @@ CREATE TABLE IF NOT EXISTS tblSongbooks (
 -- (no FK), but every non-empty value the songbook editor saves is also
 -- INSERT IGNOREd here so the typeahead can prevent duplicate-creation drift
 -- (e.g. "Seventh-day Adventist Church" vs "Seventh-Day Adventist Church"
--- vs "SDA Church"). Same shape as tblCreditPeople below.
+-- vs "SDA Church"). Same shape as tblMusicians below.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbookAffiliations (
     Id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
@@ -504,7 +506,10 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPeople (#545)
+-- tblMusicians (#545; renamed from tblCreditPeople by #1741 P2 — see the
+-- back-compat VIEWs family after the tblMusicianRelations block below, which
+-- exposes this table's data under every pre-rename name/column for app code
+-- that hasn't migrated to the new names yet, #1741 P2-B).
 -- Registry of people credited on songs. Holds the canonical Name plus
 -- optional biographical metadata. The five song-credit tables above
 -- (tblSongWriters / tblSongComposers / tblSongArrangers / tblSongAdaptors
@@ -514,7 +519,7 @@ CREATE TABLE IF NOT EXISTS tblSongArtists (
 -- registry row) inside a single transaction, leaving the existing schema
 -- intact.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPeople (
+CREATE TABLE IF NOT EXISTS tblMusicians (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
     Name            VARCHAR(255)    NOT NULL,
     /* URL-safe slug (#588) — backfilled from Name with collision-safe
@@ -571,17 +576,17 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
     INDEX idx_BirthPlaceId (BirthPlaceId),
     INDEX idx_DeathPlaceId (DeathPlaceId),
 
-    CONSTRAINT fk_CreditPeople_BirthPlace
+    CONSTRAINT fk_Musicians_BirthPlace
         FOREIGN KEY (BirthPlaceId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT fk_CreditPeople_DeathPlace
+    CONSTRAINT fk_Musicians_DeathPlace
         FOREIGN KEY (DeathPlaceId) REFERENCES tblPlaces(Id)
         ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonLinks (#545)
+-- tblMusicianLinks (#545; renamed from tblCreditPersonLinks by #1741 P2)
 -- Multiple external reference links per person (Wikipedia, official
 -- website, MusicBrainz, Discogs, IMSLP, Hymnary, other). LinkType is a
 -- short string key the UI maps to a friendly label and icon; storing as
@@ -589,9 +594,9 @@ CREATE TABLE IF NOT EXISTS tblCreditPeople (
 -- preserves admin-controlled display order. ON DELETE CASCADE removes
 -- the links automatically when the parent registry row is deleted.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
+CREATE TABLE IF NOT EXISTS tblMusicianLinks (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED    NOT NULL,
+    MusicianId      INT UNSIGNED    NOT NULL,
     LinkType        VARCHAR(64)     NOT NULL,
     Url             VARCHAR(2048)   NOT NULL,
     Label           VARCHAR(255)    NULL,
@@ -600,28 +605,28 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonLinks (
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_CreditPersonId (CreditPersonId),
+    INDEX idx_MusicianId (MusicianId),
 
-    CONSTRAINT fk_CreditPersonLinks_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianLinks_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonIPI (#545)
+-- tblMusicianIPI (#545; renamed from tblCreditPersonIPI by #1741 P2)
 -- IPI (Interested Parties Information) Name Numbers per person. A single
 -- individual can be registered under more than one IPI Name Number when
 -- they use multiple performing names — hence one-to-many on the registry
--- row. UNIQUE on (CreditPersonId, IPINumber) prevents duplicate IPIs per
+-- row. UNIQUE on (MusicianId, IPINumber) prevents duplicate IPIs per
 -- person while still allowing the same number to legitimately attach to
 -- two different registry rows if the data demands it. NameUsed is the
 -- spelling that IPI is registered under (often differs from the canonical
 -- registry Name). ON DELETE CASCADE matches the links table.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
+CREATE TABLE IF NOT EXISTS tblMusicianIPI (
     Id              INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED    NOT NULL,
+    MusicianId      INT UNSIGNED    NOT NULL,
     IPINumber       VARCHAR(32)     NOT NULL,
     NameUsed        VARCHAR(255)    NULL,
     Notes           VARCHAR(255)    NULL,
@@ -629,26 +634,26 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIPI (
     UpdatedAt       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP
                                     ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_PersonIPI (CreditPersonId, IPINumber),
+    UNIQUE KEY uk_MusicianIPI (MusicianId, IPINumber),
     INDEX idx_IPINumber (IPINumber),
 
-    CONSTRAINT fk_CreditPersonIPI_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianIPI_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonIdentifiers
+-- tblMusicianIdentifiers (renamed from tblCreditPersonIdentifiers by #1741 P2)
 -- Unified MusicBrainz-style identifier table: holds IPI Name Numbers AND
 -- ISNI (International Standard Name Identifier) rows side by side, with
--- IdentifierType discriminating. Replaces the per-kind tblCreditPersonIPI
+-- IdentifierType discriminating. Replaces the per-kind tblMusicianIPI
 -- table going forward; the legacy table stays as a one-release rollback
 -- snapshot and is dropped in a follow-up migration.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
+CREATE TABLE IF NOT EXISTS tblMusicianIdentifiers (
     Id              INT UNSIGNED       AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED       NOT NULL,
+    MusicianId      INT UNSIGNED       NOT NULL,
     IdentifierType  VARCHAR(20)        NOT NULL COMMENT 'ipi | isni | cae | ipi-base | <pro-id> (app-validated; widened from ENUM #1090 P6 so new industry identifier types need no ALTER)',
     IdentifierValue VARCHAR(64)        NOT NULL,
     NameUsed        VARCHAR(255)       NULL,
@@ -657,11 +662,11 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonIdentifiers (
     UpdatedAt       DATETIME           NOT NULL DEFAULT CURRENT_TIMESTAMP
                                        ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_PersonIdValue (CreditPersonId, IdentifierType, IdentifierValue),
+    UNIQUE KEY uk_MusicianIdValue (MusicianId, IdentifierType, IdentifierValue),
     INDEX idx_TypeValue (IdentifierType, IdentifierValue),
 
-    CONSTRAINT fk_CreditPersonId_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)
+    CONSTRAINT fk_MusicianIdentifiers_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id)
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -2504,7 +2509,7 @@ CREATE TABLE IF NOT EXISTS tblCatalogueSongs (
 -- FAMILY: EXTERNAL LINKS (#833 / #845)
 --
 -- One provider registry plus ONE LINK TABLE PER ENTITY —
--- tblSong/tblSongbook/tblCreditPerson/tblWork ExternalLinks — rather than a
+-- tblSong/tblSongbook/tblMusician/tblWork ExternalLinks — rather than a
 -- single polymorphic table with an EntityType column. That looks like
 -- duplication and is the deliberate choice (rule #15): each link table gets a
 -- REAL foreign key to its own parent, so links cascade away with the thing
@@ -2532,8 +2537,8 @@ CREATE TABLE IF NOT EXISTS tblExternalLinkTypes (
                   COMMENT 'information | listen | watch | read | sheet-music | purchase | authority | official | social | other (app-validated; widened from ENUM, rule #20, #1741 P1)',
     UrlPattern    VARCHAR(255) NULL,
     IconClass     VARCHAR(60)  NULL,
-    AppliesTo     VARCHAR(255) NOT NULL DEFAULT 'song,songbook,person'
-                  COMMENT 'CSV of applicable entity types: song | songbook | person | work | tune (app-validated via FIND_IN_SET; widened from SET so a new entity type never needs an ALTER, rule #20, #1741 P1)',
+    AppliesTo     VARCHAR(255) NOT NULL DEFAULT 'song,songbook,person,musician'
+                  COMMENT 'CSV of applicable entity types: song | songbook | musician | work | tune (legacy alias "person" also recognised for pre-#1741-P2-B app-code back-compat — see migrate-musicians-rename.php; retired once the app-code rename lands) (app-validated via FIND_IN_SET; widened from SET so a new entity type never needs an ALTER, rule #20, #1741 P1/P2)',
     AllowMultiple TINYINT(1)   NOT NULL DEFAULT 1,
     IsActive      TINYINT(1)   NOT NULL DEFAULT 1,
     DisplayOrder  INT UNSIGNED NOT NULL DEFAULT 0,
@@ -2619,12 +2624,13 @@ CREATE TABLE IF NOT EXISTS tblSongExternalLinks (
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonExternalLinks (#833) — per-credit-person external links.
--- Replaces the legacy free-text tblCreditPersonLinks (kept as read-fallback).
+-- tblMusicianExternalLinks (#833; renamed from tblCreditPersonExternalLinks
+-- by #1741 P2) — per-musician external links. Replaces the legacy free-text
+-- tblMusicianLinks (kept as read-fallback).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
+CREATE TABLE IF NOT EXISTS tblMusicianExternalLinks (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     LinkTypeId      INT UNSIGNED NOT NULL,
     Url             VARCHAR(2048) NOT NULL,
     Note            VARCHAR(255) NULL,
@@ -2633,36 +2639,37 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonExternalLinks (
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_person (CreditPersonId),
-    INDEX idx_type   (LinkTypeId),
+    INDEX idx_musician (MusicianId),
+    INDEX idx_type     (LinkTypeId),
 
-    CONSTRAINT fk_link_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id)        ON DELETE CASCADE,
-    CONSTRAINT fk_link_type_person
+    CONSTRAINT fk_link_musician
+        FOREIGN KEY (MusicianId)     REFERENCES tblMusicians(Id)           ON DELETE CASCADE,
+    CONSTRAINT fk_link_type_musician
         FOREIGN KEY (LinkTypeId)     REFERENCES tblExternalLinkTypes(Id)   ON DELETE RESTRICT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ============================================================================
--- FAMILY: CREDIT-PEOPLE SATELLITES
--- Everything that hangs off tblCreditPeople and arrived after it: alternative
+-- FAMILY: MUSICIAN SATELLITES (renamed from "CREDIT-PEOPLE SATELLITES" by
+-- #1741 P2)
+-- Everything that hangs off tblMusicians and arrived after it: alternative
 -- names, and group -> member composition. The identifier tables
--- (tblCreditPersonIPI / tblCreditPersonIdentifiers) and the person link
+-- (tblMusicianIPI / tblMusicianIdentifiers) and the musician link
 -- tables live earlier in the file, with the registry itself.
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonAliases — AKA / alternative names for searchability.
--- MusicBrainz-style alias model: one row per (person, name) with a Type
--- classification, optional Locale tag for transliterations, and an
--- IsPrimary flag for the preferred display form within a locale.
--- Searched alongside Name in site search + admin filter + editor
--- typeahead. /people/<slug> renders aliases under the bio header and
--- emits JSON-LD alternateName.
+-- tblMusicianAliases (renamed from tblCreditPersonAliases by #1741 P2) — AKA /
+-- alternative names for searchability. MusicBrainz-style alias model: one
+-- row per (musician, name) with a Type classification, optional Locale tag
+-- for transliterations, and an IsPrimary flag for the preferred display
+-- form within a locale. Searched alongside Name in site search + admin
+-- filter + editor typeahead. /people/<slug> renders aliases under the bio
+-- header and emits JSON-LD alternateName.
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
+CREATE TABLE IF NOT EXISTS tblMusicianAliases (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     Name            VARCHAR(255) NOT NULL COMMENT 'Display form of the alias',
     SortName        VARCHAR(255) NULL COMMENT 'Surname-first sortable form; NULL = derive from Name',
     Type            VARCHAR(20)  NOT NULL DEFAULT 'other'
@@ -2674,31 +2681,33 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonAliases (
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_person_name (CreditPersonId, Name),
-    INDEX idx_person (CreditPersonId),
-    INDEX idx_name   (Name),
-    INDEX idx_type   (Type),
+    UNIQUE KEY uq_musician_name (MusicianId, Name),
+    INDEX idx_musician (MusicianId),
+    INDEX idx_name     (Name),
+    INDEX idx_type     (Type),
 
-    CONSTRAINT fk_alias_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+    CONSTRAINT fk_alias_musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
 -- ----------------------------------------------------------------------------
--- tblCreditPersonMembers (#1502) — links individual MEMBER people to a
--- 'Group / band / collective' person (tblCreditPeople.IsGroup, #585).
--- Thin join table, one row per (GroupPersonId, MemberPersonId) pair —
--- both FKs point at tblCreditPeople(Id) ON DELETE CASCADE so deleting
--- either side cleans up the link automatically. UNIQUE guards duplicate
--- membership; "a group can't list itself as a member" is an application-
--- layer check (addCreditPersonGroupMember() in credit_people_helpers.php),
--- not a schema CHECK constraint. SortOrder is append-order only for v1
--- (no drag-reorder UI yet).
+-- tblMusicianRelations (#1502; renamed from tblCreditPersonMembers by
+-- #1741 P2 — the P1 M3 relation generalisation below made "Members" too
+-- narrow a name) — links a SUBJECT musician to an OBJECT musician via a
+-- typed, dated relation ('member' today, 'portrays' for a person credited
+-- as portraying a historical figure in a dramatisation). Originally a thin
+-- group/member join table; both FKs point at tblMusicians(Id) ON DELETE
+-- CASCADE so deleting either side cleans up the link automatically. UNIQUE
+-- guards duplicate membership; "a group can't list itself as a member" is
+-- an application-layer check (addCreditPersonGroupMember() in
+-- credit_people_helpers.php), not a schema CHECK constraint. SortOrder is
+-- append-order only for v1 (no drag-reorder UI yet).
 -- ----------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
-    Id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    GroupPersonId  INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — the Group/band/collective person',
-    MemberPersonId INT UNSIGNED NOT NULL COMMENT 'FK to tblCreditPeople.Id — an individual member of the group',
+CREATE TABLE IF NOT EXISTS tblMusicianRelations (
+    Id                INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    SubjectMusicianId INT UNSIGNED NOT NULL COMMENT 'FK to tblMusicians.Id — the Group/band/collective musician (subject side of the relation) (#1741 P2)',
+    ObjectMusicianId  INT UNSIGNED NOT NULL COMMENT 'FK to tblMusicians.Id — an individual member musician (object side of the relation) (#1741 P2)',
     /* Relation generalisation (#1741 P1 M3) — 'member' today, 'portrays'
        for a person credited as portraying a historical figure in a
        dramatisation. Dated so the same pair can legitimately repeat under
@@ -2713,22 +2722,84 @@ CREATE TABLE IF NOT EXISTS tblCreditPersonMembers (
     CreatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    /* uq_group_member_rel supersedes the original uq_group_member
-       (#1741 P1) — DateFrom sits inside the key and is nullable; MySQL/
-       MariaDB treat every NULL as distinct inside a UNIQUE key (the same
-       pattern as tblSongbookEntries.uq_book_number), so undated relations
-       still collide on (Group,Member,RelationType) alone while multiple
-       DATED relations for the same pair+type coexist. */
-    UNIQUE KEY uq_group_member_rel (GroupPersonId, MemberPersonId, RelationType, DateFrom),
-    INDEX      idx_group  (GroupPersonId),
-    INDEX      idx_member (MemberPersonId),
+    /* uq_subject_object_rel (renamed from uq_group_member_rel by #1741 P2,
+       which itself superseded the original uq_group_member in #1741 P1) —
+       DateFrom sits inside the key and is nullable; MySQL/MariaDB treat
+       every NULL as distinct inside a UNIQUE key (the same pattern as
+       tblSongbookEntries.uq_book_number), so undated relations still
+       collide on (Subject,Object,RelationType) alone while multiple DATED
+       relations for the same pair+type coexist. */
+    UNIQUE KEY uq_subject_object_rel (SubjectMusicianId, ObjectMusicianId, RelationType, DateFrom),
+    INDEX      idx_subject (SubjectMusicianId),
+    INDEX      idx_object  (ObjectMusicianId),
 
-    CONSTRAINT fk_creditpersonmembers_group
-        FOREIGN KEY (GroupPersonId)  REFERENCES tblCreditPeople(Id) ON DELETE CASCADE,
-    CONSTRAINT fk_creditpersonmembers_member
-        FOREIGN KEY (MemberPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+    CONSTRAINT fk_musicianrelations_subject
+        FOREIGN KEY (SubjectMusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_musicianrelations_object
+        FOREIGN KEY (ObjectMusicianId)  REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  COMMENT='Group/band/collective -> individual member people (#1502).';
+  COMMENT='Group/band/collective -> individual member musicians (#1502).';
+
+
+-- ============================================================================
+-- FAMILY: MUSICIANS BACK-COMPAT VIEWS (#1741 P2)
+--
+-- One UPDATABLE view per pre-rename table name, over the tblMusician* tables
+-- above, with every renamed column aliased back to its pre-rename name via
+-- `NewCol AS OldCol`. This is the shield that lets every app-code call site
+-- that still says tblCreditPeople/tblCreditPerson* (the whole codebase except
+-- this file's migration counterpart and includes/schema_audit.php) keep
+-- reading AND WRITING through the old names unchanged — the app-code rename
+-- itself is #1741 P2-B, a deliberately separate, later step.
+--
+-- Every column list below is explicit (never `SELECT *`) and every column is
+-- a direct, unmodified reference to its underlying column (a straight column
+-- reference, optionally aliased) — no expression, aggregate, JOIN, DISTINCT
+-- or GROUP BY — so MySQL/MariaDB's view-updatability rules are satisfied by
+-- construction and INSERT/UPDATE/DELETE against any of these seven names
+-- keep working exactly as they did against the base table.
+--
+-- These views are PERMANENT until a dedicated drop card (P2b, tracked
+-- separately, gated 'manual'+confirm=1 like the #1235 LinesJson retirement)
+-- runs once every docroot is confirmed running P2-B's renamed code. Do not
+-- hand-drop them; do not reintroduce a real table under any of these seven
+-- names.
+-- ============================================================================
+
+CREATE OR REPLACE VIEW tblCreditPeople AS
+    SELECT Id, Name, Slug, MusicBrainzArtistMBID, IsSpecialCase, IsGroup, Type, Disambiguation,
+           FirstNames, Surname, MaidenSurname, Suffix, Notes, Biography, BirthPlace, BirthPlaceId,
+           BirthDate, BirthDatePrecision, DeathPlace, DeathPlaceId, DeathDate, DeathDatePrecision,
+           CreatedAt, UpdatedAt
+      FROM tblMusicians;
+
+CREATE OR REPLACE VIEW tblCreditPersonLinks AS
+    SELECT Id, MusicianId AS CreditPersonId, LinkType, Url, Label, SortOrder, CreatedAt, UpdatedAt
+      FROM tblMusicianLinks;
+
+CREATE OR REPLACE VIEW tblCreditPersonIPI AS
+    SELECT Id, MusicianId AS CreditPersonId, IPINumber, NameUsed, Notes, CreatedAt, UpdatedAt
+      FROM tblMusicianIPI;
+
+CREATE OR REPLACE VIEW tblCreditPersonIdentifiers AS
+    SELECT Id, MusicianId AS CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes,
+           CreatedAt, UpdatedAt
+      FROM tblMusicianIdentifiers;
+
+CREATE OR REPLACE VIEW tblCreditPersonExternalLinks AS
+    SELECT Id, MusicianId AS CreditPersonId, LinkTypeId, Url, Note, SortOrder, Verified,
+           CreatedAt, UpdatedAt
+      FROM tblMusicianExternalLinks;
+
+CREATE OR REPLACE VIEW tblCreditPersonAliases AS
+    SELECT Id, MusicianId AS CreditPersonId, Name, SortName, Type, Locale, IsPrimary, SortOrder,
+           Note, CreatedAt, UpdatedAt
+      FROM tblMusicianAliases;
+
+CREATE OR REPLACE VIEW tblCreditPersonMembers AS
+    SELECT Id, SubjectMusicianId AS GroupPersonId, ObjectMusicianId AS MemberPersonId, RelationType,
+           DateFrom, DateFromPrecision, DateTo, DateToPrecision, Note, SortOrder, CreatedAt, UpdatedAt
+      FROM tblMusicianRelations;
 
 
 -- ============================================================================
@@ -2875,23 +2946,24 @@ CREATE TABLE IF NOT EXISTS tblSongbookSeriesMembership (
 -- ----------------------------------------------------------------------------
 -- tblSongbookCompilers (#831) — many-to-many credit at the songbook level
 -- (compilers / editors of a hymnal, e.g. Mission Praise → Horrobin & Leavers).
+-- MusicianId (renamed from CreditPersonId by #1741 P2) FKs to tblMusicians.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongbookCompilers (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     SongbookId      INT UNSIGNED NOT NULL,
-    CreditPersonId  INT UNSIGNED NOT NULL,
+    MusicianId      INT UNSIGNED NOT NULL,
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
     Note            VARCHAR(255) NULL,
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uq_book_person (SongbookId, CreditPersonId),
-    INDEX idx_book   (SongbookId),
-    INDEX idx_person (CreditPersonId),
+    UNIQUE KEY uq_book_musician (SongbookId, MusicianId),
+    INDEX idx_book     (SongbookId),
+    INDEX idx_musician (MusicianId),
 
     CONSTRAINT fk_compiler_book
-        FOREIGN KEY (SongbookId)     REFERENCES tblSongbooks(Id)    ON DELETE CASCADE,
-    CONSTRAINT fk_compiler_person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE CASCADE
+        FOREIGN KEY (SongbookId) REFERENCES tblSongbooks(Id) ON DELETE CASCADE,
+    CONSTRAINT fk_compiler_musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -3526,7 +3598,7 @@ CREATE TABLE IF NOT EXISTS tblTunes (
 
 -- ----------------------------------------------------------------------------
 -- tblTuneAliases (#1090 P4) — alternate names a tune is known by (modelled on
--- tblCreditPersonAliases; indexed rows, not JSON).
+-- tblMusicianAliases; indexed rows, not JSON).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblTuneAliases (
     Id        INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -3546,28 +3618,29 @@ CREATE TABLE IF NOT EXISTS tblTuneAliases (
 -- tblTuneCredits (#1741 P1) — composer/arranger/harmoniser/source credits.
 -- ONE Role-discriminated table, NOT six per-role clones like the legacy
 -- tblSongWriters/tblSongComposers/… family. Name is a plain name-string
--- (matching every other credit table in this schema); CreditPersonId is a
--- RESERVED, nullable, dormant FK to tblCreditPeople so the "credits:
--- name-strings vs FK-ify" open question costs zero ALTER either way.
+-- (matching every other credit table in this schema); MusicianId (renamed
+-- from CreditPersonId by #1741 P2) is a RESERVED, nullable, dormant FK to
+-- tblMusicians so the "credits: name-strings vs FK-ify" open question
+-- costs zero ALTER either way.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblTuneCredits (
     Id              INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     TuneId          INT UNSIGNED NOT NULL,
     Role            VARCHAR(20)  NOT NULL COMMENT 'composer | arranger | harmoniser | source (app-validated; VARCHAR not ENUM, rule #20)',
-    Name            VARCHAR(255) NOT NULL COMMENT 'Credited name-string, matching the tblSong*/tblWork credit-table pattern (no FK to tblCreditPeople by default)',
-    CreditPersonId  INT UNSIGNED NULL DEFAULT NULL COMMENT 'Reserved FK to tblCreditPeople.Id (#1741 P1) — nullable/dormant so the credits name-string-vs-FK decision costs zero ALTER either way; unused until that decision lands',
+    Name            VARCHAR(255) NOT NULL COMMENT 'Credited name-string, matching the tblSong*/tblWork credit-table pattern (no FK to tblMusicians by default)',
+    MusicianId      INT UNSIGNED NULL DEFAULT NULL COMMENT 'Reserved FK to tblMusicians.Id (#1741 P1/P2) — nullable/dormant so the credits name-string-vs-FK decision costs zero ALTER either way; unused until that decision lands',
     SortOrder       INT UNSIGNED NOT NULL DEFAULT 0,
     CreatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UpdatedAt       TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_tune           (TuneId),
-    INDEX idx_role           (Role),
-    INDEX idx_CreditPersonId (CreditPersonId),
+    INDEX idx_tune         (TuneId),
+    INDEX idx_role         (Role),
+    INDEX idx_MusicianId   (MusicianId),
 
     CONSTRAINT fk_TuneCredits_Tune
-        FOREIGN KEY (TuneId)         REFERENCES tblTunes(Id)       ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT fk_TuneCredits_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (TuneId)     REFERENCES tblTunes(Id)     ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT fk_TuneCredits_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Tune composer/arranger/harmoniser/source credits (#1741 P1), Role-discriminated per plan §2.3.';
 
@@ -3952,7 +4025,7 @@ CREATE TABLE IF NOT EXISTS tblApnsTokens (
 -- VOCAL / SINGING PARTS (#1137) — first-class queryable projection of the
 -- lossless TTML ttm:agent/ttm:role/background-vocal signal trapped in
 -- tblLyricLines.MetaJson. Registry + MANY-to-MANY line/word assignment (true
--- duet/unison). Named singer reuses tblCreditPeople (no new tblArtists). Gender
+-- duet/unison). Named singer reuses tblMusicians (no new tblArtists). Gender
 -- is an orthogonal axis. Additive + dormant (MetaJson stays the source of truth).
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblVocalParts (
@@ -3960,7 +4033,7 @@ CREATE TABLE IF NOT EXISTS tblVocalParts (
     LyricsId       INT UNSIGNED    NOT NULL COMMENT 'FK to tblLyrics.Id — parts are per lyrics version',
     PartKind       VARCHAR(30)     NOT NULL DEFAULT 'lead' COMMENT 'lead|main|backing|soloist|male|female|duet|group|unison|choir|congregation|cantor|descant|narrator|spoken|named-singer (app-validated vs a central map -> badge). VARCHAR not ENUM',
     Label          VARCHAR(120)    NULL DEFAULT NULL COMMENT 'Editor display override (Soprano, Worship Leader, …)',
-    CreditPersonId INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblCreditPeople.Id — typed named-singer link (reuses the person registry, NOT a new tblArtists)',
+    MusicianId     INT UNSIGNED    NULL DEFAULT NULL COMMENT 'FK to tblMusicians.Id — typed named-singer link (reuses the musician registry, NOT a new tblArtists)',
     SingerName     VARCHAR(255)    NULL DEFAULT NULL COMMENT 'Free-text named singer when no registry row',
     Gender         VARCHAR(16)     NULL DEFAULT NULL COMMENT 'male|female|neutral — orthogonal axis (a named soloist may also be female)',
     TtmlAgentId    VARCHAR(64)     NULL DEFAULT NULL COMMENT 'Source <ttm:agent> handle (v1,v2) — loss-free re-export + idempotent back-fill key',
@@ -3971,14 +4044,14 @@ CREATE TABLE IF NOT EXISTS tblVocalParts (
     UpdatedAt      TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uq_Lyrics_Agent (LyricsId, TtmlAgentId),
-    INDEX idx_Lyrics (LyricsId),
-    INDEX idx_Kind   (PartKind),
-    INDEX idx_Person (CreditPersonId),
+    INDEX idx_Lyrics   (LyricsId),
+    INDEX idx_Kind     (PartKind),
+    INDEX idx_Musician (MusicianId),
 
     CONSTRAINT fk_VocalParts_Lyrics
-        FOREIGN KEY (LyricsId)       REFERENCES tblLyrics(Id)       ON DELETE CASCADE  ON UPDATE CASCADE,
-    CONSTRAINT fk_VocalParts_Person
-        FOREIGN KEY (CreditPersonId) REFERENCES tblCreditPeople(Id) ON DELETE SET NULL ON UPDATE CASCADE
+        FOREIGN KEY (LyricsId)   REFERENCES tblLyrics(Id)     ON DELETE CASCADE  ON UPDATE CASCADE,
+    CONSTRAINT fk_VocalParts_Musician
+        FOREIGN KEY (MusicianId) REFERENCES tblMusicians(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Per-version singing-part registry — first-class vocal parts (#1137).';
 

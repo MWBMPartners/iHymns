@@ -257,7 +257,16 @@ return [
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
         'tblVocalParts'            => '#1066 one-pass dormant — ?include=vocalParts read side shipped, write side is future feature work',
         'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
-        'tblCreditPersonLinks'     => 'deliberate legacy fallback — index.php:541 / pages/person.php:287 read it only `if (empty($linksUnified))`, i.e. on a pre-backfill install. Dead on migrated installs BY DESIGN',
+        /* tblCreditPersonLinks' entry retired #1741 P2 — the table itself was
+           renamed to tblMusicianLinks and tblCreditPersonLinks is now a
+           back-compat VIEW (migrate-musicians-rename.php), so it no longer
+           matches orphanDeriveTables()'s `CREATE TABLE` regex at all and has
+           dropped out of the reader-no-writer candidate set entirely. The
+           original deliberate-legacy-fallback reasoning still holds for the
+           app-code read path (index.php:541 / pages/person.php:287 are
+           unchanged, still reading the same old table name — now via the
+           view) but the *allowlist entry* itself is stale because its
+           subject is no longer a "table" as this scanner defines one. */
     ],
 
     /* =====================================================================

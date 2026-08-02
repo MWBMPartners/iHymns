@@ -243,37 +243,84 @@ function schemaAuditScanMigrations(string $sqlDir): array
         }
     }
 
-    /* Signal 4 — RENAME TABLE old TO new. Second pass over all files so
-       coverage attributed to the old name (via CREATE TABLE in an
-       earlier migration) gets re-attributed to the new name. Without
-       this, the IETF migration's `CREATE TABLE tblScripts` shows up in
-       the dictionary under the old name even though every other place
-       in the codebase references `tblLanguageScripts`. (Multi-step
-       renames within a single migration chain are handled by iterating
-       to a fixed point — small file count, cheap.) */
-    $renames = [];
+    /* Signal 4 — RENAME TABLE old TO new, and RENAME COLUMN old TO new
+       (#1741 P2). Second pass over all files so coverage attributed to an
+       old table/column name (via CREATE TABLE / ADD COLUMN / @migration-adds
+       in an earlier migration) gets re-attributed to the new name. Without
+       this, the IETF migration's `CREATE TABLE tblScripts` shows up in the
+       dictionary under the old name even though every other place in the
+       codebase references `tblLanguageScripts` — and, the #1741 P2 case this
+       block was extended for, `migrate-musician-profile.php`'s
+       `@migration-adds tblCreditPeople.Type` would show up under a table
+       name that `migrate-musicians-rename.php` later renames to
+       `tblMusicians`, and `migrate-credit-person-identifiers.php`'s
+       `CreditPersonId` column would show up under a column name that same
+       migration later renames to `MusicianId` — schema.sql (rightly) only
+       declares the FINAL post-rename shape, so without this remap the test
+       would report both as "missing" even though the coverage is real, just
+       filed under a name nothing outside this file still uses.
+       (Multi-step rename chains are handled by iterating BOTH maps to a
+       fixed point together — small file count, cheap — so it doesn't matter
+       whether a table rename or a column rename "happened first" in the
+       migration history; either order converges to the same final key.)
+
+       RENAME TABLE syntax supports multiple comma-separated pairs in ONE
+       atomic statement (`RENAME TABLE a TO b, c TO d, …`, as
+       migrate-musicians-rename.php's 7-table rename uses) — the inner
+       regex captures every "tblX TO tblY" pair inside the RENAME TABLE
+       clause, not just the first, so a multi-pair statement is fully
+       covered, not just its first pair.
+
+       RENAME COLUMN is captured per-statement (`ALTER TABLE tbl RENAME
+       COLUMN old TO new`, the one spelling this codebase's migrations
+       actually emit — CHANGE-COLUMN's differing five-way syntax isn't
+       emitted anywhere and isn't parsed here). A RENAME COLUMN statement
+       always names the table under whatever name it holds AT THAT POINT in
+       the script — normally the NEW name, because a table rename (if any)
+       runs before its columns are renamed — so no separate "which table
+       name does this apply to" resolution is needed: the captured table
+       name is used as-is as one half of both the lookup key and the map
+       key. */
+    $tableRenames  = [];   // old table name  => new table name
+    $columnRenames = [];   // "table.oldCol"  => new column name
     foreach ($files as $file) {
         $contents = @file_get_contents($file);
         if ($contents === false) continue;
-        /* Strip PHP block comments so a docblock's "RENAME TABLE" prose
-           example doesn't get picked up as a real rename. */
+        /* Strip PHP block comments so a docblock's "RENAME TABLE" /
+           "RENAME COLUMN" prose example doesn't get picked up as real. */
         $stripped = preg_replace('/\/\*.*?\*\//s', '', $contents) ?? $contents;
+
         if (preg_match_all(
-            '/RENAME\s+TABLE\s+(tbl\w+)\s+TO\s+(tbl\w+)/is',
+            '/RENAME\s+TABLE\s+((?:tbl\w+\s+TO\s+tbl\w+\s*,?\s*)+)/is',
             $stripped,
-            $matches,
+            $blocks,
             PREG_SET_ORDER
         )) {
-            foreach ($matches as $m) {
-                $renames[$m[1]] = $m[2];
+            foreach ($blocks as $block) {
+                if (preg_match_all('/(tbl\w+)\s+TO\s+(tbl\w+)/i', $block[1], $pairs, PREG_SET_ORDER)) {
+                    foreach ($pairs as $p) {
+                        $tableRenames[$p[1]] = $p[2];
+                    }
+                }
+            }
+        }
+
+        if (preg_match_all(
+            '/ALTER\s+TABLE\s+(tbl\w+)\s+RENAME\s+COLUMN\s+([A-Za-z_]\w*)\s+TO\s+([A-Za-z_]\w*)/is',
+            $stripped,
+            $colMatches,
+            PREG_SET_ORDER
+        )) {
+            foreach ($colMatches as $m) {
+                $columnRenames[$m[1] . '.' . $m[2]] = $m[3];
             }
         }
     }
-    if ($renames) {
+    if ($tableRenames || $columnRenames) {
         $changed = true;
         while ($changed) {
             $changed = false;
-            foreach ($renames as $old => $new) {
+            foreach ($tableRenames as $old => $new) {
                 foreach (array_keys($coverage) as $key) {
                     if (strpos($key, $old . '.') !== 0) continue;
                     $col    = substr($key, strlen($old) + 1);
@@ -285,6 +332,17 @@ function schemaAuditScanMigrations(string $sqlDir): array
                     unset($coverage[$key]);
                     $changed = true;
                 }
+            }
+            foreach ($columnRenames as $oldKey => $newCol) {
+                if (!isset($coverage[$oldKey])) continue;
+                $tbl    = substr($oldKey, 0, strpos($oldKey, '.'));
+                $newKey = $tbl . '.' . $newCol;
+                $coverage[$newKey] = array_merge(
+                    $coverage[$newKey] ?? [],
+                    $coverage[$oldKey]
+                );
+                unset($coverage[$oldKey]);
+                $changed = true;
             }
         }
     }

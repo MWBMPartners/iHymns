@@ -2070,6 +2070,79 @@ return [
             || !_migProbe_indexExists($db, 'tblSongs', 'idx_Ccli'),
     ],
 
+    /* ----------------------------------------------------------------------
+     * Epic #1741 P2-A — Musicians rename: SCHEMA + compat views ONLY. App
+     * code (routes/actions/log keys/PHP+JS identifiers/entitlement name) is
+     * NOT touched here — that is #1741 P2-B, a deliberately separate, later
+     * step. Placed immediately after the 4 P1 entries above because it
+     * REQUIRES all four to be fully applied first (migrate-musicians-rename
+     * .php's own precondition gate refuses to run otherwise, since
+     * tune-enrichment's tblTuneCredits carries a foreign key to
+     * tblCreditPeople, and a foreign key may only ever reference a base
+     * table — never a view, which is what tblCreditPeople becomes the
+     * moment this card lands).
+     * -------------------------------------------------------------------- */
+    'musicians-rename' => [
+        'script' => 'migrate-musicians-rename.php',
+        'card' => [
+            'title'  => 'Musicians rename — schema + compat views (#1741 P2)',
+            'body'   => 'Renames the 7 <code>tblCreditPe*/tblCreditPerson*</code> tables to'
+                      . ' <code>tblMusician*</code>, renames every <code>CreditPersonId</code>-family'
+                      . ' column to <code>MusicianId</code> (or <code>Subject/ObjectMusicianId</code> on'
+                      . ' the relation table, renamed from <code>tblCreditPersonMembers</code> to'
+                      . ' <code>tblMusicianRelations</code>), renames the indexes/FK constraints that'
+                      . ' named the old vocabulary, and creates an UPDATABLE compat <code>VIEW</code>'
+                      . ' under every OLD table name so existing app code — every current read and'
+                      . ' write against <code>tblCreditPeople</code> etc. — keeps working completely'
+                      . ' unchanged. Also widens <code>tblExternalLinkTypes.AppliesTo</code> to carry a'
+                      . ' <code>musician</code> token ALONGSIDE the retained legacy <code>person</code>'
+                      . ' token (never a destructive rewrite — see the migration file for why).'
+                      . ' <strong>Requires</strong> all four #1741 P1 cards above (Musician profile /'
+                      . ' Works identity / Tune enrichment / Song identity fields) to be fully applied'
+                      . ' first; refuses to run and explains why otherwise. Idempotent — safe to'
+                      . ' re-run. The compat views are permanent until a dedicated later drop card'
+                      . ' (#1741 P2b, not this one) runs once every docroot serves renamed app code.',
+            'button' => 'Run Musicians Rename Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until the table rename, every
+           FK-carrying table's column rename, the re-keyed relation UNIQUE index, a
+           sample renamed FK constraint (proof Step 4 landed, not just Step 3), AND
+           the AppliesTo back-compat token addition have ALL completed.
+           NOTE the AppliesTo check is deliberately NOT "has the legacy 'person'
+           token been removed" — this migration's whole point is that 'person' is
+           KEPT permanently (see migrate-musicians-rename.php's file doc-block) so
+           old app code's FIND_IN_SET('person', …) calls never stop matching. The
+           real completion signal is "does every row that carries 'person' also
+           carry 'musician'" — mirroring the migration's own UPDATE …WHERE guard. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblMusicians'))                              { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianIdentifiers', 'MusicianId'))     { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianExternalLinks', 'MusicianId'))   { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianAliases', 'MusicianId'))         { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianLinks', 'MusicianId'))           { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianIPI', 'MusicianId'))             { return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianRelations', 'SubjectMusicianId')){ return true; }
+            if (!_migProbe_columnExists($db, 'tblMusicianRelations', 'ObjectMusicianId')) { return true; }
+            if (!_migProbe_columnExists($db, 'tblSongbookCompilers', 'MusicianId'))       { return true; }
+            if (!_migProbe_columnExists($db, 'tblTuneCredits', 'MusicianId'))             { return true; }
+            if (!_migProbe_columnExists($db, 'tblVocalParts', 'MusicianId'))              { return true; }
+            if (!_migProbe_indexExists($db, 'tblMusicianRelations', 'uq_subject_object_rel')) { return true; }
+            if (!_migProbe_constraintExists($db, 'tblMusicians', 'fk_Musicians_BirthPlace'))  { return true; }
+            try {
+                if (!_migProbe_tableExists($db, 'tblExternalLinkTypes')) { return false; }
+                $res = $db->query(
+                    "SELECT 1 FROM tblExternalLinkTypes
+                      WHERE FIND_IN_SET('person', AppliesTo) > 0
+                        AND FIND_IN_SET('musician', AppliesTo) = 0
+                      LIMIT 1"
+                );
+                $needsToken = $res && $res->fetch_row() !== null;
+                if ($res) { $res->close(); }
+                return $needsToken;
+            } catch (\Throwable $_e) { return false; }
+        },
+    ],
+
     'usage-events' => [
         'script' => 'migrate-usage-events.php',
         'card' => [
