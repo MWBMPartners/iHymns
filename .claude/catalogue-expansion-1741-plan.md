@@ -21,9 +21,9 @@
 
 ## Open decisions for the owner (surface AFTER planning completes — none block planning)
 
-1. **#1741 branch base** — branch off `alpha` (clean, but lacks the held wave3-fixes catalogue work
-   like #960 credits / #1608 song-links) vs off `claude/wave3-fixes` (has that work, but stacks on
-   unmerged history). Leaning: off `wave3-fixes` IF it merges first; else off `alpha` and rebase.
+1. ~~**#1741 branch base**~~ — **RESOLVED 2026-08-02 (owner):** lands on the SAME pre-merge branch
+   `claude/wave3-fixes` — one branch, one PR to `alpha` (no-PR-stacking rule). GitHub issue #1741 body
+   updated to match.
 2. **Musicians full-rename confirmation** — owner agreed in principle; the measured blast radius
    (~1,100 appWeb + 116 external occurrences, 8 FK tables, shipped Apple API contract) makes this the
    riskiest single change in the epic. Confirm scope: does the rename include the **Apple/Android**
@@ -159,9 +159,98 @@ pubyear/copyright added to Songs-not-Works.
 
 ---
 
-## §2 — One-pass forward-looking schema design (Phase 2 — TO FOLLOW)
+## §2 — One-pass forward-looking schema design (Phase 2, Fable 5, 2026-08-02)
 
-_(Fable 5, next.)_
+> **Buildable.** Four additive/idempotent/dormant migration scripts grouped by entity family, applied
+> together in registry order. All DDL is written in the byte-style of its target block in `schema.sql`
+> (anchor by table name, not line). VARCHAR-not-ENUM throughout; every mirror byte-identical (rule #19);
+> every future reader/writer column-existence-gated (3 docroots, one MySQL, web-run migrations).
+
+### 2.0 Batch overview
+| # | Slug | Script | Touches | Depends on |
+|---|------|--------|---------|-----------|
+| 1 | `musician-profile` | `migrate-musician-profile.php` | tblCreditPeople (+3 cols, Type-backfill, Notes→Biography move), tblCreditPersonMembers (+7 cols, UNIQUE re-key), tblCreditPersonAliases (ENUM→VARCHAR) | — |
+| 2 | `works-identity` | `migrate-works-identity.php` | tblWorks (+8 cols, uq_ccli, idx_TuneId, trailing fk_Works_Tune) | tunes-entity |
+| 3 | `tune-enrichment` | `migrate-tune-enrichment.php` | tblTunes (+2), NEW tblTuneCredits, NEW tblTuneExternalLinks, tblExternalLinkTypes (SET→VARCHAR + ENUM→VARCHAR) | tunes-entity |
+| 4 | `song-identity-fields` | `migrate-song-identity-fields.php` | tblSongs (+5 cols, idx_Iswc, idx_Ccli, ISWC canonical backfill) | — |
+
+### 2.1 Musicians
+- **M1 `Type` VARCHAR(20) DEFAULT 'person'** (`person|group|character|orchestra|other`), authoritative;
+  `IsGroup`/`IsSpecialCase` demoted to **derived mirrors** written only by `creditPersonTypeApply()`
+  (Phase 3) — `IsGroup = Type IN ('group','orchestra')`, `IsSpecialCase = Type IN ('character','other')`.
+  Backfill flags→Type (WHERE-guarded). CI guard bans direct flag writes outside the helper (rule #34/#35).
+- **M2 `Biography MEDIUMTEXT`** — MOVE legacy `Notes` content in (Notes→curator-internal); person.php
+  reads Biography via INFORMATION_SCHEMA-gated select with a `notes-as-bio-fallback` branch.
+- **M3 "Portrayed by" EXTENDS tblCreditPersonMembers** (+`RelationType` VARCHAR `member|portrays`,
+  `DateFrom/DateFromPrecision/DateTo/DateToPrecision`, `Note`, `UpdatedAt`); re-key
+  `uq_group_member`→`uq_group_member_rel (GroupPersonId,MemberPersonId,RelationType,DateFrom)` (ADD new
+  then DROP old). Member-specific column names left for the Phase-3 rename's single table rebuild
+  (→`SubjectMusicianId`/`ObjectMusicianId`). +`Disambiguation VARCHAR(255)` on tblCreditPeople.
+- **M4 rider:** `tblCreditPersonAliases.Type` ENUM→VARCHAR(20) (data-preserving MODIFY).
+
+### 2.2 Works (tblWorks)
++`Ccli VARCHAR(50) NULL` UNIQUE `uq_ccli` (NULL not '' so absent values coexist; the /ccli/→Work key),
+`Subtitle`, `Disambiguation`, `TuneName`+`TuneId`+`idx_TuneId` (mirror tblSongs pair; **trailing**
+`fk_Works_Tune` ALTER because tblWorks precedes tblTunes in the file — the fk_Songs_Tune idiom),
+`FirstPublishedYear SMALLINT UNSIGNED` (never MySQL YEAR — starts 1901; hymns predate it),
+`CopyrightYears`+`CopyrightHolder` (no legacy Copyright column here). ISWC unchanged (already canonical).
+
+### 2.3 Tunes
++`Subtitle`,`Disambiguation` on tblTunes. **NEW `tblTuneCredits`** — ONE Role-discriminated table
+(`Role` VARCHAR `composer|arranger|harmoniser|source`, `Name` name-string, **`CreditPersonId` reserved
+now, nullable, dormant** so the credits-FK decision costs zero ALTER either way), NOT six per-role
+clones. **NEW `tblTuneExternalLinks`** mirrors tblWorkExternalLinks (real FK, rule #15). **T3: convert
+`tblExternalLinkTypes.AppliesTo` SET→VARCHAR(255) CSV** (adding `'tune'` to a SET is the rule-#20 ALTER;
+MySQL casts SET→CSV free, `FIND_IN_SET` reads unchanged) + `Category` ENUM→VARCHAR riding along.
+
+### 2.4 Songs (tblSongs)
+`Isrc` already exists (**no schema change** — editor field + /isrc/ route are Phase 3+; multi-match
+reads `tblSongs.Isrc` non-unique, NEVER `tblSongIdentityMap.uk_Isrc`). +`Subtitle VARCHAR(500)`,
+`Disambiguation`, `FirstPublishedYear` (same as Works — both in one batch, "Song AND Work editors"),
+`CopyrightYears`+`CopyrightHolder` (legacy `Copyright` kept as as-printed denorm; NOT auto-parsed).
++`idx_Iswc`,`idx_Ccli` (neither indexed today; both resolvers hit ~14k rows on cacheable routes).
+
+### 2.5 Alias resolver — NO new schema beyond §2.4 indexes
+ISWC drift fixed by **normalise-on-write**: extract works.php's canonicaliser (:60-77) into shared
+`includes/identifier_normalize.php::ihymns_canonical_iswc()`, kill the duplicate in iswc.php:28, apply
+on every Iswc write funnel + a §2.4 backfill; /iswc/ canonicalises INPUT then one indexed exact match.
+`/ccli/` Work-first (uq_ccli) then song multi-match (idx_Ccli). `/ipi//isni/` = first consumers of the
+dormant `person_by_identifier` (api.php:1280, generic over IdentifierType — no change). `/musician/<slug>`
+= tblCreditPeople.Slug (exists).
+
+### 2.6 Musicians rename — schema side: NOT in this pass
+Batch lands on CURRENT names; rename ships as its own Phase-3 lockstep migration with response-key +
+route aliases (blast radius §1; the batch must be safe on a DB whose 3 docroots run un-updated code).
+New columns free-ride the later `RENAME TABLE`. **Rider list for Phase 3:** `tblTuneCredits.CreditPersonId`
+(+fk/idx) and the new PHP maps in `credit_people_helpers.php`.
+
+### 2.7 Adversarial "what forces a second migration?" (rule #20) — all 13 traps fixed or escape-hatched
+New-entity-kind/relation-kind/alias-kind/tune-role → VARCHAR+map (fixed); member rejoin → UNIQUE
+re-keyed now (fixed); pubyear/copyright/subtitle/disambiguation on **both** Songs+Works (+ subtitle on
+Works, added by this pass) (fixed); AppliesTo SET + Category ENUM converted (fixed); credits-FK-either-way
+→ reserved column (fixed); Works.Ccli UNIQUE → tblWorkIdentifiers escape hatch (accepted); work-level
+curator credits → tblWorkCredits escape hatch (accepted); publication month/day precision → belongs in
+the release/identity family, not these columns (accepted, named); `tblSongIdentityMap` ENUMs → adjacent
+pre-existing debt, **file its own issue, don't smuggle** (flagged).
+
+### 2.8 Migration-registry — 4 entries + 2 new probe helpers
+New helpers beside `_migProbe_constraintExists`: `_migProbe_indexExists()` and
+`_migProbe_columnDataType()` (both bound-param INFORMATION_SCHEMA, mutation-testable). Each of the 4
+entries has a REAL multi-object OR-probe (e.g. musician-profile checks Type+Biography+Disambiguation+
+RelationType cols, the uq_group_member_rel index, AND `aliases.Type != 'enum'`). Tune-dependent cards
+sit after `tunes-entity`; out-of-order clicks handled by each script's tableExists(tblTunes)
+skip-and-warn + the probe staying pending. **Per rule #34 every probe must be mutation-tested pre-merge.**
+
+### 2.9 Out of DDL scope (flagged): credits name-string vs FK-ify (owner decision 3 — attach point
+specified: nullable `CreditPersonId` FK on the six song-credit tables, the tblTuneCredits pattern);
+`tblSongIdentityMap` ENUM convergence (own issue); the rename DDL/aliases (Phase 3).
+
+**This §2 summary is the authoritative durable spec** — it carries every column, type, key, backfill,
+gotcha (trailing `fk_Works_Tune` ALTER; SET/ENUM→VARCHAR conversions; Notes→Biography MOVE; SMALLINT
+not YEAR; NULL not '' for `uq_ccli`; backfill-before-index step order; the OR-probe shapes) and the two
+new probe helpers. At implementation time the exact COMMENT wording + column POSITIONS are regenerated
+to house style by re-reading the live `schema.sql` block for each table (anchor by table name); do NOT
+rely on any ephemeral agent transcript.
 
 ## §3 — Rename blast-radius plan + alias resolver + phased implementation sequence (Phase 3 — TO FOLLOW)
 
