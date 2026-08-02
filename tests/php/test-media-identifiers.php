@@ -71,16 +71,20 @@ const MI_EXPECTED_SCOPES = ['recording', 'song', 'work', 'release', 'product', '
 /** tblSongExternalIds.IdType allow-list — Deliverable 1's explicit list
  *  (Provider/DSP + Database + core Industry IDs + Luminate's own id) plus
  *  spec §4b's full "Legacy IDs" enumeration and "release/product reserve"
- *  parenthetical (decision A=c). 40 slugs total. */
+ *  parenthetical (decision A=c), PLUS 'genius' (#1747 D5 backfill addendum —
+ *  not part of the original Luminate §4b list; promoted from the
+ *  pre-existing tblSongIdentityMap.GeniusTrackId column, see
+ *  media_identifiers.php's own entry comment). 41 slugs total. */
 const MI_EXPECTED_RECORDING_TYPES = [
     // Industry
     'isrc',
     // Provider (DSP) IDs — spec §4b, 13 providers
     'apple-music', 'spotify', 'sirius-xm', 'youtube-music', 'amazon-music',
     'deezer', 'soundcloud', 'anghami', 'melon', 'flo', 'beatport', 'tencent', 'epic',
-    // Database IDs — spec §4b, 10 providers (incl. MusicBrainz/AcoustID)
+    // Database IDs — spec §4b, 10 providers (incl. MusicBrainz/AcoustID),
+    // + 'genius' as an 11th, #1747 D5 addendum (see const doc-comment above)
     'musicbrainz-recording', 'acoustid', 'gracenote', 'tms', 'discogs', 'wikidata',
-    'imdb', 'mediabase', 'soundexchange', 'allmusic', 'rateyourmusic',
+    'imdb', 'mediabase', 'soundexchange', 'allmusic', 'rateyourmusic', 'genius',
     // Luminate's own per-entity id
     'luminate',
     // Legacy IDs — spec §4b full enumeration (recording/song-scope half)

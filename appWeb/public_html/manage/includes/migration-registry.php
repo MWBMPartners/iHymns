@@ -3459,6 +3459,98 @@ return [
             || !_migProbe_indexExists($db, 'tblSongExternalIds', 'idx_Type_Value'),
     ],
 
+    /* #1747 D5 backfill (owner-confirmed 2026-08-02) — data-only follow-up to
+       'song-external-ids' immediately above. MUST be ordered after it: the
+       backfill INSERTs into tblSongExternalIds, so the card is meaningless
+       (and its own probe would read a missing table) until that table
+       exists. Creates no schema object itself — see the script's own
+       doc-block for why "no schema.sql change" is correct here, not an
+       oversight. */
+    'backfill-song-external-ids' => [
+        'script' => 'migrate-backfill-song-external-ids.php',
+        'card' => [
+            'title'  => 'Backfill song external IDs (#1747 D5)',
+            'body'   => 'Copies the existing data out of the grandfathered'
+                      . ' <code>tblSongs.Isrc</code> column and'
+                      . ' <code>tblSongIdentityMap</code>&rsquo;s four'
+                      . ' recording-ID columns'
+                      . ' (<code>MusicBrainzRecordingMBID</code> /'
+                      . ' <code>SpotifyTrackId</code> / <code>GeniusTrackId</code> /'
+                      . ' <code>IsrcCode</code>) into the new'
+                      . ' <code>tblSongExternalIds</code> key/value store, so'
+                      . ' the new table becomes the comprehensive single home'
+                      . ' for recording IDs rather than starting empty next'
+                      . ' to columns that already had data. The old columns'
+                      . ' are left untouched (still readable) — this only'
+                      . ' adds rows, never deletes or alters anything.'
+                      . ' Idempotent — safe to re-run at any time; already-'
+                      . 'present rows are silently skipped via'
+                      . ' <code>INSERT IGNORE</code>. Requires the'
+                      . ' &ldquo;Song external IDs&rdquo; card above to be'
+                      . ' applied first.',
+            'button' => 'Backfill Song External IDs',
+        ],
+        /* Real data-derived probe (rule #19 — never `=> true`): pending when
+           the target table is missing entirely, OR when ANY grandfathered
+           source value the backfill copies lacks its mirror row in
+           tblSongExternalIds. It checks EVERY source the migration writes —
+           tblSongs.Isrc plus all four tblSongIdentityMap columns (each to its
+           own IdType) — rather than ISRC alone: an install could one day
+           (post the #1010 iLyricsDB merge) carry a MusicBrainz/Spotify/Genius
+           value with no ISRC anywhere, and an ISRC-only probe would then show
+           a false "applied" green while that data sat un-mirrored. Checking
+           all five sources keeps the probe a true completion detector with no
+           false-green window, at negligible cost against the tiny/dormant
+           tblSongIdentityMap. */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongExternalIds')) return true;
+            try {
+                /* @deleted-visible: migration probe (#1694) — backfill
+                   completeness is PHYSICAL; a hidden/soft-deleted song's ISRC
+                   still needs its tblSongExternalIds mirror row so the link
+                   is intact if that song is ever restored. Deliberately not
+                   scoped to visible-only rows. */
+                $r = $db->query(
+                    "SELECT 1 FROM tblSongs s
+                      WHERE s.Isrc IS NOT NULL AND s.Isrc <> ''
+                        AND NOT EXISTS (
+                            SELECT 1 FROM tblSongExternalIds e
+                             WHERE e.SongId = s.SongId AND e.IdType = 'isrc' AND e.IdValue = s.Isrc
+                        )
+                      LIMIT 1"
+                );
+                if ($r && $r->fetch_row() !== null) return true;
+
+                if (_migProbe_tableExists($db, 'tblSongIdentityMap')) {
+                    /* All four tblSongIdentityMap columns, each vs its own
+                       IdType — one row un-mirrored on ANY of them = pending.
+                       Column names + IdType literals are hardcoded PHP
+                       constants (rule #5), never request input. */
+                    $r2 = $db->query(
+                        "SELECT 1 FROM tblSongIdentityMap m WHERE
+                            (m.IsrcCode IS NOT NULL AND m.IsrcCode <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'isrc' AND e.IdValue = m.IsrcCode))
+                         OR (m.MusicBrainzRecordingMBID IS NOT NULL AND m.MusicBrainzRecordingMBID <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'musicbrainz-recording' AND e.IdValue = m.MusicBrainzRecordingMBID))
+                         OR (m.SpotifyTrackId IS NOT NULL AND m.SpotifyTrackId <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'spotify' AND e.IdValue = m.SpotifyTrackId))
+                         OR (m.GeniusTrackId IS NOT NULL AND m.GeniusTrackId <> '' AND NOT EXISTS (
+                                SELECT 1 FROM tblSongExternalIds e
+                                 WHERE e.SongId = m.SongId AND e.IdType = 'genius' AND e.IdValue = m.GeniusTrackId))
+                         LIMIT 1"
+                    );
+                    if ($r2 && $r2->fetch_row() !== null) return true;
+                }
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+
     'work-bowi' => [
         'script' => 'migrate-work-bowi.php',
         'card' => [

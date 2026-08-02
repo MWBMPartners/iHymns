@@ -183,7 +183,9 @@ const RECORDING_EXTERNAL_ID_TYPES = [
     'tencent'       => ['label' => 'Tencent Music', 'scope' => 'recording', 'authority' => 'Tencent Music (TME)',   'validate' => null, 'url' => null, 'urlTemplatable' => true],
     'epic'          => ['label' => 'Epic',          'scope' => 'recording', 'authority' => 'Epic',                  'validate' => null, 'url' => null, 'urlTemplatable' => true],
 
-    /* ---- Database IDs (spec §4b "Database IDs", 10 providers incl. MusicBrainz/AcoustID) ---- */
+    /* ---- Database IDs (spec §4b "Database IDs", 10 providers incl. MusicBrainz/AcoustID,
+       + 'genius' below as an 11th — a #1747 D5 addendum, NOT part of the original Luminate
+       §4b list; see the entry's own comment for why it belongs here anyway) ---- */
     'musicbrainz-recording' => [
         'label' => 'MusicBrainz Recording', 'scope' => 'recording', 'authority' => 'MetaBrainz Foundation',
         'validate' => '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i',
@@ -197,6 +199,25 @@ const RECORDING_EXTERNAL_ID_TYPES = [
     'gracenote'     => ['label' => 'Gracenote',      'scope' => 'recording', 'authority' => 'Gracenote (Nielsen)',       'validate' => null, 'url' => null, 'urlTemplatable' => false],
     'tms'           => ['label' => 'TMS',            'scope' => 'recording', 'authority' => 'TMS (Gracenote)',          'validate' => null, 'url' => null, 'urlTemplatable' => false],
     'discogs'       => ['label' => 'Discogs',        'scope' => 'recording', 'authority' => 'Discogs',                  'validate' => '/^\d+$/', 'url' => 'https://www.discogs.com/release/%s', 'urlTemplatable' => true],
+    /* ---- genius (#1747 D5 backfill) ----
+       ELI5: Genius.com's own numeric song id — the number Genius's API and
+       internal links use to identify a song/lyrics page. iHymns already had
+       *storage* for this (tblSongIdentityMap.GeniusTrackId, #1066), it just
+       was never registered as a validated IdType here — this entry is what
+       lets that grandfathered column's data be mirrored into
+       tblSongExternalIds (the D5 backfill, migrate-backfill-song-external-ids.php)
+       under a recognised, allow-listed slug instead of a bare string nobody
+       validates.
+       DETAILED: `url` stays NULL — Genius song URLs are slug-based
+       (https://genius.com/<artist>-<title>-lyrics), so a bare numeric id
+       cannot resolve a working page on its own (same "do NOT invent" posture
+       as sirius-xm/soundcloud/beatport above: url=null, urlTemplatable=false
+       — a slug/username is ALWAYS required, not merely "not yet confirmed").
+       `validate` is numeric because both Genius's own API and the legacy
+       tblSongIdentityMap.GeniusTrackId column store a plain integer id.
+       @link .claude/media-identifiers-spec.md §4c (D5 decisions this fulfils)
+       @link appWeb/.sql/migrate-backfill-song-external-ids.php (#1747 D5 backfill consumer) */
+    'genius'        => ['label' => 'Genius',         'scope' => 'recording', 'authority' => 'Genius Media',             'validate' => '/^\d+$/', 'url' => null, 'urlTemplatable' => false],
     'wikidata'      => ['label' => 'Wikidata',       'scope' => 'recording', 'authority' => 'Wikimedia Foundation',     'validate' => '/^Q\d+$/', 'url' => 'https://www.wikidata.org/wiki/%s', 'urlTemplatable' => true],
     'imdb'          => ['label' => 'IMDb',           'scope' => 'recording', 'authority' => 'IMDb (Amazon)',            'validate' => '/^tt\d{7,8}$/', 'url' => 'https://www.imdb.com/title/%s/', 'urlTemplatable' => true],
     'mediabase'     => ['label' => 'Mediabase',      'scope' => 'recording', 'authority' => 'Mediabase',                'validate' => null, 'url' => null, 'urlTemplatable' => false],
