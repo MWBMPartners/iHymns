@@ -95,10 +95,15 @@ function musTrimmed(mixed $v): string
  * depend on it):
  *   - label     friendly chip / dropdown text.
  *   - group     bucket for the dropdown <optgroup> (International / National /
- *               Academic / People — emitted in registry order).
+ *               Academic / People / Industry — emitted in registry order).
  *   - icon      FontAwesome solid icon class (rendered "fa-solid <icon>").
  *   - url        printf template; "%s" is the BARE id, rawurlencode()'d when
- *               the link is built (creditIdentifierDisplayUrl()).
+ *               the link is built (creditIdentifierDisplayUrl()). NULL when no
+ *               public per-id lookup exists (#1741 D5 — e.g. IPN, a rights-
+ *               administration number with no consumer-facing database);
+ *               mirrors the pre-existing IPI/CAE handling in
+ *               includes/pages/musician.php, which already renders a NULL-url
+ *               chip as plain (unlinked) text.
  *   - validate  a FULL PHP regex (delimiters included) — true ⇒ the bare id
  *               is well-formed for this provider.
  *   - extract   list of RAW regex bodies (NO delimiters): PHP wraps each as
@@ -106,7 +111,9 @@ function musTrimmed(mixed $v): string
  *               The bodies are deliberately PCRE/JS-compatible (capture
  *               group 1 = the bare id). Used to lift the id out of a pasted
  *               authority URL, both server-side (fallback) and client-side
- *               (the primary paste-a-URL UX).
+ *               (the primary paste-a-URL UX). Empty array ⇒ no known
+ *               pasteable authority URL to extract from (paste-a-URL then
+ *               falls through to storing the pasted text verbatim).
  *   - pickable  true ⇒ appears in the Other-Identifiers dropdown AND the save
  *               allow-list. ISNI is false: it has its own dedicated section
  *               (canonicaliseIsni()), so it's display-only here.
@@ -128,13 +135,27 @@ const CREDIT_IDENTIFIER_TYPES = [
   'librarything'=> ['label'=>'LibraryThing','group'=>'People',       'icon'=>'fa-book',            'url'=>'https://www.librarything.com/author/%s',      'validate'=>'/^[A-Za-z0-9]+$/',                      'extract'=>['librarything\.com/author/([A-Za-z0-9]+)'],                                              'pickable'=>true],
   'openlibrary' => ['label'=>'Open Library','group'=>'People',       'icon'=>'fa-book-open',       'url'=>'https://openlibrary.org/authors/%s',          'validate'=>'/^OL\d+A$/',                            'extract'=>['openlibrary\.org/authors/(OL\d+A)'],                                                   'pickable'=>true],
   'cinii'       => ['label'=>'CiNii',       'group'=>'Academic',     'icon'=>'fa-graduation-cap',  'url'=>'https://cir.nii.ac.jp/crid/%s',               'validate'=>'/^\d+$/',                               'extract'=>['cir\.nii\.ac\.jp/crid/(\d+)'],                                                          'pickable'=>true],
+  /* #1741 D5 — IPN (International Performer Number), the one Luminate party
+     ID (media-identifiers-spec.md §4b "Provider (DSP) IDs" list's sibling
+     Industry-IDs entry "IPI (interested party)" — IPN is IPI's PERFORMER-side
+     counterpart, assigned for neighbouring-rights royalty administration)
+     this registry lacked. Unlike ISNI/VIAF/ORCID/…, IPN has no confirmed
+     consumer-facing public lookup database (it is a rights-administration
+     number, the same reason IPI/CAE below are handled OUTSIDE this registry
+     in includes/pages/musician.php) — 'url' is NULL so the chip renders as
+     plain (unlinked) text, and 'extract' is empty (no authority URL exists
+     to paste-and-detect from). 'validate' is intentionally loose (no
+     officially-confirmed digit count, unlike e.g. ORCID's fixed 16-char
+     shape) — matches this file's existing convention for "we know it's
+     numeric, not the exact length" providers (compare 'trove', 'fast'). */
+  'ipn'         => ['label'=>'IPN',         'group'=>'Industry',     'icon'=>'fa-microphone',      'url'=>null,                                           'validate'=>'/^\d+$/',                               'extract'=>[],                                                                                       'pickable'=>true],
 ];
 
 /**
  * The whole registry. ELI5: hand back the lookup table so callers can read a
  * provider's label / icon / url without re-typing it.
  *
- * @return array<string,array{label:string,group:string,icon:string,url:string,validate:string,extract:list<string>,pickable:bool}>
+ * @return array<string,array{label:string,group:string,icon:string,url:?string,validate:string,extract:list<string>,pickable:bool}>
  */
 function creditIdentifierTypes(): array
 {
@@ -235,8 +256,9 @@ function creditIdentifierExtractFromUrl(string $url): ?array
 
 /**
  * Build the public look-up URL for a stored (type, bare id). ELI5: turn
- * ("gnd","118578537") into "https://d-nb.info/gnd/118578537". Unknown type
- * ⇒ null (the chip then renders as plain text, no link).
+ * ("gnd","118578537") into "https://d-nb.info/gnd/118578537". Unknown type,
+ * OR a type with no public lookup at all (#1741 D5 — 'url' === null, e.g.
+ * IPN) ⇒ null (the chip then renders as plain text, no link).
  *
  * The bare id is rawurlencode()'d before substitution so an id with reserved
  * characters can't break the URL or smuggle path segments.
@@ -246,7 +268,7 @@ function creditIdentifierExtractFromUrl(string $url): ?array
 function creditIdentifierDisplayUrl(string $type, string $value): ?string
 {
     $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
-    if ($reg === null) return null;
+    if ($reg === null || $reg['url'] === null) return null;
     return sprintf($reg['url'], rawurlencode($value));
 }
 

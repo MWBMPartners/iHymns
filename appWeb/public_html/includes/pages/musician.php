@@ -493,11 +493,14 @@ foreach ($discography as $rk => $entry) {
 
        #1367 — the authority-control entries (ISNI / VIAF / Wikidata / GND /
        FAST / WorldCat / LoC / ORCID / IdRef / Trove / LibraryThing /
-       Open Library / CiNii) are now DERIVED from the central registry, so every
-       provider a curator can save renders a chip with NO per-page edit. The
-       IPI / IPI-base / CAE rows below live OUTSIDE the registry (they're
-       rights-society numbers with no public look-up URL), so they're appended
-       explicitly after the registry-built map. */
+       Open Library / CiNii / IPN) are now DERIVED from the central registry, so
+       every provider a curator can save renders a chip with NO per-page edit.
+       IPN (#1741 D5) is IN the registry but, like IPI/CAE below, its 'url' is
+       NULL (no public look-up exists), so it renders the same unlinked-chip
+       fallback automatically. The IPI / IPI-base / CAE rows below live
+       OUTSIDE the registry entirely (they're rights-society numbers stored in
+       their own dedicated sub-form, not the "Other Identifiers" picker), so
+       they're appended explicitly after the registry-built map. */
     if (!function_exists('creditIdentifierTypes')) {
         require_once dirname(__DIR__) . '/musician_helpers.php';
     }

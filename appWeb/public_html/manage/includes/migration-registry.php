@@ -3425,4 +3425,59 @@ return [
            live-schema check, never a `true`-returning stub (rule #19). */
         'probe' => static fn(\mysqli $db) => !_migProbe_tableExists($db, 'tblIntAppsSync'),
     ],
+
+    /* ----------------------------------------------------------------------
+     * Epic #1741 D5 — comprehensive external/catalogue ID storage foundation
+     * (media-identifiers-spec.md §4b taxonomy, §4c decisions A=c / B=yes).
+     * Two additive/idempotent/dormant cards; nothing reads or writes either
+     * new object yet — the P3 alias-URL resolver is what starts consuming
+     * them, and is explicitly out of scope for this storage-layer batch.
+     * -------------------------------------------------------------------- */
+    'song-external-ids' => [
+        'script' => 'migrate-song-external-ids.php',
+        'card' => [
+            'title'  => 'Song external IDs (#1741 D5)',
+            'body'   => 'Creates <code>tblSongExternalIds</code>, a key/value'
+                      . ' (SongId, IdType, IdValue) successor to the'
+                      . ' one-column-per-provider <code>tblSongIdentityMap</code>'
+                      . ' shape — absorbs the ~13 DSP + ~10 database + legacy'
+                      . ' provider IDs (ISRC, Spotify, Apple Music, MusicBrainz,'
+                      . ' Discogs, ICPN, …) at zero further ALTER cost per new'
+                      . ' provider. The 4 existing <code>tblSongIdentityMap</code>'
+                      . ' columns are untouched (grandfathered reads). Entirely'
+                      . ' dormant until the P3 alias-URL resolver lands.'
+                      . ' Idempotent — safe to re-run.',
+            'button' => 'Create Song External IDs Table',
+        ],
+        /* Single-object probe (one CREATE TABLE + its keys, all created in
+           the same statement — nothing to partially apply), plus the two
+           indexes as an extra guard so a hand-edited/truncated DDL on some
+           future fork still shows pending rather than a false green. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_tableExists($db, 'tblSongExternalIds')
+            || !_migProbe_indexExists($db, 'tblSongExternalIds', 'uq_Song_Type_Value')
+            || !_migProbe_indexExists($db, 'tblSongExternalIds', 'idx_Type_Value'),
+    ],
+
+    'work-bowi' => [
+        'script' => 'migrate-work-bowi.php',
+        'card' => [
+            'title'  => 'Work BOWI identifier (#1741 D5)',
+            'body'   => 'Adds <code>tblWorks.Bowi</code> (Best Open Work'
+                      . ' Identifier, Luminate Data&rsquo;s open ISWC'
+                      . ' alternative) + the <code>uq_bowi</code> unique key,'
+                      . ' mirroring the existing <code>uq_iswc</code>/'
+                      . '<code>uq_ccli</code> shape (NULL, not empty string,'
+                      . ' so absent values coexist). Its own tiny migration'
+                      . ' rather than folded into the already-committed'
+                      . ' &ldquo;Works identity schema&rdquo; card above.'
+                      . ' Additive, idempotent, dormant — safe to re-run.',
+            'button' => 'Run Work BOWI Migration',
+        ],
+        /* Multi-object OR-probe (rule #19): pending until BOTH the column
+           and its UNIQUE key exist. */
+        'probe' => static fn(\mysqli $db) =>
+               !_migProbe_columnExists($db, 'tblWorks', 'Bowi')
+            || !_migProbe_indexExists($db, 'tblWorks', 'uq_bowi'),
+    ],
 ];

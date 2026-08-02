@@ -3041,6 +3041,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
        TuneName/TuneId mirror the tblSongs pair; fk_Works_Tune is a
        trailing ALTER below (tblTunes is declared later in this file). */
     Ccli          VARCHAR(50)  NULL DEFAULT NULL COMMENT 'CCLI Work Number (#1741 P1) — the future /ccli/ resolver''s Work-first lookup key. NULL rather than empty string so absent values coexist under uq_ccli (every NULL is distinct)',
+    Bowi          VARCHAR(30)  NULL DEFAULT NULL COMMENT 'Best Open Work Identifier — Luminate Data''s open ISWC alternative (media-identifiers-spec.md §4b/§4c, #1741 D5); the future /bowi/ resolver''s lookup key. NULL rather than empty string so absent values coexist under uq_bowi (every NULL is distinct), mirrors uq_iswc/uq_ccli.',
     Subtitle      VARCHAR(255) NULL DEFAULT NULL COMMENT 'Optional work subtitle (#1741 P1)',
     Disambiguation VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'Short parenthetical to distinguish same-named works (#1741 P1)',
     TuneName      VARCHAR(120) NULL DEFAULT NULL COMMENT 'Traditional tune name mirror (#1741 P1); denorm display string, same pattern as tblSongs.TuneName. Canonical entity is tblTunes via TuneId',
@@ -3059,6 +3060,7 @@ CREATE TABLE IF NOT EXISTS tblWorks (
     UNIQUE KEY uq_iswc   (Iswc),
     UNIQUE KEY uq_mbwork (MusicBrainzWorkMBID),
     UNIQUE KEY uq_ccli   (Ccli),
+    UNIQUE KEY uq_bowi   (Bowi),
     INDEX      idx_title (Title),
     INDEX      idx_parent (ParentWorkId),
     INDEX      idx_OriginCityId (OriginCityId),
@@ -3411,6 +3413,48 @@ CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
         FOREIGN KEY (VerifiedBy) REFERENCES tblUsers(Id) ON DELETE SET NULL ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Cross-system recording identity map (#1066 Theme D). iLyricsDB link column gated on the DB-merge decision.';
+
+
+-- ----------------------------------------------------------------------------
+-- tblSongExternalIds (#1741 D5) — key/value recording/release/product ID
+-- store. Luminate's own dashboard models Song -> many Recordings -> many
+-- provider IDs (~13 DSP + ~10 database + legacy codes per
+-- .claude/media-identifiers-spec.md §4b) — a one-column-per-provider table
+-- (tblSongIdentityMap's shape, immediately above) cannot absorb that
+-- (rule #28); this key/value table can, at the cost of one additional row
+-- per identifier instead of an ALTER per provider. IdScope/IdType are
+-- VARCHAR + app-validated against includes/media_identifiers.php's central
+-- map (rule #20 — never ENUM). Decision A=c (media-identifiers-spec.md §4c):
+-- release/product IDs (ICPN/GRid/UPC/EAN/catalog-number/MC_RELEASE/
+-- MC_RELEASE_GROUP/MC_PRODUCT) are stored on THIS same recording-grain row as
+-- ingest provenance (IdScope='release'|'product'), not a separate tblReleases
+-- entity — iHymns is a hymn-lyrics catalogue, not a commercial release
+-- database (owner-accepted scoping, spec §4c). The 4 existing
+-- tblSongIdentityMap columns (MusicBrainzRecordingMBID/SpotifyTrackId/
+-- GeniusTrackId/IsrcCode) are GRANDFATHERED READS — untouched, not migrated
+-- here; a later backfill MAY populate this table from them (out of scope for
+-- this additive/dormant batch). Nothing reads or writes this table yet — the
+-- P3 alias-URL resolver is what starts consuming it (#1741 D5).
+-- ----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tblSongExternalIds (
+    Id          INT UNSIGNED  AUTO_INCREMENT PRIMARY KEY,
+    SongId      VARCHAR(20)   NOT NULL COMMENT 'FK to tblSongs.SongId — the recording-grain row this identifier belongs to (or its release/product context under decision A=c, media-identifiers-spec.md §4c)',
+    IdScope     VARCHAR(20)   NOT NULL COMMENT 'recording | song | work | release | product | party (app-validated against includes/media_identifiers.php SONG_EXTERNAL_ID_SCOPES; VARCHAR not ENUM, rule #20). work/party are reserved — not populated by this phase',
+    IdType      VARCHAR(40)   NOT NULL COMMENT 'Provider/database/legacy identifier key, e.g. isrc | spotify | musicbrainz-recording | icpn | mc-release | … — app-validated against includes/media_identifiers.php RECORDING_EXTERNAL_ID_TYPES (VARCHAR not ENUM, rule #20; #1741 D5)',
+    IdValue     VARCHAR(191)  NOT NULL COMMENT 'The identifier value as issued by the provider/authority. VARCHAR(191) keeps a utf8mb4 UNIQUE index under the legacy 767-byte-per-column InnoDB limit',
+    Source      VARCHAR(40)   NULL DEFAULT NULL COMMENT 'Provenance system that supplied this row, e.g. ihymns | musicbrainz | luminate | manual (free text, mirrors tblLyrics.Source style)',
+    SourceRef   VARCHAR(191)  NULL DEFAULT NULL COMMENT 'External primary id from Source for idempotent re-import / dedup; NULL for manual entry',
+    CreatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UpdatedAt   TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uq_Song_Type_Value (SongId, IdType, IdValue),
+    INDEX      idx_Type_Value     (IdType, IdValue),
+    INDEX      idx_SongId         (SongId),
+
+    CONSTRAINT fk_SongExternalIds_Song
+        FOREIGN KEY (SongId) REFERENCES tblSongs(SongId) ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  COMMENT='Key/value recording/release/product external-ID store (#1741 D5) — the Q5 successor absorbing DSP/database/legacy IDs without a per-provider ALTER.';
 
 
 -- ----------------------------------------------------------------------------
