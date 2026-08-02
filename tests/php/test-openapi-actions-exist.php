@@ -192,6 +192,46 @@ foreach ($UNDOCUMENTED_OK as $a => $why) {
         in_array($a, $publicActions, true) && !in_array($a, $documented, true));
 }
 
+/* ---- 3. NARROW api2 contract-documentation guard (#1608) -----------------
+
+   The reverse direction — "every api2 action must be documented" — is
+   DELIBERATELY NOT asserted wholesale. api2.php dispatches ~45 actions and only
+   a minority are part of the published native-app contract; the rest are
+   internal editor plumbing no client consumes. A blanket reverse guard would
+   fail on ~39 actions today and get weakened or deleted — rule #34's other
+   failure mode, the guard so blunt it flags correct code. The full per-action
+   OpenAPI breakout is the proper fix and is tracked as #1201.
+
+   So this guards only the SPECIFIC api2 actions the 2026-08-01 wave committed to
+   documenting, after the completeness audit found all five #1608 cross-book
+   counterpart actions absent from api-docs.yaml WHILE the v2 editor is the
+   DEFAULT — i.e. a live native-app-contract gap, not a theoretical one.
+
+   Each entry is asserted BOTH to still exist in a dispatcher (so the list
+   self-cleans if an action is renamed or removed — rule #34) AND to be
+   MENTIONED in the spec. "Mentioned", not "is a path item", because the v2
+   editor API is documented as one prose block pending the #1201 breakout, not
+   as individual /…?action= paths — matching the actual convention rather than an
+   aspirational one. Comments are stripped first so a `#`-commented tombstone
+   can never satisfy the check (the near-miss that produced 5 phantom "ghost"
+   findings earlier this session — verify against real spec, not prose).
+
+   This list only ever grows toward #1201; it is not a substitute for it. */
+$yamlNoComments = preg_replace('/^\s*#.*$/m', '', $yaml) ?? $yaml;
+$API2_CONTRACT_ACTIONS = [
+    'song_links'                   => '#1608 list a song\'s cross-book counterparts',
+    'song_link_add'                => '#1608 manual counterpart link',
+    'song_link_remove'             => '#1608 manual counterpart unlink',
+    'song_link_suggestions'        => '#1608 fuzzy scored counterpart suggestions',
+    'song_link_suggestion_dismiss' => '#1608 dismiss a suggestion',
+];
+foreach ($API2_CONTRACT_ACTIONS as $a => $why) {
+    ok("api2 contract action '{$a}' still exists in a dispatcher ({$why})",
+        isset($realActions[$a]));
+    ok("api2 contract action '{$a}' is documented in api-docs.yaml ({$why})",
+        str_contains($yamlNoComments, $a));
+}
+
 echo "\n{$passed} passed, {$failed} failed\n";
 if ($failed > 0) {
     echo "\nFailures:\n";

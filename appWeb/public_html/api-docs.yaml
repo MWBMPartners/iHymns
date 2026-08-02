@@ -43,13 +43,31 @@ info:
       cutover: `arrangement_update` (writes `tblSongs.ArrangementJson`,
       validated by the shared `includes/arrangement.php` rule, #1627),
       `bulk_tag_detach` (the remove half of bulk tagging, v1's `bulk_tag`
-      already took `add`/`remove`, #1628), `easyworship_export` (#1678), and
+      already took `add`/`remove`, #1628), `easyworship_export` (#1678),
       `user_search` / `org_search` (ported verbatim from v1 for the Content
       Restrictions picker, which was never actually an editor feature,
-      #1629). **Not yet broken out into individual paths below** (#1472
-      — the `Editor API v2` tag was removed from the tag list as
+      #1629), and the cross-book **counterpart** family ported from v1
+      (**#1608**): `song_links` (GET — list a song's linked counterparts),
+      `song_link_add` / `song_link_remove` (POST — manual link/unlink;
+      `edit_songs`), and `song_link_suggestions` / `song_link_suggestion_dismiss`
+      (GET/POST — the fuzzy scored suggestions from `tblSongLinkSuggestions`,
+      scored by the shared `includes/song_similarity.php`; dismissals write
+      `tblSongLinkSuggestionsDismissed`). Two further contract changes made in
+      the same wave: **`credit_upsert`** (#960) now accepts a structured credit
+      shape `{name, first?, surname?, suffix?}` in addition to the legacy
+      `{name}`, and its response echoes the AUTHORITATIVE registry parts
+      (`{ok, creditId, name, first, surname, suffix, registryPersonId}`) — NOT
+      the caller's input, because the `tblCreditPeople` backfill never
+      overwrites an existing non-empty part, so echoing the input would mask a
+      refused write; and **`import_file`** (#882) now content-sniffs a single
+      `.xml` between OpenLyrics and OpenSong via the shared
+      `_bulkImport_processXmlAuto()` router (formats `opensong` and the
+      auto-routing `xmlauto`, plus `chordpro`), and — a corrected status
+      contract — returns **`400`** (not the former unconditional `200`) when a
+      submitted file fails to parse. **Not yet broken out into individual paths
+      below** (#1472 — the `Editor API v2` tag was removed from the tag list as
       declared-but-unused; this paragraph is its only documentation until
-      the per-action paths are added).
+      the per-action paths are added; the full per-action breakout is #1201).
     - **Service Mode** (congregation Live-Follow, #1323/#1335) — the
       `service_*` action family on `api.php`. See the **Service Mode** tag.
 
