@@ -106,7 +106,7 @@ try {
     ]);
     $rows = [];
     /* This page is gated to admin/global_admin so we surface the
-       exception detail inline — same rationale as credit-people.php
+       exception detail inline — same rationale as musicians.php
        (#635 / #698 commit). Curators get to self-diagnose without
        SSH access. */
     $where = $e->getFile() ? (' (' . basename($e->getFile()) . ':' . $e->getLine() . ')') : '';

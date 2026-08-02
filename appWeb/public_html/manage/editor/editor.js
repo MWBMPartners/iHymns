@@ -3552,7 +3552,7 @@ function initSongLinksControls() {
 
 /* ------------------------------------------------------------------
  * #960 — Structured-name helpers (JS mirror of composePersonName /
- * decomposePersonName in includes/credit_people_helpers.php).
+ * decomposePersonName in includes/musician_helpers.php).
  *
  * The Credits-tab chip lists render three inputs per credit
  * (FirstNames / Surname / Suffix) but the on-disk wire format and
@@ -5032,7 +5032,7 @@ function scheduleAutoSave() {
    suffix}; the save_song endpoint accepts either a bare string
    (legacy) or {name, first, surname, suffix} (post-#960). We
    send the richer shape so the server can populate
-   tblCreditPeople.FirstNames/Surname/Suffix on auto-promote.
+   tblMusicians.FirstNames/Surname/Suffix on auto-promote.
    Non-credit fields pass through untouched. */
 function serialiseSongForSave(song) {
     var creditKeys = ['writers', 'composers', 'arrangers', 'adaptors', 'translators', 'artists'];

@@ -76,11 +76,22 @@ return [
         'admin_activity_log'                    => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_analytics_searches'              => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_cleanup'                         => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
-        'admin_credit_person_add'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
-        'admin_credit_person_delete'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
-        'admin_credit_person_merge'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
-        'admin_credit_person_rename'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
-        'admin_credit_person_update'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
+        /* #1741 P2-B renamed Credit People -> Musicians. The
+           admin_credit_person_* action names are the shipped-Apple-contract
+           back-compat ALIASES (api.php keeps them as fallthrough case
+           labels into the SAME admin_musician_* body) — still dispatched,
+           still nothing first-party calls either name, so both the old
+           alias and the new canonical action keep an entry here. */
+        'admin_credit_person_add'               => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B back-compat alias for admin_musician_add',
+        'admin_credit_person_delete'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B back-compat alias for admin_musician_delete',
+        'admin_credit_person_merge'             => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B back-compat alias for admin_musician_merge',
+        'admin_credit_person_rename'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B back-compat alias for admin_musician_rename',
+        'admin_credit_person_update'            => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B back-compat alias for admin_musician_update',
+        'admin_musician_add'                    => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B canonical name (renamed from admin_credit_person_add)',
+        'admin_musician_delete'                 => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B canonical name (renamed from admin_credit_person_delete)',
+        'admin_musician_merge'                  => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B canonical name (renamed from admin_credit_person_merge)',
+        'admin_musician_rename'                 => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B canonical name (renamed from admin_credit_person_rename)',
+        'admin_musician_update'                 => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30; #1741 P2-B canonical name (renamed from admin_credit_person_update)',
         'admin_data_health'                     => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_export'                          => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
         'admin_group_create'                    => 'deliberate API-first surface #719; Swagger console consumer; owner decision D1 default A, 2026-07-30',
@@ -175,9 +186,13 @@ return [
          * tblLanguageScripts. Neither appears anywhere in js/, manage/,
          * includes/, appApple or appAndroid. Found by THIS guard.
          * --------------------------------------------------------------- */
-        'song_by_identifier'   => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
-        'person_by_identifier' => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
-        'songs_list'           => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
+        'song_by_identifier'    => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
+        /* #1741 P2-B — person_by_identifier is the shipped-Apple-contract
+           back-compat alias for musician_by_identifier (same shape as the
+           admin_credit_person_* / admin_musician_* pairing above). */
+        'person_by_identifier'  => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7; #1741 P2-B back-compat alias for musician_by_identifier',
+        'musician_by_identifier'=> 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7; #1741 P2-B canonical name (renamed from person_by_identifier)',
+        'songs_list'            => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
         'my_organisations'     => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
         'songs_by_tag'         => 'deliberate API parity; superseded for the web by ?page=tag (#1637); X7 adds the yaml note',
         'song_revisions'       => 'deliberate API parity; dormancy note in api-docs.yaml is remediation X7',
@@ -257,16 +272,20 @@ return [
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
         'tblVocalParts'            => '#1066 one-pass dormant — ?include=vocalParts read side shipped, write side is future feature work',
         'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
-        /* tblCreditPersonLinks' entry retired #1741 P2 — the table itself was
-           renamed to tblMusicianLinks and tblCreditPersonLinks is now a
+        /* tblCreditPersonLinks' entry retired #1741 P2-A — the table itself
+           was renamed to tblMusicianLinks and tblCreditPersonLinks became a
            back-compat VIEW (migrate-musicians-rename.php), so it no longer
-           matches orphanDeriveTables()'s `CREATE TABLE` regex at all and has
-           dropped out of the reader-no-writer candidate set entirely. The
-           original deliberate-legacy-fallback reasoning still holds for the
-           app-code read path (index.php:541 / pages/person.php:287 are
-           unchanged, still reading the same old table name — now via the
-           view) but the *allowlist entry* itself is stale because its
-           subject is no longer a "table" as this scanner defines one. */
+           matches orphanDeriveTables()'s `CREATE TABLE` regex and dropped
+           out of the reader-no-writer candidate set entirely at that point
+           (P2-A was schema-only; app code still said tblCreditPersonLinks,
+           reading it through the view). #1741 P2-B (this rename) then moved
+           the app-code read path onto the NEW base-table name directly
+           (index.php:541 / includes/pages/musician.php:288 now read
+           `tblMusicianLinks` literally, not through the view) — so
+           tblMusicianLinks is a real base table again as far as this
+           scanner is concerned, and needs its OWN entry, below, rather than
+           inheriting the retired one. */
+        'tblMusicianLinks' => 'deliberate legacy fallback — index.php:541 / includes/pages/musician.php:288 read it only `if (empty($linksUnified))`, i.e. on a pre-backfill install. Dead on migrated installs BY DESIGN; #1741 P2-B renamed from tblCreditPersonLinks (originally allowlisted, then retired #1741 P2-A when the table became a view — see the note above)',
     ],
 
     /* =====================================================================
@@ -293,7 +312,9 @@ return [
         'tblWorkExternalLinks'     => 'appWeb/public_html/includes/external_link_helpers.php',
         'tblSongExternalLinks'     => 'appWeb/public_html/includes/external_link_helpers.php',
         'tblSongbookExternalLinks' => 'appWeb/public_html/includes/external_link_helpers.php',
-        'tblCreditPersonExternalLinks' => 'appWeb/public_html/includes/external_link_helpers.php',
+        /* #1741 P2-B renamed tblCreditPersonExternalLinks -> tblMusicianExternalLinks
+           (app code + this map's key both moved together in the same commit). */
+        'tblMusicianExternalLinks' => 'appWeb/public_html/includes/external_link_helpers.php',
     ],
 
     /* =====================================================================

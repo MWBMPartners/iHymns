@@ -11,7 +11,7 @@
  *  DETAILED / WHY (#960): the ORIGINAL v2 rewrite (#1200) shipped this tab
  *  with a single flat "Name" input and a `credit_upsert` endpoint that wrote
  *  only the role table (tblSongWriters etc.) — it never touched the
- *  `tblCreditPeople` registry that powers /people/<slug>, aliases and
+ *  `tblMusicians` registry that powers /musician/<slug>, aliases and
  *  identifiers. The legacy v1 editor (editor.js's createCreditNameRow(),
  *  #960) had the three-field entry from the start; v2 dropped it. This file
  *  restores the three-field UI WITHOUT restoring v1's other habit — v1 also
@@ -21,8 +21,8 @@
  *  implementation"). Two copies of that heuristic is exactly the kind of
  *  duplication the project's modularity rule (.claude/CLAUDE.md) exists to
  *  prevent, and #960's OWN fix (the extraction in commit 3f505b86) already
- *  centralised the maths server-side in credit_people_helpers.php
- *  (creditEntryNormalise() / creditPersonPromote() / decomposePersonName()).
+ *  centralised the maths server-side in musician_helpers.php
+ *  (creditEntryNormalise() / musicianPromote() / decomposePersonName()).
  *  So this file carries NO compose/decompose logic at all: it sends whatever
  *  parts the curator typed, and only ever DISPLAYS what the server's response
  *  says the registry actually holds — including on the initial load, which
@@ -37,8 +37,8 @@
  *  UPDATE in place.
  *
  *  THE SERVER RESPONSE IS AUTHORITATIVE, NOT THE INPUT (#960 D2). The
- *  registry's never-overwrite backfill (credit_people_helpers.php's
- *  creditPersonPromote()) means a curator's typed parts can be silently
+ *  registry's never-overwrite backfill (musician_helpers.php's
+ *  musicianPromote()) means a curator's typed parts can be silently
  *  refused when the registry already holds different curated values for
  *  that name — credit_upsert's response always echoes the REGISTRY's
  *  first/surname/suffix, and this file writes that back into the three
@@ -157,7 +157,7 @@ export function mountCreditsTab(container, opts) {
         /* #960 plan §4 item 5 — the search query is a TRIVIAL join of
            whatever's currently in the three boxes, not name maths: no
            comma-swap, no suffix-token recognition, nothing that could drift
-           from credit_people_helpers.php's decomposePersonName(). It only
+           from musician_helpers.php's decomposePersonName(). It only
            has to be good enough to find matching rows server-side; the
            server's own answer is what ends up in the boxes. */
         const q = [credit.first, credit.surname, credit.suffix]
@@ -209,7 +209,7 @@ export function mountCreditsTab(container, opts) {
         if (!els) { return; }
         /* `_touched` distinguishes "the curator just cleared this row" from
            "the server never sent parts for this row" (an un-migrated
-           install — creditPeopleNamePartsColumnsExist() is false, so
+           install — musicianNamePartsColumnsExist() is false, so
            first/surname/suffix are simply absent keys, not empty strings —
            see ed2_buildSongSnapshot()'s doc-block in api2.php). Without this
            flag, EVERY pre-existing credit on an un-migrated install would

@@ -157,7 +157,7 @@ if (!empty($songs)) {
             <p class="text-muted mb-0"><?= number_format($book['songCount']) ?> songs</p>
             <?php
                 /* #831 — "Compiled by …" line. Each compiler links to
-                   their /people/<slug> page when one exists; falls back
+                   their /musician/<slug> page when one exists; falls back
                    to a plain name span otherwise. Multiple compilers
                    joined with " · " for visual lightness. Hidden when
                    the songbook has no compilers attached (or on
@@ -172,8 +172,8 @@ if (!empty($songs)) {
                     <?php foreach ($compilers as $i => $c): ?>
                         <?php if ($i > 0): ?> &middot; <?php endif; ?>
                         <?php if (!empty($c['slug'])): ?>
-                            <a href="/people/<?= rawurlencode($c['slug']) ?>"
-                               data-navigate="person"
+                            <a href="/musician/<?= rawurlencode($c['slug']) ?>"
+                               data-navigate="musician"
                                class="text-reset text-decoration-underline"><?= htmlspecialchars($c['name']) ?></a>
                         <?php else: ?>
                             <span><?= htmlspecialchars($c['name']) ?></span>

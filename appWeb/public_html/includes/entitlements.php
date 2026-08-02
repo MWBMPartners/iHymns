@@ -191,7 +191,7 @@ const ENTITLEMENTS = [
     'manage_songbooks'     => ['admin', 'global_admin'],
     'manage_user_groups'   => ['admin', 'global_admin'],
     'manage_organisations' => ['admin', 'global_admin'],
-    'manage_credit_people' => ['admin', 'global_admin'],
+    'manage_musicians' => ['admin', 'global_admin'],
     /* Works (#840) — composition-grouping CRUD. Same gate as the rest
        of the catalogue surfaces; curators creating Works are doing
        editorial work that ripples across multiple songbook surfaces. */

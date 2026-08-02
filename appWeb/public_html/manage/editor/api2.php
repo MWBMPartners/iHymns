@@ -38,7 +38,7 @@ declare(strict_types=1);
  *                               alongside {id,name} (#960 plan §4 item 3) — the
  *                               registry's curated parts when known, else a
  *                               server-side decomposePersonName() fallback; never
- *                               decomposed client-side (creditPeopleNamePartsColumnsExist()-
+ *                               decomposed client-side (musicianNamePartsColumnsExist()-
  *                               gated, so an un-migrated install still gets {id,name} only).
  *   POST create_song            { songbook, title? }        -> { ok, songId }
  *   POST delete_song            { songId, reason?, note? }  -> { ok, deleted, softDeleted }
@@ -61,7 +61,7 @@ declare(strict_types=1);
  *                               Accepts EITHER the legacy flat {name} shape (what the current
  *                               UI still sends) OR the structured {first,surname,suffix} shape
  *                               (creditEntryNormalise() reassembles/decomposes either way).
- *                               Promotes the name into tblCreditPeople in the SAME transaction
+ *                               Promotes the name into tblMusicians in the SAME transaction
  *                               as the role-table write (#960) — the response echoes back the
  *                               REGISTRY's parts, never the caller's input (D2: the backfill
  *                               never overwrites a curated value, so echoing input would show a
@@ -184,12 +184,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    (no CREATE TRIGGER privilege) that left a brand-new songbook's home tile
    permanently hidden behind a stale SongCount = 0. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';
-/* #960 — creditEntryNormalise() / creditPersonPromote(): the shared
+/* #960 — creditEntryNormalise() / musicianPromote(): the shared
    normalise-and-registry-promote pair every credit write path (this file's
    credit_upsert + revision_restore, the legacy whole-song save, and
    lyrics_ingest.php) now delegates to, so v2's granular credit saves stop
-   silently skipping tblCreditPeople (the #960 regression). */
-require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+   silently skipping tblMusicians (the #960 regression). */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -656,7 +656,7 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
        (the LOAD path — load_song AND the revision-snapshot builder) still
        emitted {id, name} only. A v2 UI built to "never decompose a name in
        JS, only display what the server sends" (the explicit #960 design —
-       see credit_people_helpers.php's doc-block) would therefore render
+       see musician_helpers.php's doc-block) would therefore render
        every EXISTING credit's First/Surname/Suffix fields blank on open,
        which is indistinguishable from data loss to a curator. One batch
        SELECT covers every distinct name credited on this song (rule #5:
@@ -666,12 +666,12 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
        creditEntryNormalise() already applies to a flat-name credit_upsert
        — supplies a same-shaped fallback split, never a second drifting
        client-side copy of that maths. Gated on
-       creditPeopleNamePartsColumnsExist() so an un-migrated install keeps
+       musicianNamePartsColumnsExist() so an un-migrated install keeps
        emitting {id, name} exactly as before this change. */
-    if ($creditNames && creditPeopleNamePartsColumnsExist($db)) {
+    if ($creditNames && musicianNamePartsColumnsExist($db)) {
         $names        = array_keys($creditNames);
         $placeholders = implode(',', array_fill(0, count($names), '?'));
-        $rp = $db->prepare("SELECT Name, FirstNames, Surname, Suffix FROM tblCreditPeople WHERE Name IN ({$placeholders})");
+        $rp = $db->prepare("SELECT Name, FirstNames, Surname, Suffix FROM tblMusicians WHERE Name IN ({$placeholders})");
         $rp->bind_param(str_repeat('s', count($names)), ...$names);
         $rp->execute();
         $rpr = $rp->get_result();
@@ -829,7 +829,7 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
                     $name = mb_substr($entry['name'], 0, 255);
                     $ci->bind_param('ss', $songId, $name);
                     $ci->execute();
-                    creditPersonPromote($db, $name, [
+                    musicianPromote($db, $name, [
                         'first'   => $entry['first'],
                         'surname' => $entry['surname'],
                         'suffix'  => $entry['suffix'],
@@ -1535,7 +1535,7 @@ try {
         /* #960 — accept EITHER shape: the legacy/flat {name} the current UI
            still sends, or the structured {name?,first?,surname?,suffix?}
            shape a future 3-field UI sends. creditEntryNormalise() is the
-           SAME function the whole-song save uses (includes/credit_people_
+           SAME function the whole-song save uses (includes/musicians_
            helpers.php) — this endpoint never re-forks the decompose/compose
            logic. */
         $entry = creditEntryNormalise($credit);
@@ -1557,11 +1557,11 @@ try {
                 $i->close();
             }
             /* #960 — the ACTUAL regression fix: promote the name into the
-               tblCreditPeople registry in the SAME transaction as the
+               tblMusicians registry in the SAME transaction as the
                role-table write, so a v2 credit save can never leave the two
                out of sync (the pre-#960 bug: this endpoint wrote Name-only
                to the role table and never touched the registry at all). */
-            $registryPersonId = creditPersonPromote($db, $name, [
+            $registryPersonId = musicianPromote($db, $name, [
                 'first'   => $entry['first'],
                 'surname' => $entry['surname'],
                 'suffix'  => $entry['suffix'],
@@ -1574,19 +1574,19 @@ try {
         }
 
         /* D2 — echo the REGISTRY's parts, never the caller's normalised
-           input. creditPersonPromote()'s backfill is
+           input. musicianPromote()'s backfill is
            COALESCE(NULLIF(col,''),?) — it NEVER overwrites an existing
            curated value, so when the registry already held different parts
            than this request sent, the write above was a silent no-op for
            those columns. Echoing the input back would show the curator
            their own text while the DB kept the old value, and the very next
            load would silently revert it — a rule #30 "looks alive, isn't"
-           failure. Gated on creditPeopleNamePartsColumnsExist(): on an
+           failure. Gated on musicianNamePartsColumnsExist(): on an
            un-migrated install there are no registry parts to read back, so
            fall back to the entry's own (decompose-derived) parts — there is
            no curated value that fallback could ever shadow. */
-        if (creditPeopleNamePartsColumnsExist($db)) {
-            $reg = $db->prepare('SELECT FirstNames, Surname, Suffix FROM tblCreditPeople WHERE Id = ?');
+        if (musicianNamePartsColumnsExist($db)) {
+            $reg = $db->prepare('SELECT FirstNames, Surname, Suffix FROM tblMusicians WHERE Id = ?');
             $reg->bind_param('i', $registryPersonId);
             $reg->execute();
             $regRow = $reg->get_result()->fetch_assoc() ?: [];
@@ -3140,7 +3140,7 @@ try {
 
     /* ---- credit_search (GET) — autocomplete for credit names. UNIONs the five
            song-credit tables (grouped by name → combined usage count + the roles
-           it appears in) + the tblCreditPeople registry for kind=any. Table +
+           it appears in) + the tblMusicians registry for kind=any. Table +
            label fragments come ONLY from the hardcoded allow-list (CLAUDE.md #5);
            the query term is bound. ---- */
     case 'credit_search': {
@@ -3168,7 +3168,7 @@ try {
             $params[] = $like; $types .= 's';
         }
         if ($kind === 'any') {
-            $parts[]  = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt FROM tblCreditPeople WHERE Name LIKE ?";
+            $parts[]  = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt FROM tblMusicians WHERE Name LIKE ?";
             $params[] = $like; $types .= 's';
         }
         $sql = 'SELECT u.Name, GROUP_CONCAT(DISTINCT u.kindLabel) AS kinds, SUM(u.cnt) AS usageCount

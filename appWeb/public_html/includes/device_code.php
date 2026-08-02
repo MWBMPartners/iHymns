@@ -121,7 +121,7 @@ const AUTH_DEVICE_CODE_LINK_ATTEMPT_WINDOW_SECONDS = 600;
  *
  * DETAILED: mirrors the established per-module probe pattern
  * (`_readRateLimitTableExists()`, `serviceMode_presenceRoleColumnExists()`,
- * `creditPersonMembersTableExists()`, …) rather than a shared generic
+ * `musicianMembersTableExists()`, …) rather than a shared generic
  * `tableExists()` — this codebase deliberately keeps each probe local +
  * memoised per module (CLAUDE.md #19/#28 dormancy convention) so every
  * caller degrades independently. mysqli runs under

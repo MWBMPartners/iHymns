@@ -78,7 +78,7 @@
  *     3. Home / End jump the highlight to the first / last candidate.
  *     4. Escape now `stopPropagation()`s in addition to
  *        `preventDefault()` — see the comment on the Escape branch of
- *        `onKeydown` for why the credit-people offcanvas drawer needed
+ *        `onKeydown` for why the musicians offcanvas drawer needed
  *        this.
  *     5. The ARIA 1.2 combobox pattern is now complete: `aria-controls`
  *        ties the input to the (now uniquely `id`'d) listbox panel,
@@ -110,7 +110,7 @@
     };
 
     /* #1594 — module-scoped counter so every attach()'d input gets a
-       globally-unique panel/option id set. ELI5: the credit-people
+       globally-unique panel/option id set. ELI5: the musicians
        drawer alone calls attach() twice on one page (birth place +
        death place), so a hardcoded id would collide between the two
        instances and break `aria-controls` / `aria-activedescendant` for

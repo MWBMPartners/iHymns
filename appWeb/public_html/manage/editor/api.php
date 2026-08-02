@@ -1430,7 +1430,7 @@ switch ($action) {
             }
             /* When the caller searches "any" role (the default for the
                editor's chip autocomplete), also surface registry rows
-               from tblCreditPeople — pre-registered names that no song
+               from tblMusicians — pre-registered names that no song
                currently cites still need to be selectable. The
                synthesized 'registry' kindLabel collapses via the outer
                GROUP BY, so a registry-only name lands as a single
@@ -1441,7 +1441,7 @@ switch ($action) {
                exists in the catalogue. (#545) */
             if ($kind === 'any') {
                 $unionParts[] = "SELECT Name, 'registry' AS kindLabel, 0 AS cnt
-                                 FROM tblCreditPeople
+                                 FROM tblMusicians
                                  WHERE Name LIKE ?";
                 $params[] = $like;
                 $types   .= 's';
@@ -1453,12 +1453,12 @@ switch ($action) {
                    that this row was matched via an alternative name —
                    the chip can render a small "via AKA: <alias>" hint
                    if it wants. Schema-tolerant: silently skipped on
-                   installs where tblCreditPersonAliases isn't present. */
-                require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-                if (creditPeopleAliasesTableExists($db)) {
+                   installs where tblMusicianAliases isn't present. */
+                require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
+                if (musicianAliasesTableExists($db)) {
                     $unionParts[] = "SELECT cp.Name, 'alias' AS kindLabel, 0 AS cnt
-                                     FROM tblCreditPersonAliases a
-                                     JOIN tblCreditPeople cp ON cp.Id = a.CreditPersonId
+                                     FROM tblMusicianAliases a
+                                     JOIN tblMusicians cp ON cp.Id = a.MusicianId
                                      WHERE a.Name LIKE ?";
                     $params[] = $like;
                     $types   .= 's';
@@ -1469,20 +1469,20 @@ switch ($action) {
                or strict-mode configurations. (#593)
 
                #960 — when the FirstNames/Surname/Suffix columns from
-               PR #935 exist, LEFT JOIN tblCreditPeople so a
+               PR #935 exist, LEFT JOIN tblMusicians so a
                registry-matched name surfaces its structured parts in
                the response. The chip-list editor uses these to
                populate all three inputs on suggestion click,
                preferring curated parts over a client-side decompose
                of the composed Name. Pre-migration installs return
                NULLs and the client falls back to decomposing. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
-            $partsCols = creditPeopleNamePartsColumnsExist($db);
+            require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
+            $partsCols = musicianNamePartsColumnsExist($db);
             $partsSelect  = $partsCols
                 ? ', cp.FirstNames AS first_names, cp.Surname AS surname, cp.Suffix AS suffix'
                 : '';
             $partsJoin    = $partsCols
-                ? 'LEFT JOIN tblCreditPeople cp ON cp.Name = u.Name'
+                ? 'LEFT JOIN tblMusicians cp ON cp.Name = u.Name'
                 : '';
             /* ONLY_FULL_GROUP_BY requires every non-aggregated select
                column to appear in GROUP BY. Group on the raw column

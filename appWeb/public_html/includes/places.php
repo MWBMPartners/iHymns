@@ -73,19 +73,19 @@ function placeColumnExists(mysqli $db, string $table, string $column): bool
 }
 
 /**
- * Cached probe for the place-id FK columns on tblCreditPeople.
- * Used by credit-people.php's add / update path to choose between
+ * Cached probe for the place-id FK columns on tblMusicians.
+ * Used by musicians.php's add / update path to choose between
  * the legacy INSERT shape and the place-id-aware one without
  * re-querying INFORMATION_SCHEMA on every save.
  */
-function creditPeoplePlaceIdColumnsExist(mysqli $db): bool
+function musicianPlaceIdColumnsExist(mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
     $stmt = $db->prepare(
         "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
           WHERE TABLE_SCHEMA = DATABASE()
-            AND TABLE_NAME   = 'tblCreditPeople'
+            AND TABLE_NAME   = 'tblMusicians'
             AND COLUMN_NAME IN ('BirthPlaceId', 'DeathPlaceId')"
     );
     $stmt->execute();

@@ -714,7 +714,7 @@ function serviceMode_resolveJoin(\mysqli $db, string $code, int $venueId, string
  * un-migrated install (the column ships via the Phase-2 schema batch,
  * `migrate-apple-phase2-live-schema.php`). Mirrors the established
  * `tierCapsColumnExists()` (access_tier_validation.php) /
- * `creditPersonMembersTableExists()` (credit_people_helpers.php) pattern —
+ * `musicianMembersTableExists()` (musician_helpers.php) pattern —
  * one INFORMATION_SCHEMA round-trip, memoised for the rest of the request.
  */
 function serviceMode_presenceRoleColumnExists(\mysqli $db): bool

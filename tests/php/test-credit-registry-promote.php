@@ -7,13 +7,13 @@ declare(strict_types=1);
  *
  * ELI5: every place in this codebase that writes a new row into one of the
  * six credit-role tables (writers / composers / arrangers / adaptors /
- * translators / artists) must ALSO tell the `tblCreditPeople` registry
+ * translators / artists) must ALSO tell the `tblMusicians` registry
  * about that name — otherwise the person has no `/people/<slug>` page, no
  * aliases, no identifiers, nothing. This guard walks the tree, finds every
  * FUNCTION (or top-level dispatch `case`) that writes one of those six
  * tables, and fails the build if that same function/case never calls
- * `creditPersonPromote()` (the one shared function that does the registry
- * write — `includes/credit_people_helpers.php`).
+ * `musicianPromote()` (the one shared function that does the registry
+ * write — `includes/musician_helpers.php`).
  *
  * DETAILED / WHY: the #960 regression was exactly this — the v2 editor's
  * `credit_upsert` action (`manage/editor/api2.php`) wrote the role-table
@@ -29,10 +29,10 @@ declare(strict_types=1);
  *
  * WHY PER-UNIT (function / dispatch `case`), NOT PER-FILE (D9 revision):
  *   An earlier draft of this guard checked "does the whole FILE contain
- *   the string `creditPersonPromote(` anywhere?". Mutation-testing that
+ *   the string `musicianPromote(` anywhere?". Mutation-testing that
  *   draft (per rule #34 — a guard must be proven able to fail) found it
  *   COULD NOT go red for the one mutation the plan explicitly requires:
- *   `manage/editor/api2.php` legitimately calls `creditPersonPromote()`
+ *   `manage/editor/api2.php` legitimately calls `musicianPromote()`
  *   from TWO independent places (`credit_upsert` and the
  *   `revision_restore` credits-restore loop inside `ed2_applySongSnapshot`)
  *   — #960's own fix adds both in the same file. Removing ONLY the
@@ -75,7 +75,7 @@ declare(strict_types=1);
  *         MANDATORY, not a nicety: a literal-only regex misses api2.php
  *         entirely, since every credit INSERT there is built from an
  *         interpolated table-name expression.
- *   Every credit-writer unit must also have `creditPersonPromote(` in its
+ *   Every credit-writer unit must also have `musicianPromote(` in its
  *   OWN `code` view.
  *
  * D9 — SAME-UNIT ASSUMPTION (documented per the house rule on guards):
@@ -85,7 +85,7 @@ declare(strict_types=1);
  *   `ed2_applySongSnapshot()`, `lyricsIngest_storeExternalIds()`). If a
  *   FUTURE credit writer routes its promote through a wrapper defined in
  *   ANOTHER function (e.g. a future `creditWriteRow($db, $table, $songId,
- *   $entry)` helper that itself calls `creditPersonPromote()`
+ *   $entry)` helper that itself calls `musicianPromote()`
  *   internally), this guard will false-positive on that writer. The
  *   correct response is to WIDEN this check (e.g. also accept a call to
  *   the named wrapper) — NEVER to delete or weaken the guard just because
@@ -105,13 +105,13 @@ declare(strict_types=1);
  *   php tests/php/test-credit-registry-promote.php
  *
  * Exit status 0 = clean, 1 = at least one credit-table-writing unit with
- * no creditPersonPromote() call, or the vacuity check tripped (see below).
+ * no musicianPromote() call, or the vacuity check tripped (see below).
  *
  * MUTATION-TESTING TRANSCRIPT (rule #34 — a guard must be proven able to
  * fail before it is trusted; re-run against the real tree before this
  * file was committed, transcript pasted verbatim into the commit body):
  *
- *   1. Comment out the `creditPersonPromote(` call inside api2.php's
+ *   1. Comment out the `musicianPromote(` call inside api2.php's
  *      `credit_upsert` case ONLY (the revision_restore call site is left
  *      untouched, so this is a genuine test of per-UNIT granularity, not
  *      just "does the file mention it anywhere") ->
@@ -121,7 +121,7 @@ declare(strict_types=1);
  *      should). Restore the line -> PASS again.
  *   2. Drop a scratch file under appWeb/public_html/ containing a bare
  *      `INSERT INTO tblSongWriters (SongId, Name) VALUES (?, ?)` inside a
- *      function, and NO `creditPersonPromote(` call -> FAIL, naming the
+ *      function, and NO `musicianPromote(` call -> FAIL, naming the
  *      scratch file's function (proves the derivation catches a
  *      genuinely NEW writer, not just the three known ones). Delete the
  *      scratch file -> PASS again.
@@ -136,7 +136,7 @@ const GUARD_LITERAL_INSERT_PATTERN     = '/^INSERT\s+INTO\s+tblSong(?:Writers|Co
    renderings. Requires the co-located ED2_CREDIT_TABLES reference (below)
    so this can't match an unrelated dynamic INSERT elsewhere in the tree. */
 const GUARD_INTERPOLATED_INSERT_PATTERN = '/^INSERT\s+INTO\s+\{*\$/i';
-const GUARD_PROMOTE_CALL           = 'creditPersonPromote(';
+const GUARD_PROMOTE_CALL           = 'musicianPromote(';
 const GUARD_ED2_CREDIT_TABLES_REF  = 'ED2_CREDIT_TABLES';
 
 /** Is this one `sqlOnly` entry (already begins with a SQL verb) an INSERT
@@ -201,8 +201,8 @@ foreach ($files as $file) {
         if (!str_contains($unit['code'], GUARD_PROMOTE_CALL)) {
             $failures[] = sprintf(
                 '%s :: %s — writes a credit role table (tblSongWriters/Composers/Arrangers/'
-                . 'Adaptors/Translators/Artists) but never calls creditPersonPromote() in the '
-                . 'same function/case — the tblCreditPeople registry silently goes unpopulated '
+                . 'Adaptors/Translators/Artists) but never calls musicianPromote() in the '
+                . 'same function/case — the tblMusicians registry silently goes unpopulated '
                 . 'for this write path (#960)',
                 $rel,
                 $unitName
@@ -232,14 +232,14 @@ if ($failures) {
     fwrite(STDERR, "FAIL: credit-registry-promote guard (#960):\n\n");
     foreach ($failures as $f) { fwrite(STDERR, "  $f\n"); }
     fwrite(STDERR, "\nEvery function/case that INSERTs into a credit role table must also call\n");
-    fwrite(STDERR, "creditPersonPromote() (includes/credit_people_helpers.php) in the SAME\n");
-    fwrite(STDERR, "function/case, so the tblCreditPeople registry never silently falls out of\n");
+    fwrite(STDERR, "musicianPromote() (includes/musician_helpers.php) in the SAME\n");
+    fwrite(STDERR, "function/case, so the tblMusicians registry never silently falls out of\n");
     fwrite(STDERR, "sync with the role tables. See this file's doc-block for the D9 same-unit\n");
     fwrite(STDERR, "assumption and what to do if a future writer routes through a wrapper.\n");
     exit(1);
 }
 
-echo "PASS: every credit-table-writing function/case promotes into tblCreditPeople "
+echo "PASS: every credit-table-writing function/case promotes into tblMusicians "
    . "({$scanned} files scanned, " . count($writerFiles) . " file(s) with a credit writer: "
    . implode(', ', array_keys($writerFiles)) . ").\n";
 exit(0);

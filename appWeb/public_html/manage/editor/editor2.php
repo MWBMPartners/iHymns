@@ -236,7 +236,7 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
 
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file
-         (editor/index.php, organisations.php, songbooks.php, credit-people.php, venues.php,
+         (editor/index.php, organisations.php, songbooks.php, musicians.php, venues.php,
          works.php all do). This one script tag was the odd one out with no `?v=` at all —
          a real staleness vector: an admin with this file already cached would silently keep
          running a stale place-search.js across deploys instead of picking up the fix. -->

@@ -5,20 +5,20 @@ declare(strict_types=1);
 /**
  * iHymns — Credit-people shared helpers (#719 PR 2d)
  *
- * Single source of truth for the bits both /manage/credit-people.php
- * and the admin_credit_person_* API endpoints share:
+ * Single source of truth for the bits both /manage/musicians.php
+ * and the admin_musician_* API endpoints share:
  *
- *   - CREDIT_PERSON_LEGACY_SLUG_MAP — back-compat slug → registry-slug
+ *   - MUSICIAN_LEGACY_SLUG_MAP — back-compat slug → registry-slug
  *     coercion table for /api.php callers that still send the legacy
- *     #586 vocabulary. The /manage/credit-people form moved to numeric
+ *     #586 vocabulary. The /manage/musicians form moved to numeric
  *     LinkTypeId values directly and no longer reads this map.
- *   - resolveCreditPersonLinkTypeId() — single source of truth for
+ *   - resolveMusicianLinkTypeId() — single source of truth for
  *     "given a numeric type_id OR a slug string, find the matching
  *     tblExternalLinkTypes.Id row" used by every write path.
- *   - normaliseCreditPersonLinks() / normaliseCreditPersonIpi() —
+ *   - normaliseMusicianLinks() / normaliseMusicianIpi() —
  *     drop empty rows, resolve link-type slugs / numeric ids to
  *     registry FKs, normalise the row shape into INSERT-ready arrays.
- *   - creditPeopleFlagsColumnsExist() — cached check for the
+ *   - musicianFlagsColumnsExist() — cached check for the
  *     IsSpecialCase / IsGroup columns from #584/#585. Lets the add /
  *     update paths gracefully no-op the flag writes on a partly-
  *     migrated install (#630).
@@ -34,10 +34,10 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 /* Partial-date parser/formatter (the ONE place that turns a curator's
    YYYY / MM/YYYY / DD/MM/YYYY input into a normalised (date, precision)
-   pair and back). The credit-person save + load paths below delegate to
+   pair and back). The musician save + load paths below delegate to
    it so the form, the API and the public page all agree on what a
    year-only birth date means. require_once is idempotent — both
-   /manage/credit-people.php and /api.php pull this helper file, and
+   /manage/musicians.php and /api.php pull this helper file, and
    either may already have included partial_date.php. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
 
@@ -54,8 +54,8 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
  * UNIQUE-keyed identifier column or a stored URL with stray whitespace.
  *
  * DETAILED / WHY a helper instead of inline `trim((string)($x ?? ''))`
- * everywhere: every credit-person add/update/rename/merge handler in
- * credit-people.php, plus every repeating sub-form normaliser below
+ * everywhere: every musician add/update/rename/merge handler in
+ * musicians.php, plus every repeating sub-form normaliser below
  * (links / IPI / ISNI / other-identifiers / aliases), needs the exact
  * same idiom on the exact same shape of input. Before this helper the
  * idiom was duplicated by hand at each call site; one typo'd copy (e.g.
@@ -69,7 +69,7 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'partial_date.php';
  * JSON-decoded sub-form rows can hand back a non-string scalar (int,
  * bool) for a field a curator left as a bare numeric literal.
  */
-function cpTrimmed(mixed $v): string
+function musTrimmed(mixed $v): string
 {
     return trim((string)($v ?? ''));
 }
@@ -87,7 +87,7 @@ function cpTrimmed(mixed $v): string
  * identifiers" picker, the save-time allow-list + value validation, the
  * public chip link-out, and the paste-a-URL auto-extract all need the SAME
  * truth. Adding a provider is now ONE entry here — no schema change, because
- * tblCreditPersonIdentifiers.IdentifierType is already VARCHAR(20) and is
+ * tblMusicianIdentifiers.IdentifierType is already VARCHAR(20) and is
  * app-validated (rule #20: a growable vocabulary is VARCHAR + an app-level
  * allow-list, never an ENUM that would force an ALTER).
  *
@@ -190,7 +190,7 @@ function creditIdentifierValidate(string $type, string $value): bool
  */
 function creditIdentifierNormalise(string $type, string $value): string
 {
-    $value = cpTrimmed($value); // #trim
+    $value = musTrimmed($value); // #trim
     if ($value === '') return $value;
     $reg = CREDIT_IDENTIFIER_TYPES[$type] ?? null;
     if ($reg === null) return $value;
@@ -221,7 +221,7 @@ function creditIdentifierNormalise(string $type, string $value): string
  */
 function creditIdentifierExtractFromUrl(string $url): ?array
 {
-    $url = cpTrimmed($url); // #trim
+    $url = musTrimmed($url); // #trim
     if ($url === '') return null;
     foreach (CREDIT_IDENTIFIER_TYPES as $slug => $def) {
         foreach ($def['extract'] as $body) {
@@ -277,22 +277,22 @@ function creditIdentifierClientConfig(): array
 }
 
 /**
- * Legacy slug → tblExternalLinkTypes.Slug map for credit-people.
+ * Legacy slug → tblExternalLinkTypes.Slug map for musicians.
  *
  * Preserved purely for backwards compatibility with /api.php
- * admin_credit_person_add / _update callers that historically sent
+ * admin_musician_add / _update callers that historically sent
  * `links[].type` as a free-text slug string (the #586 catalogue
  * vocabulary: 'apple_music', 'youtube_music', 'twitter', etc.).
- * Mirrors the mapping table from migrate-backfill-credit-person-links.php
+ * Mirrors the mapping table from migrate-backfill-musician-links.php
  * so any external consumer can keep sending the old vocabulary
  * while the storage layer moves to numeric LinkTypeId FKs.
  *
  * Anything not in the map resolves to 'other' — same fall-through
  * the backfill migration applies.
  */
-if (!defined('IHYMNS_CREDIT_LINK_LEGACY_SLUG_MAP_DEFINED')) {
-    define('IHYMNS_CREDIT_LINK_LEGACY_SLUG_MAP_DEFINED', true);
-    define('CREDIT_PERSON_LEGACY_SLUG_MAP', [
+if (!defined('IHYMNS_MUSICIAN_LINK_LEGACY_SLUG_MAP_DEFINED')) {
+    define('IHYMNS_MUSICIAN_LINK_LEGACY_SLUG_MAP_DEFINED', true);
+    define('MUSICIAN_LEGACY_SLUG_MAP', [
         /* Direct passes (the registry slug IS the form slug) */
         'wikipedia'             => 'wikipedia',
         'wikidata'              => 'wikidata',
@@ -345,17 +345,17 @@ if (!defined('IHYMNS_CREDIT_LINK_LEGACY_SLUG_MAP_DEFINED')) {
 }
 
 /**
- * Resolve the `tblExternalLinkTypes.Id` for a credit-person link row.
+ * Resolve the `tblExternalLinkTypes.Id` for a musician link row.
  *
- * Accepts either a numeric `type_id` (preferred — the /manage/credit-people
+ * Accepts either a numeric `type_id` (preferred — the /manage/musicians
  * form uses the shared editor module so values are already registry
  * IDs) or a legacy slug string (`type`) which gets coerced via
- * CREDIT_PERSON_LEGACY_SLUG_MAP and looked up in the registry.
+ * MUSICIAN_LEGACY_SLUG_MAP and looked up in the registry.
  * Returns null when neither path resolves — the caller drops the
  * row from the normaliser output, matching the pre-#833 behaviour
  * where unknown types collapsed to 'other'.
  */
-function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $rawSlug): ?int
+function resolveMusicianLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $rawSlug): ?int
 {
     static $registryIds = null;
     static $slugToId    = null;
@@ -382,9 +382,9 @@ function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $raw
     if ($typeId > 0 && isset($registryIds[$typeId])) return $typeId;
 
     /* Legacy shape — coerce the slug via the alias map, then look up. */
-    $slugIn = cpTrimmed($rawSlug ?? ''); // #trim
+    $slugIn = musTrimmed($rawSlug ?? ''); // #trim
     if ($slugIn === '') return null;
-    $resolved = CREDIT_PERSON_LEGACY_SLUG_MAP[mb_strtolower($slugIn)] ?? 'other';
+    $resolved = MUSICIAN_LEGACY_SLUG_MAP[mb_strtolower($slugIn)] ?? 'other';
     return $slugToId[$resolved] ?? null;
 }
 
@@ -392,9 +392,9 @@ function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $raw
  * Normalise the per-person external-link sub-form. Drops empty rows
  * (no URL), resolves either numeric `type_id` (new editor) or legacy
  * `type` slug strings to a `tblExternalLinkTypes.Id`, and returns
- * INSERT-ready row arrays shaped for `tblCreditPersonExternalLinks`.
+ * INSERT-ready row arrays shaped for `tblMusicianExternalLinks`.
  *
- * Accepts either the form-array shape from /manage/credit-people
+ * Accepts either the form-array shape from /manage/musicians
  * (`links[i][type_id|type|url|label]`) or the JSON shape from
  * /api.php (`links[]: {type_id|type, url, label}`).
  *
@@ -407,20 +407,20 @@ function resolveCreditPersonLinkTypeId(\mysqli $db, mixed $rawTypeId, mixed $raw
  * @param mixed   $raw  Form / JSON-decoded array; non-array → []
  * @return list<array{type_id:int,url:string,label:?string,sort_order:int}>
  */
-function normaliseCreditPersonLinks(\mysqli $db, mixed $raw): array
+function normaliseMusicianLinks(\mysqli $db, mixed $raw): array
 {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $url = cpTrimmed($row['url'] ?? ''); // #trim
+        $url = musTrimmed($row['url'] ?? ''); // #trim
         if ($url === '') continue;
-        $typeId = resolveCreditPersonLinkTypeId($db, $row['type_id'] ?? null, $row['type'] ?? null);
+        $typeId = resolveMusicianLinkTypeId($db, $row['type_id'] ?? null, $row['type'] ?? null);
         if ($typeId === null) continue;
         $out[] = [
             'type_id'    => $typeId,
             'url'        => $url,
-            'label'      => cpTrimmed($row['label'] ?? '') ?: null, // #trim
+            'label'      => musTrimmed($row['label'] ?? '') ?: null, // #trim
             'sort_order' => (int)($row['sort_order'] ?? $i),
         ];
     }
@@ -434,18 +434,18 @@ function normaliseCreditPersonLinks(\mysqli $db, mixed $raw): array
  * @param mixed $raw Form / JSON-decoded array; non-array → []
  * @return list<array{number:string,name_used:?string,notes:?string}>
  */
-function normaliseCreditPersonIpi(mixed $raw): array
+function normaliseMusicianIpi(mixed $raw): array
 {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $num = cpTrimmed($row['number'] ?? ''); // #trim
+        $num = musTrimmed($row['number'] ?? ''); // #trim
         if ($num === '') continue;
         $out[] = [
             'number'    => $num,
-            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
-            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
+            'name_used' => musTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => musTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -453,7 +453,7 @@ function normaliseCreditPersonIpi(mixed $raw): array
 
 /**
  * Normalise the per-person ISNI sub-form. Same row shape as IPI so the
- * unified tblCreditPersonIdentifiers INSERT path can treat both flows
+ * unified tblMusicianIdentifiers INSERT path can treat both flows
  * identically — the only thing that differs is the IdentifierType value
  * the caller binds when persisting.
  *
@@ -474,18 +474,18 @@ function normaliseCreditPersonIpi(mixed $raw): array
  * @param mixed $raw Form / JSON-decoded array; non-array → []
  * @return list<array{number:string,name_used:?string,notes:?string}>
  */
-function normaliseCreditPersonIsni(mixed $raw): array
+function normaliseMusicianIsni(mixed $raw): array
 {
     if (!is_array($raw)) return [];
     $out = [];
     foreach ($raw as $row) {
         if (!is_array($row)) continue;
-        $raw_id = cpTrimmed($row['number'] ?? ''); // #trim
+        $raw_id = musTrimmed($row['number'] ?? ''); // #trim
         if ($raw_id === '') continue;
         $out[] = [
             'number'    => canonicaliseIsni($raw_id),
-            'name_used' => cpTrimmed($row['name_used'] ?? '') ?: null, // #trim
-            'notes'     => cpTrimmed($row['notes']     ?? '') ?: null, // #trim
+            'name_used' => musTrimmed($row['name_used'] ?? '') ?: null, // #trim
+            'notes'     => musTrimmed($row['notes']     ?? '') ?: null, // #trim
         ];
     }
     return $out;
@@ -517,7 +517,7 @@ function canonicaliseIsni(string $raw): string
 
 /**
  * Compose a person's display name from the structured columns added in
- * #934. The result is what gets written back into tblCreditPeople.Name
+ * #934. The result is what gets written back into tblMusicians.Name
  * so the ~30 read sites that already query Name continue to see the
  * canonical display string.
  *
@@ -592,11 +592,11 @@ function decomposePersonName(string $name): array
 
 /**
  * Cached check for the FirstNames / Surname / Suffix columns from #934.
- * Mirrors creditPeopleFlagsColumnsExist()'s pattern — admin INSERT /
+ * Mirrors musicianFlagsColumnsExist()'s pattern — admin INSERT /
  * UPDATE paths gate the new columns on this so a partly-migrated
  * install still saves rather than throwing "Unknown column".
  */
-function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
+function musicianNamePartsColumnsExist(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -604,7 +604,7 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPeople'
+                AND TABLE_NAME   = 'tblMusicians'
                 AND COLUMN_NAME  = 'Surname' LIMIT 1"
         );
         $stmt->execute();
@@ -619,13 +619,13 @@ function creditPeopleNamePartsColumnsExist(\mysqli $db): bool
 /**
  * Cached check for the MaidenSurname column (#1501,
  * migrate-add-creditperson-maiden-surname.php). Mirrors
- * creditPeopleNamePartsColumnsExist()'s pattern exactly — the add /
+ * musicianNamePartsColumnsExist()'s pattern exactly — the add /
  * update_person save paths gate the write on this so a partly-migrated
  * install still saves the rest of the record rather than throwing
  * "Unknown column", and the list-load query gates the SELECT the same
  * way (falls back to `NULL AS MaidenSurname`).
  */
-function creditPeopleMaidenSurnameColumnExists(\mysqli $db): bool
+function musicianMaidenSurnameColumnExists(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -633,7 +633,7 @@ function creditPeopleMaidenSurnameColumnExists(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPeople'
+                AND TABLE_NAME   = 'tblMusicians'
                 AND COLUMN_NAME  = 'MaidenSurname' LIMIT 1"
         );
         $stmt->execute();
@@ -646,22 +646,22 @@ function creditPeopleMaidenSurnameColumnExists(\mysqli $db): bool
 }
 
 /**
- * Persist MaidenSurname for a credit-person row, in a SEPARATE statement
+ * Persist MaidenSurname for a musician row, in a SEPARATE statement
  * from the main multi-branch INSERT/UPDATE — mirrors the per-place
- * BirthPlaceId/DeathPlaceId UPDATE pattern and creditPeopleSaveDatePrecision()
+ * BirthPlaceId/DeathPlaceId UPDATE pattern and musicianSaveDatePrecision()
  * below: the giant column-existence-branched INSERT/UPDATE shapes in
- * credit-people.php don't need to learn a new branch for one more
- * optional column. No-op (gated on creditPeopleMaidenSurnameColumnExists())
+ * musicians.php don't need to learn a new branch for one more
+ * optional column. No-op (gated on musicianMaidenSurnameColumnExists())
  * on an un-migrated install — dormant-safe (#1501).
  *
- * @param int         $personId      tblCreditPeople.Id (insert_id on create).
+ * @param int         $personId      tblMusicians.Id (insert_id on create).
  * @param string|null $maidenSurname Trimmed value, or null to clear.
  */
-function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSurname): void
+function musicianSaveMaidenSurname(\mysqli $db, int $personId, ?string $maidenSurname): void
 {
     if ($personId <= 0) return;
-    if (!creditPeopleMaidenSurnameColumnExists($db)) return;
-    $stmt = $db->prepare('UPDATE tblCreditPeople SET MaidenSurname = ? WHERE Id = ?');
+    if (!musicianMaidenSurnameColumnExists($db)) return;
+    $stmt = $db->prepare('UPDATE tblMusicians SET MaidenSurname = ? WHERE Id = ?');
     $stmt->bind_param('si', $maidenSurname, $personId);
     $stmt->execute();
     $stmt->close();
@@ -678,7 +678,7 @@ function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maid
  * the whole catalogue.
  *
  * DETAILED: returns the SAME two-source shape the legacy client-side
- * `registry` array offered — registry rows (tblCreditPeople) first
+ * `registry` array offered — registry rows (tblMusicians) first
  * (alphabetical), then in-use-only names (cited on a song but with no
  * registry row yet — the same 5-table UNION the page's own list-load
  * query uses) filling any remaining slots up to $limit, ordered by
@@ -693,7 +693,7 @@ function creditPeopleSaveMaidenSurname(\mysqli $db, int $personId, ?string $maid
  *
  * @return list<array{key:string,id:?int,name:string,total:int}>
  */
-function searchCreditPersonMergeTargets(
+function searchMusicianMergeTargets(
     \mysqli $db,
     string  $q,
     int     $excludeId,
@@ -706,10 +706,10 @@ function searchCreditPersonMergeTargets(
     /* Registry rows first — alphabetical, matching the legacy dropdown's
        ordering for the "definitely a real person" bucket. */
     if ($q === '') {
-        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? ORDER BY Name ASC LIMIT ?');
+        $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id <> ? ORDER BY Name ASC LIMIT ?');
         $stmt->bind_param('ii', $excludeId, $limit);
     } else {
-        $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id <> ? AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
+        $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id <> ? AND Name LIKE ? ORDER BY Name ASC LIMIT ?');
         $stmt->bind_param('isi', $excludeId, $like, $limit);
     }
     $stmt->execute();
@@ -739,7 +739,7 @@ function searchCreditPersonMergeTargets(
               UNION ALL
               SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
           ) u
-         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
            AND u.Name <> ?"
         . ($q !== '' ? ' AND u.Name LIKE ?' : '') . "
          GROUP BY u.Name
@@ -783,7 +783,7 @@ function searchCreditPersonMergeTargets(
  * Cached probe for the BirthDatePrecision / DeathDatePrecision columns
  * (migrate-add-creditpeople-date-precision.php). Both ship together, so
  * detecting BirthDatePrecision is sufficient to assume DeathDatePrecision.
- * Mirrors creditPeoplePlaceIdColumnsExist() in includes/places.php — the
+ * Mirrors musicianPlaceIdColumnsExist() in includes/places.php — the
  * add / update / API save paths gate the precision write on this so a
  * partly-migrated install saves the date without throwing "Unknown column".
  * Static-cached for the request lifetime so the INFORMATION_SCHEMA round-trip
@@ -791,7 +791,7 @@ function searchCreditPersonMergeTargets(
  *
  * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-columns-table.html
  */
-function creditPeopleDatePrecisionColumnsExist(\mysqli $db): bool
+function musicianDatePrecisionColumnsExist(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -799,7 +799,7 @@ function creditPeopleDatePrecisionColumnsExist(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPeople'
+                AND TABLE_NAME   = 'tblMusicians'
                 AND COLUMN_NAME  = 'BirthDatePrecision' LIMIT 1"
         );
         $stmt->execute();
@@ -812,30 +812,30 @@ function creditPeopleDatePrecisionColumnsExist(\mysqli $db): bool
 }
 
 /**
- * Persist the birth / death date precision flags for a credit-person row,
+ * Persist the birth / death date precision flags for a musician row,
  * in a SEPARATE statement from the main INSERT / UPDATE (mirroring the
  * per-place BirthPlaceId / DeathPlaceId UPDATE pattern). The multi-branch
- * INSERT shapes in credit-people.php / api.php don't have to learn about
+ * INSERT shapes in musicians.php / api.php don't have to learn about
  * the precision columns — this runs straight after, gated on existence.
  *
  * Both values bind as 's' (string); a NULL precision (no date) binds fine
  * via mysqli's NULL handling and lands as SQL NULL, matching the column's
  * "NULL when no date" semantics. No-op on an un-migrated install.
  *
- * @param int          $personId  tblCreditPeople.Id (insert_id on create).
+ * @param int          $personId  tblMusicians.Id (insert_id on create).
  * @param string|null  $birthPrec 'year' | 'month' | 'day' | null
  * @param string|null  $deathPrec 'year' | 'month' | 'day' | null
  */
-function creditPeopleSaveDatePrecision(
+function musicianSaveDatePrecision(
     \mysqli $db,
     int     $personId,
     ?string $birthPrec,
     ?string $deathPrec
 ): void {
     if ($personId <= 0) return;
-    if (!creditPeopleDatePrecisionColumnsExist($db)) return;
+    if (!musicianDatePrecisionColumnsExist($db)) return;
     $stmt = $db->prepare(
-        'UPDATE tblCreditPeople
+        'UPDATE tblMusicians
             SET BirthDatePrecision = ?, DeathDatePrecision = ?
           WHERE Id = ?'
     );
@@ -856,9 +856,9 @@ function creditPeopleSaveDatePrecision(
  *
  * @return string Empty string when $date is NULL / unparseable.
  */
-function creditPeopleDateInput(\mysqli $db, ?string $date, ?string $precision): string
+function musicianDateInput(\mysqli $db, ?string $date, ?string $precision): string
 {
-    if (creditPeopleDatePrecisionColumnsExist($db)) {
+    if (musicianDatePrecisionColumnsExist($db)) {
         return partialDateFormatInput($date, $precision);
     }
     return partialDateFormatInput($date, 'day');
@@ -867,14 +867,14 @@ function creditPeopleDateInput(\mysqli $db, ?string $date, ?string $precision): 
 /**
  * Slugify a person's name for the URL component. Lower-cases, strips
  * combining marks, collapses non-letter/digit runs to single hyphens.
- * Mirrors the migration-time slugify in migrate-credit-people-slug.php
+ * Mirrors the migration-time slugify in migrate-musicians-slug.php
  * — when both implementations drift, the backfill stops being idempotent
  * with new inserts.
  *
  * Returns '' for an empty / punctuation-only name; callers should fall
  * back to a stable default (e.g. 'person') in that case.
  */
-function slugifyCreditPersonName(string $name): string
+function slugifyMusicianName(string $name): string
 {
     $s = mb_strtolower(trim($name));
     if (class_exists('Normalizer')) {
@@ -886,7 +886,7 @@ function slugifyCreditPersonName(string $name): string
 }
 
 /**
- * Generate a unique slug for a tblCreditPeople row.
+ * Generate a unique slug for a tblMusicians row.
  *
  * Computes the base slug from $name, then appends -2 / -3 / … until the
  * candidate isn't already taken. When $excludeId is provided, the row
@@ -901,7 +901,7 @@ function slugifyCreditPersonName(string $name): string
  * Schema-tolerant: if the Slug column doesn't exist yet (pre-migration
  * install), returns '' so callers can omit the column from the INSERT.
  */
-function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $excludeId = null): string
+function generateUniqueMusicianSlug(\mysqli $db, string $name, ?int $excludeId = null): string
 {
     /* If the column hasn't been added yet, no slug is needed. */
     static $hasSlugCol = null;
@@ -910,7 +910,7 @@ function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $exclude
             $probe = $db->prepare(
                 "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
                   WHERE TABLE_SCHEMA = DATABASE()
-                    AND TABLE_NAME   = 'tblCreditPeople'
+                    AND TABLE_NAME   = 'tblMusicians'
                     AND COLUMN_NAME  = 'Slug' LIMIT 1"
             );
             $probe->execute();
@@ -922,7 +922,7 @@ function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $exclude
     }
     if (!$hasSlugCol) return '';
 
-    $base = slugifyCreditPersonName($name);
+    $base = slugifyMusicianName($name);
     if ($base === '') $base = 'person';
 
     /* Pull all taken slugs that share this base prefix in one query.
@@ -931,10 +931,10 @@ function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $exclude
        registry. */
     $like = $base . '%';
     if ($excludeId !== null) {
-        $stmt = $db->prepare('SELECT Slug FROM tblCreditPeople WHERE Slug LIKE ? AND Id <> ?');
+        $stmt = $db->prepare('SELECT Slug FROM tblMusicians WHERE Slug LIKE ? AND Id <> ?');
         $stmt->bind_param('si', $like, $excludeId);
     } else {
-        $stmt = $db->prepare('SELECT Slug FROM tblCreditPeople WHERE Slug LIKE ?');
+        $stmt = $db->prepare('SELECT Slug FROM tblMusicians WHERE Slug LIKE ?');
         $stmt->bind_param('s', $like);
     }
     $stmt->execute();
@@ -952,10 +952,10 @@ function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $exclude
 /**
  * Idempotent "register this name in the registry" helper.
  *
- * Looks up tblCreditPeople by Name and returns the existing Id if a row
+ * Looks up tblMusicians by Name and returns the existing Id if a row
  * already matches. Otherwise INSERTs a new row carrying:
  *   - Name        (the trimmed input)
- *   - Slug        (computed via generateUniqueCreditPersonSlug if the
+ *   - Slug        (computed via generateUniqueMusicianSlug if the
  *                  column exists)
  *   - FirstNames  | OPTIONAL — only set when the name-parts columns
  *   - Surname     | from PR #935 are present AND $parts is supplied;
@@ -965,21 +965,21 @@ function generateUniqueCreditPersonSlug(\mysqli $db, string $name, ?int $exclude
  * empty — callers should guard.
  *
  * This is the canonical insertion point for the registry — every other
- * path that previously called `INSERT INTO tblCreditPeople (Name)` and
+ * path that previously called `INSERT INTO tblMusicians (Name)` and
  * silently relied on `NOT NULL DEFAULT ''` Slug semantics MUST route
  * through here, or it will trip the `Duplicate entry '' for uk_Slug`
  * UNIQUE collision the moment an orphan empty-Slug row exists.
  */
-function registerCreditPersonByName(
+function registerMusicianByName(
     \mysqli $db,
     string  $name,
     ?array  $parts = null
 ): int {
-    $name = cpTrimmed($name); // #trim
+    $name = musTrimmed($name); // #trim
     if ($name === '') return 0;
 
     /* Fast path: row already exists. */
-    $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ? LIMIT 1');
     $stmt->bind_param('s', $name);
     $stmt->execute();
     $row = $stmt->get_result()->fetch_row();
@@ -987,12 +987,12 @@ function registerCreditPersonByName(
     if ($row) return (int)$row[0];
 
     /* Slug is computed even if the column is technically nullable —
-       generateUniqueCreditPersonSlug() returns '' when the column
+       generateUniqueMusicianSlug() returns '' when the column
        isn't present yet (pre-migration), in which case we just omit
        it from the INSERT. */
-    $slug          = generateUniqueCreditPersonSlug($db, $name);
+    $slug          = generateUniqueMusicianSlug($db, $name);
     $hasSlugCol    = $slug !== '';
-    $hasNamePartCols = creditPeopleNamePartsColumnsExist($db);
+    $hasNamePartCols = musicianNamePartsColumnsExist($db);
     $first  = $parts['first']   ?? null;
     $surname= $parts['surname'] ?? null;
     $suffix = $parts['suffix']  ?? null;
@@ -1001,19 +1001,19 @@ function registerCreditPersonByName(
     if ($suffix !== null && trim((string)$suffix) === '') $suffix = null;
 
     if ($hasSlugCol && $hasNamePartCols) {
-        $sql   = 'INSERT INTO tblCreditPeople (Name, Slug, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?, ?)';
+        $sql   = 'INSERT INTO tblMusicians (Name, Slug, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?, ?)';
         $stmt  = $db->prepare($sql);
         $stmt->bind_param('sssss', $name, $slug, $first, $surname, $suffix);
     } elseif ($hasSlugCol) {
-        $sql   = 'INSERT INTO tblCreditPeople (Name, Slug) VALUES (?, ?)';
+        $sql   = 'INSERT INTO tblMusicians (Name, Slug) VALUES (?, ?)';
         $stmt  = $db->prepare($sql);
         $stmt->bind_param('ss', $name, $slug);
     } elseif ($hasNamePartCols) {
-        $sql   = 'INSERT INTO tblCreditPeople (Name, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?)';
+        $sql   = 'INSERT INTO tblMusicians (Name, FirstNames, Surname, Suffix) VALUES (?, ?, ?, ?)';
         $stmt  = $db->prepare($sql);
         $stmt->bind_param('ssss', $name, $first, $surname, $suffix);
     } else {
-        $sql   = 'INSERT INTO tblCreditPeople (Name) VALUES (?)';
+        $sql   = 'INSERT INTO tblMusicians (Name) VALUES (?)';
         $stmt  = $db->prepare($sql);
         $stmt->bind_param('s', $name);
     }
@@ -1089,12 +1089,12 @@ function creditEntryNormalise(mixed $v): ?array
  *
  * ELI5: whenever a credit name (writer, composer, arranger…) is saved
  * anywhere in the app, this is the ONE function that makes sure that name
- * also exists as a row in the `tblCreditPeople` registry — the table that
- * powers the public `/people/<slug>` page, aliases, identifiers and
+ * also exists as a row in the `tblMusicians` registry — the table that
+ * powers the public `/musician/<slug>` page, aliases, identifiers and
  * links. Call it with a name (and, if you have them, the first/surname/
  * suffix parts) and it either finds the existing row or creates one, then
  * quietly fills in any BLANK structured-name columns. It never
- * overwrites a value a curator already typed on `/manage/credit-people`.
+ * overwrites a value a curator already typed on `/manage/musicians`.
  *
  * DETAILED / WHY: before #960 this promote-and-backfill pairing lived
  * only inline inside `editorSaveSongCore()` (the whole-song save reached
@@ -1104,7 +1104,7 @@ function creditEntryNormalise(mixed $v): ?array
  * `tblSongArtists` insert never called into that code, so a credit saved
  * through any of THOSE paths wrote only the role-table (`tblSongWriters`
  * etc.) `Name` column and silently left the registry unpopulated — no
- * slug, no `/people/<slug>` page, nowhere to attach identifiers/links.
+ * slug, no `/musician/<slug>` page, nowhere to attach identifiers/links.
  * `credit_search` autocomplete still worked (it unions the role tables
  * directly), so the gap was invisible until someone tried to open the
  * person's page — the rule #30 "silent no-op" failure class. Extracting
@@ -1115,13 +1115,13 @@ function creditEntryNormalise(mixed $v): ?array
  * The backfill UPDATE is intentionally `COALESCE(NULLIF(col,''),?)` — it
  * fills a column ONLY when the existing value is NULL or empty string,
  * so a curator's hand-edited FirstNames/Surname/Suffix on
- * `/manage/credit-people` can never be silently clobbered by an
+ * `/manage/musicians` can never be silently clobbered by an
  * auto-promote from a song save (that guarantee is why #960's fix
  * requires callers to echo back the REGISTRY's parts, not the caller's
  * input, in any API response — see `manage/editor/api2.php`'s
- * `credit_upsert`). Gated on `creditPeopleNamePartsColumnsExist()` so an
+ * `credit_upsert`). Gated on `musicianNamePartsColumnsExist()` so an
  * un-migrated install (PR #935's columns not yet added) degrades to the
- * plain Name-only `registerCreditPersonByName()` insert, exactly as the
+ * plain Name-only `registerMusicianByName()` insert, exactly as the
  * legacy whole-song save did.
  *
  * Body is a byte-for-byte move of the promote-loop-body + the
@@ -1133,18 +1133,18 @@ function creditEntryNormalise(mixed $v): ?array
  *
  * @param \mysqli $db    Live connection (see `includes/db_mysql.php::getDbMysqli()`).
  * @param string  $name  The composed display name — becomes
- *                        `tblCreditPeople.Name`.
+ *                        `tblMusicians.Name`.
  * @param array{first?:string,surname?:string,suffix?:string} $parts
  *                        Structured name parts, when known. Missing or
  *                        empty parts are treated as "nothing to backfill".
- * @return int The person's `tblCreditPeople.Id` (existing row, or the
+ * @return int The person's `tblMusicians.Id` (existing row, or the
  *             newly inserted row). 0 only when $name is empty (mirrors
- *             `registerCreditPersonByName()`'s own contract).
+ *             `registerMusicianByName()`'s own contract).
  */
-function creditPersonPromote(\mysqli $db, string $name, array $parts = []): int
+function musicianPromote(\mysqli $db, string $name, array $parts = []): int
 {
-    $partsCols = creditPeopleNamePartsColumnsExist($db);
-    $personId  = registerCreditPersonByName($db, $name, $partsCols ? $parts : null);
+    $partsCols = musicianNamePartsColumnsExist($db);
+    $personId  = registerMusicianByName($db, $name, $partsCols ? $parts : null);
 
     $first   = trim((string)($parts['first']   ?? ''));
     $surname = trim((string)($parts['surname'] ?? ''));
@@ -1160,7 +1160,7 @@ function creditPersonPromote(\mysqli $db, string $name, array $parts = []): int
            handles the existing-row case. Never
            overwrites a curated value. */
         $stmtParts = $db->prepare(
-            'UPDATE tblCreditPeople
+            'UPDATE tblMusicians
                 SET FirstNames = COALESCE(NULLIF(FirstNames, ""), ?),
                     Surname    = COALESCE(NULLIF(Surname,    ""), ?),
                     Suffix     = COALESCE(NULLIF(Suffix,     ""), ?)
@@ -1180,12 +1180,12 @@ function creditPersonPromote(\mysqli $db, string $name, array $parts = []): int
 /**
  * Cached check for the IsSpecialCase / IsGroup columns from
  * #584/#585 (#630). Both ship together via
- * migrate-credit-people-flags.php; detecting one is sufficient to
+ * migrate-musicians-flags.php; detecting one is sufficient to
  * assume both. Caches the result for the request lifetime via a
  * static so the add / update paths don't pay the
  * INFORMATION_SCHEMA round-trip twice.
  */
-function creditPeopleFlagsColumnsExist(\mysqli $db): bool
+function musicianFlagsColumnsExist(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -1193,7 +1193,7 @@ function creditPeopleFlagsColumnsExist(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPeople'
+                AND TABLE_NAME   = 'tblMusicians'
                 AND COLUMN_NAME  = 'IsSpecialCase' LIMIT 1"
         );
         $stmt->execute();
@@ -1210,15 +1210,15 @@ function creditPeopleFlagsColumnsExist(\mysqli $db): bool
  * CREDIT PERSON ALIASES (AKA names)
  *
  * Shared helpers for the MusicBrainz-style alias model
- * (tblCreditPersonAliases — see migrate-credit-people-aliases.php).
+ * (tblMusicianAliases — see migrate-musicians-aliases.php).
  * Used by:
- *   - /api.php's admin_credit_person_add / _update handlers
- *   - /manage/credit-people.php form handler
- *   - /people/<slug>'s public render (alias list + JSON-LD)
+ *   - /api.php's admin_musician_add / _update handlers
+ *   - /manage/musicians.php form handler
+ *   - /musician/<slug>'s public render (alias list + JSON-LD)
  *   - bulk-import's "(a.k.a. …)" pattern detector
  * ========================================================================= */
 
-const CREDIT_PERSON_ALIAS_TYPES = [
+const MUSICIAN_ALIAS_TYPES = [
     'legal'         => 'Legal name',
     'artist'        => 'Artist / performing name',
     'pseudonym'     => 'Pseudonym / pen name',
@@ -1229,16 +1229,16 @@ const CREDIT_PERSON_ALIAS_TYPES = [
     'other'         => 'Other',
 ];
 
-const CREDIT_PERSON_ALIAS_TYPE_KEYS = [
+const MUSICIAN_ALIAS_TYPE_KEYS = [
     'legal','artist','pseudonym','nickname','maiden','search-hint','misspelling','other',
 ];
 
 /**
  * Schema-tolerant probe for the aliases table — returns false on installs
- * that haven't run migrate-credit-people-aliases.php yet so consuming
+ * that haven't run migrate-musicians-aliases.php yet so consuming
  * code can branch cheaply rather than throw on every load.
  */
-function creditPeopleAliasesTableExists(\mysqli $db): bool
+function musicianAliasesTableExists(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -1246,7 +1246,7 @@ function creditPeopleAliasesTableExists(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPersonAliases' LIMIT 1"
+                AND TABLE_NAME   = 'tblMusicianAliases' LIMIT 1"
         );
         $stmt->execute();
         $cached = $stmt->get_result()->fetch_row() !== null;
@@ -1265,26 +1265,26 @@ function creditPeopleAliasesTableExists(\mysqli $db): bool
  * @param mixed $raw Form / JSON-decoded array; non-array → []
  * @return list<array{name:string,sort_name:?string,type:string,locale:?string,is_primary:int,sort_order:int,note:?string}>
  */
-function normaliseCreditPersonAliases(mixed $raw): array
+function normaliseMusicianAliases(mixed $raw): array
 {
     if (!is_array($raw)) return [];
     $out  = [];
     $seen = []; /* dedupe by (lower-cased) name within the request */
     foreach ($raw as $i => $row) {
         if (!is_array($row)) continue;
-        $name = cpTrimmed($row['name'] ?? ''); // #trim
+        $name = musTrimmed($row['name'] ?? ''); // #trim
         if ($name === '') continue;
         if (mb_strlen($name) > 255) $name = mb_substr($name, 0, 255);
         $key = mb_strtolower($name);
         if (isset($seen[$key])) continue;
         $seen[$key] = true;
 
-        $type = cpTrimmed($row['type'] ?? 'other'); // #trim
-        if (!in_array($type, CREDIT_PERSON_ALIAS_TYPE_KEYS, true)) $type = 'other';
+        $type = musTrimmed($row['type'] ?? 'other'); // #trim
+        if (!in_array($type, MUSICIAN_ALIAS_TYPE_KEYS, true)) $type = 'other';
 
-        $sortName = cpTrimmed($row['sort_name'] ?? ''); // #trim
-        $locale   = cpTrimmed($row['locale']    ?? ''); // #trim
-        $note     = cpTrimmed($row['note']      ?? ''); // #trim
+        $sortName = musTrimmed($row['sort_name'] ?? ''); // #trim
+        $locale   = musTrimmed($row['locale']    ?? ''); // #trim
+        $note     = musTrimmed($row['note']      ?? ''); // #trim
 
         $out[] = [
             'name'        => $name,
@@ -1300,31 +1300,31 @@ function normaliseCreditPersonAliases(mixed $raw): array
 }
 
 /**
- * Replace all rows in tblCreditPersonAliases for a credit person with
+ * Replace all rows in tblMusicianAliases for a credit person with
  * the supplied set. Run inside the same transaction as the parent
  * INSERT/UPDATE so a downstream failure rolls back cleanly. Schema-
  * tolerant: silently no-ops on installs where the table is absent.
  *
- * @param list<array> $aliases  Output of normaliseCreditPersonAliases()
+ * @param list<array> $aliases  Output of normaliseMusicianAliases()
  */
-function replaceCreditPersonAliases(\mysqli $db, int $creditPersonId, array $aliases): void
+function replaceMusicianAliases(\mysqli $db, int $musicianId, array $aliases): void
 {
-    if (!creditPeopleAliasesTableExists($db)) return;
+    if (!musicianAliasesTableExists($db)) return;
 
-    $del = $db->prepare('DELETE FROM tblCreditPersonAliases WHERE CreditPersonId = ?');
-    $del->bind_param('i', $creditPersonId);
+    $del = $db->prepare('DELETE FROM tblMusicianAliases WHERE MusicianId = ?');
+    $del->bind_param('i', $musicianId);
     $del->execute();
     $del->close();
 
     if (!$aliases) return;
 
     $ins = $db->prepare(
-        'INSERT INTO tblCreditPersonAliases
-             (CreditPersonId, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note)
+        'INSERT INTO tblMusicianAliases
+             (MusicianId, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
     );
     foreach ($aliases as $a) {
-        $cpId      = $creditPersonId;
+        $musId      = $musicianId;
         $name      = $a['name'];
         $sortName  = $a['sort_name'];
         $type      = $a['type'];
@@ -1334,7 +1334,7 @@ function replaceCreditPersonAliases(\mysqli $db, int $creditPersonId, array $ali
         $note      = $a['note'];
         $ins->bind_param(
             'issssiis',
-            $cpId, $name, $sortName, $type, $locale, $isPrimary, $sortOrder, $note
+            $musId, $name, $sortName, $type, $locale, $isPrimary, $sortOrder, $note
         );
         $ins->execute();
     }
@@ -1342,22 +1342,22 @@ function replaceCreditPersonAliases(\mysqli $db, int $creditPersonId, array $ali
 }
 
 /**
- * Fetch every alias for one credit-person, ordered by IsPrimary DESC
+ * Fetch every alias for one musician, ordered by IsPrimary DESC
  * then SortOrder ASC then Id ASC so the curator's preferred display
  * form is first.
  *
  * @return list<array{Id:int,Name:string,SortName:?string,Type:string,Locale:?string,IsPrimary:int,SortOrder:int,Note:?string}>
  */
-function loadCreditPersonAliases(\mysqli $db, int $creditPersonId): array
+function loadMusicianAliases(\mysqli $db, int $musicianId): array
 {
-    if (!creditPeopleAliasesTableExists($db)) return [];
+    if (!musicianAliasesTableExists($db)) return [];
     $stmt = $db->prepare(
         'SELECT Id, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note
-           FROM tblCreditPersonAliases
-          WHERE CreditPersonId = ?
+           FROM tblMusicianAliases
+          WHERE MusicianId = ?
        ORDER BY IsPrimary DESC, SortOrder ASC, Id ASC'
     );
-    $stmt->bind_param('i', $creditPersonId);
+    $stmt->bind_param('i', $musicianId);
     $stmt->execute();
     $out = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
@@ -1371,24 +1371,24 @@ function loadCreditPersonAliases(\mysqli $db, int $creditPersonId): array
 }
 
 /**
- * Bulk-load aliases for many credit-people in one round-trip, grouped
- * by CreditPersonId. Used by /manage/credit-people's list-view render
+ * Bulk-load aliases for many musicians in one round-trip, grouped
+ * by MusicianId. Used by /manage/musicians's list-view render
  * so the page doesn't issue N queries when surfacing aliases inline.
  *
  * @param list<int> $personIds
- * @return array<int, list<array>>  CreditPersonId → list of alias rows
+ * @return array<int, list<array>>  MusicianId → list of alias rows
  */
-function loadCreditPersonAliasesBulk(\mysqli $db, array $personIds): array
+function loadMusicianAliasesBulk(\mysqli $db, array $personIds): array
 {
     $personIds = array_values(array_filter(array_map('intval', $personIds), fn($v) => $v > 0));
-    if (!$personIds || !creditPeopleAliasesTableExists($db)) return [];
+    if (!$personIds || !musicianAliasesTableExists($db)) return [];
     $placeholders = implode(',', array_fill(0, count($personIds), '?'));
     $types        = str_repeat('i', count($personIds));
     $stmt = $db->prepare(
-        "SELECT CreditPersonId, Id, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note
-           FROM tblCreditPersonAliases
-          WHERE CreditPersonId IN ($placeholders)
-       ORDER BY CreditPersonId ASC, IsPrimary DESC, SortOrder ASC, Id ASC"
+        "SELECT MusicianId, Id, Name, SortName, Type, Locale, IsPrimary, SortOrder, Note
+           FROM tblMusicianAliases
+          WHERE MusicianId IN ($placeholders)
+       ORDER BY MusicianId ASC, IsPrimary DESC, SortOrder ASC, Id ASC"
     );
     $stmt->bind_param($types, ...$personIds);
     $stmt->execute();
@@ -1396,8 +1396,8 @@ function loadCreditPersonAliasesBulk(\mysqli $db, array $personIds): array
     $stmt->close();
     $grouped = [];
     foreach ($rows as $r) {
-        $pid = (int)$r['CreditPersonId'];
-        unset($r['CreditPersonId']);
+        $pid = (int)$r['MusicianId'];
+        unset($r['MusicianId']);
         $r['Id']        = (int)$r['Id'];
         $r['IsPrimary'] = (int)$r['IsPrimary'];
         $r['SortOrder'] = (int)$r['SortOrder'];
@@ -1425,7 +1425,7 @@ function loadCreditPersonAliasesBulk(\mysqli $db, array $personIds): array
  * Smith-and-Jones case is distinguished by the absence of digits /
  * non-name characters inside the parens).
  */
-function parseCreditPersonAliasHints(string $raw): array
+function parseMusicianAliasHints(string $raw): array
 {
     $raw = trim($raw);
     if ($raw === '') return ['name' => '', 'aliases' => []];
@@ -1480,9 +1480,9 @@ function parseCreditPersonAliasHints(string $raw): array
 /* =========================================================================
  * GROUP MEMBERSHIP (#1502)
  *
- * Links individual MEMBER people (ordinary tblCreditPeople rows) to a
+ * Links individual MEMBER people (ordinary tblMusicians rows) to a
  * 'Group / band / collective' person (IsGroup=1, #585) via the thin
- * join table tblCreditPersonMembers — see
+ * join table tblMusicianRelations — see
  * appWeb/.sql/migrate-add-creditperson-members.php for the schema
  * rationale. Every helper below is table-existence-gated (dormant-safe
  * on an install that hasn't run the migration yet, matching the
@@ -1490,13 +1490,13 @@ function parseCreditPersonAliasHints(string $raw): array
  * ========================================================================= */
 
 /**
- * Cached probe for tblCreditPersonMembers. Static-cached for the request
+ * Cached probe for tblMusicianRelations. Static-cached for the request
  * lifetime so the INFORMATION_SCHEMA round-trip happens at most once,
- * mirroring creditPeopleAliasesTableExists() above.
+ * mirroring musicianAliasesTableExists() above.
  *
  * @link https://dev.mysql.com/doc/refman/8.0/en/information-schema-tables-table.html
  */
-function creditPersonMembersTableExists(\mysqli $db): bool
+function musicianMembersTableExists(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -1504,7 +1504,7 @@ function creditPersonMembersTableExists(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPersonMembers' LIMIT 1"
+                AND TABLE_NAME   = 'tblMusicianRelations' LIMIT 1"
         );
         $stmt->execute();
         $cached = $stmt->get_result()->fetch_row() !== null;
@@ -1516,14 +1516,14 @@ function creditPersonMembersTableExists(\mysqli $db): bool
 }
 
 /**
- * Cached probe for the Slug column on tblCreditPeople (#588). Extracted
+ * Cached probe for the Slug column on tblMusicians (#588). Extracted
  * here (rather than re-probed inline) because both the admin Members
- * card-list and the public /people/<slug> Members panel need to know
+ * card-list and the public /musician/<slug> Members panel need to know
  * whether a member row can be linked. Mirrors the inline probe already
- * embedded in generateUniqueCreditPersonSlug() below, just exposed as
+ * embedded in generateUniqueMusicianSlug() below, just exposed as
  * its own reusable, cached check.
  */
-function creditPeopleSlugColumnExists(\mysqli $db): bool
+function musicianSlugColumnExists(\mysqli $db): bool
 {
     static $cached = null;
     if ($cached !== null) return $cached;
@@ -1531,7 +1531,7 @@ function creditPeopleSlugColumnExists(\mysqli $db): bool
         $stmt = $db->prepare(
             "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
               WHERE TABLE_SCHEMA = DATABASE()
-                AND TABLE_NAME   = 'tblCreditPeople'
+                AND TABLE_NAME   = 'tblMusicians'
                 AND COLUMN_NAME  = 'Slug' LIMIT 1"
         );
         $stmt->execute();
@@ -1551,15 +1551,15 @@ function creditPeopleSlugColumnExists(\mysqli $db): bool
  *
  * @return list<array{id:int,name:string,slug:?string}>
  */
-function loadCreditPersonGroupMembers(\mysqli $db, int $groupId): array
+function loadMusicianGroupMembers(\mysqli $db, int $groupId): array
 {
-    if ($groupId <= 0 || !creditPersonMembersTableExists($db)) return [];
-    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    if ($groupId <= 0 || !musicianMembersTableExists($db)) return [];
+    $slugCol = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
     $stmt = $db->prepare(
         "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
-           FROM tblCreditPersonMembers m
-           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
-          WHERE m.GroupPersonId = ?
+           FROM tblMusicianRelations m
+           JOIN tblMusicians p ON p.Id = m.ObjectMusicianId
+          WHERE m.SubjectMusicianId = ?
        ORDER BY m.SortOrder ASC, m.Id ASC"
     );
     $stmt->bind_param('i', $groupId);
@@ -1575,26 +1575,26 @@ function loadCreditPersonGroupMembers(\mysqli $db, int $groupId): array
 
 /**
  * Bulk-load group members for many group-person ids in one round-trip.
- * Used by /manage/credit-people's list-view render so the Edit drawer's
+ * Used by /manage/musicians's list-view render so the Edit drawer's
  * Members pre-fill doesn't cost an extra query per row (mirrors
- * loadCreditPersonAliasesBulk() above).
+ * loadMusicianAliasesBulk() above).
  *
  * @param list<int> $groupIds
- * @return array<int, list<array{id:int,name:string,slug:?string}>> GroupPersonId → member rows
+ * @return array<int, list<array{id:int,name:string,slug:?string}>> SubjectMusicianId → member rows
  */
-function loadCreditPersonGroupMembersBulk(\mysqli $db, array $groupIds): array
+function loadMusicianGroupMembersBulk(\mysqli $db, array $groupIds): array
 {
     $groupIds = array_values(array_filter(array_map('intval', $groupIds), fn($v) => $v > 0));
-    if (!$groupIds || !creditPersonMembersTableExists($db)) return [];
-    $slugCol = creditPeopleSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    if (!$groupIds || !musicianMembersTableExists($db)) return [];
+    $slugCol = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
     $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
     $types        = str_repeat('i', count($groupIds));
     $stmt = $db->prepare(
-        "SELECT m.GroupPersonId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
-           FROM tblCreditPersonMembers m
-           JOIN tblCreditPeople p ON p.Id = m.MemberPersonId
-          WHERE m.GroupPersonId IN ($placeholders)
-       ORDER BY m.GroupPersonId ASC, m.SortOrder ASC, m.Id ASC"
+        "SELECT m.SubjectMusicianId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+           FROM tblMusicianRelations m
+           JOIN tblMusicians p ON p.Id = m.ObjectMusicianId
+          WHERE m.SubjectMusicianId IN ($placeholders)
+       ORDER BY m.SubjectMusicianId ASC, m.SortOrder ASC, m.Id ASC"
     );
     $stmt->bind_param($types, ...$groupIds);
     $stmt->execute();
@@ -1610,7 +1610,7 @@ function loadCreditPersonGroupMembersBulk(\mysqli $db, array $groupIds): array
 
 /**
  * Add one member to a group. Idempotent — re-adding an existing member
- * is a no-op success (matches the UNIQUE (GroupPersonId, MemberPersonId)
+ * is a no-op success (matches the UNIQUE (SubjectMusicianId, ObjectMusicianId)
  * key's intent: "membership either holds or it doesn't", not an error a
  * curator has to dismiss on a double-click). Guards:
  *   - table must exist (dormant-safe pre-migration)
@@ -1625,9 +1625,9 @@ function loadCreditPersonGroupMembersBulk(\mysqli $db, array $groupIds): array
  *
  * @return array{ok:bool, error?:string, member?:array{id:int,name:string}}
  */
-function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+function addMusicianGroupMember(\mysqli $db, int $groupId, int $memberId): array
 {
-    if (!creditPersonMembersTableExists($db)) {
+    if (!musicianMembersTableExists($db)) {
         return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
     }
     if ($groupId <= 0 || $memberId <= 0) {
@@ -1636,17 +1636,17 @@ function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): a
     if ($groupId === $memberId) {
         return ['ok' => false, 'error' => 'A group cannot list itself as a member.'];
     }
-    /* IsGroup itself is a gated column (#585, migrate-credit-people-flags.php)
+    /* IsGroup itself is a gated column (#585, migrate-musicians-flags.php)
        — an install new enough to have run THIS migration will almost
        certainly have that one too, but check anyway rather than assume,
        since a raw `SELECT IsGroup` would throw under mysqli's STRICT
        reporting on a column that doesn't exist (matches the same gate
-       creditPeopleFlagsColumnsExist() enforces elsewhere in this file). */
-    if (!creditPeopleFlagsColumnsExist($db)) {
+       musicianFlagsColumnsExist() enforces elsewhere in this file). */
+    if (!musicianFlagsColumnsExist($db)) {
         return ['ok' => false, 'error' => 'Group membership needs the Credit People classification-flags migration to be run first.'];
     }
 
-    $stmt = $db->prepare('SELECT IsGroup FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT IsGroup FROM tblMusicians WHERE Id = ? LIMIT 1');
     $stmt->bind_param('i', $groupId);
     $stmt->execute();
     $groupRow = $stmt->get_result()->fetch_assoc();
@@ -1656,14 +1656,14 @@ function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): a
         return ['ok' => false, 'error' => 'That person is not flagged as a Group.'];
     }
 
-    $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ? LIMIT 1');
     $stmt->bind_param('i', $memberId);
     $stmt->execute();
     $memberRow = $stmt->get_result()->fetch_assoc();
     $stmt->close();
     if (!$memberRow) return ['ok' => false, 'error' => 'Member person not found.'];
 
-    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ? LIMIT 1');
+    $stmt = $db->prepare('SELECT Id FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ? LIMIT 1');
     $stmt->bind_param('ii', $groupId, $memberId);
     $stmt->execute();
     $already = $stmt->get_result()->fetch_row() !== null;
@@ -1672,7 +1672,7 @@ function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): a
         return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
     }
 
-    $stmt = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) + 1 FROM tblCreditPersonMembers WHERE GroupPersonId = ?');
+    $stmt = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) + 1 FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
     $stmt->bind_param('i', $groupId);
     $stmt->execute();
     $nextRow  = $stmt->get_result()->fetch_row();
@@ -1680,7 +1680,7 @@ function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): a
     $stmt->close();
 
     $stmt = $db->prepare(
-        'INSERT INTO tblCreditPersonMembers (GroupPersonId, MemberPersonId, SortOrder) VALUES (?, ?, ?)'
+        'INSERT INTO tblMusicianRelations (SubjectMusicianId, ObjectMusicianId, SortOrder) VALUES (?, ?, ?)'
     );
     $stmt->bind_param('iii', $groupId, $memberId, $nextSort);
     $stmt->execute();
@@ -1696,15 +1696,15 @@ function addCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): a
  *
  * @return array{ok:bool, error?:string, removed?:int}
  */
-function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId): array
+function removeMusicianGroupMember(\mysqli $db, int $groupId, int $memberId): array
 {
-    if (!creditPersonMembersTableExists($db)) {
+    if (!musicianMembersTableExists($db)) {
         return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
     }
     if ($groupId <= 0 || $memberId <= 0) {
         return ['ok' => false, 'error' => 'Both a group and a member are required.'];
     }
-    $stmt = $db->prepare('DELETE FROM tblCreditPersonMembers WHERE GroupPersonId = ? AND MemberPersonId = ?');
+    $stmt = $db->prepare('DELETE FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ?');
     $stmt->bind_param('ii', $groupId, $memberId);
     $stmt->execute();
     $removed = $stmt->affected_rows;
@@ -1716,16 +1716,16 @@ function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId)
  * BULK-PROMOTE — "remaining" one-click path (#1503)
  *
  * Companion to the existing fuzzy-match review flow on
- * /manage/credit-people-bulk-promote (#846): that page's job is to
+ * /manage/musicians-bulk-promote (#846): that page's job is to
  * catch NEAR-DUPLICATES ("J. Newton" vs "John Newton") before creating
  * a new registry row. This helper answers a narrower question —
  * "which cited names have NO registry row at all yet" — for the
  * one-click "Promote all remaining (N)" action on the parent
- * /manage/credit-people page, which skips the fuzzy-match review
+ * /manage/musicians page, which skips the fuzzy-match review
  * entirely (the curator who wants that review still has the dedicated
  * bulk-promote page). Same 5-table UNION + NOT EXISTS shape as
- * searchCreditPersonMergeTargets()'s in-use-only bucket and
- * credit-people-bulk-promote.php's own candidate query — kept as its
+ * searchMusicianMergeTargets()'s in-use-only bucket and
+ * musicians-bulk-promote.php's own candidate query — kept as its
  * own narrow (name-only, no per-role breakdown) helper rather than
  * forking either of those, since a plain name list is all the
  * "register everything remaining" action needs.
@@ -1733,11 +1733,11 @@ function removeCreditPersonGroupMember(\mysqli $db, int $groupId, int $memberId)
 
 /**
  * Every name cited on >= 1 song-credit row that has no matching
- * tblCreditPeople registry row yet, highest-usage first.
+ * tblMusicians registry row yet, highest-usage first.
  *
  * @return list<string>
  */
-function creditPeopleCitedUnregisteredNames(\mysqli $db): array
+function musicianCitedUnregisteredNames(\mysqli $db): array
 {
     $sql = "
         SELECT u.Name, SUM(u.cnt) AS TotalUsage
@@ -1752,14 +1752,14 @@ function creditPeopleCitedUnregisteredNames(\mysqli $db): array
               UNION ALL
               SELECT Name, COUNT(*) AS cnt FROM tblSongTranslators GROUP BY Name
           ) u
-         WHERE NOT EXISTS (SELECT 1 FROM tblCreditPeople p WHERE p.Name = u.Name)
+         WHERE NOT EXISTS (SELECT 1 FROM tblMusicians p WHERE p.Name = u.Name)
          GROUP BY u.Name
          ORDER BY TotalUsage DESC, u.Name ASC
     ";
     /* mysqli runs under MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT
        (includes/db_mysql.php) — a failing query throws rather than
        returning false, so this is a direct chain, not a false-check
-       guard (project convention; see credit-people-bulk-promote.php's
+       guard (project convention; see musicians-bulk-promote.php's
        identical $usageSql chain). */
     $rows = $db->query($sql)->fetch_all(MYSQLI_ASSOC);
     return array_map(static fn(array $r): string => (string)$r['Name'], $rows);

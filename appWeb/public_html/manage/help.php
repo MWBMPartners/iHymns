@@ -108,9 +108,9 @@ $sections = [
         'group' => 'Content',
     ],
     [
-        'id'    => 'credit-people',
+        'id'    => 'musicians',
         'icon'  => 'bi-person-vcard',
-        'title' => 'Credit People',
+        'title' => 'Musicians',
         'group' => 'Content',
     ],
     [
@@ -470,7 +470,7 @@ foreach ($sections as $s) {
                         <dd>
                             Can add and edit songs in the Song Editor, see the
                             Dashboard, see &amp; act on Song Requests, run the
-                            Missing Numbers report, and manage the Credit People
+                            Missing Numbers report, and manage the Musicians
                             registry. Cannot see Users, Organisations, or Operations
                             pages.
                         </dd>
@@ -633,7 +633,7 @@ foreach ($sections as $s) {
                             </details>
                         </dd>
                         <dt>Credits</dt>
-                        <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#credit-people">Credit People</a> registry so you don't get duplicate spellings.</dd>
+                        <dd>Writer, composer, arranger, adaptor, translator, copyright holder. Names autocomplete from the <a href="#musicians">Musicians</a> registry so you don't get duplicate spellings.</dd>
                         <dt>Links</dt>
                         <dd>External-website links for this song (Hymnary.org, Internet Archive scans, Wikipedia, YouTube performances, Spotify, etc.). Paste a URL and the provider auto-detects; see <a href="#external-links">External Links</a> for how the shared editor works (#833 / #841).</dd>
                         <dt>Tags</dt>
@@ -935,8 +935,8 @@ foreach ($sections as $s) {
                     </div>
                 </section>
 
-                <section id="credit-people" class="help-section card-admin mb-4">
-                    <h2><i class="bi bi-person-vcard me-2"></i>Credit People</h2>
+                <section id="musicians" class="help-section card-admin mb-4">
+                    <h2><i class="bi bi-person-vcard me-2"></i>Musicians</h2>
                     <p class="role-badges">
                         <span class="badge bg-warning text-dark">admin</span>
                         <span class="badge bg-danger">global_admin</span>
@@ -958,7 +958,7 @@ foreach ($sections as $s) {
                     </div>
                     <h3 class="h6 mt-3">Bulk promote (#846)</h3>
                     <p>
-                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Credit People page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
+                        When a fresh deployment has hundreds of typed credit names that haven't been registered, click <strong>Bulk promote with fuzzy-match</strong> on the Musicians page header. The bulk page surfaces every name cited on at least one song that doesn't have a registry row, scores each against the existing registry rows (and against other candidates), and lets you pick per-row: <em>Register as new</em>, <em>Merge into existing</em> (re-points every credit on every song to the canonical row's name), or <em>Skip</em>. The whole submit runs in a single transaction with one <code>bulk_run_id</code> on the audit log so you can review the run as a unit.
                     </p>
                 </section>
 
@@ -1030,7 +1030,7 @@ foreach ($sections as $s) {
                     </p>
                     <h3 class="h6">Canonicalisation (#1222)</h3>
                     <p>
-                        Curator-typed variants (e.g. <em>Xmas</em> vs <em>Christmas</em>) are folded into the standard themes by the <strong>canonicalisation suggestions</strong> on this page, which reuse the shared <code>includes/song_similarity.php</code> scorer. Picking a suggestion runs the same irreversible <strong>Merge</strong> as Credit People &mdash; the variant becomes the source and is deleted, the standard theme is the survivor and every song re-points to it.
+                        Curator-typed variants (e.g. <em>Xmas</em> vs <em>Christmas</em>) are folded into the standard themes by the <strong>canonicalisation suggestions</strong> on this page, which reuse the shared <code>includes/song_similarity.php</code> scorer. Picking a suggestion runs the same irreversible <strong>Merge</strong> as Musicians &mdash; the variant becomes the source and is deleted, the standard theme is the survivor and every song re-points to it.
                     </p>
                     <div class="gotcha small">
                         <strong>Gotcha:</strong> Merge is atomic and irreversible. Confirm the survivor is the canonical theme before you click through.
@@ -1081,14 +1081,14 @@ foreach ($sections as $s) {
                         <span class="badge bg-danger">global_admin</span>
                     </p>
                     <p>
-                        Songs, Songbooks, Credit People and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
+                        Songs, Songbooks, Musicians and Works all support a <strong>card-list editor</strong> for external links &mdash; controlled-vocabulary providers (Wikipedia, Hymnary.org, Spotify, IMSLP, MusicBrainz, etc.) backed by <code>tblExternalLinkTypes</code>. Each link carries an optional Note and a curator-set Verified flag.
                     </p>
                     <h3 class="h6">URL auto-detect (#841)</h3>
                     <p>
                         Paste a URL into the URL field of any external-link row and the provider dropdown auto-selects the matching registry entry &mdash; Wikipedia detects Wikipedia, YouTube detects YouTube, Spotify detects Spotify, etc. The detector respects manual choices: if you pick a provider before pasting, your choice wins.
                     </p>
                     <p>
-                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Credit People editor as it's added) inherits automatically.
+                        The detector lives in a single global module &mdash; <code>js/modules/external-link-detect.js</code> &mdash; loaded on every <code>/manage/*</code> page. Every consumer (Songbook editor, Works editor, Musicians editor as it's added) inherits automatically.
                     </p>
                     <h3 class="h6 mt-3">URL patterns (#845)</h3>
                     <p>
@@ -1104,7 +1104,7 @@ foreach ($sections as $s) {
                         Admin list pages opt into a column-priority responsive convention (#842). Tag the table <code>.admin-table-responsive</code>, then mark each <code>&lt;th&gt;</code> + <code>&lt;td&gt;</code> with <code>data-col-priority="primary"</code>, <code>"secondary"</code>, or <code>"tertiary"</code>. Below 992px tertiary columns hide; below 768px secondary columns hide too. Primary columns are always visible.
                     </p>
                     <p>
-                        Pages currently opted in include Credit People, Songbooks, Songbook Series, Works and several other admin lists. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
+                        Pages currently opted in include Musicians, Songbooks, Songbook Series, Works and several other admin lists. The convention is documented in <code>DEV_NOTES.md</code>; rolling it forward to the remaining list pages is a per-page cosmetic change with zero CSS work.
                     </p>
                 </section>
 
@@ -1523,7 +1523,7 @@ foreach ($sections as $s) {
                         <li><strong>Credentials</strong> &mdash; fill in host, port, database name, username, password, table prefix. Click <strong>Test connection</strong>; only save once it goes green.</li>
                         <li><strong>Install schema</strong> &mdash; creates every table from <code>schema.sql</code>. Idempotent &mdash; re-running is safe.</li>
                         <li><strong>Migrate users / setlists</strong> &mdash; one-time import from the legacy SQLite + JSON setlist share dir.</li>
-                        <li>Run remaining migrations (Account Sync, Songbook Metadata, Credit Fields, Credit People, User Features Catch-up, Activity Log Expand) <em>in the order they appear on the dashboard</em>. Each is idempotent.</li>
+                        <li>Run remaining migrations (Account Sync, Songbook Metadata, Credit Fields, Credit People, User Features Catch-up, Activity Log Expand) <em>in the order they appear on the dashboard</em> — the migration dashboard card titles keep their original historical names even after the #1741 P2-B app-code rename. Each is idempotent.</li>
                     </ol>
                     <h3 class="h6">Setup workflow on an existing install</h3>
                     <p>
@@ -1626,7 +1626,7 @@ foreach ($sections as $s) {
                         <li><strong>Songbooks</strong> — create / update / delete / cascade-delete / reorder / auto-colour fill / auto-colour reassign (PR 2a).</li>
                         <li><strong>Users + Groups + Tiers</strong> — full CRUD plus role / activate / password-reset / member-add-remove (PR 2b).</li>
                         <li><strong>Organisations + My Organisations</strong> — system-admin updates plus the six org-admin verbs from this surface (PR 2c).</li>
-                        <li><strong>Credit People</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
+                        <li><strong>Musicians</strong> — add / update / rename / merge / delete with the same cascade and confirmation gates (PR 2d).</li>
                         <li><strong>Analytics + Diagnostics</strong> — top searches, data health snapshot, schema-audit report, per-migration applied/partial/pending status (PR 2d).</li>
                         <li><strong>Editor</strong> — load / save / save_song / bulk_tag / list_revisions / restore_revision / song_tags / tag_search / credit_search / user_search / org_search / bulk_import_zip / bulk_import_status (PR 3 docs). (The v1 <code>get_translations</code> / <code>add_translation</code> / <code>remove_translation</code> trio was dead code — no caller ever existed — and was removed 2026-07-30; translation links are now the public, live <code>song_translations</code> action.)</li>
                     </ul>
@@ -1769,7 +1769,7 @@ foreach ($sections as $s) {
 
                     <h3 class="h6">&ldquo;Two songs / two people / two anything look like duplicates.&rdquo;</h3>
                     <p class="small">
-                        For people, use <a href="#credit-people">Credit People &rarr; Merge</a>. For songs, use <a href="#duplicate-songs">Duplicate &amp; Counterpart Songs</a> &mdash; that page is the dedicated song-merge surface: it scores likely duplicates for you and lets you <strong>Link</strong> (keep both, cross-reference), <strong>Dismiss</strong> (not a duplicate), or <strong>Merge</strong> (collapse into one). For themes/tags, use <a href="#tags">Tags &amp; Themes &rarr; Merge</a>.
+                        For people, use <a href="#musicians">Musicians &rarr; Merge</a>. For songs, use <a href="#duplicate-songs">Duplicate &amp; Counterpart Songs</a> &mdash; that page is the dedicated song-merge surface: it scores likely duplicates for you and lets you <strong>Link</strong> (keep both, cross-reference), <strong>Dismiss</strong> (not a duplicate), or <strong>Merge</strong> (collapse into one). For themes/tags, use <a href="#tags">Tags &amp; Themes &rarr; Merge</a>.
                     </p>
 
                     <h3 class="h6">&ldquo;Activity Log shows an action I don't recognise. What is it?&rdquo;</h3>

@@ -3,12 +3,12 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Credit Person Public Page (#588)
+ * iHymns — Musician Public Page (#588, #1741 P2-B)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
  * PURPOSE:
- * Public landing page for a `tblCreditPeople` registry row. Surfaces
+ * Public landing page for a `tblMusicians` registry row. Surfaces
  * the bio, lifespan, special-case / group classification, external
  * links, and a discography grouped by role across the six song-credit
  * tables.
@@ -17,7 +17,7 @@ declare(strict_types=1);
  * Expects $personSlug to be set by api.php before inclusion.
  *
  * Falls back to /writer/<slug> behaviour for installs that haven't
- * applied the migrate-credit-people-slug migration yet — the slug
+ * applied the migrate-musicians-slug migration yet — the slug
  * lookup short-circuits to a name-based search across the credit
  * tables, so the page still works even before the registry row
  * exists.
@@ -35,7 +35,7 @@ function _personSlugToName(string $slug): string
     return mb_convert_case(str_replace('-', ' ', $slug), MB_CASE_TITLE, 'UTF-8');
 }
 
-$person = null;            /* tblCreditPeople row, or null on partial install / unknown slug */
+$person = null;            /* tblMusicians row, or null on partial install / unknown slug */
 $personName = '';          /* always set — falls back to slug-derived name */
 $db = getDbMysqli();
 
@@ -45,12 +45,12 @@ $db = getDbMysqli();
 try {
     /* #1348 — include the typed MusicBrainzArtistMBID column only if it exists
        (#1090 may be un-migrated; an absent column would 1054 under STRICT and blank
-       the page). The other authority identifiers live in tblCreditPersonIdentifiers
+       the page). The other authority identifiers live in tblMusicianIdentifiers
        (read separately below). $mbidCol is a hardcoded constant — the only
        legitimate string interpolation into SQL (rule #5). */
     $mbidCol = '';
     try {
-        $pc = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPeople' AND COLUMN_NAME = 'MusicBrainzArtistMBID' LIMIT 1");
+        $pc = $db->query("SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians' AND COLUMN_NAME = 'MusicBrainzArtistMBID' LIMIT 1");
         if ($pc && $pc->fetch_row() !== null) { $mbidCol = ', MusicBrainzArtistMBID'; }
         if ($pc) { $pc->free(); }
     } catch (\Throwable $_e) { $mbidCol = ''; }
@@ -59,7 +59,7 @@ try {
         "SELECT Id, Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                 COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                 COALESCE(IsGroup, 0)        AS IsGroup{$mbidCol}
-           FROM tblCreditPeople
+           FROM tblMusicians
           WHERE Slug = ?
           LIMIT 1"
     );
@@ -89,35 +89,35 @@ if ($personName === '') {
    an empty array on installs that haven't run the aliases migration. */
 $personAliases = [];
 if ($person && isset($person['Id'])) {
-    if (!function_exists('loadCreditPersonAliases')) {
-        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+    if (!function_exists('loadMusicianAliases')) {
+        require_once dirname(__DIR__) . '/musician_helpers.php';
     }
     try {
-        $personAliases = loadCreditPersonAliases($db, (int)$person['Id']);
+        $personAliases = loadMusicianAliases($db, (int)$person['Id']);
     } catch (\Throwable $_e) {
         $personAliases = [];
     }
 }
 
 /* Group members (#1502) — the individual people that make up this
-   Group/band/collective credit-person row (IsGroup=1, #585). Public,
-   read-only list; admin add/remove lives in the /manage/credit-people
+   Group/band/collective musician row (IsGroup=1, #585). Public,
+   read-only list; admin add/remove lives in the /manage/musicians
    Edit drawer. Schema-tolerant: returns an empty array on installs
    that haven't run migrate-add-creditperson-members.php yet. */
 $personMembers = [];
 if ($person && (int)($person['IsGroup'] ?? 0) === 1 && isset($person['Id'])) {
-    if (!function_exists('loadCreditPersonGroupMembers')) {
-        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+    if (!function_exists('loadMusicianGroupMembers')) {
+        require_once dirname(__DIR__) . '/musician_helpers.php';
     }
     try {
-        $personMembers = loadCreditPersonGroupMembers($db, (int)$person['Id']);
+        $personMembers = loadMusicianGroupMembers($db, (int)$person['Id']);
     } catch (\Throwable $_e) {
         $personMembers = [];
     }
 }
 
 /* External authority identifiers (#1348) — the key-value rows from
-   tblCreditPersonIdentifiers (ipi / isni / viaf / wikidata / orcid / …, the table
+   tblMusicianIdentifiers (ipi / isni / viaf / wikidata / orcid / …, the table
    widened from ENUM in #1090 P6 so new types need no ALTER). Rendered as bare-code
    chips in the header, mirroring a song's ISWC/CCLI. Schema-tolerant: empty on an
    install without the table. The typed MusicBrainzArtistMBID column (from the SELECT
@@ -128,8 +128,8 @@ if ($person && isset($person['Id'])) {
         $pid = (int)$person['Id'];
         $idStmt = $db->prepare(
             'SELECT IdentifierType, IdentifierValue
-               FROM tblCreditPersonIdentifiers
-              WHERE CreditPersonId = ?
+               FROM tblMusicianIdentifiers
+              WHERE MusicianId = ?
               ORDER BY IdentifierType ASC, Id ASC'
         );
         if ($idStmt) {
@@ -224,7 +224,7 @@ if ($person && (int)$person['Id'] > 0) {
                         c.Note         AS note,  c.SortOrder AS sortOrder
                    FROM tblSongbookCompilers c
                    JOIN tblSongbooks b ON b.Id = c.SongbookId
-                  WHERE c.CreditPersonId = ?
+                  WHERE c.MusicianId = ?
                   ORDER BY b.Name ASC'
             );
             $pid = (int)$person['Id'];
@@ -238,9 +238,9 @@ if ($person && (int)$person['Id'] > 0) {
 
 /* ---------------------------------------------------------------------- */
 /* 3. External links (when the registry row exists).                      */
-/*    Reads tblCreditPersonExternalLinks (the new unified system, #833)   */
+/*    Reads tblMusicianExternalLinks (the new unified system, #833)   */
 /*    if it has rows for this person, otherwise falls back to the legacy  */
-/*    tblCreditPersonLinks. The fallback keeps deployments that haven't   */
+/*    tblMusicianLinks. The fallback keeps deployments that haven't   */
 /*    run the backfill from losing data; the migration ensures both       */
 /*    tables stay in sync once it's been applied.                         */
 /* ---------------------------------------------------------------------- */
@@ -251,7 +251,7 @@ if ($person && (int)$person['Id'] > 0) {
     try {
         $r = $db->query(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianExternalLinks' LIMIT 1"
         );
         $hasNew = $r && $r->fetch_row() !== null;
         if ($r) $r->close();
@@ -264,9 +264,9 @@ if ($person && (int)$person['Id'] > 0) {
                         el.Url      AS url,
                         el.Note     AS note,
                         el.Verified AS verified
-                   FROM tblCreditPersonExternalLinks el
+                   FROM tblMusicianExternalLinks el
                    JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
-                  WHERE el.CreditPersonId = ?
+                  WHERE el.MusicianId = ?
                     AND COALESCE(t.IsActive, 1) = 1
                   ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC'
             );
@@ -285,8 +285,8 @@ if ($person && (int)$person['Id'] > 0) {
         try {
             $stmt = $db->prepare(
                 "SELECT LinkType, Url, Label
-                   FROM tblCreditPersonLinks
-                  WHERE CreditPersonId = ?
+                   FROM tblMusicianLinks
+                  WHERE MusicianId = ?
                   ORDER BY SortOrder, Id"
             );
             $stmt->bind_param('i', $person['Id']);
@@ -357,9 +357,9 @@ foreach ($discography as $rk => $entry) {
 ?>
 
 <!-- ================================================================
-     PERSON PAGE — Public landing for a Credit People registry row
+     MUSICIAN PAGE — Public landing for a tblMusicians registry row
      ================================================================ -->
-<section class="page-person" aria-label="<?= htmlspecialchars($personName) ?>">
+<section class="page-musician" aria-label="<?= htmlspecialchars($personName) ?>">
 
     <!-- Breadcrumb -->
     <nav aria-label="Breadcrumb" class="mb-3">
@@ -443,13 +443,13 @@ foreach ($discography as $rk => $entry) {
             <?php endif; ?>
             <?php if ($person && (int)$person['Id'] > 0): ?>
                 <!-- Edit (#1348). Hidden by default; revealed by JS for users with the
-                     manage_credit_people entitlement (admin / global_admin), mirroring
+                     manage_musicians entitlement (admin / global_admin), mirroring
                      the song page's #btn-edit-song. Server-side admin re-checks on the
                      target page, so hiding the button is purely a UX affordance. -->
                 <a class="btn btn-sm btn-outline-secondary d-none mt-2"
-                   id="btn-edit-person"
-                   href="/manage/credit-people?id=<?= (int)$person['Id'] ?>"
-                   title="Edit this person in Credit People admin">
+                   id="btn-edit-musician"
+                   href="/manage/musicians?id=<?= (int)$person['Id'] ?>"
+                   title="Edit this musician in the Musicians admin">
                     <i class="fa-solid fa-pen-to-square me-1" aria-hidden="true"></i>Edit
                 </a>
             <?php endif; ?>
@@ -459,8 +459,8 @@ foreach ($discography as $rk => $entry) {
     <?php if (!empty($personMembers)): ?>
         <!-- Members (#1502) — the individual people that make up this
              Group/band/collective. Read-only here; admin add/remove
-             lives in the /manage/credit-people Edit drawer. Each member
-             links to their own /people/<slug> page when one exists,
+             lives in the /manage/musicians Edit drawer. Each member
+             links to their own /musician/<slug> page when one exists,
              mirroring the "Compiled by" byline's slug-or-plain-text
              fallback on /manage/includes/pages/songbook.php. -->
         <div class="card card-song-header mb-4">
@@ -470,8 +470,8 @@ foreach ($discography as $rk => $entry) {
                     <?php foreach ($personMembers as $i => $m): ?>
                         <?php if ($i > 0): ?> &middot; <?php endif; ?>
                         <?php if (!empty($m['slug'])): ?>
-                            <a href="/people/<?= rawurlencode($m['slug']) ?>"
-                               data-navigate="person"
+                            <a href="/musician/<?= rawurlencode($m['slug']) ?>"
+                               data-navigate="musician"
                                class="text-reset text-decoration-underline"><?= htmlspecialchars($m['name']) ?></a>
                         <?php else: ?>
                             <span><?= htmlspecialchars($m['name']) ?></span>
@@ -484,7 +484,7 @@ foreach ($discography as $rk => $entry) {
 
     <!-- External authority identifiers (#1348) — bare-code chips, mirroring the
          song page's ISWC/CCLI row (.song-meta-link styling). Sourced from
-         tblCreditPersonIdentifiers + the typed MusicBrainzArtistMBID column. Each
+         tblMusicianIdentifiers + the typed MusicBrainzArtistMBID column. Each
          links to the provider where one exists; IPI/CAE have no public URL.
          Outbound links pass the #1347 leaving-iHymns interstitial. -->
     <?php
@@ -499,13 +499,13 @@ foreach ($discography as $rk => $entry) {
        rights-society numbers with no public look-up URL), so they're appended
        explicitly after the registry-built map. */
     if (!function_exists('creditIdentifierTypes')) {
-        require_once dirname(__DIR__) . '/credit_people_helpers.php';
+        require_once dirname(__DIR__) . '/musician_helpers.php';
     }
     $personIdMeta = [];
-    foreach (creditIdentifierTypes() as $cpIdSlug => $cpIdDef) {
+    foreach (creditIdentifierTypes() as $musIdSlug => $musIdDef) {
         /* The registry's `url` is already a "%s"-templated printf string the
            chip render below feeds through sprintf(rawurlencode(...)). */
-        $personIdMeta[$cpIdSlug] = [$cpIdDef['label'], $cpIdDef['icon'], $cpIdDef['url']];
+        $personIdMeta[$musIdSlug] = [$musIdDef['label'], $musIdDef['icon'], $musIdDef['url']];
     }
     /* Non-registry rights-society identifiers — no public look-up URL. */
     $personIdMeta['ipi']      = ['IPI',      'fa-barcode', null];
@@ -700,7 +700,7 @@ foreach ($discography as $rk => $entry) {
     <?php endforeach; ?>
 
     <?php
-        /* JSON-LD Person schema (#claude/credit-people-aliases-v2). Emit
+        /* JSON-LD Person schema (#claude/musicians-aliases-v2). Emit
            an alternateName entry for every alias so search engines and
            knowledge-graph consumers learn that "John Newton" and his
            common variants ("J. Newton", "Newton, John") are the same
@@ -721,7 +721,7 @@ foreach ($discography as $rk => $entry) {
                 'alternateName' => count($ldNames) === 1 ? $ldNames[0] : $ldNames,
             ];
     ?>
-        <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB credit-person name
+        <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB musician name
                  containing </script> (or &, ", ') cannot break out of this public
                  <script> element and inject HTML (stored XSS). See security audit. */ ?>
         <script type="application/ld+json"><?= json_encode(

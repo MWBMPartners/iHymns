@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Partial date helper (credit-people birth/death dates)
+ * iHymns — Partial date helper (musicians birth/death dates)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -14,7 +14,7 @@ declare(strict_types=1);
  * migrate-add-creditpeople-date-precision.php. This is the ONE place that parses the
  * editor input and formats a stored (date, precision) back out, so the server, the
  * edit form, the public page and the JSON-LD all agree. (A JS mirror of partialDateParse
- * lives inline in manage/credit-people.php for live client validation.)
+ * lives inline in manage/musicians.php for live client validation.)
  *
  * ACCEPTED INPUT (partialDateParse):
  *   - ''                empty            → no date

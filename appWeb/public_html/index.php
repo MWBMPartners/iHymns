@@ -472,39 +472,39 @@ try {
             $jsonLdScripts[] = $musicAlbum;
         }
     }
-    /* Person page: /people/<slug> (#833 — sameAs JSON-LD)
-       ELI5: this also answers to the singular spelling /person/<slug>,
-       same as the "people"/"person" pages on Wikipedia work either way.
-       DETAILED (#1453): the Apple app's AASA + Universal Links claim the
-       SINGULAR `/person/*` component (`.well-known/apple-app-site-
-       association.php`), and the client-side SPA router already treats
-       `/people/<slug>` and `/person/<slug>` as equivalent forgiving
-       aliases (`js/modules/router.js`, #588 — same convention as
-       `/work` vs `/works`, #840). This server-side OG/JSON-LD detection
-       block only matched the plural form, so a social-media crawler or
-       search engine fetching the singular `/person/<slug>` (e.g. a link
-       shared FROM the native app, whose CanonicalURL.person(slug:)
-       emits the singular form to match AASA) got the generic homepage
-       preview instead of the person's actual name — not a literal HTTP
-       404 (the SPA shell always renders 200 and the client router still
-       resolves it), but a broken social-preview / SEO signal for any
-       non-JS fetch of that URL. Widened to match both spellings so both
-       resolve identically; the canonical URL is then force-normalized
-       below to the plural form (mirroring the song route's PublicId
-       normalization, #1343-B) so search engines consolidate signal onto
-       ONE indexed URL regardless of which spelling was requested. */
+    /* #1741 P2-B — /people/<slug> and /person/<slug> are LEGACY path
+       prefixes; the canonical route is now /musician/<slug>. Issue a real
+       301 for any non-fragment (i.e. a genuine top-level HTTP request —
+       this file is never reached by the SPA's internal `/api?page=...`
+       fragment fetches, only by a fresh navigation / crawler / shared
+       link) load of either old prefix, so search engines converge on ONE
+       indexed URL and a stale bookmark/shared-link still lands on real
+       content. This upgrades the #1453 soft "advertise one spelling via
+       <link rel=canonical>" approach (which served both spellings 200
+       with the plural form merely PREFERRED) to an actual redirect — the
+       client-side SPA router (`js/modules/router.js`) still accepts all
+       three prefixes for same-document navigation, which never re-hits
+       this file. Kept as its own preg_match (not folded into the
+       /musician/ match below) so the redirect is unconditional and
+       doesn't need a DB round-trip just to bounce the request onward. */
     elseif (preg_match('#^/(?:people|person)/([a-z0-9\-]+)$#', $requestPath, $matches)) {
+        header('Location: ' . getCanonicalUrl('/musician/' . rawurlencode($matches[1])), true, 301);
+        exit;
+    }
+    /* Musician page: /musician/<slug> (#833 — sameAs JSON-LD; renamed
+       from the Credit-Person "Person page" by #1741 P2-B). The Apple
+       app's AASA + Universal Links claim BOTH the legacy `/person/*`
+       component (kept indefinitely — shipped client contract,
+       `.well-known/apple-app-site-association.php`) and the new
+       canonical `/musician/*`. */
+    elseif (preg_match('#^/musician/([a-z0-9\-]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $personSlug = $matches[1];
-        /* #1453 — always advertise the plural form as canonical, even
-           when this request came in via the singular AASA-matching
-           spelling. Both spellings render identically; this just picks
-           ONE URL for search engines / social crawlers to converge on. */
-        $canonicalUrl = getCanonicalUrl('/people/' . rawurlencode($personSlug));
+        $canonicalUrl = getCanonicalUrl('/musician/' . rawurlencode($personSlug));
         try {
             $personDb = getDbMysqli();
             $stmt = $personDb->prepare(
-                'SELECT Id, Name, Slug FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+                'SELECT Id, Name, Slug FROM tblMusicians WHERE Slug = ? LIMIT 1'
             );
             $stmt->bind_param('s', $personSlug);
             $stmt->execute();
@@ -521,13 +521,13 @@ try {
                 $personLinks = [];
                 $r = $personDb->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianExternalLinks' LIMIT 1"
                 );
                 $hasNewPersonLinks = $r && $r->fetch_row() !== null;
                 if ($r) $r->close();
                 if ($hasNewPersonLinks) {
                     $stmt = $personDb->prepare(
-                        'SELECT Url FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?'
+                        'SELECT Url FROM tblMusicianExternalLinks WHERE MusicianId = ?'
                     );
                     $pid = (int)$personRow['Id'];
                     $stmt->bind_param('i', $pid);
@@ -538,7 +538,7 @@ try {
                 if (empty($personLinks)) {
                     try {
                         $stmt = $personDb->prepare(
-                            'SELECT Url FROM tblCreditPersonLinks WHERE CreditPersonId = ?'
+                            'SELECT Url FROM tblMusicianLinks WHERE MusicianId = ?'
                         );
                         $pid = (int)$personRow['Id'];
                         $stmt->bind_param('i', $pid);

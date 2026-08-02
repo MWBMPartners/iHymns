@@ -110,7 +110,7 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):not(.footer-link):hover {
    <button> equivalents. The global `a { border-bottom: 1px dotted }`
    rule in app.css §2.5 (#951) gives every <a> a muted underline; on
    <a class="btn-…"> the underline collides visually with the button
-   border so the bulk-promote anchor on /manage/credit-people looked
+   border so the bulk-promote anchor on /manage/musicians looked
    subtly different from the <button>-tag "Add person" right next to
    it. Pin every .btn anchor to a solid border-bottom matching the
    rest of the button's border so the cascade lands on identical
@@ -1230,7 +1230,7 @@ body:has(.navbar-admin) .modal-content.bg-dark {
      data-col-priority="secondary"  — hidden ≤ 768px
      data-col-priority="tertiary"   — hidden ≤ 992px
 
-   Pages that opt in: credit-people, works, …
+   Pages that opt in: musicians, works, …
    When adding a new admin list: add the class to the <table> and the
    data-col-priority attr to every <th> AND its corresponding <td>.
 

@@ -317,13 +317,18 @@ export class Router {
                 return { page: 'stats', params: {} };
             case 'writer':
                 return { page: 'writer', params: { id: segments[1] || '' } };
+            case 'musician':
             case 'people':
             case 'person':
-                /* Credit Person public page (#588). Both /people/<slug>
-                   and /person/<slug> resolve to the same page so the URL
-                   is forgiving — Wikipedia-style /wiki/Foo + linked-data
-                   habits both work. */
-                return { page: 'person', params: { slug: segments[1] || '' } };
+                /* Musician public page (#588, renamed from Credit Person
+                   by #1741 P2-B). /musician/<slug> is canonical;
+                   /musician/<slug> and /person/<slug> resolve to the same
+                   page as forgiving back-compat aliases — years of
+                   external links + the shipped Apple client's
+                   CanonicalURL.person(slug:) still emit the old
+                   spellings (Wikipedia-style /wiki/Foo + linked-data
+                   habits both work too). */
+                return { page: 'musician', params: { slug: segments[1] || '' } };
             case 'work':
             case 'works':
                 /* Work public page (#840). /work/<slug> is canonical;
@@ -497,7 +502,7 @@ export class Router {
              * read, so the catch block below rendered a generic connection
              * warning. Six surfaces send a themed, accessible card with a
              * helpful message and action buttons — song.php (410 for a removed
-             * song, 404 otherwise), songbook.php, person.php, work.php, tag.php
+             * song, 404 otherwise), songbook.php, musician.php, work.php, tag.php
              * and maintenance.php's 503 — and NOT ONE had ever been seen by a
              * user. They render perfectly in curl.
              *
@@ -564,7 +569,7 @@ export class Router {
                  *     feature for ~7 weeks (#1565).
                  *   - It had nothing left to run: the only <script> in any
                  *     fragment is an inert `application/ld+json` block in
-                 *     person.php, which needs parsing, not executing.
+                 *     musician.php, which needs parsing, not executing.
                  *   - tests/php/test-fragment-inline-scripts.php now fails the
                  *     build on any executable inline script in a fragment, and
                  *     its allowlist is empty (#1572).
@@ -630,6 +635,7 @@ export class Router {
             'link': 'Link a Device — ' + appName,
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
+            'musician': 'Musician — ' + appName,
             'help': 'Help — ' + appName,
             'whats-new': "What's New — " + appName,
             'terms': 'Terms of Use — ' + appName,
@@ -760,13 +766,13 @@ export class Router {
                 }
             }
 
-            /* Edit button on the person page (#1348) — same affordance, gated on
-               manage_credit_people (admin / global_admin); the admin page re-checks. */
-            const editPersonBtn = document.getElementById('btn-edit-person');
-            if (editPersonBtn) {
+            /* Edit button on the musician page (#1348) — same affordance, gated on
+               manage_musicians (admin / global_admin); the admin page re-checks. */
+            const editMusicianBtn = document.getElementById('btn-edit-musician');
+            if (editMusicianBtn) {
                 const role = this.app.userAuth?.getUser()?.role;
-                if (userHasEntitlement('manage_credit_people', role)) {
-                    editPersonBtn.classList.remove('d-none');
+                if (userHasEntitlement('manage_musicians', role)) {
+                    editMusicianBtn.classList.remove('d-none');
                 }
             }
 

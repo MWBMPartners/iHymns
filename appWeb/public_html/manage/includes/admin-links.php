@@ -67,7 +67,7 @@ $_adminLinks = [
        layouts (tblPrintTemplates). Curator-level, same entitlement as the other
        Catalogue metadata surfaces. */
     ['print-templates',      '/manage/print-templates',        'bi-printer',         'Print templates',       'manage_songbooks',            'Catalogue'  ],
-    ['credit-people',        '/manage/credit-people',          'bi-person-badge',    'Credit People',         'manage_credit_people',        'Catalogue'  ],
+    ['musicians',        '/manage/musicians',          'bi-person-badge',    'Musicians',             'manage_musicians',        'Catalogue'  ],
     ['languages',            '/manage/languages',              'bi-translate',       'Languages',             'manage_languages',            'Catalogue'  ],
     ['tags',                 '/manage/tags',                   'bi-tags',            'Tags & Themes',         'manage_tags',                 'Catalogue'  ],
 

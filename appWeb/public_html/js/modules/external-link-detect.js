@@ -3,7 +3,7 @@
  *
  * Single source of truth for URL → tblExternalLinkTypes.Slug mapping
  * across every admin edit modal that exposes the external-links
- * card-list editor (songbooks, credit-people, songs, works — wired in
+ * card-list editor (songbooks, musicians, songs, works — wired in
  * by each page as the rest of #838 / #839 land alongside #840).
  *
  * Mirrors MusicBrainz behaviour: paste a URL, the provider dropdown

@@ -232,7 +232,8 @@ function orphanDispatchIndex(): array
  *   2. `<input name="action" … value="NAME">` (either attribute order).
  *   3. `action: 'NAME'` / `'action' => 'NAME'` / `append('action', 'NAME')`.
  *   4. `actionInput.value = 'NAME'` — the assignment shape that false-flagged
- *      all of /manage/credit-people until it was added (inventory §0.2).
+ *      all of /manage/musicians (formerly /manage/credit-people, renamed by
+ *      #1741 P2-B) until it was added (inventory §0.2).
  *
  * @param array<string,mixed> $actionSet name => anything, used to filter noise
  * @return array<string,bool>
@@ -641,8 +642,8 @@ ok("control: 'admin_refresh_iana_cldr' is NOT an orphan — proving the scanner 
 ok("control: 'bulk_import_skipped_csv' is caller-by-proxy — its only credit is the self-emitted URL inside its own dispatch file (§2.6 chain rule)",
     array_keys($act['callers']['bulk_import_skipped_csv'] ?? [])
         === ['appWeb/public_html/manage/editor/api.php']);
-ok("control: 'update_person' is credited to manage/credit-people.php — the `actionIn.value = '…'` emitter shape (§0.2)",
-    isset($act['callers']['update_person']['appWeb/public_html/manage/credit-people.php']));
+ok("control: 'update_person' is credited to manage/musicians.php — the `actionIn.value = '…'` emitter shape (§0.2)",
+    isset($act['callers']['update_person']['appWeb/public_html/manage/musicians.php']));
 ok("control: 'bulk_tag_detach' has a caller again (wired by 8c990266; the flagship orphan of the 2026-07-30 audit)",
     !in_array('bulk_tag_detach', $act['orphans'], true));
 ok("control: 'tblSongLinks' is not flagged in either direction",

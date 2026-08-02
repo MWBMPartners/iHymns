@@ -83,7 +83,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes'
    /manage/* admin surface into tblActivityLog. Every admin page
    requires this auth bootstrap first, so installing the global
    handler here covers all of them — schema-audit, organisations,
-   credit-people, songbooks, setup-database, etc. — without each
+   musicians, songbooks, setup-database, etc. — without each
    page having to remember to register its own. */
 installGlobalActivityLogHandlers('manage');
 

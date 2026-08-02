@@ -472,7 +472,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 
 /* ---- GET ?action=compiler_search&q=… (#831) ---------------------------
  * JSON typeahead for the edit-modal Compilers picker. Returns rows
- * from tblCreditPeople matching the query, preferring people who are
+ * from tblMusicians matching the query, preferring people who are
  * already cited in the catalogue (name appears in any of the song-
  * credit tables) — keeps real contributors above bare registry rows.
  *
@@ -481,8 +481,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
  * parent typeaheads.
  *
  * Pre-migration safe: no schema dependency on tblSongbookCompilers
- * itself (we're searching the existing tblCreditPeople), so the
- * endpoint works as soon as the credit-people registry has rows.
+ * itself (we're searching the existing tblMusicians), so the
+ * endpoint works as soon as the musicians registry has rows.
  * ----------------------------------------------------------------------- */
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     && ($_GET['action'] ?? '') === 'compiler_search'
@@ -492,18 +492,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
     $q     = trim((string)($_GET['q'] ?? ''));
     $limit = max(1, min(50, (int)($_GET['limit'] ?? 20)));
 
-    /* tblCreditPeople is the registry; safe to assume it exists at
+    /* tblMusicians is the registry; safe to assume it exists at
        this point (it's part of the core schema since #545 / install).
        Defensive fallback — if it really isn't there, return empty. */
     try {
         $probe = $db->query(
             "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPeople' LIMIT 1"
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians' LIMIT 1"
         );
         if (!$probe || $probe->fetch_row() === null) {
             echo json_encode([
                 'suggestions' => [],
-                'note'        => 'tblCreditPeople not yet created — run /manage/setup-database',
+                'note'        => 'tblMusicians not yet created — run /manage/setup-database',
             ]);
             exit;
         }
@@ -513,7 +513,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
 
     try {
         if ($q === '') {
-            $sql = 'SELECT Id, Name, Slug FROM tblCreditPeople
+            $sql = 'SELECT Id, Name, Slug FROM tblMusicians
                      WHERE COALESCE(IsSpecialCase, 0) = 0
                      ORDER BY Name ASC
                      LIMIT ?';
@@ -521,7 +521,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'GET'
             $stmt->bind_param('i', $limit);
         } else {
             $like = '%' . $q . '%';
-            $sql  = 'SELECT Id, Name, Slug FROM tblCreditPeople
+            $sql  = 'SELECT Id, Name, Slug FROM tblMusicians
                       WHERE Name LIKE ?
                         AND COALESCE(IsSpecialCase, 0) = 0
                       ORDER BY Name ASC
@@ -1407,7 +1407,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     /* #831 — reconcile compiler credits for this songbook.
                        The edit modal posts three parallel arrays:
-                         compiler_person_ids[]   — credit-people FKs
+                         compiler_person_ids[]   — musicians FKs
                          compiler_notes[]        — optional per-row note
                        Position N in each array is the same compiler row;
                        array index also drives SortOrder so a curator's
@@ -1448,7 +1448,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($compilerRows) {
                             $stmt = $db->prepare(
                                 'INSERT INTO tblSongbookCompilers
-                                     (SongbookId, CreditPersonId, SortOrder, Note)
+                                     (SongbookId, MusicianId, SortOrder, Note)
                                   VALUES (?, ?, ?, ?)'
                             );
                             foreach ($compilerRows as $cr) {
@@ -2196,7 +2196,7 @@ if ($hasSeriesSchema) {
 
 /* ----- Compiler-credits map for the edit modal (#831) -----------------
  *       SongbookId => [{personId, personName, sortOrder, note}, …]
- *       Joined to tblCreditPeople so the edit-modal payload can render
+ *       Joined to tblMusicians so the edit-modal payload can render
  *       chips with the person's display name without a second client
  *       round-trip. Schema-conditional via $hasCompilersSchema (probed
  *       earlier alongside $hasSeriesSchema) so a pre-migration
@@ -2206,10 +2206,10 @@ $sbCompilersMap = []; /* SongbookId => [{...}, ...] in SortOrder asc */
 if ($hasCompilersSchema) {
     try {
         $res = $db->query(
-            'SELECT c.SongbookId, c.CreditPersonId, c.SortOrder, c.Note,
+            'SELECT c.SongbookId, c.MusicianId, c.SortOrder, c.Note,
                     p.Name AS PersonName, p.Slug AS PersonSlug
                FROM tblSongbookCompilers c
-               JOIN tblCreditPeople     p ON p.Id = c.CreditPersonId
+               JOIN tblMusicians     p ON p.Id = c.MusicianId
               ORDER BY c.SongbookId ASC, c.SortOrder ASC, p.Name ASC'
         );
         if ($res) {
@@ -2217,7 +2217,7 @@ if ($hasCompilersSchema) {
                 $sb = (int)$crow['SongbookId'];
                 if (!isset($sbCompilersMap[$sb])) $sbCompilersMap[$sb] = [];
                 $sbCompilersMap[$sb][] = [
-                    'person_id'   => (int)$crow['CreditPersonId'],
+                    'person_id'   => (int)$crow['MusicianId'],
                     'person_name' => (string)$crow['PersonName'],
                     'person_slug' => (string)($crow['PersonSlug'] ?? ''),
                     'sort_order'  => (int)$crow['SortOrder'],
@@ -3428,7 +3428,7 @@ $csrf = csrfToken();
 
                         <?php if ($hasCompilersSchema): ?>
                         <!-- #831 — Compiler / Editor credits. Multi-row picker
-                             where each row pairs a tblCreditPeople entry with
+                             where each row pairs a tblMusicians entry with
                              an optional note (edition / co-compiler context).
                              Drag-handle reorder persists via array-index ⇒
                              SortOrder on save. The hidden inputs are named
@@ -3437,7 +3437,7 @@ $csrf = csrfToken();
                         <div class="mb-3" id="edit-compilers-block">
                             <label class="form-label d-flex justify-content-between align-items-center">
                                 <span>Compilers / Editors</span>
-                                <a href="/manage/credit-people" class="small text-info"
+                                <a href="/manage/musicians" class="small text-info"
                                    title="Manage credit people — add a person, set bio, slug, …">
                                     <i class="bi bi-person-badge me-1" aria-hidden="true"></i>Manage people
                                 </a>
@@ -3477,7 +3477,7 @@ $csrf = csrfToken();
                             </div>
                             <div class="form-text small text-muted mt-1">
                                 Person must already exist in Credit People. Use
-                                <a href="/manage/credit-people">Manage people</a>
+                                <a href="/manage/musicians">Manage people</a>
                                 to register a new compiler before adding them here.
                             </div>
                         </div>
@@ -4561,7 +4561,7 @@ $csrf = csrfToken();
         /* Add button — commits the currently-typed name (must be an
            exact match against one of the fetched suggestions; we never
            save a free-text id-less compiler since the FK requires a
-           real tblCreditPeople row). */
+           real tblMusicians row). */
         const commitAdd = () => {
             const v = addInput.value.trim();
             if (v === '') return;
@@ -4574,7 +4574,7 @@ $csrf = csrfToken();
                 setTimeout(() => addInput.classList.remove('is-invalid'), 1500);
                 return;
             }
-            /* Skip if already added — UNIQUE (SongbookId, CreditPersonId)
+            /* Skip if already added — UNIQUE (SongbookId, MusicianId)
                on the table would catch it but we may as well be friendly. */
             const existing = rowsEl.querySelector('input[name="compiler_person_ids[]"][value="' + Number(hit.id) + '"]');
             if (existing) {
@@ -4612,7 +4612,7 @@ $csrf = csrfToken();
             const sl  = String(data.personSlug || '');
             const nt  = String(data.note || '');
             const personLink = sl
-                ? '<a href="/people/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
+                ? '<a href="/musician/' + encodeURIComponent(sl) + '" target="_blank" rel="noopener" class="text-info text-decoration-none">'
                   + escapeHtml(nm) + ' <i class="bi bi-box-arrow-up-right small" aria-hidden="true"></i></a>'
                 : escapeHtml(nm);
             card.innerHTML =

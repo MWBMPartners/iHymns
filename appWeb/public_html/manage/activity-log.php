@@ -193,9 +193,19 @@ if (in_array($filterResult, ['success', 'failure', 'error'], true)) {
     $types   .= 's';
 }
 if ($filterEntityType !== '') {
-    $where[]  = 'a.EntityType = ?';
-    $params[] = $filterEntityType;
-    $types   .= 's';
+    /* #1741 P2-B — a renamed entity type (today: only 'musician') must
+       also surface its pre-rename historical rows ('credit_person'),
+       which are never rewritten. activityLogEntityTypeVariants() is the
+       ONE shared old↔new map (includes/activity_log.php, rule #35) — an
+       entity type with no rename history returns as a single-element
+       list, so this degrades to the old exact-match behaviour for
+       everything else. */
+    $entityTypeVariants = activityLogEntityTypeVariants($filterEntityType);
+    $where[]  = 'a.EntityType IN (' . implode(',', array_fill(0, count($entityTypeVariants), '?')) . ')';
+    foreach ($entityTypeVariants as $entityTypeVariant) {
+        $params[] = $entityTypeVariant;
+        $types   .= 's';
+    }
 }
 if ($filterEntityId !== '') {
     $where[]  = 'a.EntityId = ?';

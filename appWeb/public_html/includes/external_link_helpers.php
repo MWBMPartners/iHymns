@@ -98,7 +98,7 @@ function attachExternalLinkPatterns(\mysqli $db, array $types): array
 
 /**
  * Load the active `tblExternalLinkTypes` registry for a given surface
- * (songbook / work / song / credit-person / …) and attach URL → provider
+ * (songbook / work / song / musician / …) and attach URL → provider
  * patterns. Returns a list shaped for `window._iHymnsLinkTypes` consumption
  * by the shared `external-links-editor.js` module.
  *
@@ -108,7 +108,7 @@ function attachExternalLinkPatterns(\mysqli $db, array $types): array
  * @param \mysqli $db
  * @param string  $appliesTo  Value to test against tblExternalLinkTypes.AppliesTo
  *                            via FIND_IN_SET. Common values: 'songbook',
- *                            'work', 'song', 'credit-person'.
+ *                            'work', 'song', 'musician'.
  * @return list<array{id:int,slug:string,name:string,category:string,iconClass:string,allowMultiple:int,patterns:array}>
  */
 function loadExternalLinkTypesFor(\mysqli $db, string $appliesTo): array
@@ -202,7 +202,7 @@ function saveExternalLinksForRow(
         'tblSongbookExternalLinks'     => 'SongbookId',
         'tblWorkExternalLinks'         => 'WorkId',
         'tblSongExternalLinks'         => 'SongId',
-        'tblCreditPersonExternalLinks' => 'CreditPersonId',
+        'tblMusicianExternalLinks' => 'MusicianId',
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");
@@ -277,7 +277,7 @@ function loadExternalLinksForRow(
         'tblSongbookExternalLinks'     => 'SongbookId',
         'tblWorkExternalLinks'         => 'WorkId',
         'tblSongExternalLinks'         => 'SongId',
-        'tblCreditPersonExternalLinks' => 'CreditPersonId',
+        'tblMusicianExternalLinks' => 'MusicianId',
     ];
     if (!isset($allowedTables[$table]) || $allowedTables[$table] !== $fkColumn) {
         throw new \InvalidArgumentException("Unknown external-links table/fk: $table/$fkColumn");

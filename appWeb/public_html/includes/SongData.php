@@ -959,7 +959,7 @@ class SongData
 
     /**
      * Pull `[abbr => [{id, name, slug, note}, ...]]` from
-     * tblSongbookCompilers joined to tblCreditPeople. Same shape +
+     * tblSongbookCompilers joined to tblMusicians. Same shape +
      * caching strategy as _songbookSeriesMap(): single query covers
      * the home grid + every songbook page on a single request.
      *
@@ -995,7 +995,7 @@ class SongData
                                c.Note         AS note,
                                c.SortOrder    AS sortOrder
                           FROM tblSongbookCompilers c
-                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblMusicians p ON p.Id = c.MusicianId
                           JOIN tblSongbooks    b ON b.Id = c.SongbookId
                          ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC';
                 $stmt = $this->db->prepare($sql);
@@ -1013,7 +1013,7 @@ class SongData
                                c.Note         AS note,
                                c.SortOrder    AS sortOrder
                           FROM tblSongbookCompilers c
-                          JOIN tblCreditPeople p ON p.Id = c.CreditPersonId
+                          JOIN tblMusicians p ON p.Id = c.MusicianId
                           JOIN tblSongbooks    b ON b.Id = c.SongbookId
                          WHERE b.Abbreviation IN ($ph)
                          ORDER BY b.Abbreviation, c.SortOrder ASC, p.Name ASC";
@@ -1265,13 +1265,13 @@ class SongData
      *
      *   'songbook' → tblSongbookExternalLinks      keyed by Abbreviation
      *   'song'     → tblSongExternalLinks          keyed by SongId
-     *   'person'   → tblCreditPersonExternalLinks  keyed by CreditPersonId (int)
+     *   'musician' → tblMusicianExternalLinks      keyed by MusicianId (int)
      *
      * Schema-probed; pre-migration deployments get an empty map. The
      * registry join (tblExternalLinkTypes) drops link-type rows that
      * have been deactivated — IsActive = 0 acts as a soft delete.
      *
-     * @param string         $entityType  'songbook' | 'song' | 'person'
+     * @param string         $entityType  'songbook' | 'song' | 'musician'
      * @param array|null     $keys        Limit to these keys; null = all
      * @return array<string|int, array<int, array{slug:string,name:string,category:string,url:string,note:string,verified:bool,iconClass:string,sortOrder:int}>>
      */
@@ -1292,11 +1292,11 @@ class SongData
                 $keyExpr = 'el.SongId';
                 $bindT   = 's';
                 break;
-            case 'person':
-                $table   = 'tblCreditPersonExternalLinks';
-                $entCol  = 'CreditPersonId';
+            case 'musician':
+                $table   = 'tblMusicianExternalLinks';
+                $entCol  = 'MusicianId';
                 $joinSql = '';
-                $keyExpr = 'el.CreditPersonId';
+                $keyExpr = 'el.MusicianId';
                 $bindT   = 'i';
                 break;
             default:
@@ -2272,17 +2272,17 @@ class SongData
      * writer.php: the catalogue must NEVER materialise in full (CLAUDE.md
      * rule #17 / the #929 OOM). The match is pushed into SQL using the same
      * IN-subquery shape already used by searchSongs() and the credit→songs
-     * JOIN in person.php; only the (small) matched set is then hydrated, one
+     * JOIN in musician.php; only the (small) matched set is then hydrated, one
      * record at a time, via the canonical getSongById().
      *
      * ELI5: "show me everything this person wrote or composed", without
      * loading the whole catalogue to find it.
      *
      * WHY NAME VARIANTS RATHER THAN AN ID: there is no FK from
-     * `tblSongWriters` / `tblSongComposers` to `tblCreditPeople` today — the
+     * `tblSongWriters` / `tblSongComposers` to `tblMusicians` today — the
      * link is a name-string match. So the caller (`includes/pages/writer.php`)
      * assembles the spellings a person is credited under and passes them all;
-     * see `getCreditPerson()`'s section header, which reads the same tables the
+     * see `getMusician()`'s section header, which reads the same tables the
      * same way and must be changed in step if that FK is ever added.
      *
      * @param string[] $nameVariants Candidate names in any case; matched
@@ -2625,7 +2625,7 @@ class SongData
                         if ($lyricsId > 0) {
                             $rows = $this->_extrasRows(
                                 'SELECT Id AS id, PartKind AS partKind, Label AS label, '
-                              . 'SingerName AS singerName, Gender AS gender, CreditPersonId AS creditPersonId '
+                              . 'SingerName AS singerName, Gender AS gender, MusicianId AS musicianId '
                               . 'FROM tblVocalParts WHERE LyricsId = ? ORDER BY SortOrder, Id',
                                 'i', [$lyricsId]
                             );
@@ -5071,35 +5071,36 @@ class SongData
     }
 
     /* =====================================================================
-     * CREDIT PEOPLE — writer/composer/etc. bio + discography (#1443/#1444)
+     * MUSICIANS — writer/composer/etc. bio + discography (#1443/#1444,
+     * renamed from "Credit People" by #1741 P2-B)
      *
-     * JSON twin of includes/pages/person.php's own query logic (the public
-     * /people/<slug> HTML page — see that file's header). Deliberately NOT
-     * a copy-paste fork: both this method and person.php independently
-     * query tblCreditPeople + the six per-role credit tables because
-     * tblCreditPeople has no direct FK from tblSongWriters/tblSongComposers/
-     * etc. today (a name-string match, same as person.php) — a future
+     * JSON twin of includes/pages/musician.php's own query logic (the public
+     * /musician/<slug> HTML page — see that file's header). Deliberately NOT
+     * a copy-paste fork: both this method and musician.php independently
+     * query tblMusicians + the six per-role credit tables because
+     * tblMusicians has no direct FK from tblSongWriters/tblSongComposers/
+     * etc. today (a name-string match, same as musician.php) — a future
      * schema change adding that FK should update BOTH read paths together.
      * ===================================================================== */
 
     /**
      * One credit person's registry row (bio/lifespan/links, when a
-     * tblCreditPeople row exists) plus every song they are credited on,
+     * tblMusicians row exists) plus every song they are credited on,
      * grouped by role. Exactly ONE of $id/$slug/$name should be given by
-     * the caller (api.php's `credit_person` action resolves which); when
+     * the caller (api.php's `musician` action resolves which); when
      * none of the id/slug lookups finds a registry row, $name (or the
      * row's own Name once found) still drives the discography query — a
-     * writer/composer with no curated tblCreditPeople row yet still has a
-     * usable "songs by this name" result, mirroring person.php's own
+     * writer/composer with no curated tblMusicians row yet still has a
+     * usable "songs by this name" result, mirroring musician.php's own
      * slug-has-no-row fallback.
      *
      * Returns null only when NEITHER a registry row NOR any credited song
      * could be found — nothing to show at all (same 404 condition
-     * person.php uses).
+     * musician.php uses).
      *
      * @return array<string,mixed>|null
      */
-    public function getCreditPerson(?int $id = null, ?string $slug = null, ?string $name = null): ?array
+    public function getMusician(?int $id = null, ?string $slug = null, ?string $name = null): ?array
     {
         $row = null;
         try {
@@ -5108,7 +5109,7 @@ class SongData
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Id = ? LIMIT 1'
+                       FROM tblMusicians WHERE Id = ? LIMIT 1'
                 );
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -5119,7 +5120,7 @@ class SongData
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Slug = ? LIMIT 1'
+                       FROM tblMusicians WHERE Slug = ? LIMIT 1'
                 );
                 $stmt->bind_param('s', $slug);
                 $stmt->execute();
@@ -5127,14 +5128,14 @@ class SongData
                 $stmt->close();
             }
             /* Slug/id lookup found nothing (or wasn't attempted) — try an
-               exact Name match (tblCreditPeople.Name is UNIQUE). Mirrors
-               person.php's own "no registry row, fall back to a name" path. */
+               exact Name match (tblMusicians.Name is UNIQUE). Mirrors
+               musician.php's own "no registry row, fall back to a name" path. */
             if ($row === null && $name !== null && $name !== '') {
                 $stmt = $this->db->prepare(
                     'SELECT Id, Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                             COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
                             COALESCE(IsGroup, 0)       AS IsGroup
-                       FROM tblCreditPeople WHERE Name = ? LIMIT 1'
+                       FROM tblMusicians WHERE Name = ? LIMIT 1'
                 );
                 $stmt->bind_param('s', $name);
                 $stmt->execute();
@@ -5142,7 +5143,7 @@ class SongData
                 $stmt->close();
             }
         } catch (\Throwable $e) {
-            error_log('[SongData::getCreditPerson] registry lookup failed: ' . $e->getMessage());
+            error_log('[SongData::getMusician] registry lookup failed: ' . $e->getMessage());
             $row = null;
         }
 
@@ -5171,9 +5172,9 @@ class SongData
             'totalSongs'    => 0,
         ];
 
-        /* Discography by role — same six tables + labels person.php uses,
+        /* Discography by role — same six tables + labels musician.php uses,
            minus the #587 'artist' role when tblSongArtists hasn't been
-           migrated yet (probe, exactly like person.php's own guard). */
+           migrated yet (probe, exactly like musician.php's own guard). */
         $roleTables = [
             'writer'     => ['table' => 'tblSongWriters',     'label' => 'As Writer'],
             'composer'   => ['table' => 'tblSongComposers',   'label' => 'As Composer'],
@@ -5245,7 +5246,7 @@ class SongData
                 }
             } catch (\Throwable $_e) {
                 /* Table missing / query failed — skip this role, matching
-                   person.php's own per-role try/catch. */
+                   musician.php's own per-role try/catch. */
             }
         }
         $person['totalSongs'] = count($matchedSongIds);
@@ -5255,14 +5256,14 @@ class SongData
         }
 
         /* External links — unified system only (#833). The legacy
-           tblCreditPersonLinks fallback person.php still renders is a
+           tblMusicianLinks fallback musician.php still renders is a
            display-only shim with no new rows since #833 shipped; not worth
            carrying into this newer JSON contract. */
         if ($row && (int)$row['Id'] > 0) {
             try {
                 $probe = $this->db->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblCreditPersonExternalLinks' LIMIT 1"
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianExternalLinks' LIMIT 1"
                 );
                 $hasLinks = $probe && $probe->fetch_row() !== null;
                 if ($probe) { $probe->close(); }
@@ -5274,9 +5275,9 @@ class SongData
                 $stmt = $this->db->prepare(
                     'SELECT t.Slug AS slug, t.Name AS name, t.Category AS category, t.IconClass AS iconClass,
                             el.Url AS url, el.Note AS note, el.Verified AS verified, el.SortOrder AS sortOrder
-                       FROM tblCreditPersonExternalLinks el
+                       FROM tblMusicianExternalLinks el
                        JOIN tblExternalLinkTypes t ON t.Id = el.LinkTypeId
-                      WHERE el.CreditPersonId = ?
+                      WHERE el.MusicianId = ?
                         AND COALESCE(t.IsActive, 1) = 1
                       ORDER BY t.Category, el.SortOrder ASC, t.DisplayOrder ASC, t.Name ASC'
                 );

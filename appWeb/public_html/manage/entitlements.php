@@ -86,7 +86,7 @@ $groups = [
        written landed in the catch-all "Other" bucket, so an operator looking for
        "who can manage Works?" had to scan an unsorted list. Grouped here with
        the surfaces they sit beside in the admin nav. */
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_credit_people', 'manage_languages', 'manage_tags', 'manage_works', 'manage_external_link_types', 'manage_duplicate_songs'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_external_link_types', 'manage_duplicate_songs'],
     'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_feature_gating'],
     'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
     'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
@@ -141,7 +141,7 @@ $ENTITLEMENT_LABELS = [
     'manage_songbooks'          => ['Manage songbooks',              'CRUD over the songbook catalogue'],
     'manage_user_groups'        => ['Manage user groups',            'CRUD over groups + channel-access toggles'],
     'manage_organisations'      => ['Manage organisations',          'CRUD over orgs + licence metadata + members'],
-    'manage_credit_people'      => ['Manage credit people',           'Edit / merge / rename people credited on songs (#545)'],
+    'manage_musicians'      => ['Manage musicians',                'Edit / merge / rename people credited on songs (#545, renamed by #1741 P2-B)'],
     'manage_languages'          => ['Manage languages',                'CRUD over the IETF BCP 47 language registry (tblLanguages)'],
     'manage_tags'               => ['Manage tags & themes',            'CRUD + merge over the song-tag registry (#770)'],
     'manage_content_restrictions' => ['Manage content restrictions', 'Per-song / per-songbook gating rules'],

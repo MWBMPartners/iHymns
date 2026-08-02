@@ -697,9 +697,9 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                         <p class="mb-<?= $rowIdx === count($_creditRows) - 1 || empty(array_slice($_creditRows, $rowIdx + 1, null, true)) ? '0' : '1' ?> song-credit-row" data-credit-kind="<?= htmlspecialchars($rowId) ?>">
                             <i class="<?= htmlspecialchars($rowIcon) ?> me-2 text-muted" aria-hidden="true"></i>
                             <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
-                            <?php foreach ($rowNames as $i => $name): ?><a href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                            <?php foreach ($rowNames as $i => $name): ?><a href="/musician/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
                                    class="song-meta-link"
-                                   data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
+                                   data-navigate="musician"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                         </p>
                     <?php endforeach; ?>
                 </div>
@@ -1244,14 +1244,14 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                     <div data-credit-kind="<?= htmlspecialchars($rowId) ?>">
                         <strong><?= htmlspecialchars($rowLabel) ?>:</strong>
                         <?php /* #951 — credits-block author / composer / etc. now
-                                 click through to the same /people/<slug> page the
+                                 click through to the same /musician/<slug> page the
                                  header credits do. Same .song-meta-link styling so
                                  the footer reads as a muted parity copy of the
                                  header, not a separate visual treatment. */
                               foreach ($rowNames as $i => $name): ?><a
-                            href="/people/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
+                            href="/musician/<?= htmlspecialchars(urlencode(strtolower(str_replace(' ', '-', $name)))) ?>"
                             class="song-meta-link"
-                            data-navigate="person"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
+                            data-navigate="musician"><?= htmlspecialchars($name) ?></a><?php if ($i < count($rowNames) - 1): ?>;&nbsp;<?php endif; ?><?php endforeach; ?>
                     </div>
                 <?php endforeach; ?>
             <?php endif; ?>

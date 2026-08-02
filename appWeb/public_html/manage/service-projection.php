@@ -261,7 +261,7 @@ $DOW = [1 => 'Mon', 2 => 'Tue', 3 => 'Wed', 4 => 'Thu', 5 => 'Fri', 6 => 'Sat', 
 
         /* JSON_HEX_* so an org-admin-controlled venue/schedule Name containing a
            script-closing sequence (or < > & ' ") can't break out of this inline
-           module — the established convention (tiers.php, credit-people.php).
+           module — the established convention (tiers.php, musicians.php).
            NOTE: this comment must not write that closing sequence literally
            either; the HTML parser terminates the <script> on the raw bytes
            regardless of JS comment syntax. */

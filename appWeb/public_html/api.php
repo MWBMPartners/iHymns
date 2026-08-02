@@ -267,9 +267,9 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared organisation helpers (#719 PR 2c). ORG_MEMBER_ROLES +
    slugifyOrganisationName() + userCanActOnOrg() row-level gate. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'organisation_validation.php';
-/* Shared credit-people helpers (#719 PR 2d). Link-type catalogue +
+/* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
-require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'credit_people_helpers.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -406,6 +406,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 /* Determine request type: page (HTML) or action (JSON) */
 $page   = isset($_GET['page'])   ? trim($_GET['page'])   : null;
 $action = isset($_GET['action']) ? trim($_GET['action']) : null;
+
+/* #1741 P2-B — `page=musician` is canonical; `page=person`/`page=people`
+   are back-compat aliases (the shipped Apple client + years of external
+   links still emit the old spelling). Normalised HERE, before the
+   $_cacheablePages membership check and the ETag cache key below, so a
+   request for the old page value shares the SAME cached fragment as the
+   canonical one — two page values hashing to two different cache entries
+   for identical content would be a silent cache-fragmentation bug, not a
+   correctness bug (rule #6/#30 territory: the fragment is shared-cache,
+   so normalise before anything cache-key-shaped touches $page). */
+if ($page === 'person' || $page === 'people') {
+    $page = 'musician';
+}
 
 /* =========================================================================
  * LIVENESS PROBE — GET /api?action=health  (#1022)
@@ -570,7 +583,7 @@ if ($page !== null) {
        still skip this path because they include user-specific data. */
     $_cacheablePages = [
         'home', 'songbooks', 'songbook', 'song', 'search',
-        'writer', 'person', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
+        'writer', 'musician', 'work', 'help', 'terms', 'privacy', 'request', 'request-a-song',
         /* #1583 — a deploy-time CHANGELOG.md excerpt, identical for every
            visitor (no per-user data), so it's cacheable on the same terms
            as help/terms/privacy. */
@@ -664,18 +677,25 @@ if ($page !== null) {
             require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'writer.php';
             break;
 
-        case 'person':
-            /* Credit Person public page (#588). Slug column on
-               tblCreditPeople is the canonical lookup; the page
-               renderer falls back to a name-based search if the
-               migration hasn't been applied yet. */
+        case 'musician':
+            /* Musician public page (#588, renamed from Credit Person
+               #1741 P2-B). `page=person`/`page=people` are normalised to
+               `musician` right after $page is read (above, before the
+               cache-key logic) — years of external links + the shipped
+               Apple client's CanonicalURL.person(slug:) still emit the
+               old spellings (rule #33 — a URL another surface points at
+               is a contract), so this is the only case label that can
+               ever be reached for any of the three. Slug column on
+               tblMusicians is the canonical lookup; the page renderer
+               falls back to a name-based search if the migration hasn't
+               been applied yet. */
             $personSlug = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             if ($personSlug === '') {
                 http_response_code(400);
-                echo '<div class="alert alert-warning" role="alert">Person slug is required.</div>';
+                echo '<div class="alert alert-warning" role="alert">Musician slug is required.</div>';
                 break;
             }
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'person.php';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'musician.php';
             break;
 
         case 'work':
@@ -1274,10 +1294,18 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Resolve credit-people by an industry identifier (#1103).
+         * Resolve musicians by an industry identifier (#1103).
          * Params: type (ipi|isni|cae|…) + value (required). Both bound.
+         *
+         * #1741 P2-B back-compat alias — `person_by_identifier` is the
+         * shipped-contract OLD action name; `musician_by_identifier` is
+         * the new canonical one. Action-determines-shape (plan §3.A):
+         * ONE query, the envelope key is the only thing that differs —
+         * `people` (old, byte-identical forever) vs `musicians` (new).
          * ----------------------------------------------------------------- */
         case 'person_by_identifier':
+        case 'musician_by_identifier':
+            $_isLegacyIdAction = ($action === 'person_by_identifier');
             $pType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
             $pValue = isset($_GET['value']) ? trim((string)$_GET['value']) : '';
             if ($pType === '' || $pValue === '' || strlen($pType) > 20) {
@@ -1288,17 +1316,24 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 $probe = $db->query(
                     "SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() "
-                  . "AND TABLE_NAME = 'tblCreditPersonIdentifiers' LIMIT 1"
+                  . "AND TABLE_NAME = 'tblMusicianIdentifiers' LIMIT 1"
                 );
                 $hasTable = $probe && $probe->fetch_row() !== null;
                 if ($probe) { $probe->close(); }
-                if (!$hasTable) { sendJson(['type' => $pType, 'value' => $pValue, 'people' => []]); break; }
+                if (!$hasTable) {
+                    sendJson([
+                        'type'  => $pType,
+                        'value' => $pValue,
+                        ($_isLegacyIdAction ? 'people' : 'musicians') => [],
+                    ]);
+                    break;
+                }
 
                 $stmt = $db->prepare(
                     "SELECT cp.Id AS id, cp.Name AS name, cp.Slug AS slug, "
                   . "i.IdentifierType AS identifierType, i.IdentifierValue AS identifierValue "
-                  . "FROM tblCreditPersonIdentifiers i "
-                  . "JOIN tblCreditPeople cp ON cp.Id = i.CreditPersonId "
+                  . "FROM tblMusicianIdentifiers i "
+                  . "JOIN tblMusicians cp ON cp.Id = i.MusicianId "
                   . "WHERE i.IdentifierType = ? AND i.IdentifierValue = ? "
                   . "ORDER BY cp.Name LIMIT 50"
                 );
@@ -1311,7 +1346,11 @@ if ($action !== null) {
                     $people[] = $row;
                 }
                 $stmt->close();
-                sendJson(['type' => $pType, 'value' => $pValue, 'people' => $people]);
+                sendJson([
+                    'type'  => $pType,
+                    'value' => $pValue,
+                    ($_isLegacyIdAction ? 'people' : 'musicians') => $people,
+                ]);
             } catch (\Throwable $e) {
                 sendJson(['error' => 'Lookup failed.'], 500);
             }
@@ -1420,37 +1459,49 @@ if ($action !== null) {
             break;
 
         /* -----------------------------------------------------------------
-         * Get one credit person (#1443/#1444) — a tblCreditPeople row's
+         * Get one musician (#1443/#1444) — a tblMusicians row's
          * bio/lifespan/external links plus every song they're credited on,
          * grouped by role (writer/composer/arranger/adaptor/translator/
-         * artist). Mirrors includes/pages/person.php's own query logic (a
-         * NAME match — tblCreditPeople has no direct FK from the per-role
+         * artist). Mirrors includes/pages/musician.php's own query logic (a
+         * NAME match — tblMusicians has no direct FK from the per-role
          * credit tables today, same as that page) as JSON for the native
-         * app's credit-person detail screen. `name` is accepted (in
+         * app's musician detail screen. `name` is accepted (in
          * addition to slug/id) because SongDetail's writers/composers/etc.
-         * are plain strings with no CreditPersonId of their own — the
+         * are plain strings with no MusicianId of their own — the
          * native "tap a composer name" flow has only the name to look up
          * with (#1444).
          * Parameters: slug, or id, or name — at least one required
+         *
+         * #1741 P2-B back-compat alias — `credit_person` is the shipped
+         * Apple-contract OLD action name (action=credit_person, envelope
+         * {"person":{…}}); `musician` is the new canonical one (envelope
+         * {"musician":{…}}). Action-determines-shape (plan §3.A): ONE
+         * call to SongData::getMusician(), the envelope key is the only
+         * thing that differs — the OLD shape stays byte-identical
+         * forever, the shipped Apple binaries never change.
          * ----------------------------------------------------------------- */
         case 'credit_person':
-            enforceReadRateLimitKeyed('credit_person', 120);
+        case 'musician':
+            $_isLegacyPersonAction = ($action === 'credit_person');
+            enforceReadRateLimitKeyed($_isLegacyPersonAction ? 'credit_person' : 'musician', 120);
             $personSlug     = isset($_GET['slug']) ? trim($_GET['slug']) : '';
             $personIdRaw    = isset($_GET['id']) ? trim($_GET['id']) : '';
             $personNameRaw  = isset($_GET['name']) ? trim($_GET['name']) : '';
             if ($personSlug === '' && $personIdRaw === '' && $personNameRaw === '') {
-                sendJson(['error' => 'A credit-person slug, id, or name is required.'], 400);
+                sendJson(['error' => $_isLegacyPersonAction
+                    ? 'A credit-person slug, id, or name is required.'
+                    : 'A musician slug, id, or name is required.'], 400);
                 break;
             }
-            $person = $songData->getCreditPerson(
+            $person = $songData->getMusician(
                 $personIdRaw !== '' && ctype_digit($personIdRaw) ? (int)$personIdRaw : null,
                 $personSlug !== '' ? $personSlug : null,
                 $personNameRaw !== '' ? $personNameRaw : null
             );
             if ($person === null) {
-                sendJson(['error' => 'Credit person not found.'], 404);
+                sendJson(['error' => $_isLegacyPersonAction ? 'Credit person not found.' : 'Musician not found.'], 404);
             } else {
-                sendJson(['person' => $person]);
+                sendJson([($_isLegacyPersonAction ? 'person' : 'musician') => $person]);
             }
             break;
 
@@ -14808,25 +14859,31 @@ if ($action !== null) {
         }
 
         /* =================================================================
-         * CREDIT PEOPLE — admin CRUD parity (#719 PR 2d)
+         * MUSICIANS — admin CRUD parity (#719 PR 2d, renamed from
+         * "Credit People" by #1741 P2-B)
          *
-         * Mirrors /manage/credit-people.php POST handlers (#545). Every
+         * Mirrors /manage/musicians.php POST handlers (#545). Every
          * mutating endpoint runs inside $db->begin_transaction() so a
          * partial failure (e.g. a child-row INSERT failing after the
          * parent UPDATE landed) rolls back cleanly.
          *
-         * Activity-log verb prefix is `api.admin.credit_person.*` —
+         * Activity-log verb prefix is `api.admin.musician.*` —
          * distinguishes API-driven changes from web-UI changes (which
-         * write `credit_person.*`) so /manage/activity-log shows both
-         * sides clearly.
+         * write `admin.musicians.*`) so /manage/activity-log shows both
+         * sides clearly. Every `admin_credit_person_*` action name below
+         * is a #1741 P2-B back-compat ALIAS (shipped Apple contract) that
+         * falls through into the SAME `admin_musician_*` case body — the
+         * log keys/entity type are always the NEW canonical names
+         * regardless of which action name the caller used (an internal
+         * audit-log detail, not part of the wire contract).
          *
          * Validation rules (link-type allowlist, IPI shape) live in
-         * includes/credit_people_helpers.php — the same file
-         * /manage/credit-people uses.
+         * includes/musician_helpers.php — the same file
+         * /manage/musicians uses.
          * ================================================================= */
 
         /* -----------------------------------------------------------------
-         * Admin: add a new credit-person registry row
+         * Admin: add a new musician registry row
          * POST body: {
          *   name (required), notes?, birth_place?, birth_date?,
          *   death_place?, death_date?, is_special_case?, is_group?,
@@ -14834,7 +14891,8 @@ if ($action !== null) {
          * }
          * Birth/death dates must be YYYY-MM-DD if supplied.
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_add': {
+        case 'admin_credit_person_add':
+        case 'admin_musician_add': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -14852,9 +14910,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
-            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
-            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
-            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $ipi         = normaliseMusicianIpi($body['ipi']       ?? null);
+            $isni        = normaliseMusicianIsni($body['isni']      ?? null);
+            $aliases     = normaliseMusicianAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             /* Mutually exclusive in the UI; if both arrive we prefer
@@ -14863,7 +14921,7 @@ if ($action !== null) {
 
             /* Partial birth/death dates — accept the flexible curator form
                (YYYY / MM/YYYY / DD/MM/YYYY, plus ISO) via the shared
-               partial_date helper, same as /manage/credit-people. The
+               partial_date helper, same as /manage/musicians. The
                INSERT below writes the normalised DATE; the precision flag is
                persisted separately, gated on the column existing. */
             $pb = partialDateParse((string)($body['birth_date'] ?? ''));
@@ -14882,9 +14940,9 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 /* #833 — link normaliser resolves slug ↔ registry id via
                    tblExternalLinkTypes, so it needs the live mysqli. */
-                $links = normaliseCreditPersonLinks($db, $rawLinks);
+                $links = normaliseMusicianLinks($db, $rawLinks);
 
-                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ?');
+                $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ?');
                 $stmt->bind_param('s', $name);
                 $stmt->execute();
                 $exists = $stmt->get_result()->fetch_row() !== null;
@@ -14898,18 +14956,18 @@ if ($action !== null) {
                 try {
                     /* #630 — flag columns may not exist on a partly-
                        migrated install. Skip them when absent. */
-                    $hasFlagsCols = creditPeopleFlagsColumnsExist($db);
+                    $hasFlagsCols = musicianFlagsColumnsExist($db);
                     /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
-                       per migrate-credit-people-slug.php. Every INSERT
+                       per migrate-musicians-slug.php. Every INSERT
                        MUST carry a slug or it'll trip the orphan
                        empty-Slug collision. The helper returns '' when
                        the column doesn't exist yet so a pre-migration
                        install can still INSERT. */
-                    $slug       = generateUniqueCreditPersonSlug($db, $name);
+                    $slug       = generateUniqueMusicianSlug($db, $name);
                     $hasSlugCol = $slug !== '';
                     if ($hasFlagsCols && $hasSlugCol) {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
                         );
@@ -14919,7 +14977,7 @@ if ($action !== null) {
                         );
                     } elseif ($hasFlagsCols) {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
                         );
@@ -14929,7 +14987,7 @@ if ($action !== null) {
                         );
                     } elseif ($hasSlugCol) {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
                              VALUES (?, ?, ?, ?, ?, ?, ?)'
                         );
@@ -14938,7 +14996,7 @@ if ($action !== null) {
                         );
                     } else {
                         $stmt = $db->prepare(
-                            'INSERT INTO tblCreditPeople
+                            'INSERT INTO tblMusicians
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
                              VALUES (?, ?, ?, ?, ?, ?)'
                         );
@@ -14953,12 +15011,12 @@ if ($action !== null) {
                     /* Date precision flags — separate, column-gated UPDATE
                        (no-op on an un-migrated install; the date itself
                        already landed in the INSERT above). */
-                    creditPeopleSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
+                    musicianSaveDatePrecision($db, $newId, $birthPrec, $deathPrec);
 
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonExternalLinks
-                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                            'INSERT INTO tblMusicianExternalLinks
+                                (MusicianId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
@@ -14970,8 +15028,8 @@ if ($action !== null) {
                     }
                     if ($ipi || $isni) {
                         $idStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIdentifiers
-                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                            'INSERT INTO tblMusicianIdentifiers
+                                (MusicianId, IdentifierType, IdentifierValue, NameUsed, Notes)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         $type = 'ipi';
@@ -14988,10 +15046,10 @@ if ($action !== null) {
                         }
                         $idStmt->close();
                     }
-                    /* AKA / alias names — schema-tolerant: replaceCreditPersonAliases
+                    /* AKA / alias names — schema-tolerant: replaceMusicianAliases
                        no-ops cleanly on installs where the aliases table isn't present. */
                     if ($aliases) {
-                        replaceCreditPersonAliases($db, $newId, $aliases);
+                        replaceMusicianAliases($db, $newId, $aliases);
                     }
                     $db->commit();
                 } catch (\Throwable $txErr) {
@@ -14999,7 +15057,7 @@ if ($action !== null) {
                     throw $txErr;
                 }
 
-                logActivity('api.admin.credit_person.add', 'credit_person', (string)$newId, [
+                logActivity('api.admin.musician.add', 'musician', (string)$newId, [
                     'name'        => $name,
                     'fields'      => array_filter([
                         'birth_place' => $birthPlace,
@@ -15020,24 +15078,25 @@ if ($action !== null) {
                     'name' => $name,
                 ], 201);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.add', 'credit_person', '', $e, ['name' => $name]);
-                error_log('[admin_credit_person_add] ' . $e->getMessage());
+                logActivityError('api.admin.musician.add', 'musician', '', $e, ['name' => $name]);
+                error_log('[admin_musician_add] ' . $e->getMessage());
                 sendJson(['error' => 'Could not add person.'], 500);
             }
             break;
         }
 
         /* -----------------------------------------------------------------
-         * Admin: update an existing credit-person registry row
+         * Admin: update an existing musician registry row
          * POST body: { id (required), name, notes?, biographical
          *              fields, is_special_case?, is_group?,
          *              links?, ipi? }
          * The Name column is NOT changed here — renames have their own
          * endpoint because their blast radius is cross-table. If the
          * body's name field differs from the stored name we reject
-         * with 400 and direct the caller to admin_credit_person_rename.
+         * with 400 and direct the caller to admin_musician_rename.
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_update': {
+        case 'admin_credit_person_update':
+        case 'admin_musician_update': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -15056,9 +15115,9 @@ if ($action !== null) {
             $deathPlace  = trim((string)($body['death_place']  ?? '')) ?: null;
             $notes       = $notesRaw !== '' ? $notesRaw : null;
             $rawLinks    = $body['links']   ?? null;
-            $ipi         = normaliseCreditPersonIpi($body['ipi']       ?? null);
-            $isni        = normaliseCreditPersonIsni($body['isni']      ?? null);
-            $aliases     = normaliseCreditPersonAliases($body['aliases'] ?? null);
+            $ipi         = normaliseMusicianIpi($body['ipi']       ?? null);
+            $isni        = normaliseMusicianIsni($body['isni']      ?? null);
+            $aliases     = normaliseMusicianAliases($body['aliases'] ?? null);
             $isSpecialCase = !empty($body['is_special_case']) ? 1 : 0;
             $isGroup       = !empty($body['is_group'])        ? 1 : 0;
             if ($isSpecialCase && $isGroup) { $isGroup = 0; }
@@ -15081,10 +15140,10 @@ if ($action !== null) {
                 $db = getDbMysqli();
                 /* #833 — link normaliser resolves slug ↔ registry id via
                    tblExternalLinkTypes, so it needs the live mysqli. */
-                $links = normaliseCreditPersonLinks($db, $rawLinks);
+                $links = normaliseMusicianLinks($db, $rawLinks);
                 $stmt = $db->prepare(
                     'SELECT Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate
-                       FROM tblCreditPeople WHERE Id = ?'
+                       FROM tblMusicians WHERE Id = ?'
                 );
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
@@ -15096,16 +15155,16 @@ if ($action !== null) {
                 }
                 if ((string)$beforeRow['Name'] !== $name) {
                     sendJson([
-                        'error' => 'Use admin_credit_person_rename to change a person\'s name — the change cascades to every song that cites them.',
+                        'error' => 'Use admin_musician_rename to change a person\'s name — the change cascades to every song that cites them.',
                     ], 400);
                     break;
                 }
 
                 $db->begin_transaction();
                 try {
-                    if (creditPeopleFlagsColumnsExist($db)) {
+                    if (musicianFlagsColumnsExist($db)) {
                         $stmt = $db->prepare(
-                            'UPDATE tblCreditPeople
+                            'UPDATE tblMusicians
                                 SET Notes = ?, BirthPlace = ?, BirthDate = ?,
                                     DeathPlace = ?, DeathDate = ?,
                                     IsSpecialCase = ?, IsGroup = ?
@@ -15116,7 +15175,7 @@ if ($action !== null) {
                             $isSpecialCase, $isGroup, $id);
                     } else {
                         $stmt = $db->prepare(
-                            'UPDATE tblCreditPeople
+                            'UPDATE tblMusicians
                                 SET Notes = ?, BirthPlace = ?, BirthDate = ?,
                                     DeathPlace = ?, DeathDate = ?
                               WHERE Id = ?'
@@ -15130,20 +15189,20 @@ if ($action !== null) {
                     /* Date precision flags — column-gated UPDATE, written
                        unconditionally so clearing a date also clears its
                        precision back to NULL. No-op on an un-migrated install. */
-                    creditPeopleSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
+                    musicianSaveDatePrecision($db, $id, $birthPrec, $deathPrec);
 
                     /* Child rows: DELETE then INSERT — simpler than
                        diffing and the per-person row counts are small
                        (typically < 10 each). The child Ids change as a
                        side effect, but no other table references them. */
-                    $del = $db->prepare('DELETE FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblMusicianExternalLinks WHERE MusicianId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($links) {
                         $linkStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonExternalLinks
-                                (CreditPersonId, LinkTypeId, Url, Note, SortOrder)
+                            'INSERT INTO tblMusicianExternalLinks
+                                (MusicianId, LinkTypeId, Url, Note, SortOrder)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         foreach ($links as $l) {
@@ -15154,14 +15213,14 @@ if ($action !== null) {
                         $linkStmt->close();
                     }
 
-                    $del = $db->prepare('DELETE FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $del = $db->prepare('DELETE FROM tblMusicianIdentifiers WHERE MusicianId = ?');
                     $del->bind_param('i', $id);
                     $del->execute();
                     $del->close();
                     if ($ipi || $isni) {
                         $idStmt = $db->prepare(
-                            'INSERT INTO tblCreditPersonIdentifiers
-                                (CreditPersonId, IdentifierType, IdentifierValue, NameUsed, Notes)
+                            'INSERT INTO tblMusicianIdentifiers
+                                (MusicianId, IdentifierType, IdentifierValue, NameUsed, Notes)
                              VALUES (?, ?, ?, ?, ?)'
                         );
                         $type = 'ipi';
@@ -15182,7 +15241,7 @@ if ($action !== null) {
                        submitted list is the new truth, an empty list deletes
                        all aliases. Schema-tolerant on installs where the
                        table is absent (helper no-ops). */
-                    replaceCreditPersonAliases($db, $id, $aliases);
+                    replaceMusicianAliases($db, $id, $aliases);
                     $db->commit();
                 } catch (\Throwable $txErr) {
                     $db->rollback();
@@ -15203,7 +15262,7 @@ if ($action !== null) {
                     }
                 }
 
-                logActivity('api.admin.credit_person.update', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.update', 'musician', (string)$id, [
                     'name'        => $name,
                     'fields'      => $changed,
                     'before'      => array_intersect_key($beforeRow, array_flip($changed)),
@@ -15221,21 +15280,22 @@ if ($action !== null) {
                     'fields_changed' => $changed,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.update', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_update] ' . $e->getMessage());
+                logActivityError('api.admin.musician.update', 'musician', (string)$id, $e);
+                error_log('[admin_musician_update] ' . $e->getMessage());
                 sendJson(['error' => 'Could not update person.'], 500);
             }
             break;
         }
 
         /* -----------------------------------------------------------------
-         * Admin: rename a credit-person — cascades across the five
+         * Admin: rename a musician — cascades across the five
          * song-credit tables AND the registry row inside one transaction.
          * POST body: { id, new_name }
          * Refuses with 409 if the new name already belongs to a different
-         * registry row (caller should use admin_credit_person_merge).
+         * registry row (caller should use admin_musician_merge).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_rename': {
+        case 'admin_credit_person_rename':
+        case 'admin_musician_rename': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -15256,7 +15316,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -15265,14 +15325,14 @@ if ($action !== null) {
                 if ($oldName === '')        { sendJson(['error' => 'Person not found.'], 404); break; }
                 if ($oldName === $newName)  { sendJson(['error' => 'new_name is the same as the current name.'], 400); break; }
 
-                $stmt = $db->prepare('SELECT Id FROM tblCreditPeople WHERE Name = ? AND Id <> ?');
+                $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Name = ? AND Id <> ?');
                 $stmt->bind_param('si', $newName, $id);
                 $stmt->execute();
                 $clash = $stmt->get_result()->fetch_row() !== null;
                 $stmt->close();
                 if ($clash) {
                     sendJson([
-                        'error' => "Another registry row already uses '{$newName}'. Use admin_credit_person_merge to combine them.",
+                        'error' => "Another registry row already uses '{$newName}'. Use admin_musician_merge to combine them.",
                     ], 409);
                     break;
                 }
@@ -15292,7 +15352,7 @@ if ($action !== null) {
                         $affected[$tbl] = $stmt->affected_rows;
                         $stmt->close();
                     }
-                    $stmt = $db->prepare('UPDATE tblCreditPeople SET Name = ? WHERE Id = ?');
+                    $stmt = $db->prepare('UPDATE tblMusicians SET Name = ? WHERE Id = ?');
                     $stmt->bind_param('si', $newName, $id);
                     $stmt->execute();
                     $stmt->close();
@@ -15303,7 +15363,7 @@ if ($action !== null) {
                 }
 
                 $totalRenamed = array_sum($affected);
-                logActivity('api.admin.credit_person.rename', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.rename', 'musician', (string)$id, [
                     'before'   => ['name' => $oldName],
                     'after'    => ['name' => $newName],
                     'affected' => [
@@ -15323,8 +15383,8 @@ if ($action !== null) {
                     'song_credit_renames' => $totalRenamed,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.rename', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_rename] ' . $e->getMessage());
+                logActivityError('api.admin.musician.rename', 'musician', (string)$id, $e);
+                error_log('[admin_musician_rename] ' . $e->getMessage());
                 sendJson(['error' => 'Could not rename person.'], 500);
             }
             break;
@@ -15341,7 +15401,8 @@ if ($action !== null) {
          * deletes the source registry row (FK cascade drops any child
          * rows the caller chose not to migrate).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_merge': {
+        case 'admin_credit_person_merge':
+        case 'admin_musician_merge': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -15369,7 +15430,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Id, Name FROM tblCreditPeople WHERE Id IN (?, ?)');
+                $stmt = $db->prepare('SELECT Id, Name FROM tblMusicians WHERE Id IN (?, ?)');
                 $stmt->bind_param('ii', $sourceId, $targetId);
                 $stmt->execute();
                 $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
@@ -15406,13 +15467,13 @@ if ($action !== null) {
                        Anything not in keep_link_ids / keep_ipi_ids gets
                        dropped via the cascade when the source row is
                        deleted below. */
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonExternalLinks WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblMusicianExternalLinks WHERE MusicianId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceLinkIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
                     $stmt->close();
 
-                    $stmt = $db->prepare('SELECT Id FROM tblCreditPersonIdentifiers WHERE CreditPersonId = ?');
+                    $stmt = $db->prepare('SELECT Id FROM tblMusicianIdentifiers WHERE MusicianId = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $sourceIpiIds = array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id');
@@ -15422,7 +15483,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepLinks, array_map('intval', $sourceLinkIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonExternalLinks SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblMusicianExternalLinks SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
                             );
                             foreach ($toMove as $lid) {
                                 $upd->bind_param('iii', $targetId, $lid, $sourceId);
@@ -15438,7 +15499,7 @@ if ($action !== null) {
                         $toMove = array_intersect($keepIpi, array_map('intval', $sourceIpiIds));
                         if ($toMove) {
                             $upd = $db->prepare(
-                                'UPDATE tblCreditPersonIdentifiers SET CreditPersonId = ? WHERE Id = ? AND CreditPersonId = ?'
+                                'UPDATE tblMusicianIdentifiers SET MusicianId = ? WHERE Id = ? AND MusicianId = ?'
                             );
                             foreach ($toMove as $iid) {
                                 $upd->bind_param('iii', $targetId, $iid, $sourceId);
@@ -15452,7 +15513,7 @@ if ($action !== null) {
 
                     /* Drop the source registry row. Cascade removes
                        any child rows we chose not to migrate. */
-                    $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                    $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
                     $stmt->bind_param('i', $sourceId);
                     $stmt->execute();
                     $stmt->close();
@@ -15464,7 +15525,7 @@ if ($action !== null) {
                 }
 
                 $totalRenamed = array_sum($affected);
-                logActivity('api.admin.credit_person.merge', 'credit_person', (string)$targetId, [
+                logActivity('api.admin.musician.merge', 'musician', (string)$targetId, [
                     'source'     => ['id' => $sourceId, 'name' => $sourceName],
                     'target'     => ['id' => $targetId, 'name' => $targetName],
                     'affected'   => [
@@ -15495,10 +15556,10 @@ if ($action !== null) {
                     'ipi_dropped'         => $ipiDropped,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.merge', 'credit_person', (string)$targetId, $e, [
+                logActivityError('api.admin.musician.merge', 'musician', (string)$targetId, $e, [
                     'source_id' => $sourceId,
                 ]);
-                error_log('[admin_credit_person_merge] ' . $e->getMessage());
+                error_log('[admin_musician_merge] ' . $e->getMessage());
                 sendJson(['error' => 'Could not merge people.'], 500);
             }
             break;
@@ -15512,7 +15573,8 @@ if ($action !== null) {
          * registry row is removed even if song credits still reference
          * the name (the credits stay — only the registry row goes).
          * ----------------------------------------------------------------- */
-        case 'admin_credit_person_delete': {
+        case 'admin_credit_person_delete':
+        case 'admin_musician_delete': {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
                 sendJson(['error' => 'POST method required.'], 405);
                 break;
@@ -15533,7 +15595,7 @@ if ($action !== null) {
 
             try {
                 $db = getDbMysqli();
-                $stmt = $db->prepare('SELECT Name FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $row = $stmt->get_result()->fetch_row();
@@ -15570,12 +15632,12 @@ if ($action !== null) {
                     break;
                 }
 
-                $stmt = $db->prepare('DELETE FROM tblCreditPeople WHERE Id = ?');
+                $stmt = $db->prepare('DELETE FROM tblMusicians WHERE Id = ?');
                 $stmt->bind_param('i', $id);
                 $stmt->execute();
                 $stmt->close();
 
-                logActivity('api.admin.credit_person.delete', 'credit_person', (string)$id, [
+                logActivity('api.admin.musician.delete', 'musician', (string)$id, [
                     'name'        => $name,
                     'had_credits' => $usage > 0,
                     'force'       => $force,
@@ -15589,8 +15651,8 @@ if ($action !== null) {
                     'forced'       => $force,
                 ]);
             } catch (\Throwable $e) {
-                logActivityError('api.admin.credit_person.delete', 'credit_person', (string)$id, $e);
-                error_log('[admin_credit_person_delete] ' . $e->getMessage());
+                logActivityError('api.admin.musician.delete', 'musician', (string)$id, $e);
+                error_log('[admin_musician_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete person.'], 500);
             }
             break;

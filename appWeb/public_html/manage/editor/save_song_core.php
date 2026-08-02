@@ -790,10 +790,10 @@ function editorSaveSongCore(): array
                can populate FirstNames / Surname / Suffix on
                auto-promote (PR #935 columns). Normalise into a
                uniform array shape up front. */
-            require_once dirname(dirname(__DIR__)) . '/includes/credit_people_helpers.php';
+            require_once dirname(dirname(__DIR__)) . '/includes/musician_helpers.php';
             $regParts = []; /* keyed by composed Name → ['first'=>…,'surname'=>…,'suffix'=>…] */
             /* #960 — normalisation itself now lives in creditEntryNormalise()
-               (includes/credit_people_helpers.php) so the v2 editor's granular
+               (includes/musician_helpers.php) so the v2 editor's granular
                credit_upsert endpoint shares the exact same decompose/compose
                behaviour instead of re-forking it. This whole-song save keeps
                only what's genuinely whole-save-specific: the richest-parts
@@ -832,22 +832,22 @@ function editorSaveSongCore(): array
                 }
                 $stmt->close();
             }
-            /* Silently keep the credit-people registry in sync
+            /* Silently keep the musicians registry in sync
                (#545 / #960). When the FirstNames / Surname / Suffix
                columns exist (PR #935 migration applied), upsert the
                structured parts too — but only fill them in when the
                existing row's parts are NULL/empty, so a curated
-               edit on the /manage/credit-people page never gets
+               edit on the /manage/musicians page never gets
                overwritten by an auto-promote from the editor.
                Pre-migration installs fall back to the legacy
                Name-only path. The promote-and-backfill pairing itself
-               now lives in creditPersonPromote() (credit_people_helpers.php)
+               now lives in musicianPromote() (musician_helpers.php)
                so every credit write path — this whole-song save, v2's
                credit_upsert/revision_restore, and lyrics_ingest.php's
                artist insert — shares one implementation instead of
                re-forking it (#960; project modularity rule). */
             foreach ($regParts as $regName => $p) {
-                creditPersonPromote($db, $regName, $p);
+                musicianPromote($db, $regName, $p);
             }
 
             if ($ll_syncReady) {

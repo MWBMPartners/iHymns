@@ -57,7 +57,7 @@ info:
       shape `{name, first?, surname?, suffix?}` in addition to the legacy
       `{name}`, and its response echoes the AUTHORITATIVE registry parts
       (`{ok, creditId, name, first, surname, suffix, registryPersonId}`) — NOT
-      the caller's input, because the `tblCreditPeople` backfill never
+      the caller's input, because the `tblMusicians` backfill never
       overwrites an existing non-empty part, so echoing the input would mask a
       refused write; and **`import_file`** (#882) now content-sniffs a single
       `.xml` between OpenLyrics and OpenSong via the shared
@@ -159,7 +159,7 @@ info:
     | `song_detail` / `song_data` | 240 / minute |
     | `related_songs` | 240 / minute |
     | `songbook_export` + `bulk_songs` + `bulk_audio` (shared `bulk` bucket) | 60 / minute combined |
-    | `work` / `credit_person` | 120 / minute (or a per-key budget with a `catalogue:read` API key) |
+    | `work` / `musician` | 120 / minute (or a per-key budget with a `catalogue:read` API key) |
 
     On exceed, the endpoint returns **429** with `Retry-After`,
     `X-RateLimit-Limit`, and `X-RateLimit-Window` headers (see the shared
@@ -222,7 +222,7 @@ info:
     - Songbook CRUD (create / update / delete / reorder) — driven by
       `manage/songbooks.php`.
     - Credit-people CRUD (add / edit / rename / merge / delete / view
-      songs) — driven by `manage/credit-people.php`.
+      songs) — driven by `manage/musicians.php`.
     - Access-tier CRUD (create / update / delete a tier definition) —
       driven by `manage/tiers.php`. (The `access_tiers` read-list and
       `admin_set_user_tier` write-assignment endpoints are exposed.)
@@ -377,8 +377,8 @@ tags:
       `tblSongWriters` / `tblSongComposers` / `tblSongArrangers` /
       `tblSongAdaptors` / `tblSongTranslators`. Helpers (link-type
       catalogue, IPI normaliser, flag-columns probe) live in
-      `includes/credit_people_helpers.php` and are shared with
-      `/manage/credit-people`.
+      `includes/musician_helpers.php` and are shared with
+      `/manage/musicians`.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -786,9 +786,16 @@ paths:
     get:
       operationId: getPersonByIdentifier
       tags: [Songs]
-      summary: Resolve credit-people by an industry identifier (#1103)
+      deprecated: true
+      summary: (DEPRECATED — use musician_by_identifier) Resolve musicians by an industry identifier (#1103)
       description: |
-        Look up credit-people by an industry identifier (IPI / ISNI / CAE / …).
+        **Deprecated by #1741 P2-B — use `musician_by_identifier` instead.**
+        Kept indefinitely: this is the shipped Apple client's contract
+        (action-determines-shape — the response envelope stays the
+        byte-identical `people` key forever). Both action names call the
+        SAME internal lookup; only the envelope key differs.
+
+        Look up musicians by an industry identifier (IPI / ISNI / CAE / …).
         Both `type` and `value` are bound.
 
         Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
@@ -809,7 +816,7 @@ paths:
           schema: { type: string, example: "00052210040" }
       responses:
         "200":
-          description: Matching credit-people (may be empty)
+          description: Matching musicians (may be empty)
           content:
             application/json:
               schema:
@@ -818,6 +825,59 @@ paths:
                   type: { type: string }
                   value: { type: string }
                   people:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id: { type: integer }
+                        name: { type: string }
+                        slug: { type: string, nullable: true }
+                        identifierType: { type: string }
+                        identifierValue: { type: string }
+        "400":
+          description: Missing type or value
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api.php?action=musician_by_identifier:
+    get:
+      operationId: getMusicianByIdentifier
+      tags: [Songs]
+      summary: Resolve musicians by an industry identifier (#1103, canonical name since #1741 P2-B)
+      description: |
+        Look up musicians by an industry identifier (IPI / ISNI / CAE / …).
+        Both `type` and `value` are bound. Canonical name for the endpoint
+        documented above as `person_by_identifier` (kept as a deprecated
+        alias — shipped Apple client contract, byte-identical old envelope).
+
+        Dormant: undocumented-as-such API-parity spillover — no web/Apple/Android
+        client calls this today (orphan inventory §2.5, remediation X7). The
+        endpoint is live and correct; it simply has no first-party caller yet.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [musician_by_identifier] }
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, example: ipi }
+        - name: value
+          in: query
+          required: true
+          schema: { type: string, example: "00052210040" }
+      responses:
+        "200":
+          description: Matching musicians (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  type: { type: string }
+                  value: { type: string }
+                  musicians:
                     type: array
                     items:
                       type: object
@@ -1666,23 +1726,25 @@ paths:
     get:
       operationId: getCreditPerson
       tags: [Songs]
-      summary: Get one credit person's bio + discography as JSON
+      deprecated: true
+      summary: (DEPRECATED — use musician) Get one musician's bio + discography as JSON
       description: |
-        JSON twin of the public `/people/<slug>` HTML page's own query
-        logic (#1443/#1444) — both independently query `tblCreditPeople` +
+        **Deprecated by #1741 P2-B — use `musician` instead.** Kept
+        indefinitely: this is the shipped Apple client's contract
+        (action-determines-shape — the response envelope stays the
+        byte-identical `person` key forever). Both action names call the
+        SAME internal lookup (`SongData::getMusician()`); only the
+        envelope key differs.
+
+        JSON twin of the public `/musician/<slug>` HTML page's own query
+        logic (#1443/#1444) — both independently query `tblMusicians` +
         the per-role credit tables (`tblSongWriters`, `tblSongComposers`,
         `tblSongArrangers`, `tblSongAdaptors`, `tblSongTranslators`, and
         `tblSongArtists` when migrated) because there is no direct FK from
-        those tables to `tblCreditPeople` today — a name-string match, same
+        those tables to `tblMusicians` today — a name-string match, same
         as the HTML page.
 
-        Exactly ONE of `slug`, `id`, or `name` should be supplied. When a
-        `tblCreditPeople` registry row exists it drives the bio fields;
-        when it doesn't (a writer/composer string with no curated record
-        yet), `name` alone still returns a "songs by this name" discography
-        with `id`/`slug`/bio fields all `null`. `name` exists specifically
-        for the native app's "tap a composer name on a song" flow, which
-        only has the plain string to look up with, not a person ID.
+        Exactly ONE of `slug`, `id`, or `name` should be supplied.
       parameters:
         - name: action
           in: query
@@ -1697,7 +1759,7 @@ paths:
         - name: id
           in: query
           required: false
-          description: Numeric `tblCreditPeople.Id`.
+          description: Numeric `tblMusicians.Id`.
           schema: { type: string, example: "42" }
         - name: name
           in: query
@@ -1706,14 +1768,77 @@ paths:
           schema: { type: string, example: John Newton }
       responses:
         "200":
-          description: The credit person's bio (when registered) and discography grouped by role
+          description: The musician's bio (when registered) and discography grouped by role
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   person:
-                    $ref: "#/components/schemas/CreditPerson"
+                    $ref: "#/components/schemas/Musician"
+        "400":
+          description: None of `slug`, `id`, or `name` was supplied
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "404":
+          description: No registry row AND no credited song found under that name
+          content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /api.php?action=musician:
+    get:
+      operationId: getMusician
+      tags: [Songs]
+      summary: Get one musician's bio + discography as JSON
+      description: |
+        JSON twin of the public `/musician/<slug>` HTML page's own query
+        logic (#1443/#1444) — both independently query `tblMusicians` +
+        the per-role credit tables (`tblSongWriters`, `tblSongComposers`,
+        `tblSongArrangers`, `tblSongAdaptors`, `tblSongTranslators`, and
+        `tblSongArtists` when migrated) because there is no direct FK from
+        those tables to `tblMusicians` today — a name-string match, same
+        as the HTML page. Canonical name for the endpoint documented above
+        as `credit_person` (kept as a deprecated alias — shipped Apple
+        client contract, byte-identical old envelope).
+
+        Exactly ONE of `slug`, `id`, or `name` should be supplied. When a
+        `tblMusicians` registry row exists it drives the bio fields;
+        when it doesn't (a writer/composer string with no curated record
+        yet), `name` alone still returns a "songs by this name" discography
+        with `id`/`slug`/bio fields all `null`. `name` exists specifically
+        for the native app's "tap a composer name on a song" flow, which
+        only has the plain string to look up with, not a person ID.
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [musician]
+        - name: slug
+          in: query
+          required: false
+          schema: { type: string, example: john-newton }
+        - name: id
+          in: query
+          required: false
+          description: Numeric `tblMusicians.Id`.
+          schema: { type: string, example: "42" }
+        - name: name
+          in: query
+          required: false
+          description: Exact writer/composer/etc. name (fallback lookup + the discography match key).
+          schema: { type: string, example: John Newton }
+      responses:
+        "200":
+          description: The musician's bio (when registered) and discography grouped by role
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  musician:
+                    $ref: "#/components/schemas/Musician"
         "400":
           description: None of `slug`, `id`, or `name` was supplied
           content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
@@ -7087,7 +7212,7 @@ paths:
         grouping by name so the same person from multiple roles
         collapses to a single suggestion with combined usage and the
         list of kinds they appear in. When `kind=any` (the default),
-        also surfaces names from the `tblCreditPeople` registry that
+        also surfaces names from the `tblMusicians` registry that
         no song currently cites — those land with `usage=0` and a
         `kinds=["registry"]` marker.
       parameters:
@@ -9259,16 +9384,20 @@ paths:
           description: Licence row does not belong to that organisation
 
   # ===========================================================================
-  # ADMIN — CREDIT PEOPLE  (#719 PR 2d, #545)
+  # ADMIN — MUSICIANS  (#719 PR 2d, #545; renamed from "Credit People" by #1741 P2-B)
   # Catalogue-wide CRUD over the people credited on songs across the
-  # five song-credit tables + the tblCreditPeople registry.
+  # five song-credit tables + the tblMusicians registry. Every
+  # `admin_credit_person_*` action below is a deprecated back-compat
+  # alias (shipped Apple contract) for the `admin_musician_*` action
+  # immediately following it.
   # ===========================================================================
 
   /api.php?action=admin_credit_person_add:
     post:
       operationId: adminCreditPersonAdd
       tags: [Admin — Credit People]
-      summary: Add a registry entry (with optional links + IPI rows)
+      deprecated: true
+      summary: (DEPRECATED — use admin_musician_add) Add a registry entry (with optional links + IPI rows)
       security:
         - bearerAuth: []
       parameters:
@@ -9281,7 +9410,43 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AdminCreditPersonInput"
+              $ref: "#/components/schemas/AdminMusicianInput"
+      responses:
+        "201":
+          description: Person added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (missing name, name too long, bad birth/death date)
+        "403":
+          description: Admin access required
+        "409":
+          description: A person with that name is already registered
+
+  /api.php?action=admin_musician_add:
+    post:
+      operationId: adminMusicianAdd
+      tags: [Admin — Musicians]
+      summary: Add a registry entry (with optional links + IPI rows)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminMusicianInput"
       responses:
         "201":
           description: Person added
@@ -9304,10 +9469,11 @@ paths:
     post:
       operationId: adminCreditPersonUpdate
       tags: [Admin — Credit People]
-      summary: Update biographical metadata + replace child rows
+      deprecated: true
+      summary: (DEPRECATED — use admin_musician_update) Update biographical metadata + replace child rows
       description: |
         The Name column is NOT changed by this endpoint — renames have
-        their own endpoint (`admin_credit_person_rename`) because their
+        their own endpoint (`admin_musician_rename`) because their
         blast radius is cross-table. If the body's `name` field differs
         from the stored name we reject with **400**.
       security:
@@ -9323,7 +9489,56 @@ paths:
           application/json:
             schema:
               allOf:
-                - $ref: "#/components/schemas/AdminCreditPersonInput"
+                - $ref: "#/components/schemas/AdminMusicianInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Person updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:             { type: boolean, example: true }
+                  id:             { type: integer }
+                  name:           { type: string }
+                  fields_changed:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: Validation error or name field doesn't match (use rename instead)
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+
+  /api.php?action=admin_musician_update:
+    post:
+      operationId: adminMusicianUpdate
+      tags: [Admin — Musicians]
+      summary: Update biographical metadata + replace child rows
+      description: |
+        The Name column is NOT changed by this endpoint — renames have
+        their own endpoint (`admin_musician_rename`) because their
+        blast radius is cross-table. If the body's `name` field differs
+        from the stored name we reject with **400**.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminMusicianInput"
                 - type: object
                   required: [id]
                   properties:
@@ -9353,14 +9568,15 @@ paths:
     post:
       operationId: adminCreditPersonRename
       tags: [Admin — Credit People]
-      summary: Rename a credit person — cascades across all 5 song-credit tables
+      deprecated: true
+      summary: (DEPRECATED — use admin_musician_rename) Rename a credit person — cascades across all 5 song-credit tables
       description: |
         Cascades the new name across `tblSongWriters` /
         `tblSongComposers` / `tblSongArrangers` / `tblSongAdaptors` /
         `tblSongTranslators` AND the registry row inside one
         transaction. Refuses with **409** if the new name already
         belongs to a different registry row (caller should use
-        `admin_credit_person_merge`).
+        `admin_musician_merge`).
       security:
         - bearerAuth: []
       parameters:
@@ -9400,17 +9616,69 @@ paths:
         "409":
           description: Another registry row already uses that name (use merge)
 
+  /api.php?action=admin_musician_rename:
+    post:
+      operationId: adminMusicianRename
+      tags: [Admin — Musicians]
+      summary: Rename a credit person — cascades across all 5 song-credit tables
+      description: |
+        Cascades the new name across `tblSongWriters` /
+        `tblSongComposers` / `tblSongArrangers` / `tblSongAdaptors` /
+        `tblSongTranslators` AND the registry row inside one
+        transaction. Refuses with **409** if the new name already
+        belongs to a different registry row (caller should use
+        `admin_musician_merge`).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_rename] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, new_name]
+              properties:
+                id:       { type: integer }
+                new_name: { type: string, maxLength: 255 }
+      responses:
+        "200":
+          description: Renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                   { type: boolean, example: true }
+                  id:                   { type: integer }
+                  old_name:             { type: string }
+                  new_name:             { type: string }
+                  song_credit_renames:  { type: integer, description: Total rows updated across the 5 song-credit tables }
+        "400":
+          description: Missing fields, name too long, or new_name same as old
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "409":
+          description: Another registry row already uses that name (use merge)
+
   /api.php?action=admin_credit_person_merge:
     post:
       operationId: adminCreditPersonMerge
       tags: [Admin — Credit People]
-      summary: Collapse two registry entries into one
+      deprecated: true
+      summary: (DEPRECATED — use admin_musician_merge) Collapse two registry entries into one
       description: |
         Re-points every song-credit row from the source name to the
         target name across all five song-credit tables, migrates the
         chosen child rows from source → target, then deletes the
         source registry row. The FK ON DELETE CASCADE on
-        `tblCreditPersonLinks` / `tblCreditPersonIPI` drops any
+        `tblMusicianLinks` / `tblMusicianIPI` drops any
         child rows the caller chose not to migrate.
       security:
         - bearerAuth: []
@@ -9436,11 +9704,77 @@ paths:
                 keep_link_ids:
                   type: array
                   items: { type: integer }
-                  description: tblCreditPersonLinks.Id values from the source side to migrate. Anything not listed gets dropped via the cascade.
+                  description: tblMusicianLinks.Id values from the source side to migrate. Anything not listed gets dropped via the cascade.
                 keep_ipi_ids:
                   type: array
                   items: { type: integer }
-                  description: tblCreditPersonIdentifiers.Id values (IPI and/or ISNI rows) from the source side to migrate. Kept for backwards-compat naming after the IPI/ISNI unification.
+                  description: tblMusicianIdentifiers.Id values (IPI and/or ISNI rows) from the source side to migrate. Kept for backwards-compat naming after the IPI/ISNI unification.
+      responses:
+        "200":
+          description: Merge completed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:                  { type: boolean, example: true }
+                  source_id:           { type: integer }
+                  target_id:           { type: integer }
+                  source_name:         { type: string }
+                  target_name:         { type: string }
+                  song_credit_renames: { type: integer }
+                  links_kept:          { type: integer }
+                  links_dropped:       { type: integer }
+                  ipi_kept:            { type: integer }
+                  ipi_dropped:         { type: integer }
+        "400":
+          description: Missing source_id / target_id, or they're equal
+        "403":
+          description: Admin access required
+        "404":
+          description: Source or target person not found
+
+  /api.php?action=admin_musician_merge:
+    post:
+      operationId: adminMusicianMerge
+      tags: [Admin — Musicians]
+      summary: Collapse two registry entries into one
+      description: |
+        Re-points every song-credit row from the source name to the
+        target name across all five song-credit tables, migrates the
+        chosen child rows from source → target, then deletes the
+        source registry row. The FK ON DELETE CASCADE on
+        `tblMusicianLinks` / `tblMusicianIPI` drops any
+        child rows the caller chose not to migrate.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id:
+                  type: integer
+                  description: Registry row to absorb. Must be different from target_id.
+                target_id:
+                  type: integer
+                  description: Surviving registry row. The target's name + biographical fields are preserved.
+                keep_link_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblMusicianLinks.Id values from the source side to migrate. Anything not listed gets dropped via the cascade.
+                keep_ipi_ids:
+                  type: array
+                  items: { type: integer }
+                  description: tblMusicianIdentifiers.Id values (IPI and/or ISNI rows) from the source side to migrate. Kept for backwards-compat naming after the IPI/ISNI unification.
       responses:
         "200":
           description: Merge completed
@@ -9470,7 +9804,8 @@ paths:
     post:
       operationId: adminCreditPersonDelete
       tags: [Admin — Credit People]
-      summary: Remove a registry row (force flag for in-use names)
+      deprecated: true
+      summary: (DEPRECATED — use admin_musician_delete) Remove a registry row (force flag for in-use names)
       description: |
         Refuses with **422** + `usage_count` if any song-credit table
         still cites the name AND `force` is not set. With `force=true`
@@ -9484,6 +9819,65 @@ paths:
           in: query
           required: true
           schema: { type: string, enum: [admin_credit_person_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id:    { type: integer }
+                force:
+                  type: boolean
+                  default: false
+                  description: When true, deletes the registry row even if song credits still cite the name.
+      responses:
+        "200":
+          description: Person deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  name:         { type: string }
+                  usage_count:  { type: integer }
+                  forced:       { type: boolean }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Person not found
+        "422":
+          description: |
+            Refused — song credits still cite the name and `force` is
+            not set. Response includes `usage_count`, `name`, `hint`.
+
+  # ===========================================================================
+  # ADMIN — ANALYTICS  (#719 PR 2d)
+  # ===========================================================================
+
+  /api.php?action=admin_musician_delete:
+    post:
+      operationId: adminMusicianDelete
+      tags: [Admin — Musicians]
+      summary: Remove a registry row (force flag for in-use names)
+      description: |
+        Refuses with **422** + `usage_count` if any song-credit table
+        still cites the name AND `force` is not set. With `force=true`
+        the registry row is removed even when song credits still
+        reference the name — the credits stay; only the registry
+        row goes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_musician_delete] }
       requestBody:
         required: true
         content:
@@ -9836,7 +10230,7 @@ paths:
       summary: Credit-person public page HTML fragment (#588)
       description: |
         Renders the `/people/<slug>` page's bio + discography-by-role for
-        SPA hydration. `slug` is the canonical `tblCreditPeople.Slug`
+        SPA hydration. `slug` is the canonical `tblMusicians.Slug`
         lookup; the renderer falls back to a name-based search when the
         slug migration hasn't been applied yet. Cacheable fragment (ETag).
       parameters:
@@ -13054,7 +13448,7 @@ components:
     # Credit-people write-input + diagnostics shapes (#719 PR 2d)
     # -------------------------------------------------------------------------
 
-    CreditPersonLink:
+    MusicianLink:
       type: object
       description: |
         One row of the per-person external-link sub-form. Unknown
@@ -13065,7 +13459,7 @@ components:
       properties:
         type:
           type: string
-          description: Link type key from CREDIT_PERSON_LINK_TYPE_CATALOGUE (e.g. `wikipedia`, `spotify`, `youtube`). Unknown keys → `other`.
+          description: Link type key from MUSICIAN_LINK_TYPE_CATALOGUE (e.g. `wikipedia`, `spotify`, `youtube`). Unknown keys → `other`.
           default: other
         url:
           type: string
@@ -13076,7 +13470,7 @@ components:
           type: integer
           default: 0
 
-    CreditPersonIpi:
+    MusicianIpi:
       type: object
       description: One row of the per-person IPI Name Number sub-form.
       required: [number]
@@ -13092,11 +13486,11 @@ components:
           type: string
           nullable: true
 
-    AdminCreditPersonInput:
+    AdminMusicianInput:
       type: object
       description: |
-        Shared input for `admin_credit_person_add` and the metadata
-        half of `admin_credit_person_update`. Add `id` (required)
+        Shared input for `admin_musician_add` and the metadata
+        half of `admin_musician_update`. Add `id` (required)
         for the latter via `allOf` composition.
       required: [name]
       properties:
@@ -13131,11 +13525,11 @@ components:
         links:
           type: array
           items:
-            $ref: "#/components/schemas/CreditPersonLink"
+            $ref: "#/components/schemas/MusicianLink"
         ipi:
           type: array
           items:
-            $ref: "#/components/schemas/CreditPersonIpi"
+            $ref: "#/components/schemas/MusicianIpi"
 
     AdminDataHealthResponse:
       type: object
@@ -13651,14 +14045,14 @@ components:
           type: string
           format: date-time
 
-    CreditPerson:
+    Musician:
       type: object
       description: |
         A person/group credited on one or more songs (writer, composer,
         arranger, adaptor, translator, or artist), returned by
-        `?action=credit_person` (#1443/#1444) — the JSON twin of the
-        public `/people/<slug>` page's own query logic. `id`/`slug` and
-        the bio fields are `null` when no curated `tblCreditPeople` row
+        `?action=musician` (#1443/#1444) — the JSON twin of the
+        public `/musician/<slug>` page's own query logic. `id`/`slug` and
+        the bio fields are `null` when no curated `tblMusicians` row
         exists yet for this name (a plain writer/composer string tapped
         from a song still returns a usable discography).
       properties:
@@ -13700,7 +14094,7 @@ components:
           type: array
           description: One entry per role this person has ANY credited songs under (roles with zero matches are omitted).
           items:
-            $ref: "#/components/schemas/CreditPersonDiscographyGroup"
+            $ref: "#/components/schemas/MusicianDiscographyGroup"
         links:
           type: array
           description: External links attached to this person (#833). Empty when no registry row exists, or on a pre-migration deployment.
@@ -13711,9 +14105,9 @@ components:
           description: Count of distinct songs across every role.
           example: 6
 
-    CreditPersonDiscographyGroup:
+    MusicianDiscographyGroup:
       type: object
-      description: One role's worth of songs in a CreditPerson's discography.
+      description: One role's worth of songs in a Musician's discography.
       properties:
         role:
           type: string

@@ -104,7 +104,7 @@ function applySort(table, state) {
     if (!target) return;
 
     /* Sort visible rows only — so per-page filters that hide rows
-       (e.g. the search input on credit-people) don't shuffle hidden
+       (e.g. the search input on musicians) don't shuffle hidden
        rows around. The display-none rows stay in their current
        relative position; we only reorder the visible ones. */
     const allRows = Array.from(tbody.rows);
