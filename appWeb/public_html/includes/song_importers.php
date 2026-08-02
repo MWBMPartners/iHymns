@@ -2938,9 +2938,19 @@ function _bulkImport_xmlAutoPrimary(string $body): string
  *   1. Picks a PRIMARY format via the one shared discriminator
  *      _bulkImport_xmlAutoPrimary() (never a second, parallel guess).
  *   2. Tries the primary parser. Both _bulkImport_processOpenLp() and
- *      _bulkImport_processOpenSong() return `ok=false` ONLY on a parse
- *      failure — neither touches the database before that check — so a
- *      primary miss is always safe to retry with the other parser.
+ *      _bulkImport_processOpenSong() return `ok=false` on a parse failure, so
+ *      a primary miss is always safe to retry with the other parser (the retry
+ *      is idempotent: a failed parse writes nothing).
+ *
+ *      ⚠️ An earlier version of this line added "neither touches the database
+ *      before that check". That is TRUE of processOpenLp and FALSE of
+ *      processOpenSong, which calls getDbMysqli() +
+ *      _bulkImport_nextSongNumberFor() BEFORE parsing, because $autoNumber is
+ *      a parse ARGUMENT (parseOpenSong's 5th parameter). So a retry is safe,
+ *      but it is not free: rejecting an unparseable OpenSong file still opens
+ *      a connection and runs a MAX(Number) query. Tracked as #1740; it is also
+ *      why tests/php/test-xml-import-routing.php is not the "DB-free" suite it
+ *      once claimed to be.
  *   3. On primary success (`ok=true`, even if the save itself later fails
  *      and songs_failed>0), stamps the RESOLVED format into the result and
  *      returns immediately — no second parse attempted.

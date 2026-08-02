@@ -23,7 +23,7 @@ declare(strict_types=1);
  * DORMANT BY DEFAULT (rule: gateway flags are operational kill switches,
  * never a second source of truth for anything `TIER_CAPS`/`checkTierAccess`/
  * `contentGatingApply`/`gatingRulesApply`/`checkContentAccess` already
- * answers — see `tests/php/test-intapps-flag-boundary.php`, #1731). Every
+ * answers — enforced by `tests/php/test-intapps-guards.php`, #1731). Every
  * function here degrades to the caller's compiled-in `$default` the instant
  * ANY of the following is true: `intappsapi_enabled_channels` doesn't list
  * the current channel, the credential set is incomplete, `tblIntAppsSync`
@@ -53,11 +53,23 @@ declare(strict_types=1);
  * around `\mysqli_sql_exception` (belt) on top of the `_intappsTableExists()`
  * INFORMATION_SCHEMA pre-check (braces) — see `_intappsTableExists()`,
  * `intappsCachedScope()`, `intappsRefreshIfDue()`, `intappsForceRefresh()`
- * and `_intappsCommitFetchResult()`. `tests/php/test-intapps-client.php`
- * pins this with `ClaimProbeFailingMysqli` (a double whose every `prepare()`
- * throws 1146, `tests/php/lib/mysqli_doubles.php`) standing in for "table
- * absent while the module is enabled", mutation-tested by temporarily
- * removing the catch and watching it go red.
+ * and `_intappsCommitFetchResult()`.
+ *
+ * The behavioural coverage for "table absent while the module is ENABLED" —
+ * the D1 blocker, which would otherwise throw under mysqli STRICT on the
+ * PUBLIC HOME PAGE — lives in `tests/php/test-intapps-stub-e2e.php`, and it
+ * was reproduced live: with the module enabled for the channel and
+ * `tblIntAppsSync` renamed away, `page=home`, `app_status` and `song_detail`
+ * all return 200 and degrade to compiled-in defaults; strip the catch and the
+ * same request returns HTTP 500 with `mysqli_sql_exception: Table
+ * 'ihymns_live.tblIntAppsSync' doesn't exist`.
+ *
+ * ⚠️ An earlier version of this paragraph cited a `ClaimProbeFailingMysqli`
+ * double in `test-intapps-client.php`. NO SUCH DOUBLE EXISTS — the string
+ * appears nowhere in the tree. The coverage described was real; the artefact
+ * named for it was not. A doc-block that cites a test by name is a claim like
+ * any other, and this one was never checked. Verify the citation, not just the
+ * behaviour.
  *
  * THE SIGNER (non-negotiable, verified against the gateway's own source,
  * `web/src/Helpers/HmacValidator.php:24-55` in the `mwbm-intappsapi` repo,

@@ -139,20 +139,36 @@ foreach ($scanDir as $entry) {
     $src = (string)file_get_contents($path);
     $noComments = $stripJs($src);
 
-    /* A POST client = names api2.php ANYWHERE, and POSTs somewhere.
-       Deliberately NOT a proximity match. The first version of this scan
-       required `api2.php` within 400 chars of `method: 'POST'`, and found only
-       import2.php — because v2/api-client.js builds its URL from
-       `const ENDPOINT = '/manage/editor/api2.php'` (:17) and the literal never
-       appears near the verb. Proximity is a heuristic about formatting; "this
-       file talks to api2 and this file POSTs" is the actual property.
+    /* A POST client = REFERENCES the api2 endpoint in any spelling, and POSTs.
+       Deliberately NOT a proximity match, and deliberately NOT the literal
+       filename.
 
-       The cost of the looser test is a file that mentions api2.php and happens
-       to POST elsewhere getting checked too. That is a harmless extra
-       assertion — and cheap next to missing a real client, which is the exact
-       way this guard failed before. */
+       THIS NEEDLE HAS NOW BEEN WRONG TWICE, in two different ways, and both
+       failures were silent under-coverage — the mode rule #34 calls worse than
+       no scanner:
+
+         v1: required `api2.php` within 400 chars of `method: 'POST'`. Found
+             ONLY import2.php, because v2/api-client.js builds its URL from
+             `const ENDPOINT = '/manage/editor/api2.php'` and the literal never
+             appears near the verb. Proximity is a fact about formatting, not
+             about behaviour.
+
+         v2: dropped proximity but kept the literal `api2.php`. Still missed
+             manage/editor/editor.js, which POSTs to
+             `window.IHYMNS_EDITOR_API2 || '/manage/editor/api2'` — EXTENSIONLESS
+             (:1409, :5122). Its only `api2.php` occurrences are inside comments,
+             which this scan strips, so the file scored zero hits.
+
+       The v2 mutation test did not catch that, and it is worth understanding
+       why: it added a NEW file containing the literal `api2.php`. That proves
+       the scan finds files matching the needle — it says nothing about whether
+       the needle matches every real client. A mutation built from the same
+       assumption as the code cannot falsify that assumption.
+
+       So match `manage/editor/api2` and let the optional `.php` fall where it
+       may. The endpoint's PATH is the stable thing; the extension is not. */
     $isPostClient =
-        str_contains($noComments, 'api2.php')
+        preg_match('#manage/editor/api2(\.php)?#', $noComments)
         && (preg_match('#method\s*:\s*[\'"]POST[\'"]#i', $noComments)
             || preg_match('#\.open\(\s*[\'"]POST[\'"]#i', $noComments));
 
