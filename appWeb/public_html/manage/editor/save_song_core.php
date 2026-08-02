@@ -54,6 +54,7 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    statement of intent. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 — songVisibleSql() for the SongCount recomputes */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';   /* #1742 — songbookRecomputeSongCount(), the ONE shared recompute */
 
 /**
  * Cached check for the tblSongArtists table (#587). The table arrives
@@ -1098,49 +1099,29 @@ function editorSaveSongCore(): array
                in tblSongs but the songbook tile never appears
                because the cache stays at 0.
 
-               Two paths recompute:
+               The recompute is the shared songbookRecomputeSongCount()
+               helper (#1742, includes/songbook_count.php) — it used to be
+               TWO inline UPDATEs typed out here (a modularity-rule
+               violation); now it is one call covering both books:
                  - The current row's SongbookAbbr (always).
                  - The PREVIOUS row's SongbookAbbr if it differs
                    (song moved between books — old book shrinks,
                    new book grows). previousData is the JSON dump
-                   of the row before this save.
+                   of the row before this save; the helper itself drops
+                   a blank/duplicate previous abbr, so passing '' when
+                   there is no previous book (a brand-new song) is safe.
 
                Wrapped in try/catch so a SongCount recompute failure
                (e.g. transient deadlock) doesn't roll back the song
                save itself — the cache will self-heal on the next
                recompute pass. */
             try {
-                $cnt = $db->prepare(
-                    /* #1694 D1 — SongCount counts VISIBLE songs; must agree
-                       with the predicate-aware triggers (trigger-denied hosts
-                       rely on THIS recompute). */
-                    'UPDATE tblSongbooks
-                        SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
-                      WHERE Abbreviation = ?'
-                );
-                $cnt->bind_param('ss', $songbookAbbr, $songbookAbbr);
-                $cnt->execute();
-                $cnt->close();
-
-                /* If the row moved songbooks, the OLD book also needs
-                   its count refreshed so its tile shrinks (or hides
-                   entirely if this was its last song). */
+                $prevAbbr = '';
                 if ($previousData !== null) {
                     $prev = json_decode($previousData, true);
                     $prevAbbr = is_array($prev) ? (string)($prev['SongbookAbbr'] ?? '') : '';
-                    if ($prevAbbr !== '' && $prevAbbr !== $songbookAbbr) {
-                        $cnt = $db->prepare(
-                            /* #1694 D1 — same visible-count recompute for the
-                               OLD book after a move. */
-                            'UPDATE tblSongbooks
-                                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
-                              WHERE Abbreviation = ?'
-                        );
-                        $cnt->bind_param('ss', $prevAbbr, $prevAbbr);
-                        $cnt->execute();
-                        $cnt->close();
-                    }
                 }
+                songbookRecomputeSongCount($db, $songbookAbbr, $prevAbbr);
             } catch (\Throwable $_e) {
                 if (songRelocateIsTransactionFatal($_e)) { throw $_e; }   /* #1679 A1 — see the first such guard above. */
                 error_log('[editor save_song] SongCount recompute failed: ' . $_e->getMessage());

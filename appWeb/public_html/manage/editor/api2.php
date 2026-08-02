@@ -178,6 +178,12 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    scope rather than lazily inside the move case, because both are wanted by code
    paths that have nothing to do with a move. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_relocate.php';
+/* #1742 — songbookRecomputeSongCount(): the ONE shared tblSongbooks.SongCount
+   recompute (includes/songbook_count.php). create_song below is the funnel
+   that was missing it entirely — on iHymns' shared-hosting deployment target
+   (no CREATE TRIGGER privilege) that left a brand-new songbook's home tile
+   permanently hidden behind a stale SongCount = 0. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'songbook_count.php';
 /* #960 — creditEntryNormalise() / creditPersonPromote(): the shared
    normalise-and-registry-promote pair every credit write path (this file's
    credit_upsert + revision_restore, the legacy whole-song save, and
@@ -1002,6 +1008,20 @@ try {
             $db->rollback();
             throw $e;
         }
+
+        /* #1742 — recompute the book's cached tblSongbooks.SongCount now the new
+           song is committed. On a shared host with no CREATE TRIGGER privilege
+           (iHymns' deployment target) this app-side recompute is the ONLY thing
+           that keeps the songbook tile's count correct; on trigger-capable hosts
+           it is a harmless idempotent re-count. Best-effort and post-commit: the
+           song already exists, so a recount failure self-heals on the next pass
+           and must never fail the create. */
+        try {
+            songbookRecomputeSongCount($db, $abbr);
+        } catch (\Throwable $_e) {
+            error_log('[editor create_song] SongCount recompute failed: ' . $_e->getMessage());
+        }
+
         logActivity('song.create', 'song', $songId, ['title' => $title, 'songbook' => $abbr]);
         ed2_respond(['ok' => true, 'songId' => $songId, 'title' => $title, 'songbook' => $abbr]);
         break;

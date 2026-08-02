@@ -1358,24 +1358,16 @@ function songRelocate(\mysqli $db, string $oldSongId, string $targetAbbr, ?int $
     /* 7 — both books' cached SongCount moved. Recomputed HERE so every funnel
        gets it (api2's granular field update has no other place doing this);
        best-effort, because a cache recompute must never roll back the move
-       itself — it self-heals on the next pass (#791). */
+       itself — it self-heals on the next pass (#791). Delegates to the
+       shared songbookRecomputeSongCount() helper (#1742,
+       includes/songbook_count.php) — this used to be its own inline
+       prepare-once/loop-twice UPDATE, one of three copies of the same SQL
+       across the codebase (a modularity-rule violation); the helper is now
+       the ONE place that SQL lives, and it applies the same trim/dedupe/
+       empty-skip this loop always did. */
     try {
-        require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
-        $cnt = $db->prepare(
-            /* #1694 D1 — SongCount counts VISIBLE songs; this app-side
-               recompute must agree with the (predicate-aware) triggers or a
-               relocate on a trigger-denied host would write the stale
-               unfiltered number back. */
-            'UPDATE tblSongbooks
-                SET SongCount = (SELECT COUNT(*) FROM tblSongs WHERE SongbookAbbr = ? AND ' . songVisibleSql($db, '') . ')
-              WHERE Abbreviation = ?'
-        );
-        foreach ([$targetAbbr, $currentAbbr] as $abbr) {
-            if ($abbr === '') { continue; }
-            $cnt->bind_param('ss', $abbr, $abbr);
-            $cnt->execute();
-        }
-        $cnt->close();
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'songbook_count.php';
+        songbookRecomputeSongCount($db, $targetAbbr, $currentAbbr);
     } catch (\Throwable $e) {
         /* #1679 F8 / A1 — "best-effort" must not mean "swallow anything". Two
            MySQL errors do not fail just the STATEMENT, they can roll back the
