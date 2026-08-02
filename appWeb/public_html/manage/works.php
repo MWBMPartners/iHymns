@@ -35,6 +35,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    page uses to validate curator input. $validateIswc below delegates to
    it rather than owning the only copy (rule #22 — one fold, not two). */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+/* #1741 P4b — the work-identifier vocabulary (CCLI/BOWI/MusicBrainz-Work
+   shape validation, mediaIdentifierWorkValidate()) and the tune
+   find-or-create funnel (tuneFindOrCreateByName()) this page's new fields
+   need. Neither existed before P4b. */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -94,6 +100,227 @@ try {
 } catch (\Throwable $e) {
     error_log('[works] schema probe failed: ' . $e->getMessage());
 }
+
+/* #1741 P4b — one cached probe for the 9 P1/D5 "extra" tblWorks columns
+   plus the pre-existing #1066 MusicBrainzWorkMBID rider column. Computed
+   ONCE per request (§0.3.2's cached-per-column idiom, generalised from
+   placeColumnExists()'s single-column shape used elsewhere on this page)
+   and reused by the list SELECT below AND by both the create/update save
+   paths — a request never needs to ask INFORMATION_SCHEMA about the same
+   ten columns twice. Bowi is included in the SAME probe as the other
+   eight but — per its own migration (migrate-work-bowi.php, #1741 D5) —
+   is genuinely independent: an install can have one without the other,
+   and every call site below checks `isset($worksExtraCols['Bowi'])` on
+   its own merits, never assumes "P1 landed ⇒ Bowi landed". */
+$worksExtraCols = [];
+if ($hasSchema) {
+    try {
+        $extraColNames = [
+            'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+        ];
+        $ph    = implode(',', array_fill(0, count($extraColNames), '?'));
+        $stmt  = $db->prepare(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks'
+                AND COLUMN_NAME IN ($ph)"
+        );
+        $types = str_repeat('s', count($extraColNames));
+        $stmt->bind_param($types, ...$extraColNames);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $worksExtraCols[(string)$row['COLUMN_NAME']] = true;
+        }
+        $stmt->close();
+    } catch (\Throwable $e) {
+        error_log('[works] extra-cols probe failed: ' . $e->getMessage());
+    }
+}
+
+/**
+ * #1741 P4b — extract + validate the 9 extra tblWorks fields (+ the
+ * MusicBrainzWorkMBID rider) from a $_POST-shaped array. Shared by BOTH
+ * `create` and `update` so the two save paths validate every field
+ * exactly once, in exactly one place (rule #35 — a second hand-typed copy
+ * of this validation is the drift, not a convenience).
+ *
+ * CCLI validates through the shared `mediaIdentifierWorkValidate()`
+ * (includes/media_identifiers.php) — NO inline `preg_match()` here
+ * (rule #35: the vocabulary already exists centrally). BOWI has no
+ * documented shape (`WORK_IDENTIFIER_TYPES['bowi']['validate'] === null`
+ * — Luminate's exact format isn't independently confirmed, see that
+ * file's doc-block), so it is length-checked only (VARCHAR(30)).
+ *
+ * @param array<string,mixed> $post
+ * @return array{0: array<string,mixed>, 1: ?string} [$fields, $error] —
+ *         $error is null on success; $fields is [] (unusable) on failure.
+ */
+$parseWorkExtraFields = static function (array $post): array {
+    $subtitle        = mb_substr(trim((string)($post['subtitle'] ?? '')), 0, 255);
+    $disambiguation  = mb_substr(trim((string)($post['disambiguation'] ?? '')), 0, 255);
+    $ccliIn          = trim((string)($post['ccli'] ?? ''));
+    $bowiIn          = mb_substr(trim((string)($post['bowi'] ?? '')), 0, 30);
+    $tuneNameIn      = mb_substr(trim((string)($post['tune_name'] ?? '')), 0, 120);
+    $firstPubIn      = trim((string)($post['first_published_year'] ?? ''));
+    $copyrightYears  = mb_substr(trim((string)($post['copyright_years'] ?? '')), 0, 100);
+    $copyrightHolder = mb_substr(trim((string)($post['copyright_holder'] ?? '')), 0, 255);
+    $mbWorkIn        = trim((string)($post['musicbrainz_work_mbid'] ?? ''));
+
+    if ($ccliIn !== '' && !mediaIdentifierWorkValidate('ccli', $ccliIn)) {
+        return [[], 'CCLI Work Number must be numeric.'];
+    }
+    if ($mbWorkIn !== '' && !mediaIdentifierWorkValidate('musicbrainz-work', $mbWorkIn)) {
+        return [[], 'MusicBrainz Work MBID must look like a UUID (8-4-4-4-12 hex digits).'];
+    }
+    $firstPublishedYear = null;
+    if ($firstPubIn !== '') {
+        /* SMALLINT UNSIGNED on the schema side (schema.sql:3049) —
+           500..2100 keeps the same generous historical floor the column's
+           own comment documents ("hymn works predate" MySQL YEAR's 1901
+           floor) while still rejecting obvious typos. */
+        if (!ctype_digit($firstPubIn) || (int)$firstPubIn < 500 || (int)$firstPubIn > 2100) {
+            return [[], 'First published year must be a year between 500 and 2100.'];
+        }
+        $firstPublishedYear = (int)$firstPubIn;
+    }
+
+    return [[
+        'subtitle'            => $subtitle,
+        'disambiguation'      => $disambiguation,
+        'ccli'                => $ccliIn,
+        'bowi'                => $bowiIn,
+        'tuneName'            => $tuneNameIn,
+        'firstPublishedYear'  => $firstPublishedYear,
+        'copyrightYears'      => $copyrightYears,
+        'copyrightHolder'     => $copyrightHolder,
+        'musicBrainzWorkMbid' => $mbWorkIn,
+    ], null];
+};
+
+/**
+ * #1741 P4b — Ccli/Bowi/MusicBrainzWorkMBID uniqueness, gated per-column
+ * (an install that hasn't migrated a given column can't collide on it —
+ * there's nothing to query). Mirrors the pre-existing ISWC uniqueness
+ * check's shape (:309-316 today) generalised to loop over the three new
+ * unique-keyed columns. `$excludeId` is null on create, the row's own Id
+ * on update (same "AND Id <> ?" self-exclusion the ISWC check uses).
+ *
+ * @param array<string,true>  $worksExtraCols
+ * @param array<string,mixed> $fields
+ * @return string|null a user-facing error, or null when clear.
+ */
+$checkWorkExtraUniqueness = static function (\mysqli $db, array $worksExtraCols, array $fields, ?int $excludeId): ?string {
+    /* Hardcoded (col,val,label) triples from fixed PHP source — the
+       ONLY interpolated identifier below (`{$col}`) is drawn from this
+       literal array, never from request input (rule #5's carve-out). */
+    $checks = [
+        ['col' => 'Ccli', 'val' => (string)$fields['ccli'], 'label' => 'CCLI Work Number'],
+        ['col' => 'Bowi', 'val' => (string)$fields['bowi'], 'label' => 'BOWI'],
+        ['col' => 'MusicBrainzWorkMBID', 'val' => (string)$fields['musicBrainzWorkMbid'], 'label' => 'MusicBrainz Work MBID'],
+    ];
+    foreach ($checks as $check) {
+        $col = $check['col'];
+        $val = $check['val'];
+        if ($val === '' || !isset($worksExtraCols[$col])) continue;
+        if ($excludeId !== null) {
+            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ? AND Id <> ?");
+            $stmt->bind_param('si', $val, $excludeId);
+        } else {
+            $stmt = $db->prepare("SELECT Id FROM tblWorks WHERE {$col} = ?");
+            $stmt->bind_param('s', $val);
+        }
+        $stmt->execute();
+        $used = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        if ($used) {
+            return "{$check['label']} '{$val}' is already on another Work.";
+        }
+    }
+    return null;
+};
+
+/**
+ * #1741 P4b — ONE separate column-gated UPDATE persisting the extra
+ * fields (the OriginCityId pattern used elsewhere on this page, §0.3.3)
+ * — NEVER touches the main INSERT/UPDATE bind above/below. Each field
+ * drops out of the SET list independently when its own column is absent
+ * — there is no all-or-nothing branch, so a partially-applied P1/D5
+ * install still gets whichever subset it has.
+ *
+ * TuneName + TuneId are ALWAYS written TOGETHER in this same statement
+ * via `tuneFindOrCreateByName()` (includes/tune_helpers.php) — never
+ * TuneName alone. That is the exact drift §2.4.3's "lockstep" requirement
+ * exists to prevent: a stale TuneId sitting next to a freshly-edited
+ * TuneName would silently link the Work's tune page to the WRONG tune.
+ * `tuneFindOrCreateByName()` itself degrades to `null` when `tblTunes` is
+ * absent (a nullable column, safe to write) — see that function's
+ * doc-block for the full asymmetry.
+ *
+ * Nullable columns (Subtitle/Ccli/Bowi/TuneName/MusicBrainzWorkMBID)
+ * store NULL rather than '' on an empty field — the UNIQUE-key
+ * NULL-coexistence design documented on schema.sql's uq_ccli/uq_bowi/
+ * uq_mbwork (every NULL is distinct, so many Works can share "no CCLI").
+ * Disambiguation/CopyrightYears/CopyrightHolder are `NOT NULL DEFAULT
+ * ''` on the schema side, so they stay plain strings, never NULL.
+ *
+ * @param array<string,true>  $worksExtraCols
+ * @param array<string,mixed> $fields
+ */
+$persistWorkExtraFields = static function (\mysqli $db, array $worksExtraCols, int $workId, array $fields): void {
+    $sets  = [];
+    $types = '';
+    $vals  = [];
+
+    if (isset($worksExtraCols['Subtitle'])) {
+        $sets[] = 'Subtitle = ?'; $types .= 's';
+        $vals[] = $fields['subtitle'] !== '' ? $fields['subtitle'] : null;
+    }
+    if (isset($worksExtraCols['Disambiguation'])) {
+        $sets[] = 'Disambiguation = ?'; $types .= 's';
+        $vals[] = $fields['disambiguation'];
+    }
+    if (isset($worksExtraCols['Ccli'])) {
+        $sets[] = 'Ccli = ?'; $types .= 's';
+        $vals[] = $fields['ccli'] !== '' ? $fields['ccli'] : null;
+    }
+    if (isset($worksExtraCols['Bowi'])) {
+        $sets[] = 'Bowi = ?'; $types .= 's';
+        $vals[] = $fields['bowi'] !== '' ? $fields['bowi'] : null;
+    }
+    if (isset($worksExtraCols['FirstPublishedYear'])) {
+        $sets[] = 'FirstPublishedYear = ?'; $types .= 'i';
+        $vals[] = $fields['firstPublishedYear'];
+    }
+    if (isset($worksExtraCols['CopyrightYears'])) {
+        $sets[] = 'CopyrightYears = ?'; $types .= 's';
+        $vals[] = $fields['copyrightYears'];
+    }
+    if (isset($worksExtraCols['CopyrightHolder'])) {
+        $sets[] = 'CopyrightHolder = ?'; $types .= 's';
+        $vals[] = $fields['copyrightHolder'];
+    }
+    if (isset($worksExtraCols['MusicBrainzWorkMBID'])) {
+        $sets[] = 'MusicBrainzWorkMBID = ?'; $types .= 's';
+        $vals[] = $fields['musicBrainzWorkMbid'] !== '' ? $fields['musicBrainzWorkMbid'] : null;
+    }
+    if (isset($worksExtraCols['TuneName'])) {
+        $sets[] = 'TuneName = ?'; $types .= 's';
+        $vals[] = $fields['tuneName'] !== '' ? $fields['tuneName'] : null;
+        if (isset($worksExtraCols['TuneId'])) {
+            $sets[] = 'TuneId = ?'; $types .= 'i';
+            $vals[] = tuneFindOrCreateByName($db, $fields['tuneName']);
+        }
+    }
+
+    if (!$sets) return;
+    $stmt = $db->prepare('UPDATE tblWorks SET ' . implode(', ', $sets) . ' WHERE Id = ?');
+    $types .= 'i';
+    $vals[] = $workId;
+    $stmt->bind_param($types, ...$vals);
+    $stmt->execute();
+    $stmt->close();
+};
 
 /* External-links registry (#833) — probe + load applicable types. */
 $hasExtLinksSchema = false;
@@ -221,6 +448,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $slug  = mb_substr($slug,  0, 80);
                 $notes = mb_substr($notes, 0, 65000);
 
+                /* #1741 P4b — extra fields, parsed + shape-validated
+                   BEFORE any write (same "fail before insert" posture the
+                   slug/ISWC checks above already use). */
+                [$extraFields, $extraError] = $parseWorkExtraFields($_POST);
+                if ($extraError !== null) { $error = $extraError; break; }
+
                 /* Slug uniqueness */
                 $stmt = $db->prepare('SELECT Id FROM tblWorks WHERE Slug = ?');
                 $stmt->bind_param('s', $slug);
@@ -238,6 +471,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                     if ($iswcUsed) { $error = "ISWC '{$iswc}' is already on another Work."; break; }
                 }
+
+                /* #1741 P4b — Ccli/Bowi/MusicBrainzWorkMBID uniqueness. */
+                $extraUniqError = $checkWorkExtraUniqueness($db, $worksExtraCols, $extraFields, null);
+                if ($extraUniqError !== null) { $error = $extraUniqError; break; }
 
                 $stmt = $db->prepare(
                     'INSERT INTO tblWorks (ParentWorkId, Iswc, Title, Slug, Notes)
@@ -261,11 +498,19 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                 }
 
+                /* #1741 P4b — extra fields, ONE separate column-gated
+                   UPDATE (§0.3.3 pattern). */
+                $persistWorkExtraFields($db, $worksExtraCols, $newId, $extraFields);
+
                 if (function_exists('logActivity')) {
                     logActivity('work.create', 'work', (string)$newId, [
                         'title' => $title, 'slug' => $slug,
                         'iswc'  => $iswc, 'parent_id' => $parent > 0 ? $parent : null,
                         'origin_city' => $originCity,
+                        'subtitle'  => $extraFields['subtitle'],
+                        'ccli'      => $extraFields['ccli'],
+                        'bowi'      => $extraFields['bowi'],
+                        'tune_name' => $extraFields['tuneName'],
                     ]);
                 }
                 $success = "Work '{$title}' created.";
@@ -291,6 +536,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $slug  = mb_substr($slug,  0, 80);
                 $notes = mb_substr($notes, 0, 65000);
 
+                /* #1741 P4b — extra fields, parsed + shape-validated
+                   BEFORE any write. */
+                [$extraFields, $extraError] = $parseWorkExtraFields($_POST);
+                if ($extraError !== null) { $error = $extraError; break; }
+
                 /* Cycle check */
                 $parentBind = $parent > 0 ? $parent : null;
                 if (!$cycleSafe($id, $parentBind)) {
@@ -314,6 +564,11 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     $stmt->close();
                     if ($iswcDup) { $error = "ISWC '{$iswc}' already on another Work."; break; }
                 }
+
+                /* #1741 P4b — Ccli/Bowi/MusicBrainzWorkMBID uniqueness
+                   (excluding self). */
+                $extraUniqError = $checkWorkExtraUniqueness($db, $worksExtraCols, $extraFields, $id);
+                if ($extraUniqError !== null) { $error = $extraUniqError; break; }
 
                 /* Membership reconciliation */
                 $postedSongs    = $_POST['member_song_ids']  ?? [];
@@ -353,6 +608,12 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         $stmt->execute();
                         $stmt->close();
                     }
+
+                    /* #1741 P4b — extra fields, ONE separate column-gated
+                       UPDATE (§0.3.3 pattern), inside the same transaction
+                       as the rest of this save so a mid-way failure rolls
+                       everything back together. */
+                    $persistWorkExtraFields($db, $worksExtraCols, $id, $extraFields);
 
                     /* Membership: delete-then-insert so SortOrder /
                        IsCanonical / Note all reset cleanly. Cheap on
@@ -407,6 +668,10 @@ if ($hasSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         'parent_id'            => $parentBind,
                         'member_count'         => count($cleanSongs),
                         'external_link_count'  => $hasExtLinksSchema ? ($insertedLinks ?? 0) : null,
+                        'subtitle'             => $extraFields['subtitle'],
+                        'ccli'                 => $extraFields['ccli'],
+                        'bowi'                 => $extraFields['bowi'],
+                        'tune_name'            => $extraFields['tuneName'],
                     ]);
                 }
                 $success = "Work '{$title}' updated.";
@@ -469,8 +734,25 @@ if ($hasSchema) {
         $placeSelect  = $hasWorkPlace
             ? ', w.OriginCity, w.OriginCityId'
             : ', NULL AS OriginCity, NULL AS OriginCityId';
+
+        /* #1741 P4b — same gated-fragment idiom as $placeSelect immediately
+           above, extended to the 9 extra columns + the MusicBrainzWorkMBID
+           rider: `NULL AS <Col>` when the column is absent, so the query
+           shape never depends on migration state (rule #5's carve-out —
+           the column list is a fixed PHP-source constant, never built
+           from request input). */
+        $extraColNames = [
+            'Subtitle', 'Disambiguation', 'Ccli', 'Bowi', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder', 'MusicBrainzWorkMBID',
+        ];
+        $extraSelectParts = [];
+        foreach ($extraColNames as $extraCol) {
+            $extraSelectParts[] = isset($worksExtraCols[$extraCol]) ? "w.{$extraCol}" : "NULL AS {$extraCol}";
+        }
+        $extraListSelect = ', ' . implode(', ', $extraSelectParts);
+
         $res = $db->query(
-            'SELECT w.Id, w.ParentWorkId, w.Title, w.Slug, w.Iswc, w.Notes' . $placeSelect . ',
+            'SELECT w.Id, w.ParentWorkId, w.Title, w.Slug, w.Iswc, w.Notes' . $placeSelect . $extraListSelect . ',
                     (SELECT COUNT(*) FROM tblWorkSongs ws WHERE ws.WorkId = w.Id) AS MemberCount,
                     (SELECT COUNT(*) FROM tblWorks c   WHERE c.ParentWorkId = w.Id) AS ChildCount
                FROM tblWorks w
@@ -624,6 +906,19 @@ if ($hasSchema) {
                                 'notes'      => (string)($r['Notes'] ?? ''),
                                 'origin_city'    => (string)($r['OriginCity'] ?? ''),
                                 'origin_city_id' => isset($r['OriginCityId']) ? (int)$r['OriginCityId'] : null,
+                                /* #1741 P4b — extra identity/enrichment
+                                   fields; NULL AS <Col> in the gated SELECT
+                                   above already makes every key present
+                                   regardless of migration state. */
+                                'subtitle'              => (string)($r['Subtitle'] ?? ''),
+                                'disambiguation'        => (string)($r['Disambiguation'] ?? ''),
+                                'ccli'                  => (string)($r['Ccli'] ?? ''),
+                                'bowi'                  => (string)($r['Bowi'] ?? ''),
+                                'tune_name'             => (string)($r['TuneName'] ?? ''),
+                                'first_published_year'  => isset($r['FirstPublishedYear']) && $r['FirstPublishedYear'] !== null ? (int)$r['FirstPublishedYear'] : null,
+                                'copyright_years'       => (string)($r['CopyrightYears'] ?? ''),
+                                'copyright_holder'      => (string)($r['CopyrightHolder'] ?? ''),
+                                'musicbrainz_work_mbid' => (string)($r['MusicBrainzWorkMBID'] ?? ''),
                                 'members'    => $workMembersMap[$wid] ?? [],
                                 'links'      => $workLinksMap[$wid]   ?? [],
                             ];
@@ -745,6 +1040,84 @@ if ($hasSchema) {
                     <input type="hidden" id="create-work-origin-city-id" name="origin_city_id" value="">
                 </div>
             </div>
+            <!-- #1741 P4b — identity/enrichment fields. Column-gated on save
+                 (an un-migrated install simply drops these silently rather
+                 than erroring — see $persistWorkExtraFields above); the
+                 form fields themselves render unconditionally so a curator
+                 typing ahead of a migration doesn't lose the value, it's
+                 just not persisted until the migration lands. -->
+            <div class="row g-2 mt-2">
+                <div class="col-sm-6">
+                    <label class="form-label small">Subtitle <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="subtitle"
+                           class="form-control form-control-sm"
+                           maxlength="255"
+                           placeholder="e.g. A Hymn for the Nativity">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label small">Disambiguation <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="disambiguation"
+                           class="form-control form-control-sm"
+                           maxlength="255"
+                           placeholder="Short parenthetical distinguishing same-named works">
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-3">
+                    <label class="form-label small">CCLI Work # <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="ccli" inputmode="numeric"
+                           class="form-control form-control-sm"
+                           maxlength="50"
+                           placeholder="1234567">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label small">BOWI <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="bowi"
+                           class="form-control form-control-sm"
+                           maxlength="30">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label small">Tune name <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="tune_name"
+                           class="form-control form-control-sm"
+                           maxlength="120"
+                           placeholder="e.g. HYFRYDOL">
+                </div>
+                <div class="col-sm-3">
+                    <label class="form-label small">First published <small class="text-muted">(year, optional)</small></label>
+                    <input type="number" name="first_published_year"
+                           class="form-control form-control-sm"
+                           min="500" max="2100"
+                           placeholder="1978">
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-6">
+                    <label class="form-label small">Copyright years <small class="text-muted">(as printed, optional)</small></label>
+                    <input type="text" name="copyright_years"
+                           class="form-control form-control-sm"
+                           maxlength="100"
+                           placeholder="e.g. 1978, 1987, 2011">
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label small">Copyright holder <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="copyright_holder"
+                           class="form-control form-control-sm"
+                           maxlength="255">
+                </div>
+            </div>
+            <div class="row g-2 mt-2">
+                <div class="col-sm-6">
+                    <!-- #1741 P4b §2.4.5 rider — the pre-existing #1066
+                         MusicBrainzWorkMBID column has never had an editor
+                         field before this. -->
+                    <label class="form-label small">MusicBrainz Work MBID <small class="text-muted">(optional)</small></label>
+                    <input type="text" name="musicbrainz_work_mbid"
+                           class="form-control form-control-sm"
+                           maxlength="50"
+                           placeholder="e.g. 0a1b2c3d-...">
+                </div>
+            </div>
             <button type="submit" class="btn btn-amber btn-sm mt-3">
                 <i class="bi bi-plus me-1"></i>Create work
             </button>
@@ -811,6 +1184,64 @@ if ($hasSchema) {
                                            class="form-control js-place-search" maxlength="255"
                                            placeholder="Start typing — e.g. Cardiff, Wales">
                                     <input type="hidden" name="origin_city_id" id="edit-work-origin-city-id" value="">
+                                </div>
+                            </div>
+
+                            <!-- #1741 P4b — identity/enrichment fields, same
+                                 column-gated-on-save posture as the create
+                                 form above. -->
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Subtitle <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="subtitle" id="edit-work-subtitle"
+                                           class="form-control" maxlength="255">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Disambiguation <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="disambiguation" id="edit-work-disambiguation"
+                                           class="form-control" maxlength="255">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-3">
+                                    <label class="form-label">CCLI Work # <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="ccli" id="edit-work-ccli" inputmode="numeric"
+                                           class="form-control" maxlength="50">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">BOWI <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="bowi" id="edit-work-bowi"
+                                           class="form-control" maxlength="30">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">Tune name <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="tune_name" id="edit-work-tune-name"
+                                           class="form-control" maxlength="120" placeholder="e.g. HYFRYDOL">
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label">First published <small class="text-muted">(year, opt.)</small></label>
+                                    <input type="number" name="first_published_year" id="edit-work-first-published-year"
+                                           class="form-control" min="500" max="2100">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">Copyright years <small class="text-muted">(as printed, opt.)</small></label>
+                                    <input type="text" name="copyright_years" id="edit-work-copyright-years"
+                                           class="form-control" maxlength="100" placeholder="e.g. 1978, 1987, 2011">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">Copyright holder <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="copyright_holder" id="edit-work-copyright-holder"
+                                           class="form-control" maxlength="255">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-md-6">
+                                    <!-- #1741 P4b §2.4.5 rider. -->
+                                    <label class="form-label">MusicBrainz Work MBID <small class="text-muted">(opt.)</small></label>
+                                    <input type="text" name="musicbrainz_work_mbid" id="edit-work-musicbrainz-work-mbid"
+                                           class="form-control" maxlength="50" placeholder="e.g. 0a1b2c3d-...">
                                 </div>
                             </div>
 
@@ -1130,6 +1561,16 @@ if ($hasSchema) {
             document.getElementById('edit-work-notes').value        = row.notes || '';
             document.getElementById('edit-work-origin-city').value  = row.origin_city || '';
             document.getElementById('edit-work-origin-city-id').value = row.origin_city_id ? String(row.origin_city_id) : '';
+            /* #1741 P4b — extra identity/enrichment fields. */
+            document.getElementById('edit-work-subtitle').value             = row.subtitle || '';
+            document.getElementById('edit-work-disambiguation').value       = row.disambiguation || '';
+            document.getElementById('edit-work-ccli').value                 = row.ccli || '';
+            document.getElementById('edit-work-bowi').value                 = row.bowi || '';
+            document.getElementById('edit-work-tune-name').value            = row.tune_name || '';
+            document.getElementById('edit-work-first-published-year').value = row.first_published_year ? String(row.first_published_year) : '';
+            document.getElementById('edit-work-copyright-years').value      = row.copyright_years || '';
+            document.getElementById('edit-work-copyright-holder').value     = row.copyright_holder || '';
+            document.getElementById('edit-work-musicbrainz-work-mbid').value = row.musicbrainz_work_mbid || '';
             const psel = document.getElementById('edit-work-parent');
             psel.value = row.parent_id ? String(row.parent_id) : '';
             /* Hide the current work itself from the parent options to make

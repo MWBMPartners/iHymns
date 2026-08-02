@@ -341,6 +341,53 @@ function mediaIdentifierWorkTypeValid(string $slug): bool
 }
 
 /**
+ * True when $value passes $slug's documented shape (#1741 P4b) — the
+ * WORK_IDENTIFIER_TYPES mirror of `mediaIdentifierValidateValue()` above.
+ *
+ * ELI5: "does this CCLI Work Number / BOWI / MusicBrainz-Work MBID a
+ * curator typed into `/manage/works` actually look like a real one?"
+ *
+ * DETAILED / WHY A SEPARATE FUNCTION RATHER THAN REUSING
+ * `mediaIdentifierValidateValue()`: that function reads from
+ * `RECORDING_EXTERNAL_ID_TYPES` (the recording/release/product-grain
+ * registry) — a DIFFERENT map, keyed by a DIFFERENT vocabulary (`isrc`,
+ * `spotify`, …). `WORK_IDENTIFIER_TYPES` is work-grain (`iswc`, `bowi`,
+ * `ccli`, `musicbrainz-work`, plus the PRO/royalty slugs) and the two
+ * registries deliberately do NOT share slugs 1:1 (`ccli` here means the
+ * work's CCLI *Work* Number column; there is no `ccli` entry in
+ * `RECORDING_EXTERNAL_ID_TYPES` at all). Reading the wrong map for a given
+ * slug would silently validate against the wrong shape (or reject a valid
+ * value outright), so this function reads ONLY `WORK_IDENTIFIER_TYPES` —
+ * mirrors `mediaIdentifierValidateValue()`'s exact logic (empty → invalid,
+ * unrecognised slug → invalid, `validate === null` → any non-empty value
+ * accepted "where standard", per Deliverable 3), just against the sibling
+ * map. `manage/works.php` calls THIS function for every work-identifier
+ * field it validates (currently `ccli`; `bowi` has no documented shape —
+ * see `WORK_IDENTIFIER_TYPES['bowi']['validate'] === null` and the file
+ * doc-block — so it is validated by length only, not through this
+ * function) rather than re-typing a `preg_match()` inline, which is
+ * exactly the drift rule #35 exists to prevent: the vocabulary already
+ * lives here, a second hand-typed regex on the admin page would be a
+ * second copy that could silently diverge from it.
+ *
+ * @param string $slug  A WORK_IDENTIFIER_TYPES key, e.g. 'ccli', 'musicbrainz-work'.
+ * @param string $value The curator-typed value to check.
+ * @return bool false for an unrecognised slug or an empty value; true when
+ *              the slug has no documented shape (`validate === null`); the
+ *              PCRE match result otherwise.
+ * @link .claude/catalogue-1741-P4-plan.md §2.4 item 1
+ * @link appWeb/public_html/manage/works.php  the CCLI/MusicBrainz-Work call sites
+ */
+function mediaIdentifierWorkValidate(string $slug, string $value): bool
+{
+    $reg = WORK_IDENTIFIER_TYPES[$slug] ?? null;
+    if ($reg === null) return false;
+    if (trim($value) === '') return false;
+    if ($reg['validate'] === null) return true;
+    return (bool)preg_match($reg['validate'], $value);
+}
+
+/**
  * The `tblSongRoyaltyIds.Authority` allow-list, derived from
  * WORK_IDENTIFIER_TYPES (storage==='royalty' entries only) — never a second,
  * hand-typed copy. Ready for a future `/manage` royalty-ids editor or the P3

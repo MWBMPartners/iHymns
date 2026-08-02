@@ -4721,6 +4721,73 @@ class SongData
     private ?bool $_hasWorksSchemaCache = null;
 
     /**
+     * Cached per-column presence probe over the 9 #1741 P1/D5 tblWorks
+     * "extra" columns (Ccli/Bowi/Subtitle/Disambiguation/TuneName/TuneId/
+     * FirstPublishedYear/CopyrightYears/CopyrightHolder) — §0.3.2's cached
+     * per-column idiom, generalised from `_hasWorksSchema()` above (which
+     * only ever asked a table-level yes/no question).
+     *
+     * ELI5: "of these nine optional columns, which ones actually exist on
+     * THIS database right now?" — asked once per request (migrations are
+     * web-run, not guaranteed applied — a fresh `tblWorks` from #840 may
+     * predate the #1741 P1/D5 batches that added these), remembered for
+     * every subsequent `getWork()` call in the same request.
+     *
+     * DETAILED / WHY PER-COLUMN, NOT ALL-OR-NOTHING: `Bowi` shipped in a
+     * DIFFERENT migration (`migrate-work-bowi.php`, #1741 D5) than the
+     * other eight (`migrate-works-identity.php`, #1741 P1) — an install
+     * that has applied one card but not the other is a real, supported
+     * state, not a corrupt one. A single boolean "has the P1 batch landed?"
+     * would either wrongly hide Bowi on a P1-only install or wrongly try to
+     * SELECT a column that isn't there yet and throw. One
+     * INFORMATION_SCHEMA.COLUMNS query naming all nine returns exactly the
+     * present subset, so the caller (`getWork()`) can build its SELECT
+     * fragment from whichever subset actually exists — mirrors the cached-
+     * table-probe idiom immediately above, one level more granular.
+     *
+     * @return array<string,true> present column names as keys (a set, not
+     *                             a list — `isset($cols['Ccli'])` reads
+     *                             cleanly at every call site).
+     * @link .claude/catalogue-1741-P4-plan.md §2.2 item 1
+     * @link appWeb/.sql/migrate-works-identity.php  the P1 batch (8 of the 9 columns)
+     * @link appWeb/.sql/migrate-work-bowi.php       the D5 batch (Bowi, gated independently)
+     */
+    private function _worksExtraCols(): array
+    {
+        if ($this->_worksExtraColsCache !== null) {
+            return $this->_worksExtraColsCache;
+        }
+        /* Hardcoded constant column names (rule #5's carve-out) — never
+           built from request input. */
+        $cols = [
+            'Ccli', 'Bowi', 'Subtitle', 'Disambiguation', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder',
+        ];
+        $present = [];
+        try {
+            $ph = implode(',', array_fill(0, count($cols), '?'));
+            $stmt = $this->db->prepare(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblWorks'
+                    AND COLUMN_NAME IN ($ph)"
+            );
+            $types = str_repeat('s', count($cols));
+            $stmt->bind_param($types, ...$cols);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $present[(string)$row['COLUMN_NAME']] = true;
+            }
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            $present = [];
+        }
+        return $this->_worksExtraColsCache = $present;
+    }
+    /** @var array<string,true>|null cached probe result */
+    private ?array $_worksExtraColsCache = null;
+
+    /**
      * For each songId in $songIds, return a list of Works the song is
      * a member of. Empty array on a pre-migration deployment.
      *
@@ -4917,17 +4984,36 @@ class SongData
            unreachable by slug. That is a missing mechanism (rule #35), not a
            guarantee, and stating it as a guarantee is how it stays missing. */
         $isInt = is_int($slugOrId) || ctype_digit((string)$slugOrId);
+
+        /* #1741 P4b — append whichever of the 9 "extra" columns actually
+           exist on this install to the main SELECT. Hardcoded constant
+           column names interpolated (rule #5's carve-out — never built
+           from request input); the present-set itself comes from the
+           cached INFORMATION_SCHEMA probe above, never from $slugOrId. */
+        $extraColNames = [
+            'Ccli', 'Bowi', 'Subtitle', 'Disambiguation', 'TuneName', 'TuneId',
+            'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder',
+        ];
+        $extraPresent  = $this->_worksExtraCols();
+        $extraSelected = array_values(array_filter(
+            $extraColNames,
+            static fn(string $c): bool => isset($extraPresent[$c])
+        ));
+        $extraSelect = $extraSelected ? (', ' . implode(', ', $extraSelected)) : '';
+
         try {
             if ($isInt) {
                 $stmt = $this->db->prepare(
-                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
+                    . $extraSelect . '
                        FROM tblWorks WHERE Id = ? LIMIT 1'
                 );
                 $id = (int)$slugOrId;
                 $stmt->bind_param('i', $id);
             } else {
                 $stmt = $this->db->prepare(
-                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt
+                    'SELECT Id, ParentWorkId, Title, Slug, Iswc, Notes, CreatedAt, UpdatedAt'
+                    . $extraSelect . '
                        FROM tblWorks WHERE Slug = ? LIMIT 1'
                 );
                 $slug = (string)$slugOrId;
@@ -4951,6 +5037,21 @@ class SongData
                 'children'  => [],
                 'members'   => [],
                 'links'     => [],
+                /* #1741 P4b (§2.2.2) — absent-column defaults so work.php
+                   can render shape-blind: every key below is always
+                   present in the returned array, whether or not the
+                   backing column exists on this install yet. */
+                'ccli'               => isset($extraPresent['Ccli'])               ? (string)($row['Ccli'] ?? '')               : '',
+                'bowi'               => isset($extraPresent['Bowi'])               ? (string)($row['Bowi'] ?? '')               : '',
+                'subtitle'           => isset($extraPresent['Subtitle'])           ? (string)($row['Subtitle'] ?? '')           : '',
+                'disambiguation'     => isset($extraPresent['Disambiguation'])     ? (string)($row['Disambiguation'] ?? '')     : '',
+                'tuneName'           => isset($extraPresent['TuneName'])           ? (string)($row['TuneName'] ?? '')           : '',
+                'tuneId'             => (isset($extraPresent['TuneId']) && $row['TuneId'] !== null) ? (int)$row['TuneId'] : null,
+                'firstPublishedYear' => (isset($extraPresent['FirstPublishedYear']) && $row['FirstPublishedYear'] !== null) ? (int)$row['FirstPublishedYear'] : null,
+                'copyrightYears'     => isset($extraPresent['CopyrightYears'])     ? (string)($row['CopyrightYears'] ?? '')     : '',
+                'copyrightHolder'    => isset($extraPresent['CopyrightHolder'])    ? (string)($row['CopyrightHolder'] ?? '')    : '',
+                'tune'               => null,
+                'credits'            => ['writers' => [], 'composers' => [], 'arrangers' => []],
             ];
 
             /* Parent header (one row) */
@@ -5020,6 +5121,96 @@ class SongData
                 ];
             }
             $stmt->close();
+
+            /* #1741 P4b (§2.2.3) — Tune link resolution. Only attempted
+               when TuneId was actually resolved above (either the column
+               was absent, or it was present but NULL — both leave
+               $work['tuneId'] === null and this whole block is skipped).
+               Belt-and-braces try/catch: tblTunes is a SEPARATE table
+               (#1090) that can be absent even when tblWorks.TuneId exists
+               (migrate-works-identity.php explicitly tolerates running
+               before migrate-tunes-entity.php — see that script's
+               doc-block), so a raw SELECT here would throw under STRICT
+               mysqli on an install in that intermediate state. */
+            if ($work['tuneId'] !== null) {
+                try {
+                    $tprobe = $this->db->prepare(
+                        "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTunes' LIMIT 1"
+                    );
+                    $tprobe->execute();
+                    $hasTunes = $tprobe->get_result()->fetch_row() !== null;
+                    $tprobe->close();
+                    if ($hasTunes) {
+                        $tstmt = $this->db->prepare('SELECT Name, Slug FROM tblTunes WHERE Id = ? LIMIT 1');
+                        $tid = (int)$work['tuneId'];
+                        $tstmt->bind_param('i', $tid);
+                        $tstmt->execute();
+                        $trow = $tstmt->get_result()->fetch_assoc();
+                        $tstmt->close();
+                        if ($trow) {
+                            $work['tune'] = [
+                                'name' => (string)$trow['Name'],
+                                'slug' => (string)$trow['Slug'],
+                            ];
+                        }
+                    }
+                } catch (\Throwable $_e) {
+                    /* Tune lookup is a nice-to-have enrichment, not core
+                       Work data — degrade to no tune link rather than
+                       failing the whole page. */
+                }
+            }
+
+            /* #1741 P4b (§2.2.4) — Aggregated writer/composer/arranger
+               credits from member songs. There is NO tblWorkCredits table
+               (§2.7's accepted escape hatch: the curator-credit table was
+               scoped OUT of P4b) — credits are DERIVED by asking each of
+               the three existing per-role song-credit tables which names
+               appear across every member song's SongId. Skipped entirely
+               when the work has no members (nothing to aggregate). Each
+               table query gets its OWN try/catch — the three tables are
+               old and near-certain to exist, but STRICT-safe costs
+               nothing and one absent/renamed table shouldn't blank the
+               other two roles. */
+            if (!empty($work['members'])) {
+                $creditSongIds = array_values(array_unique(array_map(
+                    static fn(array $m): string => (string)$m['songId'],
+                    $work['members']
+                )));
+                if ($creditSongIds) {
+                    $creditPh    = implode(',', array_fill(0, count($creditSongIds), '?'));
+                    $creditTypes = str_repeat('s', count($creditSongIds));
+                    /* Hardcoded constant table names (rule #5's carve-out)
+                       — never built from request input. */
+                    $creditTables = [
+                        'writers'   => 'tblSongWriters',
+                        'composers' => 'tblSongComposers',
+                        'arrangers' => 'tblSongArrangers',
+                    ];
+                    foreach ($creditTables as $creditKey => $creditTable) {
+                        try {
+                            $cstmt = $this->db->prepare(
+                                "SELECT DISTINCT Name FROM {$creditTable} WHERE SongId IN ($creditPh)"
+                            );
+                            $cstmt->bind_param($creditTypes, ...$creditSongIds);
+                            $cstmt->execute();
+                            $cres  = $cstmt->get_result();
+                            $names = [];
+                            while ($crow = $cres->fetch_assoc()) {
+                                $names[] = (string)$crow['Name'];
+                            }
+                            $cstmt->close();
+                            sort($names, SORT_STRING | SORT_FLAG_CASE);
+                            $work['credits'][$creditKey] = array_slice($names, 0, 50);
+                        } catch (\Throwable $_e) {
+                            /* Credit table absent/renamed — that role's
+                               list simply stays empty (already defaulted
+                               to [] in $work['credits'] above). */
+                        }
+                    }
+                }
+            }
 
             /* External links — probe-gated on the work-links table */
             try {
