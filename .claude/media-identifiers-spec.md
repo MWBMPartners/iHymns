@@ -101,6 +101,18 @@ recording/song/artist grain — a column-per-provider table cannot absorb that (
   reserves product/release slugs; the Meedya repos (media files) implement release/product fully via core's `Album`.
 - Q2/Q3/Q4 (shared artifact, `#[non_exhaustive]`, MM key convergence) applied in the Meedya phase.
 
+**OWNER FORMALLY CONFIRMED 2026-08-02 (after seeing the built D5):** **A = C** (no iHymns release
+entity — releases stay first-class in MeedyaSuite-core's `Album`; the `tblReleases` option (b) remains
+reversible/additive if a release-grain feature ever lands). **B = yes** + a refinement: *also* mirror the
+grandfathered data into the new store, and *also* mirror `tblSongs.Isrc` "to make it comprehensive, and for
+consistency longer term". Both A=C and B=yes were already exactly what the D5 storage (`b428f590`) is — the
+confirmation required NO rework. The refinement shipped as the **D5 backfill** (`3ff77e02`): a `genius`
+IdType + `migrate-backfill-song-external-ids.php` mirroring `tblSongs.Isrc` + the 4 `tblSongIdentityMap`
+columns via idempotent `INSERT IGNORE` (registry card + all-5-source data-derived probe). The **ongoing**
+consistency half ("longer term" = dual-write on ISRC edit + resolver union) is distinct from the one-time
+backfill and is tracked as **#1749** (recommended for P5). `tblSongs.Isrc` stays the `/isrc/` resolver
+authority until that deliberate cutover.
+
 ## 5. Buildable next steps (Q1=c, Q5=yes ADOPTED)
 - **iHymns D5 (folds into #1741 P3):** party IDs = `CREDIT_IDENTIFIER_TYPES` lines (+IPN +any Luminate); work IDs
   = `tblSongRoyaltyIds` authorities (+HFA); recording IDs = the Q5 key/value shape + the P3 `/isrc/` resolver;
