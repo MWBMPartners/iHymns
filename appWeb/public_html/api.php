@@ -734,12 +734,32 @@ if ($page !== null) {
             break;
 
         case 'iswc':
-            /* #940 — /iswc/<code> public page listing every song that
-               shares the ISWC code (T-NNN.NNN.NNN-N format). The page
-               normalises the code defensively (strips non-T/digit
-               characters, uppercases the leading T). */
-            $iswcCode = isset($_GET['code']) ? trim($_GET['code']) : '';
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'iswc.php';
+        case 'ipi':
+        case 'isni':
+        case 'ccli':
+        case 'bowi':
+        case 'isrc':
+            /* #1741 P3 — unified external-identifier public page. `iswc`
+               (#940, the original of the six) and its five siblings —
+               `ipi`/`isni` (musician identifiers), `ccli`/`bowi` (work
+               identifiers), `isrc` (recording identifier) — all resolve
+               through the SAME fragment now: includes/pages/identifier.php,
+               backed by the shared includes/identifier_resolve.php resolver
+               + includes/identifier_normalize.php canonicaliser (one fold
+               per scheme, one resolver, six routes — rule #22's "one fold,
+               not two" applied to identifier canonicalisation). $page IS the
+               scheme name (they're identical strings by construction — see
+               IHYMNS_ID_SCHEMES); the page template itself normalises the
+               code defensively per scheme and renders its own friendly
+               empty/not-found state, so an unknown/malformed code is never
+               a hard error here.
+               Deliberately NOT added to $_cacheablePages above — matches
+               the pre-existing iswc/tune precedent (a cheap, indexed,
+               anonymous read that doesn't need the caching optimisation to
+               ship; this is an explicit choice, not an oversight). */
+            $idScheme = $page;
+            $idCode   = isset($_GET['code']) ? trim((string)$_GET['code']) : '';
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'identifier.php';
             break;
 
         case 'help':

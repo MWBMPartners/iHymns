@@ -355,6 +355,18 @@ export class Router {
                    url-encoded; the page handler decodes and strips
                    non-T/digit characters defensively. */
                 return { page: 'iswc', params: { code: segments[1] || '' } };
+            case 'ipi':
+            case 'isni':
+            case 'ccli':
+            case 'bowi':
+            case 'isrc':
+                /* #1741 P3 — the five siblings of /iswc/ above, sharing the
+                   same unified resolver + page (includes/pages/identifier.php,
+                   api.php's identifier.php case group). Same shape as
+                   'iswc': the raw URL segment is forwarded as `code` and the
+                   page handler canonicalises + resolves it per scheme
+                   (includes/identifier_normalize.php's IHYMNS_ID_SCHEMES). */
+                return { page: segments[0], params: { code: segments[1] || '' } };
             case 'help':
                 return { page: 'help', params: {} };
             case 'whats-new':
@@ -636,6 +648,15 @@ export class Router {
             'stats': 'Usage Statistics — ' + appName,
             'writer': 'Writer — ' + appName,
             'musician': 'Musician — ' + appName,
+            /* #1741 P3 — the six external-identifier alias pages (iswc had
+               no title entry before this either; added here for
+               consistency with its five new siblings). */
+            'iswc': 'ISWC — ' + appName,
+            'ipi': 'IPI — ' + appName,
+            'isni': 'ISNI — ' + appName,
+            'ccli': 'CCLI — ' + appName,
+            'bowi': 'BOWI — ' + appName,
+            'isrc': 'ISRC — ' + appName,
             'help': 'Help — ' + appName,
             'whats-new': "What's New — " + appName,
             'terms': 'Terms of Use — ' + appName,

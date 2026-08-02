@@ -29,6 +29,12 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
    legacy OriginCity display string only when the places-adoption
    migration has landed. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'places.php';
+/* #1741 P3 — the canonical ISWC fold now lives in the shared
+   includes/identifier_normalize.php module (ihymns_canonical_iswc()) so
+   the public /iswc/<code> alias route can reuse the exact same fold this
+   page uses to validate curator input. $validateIswc below delegates to
+   it rather than owning the only copy (rule #22 — one fold, not two). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -64,16 +70,15 @@ $slugFor = static function (string $name): string {
  * digit isn't recomputed (mod-10/11 schemes vary by region); we
  * trust the curator and shape-validate only. Empty string is
  * valid (ISWC is optional).
+ *
+ * #1741 P3 — delegates to the shared ihymns_canonical_iswc() fold
+ * (includes/identifier_normalize.php) rather than owning its own copy
+ * (rule #22 — one fold, not two); the closure's name/signature/return
+ * contract ('' valid-empty, null malformed, canonical otherwise) is kept
+ * identical so its call sites below are unchanged.
  */
 $validateIswc = static function (string $raw): ?string {
-    $raw = strtoupper(trim($raw));
-    if ($raw === '') return '';
-    if (preg_match('/^T-?\d{3}\.?\d{3}\.?\d{3}-?\d$/', $raw) !== 1) return null;
-    /* Re-format to canonical T-NNN.NNN.NNN-C */
-    $digits = preg_replace('/\D/', '', $raw);
-    if (strlen((string)$digits) !== 10) return null;
-    return 'T-' . substr($digits, 0, 3) . '.' . substr($digits, 3, 3)
-         . '.' . substr($digits, 6, 3) . '-' . substr($digits, 9, 1);
+    return ihymns_canonical_iswc($raw);
 };
 
 /* Schema probe — render friendly CTA when the migration hasn't run. */
