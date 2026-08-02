@@ -394,3 +394,13 @@ shared identifier normalise/resolve + alias routes. Ground truth re-read against
 nicety; adds risk to a critical file — defer to P6); Tune live-search (§3.B second half is editor work →
 P5); leaving the identifier routes **uncached** to match the existing iswc/tune precedent (cheap indexed
 anonymous read; adding to `$_cacheablePages` is a safe later optimisation, not needed for the feature).
+
+**P3 LANDED + independently verified — commit `dc9b5067` (2026-08-02).** All five files built as specced:
+`identifier_normalize.php` (registry + folds, works.php delegates, kills the duplicate ISWC strip),
+`identifier_resolve.php` (STRICT-safe, bind_param, column allow-list, never `tblSongIdentityMap.uk_Isrc`),
+`identifier.php` (absorbs+deletes iswc.php), api.php + router.js alias routes, two guards. My verification
+(not the agent's report): PHP 93/93 + node 46/46; **I mutation-proved BOTH guards** (route guard red on a
+removed router case, normalise guard red on a broken fold, both byte-identical after restore); behavioural
+probe ran the resolver for all six schemes + edge cases against the live DB under STRICT with no throw, and
+every resolver SELECT proven schema-valid raw (no catch). **Remaining for the D5/ID ask:** P5 (editor entry
+for the new IDs) + P6 (docs); the P4 per-entity pages surface them to users. Then the 3 Meedya repos.
