@@ -356,3 +356,41 @@ slice; the rest of P4a proceeds regardless.
 
 **Planning COMPLETE.** Implementation begins with P1 (unblocked). Full Part-A/B/C detail regenerates from
 this summary + a live `schema.sql`/route read at build time; do not rely on any ephemeral agent transcript.
+
+---
+
+## §4 — P3 build scoping (2026-08-02, ground-truth re-verified post-P2 rename)
+
+P1 (#1745, closed) + P2 (#1746) + D5 storage (`b428f590`, #1747) are landed. P3 now implements the
+shared identifier normalise/resolve + alias routes. Ground truth re-read against `claude/wave3-fixes`:
+- Route parsing: `router.js` parseRoute switch (`/iswc/` at :352; `/musician//people//person/`→`musician`
+  at :320; no `/ipi//isni//ccli//bowi//isrc/` yet). `api.php` page switch (`case 'iswc'` :736 requires
+  `includes/pages/iswc.php`; `$_cacheablePages` :584 — **iswc + tune are NOT cacheable today**).
+- Folds to reuse: `manage/works.php:68 $validateIswc` (the canonical ISWC fold); `iswc.php:28-31` has the
+  **duplicate** inline strip (the one to kill); `musician_helpers.php::canonicaliseIsni()` (:525) + the
+  `person_by_identifier`/`musician_by_identifier` query (api.php:1332-1348, JOIN tblMusicianIdentifiers→
+  tblMusicians) = the ipi/isni resolver shape. `media_identifiers.php` (D5) has the vocabulary.
+- Columns confirmed present: `tblSongs.{Iswc,Isrc,Ccli}` + `idx_Iswc/idx_Isrc/idx_Ccli` (Ccli is
+  `NOT NULL DEFAULT ''` → resolver must guard `Ccli<>''`); `tblWorks.{Iswc(uq_iswc),Ccli(uq_ccli),Bowi(uq_bowi)}`.
+
+**P3 scope THIS commit (single, focused):**
+1. `includes/identifier_normalize.php` — `IHYMNS_ID_SCHEMES` registry (iswc/ccli/bowi/isrc/ipi/isni) +
+   one canonical fold per scheme; `ihymns_canonical_iswc()` is the EXTRACTED works.php fold; isni/ipi
+   delegate to `musician_helpers.php`. `works.php $validateIswc` rewired to delegate (kills fold #1).
+2. `includes/identifier_resolve.php` — `ihymns_resolve_identifier($db,$scheme,$raw)`: column/table-
+   existence-gated, degrades to empty (never throws under STRICT). iswc/ccli/bowi = Work-first;
+   iswc/ccli/isrc = song multi-match (`tblSongs.Isrc` non-unique, **never** `tblSongIdentityMap.uk_Isrc`);
+   ipi/isni = `tblMusicianIdentifiers` (the dormant query's first real consumer).
+3. `includes/pages/identifier.php` — ONE cacheable-shaped fragment that **absorbs iswc.php**; renders
+   song-list (iswc/ccli/isrc) / work-header / musician-list (ipi/isni). No inline `<script>` (rule #30).
+   `iswc.php` DELETED (only api.php required it); `page=iswc` repointed here (route contract kept, rule #33).
+4. `api.php` page cases `ipi/isni/ccli/bowi/isrc` + repoint `iswc` → identifier.php (`$idScheme=$page`).
+   `router.js` parseRoute cases + DOCUMENT_TITLES for the 5 new segments.
+5. Guards: `tests/php/test-identifier-normalize.php` (fold behaviour + works.php delegation + registry
+   coverage) and `tests/test-identifier-routes.js` (tree-derived: every IHYMNS_ID_SCHEMES scheme has a
+   router case + an api.php case requiring identifier.php + the page CSP-clean/a11y) — both mutation-tested.
+
+**Deliberately OUT of P3 (scoped, reversible, noted):** the index.php bot/301 single-match layer (SEO
+nicety; adds risk to a critical file — defer to P6); Tune live-search (§3.B second half is editor work →
+P5); leaving the identifier routes **uncached** to match the existing iswc/tune precedent (cheap indexed
+anonymous read; adding to `$_cacheablePages` is a safe later optimisation, not needed for the feature).
