@@ -272,6 +272,22 @@ return [
         'tblSongScriptureRefs'     => '#1066 one-pass dormant — ?include=scriptureRefs read side shipped, write side is future feature work',
         'tblVocalParts'            => '#1066 one-pass dormant — ?include=vocalParts read side shipped, write side is future feature work',
         'tblContentLicences'       => '#1668 licence-store consolidation — catalogue rows ship only in .sql/.fulldata/ihymns-full.sql, so a schema-only install reads an empty catalogue',
+        /* #1741 P4c — includes/pages/tune.php reads these three for the
+           registry-first tune page (credits card, "spelling variant"
+           alias-fold lookup, external-links panel). #1090/#1741 P1 shipped
+           the tables dormant; the ONLY write path for tblTunes itself is
+           the one-shot migrate-tunes-entity.php backfill (which does not
+           touch these three sibling tables at all — it has zero INSERTs
+           into any of them). No live app write path exists yet for any of
+           the three — that is the tune-admin-CRUD gap the P4 build spec
+           explicitly calls out (plan §3.6) as deliberate-not-built, filed
+           as a follow-up issue under epic #1741 rather than built in P4c.
+           Dormant-by-data: each section renders only once a curator or
+           import populates a row, same posture as the #1066 batch entries
+           immediately above. */
+        'tblTuneAliases'           => '#1741 P4c — tune.php\'s alias-fold lookup step reads it; write path is the filed tune-admin-CRUD follow-up (plan §3.6), deliberate-not-built in P4c',
+        'tblTuneCredits'           => '#1741 P4c — tune.php\'s Credits card reads it; write path is the filed tune-admin-CRUD follow-up (plan §3.6), deliberate-not-built in P4c',
+        'tblTuneExternalLinks'     => '#1741 P4c — tune.php\'s external-links panel reads it; write path is the filed tune-admin-CRUD follow-up (plan §3.6), deliberate-not-built in P4c',
         /* tblCreditPersonLinks' entry retired #1741 P2-A — the table itself
            was renamed to tblMusicianLinks and tblCreditPersonLinks became a
            back-compat VIEW (migrate-musicians-rename.php), so it no longer
