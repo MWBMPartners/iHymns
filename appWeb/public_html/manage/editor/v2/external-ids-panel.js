@@ -36,7 +36,7 @@
  *  the registry's slugs appear as a quoted string literal anywhere in this
  *  file.
  *
- *  mountExternalIdsPanel(container, { songId, toast }) -> teardown fn
+ *  mountExternalIdsPanel(container, { songId, toast, onIsrcDenorm }) -> teardown fn
  *
  *  @link .claude/catalogue-1741-P5-plan.md §2.4                                  the build spec this file implements
  *  @link appWeb/public_html/manage/editor/api2.php                               song_external_ids / song_external_id_add / song_external_id_delete
@@ -52,12 +52,21 @@ import { editorApi } from './api-client.js';
  * @param {HTMLElement} container Where to append. The Metadata tab wipes its
  *   own container on every `song`-slice change, so it calls the returned
  *   teardown and re-mounts rather than relying on this to survive.
- * @param {{songId: string, toast?: Function}} opts
+ * @param {{songId: string, toast?: Function, onIsrcDenorm?: Function}} opts
+ *   `onIsrcDenorm` — #1749 full unification: called with the server's
+ *   projected primary-ISRC value (`?string`) whenever an add/remove response
+ *   carries an `isrcDenorm` key (key-presence, rule #35 — never inferred
+ *   from `idType` alone, since the SERVER is what decides whether a given
+ *   add/delete touched an isrc row). Lets the Metadata tab's `#meta-isrc` box
+ *   stay in sync with a change made from THIS panel instead of only on next
+ *   reload. Optional — defaults to a no-op so this panel still mounts
+ *   standalone in a test harness.
  * @returns {Function} teardown
  */
 export function mountExternalIdsPanel(container, opts) {
     const songId = opts && opts.songId ? String(opts.songId) : '';
     const toast  = (opts && opts.toast) || function () {};
+    const onIsrcDenorm = (opts && opts.onIsrcDenorm) || function () {};
     let disposed = false;
 
     /* The registry the server itself validates against (editor2.php's
@@ -209,10 +218,14 @@ export function mountExternalIdsPanel(container, opts) {
     }
 
     function onRemove(id) {
-        editorApi.deleteExternalId(songId, id).then(() => {
+        editorApi.deleteExternalId(songId, id).then((res) => {
             if (disposed) return;
             rows = rows.filter((r) => Number(r.id) !== Number(id));
             renderRows();
+            /* #1749 — key-PRESENCE, never inferred from the removed row's own
+               idType: the server is what decides whether this delete touched
+               an isrc row (rule #35). */
+            if (res && ('isrcDenorm' in res)) { onIsrcDenorm(res.isrcDenorm); }
         }).catch((e) => {
             if (disposed) return;
             toast('Could not remove external id: ' + e.message, 'danger');
@@ -246,6 +259,10 @@ export function mountExternalIdsPanel(container, opts) {
                 renderRows();
                 valInput.value = '';
             }
+            /* #1749 — key-PRESENCE, never inferred from the typeSel value the
+               curator picked: the server is what decides whether this add
+               touched an isrc row (rule #35). */
+            if (res && ('isrcDenorm' in res)) { onIsrcDenorm(res.isrcDenorm); }
             toast('External id added.', 'success');
         }).catch((e) => {
             if (disposed) return;

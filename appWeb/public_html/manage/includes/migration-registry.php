@@ -3551,6 +3551,63 @@ return [
         },
     ],
 
+    /* #1749 full unification (epic #1741) — the ONE cutover reconciliation
+     * card: makes tblSongs.Isrc and tblSongExternalIds agree in BOTH
+     * directions, once, for every song a pre-#1749 live edit or the P5d
+     * mirror hadn't already kept in lockstep. See
+     * appWeb/.sql/migrate-reconcile-isrc-denorm.php's own doc-block for the
+     * two-step algorithm; this registry entry is rule #19's required single
+     * point of truth (script/card/probe co-located, never four independently
+     * hand-typed facts). */
+    'reconcile-isrc-denorm' => [
+        'script' => 'migrate-reconcile-isrc-denorm.php',
+        'card' => [
+            'title'  => 'Reconcile ISRC denorm ↔ external-ID store (#1749)',
+            'body'   => 'One-shot cutover pass for the #1749 full unification:'
+                      . ' <code>tblSongExternalIds</code> becomes the authority for'
+                      . ' recording ISRCs and <code>tblSongs.Isrc</code> its'
+                      . ' kept-in-sync projection. Re-mints the mirror row from any'
+                      . ' column the pre-cutover era left drifted, then projects'
+                      . ' store-only ISRCs into empty columns. Data-only (no DDL);'
+                      . ' idempotent — safe to re-run; the probe doubles as a live'
+                      . ' drift detector afterwards. Requires the two D5 cards above.',
+            'button' => 'Reconcile ISRC Denorm',
+        ],
+        /* Real, data-derived probe (rule #19): pending when the store table is
+           missing (chain not applied yet — the backfill probe's own posture), when
+           any song carries >1 marker rows (§2.1 anomaly), or when any song's
+           column disagrees with the ONE projection. The projection SQL is BUILT by
+           songExternalIdIsrcProjectionSql() — never a second copy (rule #22). */
+        'probe' => static function (\mysqli $db): bool {
+            if (!_migProbe_tableExists($db, 'tblSongExternalIds')) return true;
+            require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+            try {
+                $r = $db->query(
+                    "SELECT 1 FROM tblSongExternalIds e
+                      WHERE e.IdType = 'isrc' AND e.SourceRef = 'tblSongs.Isrc'
+                      GROUP BY e.SongId HAVING COUNT(*) > 1 LIMIT 1"
+                );
+                if ($r && $r->fetch_row() !== null) return true;
+                /* @deleted-visible: migration probe (#1694) — reconcile
+                   completeness is PHYSICAL, the SAME posture as the sibling
+                   backfill probe a few hundred lines up: a hidden/soft-
+                   deleted song's ISRC still needs its tblSongs.Isrc column
+                   projected from the store correctly, so the value is right
+                   the moment that song is ever restored. Deliberately not
+                   scoped to visible-only rows. */
+                $r2 = $db->query(
+                    'SELECT 1 FROM tblSongs s WHERE NOT (NULLIF(s.Isrc, \'\') <=> ('
+                    . songExternalIdIsrcProjectionSql('s.SongId')
+                    . ')) LIMIT 1'
+                );
+                if ($r2 && $r2->fetch_row() !== null) return true;
+            } catch (\Throwable $e) {
+                return true;
+            }
+            return false;
+        },
+    ],
+
     'work-bowi' => [
         'script' => 'migrate-work-bowi.php',
         'card' => [

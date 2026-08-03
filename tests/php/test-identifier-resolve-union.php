@@ -314,6 +314,112 @@ if (strpos($commentOnlySlice, 'tblSongExternalIds') !== false) {
 }
 
 /* =========================================================================
+ * SECTION 3 (#1749 full unification, §7.1 of the build spec) — direct-call
+ * assertions against the TWO shared builders declared in
+ * includes/song_external_ids.php (already loaded transitively —
+ * identifier_resolve.php require_once's that file). ONE predicate/rule,
+ * three consumers (this file, api.php's song_by_identifier,
+ * lyricsIngest_resolveSong()) — rule #22 — so proving the builders' own
+ * shape here is what backs the "never re-inline it" claim the source-scan
+ * assertions in Section 4 below depend on.
+ * ========================================================================= */
+
+echo "\n3 — songExternalIdUnionArmSql() / songExternalIdIsrcProjectionSql(): the #1749 shared builders, called directly\n";
+
+$unionArm = songExternalIdUnionArmSql('s.SongId');
+ok('songExternalIdUnionArmSql() output references tblSongExternalIds',
+    strpos($unionArm, 'tblSongExternalIds') !== false, 'got: ' . $unionArm);
+ok('songExternalIdUnionArmSql() output carries exactly 2 placeholders (IdType, IdValue)',
+    substr_count($unionArm, '?') === 2, 'count=' . substr_count($unionArm, '?') . ' sql=' . $unionArm);
+ok('songExternalIdUnionArmSql() output embeds the caller-supplied $songIdExpr verbatim',
+    strpos($unionArm, 's.SongId IN') === 0, 'got: ' . $unionArm);
+/* Different $songIdExpr -> different text — proves the parameter is actually
+   USED, not silently ignored/hardcoded to one spelling (the same "gate
+   result discarded" class of mutation §1b above guards against). */
+ok('songExternalIdUnionArmSql() with a different $songIdExpr produces different text (parameter is live, not discarded)',
+    songExternalIdUnionArmSql('?') !== $unionArm,
+    'both: ' . var_export([songExternalIdUnionArmSql('?'), $unionArm], true));
+
+$projectionBound = songExternalIdIsrcProjectionSql('?');
+$projectionCorrelated = songExternalIdIsrcProjectionSql('s.SongId');
+foreach (['bound (?)' => $projectionBound, 'correlated (s.SongId)' => $projectionCorrelated] as $label => $sql) {
+    ok("songExternalIdIsrcProjectionSql() [{$label}] carries the CHAR_LENGTH(...) <= 15 guard",
+        strpos($sql, 'CHAR_LENGTH(e.IdValue) <= 15') !== false, 'got: ' . $sql);
+    ok("songExternalIdIsrcProjectionSql() [{$label}] carries the NULL-safe marker-rank term (SourceRef <=> 'tblSongs.Isrc')",
+        strpos($sql, "(e.SourceRef <=> 'tblSongs.Isrc') DESC") !== false, 'got: ' . $sql);
+    ok("songExternalIdIsrcProjectionSql() [{$label}] carries the lowest-Id tiebreak (e.Id ASC)",
+        strpos($sql, 'e.Id ASC') !== false, 'got: ' . $sql);
+    ok("songExternalIdIsrcProjectionSql() [{$label}] carries LIMIT 1 (a single primary value, never a list)",
+        strpos($sql, 'LIMIT 1') !== false, 'got: ' . $sql);
+}
+ok('songExternalIdIsrcProjectionSql() honours $songIdExpr — the bound and correlated forms differ',
+    $projectionBound !== $projectionCorrelated,
+    'bound: ' . $projectionBound . ' correlated: ' . $projectionCorrelated);
+
+/* =========================================================================
+ * SECTION 4 (#1749 full unification, §7.1) — source-scan: the OTHER two
+ * "which song has this ISRC?" readers (api.php's song_by_identifier,
+ * lyricsIngest_resolveSong()) actually CALL the shared union-arm builder
+ * AND existence-gate it, in the SAME region — never a re-inlined literal,
+ * never an ungated STRICT-throw risk on an un-migrated install (rule #9).
+ * Comment-stripped first (rule #34) exactly like Section 2 above.
+ * ========================================================================= */
+
+echo "\n4 — source-scan: api.php's song_by_identifier + lyricsIngest_resolveSong() both use the shared builder, existence-gated\n";
+
+$apiFile = $root . '/appWeb/public_html/api.php';
+if (!is_readable($apiFile)) {
+    fwrite(STDERR, "FATAL: could not read {$apiFile}\n");
+    exit(1);
+}
+$apiStrippedSrc = irusStripComments((string)file_get_contents($apiFile));
+/* A generous bounded window (rule #34 / #1676's lesson: never "no >", always
+   a wide bounded window) — song_by_identifier's case body is longer than the
+   300-char default used for identifier_resolve.php's terser case, so this
+   call passes an explicit wider window rather than silently truncating. */
+$songByIdentifierSlice = irusSliceCase($apiStrippedSrc, 'song_by_identifier', 2500);
+ok("api.php's case 'song_by_identifier': body found (within the bounded window)",
+    $songByIdentifierSlice !== '', 'window empty or case not found');
+ok("api.php's song_by_identifier calls songExternalIdUnionArmSql(...) — the shared builder, not a re-inlined literal",
+    strpos($songByIdentifierSlice, 'songExternalIdUnionArmSql(') !== false,
+    'slice: ' . $songByIdentifierSlice);
+ok("api.php's song_by_identifier existence-gates the store arm via songExternalIdsTableExists(...) in the SAME region",
+    strpos($songByIdentifierSlice, 'songExternalIdsTableExists(') !== false,
+    'slice: ' . $songByIdentifierSlice);
+
+$ingestFile = $root . '/appWeb/public_html/includes/lyrics_ingest.php';
+if (!is_readable($ingestFile)) {
+    fwrite(STDERR, "FATAL: could not read {$ingestFile}\n");
+    exit(1);
+}
+$ingestStrippedSrc = irusStripComments((string)file_get_contents($ingestFile));
+$resolveSongSlice = irusSliceFunction($ingestStrippedSrc, 'lyricsIngest_resolveSong');
+ok('includes/lyrics_ingest.php declares lyricsIngest_resolveSong() (found by the slicer)',
+    $resolveSongSlice !== '', 'function not found');
+ok('lyricsIngest_resolveSong() calls songExternalIdUnionArmSql(...) — the shared builder, not a re-inlined literal',
+    strpos($resolveSongSlice, 'songExternalIdUnionArmSql(') !== false,
+    'slice: ' . $resolveSongSlice);
+ok('lyricsIngest_resolveSong() existence-gates the store arm via songExternalIdsTableExists(...) in the SAME function',
+    strpos($resolveSongSlice, 'songExternalIdsTableExists(') !== false,
+    'slice: ' . $resolveSongSlice);
+ok('lyricsIngest_resolveSong() canonicalises the ISRC payload via ihymns_canonical_isrc(...) before matching (rule #22 — the one fold)',
+    strpos($resolveSongSlice, 'ihymns_canonical_isrc(') !== false,
+    'slice: ' . $resolveSongSlice);
+ok("lyricsIngest_resolveSong()'s ISRC step is deterministic under a tie (ORDER BY ... SongId ... LIMIT 1)",
+    preg_match('/ORDER\s+BY\s+SongId\s+ASC\s+LIMIT\s+1/', $resolveSongSlice) === 1,
+    'slice: ' . $resolveSongSlice);
+
+/* --- Mutation self-test: a comment-only mention of the builder call must
+   NOT satisfy Section 4's scans (the same comment-stripping property proven
+   for Section 2 above, re-proven for THIS section's own fixture shape). --- */
+$commentOnlyIngestFixture = "<?php\nfunction lyricsIngest_resolveSong(\\mysqli \$db, array \$payload, string \$lyricsText = ''): array\n{\n    // calls songExternalIdUnionArmSql(...) and songExternalIdsTableExists(...) only in this comment\n    return [];\n}\n";
+$commentOnlyIngestStripped = irusStripComments($commentOnlyIngestFixture);
+$commentOnlyIngestSlice = irusSliceFunction($commentOnlyIngestStripped, 'lyricsIngest_resolveSong');
+if (strpos($commentOnlyIngestSlice, 'songExternalIdUnionArmSql') !== false) {
+    $mutationFailures[] = 'comment-stripping self-test (§7.1 Section 4): a songExternalIdUnionArmSql mention that ONLY existed in a comment survived stripping and would have false-passed the real assertion above';
+}
+
+/* =========================================================================
  * REPORT
  * ========================================================================= */
 

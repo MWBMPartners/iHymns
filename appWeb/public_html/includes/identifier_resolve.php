@@ -60,7 +60,23 @@ declare(strict_types=1);
  * `tblSongs.Isrc` is explicitly queried here, NEVER `tblSongIdentityMap
  * .uk_Isrc` (that table is a DIFFERENT, cross-DB-keyed identity map gated on
  * the separate #1010 DB-merge decision — out of scope, rule #20's "gated
- * cross-DB objects" note) — per the brief.
+ * cross-DB objects" note; #1749 full unification freezes it as legacy for
+ * the SAME reason, §2.3 of that build spec) — per the brief.
+ *
+ * #1749 FULL UNIFICATION — THE STORE IS NOW THE AUTHORITY, THE COLUMN IS THE
+ * DEGRADATION PATH (re-anchoring this file's own doc-block; the SQL below was
+ * already right, built the Phase-1 union — only the NARRATIVE direction
+ * changes here). Before #1749, `tblSongExternalIds` was a SUPPLEMENT this
+ * file's ISRC lookup unioned in on top of the "real" `tblSongs.Isrc` column.
+ * After #1749, the relationship inverts: the store is the recording-ID
+ * authority, and `tblSongs.Isrc` is kept in lockstep by
+ * `includes/song_external_ids.php`'s `songExternalIdSyncIsrcDenorm()` (the
+ * store->column projection with "the last word" in every write). The column
+ * arm of the union below therefore now survives ONLY as the un-migrated-
+ * install degradation path — on a migrated + reconciled install the column
+ * is always a SUBSET of what the store already contains (column ⊆ store), so
+ * the column arm adds nothing there; it only matters when
+ * `tblSongExternalIds` doesn't exist yet.
  *
  * @link .claude/catalogue-expansion-1741-plan.md §4      the P3 build-scoping ground truth this file implements
  * @link appWeb/public_html/includes/identifier_normalize.php the canonicalisation this file's lookups key off
@@ -76,6 +92,7 @@ if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';   /* #1749 full unification — songExternalIdUnionArmSql(), the ONE store-union predicate builder */
 
 /**
  * True when $table exists in the current database schema.
@@ -200,10 +217,17 @@ function _ihymns_resolve_songs_sql(string $column, string $visibleSql, bool $wit
        without losing that property. No code path invokes this builder
        with anything other than a real songVisibleSql() result at runtime. */
     $extraGuard = ($column === 'Ccli') ? " AND s.{$column} <> ''" : '';
+    /* #1749 full unification — the union arm is now BUILT by the shared
+       songExternalIdUnionArmSql() (includes/song_external_ids.php), never
+       re-inlined here (rule #22 — ONE predicate, three consumers: this file,
+       api.php's song_by_identifier, lyricsIngest_resolveSong()). Whitespace
+       differs from the pre-#1749 inline literal this replaces (a single-line
+       fragment vs. the old multi-line one) — the properties
+       tests/php/test-identifier-resolve-union.php asserts on (placeholder
+       count, "OR ... IN" ordering, the enclosing parens) are unchanged, and
+       the test does not byte-compare the SQL text itself. */
     $match = $withStore
-        ? "(s.{$column} = ?{$extraGuard}
-            OR s.SongId IN (SELECT e.SongId FROM tblSongExternalIds e
-                             WHERE e.IdType = ? AND e.IdValue = ?))"
+        ? "(s.{$column} = ?{$extraGuard} OR " . songExternalIdUnionArmSql('s.SongId') . ')'
         : "s.{$column} = ?{$extraGuard}";
     return "SELECT s.SongId, s.Number, s.Title, s.SongbookAbbr, sb.Name AS SongbookName, s.Language
               FROM tblSongs s
@@ -423,8 +447,11 @@ function ihymns_resolve_identifier(\mysqli $db, string $scheme, string $rawCode)
                 $result['work'] = _ihymns_resolve_work($db, 'Bowi', $canonical);
                 break;
             case 'isrc':
-                /* #1749 — union with the tblSongExternalIds store, so an ISRC held
-                   only as a store row (manual second recording) still resolves. */
+                /* #1749 full unification — the store IS the authority; this
+                   union is what lets an ISRC held only as a store row (a
+                   manual second recording) resolve here — the column arm
+                   below it is now the un-migrated-install degradation path,
+                   not the primary lookup (see this file's own doc-block). */
                 $result['songs'] = _ihymns_resolve_songs($db, 'Isrc', $canonical, 'isrc');
                 break;
             case 'ipi':

@@ -50,6 +50,7 @@ require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEP
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'lyric_lines_read.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_redirects.php';   /* #1343 */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_soft_delete.php';   /* #1694 */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';   /* #1749 — merge must MOVE store rows, not let the FK cascade eat them (#1755) */
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -193,6 +194,73 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 $d->execute();
                 $d->close();
             }
+
+            /* #1749 full unification — the store is the recording-ID
+             * authority; a merge must MOVE the duplicate's tblSongExternalIds
+             * rows to the survivor, not let fk_SongExternalIds_Song's
+             * ON DELETE CASCADE (schema.sql) silently eat them the moment
+             * the duplicate row is deleted below. Before this fix a merge
+             * quietly destroyed the duplicate's external-ID history — data
+             * loss that pre-dates this commit (issue #1755).
+             *
+             * ELI5: when two song records get merged into one, any Spotify /
+             * ISRC / MusicBrainz ids recorded against the one that's going
+             * away need to move to the one that survives, not vanish.
+             *
+             * The duplicate's own MARKER row (its `SourceRef =
+             * SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF` column-projection
+             * artefact, if it has one) is DEMOTED to a plain second-recording
+             * row (`SourceRef` -> NULL, `Source` kept for provenance) as part
+             * of the SAME UPDATE, so the survivor can never end up with TWO
+             * marker rows for one song — an anomaly `songExternalIdIsrcProjectionSql()`'s
+             * `ORDER BY` only ever expects at most one of (§2.1 in the build
+             * spec). The survivor's OWN marker, if it has one, is untouched
+             * and stays the §2.1 primary; the demoted row simply becomes an
+             * ordinary rank-2-by-Id candidate.
+             *
+             * `UPDATE IGNORE` + DELETE-leftover is the SAME collision idiom
+             * the `MERGE_FK_TABLES_SINGLE` loop above uses for
+             * `uq_Song_Type_Value (SongId, IdType, IdValue)` — a row that
+             * can't move because the survivor already has the identical
+             * (IdType, IdValue) pair is a leftover duplicate fact, safe to
+             * drop.
+             *
+             * Deliberately NOT added to `MERGE_FK_TABLES_SINGLE`: that loop's
+             * plain `SET SongId = ?` has no way to ALSO carry the SourceRef
+             * demotion, and running it ungated on an un-migrated install
+             * would STRICT-throw on a missing table (rule #9) — so this stays
+             * its own gated block, existence-probed the same way every other
+             * `tblSongExternalIds` touch in this codebase is.
+             *
+             * The duplicate's OWN `tblSongs.Isrc` column needs nothing here:
+             * the whole row is hard-deleted a few statements below. */
+            if (songExternalIdsTableExists($db)) {
+                $isrcMirrorSourceRef = SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF;
+                $extIdMove = $db->prepare(
+                    "UPDATE IGNORE tblSongExternalIds
+                        SET SongId = ?,
+                            SourceRef = IF(IdType = 'isrc' AND SourceRef <=> ?, NULL, SourceRef)
+                      WHERE SongId = ?"
+                );
+                $extIdMove->bind_param('sss', $survivor, $isrcMirrorSourceRef, $duplicate);
+                $extIdMove->execute();
+                $extIdMove->close();
+                /* Leftover rows that couldn't move (uq_Song_Type_Value
+                   collision with a row the survivor already has) — same
+                   drop-the-duplicate-fact posture as every other table above. */
+                $extIdLeftover = $db->prepare('DELETE FROM tblSongExternalIds WHERE SongId = ?');
+                $extIdLeftover->bind_param('s', $duplicate);
+                $extIdLeftover->execute();
+                $extIdLeftover->close();
+                /* The store has the last word (D-1): re-project the
+                   survivor's now-possibly-changed set of isrc rows into its
+                   tblSongs.Isrc column — this is what lets a survivor with NO
+                   prior ISRC of its own get PROMOTED to the duplicate's, and
+                   what re-confirms the survivor's own marker stays primary
+                   when it already had one. */
+                songExternalIdSyncIsrcDenorm($db, $survivor);
+            }
+
             /* Two-column relationship tables. */
             foreach (MERGE_FK_TABLES_PAIR as $t => $cols) {
                 foreach ($cols as $c) {

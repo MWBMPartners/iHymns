@@ -69,6 +69,16 @@ declare(strict_types=1);
  * @link appWeb/public_html/includes/musician_helpers.php the sibling PARTY registry (CREDIT_IDENTIFIER_TYPES)
  * @see appWeb/.sql/migrate-song-external-ids.php         the tblSongExternalIds migration (Deliverable 1)
  * @see appWeb/.sql/migrate-work-bowi.php                 the tblWorks.Bowi migration (Deliverable 2)
+ *
+ * #1749 FULL UNIFICATION — `tblSongExternalIds` (this file's vocabulary) is
+ * now the recording-ID AUTHORITY; `tblSongs.Isrc` is a kept-in-sync
+ * projection of it (includes/song_external_ids.php's
+ * songExternalIdSyncIsrcDenorm()). `tblSongIdentityMap`'s four provider
+ * columns are, by contrast, FROZEN LEGACY — superseded by this table,
+ * absorbed one-way by the #1747 backfill, never written again; do not build
+ * a live sync for them (D-3, non-blocking default —
+ * .claude/catalogue-1741-1749-unification-plan.md §2.3). Their removal stays
+ * gated on the #1010 DB-merge decision, same as always.
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {

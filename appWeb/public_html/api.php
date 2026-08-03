@@ -1286,6 +1286,18 @@ if ($action !== null) {
          * Params: type (iswc|isrc|upc|ccli) + value (required).
          * The type maps to a FIXED tblSongs column (allow-list — never user
          * input into the column position); the value is always bound.
+         *
+         * #1749 full unification — for type=isrc ONLY, the WHERE is widened
+         * with the shared songExternalIdUnionArmSql('s.SongId') store arm
+         * (existence-gated), so a song whose ONLY isrc is a
+         * tblSongExternalIds row (a store-only second recording — the store
+         * is now the recording-ID authority, §1.2 of the build spec) still
+         * resolves here, matching what /isrc/ and lyricsIngest_resolveSong()
+         * already do (§5.5/§5.6 — ONE predicate, three consumers, rule #22).
+         * iswc/upc/ccli are UNCHANGED — the store has no companion column for
+         * those schemes yet. Raw bind on BOTH arms (no canonicalisation) —
+         * parity with today's behaviour and with identifier_resolve.php's own
+         * documented accepted limitation.
          * ----------------------------------------------------------------- */
         case 'song_by_identifier':
             $idType  = isset($_GET['type'])  ? strtolower(trim((string)$_GET['type'])) : '';
@@ -1298,14 +1310,24 @@ if ($action !== null) {
             try {
                 $db  = getDbMysqli();
                 $col = $songIdCols[$idType];   // hardcoded constant from the map above
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+                $useIsrcStore = $idType === 'isrc' && songExternalIdsTableExists($db);
+                $whereMatch = $useIsrcStore
+                    ? "(s.`{$col}` = ? OR " . songExternalIdUnionArmSql('s.SongId') . ')'
+                    : "s.`{$col}` = ?";
                 $stmt = $db->prepare(
                     "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, "
                   . "s.SongbookAbbr AS songbook, b.Name AS songbookName "
                   . "FROM tblSongs s LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr "
-                  . "WHERE s.`{$col}` = ? AND " . songVisibleSql($db, 's')   /* #1694 — hidden songs don't resolve */
+                  . "WHERE {$whereMatch} AND " . songVisibleSql($db, 's')   /* #1694 — hidden songs don't resolve */
                   . " ORDER BY s.SongbookAbbr, s.Number LIMIT 50"
                 );
-                $stmt->bind_param('s', $idValue);
+                if ($useIsrcStore) {
+                    $storeIdType = 'isrc';
+                    $stmt->bind_param('sss', $idValue, $storeIdType, $idValue);
+                } else {
+                    $stmt->bind_param('s', $idValue);
+                }
                 $stmt->execute();
                 $res = $stmt->get_result();
                 $songs = [];

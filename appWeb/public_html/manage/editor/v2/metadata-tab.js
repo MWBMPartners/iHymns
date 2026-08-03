@@ -142,6 +142,21 @@ export function mountMetadataTab(container, opts) {
                    actually succeeded — a misleading error is worse than none. */
                 try { onSongIdChange(res.previousId, res.songId); } catch (_e) { /* shell owns its own errors */ }
             }
+            /* #1749 full unification — the server's `value` is the STORE's
+               projected value for an isrc save, which can legitimately differ
+               from what was typed: clearing the field while a manual
+               second-recording row still exists in tblSongExternalIds
+               PROMOTES that row's value back into the column (§2.1's
+               deliberate, documented consequence). Reflect that in the input
+               immediately rather than waiting for the next full reload —
+               but ONLY when the field isn't mid-keystroke (focus-guarded),
+               so this can never fight a curator who is still typing. */
+            if (field === 'isrc' && res && typeof res.value !== 'undefined') {
+                const isrcInput = document.getElementById('meta-isrc');
+                if (isrcInput && document.activeElement !== isrcInput) {
+                    isrcInput.value = res.value == null ? '' : String(res.value);
+                }
+            }
         }).catch((e) => {
             toast('Could not save ' + field + ': ' + e.message, 'danger');
             if (typeof onError === 'function') { try { onError(e); } catch (_e) {} }
@@ -520,9 +535,33 @@ export function mountMetadataTab(container, opts) {
         import('./external-ids-panel.js')
             .then((m) => {
                 if (disposed || !container.isConnected) { return; }
-                extIdsDetach = m.mountExternalIdsPanel(container, { songId: songId, toast: toast });
+                extIdsDetach = m.mountExternalIdsPanel(container, { songId: songId, toast: toast, onIsrcDenorm: onIsrcDenorm });
             })
             .catch((e) => { console.error('[metadata-tab] external-ids panel failed to load:', e); });
+    }
+
+    /**
+     * #1749 full unification — the panel's add/remove echoes the store's
+     * projected primary ISRC via an `isrcDenorm` response key (server-side:
+     * api2.php's song_external_id_add/_delete, key-presence per rule #35).
+     * This is the callback the panel invokes with that value so the
+     * Metadata tab's OWN `#meta-isrc` box reflects a change made from a
+     * DIFFERENT control on the same tab, without waiting for a full reload.
+     *
+     * ELI5: "the little external-IDs list just changed the song's primary
+     * ISRC (adding or removing a row can do that) — update the ISRC box up
+     * above to match, right now."
+     *
+     * Focus-guarded exactly like save()'s own echo-handling immediately
+     * above: never overwrite a box the curator is actively typing into.
+     *
+     * @param {?string} v The projected value, or null/undefined for "none".
+     */
+    function onIsrcDenorm(v) {
+        const isrcInput = document.getElementById('meta-isrc');
+        if (isrcInput && document.activeElement !== isrcInput) {
+            isrcInput.value = v == null ? '' : String(v);
+        }
     }
 
     const off = store.subscribe('song', render);

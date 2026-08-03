@@ -205,14 +205,23 @@ function tsebLooksAlwaysTrueProbe(string $entrySrc): bool
     );
 }
 
+/* Anchor on the entry's OWN 4-space-indented closing `],` (its nested
+   'card' => [ … ] sub-array closes at 8-space indent, so the first 4-space
+   `],` after the key is unambiguously THIS entry's close). Earlier this
+   anchored on the FOLLOWING sibling key ('work-bowi'), which silently
+   over-captured the moment #1749 inserted 'reconcile-isrc-denorm' — WITH a
+   preceding doc-comment — between them: the slice then swallowed the whole
+   reconcile entry and its probe, weakening every entry-scoped assertion below
+   (rule #34 — a scanner that over-reports reads as coverage it doesn't have).
+   The own-close anchor cannot be moved by any later sibling insertion. */
 if (!preg_match(
-    "/'backfill-song-external-ids'\s*=>\s*\[(.*?)\n    \],\n\n    'work-bowi'/s",
+    "/'backfill-song-external-ids'\s*=>\s*\[(.*?)\n    \],/s",
     $registrySrc,
     $entryMatch
 )) {
     ok("registry has a 'backfill-song-external-ids' entry (extractable slice)", false,
-       'could not locate the entry block between its own key and the following work-bowi entry — '
-       . 'did the entry get renamed, reordered, or is it now the last entry in the file?');
+       "could not locate the entry block between its own key and its own 4-space-indented closing '],' — "
+       . 'did the entry get renamed or restructured?');
     $backfillEntrySrc = '';
 } else {
     ok("registry has a 'backfill-song-external-ids' entry (extractable slice)", true);

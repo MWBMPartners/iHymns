@@ -3373,6 +3373,19 @@ CREATE TABLE IF NOT EXISTS tblApiKeyRequests (
 -- lives on tblWorks, not here (stress-C2). Change history goes to the existing
 -- tblActivityLog, not a dedicated table (stress-C1). The iLyricsDB link column
 -- + bridge views are GATED on the DB-merge decision (see issue #1066-gated).
+--
+-- #1749 FULL UNIFICATION (D-3, decided default, non-blocking) — this table's
+-- four provider columns are now FROZEN LEGACY, not actively synced denorms:
+-- the #1747 D5 backfill absorbed them one-way into tblSongExternalIds (the
+-- new recording-ID authority), nothing reads or writes these four columns
+-- live today (0.7 in the build spec — no SELECT/INSERT/UPDATE anywhere
+-- outside migrations/probes), and the table itself stays gated on the #1010
+-- iLyricsDB DB-merge decision above. Do NOT build a live store->identity-map
+-- sync — see .claude/catalogue-1741-1749-unification-plan.md §2.3 for the
+-- full reasoning (shape incompatibility: this table's provider columns carry
+-- a TABLE-WIDE UNIQUE key, the store's uq_Song_Type_Value is PER-SONG, so a
+-- faithful sync needs cross-song collision handling this table's dormancy
+-- doesn't justify building yet). Removal is gated on #1010, same as always.
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS tblSongIdentityMap (
     Id                       INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

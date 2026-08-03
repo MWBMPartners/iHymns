@@ -1121,13 +1121,20 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         $un->execute();
         $un->close();
     }
-    /* #1749 P5d — a revision restore is an Isrc write funnel too: when the
-       scalar loop actually wrote Isrc (i.e. the snapshot carried the key —
-       Isrc is never gate-skipped, it predates P1), mirror the SAME canonical
-       value into tblSongExternalIds so the store never drifts from a
-       restored tblSongs.Isrc. Canonicalise again here rather than trusting
-       the snapshot's stored text is already canonical — an OLD revision
-       (pre-#1741 P5a) could carry a pre-canonicalisation raw value. */
+    /* #1749 P5d / full unification — a revision restore is an Isrc write
+       funnel too: when the scalar loop actually wrote Isrc (i.e. the
+       snapshot carried the key — Isrc is never gate-skipped, it predates
+       P1), mirror the SAME canonical value into tblSongExternalIds so the
+       store never drifts from a restored tblSongs.Isrc. Canonicalise again
+       here rather than trusting the snapshot's stored text is already
+       canonical — an OLD revision (pre-#1741 P5a) could carry a
+       pre-canonicalisation raw value. #1749 — this ALSO now HEALS the 0.10
+       class of pre-cutover drift: the scalar loop above wrote the
+       snapshot's RAW Isrc text into the column a few lines up, but this
+       mirror call's embedded store->column sync (songExternalIdSyncIsrcDenorm(),
+       its "last word") re-projects the CANONICAL fold back over it — so an
+       old `US-ABC-…`-shaped snapshot restore no longer leaves the column and
+       the store's marker row disagreeing. */
     if ($ed2WroteIsrc) {
         $isrcRestoreRaw   = $songRow['Isrc'] === null ? '' : (string)$songRow['Isrc'];
         $isrcRestoreCanon = ihymns_canonical_isrc($isrcRestoreRaw);
@@ -1608,6 +1615,11 @@ try {
         }
 
         $db->begin_transaction();
+        /* #1749 full unification — the mirror's PROJECTED echo (only set on
+           the Isrc branch below); null everywhere else so the response
+           builder after the try/catch can branch on isset() without a
+           second flag. See that branch's own comment for why this exists. */
+        $isrcFinal = null;
         try {
             /* Column name comes from the ED2_META_FIELDS constant only. */
             $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
@@ -1619,14 +1631,22 @@ try {
             }
             $u->execute();
             $u->close();
-            /* #1749 P5d — dual-write the canonical ISRC into tblSongExternalIds,
-               INSIDE this same transaction as the tblSongs UPDATE above (a
-               rollback must never leave the mirror row alone with a stale
-               tblSongs.Isrc, or vice versa). Table-absent is already a no-op
-               inside the helper (its own memoised probe) — unswallowed here,
-               so a genuine DB fault still rolls the whole save back honestly. */
+            /* #1749 P5d / full unification — dual-write the canonical ISRC
+               into tblSongExternalIds, INSIDE this same transaction as the
+               tblSongs UPDATE above (a rollback must never leave the mirror
+               row alone with a stale tblSongs.Isrc, or vice versa).
+               Table-absent is already a no-op inside the helper (its own
+               memoised probe) — unswallowed here, so a genuine DB fault still
+               rolls the whole save back honestly. #1749 (D-1) — the mirror
+               now RETURNS the store's projected value (its embedded
+               songExternalIdSyncIsrcDenorm() call has "the last word"), which
+               can legitimately differ from $value: clearing the field while
+               a manual second-recording row still exists in the store
+               PROMOTES that row's value back into the column (§2.1) — the
+               echo below is how the editor shows that immediately instead of
+               only on next page load. */
             if ($column === 'Isrc') {
-                songExternalIdMirrorIsrc($db, $songId, $value);
+                $isrcFinal = songExternalIdMirrorIsrc($db, $songId, $value);
             }
             /* Title drives NormalizedTitle too. */
             if ($field === 'title') {
@@ -1643,7 +1663,14 @@ try {
             throw $e;
         }
         logActivity('song.metadata', 'song', $songId, ['field' => $field]);
-        ed2_respond(['ok' => true, 'field' => $field]);
+        /* #1749 — for field=isrc, echo the STORE's projected value (never
+           the caller's raw $value): a clear-with-manual promotion (§2.1) is
+           then visible in the very response the client is already awaiting,
+           instead of only on next page load. $isrcFinal stays null for every
+           OTHER field, so `?? $value` degrades to exactly the pre-#1749
+           echo — additive-only, no response-shape change for non-isrc
+           fields. */
+        ed2_respond(['ok' => true, 'field' => $field, 'value' => $isrcFinal ?? $value]);
         break;
     }
 
@@ -2971,6 +2998,11 @@ try {
         $idScope = (string)(mediaIdentifierScopeForType($idType) ?? 'recording');
 
         $db->begin_transaction();
+        /* #1749 full unification — set only when $idType === 'isrc' (below);
+           stays null for every other id type, so the response builder can
+           branch on key-PRESENCE (rule #35) rather than a null-vs-absent
+           ambiguity. */
+        $isrcDenorm = null;
         try {
             /* INSERT IGNORE — uq_Song_Type_Value (SongId, IdType, IdValue)
                handles the dupe; $created below tells the client whether a NEW
@@ -3000,6 +3032,19 @@ try {
             $sel->execute();
             $row = $sel->get_result()->fetch_assoc();
             $sel->close();
+
+            /* #1749 full unification — a manual ADD of an isrc row is a store
+               mutation this panel makes OUTSIDE the tblSongs.Isrc mirror, so
+               (unlike metadata_field_update above) nothing else in this
+               transaction keeps the column in lockstep — that WAS the 0.9
+               bug the build spec names ("the panel already desyncs the
+               column, by design-of-the-old-model"). Project the store's
+               current primary ISRC back into the column, in the SAME
+               transaction, so an Add can never leave the two disagreeing
+               even transiently. */
+            if ($idType === 'isrc') {
+                $isrcDenorm = songExternalIdSyncIsrcDenorm($db, $songId);
+            }
             $db->commit();
         } catch (\Throwable $e) {
             $db->rollback();
@@ -3007,11 +3052,19 @@ try {
         }
 
         logActivity('song.external_id.add', 'song', $songId, ['idType' => $idType, 'idValue' => $idValue]);
-        ed2_respond([
+        $ed2ExtIdAddResponse = [
             'ok'         => true,
             'externalId' => $row ? ed2_songExternalIdRowShape($row) : null,
             'created'    => $created,
-        ]);
+        ];
+        /* #1749 — key-PRESENCE is the client's branch signal (rule #35: a
+           flag/shape, not error prose), so the key is added ONLY for an isrc
+           add — never present-but-null for every other id type, which would
+           make "is this an isrc row" ambiguous to the caller. */
+        if ($idType === 'isrc') {
+            $ed2ExtIdAddResponse['isrcDenorm'] = $isrcDenorm;
+        }
+        ed2_respond($ed2ExtIdAddResponse);
         break;
     }
 
@@ -3026,27 +3079,64 @@ try {
             ed2_respond(['ok' => false, 'error' => 'This install has not applied the song external IDs (#1741 D5) migration card yet (run it at /manage/setup-database).'], 409);
         }
 
-        /* SongId in the WHERE alongside Id — defence-in-depth against a
-           cross-song id (a stale/tampered id from a different song's panel
-           can never delete someone else's row). Already-gone -> deleted:0,
-           the same idempotent-double-click posture as song_link_remove
-           above, not an error. A single DELETE is already atomic on its own
-           — no transaction needed (unlike credit_delete/tag_detach's
-           near-identical DELETEs, which open one only because they ALSO call
-           ed2_touchRevision(); this case deliberately does not, so there is
-           nothing else to roll back together). */
-        $del = $db->prepare('DELETE FROM tblSongExternalIds WHERE Id = ? AND SongId = ?');
-        $del->bind_param('is', $id, $songId);
-        $del->execute();
-        $deleted = $del->affected_rows;
-        $del->close();
+        /* #1749 full unification — pre-read the row's IdType BEFORE the
+           DELETE below, so we know AFTER it whether the store's projection
+           needs re-syncing into tblSongs.Isrc. This is the reason this case
+           now opens a transaction it didn't need before: a single DELETE was
+           already atomic on its own (the comment this replaces said so, and
+           it was true THEN), but "DELETE, then conditionally sync the
+           denorm" is two statements that must commit or roll back together —
+           the exact reason credit_delete/tag_detach open one for their own
+           ed2_touchRevision() pairing, cited (and now itself expired) in the
+           comment this replaces. */
+        $preRead = $db->prepare('SELECT IdType FROM tblSongExternalIds WHERE Id = ? AND SongId = ?');
+        $preRead->bind_param('is', $id, $songId);
+        $preRead->execute();
+        $preReadRow = $preRead->get_result()->fetch_assoc();
+        $preRead->close();
+        $wasIsrc = $preReadRow !== null && (string)$preReadRow['IdType'] === 'isrc';
 
-        /* Deleting the #1749 P5d mirror row is allowed and harmless — the
-           next ISRC save re-mints it (songExternalIdMirrorIsrc() is a
-           DELETE-then-conditional-INSERT keyed on its own ownership
-           predicate); this case never special-cases which row it is. */
+        $isrcDenorm = null;
+        $db->begin_transaction();
+        try {
+            /* SongId in the WHERE alongside Id — defence-in-depth against a
+               cross-song id (a stale/tampered id from a different song's
+               panel can never delete someone else's row). Already-gone ->
+               deleted:0, the same idempotent-double-click posture as
+               song_link_remove above, not an error. */
+            $del = $db->prepare('DELETE FROM tblSongExternalIds WHERE Id = ? AND SongId = ?');
+            $del->bind_param('is', $id, $songId);
+            $del->execute();
+            $deleted = $del->affected_rows;
+            $del->close();
+
+            /* #1749 — deleting the mirror row (or ANY isrc row) is allowed;
+               it is no longer merely "harmless because the next ISRC save
+               re-mints it" (that was true only because the OLD model let the
+               column sit stale in between — exactly the desync class this
+               unification exists to kill). Instead it is ACTUALLY harmless
+               immediately: re-project the store's remaining primary ISRC
+               (or NULL, if none is left) into the column, in the SAME
+               transaction as the delete, so a curator never sees a stale
+               column even for one page load. */
+            if ($wasIsrc) {
+                $isrcDenorm = songExternalIdSyncIsrcDenorm($db, $songId);
+            }
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
         logActivity('song.external_id.delete', 'song', $songId, ['id' => $id]);
-        ed2_respond(['ok' => true, 'deleted' => (int)max(0, $deleted)]);
+        $ed2ExtIdDeleteResponse = ['ok' => true, 'deleted' => (int)max(0, $deleted)];
+        /* #1749 — key-PRESENCE (rule #35), mirroring song_external_id_add's
+           response shape immediately above: present only when the deleted
+           row was itself an isrc row, so the client's branch is unambiguous. */
+        if ($wasIsrc) {
+            $ed2ExtIdDeleteResponse['isrcDenorm'] = $isrcDenorm;
+        }
+        ed2_respond($ed2ExtIdDeleteResponse);
         break;
     }
 

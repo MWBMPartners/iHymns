@@ -58,15 +58,35 @@ declare(strict_types=1);
  * DELETE-by-ownership-predicate then conditionally INSERT is idempotent
  * either way and needs no prior read.
  *
+ * #1749 FULL UNIFICATION — MARKER SEMANTICS INVERTED, ZERO ROW REWRITES
+ * ----------------------------------------------------------------------------
+ * `tblSongExternalIds` is now the AUTHORITY for recording IDs; `tblSongs.Isrc`
+ * is a DERIVED single-value projection of it (the "primary ISRC" denorm),
+ * kept in lockstep by `songExternalIdSyncIsrcDenorm()` below, which has the
+ * LAST WORD inside every transaction that mutates isrc store rows (see that
+ * function's own doc-block for the full algorithm and rationale). The
+ * `SourceRef = 'tblSongs.Isrc'` marker literal keeps its EXACT bytes (no data
+ * migration, the byte-equality guard below keeps passing unchanged) but its
+ * DOCUMENTED MEANING inverts: pre-#1749 it said "this row was copied FROM the
+ * column"; post-#1749 it says "this is the row the column is now PROJECTED
+ * FROM" — the primary marker `songExternalIdIsrcProjectionSql()`'s `ORDER BY`
+ * ranks first. The rename to something like `'primary'` was deliberately NOT
+ * done — it would need a data migration + guard churn for zero behavioural
+ * gain, since the literal's ROLE (an ownership/rank key) is identical either
+ * way, only its narrative direction changed.
+ *
  * Direct access is blocked (same guard as `media_identifiers.php` /
  * `tune_helpers.php` / `musician_helpers.php`) so this file can't be
  * requested as an endpoint via an open Apache config.
  *
- * @link .claude/catalogue-1741-P5-plan.md §4                                    the build spec this file implements
- * @link appWeb/public_html/manage/editor/api2.php                               the metadata_field_update ISRC branch + ed2_applySongSnapshot() call sites
+ * @link .claude/catalogue-1741-P5-plan.md §4                                    the P5d dual-write mirror build spec
+ * @link .claude/catalogue-1741-1749-unification-plan.md §1/§2                    the #1749 full-unification design (D-1 write-path shape, D-2 primary-ID rule)
+ * @link appWeb/public_html/manage/editor/api2.php                               the metadata_field_update ISRC branch + ed2_applySongSnapshot() call sites + song_external_id_add/_delete
+ * @link appWeb/public_html/manage/duplicate-songs.php                           the merge repoint+demote+sync (#1755)
  * @link appWeb/public_html/includes/media_identifiers.php                       the IdScope/IdType vocabulary this helper's literals are checked against (mediaIdentifierScopeValid()/mediaIdentifierIdTypeValid())
  * @link appWeb/public_html/includes/identifier_normalize.php                    ihymns_canonical_isrc() — callers canonicalise BEFORE calling this helper
  * @link appWeb/.sql/migrate-backfill-song-external-ids.php                      the one-time backfill whose SourceRef='tblSongs.Isrc' literal this mirror reuses as the ownership key
+ * @link appWeb/.sql/migrate-reconcile-isrc-denorm.php                           the #1749 one-shot cutover reconciliation card
  * @link appWeb/.sql/schema.sql                                                  tblSongExternalIds CREATE TABLE block (uq_Song_Type_Value)
  * @see #1741
  * @see #1749
@@ -128,6 +148,143 @@ function songExternalIdsTableExists(\mysqli $db): bool
 const SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF = 'tblSongs.Isrc';
 
 /**
+ * ELI5: when a song has several ISRC rows in the store, this is the ONE rule
+ * for which of them shows up in the single tblSongs.Isrc box.
+ * DETAILED (#1749 full unification, D-2): marker row first via NULL-safe <=>
+ * (a manual row's SourceRef is NULL; (NULL='x') is NULL and would sort
+ * unpredictably —
+ * https://dev.mysql.com/doc/refman/8.0/en/comparison-operators.html#operator_equal-to),
+ * then lowest Id so a later-added second recording never hijacks an
+ * established denorm. Declared ONCE; the reconcile migration and its registry
+ * probe consume it via songExternalIdIsrcProjectionSql() below — the guard
+ * (tests/php/test-song-external-id-mirror.php §7.2) bans any re-forked
+ * "ORDER BY (e.SourceRef" literal elsewhere in the tree (rule #22/#35).
+ *
+ * @link .claude/catalogue-1741-1749-unification-plan.md §2.1
+ * @see #1749
+ */
+const SONG_EXTERNAL_ID_ISRC_PRIMARY_ORDER =
+    "(e.SourceRef <=> 'tblSongs.Isrc') DESC, e.Id ASC";
+
+/**
+ * PURE SQL builder for the §2.1 primary-ISRC projection — the testable seam
+ * (rule #34; mirrors identifier_resolve.php's _ihymns_resolve_songs_sql()
+ * precedent: text-only, no \mysqli, so a test can call it directly).
+ *
+ * ELI5: "give me the one SELECT statement that answers 'what is this song's
+ * PRIMARY isrc, according to the store?'" — as plain text, so both the live
+ * sync function below AND the one-shot reconcile migration/probe can ask the
+ * exact same question without a second, independently-typed copy.
+ *
+ * @param string $songIdExpr A PHP-SOURCE CONSTANT expression for the song id
+ *                           position: '?' (bound single-song form, the sync
+ *                           function's use) or 's.SongId' (correlated form,
+ *                           the reconcile migration/probe's use). NEVER user
+ *                           input (rule #5 carve-out — both call-site
+ *                           spellings below are hardcoded literals, never a
+ *                           request value).
+ * @return string
+ * @see #1749
+ */
+function songExternalIdIsrcProjectionSql(string $songIdExpr = '?'): string
+{
+    return 'SELECT e.IdValue FROM tblSongExternalIds e'
+         . " WHERE e.SongId = {$songIdExpr} AND e.IdType = 'isrc'"
+         . ' AND CHAR_LENGTH(e.IdValue) <= 15'          /* VARCHAR(15) target under STRICT — schema.sql:284 */
+         . ' ORDER BY ' . SONG_EXTERNAL_ID_ISRC_PRIMARY_ORDER
+         . ' LIMIT 1';
+}
+
+/**
+ * PURE SQL builder for the store union arm shared by every "which song has
+ * this ISRC?" reader (#1749 §1.2): /isrc/ (via identifier_resolve.php's
+ * _ihymns_resolve_songs_sql()), api.php's song_by_identifier, and
+ * lyricsIngest_resolveSong(). ONE predicate, three consumers — never
+ * re-inline it (rule #22). Emits 2 placeholders (IdType, IdValue); the
+ * caller binds both, in that order.
+ *
+ * ELI5: "is this song's id one of the ones the external-IDs store has under
+ * this id-type/value pair?" — as a reusable fragment of SQL text, so three
+ * different files can drop the identical question into their own WHERE
+ * clause instead of three slightly-different hand-typed copies.
+ *
+ * @param string $songIdExpr PHP-source constant, e.g. 's.SongId' — the column
+ *                           expression tested for store membership. NEVER
+ *                           user input (same carve-out as the projection
+ *                           builder above).
+ * @return string
+ * @see #1749
+ */
+function songExternalIdUnionArmSql(string $songIdExpr): string
+{
+    return "{$songIdExpr} IN (SELECT e.SongId FROM tblSongExternalIds e"
+         . ' WHERE e.IdType = ? AND e.IdValue = ?)';
+}
+
+/**
+ * THE store->column projection — the write that makes the store authoritative
+ * (#1749 full unification, D-1).
+ *
+ * ELI5: look at ALL the ISRC rows the store has for this song, pick the
+ * primary one by the ONE rule (songExternalIdIsrcProjectionSql() above), and
+ * make the tblSongs.Isrc box say exactly that (or go empty when the store
+ * has none).
+ *
+ * DETAILED / WHY THIS RUNS LAST (D-1 §1.1)
+ * ----------------------------------------------------------------------------
+ * This is the LAST write of every transaction that mutates isrc store rows —
+ * embedded in songExternalIdMirrorIsrc() below (both its return paths), and
+ * called directly by the non-mirror store mutations that don't go through
+ * that helper: `song_external_id_add`/`song_external_id_delete`
+ * (manage/editor/api2.php), the duplicate-songs merge, and the one-shot
+ * reconcile migration. The store therefore always has "the last word" inside
+ * any transaction that touched isrc data, which is what "the store is the
+ * authority" operationally means.
+ *
+ * Table-absent ⇒ untouched column ⇒ whichever caller's own direct write
+ * already ran stands unchanged — an un-migrated install's behaviour is
+ * byte-identical to pre-#1749 column-authoritative behaviour (rule #9).
+ *
+ * The `NOT (Isrc <=> ?)` predicate makes the UPDATE a true no-op (0 affected
+ * rows, no `UpdatedAt` churn) when the column is already in lockstep with the
+ * projection — https://dev.mysql.com/doc/refman/8.0/en/comparison-operators.html#operator_equal-to
+ * (NULL-safe equals) is what lets a single expression cover both the
+ * "already this value" and "already NULL" cases without a separate branch.
+ *
+ * Deliberately UNSWALLOWED, like the mirror it is embedded in: a genuine
+ * `mysqli_sql_exception` here must propagate to the caller's own transaction
+ * `catch` block — a half-projected pair (store changed, column stale, or
+ * vice versa) is worse than the whole edit failing outright.
+ *
+ * @param \mysqli $db
+ * @param string  $songId tblSongs.SongId (already validated to exist by the caller).
+ * @return string|null The projected value now in the column (null = cleared
+ *                      to NULL), or null on an un-migrated install — a caller
+ *                      that wants to echo a final value falls back to
+ *                      whatever it itself already wrote in that case.
+ * @link .claude/catalogue-1741-1749-unification-plan.md §1.1 D-1 (the write-path shape this implements)
+ * @see #1749
+ */
+function songExternalIdSyncIsrcDenorm(\mysqli $db, string $songId): ?string
+{
+    if (!songExternalIdsTableExists($db)) {
+        return null;                         /* un-migrated — column stays whatever the funnel wrote */
+    }
+    $sel = $db->prepare(songExternalIdIsrcProjectionSql('?'));
+    $sel->bind_param('s', $songId);
+    $sel->execute();
+    $row = $sel->get_result()->fetch_row();
+    $sel->close();
+    $projected = ($row === null || (string)$row[0] === '') ? null : (string)$row[0];
+
+    $u = $db->prepare('UPDATE tblSongs SET Isrc = ? WHERE SongId = ? AND NOT (Isrc <=> ?)');
+    $u->bind_param('sss', $projected, $songId, $projected);
+    $u->execute();
+    $u->close();
+    return $projected;
+}
+
+/**
  * Mirror `tblSongs.Isrc` into `tblSongExternalIds` — the #1749 dual-write.
  * Call this every time (and ONLY when) `tblSongs.Isrc` is written through a
  * live edit path (currently: `manage/editor/api2.php`'s
@@ -167,10 +324,22 @@ const SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF = 'tblSongs.Isrc';
  * re-derived copy that could silently diverge from a future change to the
  * canonicaliser's rules. Pass `null` (or `''`) to mean "cleared".
  *
- * Deliberately `void` + UNSWALLOWED: a genuine `mysqli_sql_exception` here
- * must propagate to the caller's transaction `catch` block and roll BOTH
- * writes back — a half-mirrored pair (tblSongs.Isrc changed, store stale, or
- * vice versa) is worse than the whole edit failing outright.
+ * Deliberately UNSWALLOWED: a genuine `mysqli_sql_exception` here must
+ * propagate to the caller's transaction `catch` block and roll BOTH writes
+ * back — a half-mirrored pair (tblSongs.Isrc changed, store stale, or vice
+ * versa) is worse than the whole edit failing outright.
+ *
+ * #1749 full unification (D-1) — this function now RETURNS `?string`, not
+ * `void`: its final statement calls songExternalIdSyncIsrcDenorm() (above),
+ * the store->column projection that gives the store "the last word" — on
+ * BOTH return paths (the cleared-value early return, and the normal
+ * insert-then-return path), because a CLEARED tblSongs.Isrc can still
+ * PROMOTE a pre-existing manual second-recording row into the column
+ * (§2.1's documented, deliberate consequence — clearing the editor's ISRC
+ * field does not necessarily mean "no ISRC" when the store still knows one).
+ * The four existing callers (both api2.php sites, and both lyrics_ingest.php
+ * sites) acquire the store-is-authoritative invariant with ZERO call-site
+ * changes; they simply gained a return value they may optionally consume.
  *
  * @param \mysqli     $db
  * @param string      $songId        tblSongs.SongId (already validated to exist by the caller).
@@ -181,16 +350,29 @@ const SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF = 'tblSongs.Isrc';
  *                                     predicate, which stays `SongId + IdType + SourceRef` regardless of
  *                                     which caller minted the row — SourceRef is the ownership key and is
  *                                     provenance-independent; Source is provenance only.
- * @return void
+ * @return string|null #1749 — the PROJECTED value now in tblSongs.Isrc (per
+ *                      the §2.1 primary-ISRC rule), or null when the column
+ *                      was cleared/never set, or null on an un-migrated
+ *                      install (the table-absent early return below echoes
+ *                      $canonicalIsrc itself in that case, since no
+ *                      projection ran — a caller wanting a value still gets
+ *                      a sensible one rather than a bare null meaning two
+ *                      different things).
  * @link .claude/catalogue-1741-P5-plan.md §4.2
  * @link .claude/catalogue-1741-followups-small-plan.md §2.1 the #1751 $source parameter this signature adds
+ * @link .claude/catalogue-1741-1749-unification-plan.md §1.1/§5.1 the D-1 return-value change this adds
  * @link appWeb/.sql/migrate-backfill-song-external-ids.php:167-174 the SourceRef literal + IdScope/IdType this mirrors
  * @see #1751
+ * @see #1749
  */
-function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonicalIsrc, string $source = 'ihymns-mirror'): void
+function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonicalIsrc, string $source = 'ihymns-mirror'): ?string
 {
     if (!songExternalIdsTableExists($db)) {
-        return;   // un-migrated install — the backfill card is the catch-all once it lands
+        /* un-migrated install — the backfill card is the catch-all once it
+           lands; no projection ran, so echo the caller's own intended value
+           rather than a bare null (which would otherwise ambiguously mean
+           either "cleared" or "table absent"). */
+        return $canonicalIsrc === null || $canonicalIsrc === '' ? null : $canonicalIsrc;
     }
 
     /* bind_param() binds BY REFERENCE, so the class constant is copied into a
@@ -209,7 +391,13 @@ function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonica
 
     $value = $canonicalIsrc === null ? '' : trim($canonicalIsrc);
     if ($value === '') {
-        return;   // cleared — the DELETE above is the whole job
+        /* #1749 — cleared: the DELETE above already dropped the marker row,
+           but the store may still hold a MANUAL second-recording row for
+           this song. Re-project (the promotion case, §2.1) instead of just
+           returning null here — a bare early-return would leave the column
+           at whatever the caller's OWN write left it, which is exactly the
+           class of drift this whole helper exists to prevent. */
+        return songExternalIdSyncIsrcDenorm($db, $songId);
     }
 
     $idScope = 'recording';
@@ -231,4 +419,12 @@ function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonica
     );
     $ins->execute();
     $ins->close();
+
+    /* #1749 — the store has the last word: project it back into the column.
+       Normally a no-op (this mirror's own marker row IS the projection's
+       rank-1 pick per SONG_EXTERNAL_ID_ISRC_PRIMARY_ORDER), but it is what
+       HEALS a pre-#1749 mismatch (0.9/0.10 in the build spec) the moment
+       this song's ISRC is next touched, without needing the one-shot
+       reconcile card to have run first. */
+    return songExternalIdSyncIsrcDenorm($db, $songId);
 }

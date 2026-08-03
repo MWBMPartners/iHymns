@@ -73,14 +73,16 @@ const stripPhpBlock = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '');
 
 const clientSrc  = readFileSync(join(EDITOR_V2, 'api-client.js'), 'utf8');
 const panelSrc   = readFileSync(join(EDITOR_V2, 'external-ids-panel.js'), 'utf8');
+const metaTabSrc = readFileSync(join(EDITOR_V2, 'metadata-tab.js'), 'utf8');
 const shellSrc   = readFileSync(join(EDITOR, 'editor2.php'), 'utf8');
 const apiSrc     = readFileSync(join(EDITOR, 'api2.php'), 'utf8');
 const mediaIdSrc = readFileSync(join(PUB, 'includes', 'media_identifiers.php'), 'utf8');
 
-const client = stripJs(clientSrc);
-const panel  = stripJs(panelSrc);
-const shell  = stripPhpBlock(shellSrc);
-const api    = stripPhpBlock(apiSrc);
+const client  = stripJs(clientSrc);
+const panel   = stripJs(panelSrc);
+const metaTab = stripJs(metaTabSrc);
+const shell   = stripPhpBlock(shellSrc);
+const api     = stripPhpBlock(apiSrc);
 const mediaId = stripPhpBlock(mediaIdSrc);
 
 console.log('\n#1741 P5b — v2 editor "Recording / external IDs" panel\n');
@@ -173,6 +175,65 @@ check("song_external_id_add answers 409 (table missing)",
     /ed2_respond\([^;]*?,\s*409\)/s.test(addCase));
 check("song_external_id_add answers 422 (unknown idType or bad value)",
     /ed2_respond\([^;]*?,\s*422\)/s.test(addCase));
+
+/* ---- 5 (#1749 full unification) — the isrcDenorm key-presence branch: the
+   panel invokes onIsrcDenorm from BOTH onAdd and onRemove, keyed on
+   `'isrcDenorm' in res` (never inferred from the idType the curator picked
+   — rule #35), and the Metadata tab both PASSES the callback at mount and
+   CONSUMES the server's echoed value with a focus guard. --------------- */
+
+console.log('\n#1749 full unification — isrcDenorm key-presence plumbing\n');
+
+check("external-ids-panel.js checks key-presence ('isrcDenorm' in res), never a value/prose match",
+    /'isrcDenorm'\s+in\s+res/.test(panel));
+check('external-ids-panel.js invokes onIsrcDenorm from onAdd (add path)',
+    (() => {
+        const onAddBody = panel.slice(panel.indexOf('function onAdd'), panel.indexOf('function onAdd') + 1500);
+        return onAddBody.length > 0 && /onIsrcDenorm\s*\(/.test(onAddBody);
+    })());
+check('external-ids-panel.js invokes onIsrcDenorm from onRemove (delete path)',
+    (() => {
+        const onRemoveBody = panel.slice(panel.indexOf('function onRemove'), panel.indexOf('function onRemove') + 700);
+        return onRemoveBody.length > 0 && /onIsrcDenorm\s*\(/.test(onRemoveBody);
+    })());
+check('mountExternalIdsPanel() reads opts.onIsrcDenorm (an injected callback, not a hardcoded/global handler)',
+    /onIsrcDenorm/.test(panel) && /opts\s*&&\s*opts\.onIsrcDenorm/.test(panel));
+
+check('metadata-tab.js passes onIsrcDenorm when mounting the external-ids panel',
+    /mountExternalIdsPanel\([^)]*onIsrcDenorm\s*:\s*onIsrcDenorm/.test(metaTab));
+check('metadata-tab.js declares an onIsrcDenorm() handler that writes #meta-isrc',
+    /function\s+onIsrcDenorm\s*\(/.test(metaTab)
+    && /getElementById\('meta-isrc'\)/.test(metaTab));
+check('metadata-tab.js\'s onIsrcDenorm handler is FOCUS-GUARDED (never overwrites a box the curator is actively typing into)',
+    (() => {
+        const start = metaTab.indexOf('function onIsrcDenorm');
+        if (start === -1) return false;
+        const body = metaTab.slice(start, start + 600);
+        return /document\.activeElement\s*!==\s*isrcInput/.test(body);
+    })());
+
+check("metadata-tab.js's save() consumes res.value for a successful save (typeof res.value !== 'undefined')",
+    /typeof\s+res\.value\s*!==\s*'undefined'/.test(metaTab));
+check("metadata-tab.js's save()-side echo is ALSO focus-guarded",
+    (() => {
+        const idx = metaTab.indexOf("typeof res.value !== 'undefined'");
+        if (idx === -1) return false;
+        const window_ = metaTab.slice(idx, idx + 400);
+        return /document\.activeElement\s*!==\s*isrcInput/.test(window_);
+    })());
+
+/* --- Mutation self-test: a comment-only mention of onIsrcDenorm must NOT
+   satisfy the checks above (the same comment-stripping property every
+   sibling guard in this repo proves for its own fixture shape, rule #34). --- */
+const commentOnlyPanelFixture = stripJs("/* function onAdd() { onIsrcDenorm(res.isrcDenorm); } */\nfunction onAdd() { /* no real call here */ }\n");
+if (/onIsrcDenorm\s*\(/.test(commentOnlyPanelFixture.slice(commentOnlyPanelFixture.indexOf('function onAdd'), commentOnlyPanelFixture.indexOf('function onAdd') + 200))) {
+    failed++;
+    failures.push('comment-stripping self-test: a comment-only onIsrcDenorm() mention inside onAdd survived stripJs() and would have false-passed the real assertion above');
+    console.log('  ❌ (mutation self-test) comment-stripping did not remove a comment-only onIsrcDenorm mention');
+} else {
+    passed++;
+    console.log('  ✅ (mutation self-test) comment-stripping correctly removes a comment-only onIsrcDenorm mention');
+}
 
 /* ---------------------------------------------------------------------- */
 

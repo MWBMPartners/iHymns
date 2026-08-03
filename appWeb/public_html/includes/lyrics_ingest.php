@@ -434,6 +434,13 @@ function lyricsIngest_writeToDb(\mysqli $db, string $songId, array $parsed, arra
 function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsText = ''): array
 {
     require_once __DIR__ . DIRECTORY_SEPARATOR . 'title_normalize.php';
+    /* #1749 full unification — hoisted above both this function's own use
+       (step 2 below, the store arm) and the two existing write-site
+       require_once calls further down in this file (lyricsIngest_createSong()
+       / lyricsIngest_storeExternalIds()), so a single require_once covers the
+       whole resolve+write funnel rather than three independently-typed ones. */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 
     /* 1. Explicit songId → verify it exists.
 
@@ -454,12 +461,44 @@ function lyricsIngest_resolveSong(\mysqli $db, array $payload, string $lyricsTex
         return ['songId' => $songId, 'matched' => true, 'created' => false];
     }
 
-    /* 2. Match by ISRC (exact) — the strongest signal once songs carry one. */
-    $isrc = trim((string)($payload['isrc'] ?? ''));
+    /* 2. Match by ISRC (exact) — the strongest signal once songs carry one.
+     *
+     * #1749 full unification — THREE fixes to this step, all landing
+     * together (§5.5 of the build spec):
+     *   (a) CANONICALISE the payload value first, through the ONE fold
+     *       (ihymns_canonical_isrc(), rule #22 — the same one this file
+     *       already uses at its two write sites below) — a raw-bound compare
+     *       against the CANONICAL tblSongs.Isrc column could miss an
+     *       otherwise-identical value that merely differs in separator style
+     *       or case;
+     *   (b) the gated store arm (songExternalIdUnionArmSql('s.SongId'),
+     *       existence-probed via songExternalIdsTableExists()) — a store-only
+     *       second-recording ISRC now resolves here too, instead of silently
+     *       falling through to step 3's fuzzy TITLE match (a real
+     *       wrong-song-attach risk this closes: two differently-titled songs
+     *       sharing a first word could otherwise collide on the LIKE scan);
+     *   (c) a DETERMINISTIC `ORDER BY s.SongId ASC LIMIT 1` — the bare
+     *       `LIMIT 1` this replaces was storage-order roulette the moment two
+     *       songs legitimately share an ISRC (possible via a manual store
+     *       row), silently picking whichever the engine happened to return
+     *       first.
+     */
+    $isrc = ihymns_canonical_isrc((string)($payload['isrc'] ?? ''));
     if ($isrc !== '') {
+        $useIsrcStore = songExternalIdsTableExists($db);
+        $isrcMatch = $useIsrcStore
+            ? '(Isrc = ? OR ' . songExternalIdUnionArmSql('SongId') . ')'
+            : 'Isrc = ?';
         /* @deleted-visible: identity resolver — see the marker at step 1. */
-        $st = $db->prepare('SELECT SongId FROM tblSongs WHERE Isrc = ? LIMIT 1');
-        $st->bind_param('s', $isrc);
+        $st = $db->prepare(
+            "SELECT SongId FROM tblSongs WHERE {$isrcMatch} ORDER BY SongId ASC LIMIT 1"
+        );
+        if ($useIsrcStore) {
+            $storeIdType = 'isrc';
+            $st->bind_param('sss', $isrc, $storeIdType, $isrc);
+        } else {
+            $st->bind_param('s', $isrc);
+        }
         $st->execute();
         $row = $st->get_result()->fetch_assoc();
         $st->close();

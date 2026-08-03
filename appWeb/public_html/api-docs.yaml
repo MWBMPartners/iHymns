@@ -1262,6 +1262,15 @@ paths:
         IDs (`isrc`/`upc`) + artists + provider URLs (`appleMusicUrl`,
         `crossPlatform`) are stored on the song (idempotent add-if-absent) so
         future matches get stronger. The response reports `matched`/`created`.
+
+        **#1749 full unification:** the exact-`isrc` resolve step now ALSO
+        matches a song whose ISRC is recorded ONLY in the `tblSongExternalIds`
+        store (e.g. a manually-added second recording) — not just
+        `tblSongs.Isrc` — so a store-only ISRC resolves here too instead of
+        silently falling through to the fuzzy title match. The payload value
+        is canonicalised (uppercased, separators stripped) before comparison,
+        and ties (two songs legitimately sharing one ISRC) resolve
+        deterministically to the lowest `SongId`.
       security:
         - ingestApiKey: []
         - ingestApiKeyHeader: []
