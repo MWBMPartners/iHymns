@@ -4,7 +4,53 @@
 
 ---
 
-## 📌 Continuation note — 2026-07-31 (supersedes the 07-30 note below)
+## 📌 Continuation note — 2026-08-03 (supersedes the 07-31 note below)
+
+**Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)** (its
+`#1741` P-series status block is kept current commit-by-commit).
+
+**Epic #1741 (catalogue data-model expansion) is being built ON `claude/wave3-fixes` — NOT
+post-merge.** The 07-31 note below still calls #1741 "post-merge"; that is now stale. The branch is
+still the ONE pre-merge branch (no PR — the owner wants a single PR to `alpha`, on their word), and
+the branch/push warnings below (and `tools/githooks/pre-push`) still stand — install the hooks in
+every fresh container (`git config core.hooksPath tools/githooks`).
+
+**#1741 progress (all landed + independently verified on the branch):**
+- **P1** — additive, dormant schema batch (identity/disambiguation columns on `tblSongs`,
+  `tblMusicians`→`tblTunes`+satellites, `tblSongExternalIds` D5 key/value recording-ID store; all
+  `schema.sql`-mirrored, real migration probes).
+- **P3** — shared identifier normaliser + resolver (`includes/identifier_normalize.php` +
+  `identifier_resolve.php` + `includes/pages/identifier.php`) and alias routes `/isrc /iswc /ccli
+  /ipi /isni /bowi` (`dc9b5067`).
+- **P4** — per-entity pages: Work + Musician profile + Tune page keyed on the registry, shared
+  external-links panel + `tune_helpers.php` extraction (`cb612036`/`8af91f12`/`365b7f41`); P4a-3
+  (writer/person consolidation) **HELD on owner decision D4** — see the handoff.
+- **D5 backfill (#1747)** — idempotent mirror of `tblSongs.Isrc` + the 4 grandfathered
+  `tblSongIdentityMap` columns into `tblSongExternalIds`; added the `genius` recording-ID type
+  (`3ff77e02`, owner-confirmed A=C / B=yes / +genius / mirror-ISRC).
+- **P5 (COMPLETE)** — editor can enter every identity column (409-gated) + the #1749 ISRC dual-write
+  mirror (P5a+P5d `223a10b9`); recording-ID card-list on the Metadata tab (P5b `2349ae57`); tune
+  typeahead + the ONE `TuneName`↔`TuneId` write core `ed2_songTuneApply()` + `tune_search` +
+  `ihymns_meter_normalize()`, with the lockstep also wired into whole-song save, bulk import, AND
+  revision-restore (P5c `55bbac84`). `place-search.js` was **generalised, not forked**, to back the
+  tune control. Two new mutation-proven guards (`test-tune-lockstep.php`, `test-tune-typeahead-ui.js`).
+- **P6 (docs, this note)** — CHANGELOG + this brief + the handoff updated; `api-docs.yaml` was
+  already kept current through P2-B (person→musician deprecation is documented); per-action api2 docs
+  remain the **deferred #1201** breakout. ⚠️ **Wiki NOT updatable from this environment** —
+  `../iHymns.wiki/` is not checked out here; the wiki API/Architecture/Schema delta for the epic is a
+  **tracked, still-open task** (do it wherever the wiki working copy exists).
+
+**Suites now: 100 PHP / 48 node** (re-derived this session; the 07-31 note's "80 / 45" predates the
+#1741 guards). Both runners glob their directories.
+
+**Remaining on the branch:** #1741 P4a-3 (on D4) → then the owner's next major directive, the **3
+Meedya repos** (MeedyaSuite-core / MeedyaManager / MeedyaConverter — file an issue in each + implement
+the shared media-ID + core-info model per `.claude/media-identifiers-spec.md` §5). Owner-only gate
+still open: **#1726** (IntAppsAPI gateway liveness + credentials).
+
+---
+
+## 📌 Continuation note — 2026-07-31 (superseded by the 08-03 note above)
 
 **Live resume point: [`.claude/sessions/2026-07-28-HANDOFF.md`](sessions/2026-07-28-HANDOFF.md)**
 
