@@ -62,6 +62,12 @@ declare(strict_types=1);
  *                               copyrightYears/copyrightHolder) answer 409 on
  *                               an install that hasn't applied that migration
  *                               card yet (ed2_songIdentityColsPresent()).
+ *                               field=tuneName is RETIRED-BY-ALIAS (#1741 P5c,
+ *                               rule #33 — the key stays live for a stale
+ *                               Service-Worker-cached client) into the SAME
+ *                               ed2_songTuneApply() core song_tune_set (below)
+ *                               uses, so TuneName can never again be written
+ *                               without TuneId; answers { ok, field:'tuneName', tuneId }.
  *   POST component_upsert       { songId, component:{id?,type,number,sortOrder,lines[],chords?,language?} } -> { ok, componentId }
  *   POST component_delete       { songId, componentId }     -> { ok }
  *   POST component_reorder      { songId, order:[id,...] }  -> { ok }
@@ -150,6 +156,25 @@ declare(strict_types=1);
  *                               same idempotent-double-click posture as song_link_remove.
  *                               409 table missing. Deleting the P5d mirror row is harmless —
  *                               the next ISRC save re-mints it.
+ *   GET  tune_search?q=&limit=&meter=                          -> { ok, suggestions, tableMissing? }
+ *                               #1741 P5c — typeahead over the tblTunes registry (mirror of
+ *                               tag_search above). Alias-JOINed (tblTuneAliases, when present)
+ *                               so a spelling variant surfaces its CANONICAL tune;
+ *                               `suggestions[].matchedAlias` is non-null only when an ALIAS
+ *                               (not the tune's own Name) matched. `meter` folds both sides
+ *                               through ihymns_meter_normalize() (tune_helpers.php) and
+ *                               filters PHP-side — MeterCode is stored display-form, the fold
+ *                               cannot run in SQL. tableMissing:true on an un-migrated (no
+ *                               tblTunes) install, same degrade convention as
+ *                               song_link_suggestions/song_external_ids above.
+ *   POST song_tune_set          { songId, tuneName }          -> { ok, field, tuneId, tuneName, slug, meterCode }
+ *                               #1741 P5c — the ONE tune write, via the shared
+ *                               ed2_songTuneApply() core (also used by metadata_field_update's
+ *                               `tuneName` alias branch below): TuneName + TuneId are ALWAYS
+ *                               written in the SAME statement (tuneFindOrCreateByName(), P4b),
+ *                               never TuneName alone — that is the drift this endpoint retires.
+ *                               400 when `tuneName` key is absent; an EMPTY string is a legal
+ *                               clear (both columns -> NULL). 404 unknown song.
  *   GET  media_list?id=<SongId>                              -> { ok, media }
  *   POST media_upload  (MULTIPART: songId, kind, annotation?, file) -> { ok, media }
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
@@ -247,6 +272,14 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+/* #1741 P5c — tuneFindOrCreateByName() (P4b's find-or-create funnel, the
+   TuneName<->TuneId lockstep every write path here consumes, never re-forks
+   — rule #22) + ihymns_meter_normalize() (this phase's addition, tune_search's
+   `meter` filter). Loaded at module scope like the identifier/media-id pair
+   above: song_tune_set, metadata_field_update's TuneName alias branch,
+   tune_search AND ed2_applySongSnapshot()'s revision-restore all reach the one
+   tune write core (ed2_songTuneApply()) from different points in this file. */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
 
 header('Content-Type: application/json; charset=UTF-8');
 header('X-Content-Type-Options: nosniff');
@@ -358,6 +391,13 @@ const ED2_META_FIELDS = [
        get its own coercion branch below (canonicalise + shape-validate +
        #1749 P5d mirror), never the plain trim-or-empty-to-null generic path. */
     'isrc'               => ['Isrc', 's'],
+    /* #1741 P5c — 'tuneName' is RETIRED-BY-ALIAS (rule #33): the KEY stays
+       here so a stale Service-Worker-cached metadata-tab.js can still send
+       it, but metadata_field_update no longer lets it reach the generic
+       coercion + UPDATE below — a dedicated branch (mirroring the
+       SongbookAbbr branch's shape) delegates to the SAME shared lockstep
+       core (ed2_songTuneApply()) song_tune_set uses, so TuneName can never
+       again be written without TuneId (the drift this phase retires). */
     'tuneName'           => ['TuneName', 's'],
     /* #1741 P1 — the five identity columns below may not exist on an
        un-migrated install (the "song-identity-fields" migration card);
@@ -470,6 +510,131 @@ function ed2_songIdentityColsPresent(\mysqli $db): array {
            safe direction, matching every other existence probe in this file. */
     }
     return $presence;
+}
+
+/**
+ * Memoised probe: does `tblSongs.TuneId` exist on this install (#1090 tune-
+ * registry migration)? A dedicated, SELF-CONTAINED probe — rather than
+ * reaching for `includes/places.php`'s generic `placeColumnExists()` — so
+ * this file doesn't pull that include in at module scope just for one
+ * column (same reasoning as `ed2_songIdentityColsPresent()` just above, P5
+ * plan §1.3 item 3). `save_song_core.php` already loads places.php for its
+ * own OriginCityId gate, so IT reuses `placeColumnExists()` for its own
+ * TuneId lockstep block (P5c §3.4) instead of duplicating this probe.
+ *
+ * ELI5: "does this install have the TuneId column yet?" — an install that
+ * hasn't run the #1090 tune-registry migration card gets `false`, and every
+ * tune write in this file then degrades to a TuneName-only UPDATE (the same
+ * asymmetry `manage/works.php`'s lockstep block documents: TuneName-only is
+ * safe ONLY because there is then no TuneId column left to strand).
+ *
+ * @link .claude/catalogue-1741-P5-plan.md §3.2 / §3.3
+ */
+function ed2_tuneIdColumnExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs' AND COLUMN_NAME = 'TuneId' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * Memoised probe: is `tblTuneAliases` present (#1090 P4's spelling-variant
+ * table — "aka" names a tune is also known by)? `tune_search`'s alias JOIN
+ * is gated on this; an install without it (pre-migration, or one that ran
+ * only the base tblTunes card) just gets exact/LIKE matches on
+ * `tblTunes.Name` alone. Same shape as `ed2_songMediaTableExists()` above.
+ */
+function ed2_tuneAliasesTableExists(\mysqli $db): bool {
+    static $exists = null;
+    if ($exists !== null) { return $exists; }
+    try {
+        $r = $db->query(
+            "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblTuneAliases' LIMIT 1"
+        );
+        $exists = $r && $r->fetch_row() !== null;
+        if ($r) { $r->close(); }
+    } catch (\Throwable $_e) {
+        $exists = false;
+    }
+    return $exists;
+}
+
+/**
+ * The ONE tblSongs tune write: TuneName + TuneId in lockstep (#1741 P5c,
+ * parent plan §3B). Consumes `tuneFindOrCreateByName()` (P4b, rule #22 —
+ * never a second lookup fork). `case 'song_tune_set'`, the `TuneName` alias
+ * branch inside `metadata_field_update`, AND `ed2_applySongSnapshot()`'s
+ * revision-restore all delegate here, so there is exactly ONE place in this
+ * editor a song's tune can be written from — mirroring `manage/works.php`'s
+ * :307-313 Work-side lockstep.
+ *
+ * ELI5: a curator types (or picks) a tune name; this function finds or
+ * creates that tune's registry row and writes BOTH the display name and
+ * the registry link onto the song in one go, so the two columns can never
+ * fall out of sync the way a bare `UPDATE ... SET TuneName = ?` would let
+ * them (tune.php's page would then link the WRONG tune, or none at all).
+ *
+ * DETAILED: empty/whitespace `$rawName` clears both columns — a legal "no
+ * tune set", not an error. A non-empty name is capped to 120 chars
+ * (`tblSongs.TuneName` is VARCHAR(120), schema.sql:280 — the SAME cap
+ * `tuneFindOrCreateByName()` applies internally, tune_helpers.php:185, so
+ * this is belt-and-braces rather than load-bearing). When `tblSongs.TuneId`
+ * doesn't exist yet (pre-#1090 install), the write degrades to a
+ * TuneName-only UPDATE — safe ONLY because there is then no id column to
+ * strand (the works.php asymmetry, P4 plan §2.5's last row). On a resolved
+ * id, one extra bound SELECT fetches the tune's Slug + MeterCode so the
+ * caller can update its meter affordance without a second round-trip.
+ *
+ * @param \mysqli $db
+ * @param string  $songId
+ * @param string  $rawName Curator-typed or picked tune name, any whitespace.
+ * @return array{tuneId:?int, tuneName:?string, slug:?string, meterCode:?string}
+ * @link .claude/catalogue-1741-P5-plan.md §3.3
+ * @link appWeb/public_html/manage/works.php:307-313 the sibling Work-side lockstep this mirrors
+ */
+function ed2_songTuneApply(\mysqli $db, string $songId, string $rawName): array {
+    $name = trim($rawName);
+    if ($name !== '') { $name = mb_substr($name, 0, 120); }
+    $tuneName = $name === '' ? null : $name;
+    $tuneId   = $name === '' ? null : tuneFindOrCreateByName($db, $name);
+
+    if (ed2_tuneIdColumnExists($db)) {
+        $u = $db->prepare('UPDATE tblSongs SET TuneName = ?, TuneId = ? WHERE SongId = ?');
+        $u->bind_param('sis', $tuneName, $tuneId, $songId);
+        $u->execute();
+        $u->close();
+    } else {
+        $u = $db->prepare('UPDATE tblSongs SET TuneName = ? WHERE SongId = ?');
+        $u->bind_param('ss', $tuneName, $songId);
+        $u->execute();
+        $u->close();
+    }
+
+    $slug = null;
+    $meterCode = null;
+    if ($tuneId !== null) {
+        $s = $db->prepare('SELECT Slug, MeterCode FROM tblTunes WHERE Id = ? LIMIT 1');
+        $s->bind_param('i', $tuneId);
+        $s->execute();
+        $row = $s->get_result()->fetch_assoc();
+        $s->close();
+        if ($row) {
+            $slug      = (string)$row['Slug'];
+            $meterCode = $row['MeterCode'] !== null ? (string)$row['MeterCode'] : null;
+        }
+    }
+
+    return ['tuneId' => $tuneId, 'tuneName' => $tuneName, 'slug' => $slug, 'meterCode' => $meterCode];
 }
 
 /** Shape a tblSongMedia row for the v2 client (camelCase, like the other slices).
@@ -886,6 +1051,13 @@ function ed2_buildSongSnapshot(\mysqli $db, string $songId): ?array {
  * action the curator asked for on a completely different field. A restore
  * therefore keeps the song's CURRENT home; moving books stays an explicit act
  * (`metadata_field_update` with field=songbook → songRelocate()).
+ *
+ * TUNE IS RESTORED IN LOCKSTEP (#1741 P5c) — `TuneName` is NOT restored by the
+ * generic scalar loop (writing it alone would strand `TuneId`, the drift P5c
+ * retires); it funnels through `ed2_songTuneApply()`, the same ONE write core
+ * the live edit paths use, so a restore re-links the tune registry row exactly
+ * as re-typing the name would (re-resolving via find-or-create, never trusting
+ * a snapshot's stale id).
  */
 function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
     /* A v2 full snapshot has a 'song' key; an old scalar-only snapshot IS the row. */
@@ -895,9 +1067,28 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
        metadata_field_update). */
     $ed2IdentityPresence = ed2_songIdentityColsPresent($db);   // #1741 P1 gate
     $ed2WroteIsrc = false;
+    /* #1741 P5c — captured in the scalar loop, restored AFTER it through the
+       ONE tune write core so TuneId lands in lockstep with TuneName. */
+    $ed2TuneRestore    = false;
+    $ed2TuneRestoreRaw = null;
     foreach (ED2_META_FIELDS as $field => [$column, $type]) {
         /* #1679 — never restore the songbook (see the doc-block above). */
         if ($column === 'SongbookAbbr') { continue; }
+        /* #1741 P5c — TuneName is NOT a scalar restore: writing it alone here
+           would strand TuneId (the exact drift this phase retires). Capture
+           the snapshot's value (only when the key is present — an old
+           scalar-only snapshot without it leaves the current tune untouched)
+           and skip the generic write; ed2_songTuneApply() restores BOTH
+           columns in lockstep after the loop (gated there: an un-migrated
+           install with no TuneId column degrades to a TuneName-only UPDATE,
+           byte-identical to the pre-P5c restore behaviour). */
+        if ($column === 'TuneName') {
+            if (array_key_exists($column, $songRow)) {
+                $ed2TuneRestore    = true;
+                $ed2TuneRestoreRaw = $songRow[$column];
+            }
+            continue;
+        }
         /* #1741 P1 — silently skip an absent identity column so the REST of
            the snapshot still restores; never abort a whole restore over one
            optional field on an un-migrated install (mirrors works.php's
@@ -911,7 +1102,10 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
                 : (int)((bool)$raw);
         } else {
             $value = $raw === null ? '' : trim((string)$raw);
-            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
+            /* 'TuneName' deliberately absent (#1741 P5c) — it is captured and
+               skipped above, then restored via ed2_songTuneApply() after the
+               loop; it can never reach this generic scalar path. */
+            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
         }
         $u = $db->prepare("UPDATE tblSongs SET `{$column}` = ? WHERE SongId = ?");
         if ($value === null) { $np = null; $u->bind_param('ss', $np, $songId); }
@@ -938,6 +1132,17 @@ function ed2_applySongSnapshot(\mysqli $db, string $songId, array $snap): void {
         $isrcRestoreRaw   = $songRow['Isrc'] === null ? '' : (string)$songRow['Isrc'];
         $isrcRestoreCanon = ihymns_canonical_isrc($isrcRestoreRaw);
         songExternalIdMirrorIsrc($db, $songId, $isrcRestoreCanon === '' ? null : $isrcRestoreCanon);
+    }
+    /* #1741 P5c — restore the tune through the ONE write core (the same
+       ed2_songTuneApply() metadata_field_update's TuneName branch and
+       song_tune_set delegate to), so TuneId is restored in lockstep with
+       TuneName. An OLD snapshot may carry TuneName with no TuneId, or a TuneId
+       since merged away — funnelling through the find-or-create core re-resolves
+       the CURRENT registry row rather than trusting a stale id. Only runs when
+       the snapshot actually carried TuneName (captured in the scalar loop
+       above); an empty/whitespace value clears both columns, as elsewhere. */
+    if ($ed2TuneRestore) {
+        ed2_songTuneApply($db, $songId, $ed2TuneRestoreRaw === null ? '' : (string)$ed2TuneRestoreRaw);
     }
 
     /* Components — replace the whole set (only if the snapshot carries them). #1235
@@ -1349,9 +1554,33 @@ try {
             ]);
         }
 
+        /* ---- #1741 P5c — TUNE is not a scalar update either ---------------
+           Writing TuneName through the generic coercion + UPDATE below would
+           strand TuneId — the exact drift this phase retires (§3.3-3 of the
+           plan). `tuneName` stays a valid wire-contract KEY (rule #33: a
+           stale Service-Worker-cached metadata-tab.js may still send it) but
+           is now an ALIAS into the SAME shared lockstep core `song_tune_set`
+           uses (`ed2_songTuneApply()`), never the bare column write. Mirrors
+           the SongbookAbbr branch immediately above in shape: own
+           transaction, own response, nothing below it runs for this column. */
+        if ($column === 'TuneName') {
+            $db->begin_transaction();
+            try {
+                $tuneResult = ed2_songTuneApply($db, $songId, (string)($raw ?? ''));
+                ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+                $db->commit();
+            } catch (\Throwable $e) {
+                $db->rollback();
+                throw $e;
+            }
+            logActivity('song.metadata', 'song', $songId, ['field' => $field, 'tuneId' => $tuneResult['tuneId']]);
+            ed2_respond(['ok' => true, 'field' => 'tuneName', 'tuneId' => $tuneResult['tuneId']]);
+        }
+
         /* Coerce per the allow-listed type; numberless/empty → NULL where the
-           column allows it (Number/originCityId/firstPublishedYear/TuneName/
-           Iswc/OriginCity/Isrc/Subtitle are nullable). */
+           column allows it (Number/originCityId/firstPublishedYear/
+           Iswc/OriginCity/Isrc/Subtitle are nullable; TuneName is handled by
+           the dedicated branch above and never reaches here). */
         if ($type === 'i') {
             if ($field === 'number' || $field === 'originCityId') {
                 /* nullable ints (song number / place FK): empty or <=0 → NULL */
@@ -1370,7 +1599,12 @@ try {
             }
         } else {
             $value = $raw === null ? '' : trim((string)$raw);
-            if (in_array($column, ['TuneName', 'Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
+            /* 'TuneName' deliberately absent from this list (#1741 P5c) — the
+               dedicated branch above always returns before this line runs
+               for that column; leaving it here would imply the generic path
+               can still write TuneName alone, which is exactly the drift
+               this phase retires. */
+            if (in_array($column, ['Iswc', 'OriginCity', 'Isrc', 'Subtitle'], true) && $value === '') { $value = null; }
         }
 
         $db->begin_transaction();
@@ -1410,6 +1644,40 @@ try {
         }
         logActivity('song.metadata', 'song', $songId, ['field' => $field]);
         ed2_respond(['ok' => true, 'field' => $field]);
+        break;
+    }
+
+    /* ---- song_tune_set (POST) — the ONE tune write (#1741 P5c). Same
+           shared core (ed2_songTuneApply()) `metadata_field_update`'s
+           `tuneName` alias branch delegates to, so there is exactly one
+           write path regardless of which action a caller (current or
+           stale-cached) uses. `tuneName` MAY be '' — that is a legal clear,
+           distinct from the key being absent entirely (a caller mistake). ---- */
+    case 'song_tune_set': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        if ($songId === '' || !array_key_exists('tuneName', $body)) {
+            ed2_respond(['ok' => false, 'error' => 'songId + tuneName (may be empty, to clear) are required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        $db->begin_transaction();
+        try {
+            $tuneResult = ed2_songTuneApply($db, $songId, (string)$body['tuneName']);
+            ed2_touchRevision($db, $songId, $ed2UserId, 'metadata');
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+        logActivity('song.metadata', 'song', $songId, ['field' => 'tune', 'tuneId' => $tuneResult['tuneId']]);
+        ed2_respond([
+            'ok'        => true,
+            'field'     => 'tune',
+            'tuneId'    => $tuneResult['tuneId'],
+            'tuneName'  => $tuneResult['tuneName'],
+            'slug'      => $tuneResult['slug'],
+            'meterCode' => $tuneResult['meterCode'],
+        ]);
         break;
     }
 
@@ -1924,6 +2192,108 @@ try {
         }
         $q->close();
         ed2_respond(['ok' => true, 'suggestions' => $suggestions]);
+        break;
+    }
+
+    /* ---- tune_search (GET) — typeahead over the tblTunes registry (#1741
+           P5c), a mirror of tag_search immediately above. Alias-JOINed
+           (tblTuneAliases, when present) so a spelling variant surfaces its
+           CANONICAL tune — the actual de-dup mechanism, parent plan §3B —
+           `matchedAlias` is non-null only when the ALIAS (not the tune's own
+           Name) matched, so the client can render "also known as …". Empty
+           `q` => browse-mode top-N by usage, same convention as tag_search.
+           `meter`, when given, folds both sides through
+           ihymns_meter_normalize() (tune_helpers.php) and filters PHP-side —
+           MeterCode is a free-text display column, so the fold cannot run in
+           SQL (§3.5). Every optional table/column is existence-gated: an
+           absent tblTunes degrades to tableMissing:true (empty list, not a
+           500); an absent tblTuneAliases just drops the alias JOIN/leg; an
+           absent tblSongs.TuneId (pre-#1090) drops the UsageCount JOIN
+           (usage reads as 0 rather than throwing under STRICT). ---- */
+    case 'tune_search': {
+        $term  = trim((string)($_GET['q'] ?? ''));
+        $limit = (int)($_GET['limit'] ?? 10);
+        if ($limit < 1)  { $limit = 1; }
+        if ($limit > 20) { $limit = 20; }
+        $meterFilter = trim((string)($_GET['meter'] ?? ''));
+
+        if (!tuneTunesTableExists($db)) {
+            ed2_respond(['ok' => true, 'suggestions' => [], 'tableMissing' => true]);
+        }
+
+        $hasAliases       = ed2_tuneAliasesTableExists($db);
+        $hasTuneIdOnSongs = ed2_tuneIdColumnExists($db);
+
+        /* Meter-filtering needs a wider slice to PHP-filter against (the
+           fold can't run in SQL) — capped so a pathological limit can't
+           become an unbounded scan; the meter-carrying subset of tblTunes
+           is small today (P4c §3.6 dormancy note). */
+        $fetchLimit = $meterFilter !== '' ? min(100, $limit * 5) : $limit;
+
+        $usageSelectSql = $hasTuneIdOnSongs ? 'COUNT(DISTINCT s.Id)' : '0';
+        $usageJoinSql   = $hasTuneIdOnSongs ? 'LEFT JOIN tblSongs s ON s.TuneId = t.Id' : '';
+        $aliasJoinSql   = $hasAliases ? 'LEFT JOIN tblTuneAliases a ON a.TuneId = t.Id' : '';
+        /* MatchedAlias is only bound/computed when there IS a search term —
+           an empty `q` would otherwise LIKE-match every alias row and
+           MIN() would surface an arbitrary "aka …" on every browse-mode
+           suggestion, which is not what "also known as" is meant to mean. */
+        $wantAliasSelect = $hasAliases && $term !== '';
+        $aliasSelectSql  = $wantAliasSelect ? 'MIN(CASE WHEN a.Name LIKE ? THEN a.Name END)' : 'NULL';
+
+        /* Every interpolated {...} fragment above is a hardcoded literal
+           built from a boolean existence gate — never request input (rule
+           #5's carve-out); every VALUE below is bound. */
+        $sql = "SELECT t.Id, t.Name, t.Slug, t.MeterCode,
+                       {$usageSelectSql} AS UsageCount, {$aliasSelectSql} AS MatchedAlias
+                  FROM tblTunes t
+                  {$aliasJoinSql}
+                  {$usageJoinSql}";
+
+        $types  = '';
+        $params = [];
+        if ($wantAliasSelect) { $types .= 's'; $params[] = '%' . $term . '%'; }
+
+        if ($term !== '') {
+            $whereParts = ['t.Name LIKE ?'];
+            $types .= 's'; $params[] = '%' . $term . '%';
+            if ($hasAliases) {
+                $whereParts[] = 'a.Name LIKE ?';
+                $types .= 's'; $params[] = '%' . $term . '%';
+            }
+            $sql .= ' WHERE (' . implode(' OR ', $whereParts) . ')';
+        }
+        $sql   .= ' GROUP BY t.Id, t.Name, t.Slug, t.MeterCode ORDER BY UsageCount DESC, t.Name ASC LIMIT ?';
+        $types .= 'i';
+        $params[] = $fetchLimit;
+
+        $q = $db->prepare($sql);
+        $q->bind_param($types, ...$params);
+        $q->execute();
+        $r = $q->get_result();
+        $rows = [];
+        while ($row = $r->fetch_assoc()) {
+            $rows[] = [
+                'id'           => (int)$row['Id'],
+                'name'         => (string)$row['Name'],
+                'slug'         => (string)$row['Slug'],
+                'meterCode'    => $row['MeterCode'] !== null ? (string)$row['MeterCode'] : null,
+                'usage'        => (int)$row['UsageCount'],
+                'matchedAlias' => $row['MatchedAlias'] !== null ? (string)$row['MatchedAlias'] : null,
+            ];
+        }
+        $q->close();
+
+        if ($meterFilter !== '') {
+            $needle = ihymns_meter_normalize($meterFilter);
+            if ($needle !== '') {
+                $rows = array_values(array_filter($rows, static function (array $row) use ($needle): bool {
+                    return $row['meterCode'] !== null && ihymns_meter_normalize($row['meterCode']) === $needle;
+                }));
+            }
+            $rows = array_slice($rows, 0, $limit);
+        }
+
+        ed2_respond(['ok' => true, 'suggestions' => $rows]);
         break;
     }
 

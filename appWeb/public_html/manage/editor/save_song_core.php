@@ -651,6 +651,45 @@ function editorSaveSongCore(): array
                 $placeStmt->close();
             }
 
+            /* #1741 P5c — TuneName<->TuneId lockstep, the song-side mirror of
+             * manage/works.php's :307-313 Work-side block. The UPSERT above
+             * wrote TuneName (via $tuneName, extracted at the top of this
+             * function); resolve + write the registry id HERE, in the SAME
+             * transaction, so a v1 whole-song save can never strand TuneId
+             * the way a bare "SET TuneName = ?" would — v2's granular
+             * `song_tune_set` / `metadata_field_update` already avoid that
+             * drift via the shared ed2_songTuneApply() core (api2.php); this
+             * is save_song_core's own write path (used by BOTH v1 api.php
+             * and api2's `save_song` action) closing the same gap.
+             *
+             * ELI5: whichever editor saved the whole song just wrote the
+             * tune's NAME onto it — this one extra step makes sure the
+             * tune's REGISTRY LINK gets written too, so /tune/<slug> keeps
+             * pointing at the right tune.
+             *
+             * placeColumnExists() is the generic column probe already
+             * loaded at the top of this file (:43) for the OriginCityId
+             * gate just above — reused here rather than api2.php's own
+             * self-contained ed2_tuneIdColumnExists() (that duplication
+             * exists ONLY because api2.php deliberately avoids pulling
+             * includes/places.php in at module scope for one column, see
+             * that probe's doc-block; this file already has places.php
+             * loaded, so reusing it here is the ONE-probe path, not a
+             * second fork). tuneFindOrCreateByName() (tune_helpers.php,
+             * P4b) already degrades to null when tblTunes itself is
+             * absent — this block runs unguarded inside the transaction (no
+             * try/catch of its own) so a genuine DB fault still rolls the
+             * whole save back honestly, matching the places-UPDATE posture
+             * immediately above. */
+            if (placeColumnExists($db, 'tblSongs', 'TuneId')) {
+                require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+                $tuneIdVal = $tuneName === null ? null : tuneFindOrCreateByName($db, $tuneName);
+                $tuneStmt = $db->prepare('UPDATE tblSongs SET TuneId = ? WHERE SongId = ?');
+                $tuneStmt->bind_param('is', $tuneIdVal, $songId);
+                $tuneStmt->execute();
+                $tuneStmt->close();
+            }
+
             /* #1235 PF1 / R1 — carry-forward (data-loss guard) + write-path selection.
                A STALE client (a Service-Worker-cached pre-#1094 / pre-P3 editor.js)
                POSTs components WITHOUT `chords` / `languages`, so a naive recreate

@@ -26,6 +26,55 @@
  *                                      after the form's hidden
  *                                      input is updated.
  *
+ * Options (additive, #1741 P5c) — GENERALISATION for a second, non-place
+ * consumer (the Song Editor's tune typeahead), never a fork of this module
+ * (modularity rule). Every default below reproduces TODAY's behaviour
+ * byte-for-byte, so the two pre-existing consumers (Credit People / Works /
+ * Venues / Organisations place pickers, and this tab's own origin-city
+ * picker) are UNCHANGED unless they opt in:
+ *   searchUrl(query, settings) -> string
+ *                                      Builds the search request URL.
+ *                                      DEFAULT: `${endpoint}?action=search&
+ *                                      q=${query}&limit=${maxResults}` (the
+ *                                      places-api.php shape). A caller with a
+ *                                      differently-shaped search endpoint
+ *                                      (tune_search's `&meter=` leg) supplies
+ *                                      its own.
+ *   parseResults(data) -> array|null   Maps the fetched JSON to the
+ *                                      candidates array (or null for "no
+ *                                      usable data", which renders the
+ *                                      existing "returned no data" hint).
+ *                                      DEFAULT: `Array.isArray(data.results)
+ *                                      ? data.results : null`. Each returned
+ *                                      candidate is rendered as
+ *                                      `{ display_name, hint?, id, ... }` —
+ *                                      `hint`, if present, REPLACES the
+ *                                      default type/address.country meta
+ *                                      line (see renderPanel() below).
+ *   pickMode       'upsert' | 'value'  DEFAULT 'upsert' — today's behaviour:
+ *                                      pickCandidate() POSTs `?action=upsert`
+ *                                      and adopts `data.place.id`. 'value':
+ *                                      NO network call — sets the hidden id
+ *                                      straight from the candidate's own
+ *                                      `id`, calls onSelect(candidate), and
+ *                                      leaves PERSISTING the pick entirely to
+ *                                      the caller (e.g. a separate
+ *                                      `song_tune_set` POST) — needed because
+ *                                      a place row is idempotently
+ *                                      upsert-by-value, but a tblTunes
+ *                                      find-or-create is NOT something a
+ *                                      generic typeahead should trigger
+ *                                      twice for one pick.
+ *   noun           {singular, plural}  DEFAULT {singular:'place',
+ *                                      plural:'places'} — threads through
+ *                                      every user-facing string (loading
+ *                                      hints, live-region announcements) so
+ *                                      a non-place instance reads "2 tunes
+ *                                      found." instead of "2 places found.".
+ * No other behaviour changes — the #1594 keyboard/ARIA machinery below is
+ * shape-agnostic and untouched; @see tests/test-place-search-keyboard.js
+ * (proves the pre-existing default path is unaffected).
+ *
  * Behaviour:
  *   - Free-typing clears the hidden Id (curator typed something
  *     not in the registry — the form falls back to display-string-only).
@@ -109,6 +158,33 @@
         maxResults: 8,
     };
 
+    /* #1741 P5c — the four additive generalisation defaults (module doc-block
+       above). Kept OUTSIDE the `DEFAULTS` object above deliberately: DEFAULTS
+       holds the places-api.php REQUEST TUNING the 2 pre-existing consumers
+       (birth/death place, origin-city) already read/override, and this
+       module's own default-content proof (tests/test-place-search-keyboard.js)
+       and the P5c UI guard both check that object's exact 4-key shape stays
+       unchanged (rule #34) — folding function-valued options into it would
+       make "unchanged in content" ambiguous to assert against. */
+
+    /** DEFAULT searchUrl(query, settings) — today's :`?action=search&q=…&limit=…` line, extracted verbatim. */
+    function defaultSearchUrl(query, settings) {
+        return settings.endpoint + '?action=search&q=' + encodeURIComponent(query) + '&limit=' + settings.maxResults;
+    }
+
+    /** DEFAULT parseResults(data) — today's `Array.isArray(data.results) ? data.results : null` check, extracted verbatim. */
+    function defaultParseResults(data) {
+        return (data && Array.isArray(data.results)) ? data.results : null;
+    }
+
+    const DEFAULT_NOUN = { singular: 'place', plural: 'places' };
+
+    /** Capitalise the first character — used to turn `noun.singular` ("place" /
+     *  "tune") into the sentence-initial "Place" / "Tune" the hint strings need. */
+    function capitalise(word) {
+        return word.length ? word.charAt(0).toUpperCase() + word.slice(1) : word;
+    }
+
     /* #1594 — module-scoped counter so every attach()'d input gets a
        globally-unique panel/option id set. ELI5: the musicians
        drawer alone calls attach() twice on one page (birth place +
@@ -154,6 +230,18 @@
         }
         ensureStatusStyles();
         const settings = Object.assign({}, DEFAULTS, opts || {});
+        /* #1741 P5c — resolve the four additive generalisation options once,
+           here, rather than re-checking `typeof settings.X === 'function'`
+           at every call site below. Each falls back to TODAY's behaviour
+           (see the defaultSearchUrl/defaultParseResults functions + the
+           module doc-block's "Options (additive)" section above) when the
+           caller didn't pass one — the 2 pre-existing consumers pass none
+           of these, so `resolvedSearchUrl`/`resolvedParseResults` are
+           exactly `defaultSearchUrl`/`defaultParseResults` for them. */
+        const resolvedSearchUrl    = typeof settings.searchUrl === 'function' ? settings.searchUrl : defaultSearchUrl;
+        const resolvedParseResults = typeof settings.parseResults === 'function' ? settings.parseResults : defaultParseResults;
+        const pickMode = settings.pickMode === 'value' ? 'value' : 'upsert';   // default 'upsert'
+        const noun = (settings.noun && settings.noun.singular && settings.noun.plural) ? settings.noun : DEFAULT_NOUN;
         inputEl.dataset.placeSearchAttached = '1';
         /* #1594 — `autocomplete="off"` is NOT sufficient here. Chrome
            deliberately IGNORES `off` on fields it heuristically decides
@@ -428,11 +516,21 @@
                 main.style.overflow = 'hidden';
                 main.style.textOverflow = 'ellipsis';
                 item.appendChild(main);
-                if (c.type || c.address) {
+                /* #1741 P5c — a caller's parseResults() may map a candidate
+                   to `{ display_name, hint, ... }` instead of the places-api
+                   `{ type, address }` shape (tune_search has neither — it has
+                   meter/alias/usage folded into one `hint` string server-
+                   side isn't right either, so the CLIENT's parseResults maps
+                   it to `hint`). `c.hint` takes over the WHOLE meta line when
+                   present; the default place shape (no `hint` key) renders
+                   exactly as before. */
+                if (c.hint || c.type || c.address) {
                     const meta = document.createElement('div');
                     meta.style.fontSize = '0.75rem';
                     meta.style.opacity = '0.7';
-                    meta.textContent = (c.type || '') + (c.address && c.address.country ? ' • ' + c.address.country : '');
+                    meta.textContent = c.hint
+                        ? c.hint
+                        : (c.type || '') + (c.address && c.address.country ? ' • ' + c.address.country : '');
                     item.appendChild(meta);
                 }
                 item.addEventListener('mousedown', (ev) => {
@@ -509,7 +607,9 @@
                the older call's own `requestId !== currentRequest` guards
                below stop it from clobbering this state afterwards. */
             setStatus('loading');
-            const url = settings.endpoint + '?action=search&q=' + encodeURIComponent(query) + '&limit=' + settings.maxResults;
+            /* #1741 P5c — resolvedSearchUrl defaults to today's exact
+               '?action=search&q=…&limit=…' line (defaultSearchUrl above). */
+            const url = resolvedSearchUrl(query, settings);
             let resp;
             try {
                 resp = await fetch(url, {
@@ -519,7 +619,7 @@
             } catch (_e) {
                 if (requestId === currentRequest) {
                     setStatus('idle');
-                    renderHint('Place lookup unavailable (offline?). Your text is saved as typed.');
+                    renderHint(capitalise(noun.singular) + ' lookup unavailable (offline?). Your text is saved as typed.');
                 }
                 return;
             }
@@ -533,25 +633,31 @@
                     if (errBody && errBody.detail) { detail = ' — ' + errBody.detail; }
                 } catch (_e) { /* no JSON body */ }
                 setStatus('idle');
-                renderHint('Place lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
+                renderHint(capitalise(noun.singular) + ' lookup unavailable (HTTP ' + resp.status + ')' + detail + '. Your text is saved as typed.');
                 return;
             }
             const data = await resp.json().catch(() => null);
-            if (!data || !Array.isArray(data.results)) {
+            /* #1741 P5c — resolvedParseResults defaults to today's exact
+               `Array.isArray(data.results) ? data.results : null` check
+               (defaultParseResults above); a caller with a differently-
+               shaped payload (tune_search's `{ suggestions: [...] }`)
+               supplies its own mapping to the SAME candidate shape. */
+            const results = data ? resolvedParseResults(data) : null;
+            if (!results) {
                 setStatus('idle');
-                renderHint('Place lookup returned no data. Your text is saved as typed.');
+                renderHint(capitalise(noun.singular) + ' lookup returned no data. Your text is saved as typed.');
                 return;
             }
-            candidates = data.results;
+            candidates = results;
             highlight = candidates.length ? 0 : -1;
             if (!candidates.length) {
                 setStatus('idle');
-                renderHint('No matching places — your text is saved as typed.');
+                renderHint('No matching ' + noun.plural + ' — your text is saved as typed.');
                 /* #1594 — announce the resolved-but-empty result too, not
                    just the success count below. A screen-reader user who
                    hears nothing after typing can't tell "still searching"
                    apart from "found nothing" apart from "this is broken". */
-                announce('No places found.');
+                announce('No ' + noun.plural + ' found.');
                 return;
             }
             setStatus('idle');
@@ -559,9 +665,9 @@
             /* #1594 — announce the result COUNT on every resolved search
                (the ARIA APG combobox pattern's recommended feedback for
                screen-reader users, who can't see the panel populate).
-               Singular/plural handled inline rather than pulling in a
+               Singular/plural handled via `noun` (#1741 P5c) rather than a
                pluralisation helper for one string. */
-            announce(candidates.length + (candidates.length === 1 ? ' place found.' : ' places found.'));
+            announce(candidates.length + (candidates.length === 1 ? ' ' + noun.singular + ' found.' : ' ' + noun.plural + ' found.'));
         }
 
         async function pickCandidate(index) {
@@ -572,6 +678,22 @@
                upsert call below races behind to claim the FK. */
             inputEl.dataset.placeSearchPicked = '1';
             closePanel();
+
+            /* #1741 P5c — pickMode:'value' (default 'upsert', untouched
+               below). NO network call here: the candidate already carries
+               its own `id` (tune_search's suggestions do), so the hidden
+               input is set straight from it and PERSISTING the pick is left
+               entirely to the caller via onSelect() — a find-or-CREATE
+               funnel (tblTunes) must not be triggered a SECOND time by this
+               module racing its own upsert behind the caller's real save. */
+            if (pickMode === 'value') {
+                setHiddenId(String(c.id != null ? c.id : ''));
+                if (typeof settings.onSelect === 'function') {
+                    try { settings.onSelect(c); } catch (_e) { /* swallow */ }
+                }
+                return;
+            }
+
             try {
                 const resp = await fetch(settings.endpoint + '?action=upsert', {
                     method: 'POST',

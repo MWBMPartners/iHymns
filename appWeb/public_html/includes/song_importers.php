@@ -531,6 +531,39 @@ function _bulkImport_saveSong(\mysqli $db, array $song): array
         $insert->execute();
         $insert->close();
 
+        /* #1741 P5c — TuneName<->TuneId lockstep, the bulk-import-side mirror
+         * of manage/works.php's :307-313 Work-side block and
+         * save_song_core.php's own gated UPDATE just above this file's
+         * sibling save path. The INSERT above just wrote TuneName (via
+         * $tuneName, extracted with the rest of this function's locals); a
+         * SEPARATE small gated UPDATE resolves + writes the registry id in
+         * the SAME transaction so a bulk import can never strand TuneId the
+         * way the un-mirrored write used to. This function processes ONE
+         * song per call (the loop lives in the caller), so — unlike a
+         * batch/shared-statement writer — there is no per-row complication
+         * here; the rider named as droppable in the P5 build spec (§3.4
+         * item 2) turned out straightforward to wire, so it is wired rather
+         * than dropped-with-a-follow-up-issue.
+         *
+         * ELI5: importing a song wrote its tune's NAME — this makes sure the
+         * tune's REGISTRY LINK gets written too, so a bulk-imported song's
+         * tune page (/tune/<slug>) is linked correctly from day one, not
+         * just resolved later via the free-text fallback ladder.
+         *
+         * Unguarded inside the transaction (no local try/catch): a genuine
+         * DB fault here must roll the whole import of this song back, same
+         * posture as every other write in this function; tuneFindOrCreate-
+         * ByName() itself already degrades to null when tblTunes is absent. */
+        require_once __DIR__ . DIRECTORY_SEPARATOR . 'places.php';
+        if (placeColumnExists($db, 'tblSongs', 'TuneId')) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'tune_helpers.php';
+            $tuneIdVal = $tuneName === null ? null : tuneFindOrCreateByName($db, $tuneName);
+            $tuneStmt = $db->prepare('UPDATE tblSongs SET TuneId = ? WHERE SongId = ?');
+            $tuneStmt->bind_param('is', $tuneIdVal, $songId);
+            $tuneStmt->execute();
+            $tuneStmt->close();
+        }
+
         /* #1235 P4/C5 — write inversion. When the tblLyricLines mirror exists, the
            shared write path makes the normalised lines authoritative and shadow-writes
            the (still-present) JSON columns from the same payload — so this import keeps

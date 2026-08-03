@@ -55,6 +55,18 @@ declare(strict_types=1);
  * @link appWeb/public_html/manage/works.php                         first live caller (#1741 P4b)
  * @link appWeb/.sql/schema.sql                                      tblTunes CREATE TABLE block (~3623-3641)
  * @see #1741
+ *
+ * #1741 P5c ADDITION — `ihymns_meter_normalize()`
+ * ----------------------------------------------------------------------------
+ * A hymn metre can be written half a dozen ways for the SAME thing — "CM",
+ * "C.M.", "86.86" and "86 86" all mean Common Metre. `tune_search`'s `meter`
+ * filter (api2.php, #1741 P5c) needs to compare a curator's typed metre
+ * against `tblTunes.MeterCode` (a free-text display column, #1090) without
+ * those spelling differences hiding a real match — this is that ONE fold,
+ * pure and DB-free so it is trivially unit-testable (guarded by
+ * `tests/php/test-tune-lockstep.php`'s behavioural assertions) and reusable
+ * later by the tune page's planned "tunes with this meter" section (P4c
+ * §3.3-6 named this exact upgrade path already).
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
@@ -218,4 +230,128 @@ function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
         error_log('[tuneFindOrCreateByName] ' . $e->getMessage());
         return null;
     }
+}
+
+/**
+ * Named-metre → digit-form map (#1741 P5c). VARCHAR-shaped as a PHP const,
+ * not a database ENUM/table (rule #20 — this is app-validated vocabulary
+ * that could grow, e.g. "6.6.4.4.4.4" style long/short-metre variants a
+ * curator names later; adding one is a one-line change here, never a
+ * schema migration). Every mapped value is the CANONICAL digit form
+ * `ihymns_meter_normalize()` also produces for that metre's numeric
+ * spelling, so `CM` and `86.86` fold to the SAME string and therefore
+ * compare equal in `tune_search`'s `meter` filter.
+ *
+ * @link https://en.wikipedia.org/wiki/Hymn_meter background on the CM/LM/SM naming convention
+ */
+const IHYMNS_METER_NAMED = [
+    'CM'  => '86.86',   'CMD' => '86.86D',
+    'LM'  => '88.88',   'LMD' => '88.88D',
+    'SM'  => '66.86',   'SMD' => '66.86D',
+];
+
+/**
+ * Fold a hymn-metre string into ONE canonical comparable form, e.g.
+ * "CM" / "C.M." / "86.86" / "86 86" all -> "86.86"; "87 87 D" /
+ * "87.87.D" / "8787D" all -> "87.87D".
+ *
+ * ELI5: a curator (or an old hymnal) can write the same metre a dozen
+ * different ways — this turns any of those spellings into ONE string, so
+ * "does this tune's metre match what I typed?" can be a plain `===`
+ * instead of a fuzzy guess.
+ *
+ * DETAILED, in the order the fold actually runs:
+ *   1. Uppercase + trim; periods/commas (metre notation's usual figure
+ *      separators, "8.7.8.7" / "C.M.") fold to a SPACE (not removed) so
+ *      grouping survives — losing the separator before splitting on digit
+ *      runs would turn "8.7.8.7" into the ambiguous "8787" this function
+ *      would then have to GUESS how to re-split.
+ *   2. A trailing "DOUBLED" or a standalone "D" WORD (space-separated —
+ *      "CM D", "87 87 D", "LM DOUBLED") is detected and stripped as the
+ *      metre's "doubled" flag, re-added to whatever the rest of the string
+ *      resolves to. A "D" GLUED directly onto the preceding token with no
+ *      separator ("CMD", "8787D", "SMD") has no space to split on, so it is
+ *      handled per-branch below instead (named-key lookup / a trailing-D
+ *      regex on the last digit run) rather than at this step.
+ *   3. NAMED branch — if what's left is letters only, look it up in
+ *      `IHYMNS_METER_NAMED` (trying the bare key, then the key with a
+ *      trailing "D" stripped for the glued-on case: "CMD" -> "CM" + D).
+ *      No match -> `''` (an unrecognised name, not a numeric metre).
+ *   4. NUMERIC branch — every space-separated digit run is collected and
+ *      joined with '.'. A SINGLE glued-together run with no separators at
+ *      all AND an even digit count ("8787", "6686") is a genuinely
+ *      ambiguous input (no separator survives to say where one figure ends
+ *      and the next begins) — the DEFENSIBLE DEFAULT taken here is to
+ *      split it into 2-digit pairs (the overwhelmingly common case: every
+ *      named metre in `IHYMNS_METER_NAMED` above is two-digit-per-line),
+ *      which is what makes "8787D" fold to the SAME "87.87D" as the
+ *      explicitly-separated "87 87 D" / "87.87.D" spellings. A metre with
+ *      a genuine 1-digit or 3-digit line written with NO separator at all
+ *      is a real but rare edge this default does not handle — trivially
+ *      revisitable if a curator ever hits it (this is a pure function with
+ *      one call site today, `tune_search`'s meter filter).
+ *   5. No digits and no named match anywhere -> `''`, which every caller
+ *      treats as "no metre filter" (never a query that matches nothing).
+ *
+ * @param string $code Curator-typed or stored (`tblTunes.MeterCode`) metre text.
+ * @return string Canonical form, or '' when nothing recognisable was found.
+ * @link .claude/catalogue-1741-P5-plan.md §3.5
+ * @link appWeb/public_html/manage/editor/api2.php tune_search's `meter` filter (the one call site today)
+ */
+function ihymns_meter_normalize(string $code): string
+{
+    $s = strtoupper(trim($code));
+    if ($s === '') { return ''; }
+
+    /* Fold period/comma figure-separators to a space (kept as a separator,
+       not discarded) then collapse every whitespace run to one space. */
+    $s = str_replace(['.', ','], ' ', $s);
+    $s = trim((string)preg_replace('/\s+/', ' ', $s));
+    if ($s === '') { return ''; }
+
+    $doubled = false;
+    $words   = explode(' ', $s);
+    $lastWord = end($words);
+    if ($lastWord === 'DOUBLED' || $lastWord === 'D') {
+        $doubled = true;
+        array_pop($words);
+    }
+    if (!$words) { return ''; }   // input WAS just "D" / "DOUBLED" alone
+
+    $compactNoSpace = implode('', $words);
+
+    /* NAMED branch — letters only once digits are ruled out. */
+    if ($compactNoSpace !== '' && ctype_alpha($compactNoSpace)) {
+        $mapped = IHYMNS_METER_NAMED[$compactNoSpace] ?? null;
+        if ($mapped === null
+            && substr($compactNoSpace, -1) === 'D'
+            && isset(IHYMNS_METER_NAMED[substr($compactNoSpace, 0, -1)])
+        ) {
+            /* Glued-on "D" the word-split above couldn't see ("CMD"). */
+            $mapped  = IHYMNS_METER_NAMED[substr($compactNoSpace, 0, -1)];
+            $doubled = true;
+        }
+        if ($mapped === null) { return ''; }
+        return ($doubled && substr($mapped, -1) !== 'D') ? $mapped . 'D' : $mapped;
+    }
+
+    /* NUMERIC branch. A "D" glued onto the LAST word with no separator
+       ("8787D") is stripped from that word first. */
+    $tailWord = end($words);
+    if ($tailWord !== false && preg_match('/^(\d+)D$/', $tailWord, $wm)) {
+        $doubled = true;
+        $words[array_key_last($words)] = $wm[1];
+    }
+    $digitRuns = array_values(array_filter($words, static fn(string $w): bool => $w !== '' && ctype_digit($w)));
+    if (!$digitRuns) { return ''; }
+
+    /* A single glued-together run with an even digit count is genuinely
+       ambiguous (no surviving separator) — split into 2-digit pairs, the
+       defensible default per the doc-block above. */
+    if (count($digitRuns) === 1 && strlen($digitRuns[0]) >= 4 && strlen($digitRuns[0]) % 2 === 0) {
+        $digitRuns = str_split($digitRuns[0], 2);
+    }
+
+    $joined = implode('.', $digitRuns);
+    return $doubled ? $joined . 'D' : $joined;
 }

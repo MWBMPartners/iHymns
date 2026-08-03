@@ -40,7 +40,13 @@ const FIELDS = [
     ['ccli',               'CCLI Number',       'Ccli',               'text'],
     ['iswc',               'ISWC',              'Iswc',               'text'],
     ['isrc',               'ISRC',              'Isrc',               'text'],
-    ['tuneName',           'Tune Name',         'TuneName',           'text'],
+    /* #1741 P5c — 'tuneName' DELETED from this list. A plain FIELDS row
+       saved TuneName alone through the generic metadata_field_update path,
+       stranding TuneId on every edit (the drift this phase retires). The
+       Tune control is now a BESPOKE live-search widget rendered after the
+       origin-city picker below (see render()), backed by the shared
+       ed2_songTuneApply() write core via api.setSongTune() — never a plain
+       text FIELDS row again. */
     ['copyright',          'Copyright',         'Copyright',          'text'],
     ['copyrightYears',     'Copyright year(s)', 'CopyrightYears',     'text'],
     ['copyrightHolder',    'Copyright holder',  'CopyrightHolder',    'text'],
@@ -96,6 +102,12 @@ export function mountMetadataTab(container, opts) {
     const timers = new Map();
     let disposed = false;     // set by teardown, so a late list can't touch a dead tab
     let placeDetach = null;   // teardown for the geocoder attached to the origin picker
+    /* #1741 P5c — teardown for the tune typeahead (the SAME shared
+       place-search.js module the origin picker above uses, generalised
+       rather than forked — pickMode:'value', noun:{tune,tunes}). Same
+       render()-wipes-the-container reason as placeDetach immediately
+       above: a fresh attach() happens on every `song`-slice change. */
+    let tuneDetach = null;
     /* #1671 F3 — teardown for the "Musical key" fieldset. render() wipes the
        container on every `song`-slice change, so the panel is torn down and
        re-mounted with it; without this its in-flight fetch would resolve into a
@@ -243,6 +255,7 @@ export function mountMetadataTab(container, opts) {
     function render() {
         const song = store.get('song') || {};
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
+        if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         container.innerHTML = '';
@@ -330,11 +343,152 @@ export function mountMetadataTab(container, opts) {
         pcol.append(plab, pinput, phidden);
         row.appendChild(pcol);
 
+        /* Tune (#1741 P5c) — a BESPOKE live-search control, not a plain
+           FIELDS row (the old `['tuneName', …]` row, DELETED above, saved
+           TuneName alone and stranded TuneId on every edit). Rendered right
+           after the origin-city picker above, mirroring its shape: visible
+           text input + hidden TuneId + (once a metre is actually known) a
+           small badge and a "Matching metre only" toggle that narrows the
+           typeahead to same-metre tunes — the swap-lyrics-between-tunes
+           affordance the parent plan names. Both the badge and the toggle
+           start HIDDEN — dormant-by-data, like P4c's own meter section —
+           so a tune with no recorded MeterCode shows nothing extra. */
+        const tcol = document.createElement('div');
+        tcol.className = 'col-12 col-md-6';
+        const tlab = document.createElement('label');
+        tlab.className = 'form-label small mb-1';
+        tlab.htmlFor = 'meta-tuneName';
+        tlab.textContent = 'Tune Name';
+        const tinput = document.createElement('input');
+        tinput.type = 'text';
+        tinput.className = 'form-control form-control-sm';
+        tinput.id = 'meta-tuneName';
+        tinput.placeholder = 'Tune name…';
+        tinput.value = song.TuneName != null ? String(song.TuneName) : '';
+        const thidden = document.createElement('input');
+        thidden.type = 'hidden';
+        thidden.value = song.TuneId != null ? String(song.TuneId) : '';
+
+        const tmeterRow = document.createElement('div');
+        tmeterRow.className = 'form-text small d-flex align-items-center gap-2 mt-1';
+        tmeterRow.style.display = 'none';   // shown once a metre is known
+        const tbadge = document.createElement('span');
+        tbadge.className = 'badge bg-body-secondary';
+        const tmeterCheckWrap = document.createElement('div');
+        tmeterCheckWrap.className = 'form-check form-check-inline mb-0';
+        const tmeterCheck = document.createElement('input');
+        tmeterCheck.type = 'checkbox';
+        tmeterCheck.className = 'form-check-input';
+        tmeterCheck.id = 'meta-tuneMeterOnly';
+        const tmeterCheckLabel = document.createElement('label');
+        tmeterCheckLabel.className = 'form-check-label';
+        tmeterCheckLabel.htmlFor = tmeterCheck.id;
+        tmeterCheckLabel.textContent = 'Matching metre only';
+        tmeterCheckWrap.append(tmeterCheck, tmeterCheckLabel);
+        tmeterRow.append(tbadge, tmeterCheckWrap);
+
+        let currentMeter = null;   // ?string — null until a metre is known
+        function showMeter(meterCode) {
+            currentMeter = meterCode || null;
+            if (currentMeter) {
+                tbadge.textContent = 'Metre ' + currentMeter;
+                tmeterRow.style.display = '';
+            } else {
+                tmeterRow.style.display = 'none';
+                tmeterCheck.checked = false;
+            }
+        }
+
+        /**
+         * Persist a tune edit/pick via the ONE tune write (`song_tune_set`,
+         * the shared `ed2_songTuneApply()` core server-side).
+         *
+         * #1679 H1's exact reasoning, restated for tunes: this fires on
+         * `change` (blur/Enter) and on a typeahead pick — DELIBERATELY NOT
+         * debounced-per-keystroke like every sibling text field. Unlike a
+         * plain scalar column, a tune name can FIND-OR-CREATE a `tblTunes`
+         * registry row; a debounced write firing on every half-second pause
+         * while a curator is still typing ("HYF", "HYFRY", "HYFRYDOL", …)
+         * would mint a junk row per pause instead of one clean save. A
+         * side-effectful write belongs on a COMMIT event, never a typing
+         * pause — the songbook <select>'s own `change`-not-`input` wiring
+         * a few fields up is the same rule applied to a different
+         * irreversible-ish action.
+         *
+         * @param {string} name Tune name to save (server-trimmed; '' clears).
+         * @param {?string} meterFromPick MeterCode a typeahead pick already
+         *   carried (avoids waiting on the save's own echo to show the badge).
+         */
+        function saveTune(name, meterFromPick) {
+            api.setSongTune(songId, name).then((res) => {
+                song.TuneName = res.tuneName;
+                song.TuneId = res.tuneId;
+                thidden.value = res.tuneId != null ? String(res.tuneId) : '';
+                showMeter(res.meterCode || meterFromPick || null);
+            }).catch((e) => {
+                toast('Could not save tune: ' + e.message, 'danger');
+            });
+        }
+
+        tinput.addEventListener('input', () => {
+            /* Free-typing invalidates a previously-picked TuneId — the SAME
+               "the form falls back to display-string-only" contract
+               place-search.js documents for its own hidden input. */
+            thidden.value = '';
+        });
+        tinput.addEventListener('change', () => { saveTune(tinput.value, null); });
+
+        tcol.append(tlab, tinput, thidden, tmeterRow);
+        row.appendChild(tcol);
+
         container.appendChild(row);
 
         /* Attach the geocoder typeahead (best-effort — no-op if the module didn't load). */
         if (window.iHymnsPlaceSearch && typeof window.iHymnsPlaceSearch.attach === 'function') {
             placeDetach = window.iHymnsPlaceSearch.attach(pinput, { hiddenIdInput: phidden }) || null;
+
+            /* #1741 P5c — the SAME shared module, GENERALISED (never forked)
+               via its additive options: pickMode:'value' (no implicit
+               upsert — song_tune_set is the one write, fired from
+               saveTune() above, not from inside place-search.js itself),
+               noun:{tune,tunes} (user-facing strings read "2 tunes found."),
+               a custom searchUrl (injects `&meter=` only once BOTH a metre
+               is known AND the toggle is checked) and parseResults (maps
+               tune_search's `{ suggestions }` shape into the candidate
+               shape place-search.js renders, folding meter/alias/usage into
+               one `hint` line for the meta row). */
+            tuneDetach = window.iHymnsPlaceSearch.attach(tinput, {
+                hiddenIdInput: thidden,
+                minChars: 2,
+                pickMode: 'value',
+                noun: { singular: 'tune', plural: 'tunes' },
+                searchUrl: (q) => '/manage/editor/api2.php?action=tune_search&q=' + encodeURIComponent(q)
+                    + '&limit=10' + (tmeterCheck.checked && currentMeter ? '&meter=' + encodeURIComponent(currentMeter) : ''),
+                parseResults: (d) => (d.suggestions || []).map((s) => ({
+                    id: s.id,
+                    display_name: s.name,
+                    hint: [
+                        s.meterCode ? 'Metre ' + s.meterCode : '',
+                        s.matchedAlias ? 'aka ' + s.matchedAlias : '',
+                        s.usage ? s.usage + ' song' + (s.usage === 1 ? '' : 's') : '',
+                    ].filter(Boolean).join(' · '),
+                    meterCode: s.meterCode || '',
+                })),
+                onSelect: (c) => saveTune(c.display_name, c.meterCode),
+            }) || null;
+        }
+
+        /* #1741 P5c — meter hydration on mount: a single best-effort read
+           (never a write) so an existing tune's badge/toggle appear WITHOUT
+           waiting for the curator to touch the field. Silent failure leaves
+           the toggle hidden — this is decoration, not a blocking load. */
+        if (song.TuneName) {
+            const tName = String(song.TuneName);
+            api.searchTunes(tName, 1).then((res) => {
+                const suggestions = res.suggestions || [];
+                const exact = suggestions.find((s) => s.name === tName) || suggestions[0];
+                if (exact && exact.meterCode) { showMeter(exact.meterCode); }
+            }).catch(() => { /* best-effort — toggle stays hidden */ });
         }
 
         /* Musical key / tempo / time signature (#298 server, wired #1671 F3).
@@ -380,6 +534,7 @@ export function mountMetadataTab(container, opts) {
         timers.forEach((t) => clearTimeout(t));
         timers.clear();
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
+        if (tuneDetach) { try { tuneDetach(); } catch (_e) {} tuneDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
         if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         container.innerHTML = '';

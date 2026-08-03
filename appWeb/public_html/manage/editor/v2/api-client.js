@@ -216,6 +216,18 @@ export const editorApi = {
     attachTag:         (songId, name)            => postJson('tag_attach', { songId: songId, name: name }),
     detachTag:         (songId, tagId)           => postJson('tag_detach', { songId: songId, tagId: tagId }),
 
+    /* Tune registry typeahead + the ONE tune write (#1741 P5c). searchTunes
+       mirrors searchTags's shape (q/limit), plus an optional `meter` leg
+       (folded server-side via ihymns_meter_normalize()) for the "matching
+       metre only" toggle. setSongTune is consumed by metadata-tab.js's tune
+       control on `change` (blur) + a typeahead pick — deliberately NOT on
+       every keystroke, since it can find-or-CREATE a tblTunes row
+       (metadata-tab.js's saveTune() doc-comment explains why). An empty
+       `tuneName` is a legal CLEAR (both TuneName/TuneId -> NULL server-side),
+       distinct from omitting the key entirely (400). */
+    searchTunes:       (q, limit, meter)         => getJson('tune_search', Object.assign({ q: q || '', limit: limit || 10 }, meter ? { meter: meter } : {})),
+    setSongTune:       (songId, tuneName)        => postJson('song_tune_set', { songId: songId, tuneName: tuneName }),
+
     /* External links — whole sub-form reconcile (the shared card-list editor model).
        `links` is [{ typeId, url, note?, verified? }]; returns the persisted rows. */
     saveLinks:         (songId, links)           => postJson('link_save_all', { songId: songId, links: links }),
