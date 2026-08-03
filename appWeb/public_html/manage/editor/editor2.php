@@ -108,6 +108,37 @@ $initialTab = $_ED2_TABS[$tabParam] ?? '';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
+
+/**
+ * #1741 P5b — the recording/release/product external-ID vocabulary for the
+ * Metadata tab's external-ids-panel.js, shipped the SAME way the Links tab's
+ * window._iHymnsLinkTypes is (rule #35's "server-derive the vocab, no second
+ * list" applied here): the panel builds its add-row dropdown from THIS
+ * object, never from a hand-typed provider list of its own.
+ *
+ * ELI5: this is the list of "Spotify / ISRC / MusicBrainz / …" choices the
+ * "Add external id" dropdown offers — generated from the SAME registry
+ * api2.php's song_external_id_add validates against, so the dropdown can
+ * never offer a provider the server would then 422 on.
+ *
+ * ONLY `label` + `scope` are shipped — deliberately NOT the PCRE `validate`
+ * patterns (media_identifiers.php's RECORDING_EXTERNAL_ID_TYPES also carries
+ * those). PHP's PCRE and JavaScript's RegExp use different delimiter/flag
+ * conventions; a half-translated pattern shipped to the client would be a
+ * SECOND, silently-divergent validator. The server's 422 on
+ * mediaIdentifierValidateValue() stays the ONE shape check — the client only
+ * needs to know WHAT to offer and WHAT to call it, never whether a value is
+ * valid before asking the server.
+ *
+ * @link .claude/catalogue-1741-P5-plan.md §2.3
+ * @link appWeb/public_html/includes/media_identifiers.php mediaIdentifierRecordingTypes() / RECORDING_EXTERNAL_ID_TYPES
+ * @link appWeb/public_html/manage/editor/v2/external-ids-panel.js the sole consumer
+ */
+require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
+$recordingIdTypesForJs = array_map(
+    static fn(array $t): array => ['label' => $t['label'], 'scope' => $t['scope']],
+    mediaIdentifierRecordingTypes()
+);
 ?><!DOCTYPE html>
 <html lang="en">
 <head>
@@ -233,6 +264,13 @@ $linkTypesForSong = loadExternalLinkTypesFor(getDbMysqli(), 'song');
     <script>window._iHymnsLinkTypes = <?= json_encode($linkTypesForSong, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
     <script src="/js/modules/external-link-detect.js"></script>
     <script src="/js/modules/external-links-editor.js"></script>
+
+    <!-- #1741 P5b — recording/release/product external-ID vocabulary (slug -> {label,scope}
+         only, no validate patterns — see the PHP-side doc-block above) for the Metadata
+         tab's external-ids-panel.js "Add external id" dropdown. Same emit shape + flags as
+         window._iHymnsLinkTypes just above, on purpose (one convention for "a registry map
+         shipped to a classic global"). -->
+    <script>window._iHymnsRecordingIdTypes = <?= json_encode($recordingIdTypesForJs, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) ?>;</script>
 
     <!-- Place-search (geocoder) for the Composition-origin picker — window.iHymnsPlaceSearch.
          #1594 part 2 — cache-bust with filemtime like every OTHER consumer of this file

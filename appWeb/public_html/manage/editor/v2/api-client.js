@@ -236,6 +236,18 @@ export const editorApi = {
     songLinkSuggestionDismiss: (songIdA, songIdB, reason)   =>
         postJson('song_link_suggestion_dismiss', { songIdA: songIdA, songIdB: songIdB, reason: reason || '' }),
 
+    /* External IDs (#1741 P5b) — tblSongExternalIds' first UI write path. A
+       card-list of {Spotify, ISRC, MusicBrainz, …} recording identifiers, on
+       the Metadata tab (external-ids-panel.js), NOT the Links tab (which is a
+       different registry — see that panel's file header). `created:false` on
+       addExternalId means the (idType,idValue) pair already existed (INSERT
+       IGNORE server-side); err.status carries the failure KIND (409 =
+       un-migrated, 422 = unknown idType or bad shape) per rule #35 — the
+       panel branches on that, never on err.message. */
+    listExternalIds:   (songId)                  => getJson('song_external_ids', { id: songId }),
+    addExternalId:     (songId, idType, idValue) => postJson('song_external_id_add', { songId: songId, idType: idType, idValue: idValue }),
+    deleteExternalId:  (songId, id)              => postJson('song_external_id_delete', { songId: songId, id: id }),
+
     /* Media — file metadata reads; upload is multipart; only annotation is mutable. */
     listMedia:         (songId)                  => getJson('media_list', { id: songId }),
     uploadMedia:       (songId, kind, file, annotation) => {

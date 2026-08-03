@@ -121,6 +121,35 @@ declare(strict_types=1);
  *                               dismissal from either surface suppresses the pair in
  *                               both — and drops the matching pending suggestion row.
  *                               Entitlement: edit_songs.
+ *   GET  song_external_ids?id=<SongId>                       -> { ok, externalIds, tableMissing? }
+ *                               #1741 P5b — tblSongExternalIds' FIRST UI read path.
+ *                               Row shape { id, idType, idValue, scope, source, label, url } —
+ *                               label/url come from the RECORDING_EXTERNAL_ID_TYPES registry
+ *                               (media_identifiers.php), never re-typed here. tableMissing:true
+ *                               on an un-migrated install (empty list, not a 500) — the same
+ *                               probe the #1749 P5d mirror already uses (songExternalIdsTableExists(),
+ *                               includes/song_external_ids.php), never a second one.
+ *   POST song_external_id_add   { songId, idType, idValue }  -> { ok, externalId, created }
+ *                               400 missing params; 404 song; 409 table missing; 422 unknown
+ *                               idType or a value that fails the registry's documented shape.
+ *                               idType='isrc' is canonicalised via ihymns_canonical_isrc()
+ *                               FIRST (the same fold metadata_field_update's ISRC branch uses).
+ *                               IdScope is SERVER-DERIVED from idType, never a client param.
+ *                               `Source='manual'`/`SourceRef=NULL` — a curator-entered row,
+ *                               distinct from the #1749 mirror's `Source='ihymns-mirror'` rows
+ *                               and the #1747 backfill's `Source='ihymns-backfill'` rows.
+ *                               INSERT IGNORE — a duplicate (SongId,IdType,IdValue) re-selects
+ *                               the existing row so the echo is always canonical; `created`
+ *                               tells the client whether a NEW row was actually written. No
+ *                               ed2_touchRevision — external IDs sit outside the content
+ *                               snapshot, the same posture as tblSongLinks (see that case's
+ *                               comment above) and media file metadata.
+ *   POST song_external_id_delete { songId, id }               -> { ok, deleted }
+ *                               `SongId` is part of the WHERE (cross-song defence-in-depth,
+ *                               not just `Id`); already-gone -> { ok:true, deleted:0 }, the
+ *                               same idempotent-double-click posture as song_link_remove.
+ *                               409 table missing. Deleting the P5d mirror row is harmless —
+ *                               the next ISRC save re-mints it.
  *   GET  media_list?id=<SongId>                              -> { ok, media }
  *   POST media_upload  (MULTIPART: songId, kind, annotation?, file) -> { ok, media }
  *   POST media_update           { mediaId, annotation }      -> { ok, mediaId }
@@ -200,16 +229,21 @@ require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_
    lyrics_ingest.php) now delegates to, so v2's granular credit saves stop
    silently skipping tblMusicians (the #960 regression). */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
-/* #1741 P5a / #1749 P5d — the canonical-identifier fold (ihymns_canonical_isrc())
-   and the recording/release/product IdType vocabulary
-   (mediaIdentifierValidateValue()) the metadata_field_update ISRC branch below
-   needs to write the SAME canonical form `/isrc/`'s resolver indexes on, plus
-   the dual-write mirror funnel (songExternalIdMirrorIsrc()) that keeps
-   tblSongExternalIds from drifting once a curator edits tblSongs.Isrc through
-   this editor. Loaded at module scope — like song_relocate.php above — rather
-   than lazily inside one branch, because ed2_applySongSnapshot() (a DIFFERENT
-   function, the revision-restore path) needs the same fold + mirror for the
-   #1749 §4.3 restore funnel. */
+/* #1741 P5a / #1749 P5d / #1741 P5b — the canonical-identifier fold
+   (ihymns_canonical_isrc()) and the recording/release/product IdType
+   vocabulary (RECORDING_EXTERNAL_ID_TYPES, mediaIdentifierIdTypeValid(),
+   mediaIdentifierValidateValue(), mediaIdentifierScopeForType()) the
+   metadata_field_update ISRC branch below needs to write the SAME canonical
+   form `/isrc/`'s resolver indexes on, plus the dual-write mirror funnel
+   (songExternalIdMirrorIsrc()) that keeps tblSongExternalIds from drifting
+   once a curator edits tblSongs.Isrc through this editor. P5b's three
+   song_external_id* cases reuse the SAME two requires (never a second
+   IdType/IdScope vocabulary, never a second table probe —
+   songExternalIdsTableExists() is the ONE probe, reused verbatim). Loaded at
+   module scope — like song_relocate.php above — rather than lazily inside one
+   branch, because ed2_applySongSnapshot() (a DIFFERENT function, the
+   revision-restore path) needs the same fold + mirror for the #1749 §4.3
+   restore funnel. */
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'media_identifiers.php';
 require_once dirname(__DIR__, 2) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'song_external_ids.php';
@@ -494,6 +528,44 @@ function ed2_songExists(\mysqli $db, string $songId): bool {
     $exists = (bool)$s->get_result()->fetch_row();
     $s->close();
     return $exists;
+}
+
+/**
+ * Shape a `tblSongExternalIds` row for the v2 client (#1741 P5b) — camelCase,
+ * like every other row-shape helper in this file (ed2_mediaRowShape's
+ * sibling), PLUS a friendly `label` and a per-id `url` DERIVED from the
+ * RECORDING_EXTERNAL_ID_TYPES registry (media_identifiers.php) — never
+ * hand-typed here, and never invented for a provider whose registry entry
+ * carries `url === null` (the "do NOT invent a deep link" contract that
+ * file's own doc-block states; a bare id cannot resolve a working page for
+ * those providers regardless of curator input).
+ *
+ * ELI5: turn one raw database row into `{ id, idType, idValue, scope,
+ * source, label, url }` — the exact shape both `song_external_ids` (GET) and
+ * `song_external_id_add`'s echo (POST) hand back to the panel, so the panel
+ * never has to build a URL itself.
+ *
+ * @param array<string,mixed> $r A row selected with at least Id/IdScope/IdType/IdValue/Source.
+ * @return array{id:int,idType:string,idValue:string,scope:string,source:string,label:string,url:?string}
+ * @link .claude/catalogue-1741-P5-plan.md §2.2 item 1
+ * @link appWeb/public_html/includes/media_identifiers.php RECORDING_EXTERNAL_ID_TYPES's `url`/`label` contract
+ */
+function ed2_songExternalIdRowShape(array $r): array {
+    $idType  = (string)$r['IdType'];
+    $idValue = (string)$r['IdValue'];
+    $reg     = RECORDING_EXTERNAL_ID_TYPES[$idType] ?? null;
+    $url     = ($reg !== null && $reg['url'] !== null)
+        ? sprintf($reg['url'], rawurlencode($idValue))
+        : null;
+    return [
+        'id'      => (int)$r['Id'],
+        'idType'  => $idType,
+        'idValue' => $idValue,
+        'scope'   => (string)$r['IdScope'],
+        'source'  => (string)$r['Source'],
+        'label'   => $reg['label'] ?? $idType,
+        'url'     => $url,
+    ];
 }
 
 /**
@@ -2426,6 +2498,185 @@ try {
 
         logActivity('song.link.dismiss', 'song', $a, ['other' => $b, 'reason' => $reason]);
         ed2_respond(['ok' => true]);
+        break;
+    }
+
+    /* =========================================================================
+     * song_external_ids / song_external_id_add / song_external_id_delete
+     * (#1741 P5b) — tblSongExternalIds' FIRST UI write path.
+     *
+     * ELI5: a song can have a Spotify id, a MusicBrainz recording id, a
+     * SoundExchange code, and so on — this is the little list on the
+     * Metadata tab where a curator can see and add those.
+     *
+     * DETAILED
+     * --------------------------------------------------------------------
+     * The table has existed since D5 (#1741, `migrate-song-external-ids.php`)
+     * and the #1747 D5 backfill mirrored grandfathered identifiers into it,
+     * but until now NOTHING in the editor could read or write a row — this
+     * is that write path. It reuses, never re-forks:
+     *   - the ONE table probe, `songExternalIdsTableExists()`
+     *     (includes/song_external_ids.php), already `require_once`'d at
+     *     module scope for the #1749 P5d ISRC mirror — no second
+     *     INFORMATION_SCHEMA probe under a different name;
+     *   - the ONE IdType/IdScope vocabulary, `RECORDING_EXTERNAL_ID_TYPES`
+     *     + its validators (media_identifiers.php) — `mediaIdentifierIdTypeValid()`
+     *     rejects an unrecognised slug, `mediaIdentifierValidateValue()`
+     *     shape-checks the value "where standard" (a null `validate` pattern
+     *     accepts any non-empty value, per that file's documented contract),
+     *     `mediaIdentifierScopeForType()` derives IdScope server-side — a
+     *     client can never claim its own scope;
+     *   - the ONE ISRC fold, `ihymns_canonical_isrc()` — the identical
+     *     canonicalisation the metadata_field_update ISRC branch applies to
+     *     `tblSongs.Isrc`, so a curator-entered ISRC recording id lands in
+     *     the SAME normalised shape either write path produces.
+     *
+     * No `ed2_touchRevision()` call anywhere below: external IDs are not part
+     * of the song record a revision snapshot restores (scalars/components/
+     * credits/tags/links-the-external-kind) — the SAME posture tblSongLinks
+     * takes (see that section's comment above) and media file metadata takes
+     * (kind/filename/annotation live outside the snapshot too).
+     *
+     * ENTITLEMENT: the file-level editor-role gate only (matches
+     * credit_upsert/tag_attach) — adding or removing an external id is
+     * ordinary curation, not a destructive class like delete_song.
+     * ===================================================================== */
+
+    /* ---- song_external_ids (GET) — a song's external IDs. ---- */
+    case 'song_external_ids': {
+        $songId = trim((string)($_GET['id'] ?? ''));
+        if ($songId === '') { ed2_respond(['ok' => false, 'error' => 'id is required.'], 400); }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+
+        if (!songExternalIdsTableExists($db)) {
+            /* Un-migrated read degrades to an empty list + tableMissing:true,
+               matching song_link_suggestions above — never a mysqli-STRICT
+               throw (rule #35: status/flag is the contract). */
+            ed2_respond(['ok' => true, 'externalIds' => [], 'tableMissing' => true]);
+        }
+
+        $stmt = $db->prepare(
+            'SELECT Id, IdScope, IdType, IdValue, Source, SourceRef
+               FROM tblSongExternalIds
+              WHERE SongId = ?
+              ORDER BY IdType ASC, Id ASC'
+        );
+        $stmt->bind_param('s', $songId);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        $stmt->close();
+
+        ed2_respond(['ok' => true, 'externalIds' => array_map('ed2_songExternalIdRowShape', $rows)]);
+        break;
+    }
+
+    /* ---- song_external_id_add (POST) — add one manual external id. ---- */
+    case 'song_external_id_add': {
+        $songId  = trim((string)($body['songId'] ?? ''));
+        $idType  = trim((string)($body['idType'] ?? ''));
+        $idValue = trim((string)($body['idValue'] ?? ''));
+        if ($songId === '' || $idType === '' || $idValue === '') {
+            ed2_respond(['ok' => false, 'error' => 'songId, idType and idValue are required.'], 400);
+        }
+        if (!ed2_songExists($db, $songId)) { ed2_respond(['ok' => false, 'error' => 'Song not found.'], 404); }
+        if (!songExternalIdsTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the song external IDs (#1741 D5) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+        if (!mediaIdentifierIdTypeValid($idType)) {
+            ed2_respond(['ok' => false, 'error' => 'Unrecognised external-ID type "' . $idType . '".'], 422);
+        }
+        /* ISRC canonicalises FIRST — the SAME fold the metadata_field_update
+           ISRC branch (#1741 P5a) applies, so a value entered here and a value
+           entered on the Metadata tab's ISRC field end up in the identical
+           normalised form (uppercase, no separators) before shape-validation. */
+        if ($idType === 'isrc') {
+            $idValue = ihymns_canonical_isrc($idValue);
+        }
+        if (!mediaIdentifierValidateValue($idType, $idValue)) {
+            $label = RECORDING_EXTERNAL_ID_TYPES[$idType]['label'] ?? $idType;
+            ed2_respond(['ok' => false, 'error' => 'That value does not look like a valid ' . $label . '.'], 422);
+        }
+        /* Server-derived, never a client param — a caller cannot claim its
+           own IdScope for a recognised IdType. */
+        $idScope = (string)(mediaIdentifierScopeForType($idType) ?? 'recording');
+
+        $db->begin_transaction();
+        try {
+            /* INSERT IGNORE — uq_Song_Type_Value (SongId, IdType, IdValue)
+               handles the dupe; $created below tells the client whether a NEW
+               row actually landed, so a re-add of an existing value can say
+               "Already recorded" instead of a silent (and misleading) success. */
+            $source = 'manual';
+            $ins = $db->prepare(
+                'INSERT IGNORE INTO tblSongExternalIds (SongId, IdScope, IdType, IdValue, Source, SourceRef)
+                 VALUES (?, ?, ?, ?, ?, NULL)'
+            );
+            $ins->bind_param('sssss', $songId, $idScope, $idType, $idValue, $source);
+            $ins->execute();
+            $created = $ins->affected_rows > 0;
+            $ins->close();
+
+            /* Re-select on EITHER outcome, so the echo is always the
+               CANONICAL stored row (never the caller's own typed input) —
+               matters most on a collision, where the existing row may carry
+               a different Source (e.g. an earlier #1749 mirror or #1747
+               backfill row for the identical value). */
+            $sel = $db->prepare(
+                'SELECT Id, IdScope, IdType, IdValue, Source, SourceRef
+                   FROM tblSongExternalIds
+                  WHERE SongId = ? AND IdType = ? AND IdValue = ?'
+            );
+            $sel->bind_param('sss', $songId, $idType, $idValue);
+            $sel->execute();
+            $row = $sel->get_result()->fetch_assoc();
+            $sel->close();
+            $db->commit();
+        } catch (\Throwable $e) {
+            $db->rollback();
+            throw $e;
+        }
+
+        logActivity('song.external_id.add', 'song', $songId, ['idType' => $idType, 'idValue' => $idValue]);
+        ed2_respond([
+            'ok'         => true,
+            'externalId' => $row ? ed2_songExternalIdRowShape($row) : null,
+            'created'    => $created,
+        ]);
+        break;
+    }
+
+    /* ---- song_external_id_delete (POST) — remove one external id row. ---- */
+    case 'song_external_id_delete': {
+        $songId = trim((string)($body['songId'] ?? ''));
+        $id     = (int)($body['id'] ?? 0);
+        if ($songId === '' || $id <= 0) {
+            ed2_respond(['ok' => false, 'error' => 'songId and id are required.'], 400);
+        }
+        if (!songExternalIdsTableExists($db)) {
+            ed2_respond(['ok' => false, 'error' => 'This install has not applied the song external IDs (#1741 D5) migration card yet (run it at /manage/setup-database).'], 409);
+        }
+
+        /* SongId in the WHERE alongside Id — defence-in-depth against a
+           cross-song id (a stale/tampered id from a different song's panel
+           can never delete someone else's row). Already-gone -> deleted:0,
+           the same idempotent-double-click posture as song_link_remove
+           above, not an error. A single DELETE is already atomic on its own
+           — no transaction needed (unlike credit_delete/tag_detach's
+           near-identical DELETEs, which open one only because they ALSO call
+           ed2_touchRevision(); this case deliberately does not, so there is
+           nothing else to roll back together). */
+        $del = $db->prepare('DELETE FROM tblSongExternalIds WHERE Id = ? AND SongId = ?');
+        $del->bind_param('is', $id, $songId);
+        $del->execute();
+        $deleted = $del->affected_rows;
+        $del->close();
+
+        /* Deleting the #1749 P5d mirror row is allowed and harmless — the
+           next ISRC save re-mints it (songExternalIdMirrorIsrc() is a
+           DELETE-then-conditional-INSERT keyed on its own ownership
+           predicate); this case never special-cases which row it is. */
+        logActivity('song.external_id.delete', 'song', $songId, ['id' => $id]);
+        ed2_respond(['ok' => true, 'deleted' => (int)max(0, $deleted)]);
         break;
     }
 

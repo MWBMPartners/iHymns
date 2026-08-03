@@ -101,6 +101,11 @@ export function mountMetadataTab(container, opts) {
        re-mounted with it; without this its in-flight fetch would resolve into a
        detached node and its listener would leak. */
     let keyPanelDetach = null;
+    /* #1741 P5b — teardown for the "Recording / external IDs" fieldset. Same
+       reason as keyPanelDetach immediately above: render() wipes the whole
+       container on every `song`-slice change, so this panel is torn down and
+       re-mounted with it. */
+    let extIdsDetach = null;
 
     /**
      * @param {string}   field
@@ -239,6 +244,7 @@ export function mountMetadataTab(container, opts) {
         const song = store.get('song') || {};
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
+        if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         container.innerHTML = '';
         const row = document.createElement('div');
         row.className = 'row g-3';
@@ -345,6 +351,24 @@ export function mountMetadataTab(container, opts) {
                 keyPanelDetach = m.mountSongKeyPanel(container, { songId: songId, toast: toast });
             })
             .catch((e) => { console.error('[metadata-tab] song-key panel failed to load:', e); });
+
+        /* Recording / external IDs (#1741 P5b, tblSongExternalIds' first UI
+           write path) — a card-list of {Spotify, ISRC, MusicBrainz, …} ids for
+           this recording. Mounted BELOW the scalar grid via the SAME
+           dynamically-imported-panel pattern as "Musical key" immediately
+           above (own fieldset, own teardown var, curator who never opens
+           Metadata never pays for the extra module). Lives here rather than
+           as a new editor2.php tab because these ARE song metadata
+           (identifiers about the song), not a Links-tab row — the Links tab's
+           rows carry a `typeId` FK into a completely different registry
+           (tblExternalLinkTypes), so reusing that editor here would mean
+           faking typeIds for a store that doesn't have them. */
+        import('./external-ids-panel.js')
+            .then((m) => {
+                if (disposed || !container.isConnected) { return; }
+                extIdsDetach = m.mountExternalIdsPanel(container, { songId: songId, toast: toast });
+            })
+            .catch((e) => { console.error('[metadata-tab] external-ids panel failed to load:', e); });
     }
 
     const off = store.subscribe('song', render);
@@ -357,6 +381,7 @@ export function mountMetadataTab(container, opts) {
         timers.clear();
         if (placeDetach) { try { placeDetach(); } catch (_e) {} placeDetach = null; }
         if (keyPanelDetach) { try { keyPanelDetach(); } catch (_e) {} keyPanelDetach = null; }
+        if (extIdsDetach) { try { extIdsDetach(); } catch (_e) {} extIdsDetach = null; }
         container.innerHTML = '';
     };
 }
