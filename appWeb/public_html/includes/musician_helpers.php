@@ -1565,23 +1565,297 @@ function musicianSlugColumnExists(\mysqli $db): bool
     return $cached;
 }
 
+/* =========================================================================
+ * ENTITY TYPE VOCABULARY + GENERALISED RELATIONS (#1741 P4a)
+ *
+ * ELI5: two upgrades over the plain member-of-a-group link above.
+ *   1. A musician row can now be classified more precisely than the old
+ *      IsGroup/IsSpecialCase pair of checkboxes — MUSICIAN_TYPES is the ONE
+ *      central vocabulary (person/group/character/orchestra/other).
+ *   2. tblMusicianRelations (formerly "just group membership") can now
+ *      express a SECOND relation shape — 'portrays' — for a person credited
+ *      as portraying a historical/fictional figure in a dramatisation
+ *      ("Anonymous 4 performs as St. Cecilia" style credits). Both relation
+ *      types share the same table + the same SubjectMusicianId/
+ *      ObjectMusicianId direction: "subject HAS-RELATION-TO object" — for
+ *      'member' that reads "the Group subject HAS-MEMBER the person object"
+ *      (unchanged from #1502); for 'portrays' it reads "the portrayer
+ *      subject PORTRAYS the portrayed-figure object". A character page's
+ *      "Portrayed by" section therefore queries
+ *      `ObjectMusicianId = <this row> AND RelationType = 'portrays'`
+ *      (loadMusicianPortrayedBy() below) — never the reverse.
+ *
+ * DETAILED / WHY
+ * ----------------------------------------------------------------------------
+ * `MUSICIAN_TYPES` mirrors the schema.sql `tblMusicians.Type` COMMENT
+ * vocabulary exactly (VARCHAR-not-ENUM, rule #20 — a growable classification
+ * list must never force an ALTER). `musicianTypeApply()` is THE ONE funnel
+ * that writes Type — and, since IsGroup/IsSpecialCase are DERIVED MIRRORS of
+ * it (schema.sql:539-544's COMMENT: "group|orchestra" ⇒ IsGroup=1,
+ * "character|other" ⇒ IsSpecialCase=1), it writes all three columns
+ * together in ONE statement so they can never disagree. From this file's
+ * next edit onward NOTHING outside this function may `SET IsGroup = …` or
+ * `SET IsSpecialCase = …` — enforced by
+ * tests/php/test-musician-profile-fields.php's flag-funnel-ban regex, which
+ * excludes only this file (and appWeb/.sql/, the one-shot backfill
+ * migration that predates the funnel).
+ *
+ * Every helper below is existence-gated the SAME way the rest of this file
+ * is (musicianProfileColumnsExist() / musicianRelationColumnsExist() mirror
+ * musicianFlagsColumnsExist()'s cached-per-request INFORMATION_SCHEMA
+ * probe idiom, generalised to return a per-column map — §0.3.4 in the build
+ * spec — since Type/Biography/Disambiguation, like tblWorks' P4b columns,
+ * could in principle be partially applied).
+ *
+ * @link .claude/catalogue-1741-P4-plan.md §1.2  the build spec this section implements
+ * @see #1741
+ * ========================================================================= */
+
+/**
+ * The entity-type vocabulary — schema.sql's `tblMusicians.Type` COMMENT,
+ * verbatim. Central map (rule #20): never hard-code this list a second
+ * time in manage/musicians.php or musician.php — both `require_once` this
+ * file and read the map.
+ */
+const MUSICIAN_TYPES = [
+    'person'    => 'Person',
+    'group'     => 'Group / collective',
+    'character' => 'Character / persona',
+    'orchestra' => 'Orchestra / ensemble',
+    'other'     => 'Other / special',
+];
+
+/**
+ * The tblMusicianRelations RelationType vocabulary — schema.sql's COMMENT,
+ * verbatim. 'member' is the pre-existing #1502 shape; 'portrays' is new in
+ * #1741 P1/P4a.
+ */
+const MUSICIAN_RELATION_TYPES = [
+    'member'   => 'Member of',
+    'portrays' => 'Portrays',
+];
+
+/**
+ * Cached, per-column probe for the three #1741 P1 tblMusicians profile
+ * columns (Type / Biography / Disambiguation). Returns a map so a caller
+ * can gate each column independently — a partially-applied
+ * migrate-musician-profile.php run (unlikely, but every other probe in
+ * this file assumes the same "any subset may be present" posture, e.g.
+ * tblWorks' `_worksExtraCols()` sibling in SongData.php) never throws
+ * "Unknown column" under mysqli STRICT.
+ *
+ * @return array{Type:bool,Biography:bool,Disambiguation:bool}
+ */
+function musicianProfileColumnsExist(\mysqli $db): array
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $cols = ['Type', 'Biography', 'Disambiguation'];
+    $out  = array_fill_keys($cols, false);
+    try {
+        $ph   = implode(',', array_fill(0, count($cols), '?'));
+        $stmt = $db->prepare(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicians'
+                AND COLUMN_NAME IN ($ph)"
+        );
+        $types = str_repeat('s', count($cols));
+        $stmt->bind_param($types, ...$cols);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $out[(string)$row['COLUMN_NAME']] = true;
+        }
+        $stmt->close();
+    } catch (\Throwable $_e) { /* leave every column false */ }
+    $cached = $out;
+    return $cached;
+}
+
+/**
+ * Cached, per-column probe for the six #1741 P1 tblMusicianRelations
+ * "dated relation" columns. Mirrors musicianProfileColumnsExist() above.
+ *
+ * @return array{RelationType:bool,DateFrom:bool,DateFromPrecision:bool,DateTo:bool,DateToPrecision:bool,Note:bool}
+ */
+function musicianRelationColumnsExist(\mysqli $db): array
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $cols = ['RelationType', 'DateFrom', 'DateFromPrecision', 'DateTo', 'DateToPrecision', 'Note'];
+    $out  = array_fill_keys($cols, false);
+    try {
+        $ph   = implode(',', array_fill(0, count($cols), '?'));
+        $stmt = $db->prepare(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianRelations'
+                AND COLUMN_NAME IN ($ph)"
+        );
+        $types = str_repeat('s', count($cols));
+        $stmt->bind_param($types, ...$cols);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($row = $res->fetch_assoc()) {
+            $out[(string)$row['COLUMN_NAME']] = true;
+        }
+        $stmt->close();
+    } catch (\Throwable $_e) { /* leave every column false */ }
+    $cached = $out;
+    return $cached;
+}
+
+/**
+ * THE ONE write funnel for tblMusicians.Type + its two derived mirrors
+ * (IsGroup / IsSpecialCase). ELI5: pick a type from the drop-down (Person /
+ * Group / Character / Orchestra / Other) and this is the only place that
+ * turns that choice into database columns.
+ *
+ * DETAILED / WHY: before this function, manage/musicians.php (and
+ * api.php's admin_musician_add/_update, the native-app equivalent) each
+ * wrote IsGroup/IsSpecialCase directly from two checkboxes, with no
+ * concept of Type at all. Centralising the write means Type and its
+ * mirrors can never disagree (a curator picking "Character" always yields
+ * IsSpecialCase=1, never a stray IsSpecialCase=0/Type=character split
+ * that would make the old flag-reading code and the new Type-reading code
+ * disagree about the same row) — the exact mapping schema.sql:539-544's
+ * COMMENT documents: group|orchestra ⇒ IsGroup=1; character|other ⇒
+ * IsSpecialCase=1; person ⇒ neither.
+ *
+ * Column-gated (§0.3.4): when the Type column doesn't exist yet
+ * (un-migrated install) this falls back to writing ONLY the two legacy
+ * flag columns — the exact shape the pre-P4a direct writes produced —
+ * and no-ops entirely (returns false, no throw) on an install with
+ * neither Type nor the flag columns.
+ *
+ * @param string $type One of MUSICIAN_TYPES' keys. An unrecognised value
+ *                      is rejected (returns false, no write at all) rather
+ *                      than silently defaulting — callers are expected to
+ *                      have already synthesised a valid key (see
+ *                      manage/musicians.php's checkbox→type fallback).
+ * @return bool True when a write happened (either shape); false when $id/
+ *              $type were invalid, or no relevant column exists at all.
+ */
+function musicianTypeApply(\mysqli $db, int $id, string $type): bool
+{
+    if ($id <= 0) return false;
+    if (!array_key_exists($type, MUSICIAN_TYPES)) return false;
+
+    /* Derived mirrors — fixed mapping, schema.sql:539-544's COMMENT. */
+    $isGroup       = (int)in_array($type, ['group', 'orchestra'], true);
+    $isSpecialCase = (int)in_array($type, ['character', 'other'], true);
+
+    $profileCols = musicianProfileColumnsExist($db);
+    if ($profileCols['Type']) {
+        $stmt = $db->prepare(
+            'UPDATE tblMusicians SET Type = ?, IsGroup = ?, IsSpecialCase = ? WHERE Id = ?'
+        );
+        $stmt->bind_param('siii', $type, $isGroup, $isSpecialCase, $id);
+        $stmt->execute();
+        $stmt->close();
+        return true;
+    }
+
+    /* Type absent — an install that hasn't run migrate-musician-profile.php
+       yet. Fall back to the legacy flags-only write (still column-gated:
+       an ancient pre-#630 install has neither, and gets no write at all,
+       matching every add/update path's pre-P4a behaviour on that install
+       tier). */
+    if (!musicianFlagsColumnsExist($db)) return false;
+    $stmt = $db->prepare('UPDATE tblMusicians SET IsGroup = ?, IsSpecialCase = ? WHERE Id = ?');
+    $stmt->bind_param('iii', $isGroup, $isSpecialCase, $id);
+    $stmt->execute();
+    $stmt->close();
+    return true;
+}
+
+/**
+ * Shape one tblMusicianRelations JOIN tblMusicians row into the array shape
+ * both the admin drawer's Members pre-fill and the public Portrayed-by/
+ * Portrays cards consume. Shared by loadMusicianGroupMembers(),
+ * loadMusicianGroupMembersBulk(), loadMusicianPortrayedBy() and
+ * loadMusicianPortrays() so the five optional date/note columns are named
+ * identically everywhere a caller reads them (rule #35 — one shape, not a
+ * per-caller re-typed array literal).
+ *
+ * @param array<string,mixed> $r One fetch_assoc() row, already carrying
+ *                                Id/Name/Slug + whichever of DateFrom/
+ *                                DateFromPrecision/DateTo/DateToPrecision/
+ *                                Note the caller's own column-gated SELECT
+ *                                fragment included (absent keys read as
+ *                                null via the `?? null` fallbacks below).
+ *                                An optional `RelationId` (the
+ *                                tblMusicianRelations row's OWN Id, distinct
+ *                                from `Id` = the joined PERSON's Id) is
+ *                                carried through as `relationId` when the
+ *                                caller's SELECT included it — the
+ *                                Portrayed-by sub-panel's Remove button
+ *                                needs it to call `action=remove_relation`
+ *                                by relation row Id (§1.2.10); Members rows
+ *                                don't select it and simply get `null` here,
+ *                                since remove_member deletes by the
+ *                                (group,member) pair instead.
+ * @return array{id:int,relationId:?int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}
+ */
+function musicianRelationRowShape(array $r, string $relationType): array
+{
+    return [
+        'id'                => (int)$r['Id'],
+        'relationId'        => isset($r['RelationId']) ? (int)$r['RelationId'] : null,
+        'name'              => (string)$r['Name'],
+        'slug'              => $r['Slug'] ?? null,
+        'relationType'      => $relationType,
+        'dateFrom'          => $r['DateFrom'] ?? null,
+        'dateFromPrecision' => $r['DateFromPrecision'] ?? null,
+        'dateTo'            => $r['DateTo'] ?? null,
+        'dateToPrecision'   => $r['DateToPrecision'] ?? null,
+        'note'              => $r['Note'] ?? null,
+    ];
+}
+
+/**
+ * Build the optional-columns SELECT fragment (`, m.DateFrom, …`) shared by
+ * every tblMusicianRelations reader below, from the same
+ * musicianRelationColumnsExist() map every writer already gates on.
+ */
+function musicianRelationExtraColsSql(array $relCols): string
+{
+    $extra = '';
+    if ($relCols['DateFrom'])          $extra .= ', m.DateFrom';
+    if ($relCols['DateFromPrecision']) $extra .= ', m.DateFromPrecision';
+    if ($relCols['DateTo'])            $extra .= ', m.DateTo';
+    if ($relCols['DateToPrecision'])   $extra .= ', m.DateToPrecision';
+    if ($relCols['Note'])              $extra .= ', m.Note';
+    return $extra;
+}
+
 /**
  * Fetch every member of one Group person, in SortOrder/Id order
  * (append-order — v1 has no drag-reorder UI). Slug is included (NULL on
  * a pre-#588 install) so callers that need to link to a member's public
  * page can do so without a second query.
  *
- * @return list<array{id:int,name:string,slug:?string}>
+ * #1741 P4a — extended (column-gated) to also select the dated-relation
+ * columns and to filter `RelationType = 'member'` once that column
+ * exists, so a 'portrays' row (added via addMusicianRelation() below)
+ * never renders as a band member here. On an install without
+ * RelationType every relation row IS implicitly 'member' (the only shape
+ * the legacy schema could express), so the unfiltered SELECT is already
+ * correct — no filter is added in that case.
+ *
+ * @return list<array{id:int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}>
  */
 function loadMusicianGroupMembers(\mysqli $db, int $groupId): array
 {
     if ($groupId <= 0 || !musicianMembersTableExists($db)) return [];
-    $slugCol = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $slugCol   = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $relCols   = musicianRelationColumnsExist($db);
+    $extraCols = musicianRelationExtraColsSql($relCols);
+    $typeFilter = $relCols['RelationType'] ? " AND m.RelationType = 'member'" : '';
     $stmt = $db->prepare(
-        "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+        "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug{$extraCols}
            FROM tblMusicianRelations m
            JOIN tblMusicians p ON p.Id = m.ObjectMusicianId
-          WHERE m.SubjectMusicianId = ?
+          WHERE m.SubjectMusicianId = ?{$typeFilter}
        ORDER BY m.SortOrder ASC, m.Id ASC"
     );
     $stmt->bind_param('i', $groupId);
@@ -1589,9 +1863,7 @@ function loadMusicianGroupMembers(\mysqli $db, int $groupId): array
     $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
     $out = [];
-    foreach ($rows as $r) {
-        $out[] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
-    }
+    foreach ($rows as $r) { $out[] = musicianRelationRowShape($r, 'member'); }
     return $out;
 }
 
@@ -1599,23 +1871,27 @@ function loadMusicianGroupMembers(\mysqli $db, int $groupId): array
  * Bulk-load group members for many group-person ids in one round-trip.
  * Used by /manage/musicians's list-view render so the Edit drawer's
  * Members pre-fill doesn't cost an extra query per row (mirrors
- * loadMusicianAliasesBulk() above).
+ * loadMusicianAliasesBulk() above). #1741 P4a — same RelationType='member'
+ * filter + extra date/note columns as loadMusicianGroupMembers() above.
  *
  * @param list<int> $groupIds
- * @return array<int, list<array{id:int,name:string,slug:?string}>> SubjectMusicianId → member rows
+ * @return array<int, list<array{id:int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}>> SubjectMusicianId → member rows
  */
 function loadMusicianGroupMembersBulk(\mysqli $db, array $groupIds): array
 {
     $groupIds = array_values(array_filter(array_map('intval', $groupIds), fn($v) => $v > 0));
     if (!$groupIds || !musicianMembersTableExists($db)) return [];
-    $slugCol = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $slugCol   = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $relCols   = musicianRelationColumnsExist($db);
+    $extraCols = musicianRelationExtraColsSql($relCols);
+    $typeFilter = $relCols['RelationType'] ? " AND m.RelationType = 'member'" : '';
     $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
     $types        = str_repeat('i', count($groupIds));
     $stmt = $db->prepare(
-        "SELECT m.SubjectMusicianId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug
+        "SELECT m.SubjectMusicianId AS GroupId, p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug{$extraCols}
            FROM tblMusicianRelations m
            JOIN tblMusicians p ON p.Id = m.ObjectMusicianId
-          WHERE m.SubjectMusicianId IN ($placeholders)
+          WHERE m.SubjectMusicianId IN ($placeholders){$typeFilter}
        ORDER BY m.SubjectMusicianId ASC, m.SortOrder ASC, m.Id ASC"
     );
     $stmt->bind_param($types, ...$groupIds);
@@ -1625,96 +1901,343 @@ function loadMusicianGroupMembersBulk(\mysqli $db, array $groupIds): array
     $grouped = [];
     foreach ($rows as $r) {
         $gid = (int)$r['GroupId'];
-        $grouped[$gid][] = ['id' => (int)$r['Id'], 'name' => (string)$r['Name'], 'slug' => $r['Slug']];
+        $grouped[$gid][] = musicianRelationRowShape($r, 'member');
     }
     return $grouped;
 }
 
 /**
- * Add one member to a group. Idempotent — re-adding an existing member
- * is a no-op success (matches the UNIQUE (SubjectMusicianId, ObjectMusicianId)
- * key's intent: "membership either holds or it doesn't", not an error a
- * curator has to dismiss on a double-click). Guards:
- *   - table must exist (dormant-safe pre-migration)
- *   - both ids must be > 0
- *   - $groupId must reference a row with IsGroup = 1 (a plain individual
- *     is not a valid membership parent)
- *   - $memberId must reference an existing row
- *   - $groupId !== $memberId (no self-membership)
+ * Bulk-load "Portrayed by" performers for many portrayed-figure ids in
+ * one round-trip — the admin list-load's counterpart to
+ * loadMusicianGroupMembersBulk() above, used so the "Portrayed by"
+ * sub-panel on manage/musicians.php's Edit drawer (§1.2.10, rendered for
+ * character/other-type rows) pre-fills without a per-row query. Returns
+ * [] entirely when RelationType isn't a real column yet (mirrors
+ * loadMusicianPortrayedBy()'s single-row sibling).
  *
- * Appends at the end of the group's current member list (SortOrder =
+ * @param list<int> $objectIds The portrayed-figure ids (ObjectMusicianId).
+ * @return array<int, list<array{id:int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}>> ObjectMusicianId → portrayer rows
+ */
+function loadMusicianPortrayedByBulk(\mysqli $db, array $objectIds): array
+{
+    $objectIds = array_values(array_filter(array_map('intval', $objectIds), fn($v) => $v > 0));
+    if (!$objectIds || !musicianMembersTableExists($db)) return [];
+    $relCols = musicianRelationColumnsExist($db);
+    if (!$relCols['RelationType']) return [];
+    $slugCol   = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $extraCols = musicianRelationExtraColsSql($relCols);
+    $placeholders = implode(',', array_fill(0, count($objectIds), '?'));
+    $types        = str_repeat('i', count($objectIds));
+    $stmt = $db->prepare(
+        "SELECT m.ObjectMusicianId AS FigureId, p.Id AS Id, m.Id AS RelationId, p.Name AS Name, {$slugCol} AS Slug{$extraCols}
+           FROM tblMusicianRelations m
+           JOIN tblMusicians p ON p.Id = m.SubjectMusicianId
+          WHERE m.ObjectMusicianId IN ($placeholders) AND m.RelationType = 'portrays'
+       ORDER BY m.ObjectMusicianId ASC, m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param($types, ...$objectIds);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $grouped = [];
+    foreach ($rows as $r) {
+        $fid = (int)$r['FigureId'];
+        $grouped[$fid][] = musicianRelationRowShape($r, 'portrays');
+    }
+    return $grouped;
+}
+
+/**
+ * Every figure this person (an actor / performer, $id) is credited as
+ * portraying — the "Portrays" card on their own public page. Inverse of
+ * loadMusicianPortrayedBy() below: reads the SUBJECT side.
+ *
+ * Returns [] whenever RelationType isn't a real column yet — a
+ * 'portrays' relation cannot exist to find on that install (the legacy
+ * schema can only express 'member').
+ *
+ * @return list<array{id:int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}>
+ */
+function loadMusicianPortrays(\mysqli $db, int $id): array
+{
+    if ($id <= 0 || !musicianMembersTableExists($db)) return [];
+    $relCols = musicianRelationColumnsExist($db);
+    if (!$relCols['RelationType']) return [];
+    $slugCol   = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $extraCols = musicianRelationExtraColsSql($relCols);
+    $stmt = $db->prepare(
+        "SELECT p.Id AS Id, p.Name AS Name, {$slugCol} AS Slug{$extraCols}
+           FROM tblMusicianRelations m
+           JOIN tblMusicians p ON p.Id = m.ObjectMusicianId
+          WHERE m.SubjectMusicianId = ? AND m.RelationType = 'portrays'
+       ORDER BY m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $out = [];
+    foreach ($rows as $r) { $out[] = musicianRelationRowShape($r, 'portrays'); }
+    return $out;
+}
+
+/**
+ * Every performer credited as portraying THIS figure ($id) — the
+ * "Portrayed by" card on a character/other-type person's own public page.
+ * Direction, verbatim from the plan (record here, not just in the plan,
+ * since this is the load-bearing query): the relation verb reads FROM
+ * subject TO object ("subject portrays object"), so "who portrays ME" is
+ * `ObjectMusicianId = <this row> AND RelationType = 'portrays'` — the
+ * SUBJECT side of each matching row is the portrayer. Inverse of
+ * loadMusicianPortrays() above.
+ *
+ * @return list<array{id:int,name:string,slug:?string,relationType:string,dateFrom:?string,dateFromPrecision:?string,dateTo:?string,dateToPrecision:?string,note:?string}>
+ */
+function loadMusicianPortrayedBy(\mysqli $db, int $id): array
+{
+    if ($id <= 0 || !musicianMembersTableExists($db)) return [];
+    $relCols = musicianRelationColumnsExist($db);
+    if (!$relCols['RelationType']) return [];
+    $slugCol   = musicianSlugColumnExists($db) ? 'p.Slug' : 'NULL';
+    $extraCols = musicianRelationExtraColsSql($relCols);
+    $stmt = $db->prepare(
+        "SELECT p.Id AS Id, m.Id AS RelationId, p.Name AS Name, {$slugCol} AS Slug{$extraCols}
+           FROM tblMusicianRelations m
+           JOIN tblMusicians p ON p.Id = m.SubjectMusicianId
+          WHERE m.ObjectMusicianId = ? AND m.RelationType = 'portrays'
+       ORDER BY m.SortOrder ASC, m.Id ASC"
+    );
+    $stmt->bind_param('i', $id);
+    $stmt->execute();
+    $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    $stmt->close();
+    $out = [];
+    foreach ($rows as $r) { $out[] = musicianRelationRowShape($r, 'portrays'); }
+    return $out;
+}
+
+/**
+ * Add one relation row — generalisation of the #1502 "add group member"
+ * write, now covering BOTH relation types (§1.2.5 of the build spec).
+ * Idempotent — re-adding an existing (subject, object, relationType)
+ * combination is a no-op success, matching addMusicianGroupMember()'s
+ * original "membership either holds or it doesn't" contract (the dedupe
+ * check below deliberately ignores dates: this phase's UI offers one
+ * relation row per (subject,object,type), not multiple dated stints —
+ * schema.sql's uq_subject_object_rel key allows more, a future UI could
+ * use it, but that is not this phase's scope).
+ *
+ * Guards:
+ *   - table must exist (dormant-safe pre-migration)
+ *   - both ids must be > 0, and $subjectId !== $objectId (no self-relation)
+ *   - an install without RelationType can only express 'member' (the
+ *     legacy shape) — 'portrays' is rejected with a migration-needed error
+ *   - for 'member': $subjectId must reference a row with IsGroup = 1 (the
+ *     pre-existing addMusicianGroupMember() guard, preserved verbatim)
+ *   - for 'portrays': no IsGroup guard (any musician can be a portrayer);
+ *     $subjectId merely needs to exist
+ *   - $objectId must reference an existing row
+ *
+ * Appends at the end of the subject's current relation list (SortOrder =
  * current max + 1) — v1 has no drag-reorder UI, so every add lands last.
+ *
+ * Direction (verbatim from the plan): the relation verb reads FROM
+ * subject TO object — for 'member' that's "subject GROUP has-member
+ * object PERSON" (unchanged since #1502); for 'portrays' that's "subject
+ * PORTRAYER portrays object PORTRAYED-FIGURE".
  *
  * @return array{ok:bool, error?:string, member?:array{id:int,name:string}}
  */
-function addMusicianGroupMember(\mysqli $db, int $groupId, int $memberId): array
-{
+function addMusicianRelation(
+    \mysqli $db,
+    int     $subjectId,
+    int     $objectId,
+    string  $relationType,
+    ?string $dateFrom = null,
+    ?string $dateFromPrec = null,
+    ?string $dateTo = null,
+    ?string $dateToPrec = null,
+    ?string $note = null
+): array {
     if (!musicianMembersTableExists($db)) {
-        return ['ok' => false, 'error' => 'Group membership needs a pending migration — run it from /manage/setup-database first.'];
+        return ['ok' => false, 'error' => 'Relations need a pending migration — run it from /manage/setup-database first.'];
     }
-    if ($groupId <= 0 || $memberId <= 0) {
-        return ['ok' => false, 'error' => 'Both a group and a member are required.'];
+    if ($subjectId <= 0 || $objectId <= 0) {
+        return ['ok' => false, 'error' => 'Both a subject and an object are required.'];
     }
-    if ($groupId === $memberId) {
-        return ['ok' => false, 'error' => 'A group cannot list itself as a member.'];
-    }
-    /* IsGroup itself is a gated column (#585, migrate-musicians-flags.php)
-       — an install new enough to have run THIS migration will almost
-       certainly have that one too, but check anyway rather than assume,
-       since a raw `SELECT IsGroup` would throw under mysqli's STRICT
-       reporting on a column that doesn't exist (matches the same gate
-       musicianFlagsColumnsExist() enforces elsewhere in this file). */
-    if (!musicianFlagsColumnsExist($db)) {
-        return ['ok' => false, 'error' => 'Group membership needs the Credit People classification-flags migration to be run first.'];
+    if ($subjectId === $objectId) {
+        return ['ok' => false, 'error' => 'A person cannot have a relation to themselves.'];
     }
 
-    $stmt = $db->prepare('SELECT IsGroup FROM tblMusicians WHERE Id = ? LIMIT 1');
-    $stmt->bind_param('i', $groupId);
-    $stmt->execute();
-    $groupRow = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
-    if (!$groupRow) return ['ok' => false, 'error' => 'Group person not found.'];
-    if ((int)($groupRow['IsGroup'] ?? 0) !== 1) {
-        return ['ok' => false, 'error' => 'That person is not flagged as a Group.'];
+    $relCols         = musicianRelationColumnsExist($db);
+    $hasRelationType = $relCols['RelationType'];
+    if ($hasRelationType) {
+        if (!array_key_exists($relationType, MUSICIAN_RELATION_TYPES)) {
+            return ['ok' => false, 'error' => 'Unrecognised relation type.'];
+        }
+    } elseif ($relationType !== 'member') {
+        /* Legacy install — RelationType doesn't exist, so only the
+           implicit 'member' shape can be represented at all. */
+        return ['ok' => false, 'error' => 'This relation type needs a pending migration — run it from /manage/setup-database first.'];
+    }
+
+    if ($relationType === 'member') {
+        /* Preserved verbatim from addMusicianGroupMember() (#1502): IsGroup
+           itself is a gated column (#585, migrate-musicians-flags.php) — an
+           install new enough to have RelationType will almost certainly
+           have that one too, but check anyway rather than assume, since a
+           raw `SELECT IsGroup` would throw under mysqli's STRICT reporting
+           on a column that doesn't exist. */
+        if (!musicianFlagsColumnsExist($db)) {
+            return ['ok' => false, 'error' => 'Group membership needs the Credit People classification-flags migration to be run first.'];
+        }
+        $stmt = $db->prepare('SELECT IsGroup FROM tblMusicians WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $subjectId);
+        $stmt->execute();
+        $subjectRow = $stmt->get_result()->fetch_assoc();
+        $stmt->close();
+        if (!$subjectRow) return ['ok' => false, 'error' => 'Group person not found.'];
+        if ((int)($subjectRow['IsGroup'] ?? 0) !== 1) {
+            return ['ok' => false, 'error' => 'That person is not flagged as a Group.'];
+        }
+    } else {
+        /* 'portrays' — no IsGroup guard; the subject just needs to exist. */
+        $stmt = $db->prepare('SELECT Id FROM tblMusicians WHERE Id = ? LIMIT 1');
+        $stmt->bind_param('i', $subjectId);
+        $stmt->execute();
+        $subjectExists = $stmt->get_result()->fetch_row() !== null;
+        $stmt->close();
+        if (!$subjectExists) return ['ok' => false, 'error' => 'Person not found.'];
     }
 
     $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ? LIMIT 1');
-    $stmt->bind_param('i', $memberId);
+    $stmt->bind_param('i', $objectId);
     $stmt->execute();
-    $memberRow = $stmt->get_result()->fetch_assoc();
+    $objectRow = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    if (!$memberRow) return ['ok' => false, 'error' => 'Member person not found.'];
+    if (!$objectRow) return ['ok' => false, 'error' => 'Person not found.'];
 
-    $stmt = $db->prepare('SELECT Id FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ? LIMIT 1');
-    $stmt->bind_param('ii', $groupId, $memberId);
+    /* Subject's Name — needed for the response shape below. For 'member'
+       the caller already has the subject (it's the group being edited)
+       so this is only actually consumed by 'portrays' callers, but it's
+       cheap and keeps the response shape uniform across both types. */
+    $stmt = $db->prepare('SELECT Name FROM tblMusicians WHERE Id = ? LIMIT 1');
+    $stmt->bind_param('i', $subjectId);
     $stmt->execute();
-    $already = $stmt->get_result()->fetch_row() !== null;
+    $subjectNameRow = $stmt->get_result()->fetch_assoc();
     $stmt->close();
-    if ($already) {
-        return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+    $subjectName = $subjectNameRow ? (string)$subjectNameRow['Name'] : '';
+
+    /* Idempotent dedupe — same (subject, object[, type]) already exists.
+       Filtered by RelationType only when the column exists (mirrors every
+       other gate in this function); on a legacy install every row IS a
+       'member' row, so the unfiltered check is already correct. */
+    if ($hasRelationType) {
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ? AND RelationType = ? LIMIT 1');
+        $stmt->bind_param('iis', $subjectId, $objectId, $relationType);
+    } else {
+        $stmt = $db->prepare('SELECT Id FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ? LIMIT 1');
+        $stmt->bind_param('ii', $subjectId, $objectId);
+    }
+    $stmt->execute();
+    $existingRow = $stmt->get_result()->fetch_row();
+    $stmt->close();
+    if ($existingRow) {
+        return _musicianRelationAddedResponse((int)$existingRow[0], $subjectId, $subjectName, $objectId, (string)$objectRow['Name']);
     }
 
     $stmt = $db->prepare('SELECT COALESCE(MAX(SortOrder), -1) + 1 FROM tblMusicianRelations WHERE SubjectMusicianId = ?');
-    $stmt->bind_param('i', $groupId);
+    $stmt->bind_param('i', $subjectId);
     $stmt->execute();
     $nextRow  = $stmt->get_result()->fetch_row();
     $nextSort = (int)($nextRow[0] ?? 0);
     $stmt->close();
 
-    $stmt = $db->prepare(
-        'INSERT INTO tblMusicianRelations (SubjectMusicianId, ObjectMusicianId, SortOrder) VALUES (?, ?, ?)'
-    );
-    $stmt->bind_param('iii', $groupId, $memberId, $nextSort);
+    /* Column-gated INSERT — SubjectMusicianId/ObjectMusicianId/SortOrder
+       always write; RelationType + the four date/note columns each drop
+       out independently when absent (§0.3.4), never an all-or-nothing
+       branch. */
+    $cols  = ['SubjectMusicianId', 'ObjectMusicianId', 'SortOrder'];
+    $types = 'iii';
+    $vals  = [$subjectId, $objectId, $nextSort];
+    if ($hasRelationType)               { $cols[] = 'RelationType';      $types .= 's'; $vals[] = $relationType; }
+    if ($relCols['DateFrom'])           { $cols[] = 'DateFrom';          $types .= 's'; $vals[] = $dateFrom; }
+    if ($relCols['DateFromPrecision'])  { $cols[] = 'DateFromPrecision'; $types .= 's'; $vals[] = $dateFromPrec; }
+    if ($relCols['DateTo'])             { $cols[] = 'DateTo';            $types .= 's'; $vals[] = $dateTo; }
+    if ($relCols['DateToPrecision'])    { $cols[] = 'DateToPrecision';   $types .= 's'; $vals[] = $dateToPrec; }
+    if ($relCols['Note'])               { $cols[] = 'Note';              $types .= 's'; $vals[] = $note; }
+
+    $placeholders = implode(',', array_fill(0, count($cols), '?'));
+    $stmt = $db->prepare('INSERT INTO tblMusicianRelations (' . implode(',', $cols) . ') VALUES (' . $placeholders . ')');
+    $stmt->bind_param($types, ...$vals);
     $stmt->execute();
+    $newRelationId = (int)$db->insert_id;
     $stmt->close();
 
-    return ['ok' => true, 'member' => ['id' => $memberId, 'name' => (string)$memberRow['Name']]];
+    return _musicianRelationAddedResponse($newRelationId, $subjectId, $subjectName, $objectId, (string)$objectRow['Name']);
 }
 
 /**
- * Remove one member from a group. Idempotent — removing a non-member
- * (already removed, or never a member) is a 0-rows-affected success,
- * not an error.
+ * Build addMusicianRelation()'s success response. ELI5: whoever called
+ * add_member/add_relation needs to know what just got added — but "what
+ * got added" means a DIFFERENT side of the relation depending on
+ * direction: for 'member' the caller already knows the subject (the
+ * group being edited) and wants the OBJECT (the new member) back; for
+ * 'portrays' the caller already knows the object (the figure being
+ * edited) and wants the SUBJECT (the new portrayer) back. Rather than
+ * have the two call sites guess which field means what, this returns
+ * BOTH sides explicitly (`subject`/`object`) plus the relation row's own
+ * Id (`relationId`, needed by the Portrayed-by sub-panel's Remove button
+ * — see removeMusicianRelation()'s doc-block) — AND keeps the original
+ * `member` key (`{id, name}` = the OBJECT) for back-compat with
+ * addMemberRow()'s existing JS shape, unchanged since #1502.
+ *
+ * @return array{ok:true, relationId:int, member:array{id:int,name:string},
+ *               subject:array{id:int,name:string}, object:array{id:int,name:string}}
+ */
+function _musicianRelationAddedResponse(
+    int    $relationId,
+    int    $subjectId,
+    string $subjectName,
+    int    $objectId,
+    string $objectName
+): array {
+    return [
+        'ok'         => true,
+        'relationId' => $relationId,
+        'member'     => ['id' => $objectId, 'name' => $objectName], // back-compat shape (#1502)
+        'subject'    => ['id' => $subjectId, 'name' => $subjectName],
+        'object'     => ['id' => $objectId, 'name' => $objectName],
+    ];
+}
+
+/**
+ * Add one member to a group. #1741 P4a — now a thin `'member'`-typed
+ * wrapper around addMusicianRelation() (keeps this function's own
+ * pre-existing IsGroup-subject guard + idempotent-dedupe + self-relation
+ * guard, all preserved inside addMusicianRelation() verbatim); kept as its
+ * own name because manage/musicians.php's existing `add_member` endpoint
+ * (and its client-side fetch()) still calls it by this name — rule #33,
+ * an internal call site is still a contract worth an alias.
+ *
+ * @return array{ok:bool, error?:string, member?:array{id:int,name:string}}
+ */
+function addMusicianGroupMember(\mysqli $db, int $groupId, int $memberId): array
+{
+    return addMusicianRelation($db, $groupId, $memberId, 'member');
+}
+
+/**
+ * Remove one 'member'-typed relation between a group and a member.
+ * Idempotent — removing a non-member (already removed, or never a
+ * member) is a 0-rows-affected success, not an error.
+ *
+ * #1741 P4a — the DELETE now filters `RelationType = 'member'` once that
+ * column exists, so removing a group member can never accidentally take a
+ * 'portrays' relation between the same two rows with it (a real, if
+ * unusual, possibility now that a pair can hold both relation types). On
+ * a legacy install every row IS a 'member' row, so the unfiltered DELETE
+ * was — and remains — correct there.
  *
  * @return array{ok:bool, error?:string, removed?:int}
  */
@@ -1726,8 +2249,42 @@ function removeMusicianGroupMember(\mysqli $db, int $groupId, int $memberId): ar
     if ($groupId <= 0 || $memberId <= 0) {
         return ['ok' => false, 'error' => 'Both a group and a member are required.'];
     }
-    $stmt = $db->prepare('DELETE FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ?');
+    $relCols = musicianRelationColumnsExist($db);
+    if ($relCols['RelationType']) {
+        $stmt = $db->prepare("DELETE FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ? AND RelationType = 'member'");
+    } else {
+        $stmt = $db->prepare('DELETE FROM tblMusicianRelations WHERE SubjectMusicianId = ? AND ObjectMusicianId = ?');
+    }
     $stmt->bind_param('ii', $groupId, $memberId);
+    $stmt->execute();
+    $removed = $stmt->affected_rows;
+    $stmt->close();
+    return ['ok' => true, 'removed' => $removed];
+}
+
+/**
+ * Remove one relation row by its own Id. This is what the Portrayed-by
+ * sub-panel's Remove button calls (`action=remove_relation`,
+ * manage/musicians.php) — unlike Members, whose rendered rows carry only
+ * the OTHER person's id (so removeMusicianGroupMember() deletes by the
+ * (group,member) pair instead), the Portrayed-by rows carry the relation
+ * row's own Id via musicianRelationRowShape()'s `relationId` key
+ * (populated by loadMusicianPortrayedBy()/…Bulk()'s `m.Id AS RelationId`
+ * SELECT), so a delete-by-primary-key is both possible and simplest here.
+ * Idempotent — deleting an already-gone Id is a 0-rows-affected success.
+ *
+ * @return array{ok:bool, error?:string, removed?:int}
+ */
+function removeMusicianRelation(\mysqli $db, int $relationId): array
+{
+    if (!musicianMembersTableExists($db)) {
+        return ['ok' => false, 'error' => 'Relations need a pending migration — run it from /manage/setup-database first.'];
+    }
+    if ($relationId <= 0) {
+        return ['ok' => false, 'error' => 'A relation id is required.'];
+    }
+    $stmt = $db->prepare('DELETE FROM tblMusicianRelations WHERE Id = ?');
+    $stmt->bind_param('i', $relationId);
     $stmt->execute();
     $removed = $stmt->affected_rows;
     $stmt->close();

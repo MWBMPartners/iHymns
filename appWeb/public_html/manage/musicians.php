@@ -99,12 +99,15 @@ $logMusician = static function (string $action, string $entityId, array $details
 /* ----------------------------------------------------------------------
  * Helpers — link / IPI sub-form normalisation (#719 PR 2d)
  *
- * The link-type catalogue, the two normalisers, and the
- * flag-columns-exist probe now live in
+ * The link-type catalogue and the two normalisers live in
  * /includes/musician_helpers.php. The closures kept here are
  * thin wrappers so the existing call sites below ($normaliseLinks,
- * $normaliseIpi, _musFlagsColumnsExist) keep working unchanged.
- * ---------------------------------------------------------------------- */
+ * $normaliseIpi) keep working unchanged. (The flag-columns-exist probe
+ * this comment used to mention its own page-local wrapper for,
+ * `_musFlagsColumnsExist()`, was removed in #1741 P4a — the add/
+ * update_person handlers no longer branch on it directly, since
+ * IsSpecialCase/IsGroup are now written ONLY by
+ * `musicianTypeApply()` in musician_helpers.php.) */
 $ALIAS_TYPES         = MUSICIAN_ALIAS_TYPES;
 $normaliseLinks      = static fn(\mysqli $db, mixed $raw): array => normaliseMusicianLinks($db, $raw);
 $normaliseIpi        = static fn(mixed $raw): array => normaliseMusicianIpi($raw);
@@ -160,14 +163,6 @@ $normaliseAliases    = static fn(mixed $raw): array => normaliseMusicianAliases(
    section once $db is in scope. */
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes'
     . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
-
-/* Wrapper kept under the original snake_case private-prefix name so
-   existing call sites in this file keep working without further
-   touch-up. */
-function _musFlagsColumnsExist(\mysqli $db): bool
-{
-    return musicianFlagsColumnsExist($db);
-}
 
 /* ----------------------------------------------------------------------
  * GET endpoint — view_songs JSON
@@ -315,14 +310,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && (string)($_GET['action'] ?? '') === 
  * time. Both actions return JSON and `exit` immediately; on any
  * non-match they fall through to the rest of the file unchanged.
  *
- * POST action=add_member    group_id=<int> member_id=<int>
+ * POST action=add_member    group_id=<int> member_id=<int> [relation_type] [date_from] [date_to] [note]
  * POST action=remove_member group_id=<int> member_id=<int>
  *
- * The actual validation (self-membership guard, existence checks,
- * idempotent dupe handling, table-existence gate) lives in the shared
- * addMusicianGroupMember() / removeMusicianGroupMember()
- * helpers — see includes/musician_helpers.php — so it's testable
- * independent of this dispatch block.
+ * #1741 P4a — `add_member` now grows the optional relation_type/date_from/
+ * date_to/note params and delegates straight to the generalised
+ * addMusicianRelation() (relation_type defaults to 'member' when absent,
+ * so the pre-P4a two-param POST shape still works unchanged). The actual
+ * validation (self-membership guard, IsGroup-subject guard, idempotent
+ * dupe handling, table-existence gate) lives in that shared helper — see
+ * includes/musician_helpers.php — so it's testable independent of this
+ * dispatch block. `remove_member` stays on removeMusicianGroupMember()
+ * (a 'member'-scoped delete by the (group,member) pair); the general
+ * by-Id `remove_relation` endpoint below is what a Portrayed-by/Portrays
+ * row (which has no natural group/member pair) uses instead.
  * ---------------------------------------------------------------------- */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'add_member') {
     header('Content-Type: application/json; charset=UTF-8');
@@ -337,10 +338,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
 
     $groupId  = (int)($_POST['group_id']  ?? 0);
     $memberId = (int)($_POST['member_id'] ?? 0);
+    /* #1741 P4a — optional relation dates/note. relation_type is pinned to
+       'member' here regardless of what's posted — this endpoint is
+       specifically the Members card-list; a 'portrays' add always goes
+       through action=add_relation below. */
+    $memPb = partialDateParse((string)($_POST['date_from'] ?? ''));
+    $memPd = partialDateParse((string)($_POST['date_to']   ?? ''));
+    $memDateFrom = $memPb['ok'] ? $memPb['date'] : null;
+    $memDateFromPrec = $memPb['ok'] ? $memPb['precision'] : null;
+    $memDateTo = $memPd['ok'] ? $memPd['date'] : null;
+    $memDateToPrec = $memPd['ok'] ? $memPd['precision'] : null;
+    $memNote = musTrimmed($_POST['note'] ?? '') ?: null; // #trim
 
     try {
         $db     = getDbMysqli();
-        $result = addMusicianGroupMember($db, $groupId, $memberId);
+        $result = addMusicianRelation(
+            $db, $groupId, $memberId, 'member',
+            $memDateFrom, $memDateFromPrec, $memDateTo, $memDateToPrec, $memNote
+        );
         if (!$result['ok']) {
             http_response_code(400);
             echo json_encode($result);
@@ -349,6 +364,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
         $logMusician('member_add', (string)$groupId, [
             'group_id'  => $groupId,
             'member_id' => $memberId,
+            'date_from' => $memDateFrom,
+            'date_to'   => $memDateTo,
         ]);
         echo json_encode($result);
         exit;
@@ -392,6 +409,110 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
         error_log('[manage/musicians.php] remove_member failed: ' . $e->getMessage());
         http_response_code(500);
         echo json_encode(['ok' => false, 'error' => 'Could not remove member.']);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------------------
+ * POST endpoints — add_relation / remove_relation (#1741 P4a)
+ *
+ * ELI5: the general-purpose write pair for tblMusicianRelations, covering
+ * BOTH relation types. Both are what the "Portrayed by" sub-panel on a
+ * character/other-type row's Edit drawer (§1.2.10) POSTs to — `add_relation`
+ * on pick, `remove_relation` (by the relation row's OWN Id, carried in the
+ * rendered row as `relationId` — see loadMusicianPortrayedBy()'s
+ * `m.Id AS RelationId` select + musicianRelationRowShape()'s doc-block) on
+ * the row's Remove button. Members stays on its own add_member/
+ * remove_member pair above (a 'member'-typed thin wrapper deleting by the
+ * (group,member) pair — no relation-row-Id tracking needed there). Same
+ * live-persist-on-pick shape and the same validateCsrfRequest() same-origin
+ * CSRF check as add_member/remove_member.
+ *
+ * POST action=add_relation    subject_id=<int> object_id=<int> relation_type=<string> [date_from] [date_to] [note]
+ * POST action=remove_relation id=<int>   (the tblMusicianRelations row's own Id)
+ *
+ * Validation (self-relation guard, column-gating, idempotent dedupe)
+ * lives in addMusicianRelation() / removeMusicianRelation() — see
+ * includes/musician_helpers.php.
+ * ---------------------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'add_relation') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $subjectId    = (int)($_POST['subject_id'] ?? 0);
+    $objectId     = (int)($_POST['object_id']  ?? 0);
+    $relationType = musTrimmed($_POST['relation_type'] ?? 'portrays'); // #trim
+    $relPb = partialDateParse((string)($_POST['date_from'] ?? ''));
+    $relPd = partialDateParse((string)($_POST['date_to']   ?? ''));
+    $relDateFrom = $relPb['ok'] ? $relPb['date'] : null;
+    $relDateFromPrec = $relPb['ok'] ? $relPb['precision'] : null;
+    $relDateTo = $relPd['ok'] ? $relPd['date'] : null;
+    $relDateToPrec = $relPd['ok'] ? $relPd['precision'] : null;
+    $relNote = musTrimmed($_POST['note'] ?? '') ?: null; // #trim
+
+    try {
+        $db     = getDbMysqli();
+        $result = addMusicianRelation(
+            $db, $subjectId, $objectId, $relationType,
+            $relDateFrom, $relDateFromPrec, $relDateTo, $relDateToPrec, $relNote
+        );
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logMusician('relation_add', (string)$subjectId, [
+            'subject_id'    => $subjectId,
+            'object_id'     => $objectId,
+            'relation_type' => $relationType,
+            'date_from'     => $relDateFrom,
+            'date_to'       => $relDateTo,
+        ]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/musicians.php] add_relation failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not add relation.']);
+        exit;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'remove_relation') {
+    header('Content-Type: application/json; charset=UTF-8');
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
+
+    if (!validateCsrfRequest((string)($_POST['csrf_token'] ?? ''))) {
+        http_response_code(403);
+        echo json_encode(['ok' => false, 'error' => 'CSRF check failed — please retry.']);
+        exit;
+    }
+
+    $relationId = (int)($_POST['id'] ?? 0);
+
+    try {
+        $db     = getDbMysqli();
+        $result = removeMusicianRelation($db, $relationId);
+        if (!$result['ok']) {
+            http_response_code(400);
+            echo json_encode($result);
+            exit;
+        }
+        $logMusician('relation_remove', (string)$relationId, ['id' => $relationId]);
+        echo json_encode($result);
+        exit;
+    } catch (\Throwable $e) {
+        error_log('[manage/musicians.php] remove_relation failed: ' . $e->getMessage());
+        http_response_code(500);
+        echo json_encode(['ok' => false, 'error' => 'Could not remove relation.']);
         exit;
     }
 }
@@ -557,6 +678,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+                /* #1741 P4a — Type. Named $musicianType (NOT $type) because
+                   this same case-block reuses the bare $type variable
+                   further down as the tblMusicianIdentifiers IdentifierType
+                   scratch var ('ipi' / 'isni') when writing the IPI/ISNI
+                   sub-forms — reusing that name here would get silently
+                   clobbered before logActivity() reads it back. When the
+                   drawer's Type <select> posted a recognised MUSICIAN_TYPES
+                   key (the column-exists branch, §1.2.8), it wins.
+                   Otherwise (an install still on the two checkboxes)
+                   synthesise $musicianType from them — group→'group',
+                   special→'other', else 'person' — so EVERY install reaches
+                   the same single write funnel (musicianTypeApply(), called
+                   after the INSERT below) with a valid type either way.
+                   $isSpecialCase/$isGroup are then re-derived FROM
+                   $musicianType so the rest of this handler
+                   (individual-only structured-name fields, IPI section)
+                   sees a consistent classification regardless of which UI
+                   shape posted. */
+                $typePosted = musTrimmed($_POST['type'] ?? ''); // #trim
+                if ($typePosted !== '' && array_key_exists($typePosted, MUSICIAN_TYPES)) {
+                    $musicianType = $typePosted;
+                } else {
+                    $musicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                }
+                $isGroup       = (int)in_array($musicianType, ['group', 'orchestra'], true);
+                $isSpecialCase = (int)in_array($musicianType, ['character', 'other'], true);
+
                 /* #934 — structured-name parts. Only meaningful for
                    individuals; for Group / Special-case rows we leave
                    them NULL and use Name as-is. For individuals, Name
@@ -577,6 +725,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                    rule as the other structured-name parts above. */
                 $maidenSurnameRaw = musTrimmed($_POST['maiden_surname'] ?? ''); // #trim
                 $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
+                /* #1741 P4a — Biography (public bio, replaces Notes as the
+                   public read path — musician.php's notes-as-bio-fallback)
+                   + Disambiguation ("(the elder)"-style short parenthetical).
+                   Always read (mirrors the maiden-surname "always render,
+                   gate only the write" convention, #1501); persisted via a
+                   separate column-gated UPDATE below (§0.3.3 — never added
+                   to the multi-branch INSERT). */
+                $biographyRaw     = musTrimmed($_POST['biography'] ?? ''); // #trim
+                $biography        = $biographyRaw !== '' ? $biographyRaw : null;
+                $disambiguation   = mb_substr(musTrimmed($_POST['disambiguation'] ?? ''), 0, 255); // #trim
 
                 if ($name === '')                       { $error = 'Name is required.'; break; }
                 if (mb_strlen($name) > 255)             { $error = 'Name must be 255 characters or fewer.'; break; }
@@ -595,13 +753,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
                 $db->begin_transaction();
                 try {
-                    /* Detect whether the flag columns from #584/#585 are
-                       present yet (#630). On a partly-migrated install
-                       — flags migration not applied — the INSERT must
-                       skip those columns rather than throw "Unknown
-                       column", which is what surfaced as the
-                       "Database error" banner before #635 unmasked it. */
-                    $hasFlagsCols = _musFlagsColumnsExist($db);
+                    /* #1741 P4a — IsSpecialCase/IsGroup are no longer
+                       written directly here (or anywhere outside
+                       musicianTypeApply(), see below) — that dropped the
+                       `hasFlagsCols` dimension this multi-branch INSERT
+                       used to need, simplifying it from six shapes to four. */
                     /* #934 — name-parts columns only present after the
                        structured-name migration. Pre-migration installs
                        fall through to the legacy INSERT shape; the three
@@ -617,49 +773,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                        helper omits the column conditionally below. */
                     $slug         = generateUniqueMusicianSlug($db, $name);
                     $hasSlugCol   = $slug !== '';
-                    if ($hasFlagsCols && $hasNameParts && $hasSlugCol) {
+                    if ($hasNameParts && $hasSlugCol) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblMusicians
                                 (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
-                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                                 FirstNames, Surname, Suffix)
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
                         );
-                        $stmt->bind_param('sssssssiisss',
+                        $stmt->bind_param('ssssssssss',
                             $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup,
                             $firstNames, $surname, $suffix
                         );
-                    } elseif ($hasFlagsCols && $hasNameParts) {
+                    } elseif ($hasNameParts) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblMusicians
                                 (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
-                                 IsSpecialCase, IsGroup, FirstNames, Surname, Suffix)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('ssssssiisss',
-                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup,
-                            $firstNames, $surname, $suffix
-                        );
-                    } elseif ($hasFlagsCols && $hasSlugCol) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblMusicians
-                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
+                                 FirstNames, Surname, Suffix)
                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
                         );
-                        $stmt->bind_param('sssssssii',
-                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
-                        );
-                    } elseif ($hasFlagsCols) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblMusicians
-                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('ssssssii',
+                        $stmt->bind_param('sssssssss',
                             $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
+                            $firstNames, $surname, $suffix
                         );
                     } elseif ($hasSlugCol) {
                         $stmt = $db->prepare(
@@ -683,6 +817,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+
+                    /* #1741 P4a — THE ONE flags/Type write funnel (rule
+                       guard: tests/php/test-musician-profile-fields.php's
+                       flag-funnel-ban). Writes Type (when present) plus
+                       its derived IsGroup/IsSpecialCase mirrors, or falls
+                       back to the flags-only legacy shape. */
+                    musicianTypeApply($db, $newId, $musicianType);
+
+                    /* #1741 P4a — Biography + Disambiguation, a separate
+                       column-gated UPDATE (§0.3.3 pattern — never folded
+                       into the multi-branch INSERT above). */
+                    $profileCols = musicianProfileColumnsExist($db);
+                    $profSets = [];
+                    $profTypes = '';
+                    $profVals = [];
+                    if ($profileCols['Biography']) { $profSets[] = 'Biography = ?'; $profTypes .= 's'; $profVals[] = $biography; }
+                    if ($profileCols['Disambiguation']) { $profSets[] = 'Disambiguation = ?'; $profTypes .= 's'; $profVals[] = $disambiguation; }
+                    if ($profSets) {
+                        $profStmt = $db->prepare('UPDATE tblMusicians SET ' . implode(', ', $profSets) . ' WHERE Id = ?');
+                        $profTypes .= 'i';
+                        $profVals[] = $newId;
+                        $profStmt->bind_param($profTypes, ...$profVals);
+                        $profStmt->execute();
+                        $profStmt->close();
+                    }
 
                     /* Places FK assignment — separate UPDATE so the
                        multi-branch INSERT shapes above don't have to
@@ -762,6 +921,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
 
                     $logMusician('add', (string)$newId, [
                         'name'        => $name,
+                        'type'        => $musicianType, // #1741 P4a
+                        'has_biography'  => $biography !== null, // #1741 P4a
+                        'disambiguation' => $disambiguation !== '' ? $disambiguation : null, // #1741 P4a
                         'fields'      => array_filter([
                             'birth_place' => $birthPlace,
                             'birth_date'  => $birthDate,
@@ -822,6 +984,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 $isGroup       = !empty($_POST['is_group'])        ? 1 : 0;
                 if ($isSpecialCase && $isGroup) { $isGroup = 0; }
 
+                /* #1741 P4a — Type; see the identically-commented block in
+                   the 'add' case above for why this is $musicianType, not
+                   $type (this case-block also reuses bare $type as the
+                   tblMusicianIdentifiers IdentifierType scratch var
+                   below). */
+                $typePosted = musTrimmed($_POST['type'] ?? ''); // #trim
+                if ($typePosted !== '' && array_key_exists($typePosted, MUSICIAN_TYPES)) {
+                    $musicianType = $typePosted;
+                } else {
+                    $musicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                }
+                $isGroup       = (int)in_array($musicianType, ['group', 'orchestra'], true);
+                $isSpecialCase = (int)in_array($musicianType, ['character', 'other'], true);
+
                 /* #934 — structured-name parts. For individuals we
                    recompose Name from the three fields and persist all
                    four columns; the rename guard below still rejects a
@@ -843,6 +1019,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                    rule as the other structured-name parts above. */
                 $maidenSurnameRaw = musTrimmed($_POST['maiden_surname'] ?? ''); // #trim
                 $maidenSurname    = $isIndividual && $maidenSurnameRaw !== '' ? $maidenSurnameRaw : null;
+                /* #1741 P4a — Biography + Disambiguation; see the
+                   identically-commented block in the 'add' case above. */
+                $biographyRaw     = musTrimmed($_POST['biography'] ?? ''); // #trim
+                $biography        = $biographyRaw !== '' ? $biographyRaw : null;
+                $disambiguation   = mb_substr(musTrimmed($_POST['disambiguation'] ?? ''), 0, 255); // #trim
 
                 if ($id <= 0)                           { $error = 'Person id missing.'; break; }
                 if ($name === '')                       { $error = 'Name is required.'; break; }
@@ -868,38 +1049,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                 $db->begin_transaction();
                 try {
                     /* Update the registry row. Name is not in the SET
-                       clause — renames go through the rename action. */
-                    /* Gate the flag-column writes on column existence
-                       (#630). Same partly-migrated tolerance as the
-                       add path. */
+                       clause — renames go through the rename action.
+                       #1741 P4a — IsSpecialCase/IsGroup are no longer in
+                       this SET clause (or anywhere outside
+                       musicianTypeApply(), called below) — that dropped
+                       the flags-columns-exist dimension this branch used
+                       to need. */
                     /* #934 — name-parts columns gate. When present they
                        update alongside the existing fields; pre-migration
                        installs fall through to the legacy UPDATE shape. */
                     $hasNamePartsCols = musicianNamePartsColumnsExist($db);
-                    if (_musFlagsColumnsExist($db) && $hasNamePartsCols) {
+                    if ($hasNamePartsCols) {
                         $stmt = $db->prepare(
                             'UPDATE tblMusicians
                                 SET Notes = ?, BirthPlace = ?, BirthDate = ?,
                                     DeathPlace = ?, DeathDate = ?,
-                                    IsSpecialCase = ?, IsGroup = ?,
                                     FirstNames = ?, Surname = ?, Suffix = ?
                               WHERE Id = ?'
                         );
-                        $stmt->bind_param('sssssiisssi',
+                        $stmt->bind_param('ssssssssi',
                             $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup,
                             $firstNames, $surname, $suffix, $id);
-                    } elseif (_musFlagsColumnsExist($db)) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblMusicians
-                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                    DeathPlace = ?, DeathDate = ?,
-                                    IsSpecialCase = ?, IsGroup = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssiii',
-                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup, $id);
                     } else {
                         $stmt = $db->prepare(
                             'UPDATE tblMusicians
@@ -912,6 +1082,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     }
                     $stmt->execute();
                     $stmt->close();
+
+                    /* #1741 P4a — THE ONE flags/Type write funnel (rule
+                       guard: tests/php/test-musician-profile-fields.php's
+                       flag-funnel-ban). */
+                    musicianTypeApply($db, $id, $musicianType);
+
+                    /* #1741 P4a — Biography + Disambiguation, a separate
+                       column-gated UPDATE (§0.3.3 pattern), written
+                       unconditionally (like the places/date-precision/
+                       maiden-surname writes below) so clearing either
+                       field also clears the stored value. */
+                    $profileCols = musicianProfileColumnsExist($db);
+                    $profSets = [];
+                    $profTypes = '';
+                    $profVals = [];
+                    if ($profileCols['Biography']) { $profSets[] = 'Biography = ?'; $profTypes .= 's'; $profVals[] = $biography; }
+                    if ($profileCols['Disambiguation']) { $profSets[] = 'Disambiguation = ?'; $profTypes .= 's'; $profVals[] = $disambiguation; }
+                    if ($profSets) {
+                        $profStmt = $db->prepare('UPDATE tblMusicians SET ' . implode(', ', $profSets) . ' WHERE Id = ?');
+                        $profTypes .= 'i';
+                        $profVals[] = $id;
+                        $profStmt->bind_param($profTypes, ...$profVals);
+                        $profStmt->execute();
+                        $profStmt->close();
+                    }
 
                     /* Places FK assignment — written unconditionally
                        so unsetting a previously-picked place clears
@@ -1021,6 +1216,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') !=
                     }
                     $logMusician('update_person', (string)$id, [
                         'name'       => $name,
+                        'type'       => $musicianType, // #1741 P4a
+                        'has_biography'  => $biography !== null, // #1741 P4a
+                        'disambiguation' => $disambiguation !== '' ? $disambiguation : null, // #1741 P4a
                         'fields'     => $changed,
                         'before'     => array_intersect_key($beforeRow, array_flip($changed)),
                         'after'      => array_intersect_key($afterRow,  array_flip($changed)),
@@ -1521,6 +1719,20 @@ try {
         $countryJoin = '';
     }
 
+    /* #1741 P4a — Type / Biography / Disambiguation. Per-column gated
+       (musicianProfileColumnsExist(), §0.3.4) — same "conditional select
+       fragment" idiom as every other block above; each column drops out
+       to a NULL-shaped default independently when absent. */
+    $profileColsExist = musicianProfileColumnsExist($db);
+    /* #1741 P4a — dated-relations columns (RelationType/DateFrom/…/Note),
+       used further down to decide whether the Members add-row's optional
+       date/note inputs, and the Portrayed-by sub-panel, render at all. */
+    $relationColsExist = musicianRelationColumnsExist($db);
+    $profileSelectCols =
+        ($profileColsExist['Type'] ? ', p.Type' : ", 'person' AS Type")
+      . ($profileColsExist['Biography'] ? ', p.Biography' : ', NULL AS Biography')
+      . ($profileColsExist['Disambiguation'] ? ', p.Disambiguation' : ", '' AS Disambiguation");
+
     $registrySql = "
         SELECT p.Id,
                p.Name,
@@ -1539,6 +1751,7 @@ try {
                {$placeIdCols}
                {$datePrecisionCols}
                {$countryCols}
+               {$profileSelectCols}
           FROM tblMusicians p
           {$countryJoin}
     ";
@@ -1628,6 +1841,13 @@ try {
        individual simply never appears as a key. */
     $membersByPerson = loadMusicianGroupMembersBulk($db, $personIds);
 
+    /* #1741 P4a — "Portrayed by" bulk load, same convention as the
+       Members bulk load above: only character/other-type rows will ever
+       have entries here in practice, but the bulk-load itself doesn't
+       filter by Type — the Edit drawer only RENDERS the sub-panel for
+       those types (§1.2.10), it can pre-fill from this map regardless. */
+    $portrayedByPerson = loadMusicianPortrayedByBulk($db, $personIds);
+
     /* Merge — keyed by Name. A name may appear in usage only,
        registry only, or both. */
     $byName = [];
@@ -1656,11 +1876,15 @@ try {
             'ipi_count'   => 0,
             'is_special_case' => 0,   /* #584 */
             'is_group'        => 0,   /* #585 */
+            'type'            => 'person', // #1741 P4a
+            'biography'       => null,     // #1741 P4a
+            'disambiguation'  => '',       // #1741 P4a
             'links'       => [],
             'ipi'         => [],
             'otherid'     => [],   // #1348
             'aliases'     => [],
             'members'     => [],   // #1502
+            'portrayed_by' => [],  // #1741 P4a
         ];
     }
     foreach ($registryRows as $r) {
@@ -1690,6 +1914,9 @@ try {
                 'ipi_count'   => 0,
                 'is_special_case' => 0,
                 'is_group'        => 0,
+                'type'            => 'person', // #1741 P4a
+                'biography'       => null,     // #1741 P4a
+                'disambiguation'  => '',       // #1741 P4a
             ];
         }
         $byName[$name]['registry_id'] = (int)$r['Id'];
@@ -1717,6 +1944,12 @@ try {
         $byName[$name]['ipi_count']   = (int)$r['IPICount'];
         $byName[$name]['is_special_case'] = (int)($r['IsSpecialCase'] ?? 0);
         $byName[$name]['is_group']        = (int)($r['IsGroup']        ?? 0);
+        /* #1741 P4a — Type / Biography / Disambiguation. The SELECT above
+           already shapes absent-column defaults ('person' / NULL / ''),
+           so no extra `?? ` fallback is needed here. */
+        $byName[$name]['type']           = (string)$r['Type'];
+        $byName[$name]['biography']      = $r['Biography'];
+        $byName[$name]['disambiguation'] = (string)$r['Disambiguation'];
         /* #934 — structured-name parts surface to JS so the Edit drawer
            can pre-fill the three split fields. NULL on partly-migrated
            installs; the drawer's default-to-Name fallback handles that. */
@@ -1739,6 +1972,9 @@ try {
            Group), but no filter is needed here — a plain individual
            simply never has a key in $membersByPerson. */
         $byName[$name]['members'] = $membersByPerson[(int)$r['Id']] ?? [];
+        /* #1741 P4a — "Portrayed by" pre-fill for the character/other-type
+           sub-panel. */
+        $byName[$name]['portrayed_by'] = $portrayedByPerson[(int)$r['Id']] ?? [];
     }
 
     /* Sort: highest-usage first, then alphabetical. Registry-only
@@ -2534,21 +2770,50 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 </div>
             </div>
 
-            <!-- Classification flags (#584 / #585). Mutually exclusive
-                 by design — both are unticked for an individual. The
-                 JS below toggles them so ticking one unticks the
-                 other, and adapts the date-field labels for groups
-                 (Birth/Death → Founded/Dissolved). -->
+            <!-- Classification (#584 / #585, widened by #1741 P4a's Type
+                 vocabulary). When the Type column exists, a single
+                 <select name="type"> (MUSICIAN_TYPES) is the VISIBLE
+                 control — it is the one the server prefers
+                 (manage/musicians.php's add/update_person handlers read
+                 `type` before falling back to the checkboxes). The two
+                 checkboxes are ALWAYS rendered exactly once (never a
+                 second, mutually-exclusive copy of the same id= — that
+                 duplicate-id shape is what test-a11y-static-checks.php's
+                 static scanner exists to catch: it reads raw PHP source
+                 text, not evaluated HTML, so an `if/else` with the SAME
+                 id in both branches reads as two declarations of one
+                 id, unconditionally); a single PHP-computed CSS class
+                 hides them (+ aria-hidden/tabindex) when the Type select
+                 exists, purely as internal state — the rest of this
+                 drawer's JS (applyFlagLabels(), the birth/death label
+                 swap, the IPI/name-parts/Members section toggles) was
+                 all written against `is_special_case`/`is_group`
+                 .checked, kept driving that logic UNCHANGED rather than
+                 rewriting every consumer, and kept in sync FROM the Type
+                 select by syncCheckboxesFromType() below, never the
+                 other way round. On an install without the Type column
+                 the checkboxes render fully visible (no select at all)
+                 — the server's checkbox→type synthesis (§1.2.8) covers
+                 that install tier. -->
+            <?php $musTypeHidesFlags = $profileColsExist['Type']; ?>
             <div class="border rounded p-2" style="border-color: var(--bs-border-color) !important;">
-                <div class="form-check form-check-inline mb-0">
-                    <input class="form-check-input" type="checkbox" name="is_special_case" value="1" id="mus-drawer-is-special-case">
+                <?php if ($musTypeHidesFlags): ?>
+                    <label class="form-label small mb-1" for="mus-drawer-type">Type</label>
+                    <select class="form-select form-select-sm" name="type" id="mus-drawer-type">
+                        <?php foreach (MUSICIAN_TYPES as $typeKey => $typeLabel): ?>
+                            <option value="<?= htmlspecialchars($typeKey) ?>"><?= htmlspecialchars($typeLabel) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                <?php endif; ?>
+                <div class="form-check form-check-inline mb-0<?= $musTypeHidesFlags ? ' d-none' : '' ?>">
+                    <input class="form-check-input" type="checkbox" name="is_special_case" value="1" id="mus-drawer-is-special-case"<?= $musTypeHidesFlags ? ' aria-hidden="true" tabindex="-1"' : '' ?>>
                     <label class="form-check-label small" for="mus-drawer-is-special-case">
                         <i class="bi bi-question-circle me-1" aria-hidden="true"></i>
                         Special case (Anonymous, Traditional, etc.)
                     </label>
                 </div>
-                <div class="form-check form-check-inline mb-0">
-                    <input class="form-check-input" type="checkbox" name="is_group" value="1" id="mus-drawer-is-group">
+                <div class="form-check form-check-inline mb-0<?= $musTypeHidesFlags ? ' d-none' : '' ?>">
+                    <input class="form-check-input" type="checkbox" name="is_group" value="1" id="mus-drawer-is-group"<?= $musTypeHidesFlags ? ' aria-hidden="true" tabindex="-1"' : '' ?>>
                     <label class="form-check-label small" for="mus-drawer-is-group">
                         <i class="bi bi-people-fill me-1" aria-hidden="true"></i>
                         Group / band / collective
@@ -2702,12 +2967,99 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         <i class="bi bi-plus me-1"></i>Add
                     </button>
                 </div>
+                <?php if ($relationColsExist['RelationType']): ?>
+                    <!-- #1741 P4a — optional membership dates + note. Blank
+                         From/To is the common case (a v1 catalogue almost
+                         never knows exact tenure dates) — both are parsed
+                         via the same partialDateParse() the Birth/Death
+                         fields use, so "1998" alone is a valid entry. -->
+                    <div class="row g-2 mt-1">
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-member-date-from"
+                                   inputmode="numeric" autocomplete="off" placeholder="Member since (opt.)">
+                        </div>
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-member-date-to"
+                                   inputmode="numeric" autocomplete="off" placeholder="Until (blank = current)">
+                        </div>
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-member-note"
+                                   maxlength="255" placeholder="Note (opt.)">
+                        </div>
+                    </div>
+                <?php endif; ?>
                 <div class="form-text small">Only people already in the registry can be added — search picks from existing records, matching the Merge modal's target picker.</div>
+            </div>
+
+            <!-- #1741 P4a — "Portrayed by" sub-panel. Visible only for
+                 Character/Other-type rows (a "person portrayed in a
+                 dramatisation" concept doesn't apply to a real individual
+                 or a Group). Same live-search + Add/Remove shape as
+                 Members above, but relation_type is always 'portrays' and
+                 the direction is REVERSED: this row is the OBJECT
+                 (the portrayed figure), the picked person becomes the
+                 SUBJECT (the portrayer) — action=add_relation posts
+                 subject_id=<picked>, object_id=<this row's id> (see the
+                 addMusicianRelation() doc-block in musician_helpers.php
+                 for the verbatim direction rule). Only renders at all
+                 when RelationType exists — a 'portrays' relation cannot
+                 be represented on an un-migrated install. -->
+            <?php if ($relationColsExist['RelationType']): ?>
+                <div data-flag-section="portrayed-by" class="d-none">
+                    <label class="form-label small mb-1">
+                        <i class="bi bi-person-video2 me-1" aria-hidden="true"></i>Portrayed by
+                    </label>
+                    <div id="mus-portrayedby-unsaved" class="alert alert-secondary py-2 small mb-2 d-none">
+                        <i class="bi bi-info-circle me-1" aria-hidden="true"></i>
+                        Save this person first — portrayers can only be added once this row has been registered.
+                    </div>
+                    <div id="mus-portrayedby-container" class="d-flex flex-column gap-1 mb-2"></div>
+                    <div class="input-group input-group-sm" id="mus-portrayedby-add-row">
+                        <input type="text" class="form-control" id="mus-portrayedby-search" list="mus-portrayedby-datalist"
+                               autocomplete="off" placeholder="Type a registered person's name…">
+                        <datalist id="mus-portrayedby-datalist"></datalist>
+                        <button type="button" class="btn btn-outline-secondary" id="mus-add-portrayedby-btn">
+                            <i class="bi bi-plus me-1"></i>Add
+                        </button>
+                    </div>
+                    <div class="row g-2 mt-1">
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-portrayedby-date-from"
+                                   inputmode="numeric" autocomplete="off" placeholder="From (opt.)">
+                        </div>
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-portrayedby-date-to"
+                                   inputmode="numeric" autocomplete="off" placeholder="To (opt.)">
+                        </div>
+                        <div class="col-4">
+                            <input type="text" class="form-control form-control-sm" id="mus-portrayedby-note"
+                                   maxlength="255" placeholder="Note (opt.)">
+                        </div>
+                    </div>
+                    <div class="form-text small">Who has been credited as portraying this figure — e.g. an actor in a dramatisation. Only people already in the registry can be added.</div>
+                </div>
+            <?php endif; ?>
+
+            <!-- #1741 P4a — Biography (public "About" text — musician.php
+                 renders this, falling back to Notes only when Biography
+                 is empty) + Disambiguation (short parenthetical shown
+                 after the name, e.g. "(the elder)", when two musicians
+                 share a name). Always rendered (mirrors the #1501
+                 Maiden-surname "always show, gate only the write"
+                 convention) — the write itself is column-gated
+                 server-side. -->
+            <div>
+                <label class="form-label small mb-1" for="mus-drawer-biography">Biography (public)</label>
+                <textarea class="form-control form-control-sm" id="mus-drawer-biography" name="biography" rows="4" placeholder="Shown on this person's public page. Leave blank to fall back to Notes below."></textarea>
+            </div>
+            <div>
+                <label class="form-label small mb-1" for="mus-drawer-disambiguation">Disambiguation</label>
+                <input type="text" class="form-control form-control-sm" id="mus-drawer-disambiguation" name="disambiguation" maxlength="255" placeholder="e.g. the elder — shown after the name when two musicians share it">
             </div>
 
             <!-- Notes -->
             <div>
-                <label class="form-label small mb-1" for="mus-drawer-notes">Notes</label>
+                <label class="form-label small mb-1" for="mus-drawer-notes">Notes (internal — not shown publicly)</label>
                 <textarea class="form-control form-control-sm" id="mus-drawer-notes" name="notes" rows="3" placeholder="Anything that doesn't fit the structured fields above."></textarea>
             </div>
 
@@ -3200,6 +3552,25 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             const memberSearchIn   = document.getElementById('mus-member-search');
             const memberDatalist   = document.getElementById('mus-member-datalist');
             const addMemberBtn     = document.getElementById('mus-add-member-btn');
+            const memberDateFromIn = document.getElementById('mus-member-date-from');
+            const memberDateToIn   = document.getElementById('mus-member-date-to');
+            const memberNoteIn     = document.getElementById('mus-member-note');
+            /* #1741 P4a — Type <select> (present only when the column
+               exists — see the else-branch checkboxes in the PHP above). */
+            const typeSelect = document.getElementById('mus-drawer-type');
+            /* #1741 P4a — "Portrayed by" sub-panel refs. All may be null
+               (RelationType-absent install renders none of this markup);
+               every use below is optional-chained / existence-guarded. */
+            const portrayedBySection   = document.querySelector('[data-flag-section="portrayed-by"]');
+            const portrayedByUnsavedEl = document.getElementById('mus-portrayedby-unsaved');
+            const portrayedByAddRow    = document.getElementById('mus-portrayedby-add-row');
+            const portrayedByContainer = document.getElementById('mus-portrayedby-container');
+            const portrayedBySearchIn  = document.getElementById('mus-portrayedby-search');
+            const portrayedByDatalist  = document.getElementById('mus-portrayedby-datalist');
+            const addPortrayedByBtn    = document.getElementById('mus-add-portrayedby-btn');
+            const portrayedByDateFromIn = document.getElementById('mus-portrayedby-date-from');
+            const portrayedByDateToIn   = document.getElementById('mus-portrayedby-date-to');
+            const portrayedByNoteIn     = document.getElementById('mus-portrayedby-note');
             if (!drawerEl || !form) return;
 
             const drawer = bootstrap.Offcanvas.getOrCreateInstance(drawerEl);
@@ -3505,7 +3876,24 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 if (membersContainer) membersContainer.innerHTML = '';
                 if (memberSearchIn)   memberSearchIn.value = '';
                 if (memberDatalist)   memberDatalist.innerHTML = '';
+                if (memberDateFromIn) memberDateFromIn.value = '';
+                if (memberDateToIn)   memberDateToIn.value = '';
+                if (memberNoteIn)     memberNoteIn.value = '';
                 memberLabelToKey = new Map();
+                /* #1741 P4a — same clear for the Portrayed-by sub-panel. */
+                if (portrayedByContainer) portrayedByContainer.innerHTML = '';
+                if (portrayedBySearchIn)  portrayedBySearchIn.value = '';
+                if (portrayedByDatalist)  portrayedByDatalist.innerHTML = '';
+                if (portrayedByDateFromIn) portrayedByDateFromIn.value = '';
+                if (portrayedByDateToIn)   portrayedByDateToIn.value = '';
+                if (portrayedByNoteIn)     portrayedByNoteIn.value = '';
+                portrayedByLabelToKey = new Map();
+                /* #1741 P4a — default the Type select back to 'person'
+                   (form.reset() already handles this for a real <select>,
+                   but it's set explicitly here too since resetDrawer() is
+                   also called right before the Edit pre-fill assigns its
+                   own value — no observable double-set). */
+                if (typeSelect) typeSelect.value = 'person';
             }
 
             /* Open empty drawer for Add. */
@@ -3571,9 +3959,28 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                 document.getElementById('mus-drawer-death-place-id').value = person.death_place_id ? String(person.death_place_id) : '';
                 document.getElementById('mus-drawer-death-date').value  = person.death_date_input || person.death_date || '';
                 document.getElementById('mus-drawer-notes').value       = person.notes       || '';
+                /* #1741 P4a — Biography + Disambiguation pre-fill. */
+                const bioIn = document.getElementById('mus-drawer-biography');
+                if (bioIn) bioIn.value = person.biography || '';
+                const disambigIn = document.getElementById('mus-drawer-disambiguation');
+                if (disambigIn) disambigIn.value = person.disambiguation || '';
                 /* #584 / #585 — pre-tick the classification flags. */
                 document.getElementById('mus-drawer-is-special-case').checked = !!person.is_special_case;
                 document.getElementById('mus-drawer-is-group').checked        = !!person.is_group;
+                /* #1741 P4a — Type select pre-fill wins over the flags
+                   above when it exists: person.type is the registry's
+                   OWN Type value when the column is present (server
+                   default 'person' otherwise), so this is strictly more
+                   precise than re-deriving from is_group/is_special_case
+                   (which can't distinguish group-vs-orchestra or
+                   character-vs-other). syncCheckboxesFromType() re-syncs
+                   the two hidden checkboxes from it so applyFlagLabels()
+                   (called right below) still sees a consistent state. */
+                if (typeSelect) {
+                    typeSelect.value = person.type
+                        || (person.is_group ? 'group' : (person.is_special_case ? 'other' : 'person'));
+                    syncCheckboxesFromType();
+                }
                 /* #934 — pre-fill the structured-name fields. If the row
                    has them populated, use those directly. If they're
                    NULL (legacy / partly-migrated install) AND this is
@@ -3608,6 +4015,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    individuals / special-cases (server never populates the
                    array for them) and for pre-migration installs alike. */
                 (person.members || []).forEach(m => addMemberRow(m));
+                /* #1741 P4a — pre-fill this figure's current portrayers.
+                   Empty for every non character/other row (server never
+                   populates the array for them) and for installs without
+                   RelationType alike. */
+                (person.portrayed_by || []).forEach(m => addPortrayedByRow(m));
                 drawer.show();
             });
 
@@ -3766,6 +4178,19 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                    live search + list (Id known — Edit mode). */
                 if (membersSection) membersSection.classList.toggle('d-none', !isGroup);
                 refreshMembersAvailability();
+
+                /* #1741 P4a — "Portrayed by" sub-panel only applies to a
+                   Character/Other-type row — both of which map to
+                   IsSpecialCase=1 (musicianTypeApply()'s fixed mapping),
+                   so reusing the same isSpecialCase boolean the IPI
+                   section above already keys off of is correct: the ONE
+                   place that distinguishes "Special case" further into
+                   character-vs-other is the Type select itself, which
+                   this section doesn't need to — a portrayable "Other"
+                   row (e.g. an anonymised/composite figure) is just as
+                   valid a target as a "Character" row. */
+                if (portrayedBySection) portrayedBySection.classList.toggle('d-none', !isSpecialCase);
+                refreshPortrayedByAvailability();
             }
             specialCaseCb?.addEventListener('change', () => {
                 if (specialCaseCb.checked && groupCb) groupCb.checked = false;
@@ -3773,6 +4198,19 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
             });
             groupCb?.addEventListener('change', () => {
                 if (groupCb.checked && specialCaseCb) specialCaseCb.checked = false;
+                applyFlagLabels();
+            });
+            /* #1741 P4a — Type <select> drives the two hidden checkboxes
+               above (never the other way round — see the drawer markup's
+               doc-comment for why). */
+            function syncCheckboxesFromType() {
+                if (!typeSelect) return;
+                const t = typeSelect.value;
+                if (specialCaseCb) specialCaseCb.checked = (t === 'character' || t === 'other');
+                if (groupCb)       groupCb.checked       = (t === 'group' || t === 'orchestra');
+            }
+            typeSelect?.addEventListener('change', () => {
+                syncCheckboxesFromType();
                 applyFlagLabels();
             });
 
@@ -3919,6 +4357,12 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         action: 'add_member',
                         group_id: String(groupId),
                         member_id: String(picked),
+                        /* #1741 P4a — optional dates/note; empty strings are
+                           fine, the server's partialDateParse('') resolves
+                           to "no date". */
+                        date_from: memberDateFromIn ? memberDateFromIn.value : '',
+                        date_to: memberDateToIn ? memberDateToIn.value : '',
+                        note: memberNoteIn ? memberNoteIn.value : '',
                         csrf_token: csrfField ? csrfField.value : '',
                     }),
                 })
@@ -3930,8 +4374,11 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                             return;
                         }
                         addMemberRow(body.member);
-                        if (memberSearchIn) memberSearchIn.value = '';
-                        if (memberDatalist) memberDatalist.innerHTML = '';
+                        if (memberSearchIn)   memberSearchIn.value = '';
+                        if (memberDatalist)   memberDatalist.innerHTML = '';
+                        if (memberDateFromIn) memberDateFromIn.value = '';
+                        if (memberDateToIn)   memberDateToIn.value = '';
+                        if (memberNoteIn)     memberNoteIn.value = '';
                     })
                     .catch(() => { addMemberBtn.disabled = false; window.alert('Could not add member.'); });
             });
@@ -3973,6 +4420,204 @@ $totalInUseUnregistered = count(array_filter($people, static fn($p) =>
                         row.remove();
                     })
                     .catch(() => { btn.disabled = false; window.alert('Could not remove member.'); });
+            });
+
+            /* =====================================================================
+               #1741 P4a — "Portrayed by" sub-panel. Same live-persist shape as
+               Group members above (search via the shared merge_target_search
+               endpoint, add/remove without waiting for the drawer's Save
+               button), but relation_type is fixed to 'portrays' and the
+               ADD request direction is reversed: THIS row is the object (the
+               portrayed figure), the picked person becomes the subject (the
+               portrayer) — action=add_relation posts subject_id=<picked>,
+               object_id=<this row's id>. REMOVE posts the relation row's OWN
+               Id to action=remove_relation — unlike Members (which deletes by
+               the (group,member) pair), the server's
+               loadMusicianPortrayedBy()/…Bulk() SELECT `m.Id AS RelationId`
+               precisely so this panel can delete by primary key instead (see
+               musicianRelationRowShape()'s doc-block, musician_helpers.php).
+               Every DOM ref here may be null (RelationType-absent install
+               renders none of this markup) — every use below is guarded.
+               ===================================================================== */
+            let portrayedByLabelToKey = new Map();
+            let portrayedByInflight   = null;
+            let portrayedByDebounce   = null;
+
+            /** Every portrayer person id currently rendered, so a re-add of
+                the same portrayer isn't offered twice in the same session
+                (the server itself is idempotent regardless — this is just
+                UX). */
+            function currentPortrayedByPersonIds() {
+                if (!portrayedByContainer) return [];
+                return Array.from(portrayedByContainer.querySelectorAll('[data-person-id]'))
+                    .map((el) => parseInt(el.getAttribute('data-person-id'), 10))
+                    .filter((n) => n > 0);
+            }
+
+            function addPortrayedByRow(m) {
+                if (!portrayedByContainer || !m) return;
+                const personId   = m.id ?? m.Id ?? 0;                         // the portrayer's tblMusicians.Id (search-exclusion only)
+                const relationId = m.relationId ?? m.RelationId ?? 0;         // the tblMusicianRelations row's OWN Id (used to remove)
+                const name       = m.name ?? m.Name ?? '';
+                if (!personId || !relationId) return;
+                const html = '<div class="d-flex align-items-center justify-content-between border rounded px-2 py-1" '
+                    + 'style="border-color: var(--bs-border-color) !important;" '
+                    + 'data-person-id="' + parseInt(personId, 10) + '" data-relation-id="' + parseInt(relationId, 10) + '">'
+                    + '<span class="small">' + escapeMemberHtml(name) + '</span>'
+                    + '<button type="button" class="btn btn-sm btn-outline-danger mus-portrayedby-remove" '
+                    + 'aria-label="Remove ' + escapeMemberHtml(name) + ' from portrayed-by"><i class="bi bi-x-lg" aria-hidden="true"></i></button>'
+                    + '</div>';
+                portrayedByContainer.insertAdjacentHTML('beforeend', html);
+            }
+
+            /* Toggle the "save this person first" note vs the live search +
+               Add button — same rule as refreshMembersAvailability(): a
+               brand-new, unsaved figure has no ObjectMusicianId yet for a
+               relation to reference. */
+            function refreshPortrayedByAvailability() {
+                if (!portrayedBySection) return;
+                const hasId = !!(idIn && idIn.value);
+                if (portrayedByUnsavedEl) portrayedByUnsavedEl.classList.toggle('d-none', hasId);
+                if (portrayedByAddRow)    portrayedByAddRow.classList.toggle('d-none', !hasId);
+            }
+
+            /* Live-search typeahead — same shared merge_target_search
+               endpoint + <datalist> shape as memberLookup() above, excluding
+               THIS row itself (a figure can't portray itself) and anyone
+               already listed as a portrayer. */
+            function portrayedByLookup(query) {
+                if (!portrayedByDatalist) return;
+                if (portrayedByInflight) portrayedByInflight.abort();
+                const ac = new AbortController();
+                portrayedByInflight = ac;
+                const figureId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                const url = '/manage/musicians?action=merge_target_search'
+                          + '&q=' + encodeURIComponent(query)
+                          + '&exclude_id=' + encodeURIComponent(figureId)
+                          + '&limit=20';
+                fetch(url, { credentials: 'same-origin', signal: ac.signal })
+                    .then((r) => (r.ok ? r.json() : { candidates: [] }))
+                    .then((data) => {
+                        const already = new Set(currentPortrayedByPersonIds());
+                        const list = (Array.isArray(data.candidates) ? data.candidates : [])
+                            .filter((c) => c.id && !already.has(c.id));
+                        portrayedByLabelToKey = new Map();
+                        portrayedByDatalist.innerHTML = list.map((c) => {
+                            portrayedByLabelToKey.set(c.name, c.id);
+                            return '<option value="' + escapeMemberHtml(c.name) + '"></option>';
+                        }).join('');
+                    })
+                    .catch((err) => { if (err.name !== 'AbortError') { /* search is a nicety, not critical path */ } });
+            }
+            portrayedBySearchIn?.addEventListener('input', () => {
+                const v = portrayedBySearchIn.value;
+                clearTimeout(portrayedByDebounce);
+                if (v.trim() === '') {
+                    if (portrayedByDatalist) portrayedByDatalist.innerHTML = '';
+                    return;
+                }
+                portrayedByDebounce = setTimeout(() => portrayedByLookup(v.trim()), 200);
+            });
+            portrayedBySearchIn?.addEventListener('focus', () => portrayedByLookup(portrayedBySearchIn.value.trim()));
+
+            /* Add — resolves the typed/picked name to its id, then POSTs
+               action=add_relation with subject_id=<picked performer>,
+               object_id=<this figure>, relation_type=portrays (the
+               direction rule from addMusicianRelation()'s doc-block). */
+            addPortrayedByBtn?.addEventListener('click', () => {
+                const figureId = idIn && idIn.value ? parseInt(idIn.value, 10) : 0;
+                if (!figureId) return;
+                const picked = portrayedByLabelToKey.get(portrayedBySearchIn ? portrayedBySearchIn.value : '');
+                if (!picked) {
+                    window.alert('Pick a suggested person from the list first.');
+                    return;
+                }
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                addPortrayedByBtn.disabled = true;
+                fetch('/manage/musicians', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'add_relation',
+                        subject_id: String(picked),
+                        object_id: String(figureId),
+                        relation_type: 'portrays',
+                        date_from: portrayedByDateFromIn ? portrayedByDateFromIn.value : '',
+                        date_to: portrayedByDateToIn ? portrayedByDateToIn.value : '',
+                        note: portrayedByNoteIn ? portrayedByNoteIn.value : '',
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        addPortrayedByBtn.disabled = false;
+                        if (!ok || !body.ok) {
+                            window.alert((body && body.error) || 'Could not add portrayer.');
+                            return;
+                        }
+                        /* NOTE: `body.subject` (NOT `body.member`) — the
+                           portrayer is the SUBJECT side of this relation
+                           (subject_id=<picked> was posted above); `member`
+                           is add_relation's back-compat shape for the
+                           Members flow, where the OBJECT is what was added.
+                           `body.relationId` is the new/existing relation
+                           row's own Id — addPortrayedByRow() needs it for
+                           the Remove button (action=remove_relation). */
+                        addPortrayedByRow({
+                            id: body.subject ? body.subject.id : null,
+                            name: body.subject ? body.subject.name : '',
+                            relationId: body.relationId,
+                        });
+                        if (portrayedBySearchIn)   portrayedBySearchIn.value = '';
+                        if (portrayedByDatalist)   portrayedByDatalist.innerHTML = '';
+                        if (portrayedByDateFromIn) portrayedByDateFromIn.value = '';
+                        if (portrayedByDateToIn)   portrayedByDateToIn.value = '';
+                        if (portrayedByNoteIn)     portrayedByNoteIn.value = '';
+                    })
+                    .catch(() => { addPortrayedByBtn.disabled = false; window.alert('Could not add portrayer.'); });
+            });
+
+            /* Remove — posts the relation row's OWN Id (this row's
+               data-relation-id, set from addPortrayedByRow()'s `relationId`
+               param — see loadMusicianPortrayedBy()'s `m.Id AS RelationId`
+               select for where that value originates on page-load pre-fill)
+               to action=remove_relation. */
+            portrayedByContainer?.addEventListener('click', (ev) => {
+                const btn = ev.target.closest('.mus-portrayedby-remove');
+                if (!btn) return;
+                const row = btn.closest('[data-relation-id]');
+                if (!row) return;
+                const relationId = parseInt(row.getAttribute('data-relation-id'), 10);
+                if (!relationId) return;
+                const csrfField = form.querySelector('input[name="csrf_token"]');
+                btn.disabled = true;
+                fetch('/manage/musicians', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        action: 'remove_relation',
+                        id: String(relationId),
+                        csrf_token: csrfField ? csrfField.value : '',
+                    }),
+                })
+                    .then((r) => r.json().then((j) => ({ ok: r.ok, body: j })))
+                    .then(({ ok, body }) => {
+                        if (!ok || !body.ok) {
+                            btn.disabled = false;
+                            window.alert((body && body.error) || 'Could not remove portrayer.');
+                            return;
+                        }
+                        row.remove();
+                    })
+                    .catch(() => { btn.disabled = false; window.alert('Could not remove portrayer.'); });
             });
         })();
 

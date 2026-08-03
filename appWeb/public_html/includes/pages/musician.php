@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Musician Public Page (#588, #1741 P2-B)
+ * iHymns — Musician Public Page (#588, #1741 P2-B, P4a)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -12,6 +12,15 @@ declare(strict_types=1);
  * the bio, lifespan, special-case / group classification, external
  * links, and a discography grouped by role across the six song-credit
  * tables.
+ *
+ * #1741 P4a additions: the entity-type vocabulary (Type — person / group
+ * / character / orchestra / other, replacing the old flag-only icon
+ * ladder), a dedicated public Biography field (falling back to the
+ * internal-only Notes when empty — see the `notes-as-bio-fallback`
+ * marker below), Disambiguation ("(the elder)"-style short parentheticals),
+ * and the generalised tblMusicianRelations 'portrays' relation
+ * (Portrayed-by / Portrays cards, for character/other-type rows) —
+ * @link .claude/catalogue-1741-P4-plan.md §1.3
  *
  * Loaded via api.php?page=person&slug=cecil-frances-humphreys-alexander.
  * Expects $personSlug to be set by api.php before inclusion.
@@ -55,10 +64,23 @@ try {
         if ($pc) { $pc->free(); }
     } catch (\Throwable $_e) { $mbidCol = ''; }
 
+    /* #1741 P4a — Type / Biography / Disambiguation, per-column gated via
+       the shared musicianProfileColumnsExist() probe (§0.3.1 conditional
+       select fragment idiom — same shape as $mbidCol just above). Each
+       column drops out to a hardcoded-constant default independently
+       when absent, so this page renders shape-blind either way. */
+    if (!function_exists('musicianProfileColumnsExist')) {
+        require_once dirname(__DIR__) . '/musician_helpers.php';
+    }
+    $profileCols = musicianProfileColumnsExist($db);
+    $extraCols  = $profileCols['Type']           ? ', Type'           : ", 'person' AS Type";
+    $extraCols .= $profileCols['Biography']      ? ', Biography'      : ', NULL AS Biography';
+    $extraCols .= $profileCols['Disambiguation'] ? ', Disambiguation' : ", '' AS Disambiguation";
+
     $stmt = $db->prepare(
         "SELECT Id, Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate,
                 COALESCE(IsSpecialCase, 0) AS IsSpecialCase,
-                COALESCE(IsGroup, 0)        AS IsGroup{$mbidCol}
+                COALESCE(IsGroup, 0)        AS IsGroup{$mbidCol}{$extraCols}
            FROM tblMusicians
           WHERE Slug = ?
           LIMIT 1"
@@ -113,6 +135,31 @@ if ($person && (int)($person['IsGroup'] ?? 0) === 1 && isset($person['Id'])) {
         $personMembers = loadMusicianGroupMembers($db, (int)$person['Id']);
     } catch (\Throwable $_e) {
         $personMembers = [];
+    }
+}
+
+/* #1741 P4a — "Portrayed by" (who is credited as portraying THIS
+   figure) / "Portrays" (which figures THIS person is credited as
+   portraying) — read-only public cards, admin add/remove lives in the
+   /manage/musicians Edit drawer's Portrayed-by sub-panel. Both loaders
+   are RelationType-gated and return [] on an install without it, so no
+   type check is needed here — a non-character/non-portrayer row simply
+   gets two empty arrays and neither card renders (§1.3.5). */
+$personPortrayedBy = [];
+$personPortrays     = [];
+if ($person && isset($person['Id'])) {
+    if (!function_exists('loadMusicianPortrayedBy')) {
+        require_once dirname(__DIR__) . '/musician_helpers.php';
+    }
+    try {
+        $personPortrayedBy = loadMusicianPortrayedBy($db, (int)$person['Id']);
+    } catch (\Throwable $_e) {
+        $personPortrayedBy = [];
+    }
+    try {
+        $personPortrays = loadMusicianPortrays($db, (int)$person['Id']);
+    } catch (\Throwable $_e) {
+        $personPortrays = [];
     }
 }
 
@@ -315,9 +362,33 @@ function _personFormatLifespan(?string $birth, ?string $death, bool $isGroup): s
     return 'd. ' . $dYear;
 }
 
-$lifespanText = $person
-    ? _personFormatLifespan($person['BirthDate'], $person['DeathDate'], (bool)$person['IsGroup'])
-    : '';
+/**
+ * #1741 P4a — format a tblMusicianRelations date range (member tenure /
+ * portrayal dates) for display, honouring per-boundary precision (a
+ * 'year' precision shows just "1998", not "1998-01-01"). Shared by the
+ * Members card and the Portrayed-by/Portrays cards below so all three
+ * date-range renders agree byte-for-byte.
+ *
+ * @param array{dateFrom?:?string,dateFromPrecision?:?string,dateTo?:?string,dateToPrecision?:?string} $m
+ * @return string '' when neither date is set.
+ */
+function _personFormatRelationDateRange(array $m): string
+{
+    $fmt = static function (?string $d, ?string $prec): string {
+        if (!$d) return '';
+        return $prec === 'year' ? substr($d, 0, 4) : $d;
+    };
+    $fromStr = $fmt($m['dateFrom'] ?? null, $m['dateFromPrecision'] ?? null);
+    $toStr   = $fmt($m['dateTo']   ?? null, $m['dateToPrecision']   ?? null);
+    if ($fromStr !== '' && $toStr !== '') return $fromStr . '–' . $toStr;
+    if ($fromStr !== '')                  return 'since ' . $fromStr;
+    if ($toStr !== '')                    return '–' . $toStr;
+    return '';
+}
+
+/* $lifespanText itself is computed further below (§8, #1741 P4a) once
+   $isGroupish is known — Type widens the "Active/Founded" wording beyond
+   the legacy IsGroup-only check to also cover 'orchestra'. */
 
 /* ---------------------------------------------------------------------- */
 /* 5. 404 if neither a registry row nor any credited songs match.         */
@@ -354,6 +425,52 @@ foreach ($discography as $rk => $entry) {
     $rolesForBadges[] = ucfirst($rk);
 }
 
+/* ---------------------------------------------------------------------- */
+/* 7. #1741 P4a — Bio switch: Biography (new, public) wins; empty falls    */
+/*    back to Notes (the pre-P4a public read path). Once a curator fills   */
+/*    in Biography, Notes never renders publicly again — Notes becomes     */
+/*    the "internal — not shown publicly" field (manage/musicians.php's    */
+/*    drawer label). The literal marker comment below is grepped by        */
+/*    tests/php/test-musician-profile-fields.php (mirrors the              */
+/*    `lines-json-fallback` convention, rule #25).                         */
+/* ---------------------------------------------------------------------- */
+$bioText = trim((string)($person['Biography'] ?? ''));
+if ($bioText === '') {
+    /* notes-as-bio-fallback */
+    $bioText = trim((string)($person['Notes'] ?? ''));
+}
+
+/* ---------------------------------------------------------------------- */
+/* 8. #1741 P4a — Type presentation, replacing the flag-only icon ladder.  */
+/*    Falls back to the legacy IsGroup/IsSpecialCase flags when Type is    */
+/*    absent (pre-migration install) — $personType stays 'person'/'group'/ */
+/*    'other' either way so every render site below can key on ONE value. */
+/* ---------------------------------------------------------------------- */
+$MUSICIAN_TYPE_PRESENTATION = [
+    'person'    => ['icon' => 'fa-user-pen',           'badge' => null,          'italic' => false],
+    'group'     => ['icon' => 'fa-users',               'badge' => 'Group',       'italic' => false],
+    'orchestra' => ['icon' => 'fa-users-line',           'badge' => 'Orchestra',   'italic' => false],
+    'character' => ['icon' => 'fa-masks-theater',        'badge' => 'Character',   'italic' => true],
+    'other'     => ['icon' => 'fa-circle-question',      'badge' => null,          'italic' => true],
+];
+if ($person && !empty($person['Type']) && isset($MUSICIAN_TYPE_PRESENTATION[$person['Type']])) {
+    $personType = (string)$person['Type'];
+} else {
+    /* Pre-Type-column fallback, derived from the legacy flags. */
+    $personType = $person && (int)($person['IsGroup'] ?? 0) === 1
+        ? 'group'
+        : ($person && (int)($person['IsSpecialCase'] ?? 0) === 1 ? 'other' : 'person');
+}
+$personTypePresentation = $MUSICIAN_TYPE_PRESENTATION[$personType] ?? $MUSICIAN_TYPE_PRESENTATION['person'];
+/* "group-ish" for the lifespan wording (Active/Founded vs b./d.) — group
+   AND orchestra both use the "Active …" phrasing, matching the pre-Type
+   IsGroup-only behaviour extended to the new orchestra type. */
+$isGroupish = in_array($personType, ['group', 'orchestra'], true);
+$lifespanText = $person
+    ? _personFormatLifespan($person['BirthDate'], $person['DeathDate'], $isGroupish)
+    : '';
+$personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
+
 ?>
 
 <!-- ================================================================
@@ -376,15 +493,23 @@ foreach ($discography as $rk => $entry) {
     <!-- Header card -->
     <div class="card card-song-header mb-4">
         <div class="card-body">
+            <!-- #1741 P4a — per-Type icon + badge, replacing the old
+                 IsGroup/IsSpecialCase-only icon ladder. Falls back to the
+                 legacy flags automatically via $personType (computed
+                 above). The badge is folded INSIDE the <h1> — the #1223
+                 badge-a11y pattern (the "Unofficial" songbook badge, and
+                 the language badge before it) — so a screen reader's
+                 accessible name for the heading includes e.g. "Hillsong
+                 United Group", not just the bare name. -->
             <h1 class="h4 mb-1 d-flex flex-wrap align-items-center gap-2">
-                <?php if ($person && (int)$person['IsGroup'] === 1): ?>
-                    <i class="fa-solid fa-users text-info" aria-hidden="true" title="Group / band / collective"></i>
-                <?php elseif ($person && (int)$person['IsSpecialCase'] === 1): ?>
-                    <i class="fa-solid fa-circle-question text-warning" aria-hidden="true" title="Special-case attribution"></i>
-                <?php else: ?>
-                    <i class="fa-solid fa-user-pen" aria-hidden="true"></i>
+                <i class="fa-solid <?= htmlspecialchars($personTypePresentation['icon']) ?><?= $personTypePresentation['badge'] === null && $personType === 'person' ? '' : ' text-info' ?>" aria-hidden="true" title="<?= htmlspecialchars(MUSICIAN_TYPES[$personType] ?? 'Person') ?>"></i>
+                <span class="<?= $personTypePresentation['italic'] ? 'fst-italic' : '' ?>"><?= htmlspecialchars($personName) ?></span>
+                <?php if ($personDisambiguation !== ''): ?>
+                    <small class="text-muted fw-normal">(<?= htmlspecialchars($personDisambiguation) ?>)</small>
                 <?php endif; ?>
-                <span class="<?= ($person && (int)$person['IsSpecialCase'] === 1) ? 'fst-italic' : '' ?>"><?= htmlspecialchars($personName) ?></span>
+                <?php if ($personTypePresentation['badge'] !== null): ?>
+                    <span class="badge bg-body-secondary"><?= htmlspecialchars($personTypePresentation['badge']) ?></span>
+                <?php endif; ?>
                 <?php if ($lifespanText !== ''): ?>
                     <small class="text-muted fw-normal ms-1"><?= htmlspecialchars($lifespanText) ?></small>
                 <?php endif; ?>
@@ -429,13 +554,13 @@ foreach ($discography as $rk => $entry) {
                     — <?= (int)$totalSongs ?> song<?= $totalSongs === 1 ? '' : 's' ?> total
                 </p>
             <?php endif; ?>
-            <?php if ($person && !empty($person['BirthPlace']) && !$person['IsGroup']): ?>
+            <?php if ($person && !empty($person['BirthPlace']) && !$isGroupish): ?>
                 <p class="text-muted small mb-0">
                     <i class="fa-solid fa-location-dot me-1" aria-hidden="true"></i>
                     Born in <?= htmlspecialchars($person['BirthPlace']) ?><?php if (!empty($person['DeathPlace'])): ?>,
                     died in <?= htmlspecialchars($person['DeathPlace']) ?><?php endif; ?>
                 </p>
-            <?php elseif ($person && $person['IsGroup'] && !empty($person['BirthPlace'])): ?>
+            <?php elseif ($person && $isGroupish && !empty($person['BirthPlace'])): ?>
                 <p class="text-muted small mb-0">
                     <i class="fa-solid fa-location-dot me-1" aria-hidden="true"></i>
                     Founded in <?= htmlspecialchars($person['BirthPlace']) ?>
@@ -476,6 +601,75 @@ foreach ($discography as $rk => $entry) {
                         <?php else: ?>
                             <span><?= htmlspecialchars($m['name']) ?></span>
                         <?php endif; ?>
+                        <?php
+                            /* #1741 P4a — append the member's date range when
+                               present (empty on installs without RelationType,
+                               or when no dates were ever recorded). */
+                            $mRange = _personFormatRelationDateRange($m);
+                        ?>
+                        <?php if ($mRange !== ''): ?>
+                            <small class="text-muted">(<?= htmlspecialchars($mRange) ?>)</small>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <?php if (!empty($personPortrayedBy)): ?>
+        <!-- #1741 P4a — "Portrayed by": performers credited as portraying
+             THIS figure (a character/other-type row) in a dramatisation.
+             Read-only here; admin add/remove lives in the
+             /manage/musicians Edit drawer's Portrayed-by sub-panel. -->
+        <div class="card card-song-header mb-4">
+            <div class="card-body">
+                <h2 class="h6 mb-2"><i class="fa-solid fa-person-circle-question me-1" aria-hidden="true"></i>Portrayed by</h2>
+                <p class="mb-0">
+                    <?php foreach ($personPortrayedBy as $i => $m): ?>
+                        <?php if ($i > 0): ?> &middot; <?php endif; ?>
+                        <?php if (!empty($m['slug'])): ?>
+                            <a href="/musician/<?= rawurlencode($m['slug']) ?>"
+                               data-navigate="musician"
+                               class="text-reset text-decoration-underline"><?= htmlspecialchars($m['name']) ?></a>
+                        <?php else: ?>
+                            <span><?= htmlspecialchars($m['name']) ?></span>
+                        <?php endif; ?>
+                        <?php $pbRange = _personFormatRelationDateRange($m); ?>
+                        <?php if ($pbRange !== ''): ?>
+                            <small class="text-muted">(<?= htmlspecialchars($pbRange) ?>)</small>
+                        <?php endif; ?>
+                        <?php if (!empty($m['note'])): ?>
+                            <small class="text-muted d-block ms-0"><?= htmlspecialchars((string)$m['note']) ?></small>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                </p>
+            </div>
+        </div>
+    <?php endif; ?>
+
+    <?php if (!empty($personPortrays)): ?>
+        <!-- #1741 P4a — "Portrays": the figures THIS person is credited
+             as portraying (an actor's own page). -->
+        <div class="card card-song-header mb-4">
+            <div class="card-body">
+                <h2 class="h6 mb-2"><i class="fa-solid fa-masks-theater me-1" aria-hidden="true"></i>Portrays</h2>
+                <p class="mb-0">
+                    <?php foreach ($personPortrays as $i => $m): ?>
+                        <?php if ($i > 0): ?> &middot; <?php endif; ?>
+                        <?php if (!empty($m['slug'])): ?>
+                            <a href="/musician/<?= rawurlencode($m['slug']) ?>"
+                               data-navigate="musician"
+                               class="text-reset text-decoration-underline"><?= htmlspecialchars($m['name']) ?></a>
+                        <?php else: ?>
+                            <span><?= htmlspecialchars($m['name']) ?></span>
+                        <?php endif; ?>
+                        <?php $prRange = _personFormatRelationDateRange($m); ?>
+                        <?php if ($prRange !== ''): ?>
+                            <small class="text-muted">(<?= htmlspecialchars($prRange) ?>)</small>
+                        <?php endif; ?>
+                        <?php if (!empty($m['note'])): ?>
+                            <small class="text-muted d-block ms-0"><?= htmlspecialchars((string)$m['note']) ?></small>
+                        <?php endif; ?>
                     <?php endforeach; ?>
                 </p>
             </div>
@@ -486,7 +680,10 @@ foreach ($discography as $rk => $entry) {
          song page's ISWC/CCLI row (.song-meta-link styling). Sourced from
          tblMusicianIdentifiers + the typed MusicBrainzArtistMBID column. Each
          links to the provider where one exists; IPI/CAE have no public URL.
-         Outbound links pass the #1347 leaving-iHymns interstitial. -->
+         Outbound links pass the #1347 leaving-iHymns interstitial.
+         #1741 P4a — ipi/isni additionally cross-link INTERNALLY to the P3
+         /ipi/<value> and /isni/<value> routes (§1.3.6); see the internal-
+         routability check below. -->
     <?php
     /* IdentifierType => [label, FontAwesome icon, printf URL template (rawurlencoded
        value) or null]. Unknown/new types still render as a bare uppercased chip.
@@ -504,6 +701,13 @@ foreach ($discography as $rk => $entry) {
     if (!function_exists('creditIdentifierTypes')) {
         require_once dirname(__DIR__) . '/musician_helpers.php';
     }
+    /* #1741 P4a — the tree-derived source of which chip types are
+       internally routable (rule #35: no second hardcoded ['ipi','isni']
+       list — today's two happen to be ipi+isni, but this reads the SAME
+       registry the /ipi/ /isni/ public routes themselves are built from,
+       so a future scheme added there picks up a routable chip here with
+       zero changes to this file). */
+    require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
     $personIdMeta = [];
     foreach (creditIdentifierTypes() as $musIdSlug => $musIdDef) {
         /* The registry's `url` is already a "%s"-templated printf string the
@@ -514,14 +718,19 @@ foreach ($discography as $rk => $entry) {
     $personIdMeta['ipi']      = ['IPI',      'fa-barcode', null];
     $personIdMeta['ipi-base'] = ['IPI Base', 'fa-barcode', null];
     $personIdMeta['cae']      = ['CAE',      'fa-barcode', null];
+    /* Each chip carries its raw type slug as a 5th element so the render
+       loop below can derive internal-routability per chip (never a
+       second hardcoded list — rule #35). */
     $personIdChips = [];
-    /* MusicBrainz first — its own typed column (#1090). */
+    /* MusicBrainz first — its own typed column (#1090). Not in
+       IHYMNS_ID_SCHEMES ⇒ not internally routable, keeps its existing
+       direct-link behaviour exactly. */
     if ($person && !empty($person['MusicBrainzArtistMBID'])) {
-        $personIdChips[] = ['MusicBrainz', 'fa-compact-disc', 'https://musicbrainz.org/artist/%s', trim((string)$person['MusicBrainzArtistMBID'])];
+        $personIdChips[] = ['MusicBrainz', 'fa-compact-disc', 'https://musicbrainz.org/artist/%s', trim((string)$person['MusicBrainzArtistMBID']), 'musicbrainz'];
     }
     foreach ($personIdentifiers as $pIdRow) {
         $meta = $personIdMeta[$pIdRow['type']] ?? [strtoupper($pIdRow['type']), 'fa-barcode', null];
-        $personIdChips[] = [$meta[0], $meta[1], $meta[2], $pIdRow['value']];
+        $personIdChips[] = [$meta[0], $meta[1], $meta[2], $pIdRow['value'], $pIdRow['type']];
     }
     ?>
     <?php if (!empty($personIdChips)): ?>
@@ -531,11 +740,30 @@ foreach ($discography as $rk => $entry) {
                     <i class="fa-solid fa-fingerprint me-1" aria-hidden="true"></i>Identifiers
                 </h2>
                 <div class="d-flex flex-wrap column-gap-4 row-gap-1">
-                    <?php foreach ($personIdChips as [$idLabel, $idIcon, $idUrlTpl, $idVal]): ?>
+                    <?php foreach ($personIdChips as [$idLabel, $idIcon, $idUrlTpl, $idVal, $idType]): ?>
+                        <?php
+                            /* #1741 P4a — internal routability, derived from
+                               the tree (identifier_normalize.php's
+                               IHYMNS_ID_SCHEMES), not a second hardcoded
+                               ['ipi','isni'] list (rule #35). */
+                            $idInternal = array_key_exists($idType, IHYMNS_ID_SCHEMES)
+                                && IHYMNS_ID_SCHEMES[$idType]['entity'] === 'musician';
+                        ?>
                         <span class="small text-muted">
                             <i class="fa-solid <?= htmlspecialchars($idIcon) ?> me-2" aria-hidden="true"></i>
                             <strong><?= htmlspecialchars($idLabel) ?>:</strong>&nbsp;<?php
-                            if ($idUrlTpl !== null): ?><a class="song-meta-link"
+                            if ($idInternal): ?><a class="song-meta-link"
+                                   href="/<?= htmlspecialchars($idType) ?>/<?= rawurlencode($idVal) ?>"
+                                   data-navigate="<?= htmlspecialchars($idType) ?>"
+                                   title="See everyone sharing this <?= htmlspecialchars($idLabel) ?>"><?= htmlspecialchars($idVal) ?></a><?php
+                                if ($idUrlTpl !== null): /* authority URL moves to a trailing icon */ ?><a
+                                       href="<?= htmlspecialchars(sprintf($idUrlTpl, rawurlencode($idVal))) ?>"
+                                       target="_blank" rel="noopener nofollow external" class="ms-1"
+                                       aria-label="<?= htmlspecialchars($idLabel) ?> on its authority site — opens in a new tab"
+                                       title="<?= htmlspecialchars($idLabel) ?> on its authority site — opens in a new tab"><i
+                                       class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></a><?php
+                                endif; ?><?php
+                            elseif ($idUrlTpl !== null): ?><a class="song-meta-link"
                                    href="<?= htmlspecialchars(sprintf($idUrlTpl, rawurlencode($idVal))) ?>"
                                    target="_blank" rel="noopener nofollow external"
                                    title="<?= htmlspecialchars($idLabel) ?> — opens in a new tab"><?= htmlspecialchars($idVal) ?></a><?php
@@ -548,73 +776,33 @@ foreach ($discography as $rk => $entry) {
         </div>
     <?php endif; ?>
 
-    <!-- Notes / bio -->
-    <?php if ($person && !empty(trim((string)$person['Notes']))): ?>
+    <!-- About / bio (#1741 P4a — $bioText is Biography-with-Notes-fallback,
+         computed above §7; the notes-as-bio-fallback marker lives there). -->
+    <?php if ($person && $bioText !== ''): ?>
         <div class="card mb-4">
             <div class="card-body">
                 <h2 class="h6 text-muted mb-2">
                     <i class="fa-solid fa-circle-info me-1" aria-hidden="true"></i>About
                 </h2>
-                <p class="mb-0" style="white-space: pre-line;"><?= htmlspecialchars((string)$person['Notes']) ?></p>
+                <p class="mb-0" style="white-space: pre-line;"><?= htmlspecialchars($bioText) ?></p>
             </div>
         </div>
     <?php endif; ?>
 
-    <!-- External links — unified system (#833) preferred, legacy fallback -->
-    <?php if (!empty($linksUnified)): ?>
-        <?php
-            $pLinksByCat = [];
-            foreach ($linksUnified as $l) {
-                $cat = (string)($l['category'] ?? 'other');
-                if (!isset($pLinksByCat[$cat])) $pLinksByCat[$cat] = [];
-                $pLinksByCat[$cat][] = $l;
-            }
-            $pCatLabels = [
-                'official'    => 'Official',
-                'information' => 'Information',
-                'authority'   => 'Authority',
-                'sheet-music' => 'Sheet music',
-                'listen'      => 'Listen',
-                'watch'       => 'Watch',
-                'social'      => 'Social',
-                'read'        => 'Read',
-                'purchase'    => 'Purchase',
-                'other'       => 'Other',
-            ];
-        ?>
-        <div class="card mb-4">
-            <div class="card-body">
-                <h2 class="h6 text-muted mb-3">
-                    <i class="fa-solid fa-link me-1" aria-hidden="true"></i>Find this person elsewhere
-                </h2>
-                <?php foreach ($pCatLabels as $cat => $catLabel): ?>
-                    <?php if (empty($pLinksByCat[$cat])) continue; ?>
-                    <div class="mb-2">
-                        <div class="text-uppercase small text-muted mb-1"><?= htmlspecialchars($catLabel) ?></div>
-                        <div class="d-flex flex-wrap gap-2">
-                            <?php foreach ($pLinksByCat[$cat] as $l): ?>
-                                <a class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2"
-                                   href="<?= htmlspecialchars((string)$l['url']) ?>"
-                                   target="_blank" rel="noopener nofollow"
-                                   title="<?= htmlspecialchars((string)$l['url']) ?>">
-                                    <?php if (!empty($l['iconClass'])): ?>
-                                        <i class="<?= htmlspecialchars((string)$l['iconClass']) ?>" aria-hidden="true"></i>
-                                    <?php endif; ?>
-                                    <span><?= htmlspecialchars((string)$l['name']) ?></span>
-                                    <?php if (!empty($l['note'])): ?>
-                                        <span class="text-muted small">— <?= htmlspecialchars((string)$l['note']) ?></span>
-                                    <?php endif; ?>
-                                    <?php if (!empty($l['verified'])): ?>
-                                        <i class="fa-solid fa-circle-check text-success small" aria-label="Verified" title="Verified"></i>
-                                    <?php endif; ?>
-                                </a>
-                            <?php endforeach; ?>
-                        </div>
-                    </div>
-                <?php endforeach; ?>
-            </div>
-        </div>
-    <?php elseif (!empty($links)): /* legacy fallback when no unified rows */ ?>
+    <!-- External links — unified system (#833) preferred, legacy fallback.
+         #1741 P4a — the unified-rows branch now consumes the SHARED
+         partial (§0.4) work.php/tune.php already use, instead of its own
+         inlined $pCatLabels category-label map + render loop (byte-similar
+         output, one source — the category order shifts very slightly to
+         match the partial's canonical list, an accepted cosmetic change
+         noted in the P4a commit). -->
+    <?php if (!empty($linksUnified)):
+        $panelLinks     = $linksUnified;
+        $panelHeading   = 'Find this person elsewhere';
+        $panelAriaLabel = 'Find this person elsewhere';
+        require __DIR__ . DIRECTORY_SEPARATOR . '..' . DIRECTORY_SEPARATOR
+              . 'partials' . DIRECTORY_SEPARATOR . 'external-links-panel.php';
+    elseif (!empty($links)): /* legacy fallback when no unified rows */ ?>
         <div class="card mb-4">
             <div class="card-body">
                 <h2 class="h6 text-muted mb-2">
@@ -710,19 +898,29 @@ foreach ($discography as $rk => $entry) {
            person. Search-hint / misspelling aliases are included here
            too — schema.org alternateName is a non-display catalogue of
            known synonyms, so search engines benefit from the broader
-           set the public header skipped. */
-        if ($person && (!empty($publicAliases) || !empty($personAliases))):
+           set the public header skipped.
+           #1741 P4a — the gate widens to ALSO fire when Disambiguation
+           is set (so a disambiguated-but-alias-less row still gets a
+           JSON-LD block), and adds disambiguatingDescription — the
+           schema.org property built exactly for "(the elder)"-style
+           short parentheticals. */
+        if ($person && (!empty($publicAliases) || !empty($personAliases) || $personDisambiguation !== '')):
             $ldNames = array_values(array_unique(array_map(
                 static fn(array $a): string => (string)$a['Name'],
                 $personAliases
             )));
-            $ldType = ((int)($person['IsGroup'] ?? 0) === 1) ? 'MusicGroup' : 'Person';
+            $ldType = $isGroupish ? 'MusicGroup' : 'Person';
             $ld = [
-                '@context'      => 'https://schema.org',
-                '@type'         => $ldType,
-                'name'          => $personName,
-                'alternateName' => count($ldNames) === 1 ? $ldNames[0] : $ldNames,
+                '@context' => 'https://schema.org',
+                '@type'    => $ldType,
+                'name'     => $personName,
             ];
+            if (!empty($ldNames)) {
+                $ld['alternateName'] = count($ldNames) === 1 ? $ldNames[0] : $ldNames;
+            }
+            if ($personDisambiguation !== '') {
+                $ld['disambiguatingDescription'] = $personDisambiguation;
+            }
     ?>
         <?php /* SECURITY: JSON_HEX_TAG|_AMP|_APOS|_QUOT so a DB musician name
                  containing </script> (or &, ", ') cannot break out of this public

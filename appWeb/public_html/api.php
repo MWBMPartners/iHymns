@@ -14974,9 +14974,12 @@ if ($action !== null) {
 
                 $db->begin_transaction();
                 try {
-                    /* #630 — flag columns may not exist on a partly-
-                       migrated install. Skip them when absent. */
-                    $hasFlagsCols = musicianFlagsColumnsExist($db);
+                    /* #1741 P4a — IsSpecialCase/IsGroup are no longer
+                       written directly here — they're written ONLY by
+                       musicianTypeApply() below (the same funnel
+                       manage/musicians.php's add/update_person handlers
+                       use), which dropped the flags-columns-exist
+                       dimension this INSERT used to need. */
                     /* Slug — NOT NULL DEFAULT '' with UNIQUE uk_Slug
                        per migrate-musicians-slug.php. Every INSERT
                        MUST carry a slug or it'll trip the orphan
@@ -14985,27 +14988,7 @@ if ($action !== null) {
                        install can still INSERT. */
                     $slug       = generateUniqueMusicianSlug($db, $name);
                     $hasSlugCol = $slug !== '';
-                    if ($hasFlagsCols && $hasSlugCol) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblMusicians
-                                (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('sssssssii',
-                            $name, $slug, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
-                        );
-                    } elseif ($hasFlagsCols) {
-                        $stmt = $db->prepare(
-                            'INSERT INTO tblMusicians
-                                (Name, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate, IsSpecialCase, IsGroup)
-                             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-                        );
-                        $stmt->bind_param('ssssssii',
-                            $name, $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup
-                        );
-                    } elseif ($hasSlugCol) {
+                    if ($hasSlugCol) {
                         $stmt = $db->prepare(
                             'INSERT INTO tblMusicians
                                 (Name, Slug, Notes, BirthPlace, BirthDate, DeathPlace, DeathDate)
@@ -15027,6 +15010,15 @@ if ($action !== null) {
                     $stmt->execute();
                     $newId = (int)$db->insert_id;
                     $stmt->close();
+
+                    /* #1741 P4a — THE ONE flags/Type write funnel (rule
+                       guard: tests/php/test-musician-profile-fields.php's
+                       flag-funnel-ban). The native-app API has no `type`
+                       field of its own (yet) — synthesise it from the
+                       posted is_special_case/is_group booleans, same as
+                       manage/musicians.php's checkbox-only fallback. */
+                    $apiMusicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                    musicianTypeApply($db, $newId, $apiMusicianType);
 
                     /* Date precision flags — separate, column-gated UPDATE
                        (no-op on an un-migrated install; the date itself
@@ -15182,29 +15174,23 @@ if ($action !== null) {
 
                 $db->begin_transaction();
                 try {
-                    if (musicianFlagsColumnsExist($db)) {
-                        $stmt = $db->prepare(
-                            'UPDATE tblMusicians
-                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                    DeathPlace = ?, DeathDate = ?,
-                                    IsSpecialCase = ?, IsGroup = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssiii',
-                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate,
-                            $isSpecialCase, $isGroup, $id);
-                    } else {
-                        $stmt = $db->prepare(
-                            'UPDATE tblMusicians
-                                SET Notes = ?, BirthPlace = ?, BirthDate = ?,
-                                    DeathPlace = ?, DeathDate = ?
-                              WHERE Id = ?'
-                        );
-                        $stmt->bind_param('sssssi',
-                            $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
-                    }
+                    /* #1741 P4a — IsSpecialCase/IsGroup no longer in this
+                       SET clause; see the identically-commented block in
+                       admin_musician_add above. */
+                    $stmt = $db->prepare(
+                        'UPDATE tblMusicians
+                            SET Notes = ?, BirthPlace = ?, BirthDate = ?,
+                                DeathPlace = ?, DeathDate = ?
+                          WHERE Id = ?'
+                    );
+                    $stmt->bind_param('sssssi',
+                        $notes, $birthPlace, $birthDate, $deathPlace, $deathDate, $id);
                     $stmt->execute();
                     $stmt->close();
+
+                    /* #1741 P4a — THE ONE flags/Type write funnel. */
+                    $apiMusicianType = $isGroup ? 'group' : ($isSpecialCase ? 'other' : 'person');
+                    musicianTypeApply($db, $id, $apiMusicianType);
 
                     /* Date precision flags — column-gated UPDATE, written
                        unconditionally so clearing a date also clears its
