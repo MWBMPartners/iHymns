@@ -472,6 +472,28 @@ try {
             $jsonLdScripts[] = $musicAlbum;
         }
     }
+    /* #1741 P4a-3 (owner decision D4) — /writer/<name-slug> is retired in favour
+       of /musician/<registry-slug>. A resolvable slug gets a REAL 301 (mirrors
+       the /people|/person 301 below) so crawlers + old external links converge
+       on one canonical URL. An unresolvable slug falls through to the SPA shell
+       — the fragment renders the name-based fallback, so no /writer/ URL that
+       used to answer ever dies (rule #33). NOTE the pattern: ([^/]+) +
+       rawurldecode, NOT the person branch's [a-z0-9\-]+ — historic writer slugs
+       carry dots and percent-encoded bytes (sitemap fold, pre-D4).
+       @link .claude/catalogue-1741-P4a3-plan.md §1.1 leg A / §2 A1-A2/A11-A12 */
+    elseif (preg_match('#^/writer/([^/]+)$#', $requestPath, $matches)) {
+        $pageType = 'other';
+        try {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+            $writerResolved = musicianResolveLegacySlugDb(getDbMysqli(), rawurldecode($matches[1]));
+        } catch (\Throwable $_e) {
+            $writerResolved = null;   /* fail-open: serve the shell, never a 500 */
+        }
+        if ($writerResolved !== null) {
+            header('Location: ' . getCanonicalUrl('/musician/' . rawurlencode($writerResolved)), true, 301);
+            exit;
+        }
+    }
     /* #1741 P2-B — /people/<slug> and /person/<slug> are LEGACY path
        prefixes; the canonical route is now /musician/<slug>. Issue a real
        301 for any non-fragment (i.e. a genuine top-level HTTP request —

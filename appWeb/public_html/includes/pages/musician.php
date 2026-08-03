@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 /**
- * iHymns — Musician Public Page (#588, #1741 P2-B, P4a)
+ * iHymns — Musician Public Page (#588, #1741 P2-B, P4a, P4a-3)
  *
  * Copyright (c) 2026 iHymns. All rights reserved.
  *
@@ -22,7 +22,22 @@ declare(strict_types=1);
  * (Portrayed-by / Portrays cards, for character/other-type rows) —
  * @link .claude/catalogue-1741-P4-plan.md §1.3
  *
- * Loaded via api.php?page=person&slug=cecil-frances-humphreys-alexander.
+ * #1741 P4a-3 additions (writer/person page consolidation, owner decision
+ * D4): `includes/pages/writer.php` was DELETED and this page now also
+ * serves every legacy `/writer/<name-slug>` request (api.php's
+ * `case 'writer'` requires this file directly). Before the registry
+ * lookup, `musicianResolveLegacySlugDb()` (musician_helpers.php) resolves
+ * a name-slug or punctuated-slug input to the real registry Slug when
+ * one exists; when a registry row DOES render, the section tag carries
+ * `data-musician-canonical` so router.js can soft-canonicalise the
+ * address bar via history.replaceState (no reload). The no-registry-row
+ * discography fallback below was widened to try the historic writer.php
+ * name-variant set (not just the title-cased spaced name) so a
+ * hyphenated credited name like "Smith-Jones" still lists.
+ * @link .claude/catalogue-1741-P4a3-plan.md the full design + decisions
+ *
+ * Loaded via api.php?page=person&slug=cecil-frances-humphreys-alexander,
+ * OR api.php?page=writer&id=<legacy-name-slug> (P4a-3).
  * Expects $personSlug to be set by api.php before inclusion.
  *
  * Falls back to /writer/<slug> behaviour for installs that haven't
@@ -47,6 +62,41 @@ function _personSlugToName(string $slug): string
 $person = null;            /* tblMusicians row, or null on partial install / unknown slug */
 $personName = '';          /* always set — falls back to slug-derived name */
 $db = getDbMysqli();
+
+/**
+ * #1741 P4a-3 — legacy-slug resolution, BEFORE the registry SELECT below.
+ *
+ * ELI5: this page can be reached three ways that don't necessarily carry
+ * the registry's own slug — a legacy /writer/<name-slug> URL
+ * (api.php's `case 'writer'` sets $personSlug = the writer id and
+ * requires this file), a name-slug /musician/ credit link built by
+ * song.php:700/:1252 (which folds a credited NAME, not a registry
+ * Slug), or the /person|/people 301 alias. This resolves whichever of
+ * those the incoming slug is into the real registry slug FIRST, so the
+ * `WHERE Slug = ?` lookup immediately below always sees a canonical
+ * value when one exists.
+ *
+ * DETAILED / WHY: `musicianResolveLegacySlugDb()` is the ONE shared
+ * ladder (musician_helpers.php, rule #22 — never re-fork the fold) and
+ * is FAIL-OPEN: on an un-migrated install (no Slug column / table) it
+ * returns null and $personSlug is left exactly as it arrived, so this
+ * page behaves precisely as it did before this slice — the name-based
+ * fallback in §5 below still fires. `require_once` is guarded by
+ * `function_exists()` because musician.php can be `require`d more than
+ * once per PHP process in the P4 verification probe (see the build
+ * spec's §5.4 live-probe note) and a bare `require_once` of a file that
+ * unconditionally redeclares functions would still be safe, but the
+ * guard costs nothing and matches the file's own existing convention
+ * (see `musicianProfileColumnsExist()`'s guard a few lines below).
+ *
+ * @see includes/musician_helpers.php musicianResolveLegacySlugDb()
+ * @link .claude/catalogue-1741-P4a3-plan.md §1.2 the ladder's design
+ */
+if (!function_exists('musicianResolveLegacySlugDb')) {
+    require_once dirname(__DIR__) . '/musician_helpers.php';
+}
+$_resolvedSlug = musicianResolveLegacySlugDb($db, $personSlug);
+if ($_resolvedSlug !== null) { $personSlug = $_resolvedSlug; }
 
 /* ---------------------------------------------------------------------- */
 /* 1. Look up the registry row (if the migration has been applied).       */
@@ -223,19 +273,56 @@ if (!_personPageArtistsTableExists($db)) {
     unset($roleTables['artist']);
 }
 
+/**
+ * #1741 P4a-3 — the discography's credited-name candidate list.
+ *
+ * ELI5: when there's a real profile (a registry row matched), we only
+ * ever looked up songs by its exact Name — that stays true. When there
+ * ISN'T one (an un-registered writer, or a legacy slug the ladder above
+ * couldn't resolve), the old /writer/<slug> page tried a few spelling
+ * variants of the slug before giving up; this keeps that same courtesy
+ * so those pages still list songs instead of 404ing.
+ *
+ * DETAILED / WHY: this is the D4 "no-silent-404" guarantee from the
+ * P4a-3 build spec §1.3 — the ONE gap between the old two-role
+ * writer.php and this six-role fallback. writer.php additionally tried
+ * the RAW slug as a credited name (`smith-jones`), which the
+ * title-cased-spaced-only fallback here never did; a hyphenated
+ * credited name like "Smith-Jones" spaces to "Smith Jones" and would
+ * never match. `musicianLegacySlugPlan()` (the SAME plan-builder the
+ * ladder above consumes — rule #22, one fold, not two) already produces
+ * exactly writer.php's historic variant set (title-cased spaced,
+ * spaced, raw slug), CI-deduped.
+ *
+ * One `Name IN (...)` query SHAPE serves both branches deliberately —
+ * a registry hit binds a one-element list, so there is no second SQL
+ * string to keep in sync (rule #35: cross-file/cross-branch agreement
+ * needs ONE mechanism, not two copies that could drift). Case-fold is
+ * free: the credit tables' utf8mb4 collation is already
+ * case-insensitive, same property `SongData::getSongsByCreditName()`
+ * makes explicit with `LOWER()` for its own (unrelated) caller.
+ *
+ * @see musicianLegacySlugPlan() musician_helpers.php — the one fold
+ * @link .claude/catalogue-1741-P4a3-plan.md §1.3 "The closure"
+ */
+$creditNames = $person !== null
+    ? [$personName]
+    : musicianLegacySlugPlan($personSlug)['names'];
+
 $discography = [];
 $totalSongs = 0;
 $matchedSongIds = [];
 foreach ($roleTables as $roleKey => $cfg) {
     require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'song_soft_delete.php';
+    $creditPh = implode(',', array_fill(0, count($creditNames), '?'));
     $sql = "SELECT s.SongId, s.Title, s.SongbookAbbr, s.Number
               FROM {$cfg['table']} c
               JOIN tblSongs s ON s.SongId = c.SongId
-             WHERE c.Name = ? AND " . songVisibleSql($db, 's') . "
+             WHERE c.Name IN ($creditPh) AND " . songVisibleSql($db, 's') . "
              ORDER BY s.SongbookAbbr, s.Number";   /* #1694 — visible songs only */
     try {
         $stmt = $db->prepare($sql);
-        $stmt->bind_param('s', $personName);
+        $stmt->bind_param(str_repeat('s', count($creditNames)), ...$creditNames);
         $stmt->execute();
         $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
         $stmt->close();
@@ -476,7 +563,29 @@ $personDisambiguation = trim((string)($person['Disambiguation'] ?? ''));
 <!-- ================================================================
      MUSICIAN PAGE — Public landing for a tblMusicians registry row
      ================================================================ -->
-<section class="page-musician" aria-label="<?= htmlspecialchars($personName) ?>">
+<?php
+/* #1741 P4a-3 — the canonicalisation marker's explanatory comment MUST be
+   a PHP comment, never an HTML comment, on this line: an HTML `<!-- -->`
+   is static markup PHP does not strip, so it renders into the fragment's
+   OUTPUT unconditionally — including on the no-registry-row fallback
+   branch, where the marker attribute itself is deliberately absent. An
+   HTML comment merely MENTIONING the literal string
+   "data-musician-canonical" would therefore make every fallback page's
+   HTML contain that substring anyway, defeating any caller (including
+   this feature's own live probe, build spec §5.4 P4) that checks
+   `!str_contains($html, 'data-musician-canonical')` to confirm the
+   fallback emits NO fake canonical. The marker is emitted ONLY when a
+   registry row rendered ($person !== null) — a bare fallback page has no
+   canonical /musician/ URL to point at. router.js's afterPageLoad() reads
+   it and history.replaceState()s the address bar to it — the #1343-B
+   [data-song-canonical] pattern applied to legacy /writer/<name-slug>
+   hits, name-slug /musician/ credit links (song.php:700/:1252), and
+   /person|/people alias navigations, all for the price of one marker.
+   @link .claude/catalogue-1741-P4a3-plan.md §1.1 leg C */
+?>
+<section class="page-musician"<?= $person !== null
+    ? ' data-musician-canonical="/musician/' . htmlspecialchars(rawurlencode($personSlug)) . '"'
+    : '' ?> aria-label="<?= htmlspecialchars($personName) ?>">
 
     <!-- Breadcrumb -->
     <nav aria-label="Breadcrumb" class="mb-3">

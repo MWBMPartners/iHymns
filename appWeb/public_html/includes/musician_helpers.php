@@ -908,6 +908,204 @@ function slugifyMusicianName(string $name): string
 }
 
 /**
+ * iHymns — legacy /writer/<name-slug> → tblMusicians registry-slug resolver (#1741 P4a-3).
+ *
+ * ELI5: an old-style writer link like /writer/charles-h.-gabriel doesn't
+ * automatically match the registry's own slug for that person
+ * (charles-h-gabriel). This is the "try a few reasonable guesses, in a
+ * fixed order" plan-builder those guesses are made from.
+ *
+ * DETAILED / WHY: inverts the ONE fold every emitter of a name-slug has
+ * ever used — `strtolower(str_replace(' ', '-', $name))` (the historic
+ * sitemap.xml.php:153 writer-page fold, and the CURRENT credit-link fold
+ * at song.php:700/:1252) — into an ORDERED list of candidate registry
+ * slugs and candidate registry/credited Names, consumed by
+ * `musicianResolveLegacySlug()` below. Reused by THREE call sites
+ * (index.php's top-level 301, api.php's `case 'writer'` via
+ * musician.php, and musician.php's own no-registry-row fallback) so the
+ * name/slug variant fold exists exactly once in this codebase — the
+ * modularity rule (CLAUDE.md, "reuse a shared module — do not
+ * duplicate") and rule #22 ("never re-fork the normalise … fold").
+ *
+ * Deliberately PURE (no DB, no I/O) so `musicianResolveLegacySlug()` and
+ * this plan builder are unit-testable with zero fixtures — the #1689
+ * `songRedirectFollow()` pure/driver split this mirrors.
+ *
+ * @param string $slug ALREADY-URLDECODED slug segment (callers decode
+ *                      exactly once — see the A11 double-decode note in
+ *                      .claude/catalogue-1741-P4a3-plan.md §2).
+ * @return array{slugs: list<string>, names: list<string>}
+ *   `slugs` — ordered candidate registry `tblMusicians.Slug` values:
+ *             the raw input first (the common case — most slugs already
+ *             match), then the `slugifyMusicianName()` punctuation/
+ *             diacritic fold (dedupe-guarded so a no-op fold doesn't
+ *             double an entry).
+ *   `names` — ordered candidate credited/registry `Name` values: the
+ *             title-cased spaced form, the plain spaced form, then the
+ *             raw slug verbatim (the "Smith-Jones" case — a hyphenated
+ *             credited name whose slug IS its name, so spacing the
+ *             hyphen away would never match). Deduped case-insensitively
+ *             via `mb_strtolower()`, matching the tables' utf8mb4 CI
+ *             collation so a caller never binds the same value twice.
+ * @link https://www.php.net/manual/en/function.mb-convert-case.php MB_CASE_TITLE
+ * @see slugifyMusicianName() the punctuation/diacritic fold this reuses (rung 2)
+ */
+function musicianLegacySlugPlan(string $slug): array
+{
+    $slug   = trim($slug);
+    $spaced = str_replace('-', ' ', $slug);
+
+    /* Rung order: exact slug first (cheapest, most common hit), the
+       slugify() fold second — see musicianResolveLegacySlug()'s doc-block
+       for why this order matters. */
+    $slugs = [];
+    foreach ([$slug, slugifyMusicianName($slug)] as $c) {
+        if ($c !== '' && !in_array($c, $slugs, true)) { $slugs[] = $c; }
+    }
+
+    $names = [];
+    $seen  = [];
+    foreach ([mb_convert_case($spaced, MB_CASE_TITLE, 'UTF-8'), $spaced, $slug] as $c) {
+        $c = trim($c);
+        $k = mb_strtolower($c);
+        if ($c === '' || isset($seen[$k])) { continue; }
+        $seen[$k] = true;
+        $names[]  = $c;
+    }
+    return ['slugs' => $slugs, 'names' => $names];
+}
+
+/**
+ * iHymns — pure ladder walker for the legacy-slug resolution plan (#1741 P4a-3).
+ *
+ * ELI5: given the list of guesses from `musicianLegacySlugPlan()`, try
+ * each one in order using whatever lookup function the caller hands in,
+ * and stop at the first hit.
+ *
+ * DETAILED / WHY: the lookups are INJECTED CALLABLES rather than a
+ * `\mysqli $db` parameter — the same seam `songRedirectFollow()`
+ * (`song_redirects.php:94-117`) uses, and for the same reason: a
+ * behaviour with a runtime handle is what
+ * `tests/php/test-song-redirect-claim.php`'s doc-block calls "a property
+ * a test could simply have CALLED", so `tests/php/test-musician-slug-
+ * resolve.php` can assert the *order* rungs are tried in (spy closures
+ * that record every candidate they were asked about) with zero database
+ * and zero fixtures.
+ *
+ * Ladder order (load-bearing — do not reorder without updating both this
+ * doc-block and the mutation-proof row in the P4a-3 build spec §4.3):
+ *   1. Exact registry slug — resolves the overwhelming common case (a
+ *      simple name) in one indexed hit, AND makes the whole ladder
+ *      idempotent: feeding an ALREADY-canonical registry slug back
+ *      through resolves to itself, so leg A (index.php) can never loop.
+ *   2. Punctuation/diacritic-folded slug (`slugifyMusicianName()`) —
+ *      the SAME fold `generateUniqueMusicianSlug()` and the migration
+ *      backfill use (rule #22: never re-fork it). Closes the writer-fold
+ *      ↔ registry-fold gap for names like "Charles H. Gabriel".
+ *   3. Registry `Name` match (only tried once BOTH slug rungs miss) —
+ *      covers collision-suffixed slugs (`john-smith-2`) and the raw-slug
+ *      "Smith-Jones" case. `$byName` receives the FULL deduped name list
+ *      in one call so the driver can express it as one `Name IN (…)`
+ *      query (never N round-trips).
+ *   4. Aliases are deliberately NOT a rung here — see decision D-4 in
+ *      the build spec; a follow-up issue tracks widening this ladder.
+ *
+ * @param callable(string):?string       $bySlug Exact `tblMusicians.Slug`
+ *        lookup for one candidate slug. Returns the canonical slug on a
+ *        hit (normally the same string it was asked about), or null/''
+ *        on a miss — both treated as "no match, try the next rung".
+ * @param callable(list<string>):?string $byName `tblMusicians.Name IN (…)`
+ *        lookup across the WHOLE candidate name list at once. Returns
+ *        the matched row's canonical Slug, or null/'' on a miss.
+ * @param string $slug ALREADY-URLDECODED slug segment (see
+ *        `musicianLegacySlugPlan()`'s doc-block).
+ * @return ?string The canonical `tblMusicians.Slug`, or null when every
+ *         rung misses (the caller then degrades to the pre-#1741-P4a-3
+ *         name-based fallback — never a 404 for a legacy URL that used
+ *         to answer, per rule #33).
+ */
+function musicianResolveLegacySlug(callable $bySlug, callable $byName, string $slug): ?string
+{
+    $plan = musicianLegacySlugPlan($slug);
+    foreach ($plan['slugs'] as $cand) {
+        $hit = $bySlug($cand);
+        if (is_string($hit) && $hit !== '') { return $hit; }
+    }
+    if ($plan['names'] !== []) {
+        $hit = $byName($plan['names']);
+        if (is_string($hit) && $hit !== '') { return $hit; }
+    }
+    return null;
+}
+
+/**
+ * iHymns — DB driver for the legacy-slug ladder (#1741 P4a-3).
+ *
+ * ELI5: the real, database-backed version of the guess-and-check above —
+ * plugs actual `tblMusicians` lookups into `musicianResolveLegacySlug()`.
+ * If anything goes wrong (old install, DB hiccup), it just says "I don't
+ * know" instead of crashing the page.
+ *
+ * DETAILED / WHY: FAIL-OPEN by design, mirroring the
+ * `songRedirectClaimsId()` reasoning at `song_redirects.php:186-208` —
+ * a pre-`Slug`-migration install (no `Slug` column, or the column exists
+ * but is empty on every row), an absent `tblMusicians` table, or a
+ * transient query failure must never surface as a fatal on a public
+ * page; they all answer `null`, and every caller (index.php's 301
+ * branch, api.php's `case 'writer'` → musician.php, musician.php's own
+ * lookup) then degrades to the SAME name-based fallback the un-migrated
+ * install has always used (CLAUDE.md red-flag list: a
+ * `mysqli_sql_exception` under STRICT mode must be caught at a page-load
+ * boundary, never left to white-screen — the #1228 lesson).
+ *
+ * Both closures use bound parameters exclusively (`bind_param('s', …)`
+ * / `str_repeat('s', count($names))` for the `Name IN (…)` placeholder
+ * count) — the ONLY sanctioned string interpolation into SQL here is the
+ * placeholder-count-derived `?,?,?` string itself (CLAUDE.md SQL rule).
+ *
+ * @param \mysqli $db  Live connection from `getDbMysqli()`.
+ * @param string  $slug ALREADY-URLDECODED slug segment.
+ * @return ?string The canonical `tblMusicians.Slug`, or null on a miss
+ *         OR any failure (schema-tolerant, never throws).
+ * @see musicianResolveLegacySlug() the pure ladder this wires real lookups into
+ */
+function musicianResolveLegacySlugDb(\mysqli $db, string $slug): ?string
+{
+    try {
+        return musicianResolveLegacySlug(
+            static function (string $cand) use ($db): ?string {
+                $st = $db->prepare('SELECT Slug FROM tblMusicians WHERE Slug = ? LIMIT 1');
+                $st->bind_param('s', $cand);
+                $st->execute();
+                $row = $st->get_result()->fetch_row();
+                $st->close();
+                return ($row !== null && (string)$row[0] !== '') ? (string)$row[0] : null;
+            },
+            static function (array $names) use ($db): ?string {
+                /* Placeholder string built from count() — a hardcoded
+                   constant shape, never user input (rule #5's
+                   sanctioned interpolation: array_fill(0, count(...),
+                   '?') joined). */
+                $ph = implode(',', array_fill(0, count($names), '?'));
+                $st = $db->prepare(
+                    "SELECT Slug FROM tblMusicians
+                      WHERE Name IN ($ph) AND Slug IS NOT NULL AND Slug <> ''
+                      ORDER BY Id ASC LIMIT 1"
+                );
+                $st->bind_param(str_repeat('s', count($names)), ...$names);
+                $st->execute();
+                $row = $st->get_result()->fetch_row();
+                $st->close();
+                return $row !== null ? (string)$row[0] : null;
+            },
+            $slug
+        );
+    } catch (\Throwable $_e) {
+        return null;
+    }
+}
+
+/**
  * Generate a unique slug for a tblMusicians row.
  *
  * Computes the base slug from $name, then appends -2 / -3 / … until the

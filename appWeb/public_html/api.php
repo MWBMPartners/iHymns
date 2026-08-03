@@ -667,14 +667,22 @@ if ($page !== null) {
             break;
 
         case 'writer':
-            /* Requires writer slug parameter */
+            /* #1741 P4a-3 (owner decision D4) — /writer/<name-slug> is consolidated
+               into the musician profile page. The route + its `id` param are a
+               shipped contract (years of sitemap emissions + external links — rule
+               #33), so the case stays forever; it now serves the musician fragment,
+               whose internal ladder (musician_helpers.php) maps the name-slug to a
+               registry row and whose data-musician-canonical marker lets router.js
+               canonicalise the address bar. Top-level HTTP hits get a real 301 in
+               index.php instead — this fragment path is only ever fetched by the SPA. */
             $writerId = isset($_GET['id']) ? trim($_GET['id']) : '';
             if ($writerId === '') {
                 http_response_code(400);
                 echo '<div class="alert alert-warning" role="alert">Writer ID is required.</div>';
                 break;
             }
-            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'writer.php';
+            $personSlug = $writerId;   /* musician.php resolves via the shared ladder */
+            require __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'pages' . DIRECTORY_SEPARATOR . 'musician.php';
             break;
 
         case 'musician':

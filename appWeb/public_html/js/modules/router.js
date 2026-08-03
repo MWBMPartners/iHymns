@@ -696,6 +696,49 @@ export class Router {
            Must run before the early `return`s in the song branch below. */
         this.app.setList?.renderSongNavigation();
 
+        /* #1741 P4a-3 — a legacy /writer/<name-slug> (or a name-slug /musician/
+           credit link, or a /person|/people alias path) whose fragment resolved to
+           a registry musician carries the canonical path on .page-musician.
+           Soft-canonicalise the URL bar — the #1343-B data-song-canonical pattern:
+           replaceState (no reload, no back-button trap), then retitle as Musician.
+
+           ELI5: if you land on an old writer link (or a name-based musician link)
+           and the page you get IS a real registry profile, quietly tidy the address
+           bar to the profile's real /musician/<slug> URL — without reloading the
+           page or breaking the Back button.
+
+           DETAILED / WHY: `.page-musician[data-musician-canonical]` is only emitted
+           by musician.php when a registry row actually rendered (musician.php's
+           `$person !== null` guard) — a bare fallback-discography page has no
+           canonical URL to point at, so this simply no-ops for it. `replaceState`
+           (never `pushState` or `this.navigate()`) matches the #1343-B precedent:
+           no second fetch, no new history entry, no reload — the fragment already
+           on screen IS the right content, only the bar was stale.
+           @link https://developer.mozilla.org/docs/Web/API/History/replaceState
+           @link .claude/catalogue-1741-P4a3-plan.md §1.1 leg C */
+        if (page === 'writer' || page === 'musician') {
+            const _mCanon = document.querySelector('.page-musician[data-musician-canonical]');
+            if (_mCanon) {
+                const _mto = _mCanon.getAttribute('data-musician-canonical');
+                if (_mto && _mto !== window.location.pathname) {
+                    window.history.replaceState({ path: _mto }, '', _mto);
+                    this.currentPath = _mto;
+                    this.updateTitle('musician', params);
+                }
+            }
+            /* #1753 — the #btn-edit-musician reveal was stranded inside the
+               page === 'song' branch since #1348 and never ran on musician pages
+               (the element only exists in the musician fragment, never the song
+               one); it lives here now, where the element actually renders. */
+            const editMusicianBtn = document.getElementById('btn-edit-musician');
+            if (editMusicianBtn) {
+                const role = this.app.userAuth?.getUser()?.role;
+                if (userHasEntitlement('manage_musicians', role)) {
+                    editMusicianBtn.classList.remove('d-none');
+                }
+            }
+        }
+
         /* Initialise favourites state on song pages */
         if (page === 'song') {
             /* #1343 — a merged/deleted/renamed permalink renders a redirect marker
@@ -784,16 +827,6 @@ export class Router {
                 const role = this.app.userAuth?.getUser()?.role;
                 if (userHasEntitlement('edit_songs', role)) {
                     editBtn.classList.remove('d-none');
-                }
-            }
-
-            /* Edit button on the musician page (#1348) — same affordance, gated on
-               manage_musicians (admin / global_admin); the admin page re-checks. */
-            const editMusicianBtn = document.getElementById('btn-edit-musician');
-            if (editMusicianBtn) {
-                const role = this.app.userAuth?.getUser()?.role;
-                if (userHasEntitlement('manage_musicians', role)) {
-                    editMusicianBtn.classList.remove('d-none');
                 }
             }
 

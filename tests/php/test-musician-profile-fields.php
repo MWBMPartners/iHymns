@@ -35,11 +35,16 @@ declare(strict_types=1);
  * (or one silently removed) changes what this test expects, automatically,
  * with no maintenance here.
  *
- * D4 (writer/musician consolidation) IS OUT OF SCOPE for this commit —
- * per the build spec, this guard's D4 assertions self-skip while
- * `includes/pages/writer.php` still exists, so they simply don't fire
- * here (see musicianD4Assertions() below) and are ready to activate the
- * moment that file is deleted in a future commit.
+ * D4 (writer/musician consolidation, #1741 P4a-3) LANDED: `includes/pages/
+ * writer.php` is deleted, so `musicianD4Assertions()` below now actually
+ * RUNS (it self-skips only on a tree where that file still exists — kept
+ * that way so this guard degrades gracefully if writer.php is ever
+ * reintroduced by accident rather than failing in a confusing way).
+ * NOTE: `$routerFile` originally pointed at the non-existent
+ * `js/router.js` (router.js has always lived at `js/modules/router.js`) —
+ * a latent bug that only became observable once D4 actually deleted
+ * writer.php and these assertions started running for the first time;
+ * fixed alongside the P4a-3 implementation.
  *
  * MUTATION-TESTING PROTOCOL (rule #34 — run on EVERY invocation, entirely
  * in memory, never touching the tree, mirroring test-work-identity-fields.php
@@ -393,7 +398,7 @@ $musiciansAdminFile = $repoRoot . '/appWeb/public_html/manage/musicians.php';
 $helpersFile        = $repoRoot . '/appWeb/public_html/includes/musician_helpers.php';
 $writerPageFile     = $repoRoot . '/appWeb/public_html/includes/pages/writer.php';
 $apiFile            = $repoRoot . '/appWeb/public_html/api.php';
-$routerFile         = $repoRoot . '/appWeb/public_html/js/router.js';
+$routerFile         = $repoRoot . '/appWeb/public_html/js/modules/router.js';
 $sitemapFile        = $repoRoot . '/appWeb/public_html/sitemap.xml.php';
 
 foreach ([
