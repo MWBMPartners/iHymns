@@ -44,8 +44,12 @@ every fresh container (`git config core.hooksPath tools/githooks`).
 **Suites now: 100 PHP / 48 node** (re-derived this session; the 07-31 note's "80 / 45" predates the
 #1741 guards). Both runners glob their directories.
 
-**Remaining on the branch:** #1741 P4a-3 (on D4) → then the owner's next major directive, the **3
-Meedya repos** (MeedyaSuite-core / MeedyaManager / MeedyaConverter — file an issue in each + implement
+**Remaining on the branch:** #1741 **P4a-3** — now UNBLOCKED (owner confirmed **D4 = consolidate**,
+2026-08-03: fold `writer.php` into the musician profile; `/writer/<slug>` 301→`/musician/<slug>`;
+sitemap emits `/musician/`, `/writer/` stays resolvable via the 301). Then the owner's next major
+directive, the **3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation
+next, per repo, once each repo's CLAUDE.md loads (they're attached + cloned in `/workspace/`,
+roots registered) (MeedyaSuite-core / MeedyaManager / MeedyaConverter — file an issue in each + implement
 the shared media-ID + core-info model per `.claude/media-identifiers-spec.md` §5). Owner-only gate
 still open: **#1726** (IntAppsAPI gateway liveness + credentials).
 

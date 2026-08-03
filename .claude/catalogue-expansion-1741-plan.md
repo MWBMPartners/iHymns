@@ -344,6 +344,10 @@ slice; the rest of P4a proceeds regardless.
 - **D3 — credits name-string vs FK-ify** — gates NOTHING in this epic (reserved column). No-rush.
 - **D4 — writer/person page consolidation** — gates only P4a's writer slice. Recommend consolidate
   (`/writer/` survives as a 301-alias). Confirm before that slice; rest of P4a unaffected.
+  ✅ **OWNER CONFIRMED 2026-08-03: CONSOLIDATE.** Fold the heuristic `writer.php` bare song-list into
+  the registry-backed musician profile; `/writer/<slug>` **301-redirects** to `/musician/<slug>`; the
+  sitemap emits `/musician/` (keep `/writer/` resolvable via the 301, rule #33 — links outlive code).
+  P4a-3 is now UNBLOCKED for implementation (Fable-plan → Sonnet → verify).
 - **D5 — additional external/catalogue IDs (owner request 2026-08-02, per Luminate Data's "External
   IDs" KB article).** Fold into #1741's identifier model. ⚠️ The article is WebFetch-403 (Luminate portal
   bot-block, not the proxy) — do NOT implement a guessed list. Architectural fit: because the identifier
