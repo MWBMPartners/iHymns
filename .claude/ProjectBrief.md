@@ -65,7 +65,14 @@ node + my own 3 mutations + live probe). Epic follow-ups (non-blocking): #1748/#
   mirror/sync/promotion/merge-collapse/resolver-union-arm live-probed against dev DB (rolled back). The
   three adversarial guard gaps (mirror assertion 8 per-return-path, assertion 9 per-statement window,
   new behavioural reconcile test) were found by the verify lens and hardened this session.
-- **STILL QUEUED (drain before Meedya):** #1750 → #1748 → #1752 (specs already written in `.claude/`).
+- **#1750 — DONE + CLOSED** (`56fdd51c`). Public song page + `song_detail`/`song_data`/`getSongs`
+  payload + JSON-LD now surface the five P1 identity fields (subtitle/disambiguation/first-published/
+  ©-split); one probe + one select-fold feed both read paths; opt-in `include=externalIds` (no
+  SourceRef); the five keys are the frozen **#1752 native contract** (noted on #1752). New guard
+  `test-song-identity-render.php` (schema-derived, comment-stripped, `tsirVariableUsageCount` catches
+  a deleted render). 104 PHP / 49 node green; live data-layer probe + own mutations verified.
+- **STILL QUEUED (drain before Meedya):** #1748 → #1752 (specs written in `.claude/`; #1752 depends on
+  the #1750 payload shape, now frozen).
 
 **Remaining on the branch after the queue:** the owner's next major directive, the
 **3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation next, per repo,
