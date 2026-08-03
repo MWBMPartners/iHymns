@@ -404,6 +404,35 @@ Since 2026-06 every runtime read is live MySQL; `songs.json` is a one-time migra
 - Clearer separation in the directory tree
 - Matches original repo convention
 
+### Catalogue expansion (#1741) — the shared modules you MUST reuse, not re-fork
+
+The MusicBrainz-shaped catalogue rework (Musicians / Works / Tunes / Songs — identifiers,
+disambiguation, profile pages, alias URLs; on `claude/wave3-fixes` pre-merge) is built on a small set
+of **single-home** modules. The epic's whole point is reuse-don't-duplicate (the modularity rule);
+before adding catalogue code, reach for these:
+
+- **Identifier normalise + resolve** — `includes/identifier_normalize.php` (`IHYMNS_ID_SCHEMES`
+  registry + `ihymns_canonical_iswc/_ccli/_bowi/_isrc/_isni/_ipi` + `ihymns_normalize_identifier`)
+  and `includes/identifier_resolve.php` (`ihymns_resolve_identifier`, table/column-gated, `bind_param`).
+  The alias routes `/isrc /iswc /ccli /ipi /isni /bowi` all resolve through these — ONE normaliser,
+  ONE resolver, never five near-copies (P3, `dc9b5067`).
+- **Recording-ID vocabulary** — `includes/media_identifiers.php` (`RECORDING_EXTERNAL_ID_TYPES` +
+  pure validators, no `\mysqli`). The `tblSongExternalIds` key/value store is the comprehensive home
+  for recording IDs (MBID / Spotify / Genius / ISRC). The `tblSongs.Isrc` → store **dual-write**
+  mirror is `includes/song_external_ids.php::songExternalIdMirrorIsrc()` (SourceRef-keyed ownership —
+  manual rows never touched; #1749).
+- **Tune find-or-create + metre** — `includes/tune_helpers.php`: `tuneFindOrCreateByName()` is the ONE
+  tune lookup funnel; `ihymns_meter_normalize()` folds metre spellings (CM / C.M. / 86.86 → `86.86`).
+  In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the ONE place `tblSongs.TuneName`
+  and `TuneId` are written — always together, so a tune edit can never strand the registry link.
+  Every `TuneName` write path (whole-song save, bulk import, revision-restore) funnels through it;
+  `tests/php/test-tune-lockstep.php` enforces that from the tree (P5c).
+- **Typeahead** — `js/modules/place-search.js` is GENERALISED (additive `searchUrl` / `parseResults`
+  / `pickMode` / `noun` options, byte-equivalent defaults), not forked, to back both the place pickers
+  and the editor tune typeahead. A new typeahead consumer passes options; it does not copy the module.
+- **Shared external-links panel** — `includes/partials/external-links-panel.php` for the Work / Tune /
+  Musician profile external-links editors (rule #12/#15).
+
 ---
 
 ## 🚀 Deployment Architecture
