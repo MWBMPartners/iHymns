@@ -51,7 +51,23 @@ fail-open `musicianResolveLegacySlugDb()` ladder (also fixes name-slug `/musicia
 `writer.php` deleted, sitemap registry-driven, no-registry fallback widened (no silent 404). Also fixed
 **#1753** (stranded musician Edit button). Two mutation-proven guards; verified by me (101 PHP / 49
 node + my own 3 mutations + live probe). Epic follow-ups (non-blocking): #1748/#1749/#1750/#1751/#1752
-+ #1754 (P4a-3 minor follow-ups). **Remaining on the branch:** the owner's next major directive, the
++ #1754 (P4a-3 minor follow-ups).
+
+**Follow-up queue drain (owner 2026-08-03: "do the iHymns bits first… then Meedya"):**
+- **#1749 / #1751 / #1754 — DONE + CLOSED.** Phase-1 (`e65b92a4`) shipped the ISRC resolver union +
+  ingest mirror (`$source` param) + the P4a-3 JSON-LD/alias-rung/discography trio. **#1749 then
+  ESCALATED to full unification** (owner "do full unifications now also") — `8f2f3a4f`:
+  `tblSongExternalIds` is now the recording-ID **authority**, `tblSongs.Isrc` a synced denorm (one
+  projection builder + `songExternalIdSyncIsrcDenorm()` last-word; mirror re-projects on both paths;
+  panel/ingest/merge all sync; data-only `migrate-reconcile-isrc-denorm.php` + drift-probe card).
+  **#1755** (merge cascade-wiped store rows) fixed in the same commit. D-3 default: tblSongIdentityMap
+  columns frozen (flagged to owner, non-blocking). 103 PHP / 49 node green; every guard mutation-proven;
+  mirror/sync/promotion/merge-collapse/resolver-union-arm live-probed against dev DB (rolled back). The
+  three adversarial guard gaps (mirror assertion 8 per-return-path, assertion 9 per-statement window,
+  new behavioural reconcile test) were found by the verify lens and hardened this session.
+- **STILL QUEUED (drain before Meedya):** #1750 → #1748 → #1752 (specs already written in `.claude/`).
+
+**Remaining on the branch after the queue:** the owner's next major directive, the
 **3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation next, per repo,
 once each repo's CLAUDE.md loads (they're attached + cloned in `/workspace/`, roots registered). (MeedyaSuite-core / MeedyaManager / MeedyaConverter — file an issue in each + implement
 the shared media-ID + core-info model per `.claude/media-identifiers-spec.md` §5). Owner-only gate

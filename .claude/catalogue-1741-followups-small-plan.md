@@ -33,8 +33,14 @@ follows the LIVE code, not the issue.
 
 An ISRC that exists ONLY as a store row (`IdType='isrc'` in `tblSongExternalIds` — e.g. a
 curator-entered second-recording row, `Source='manual'`, `SourceRef IS NULL`) currently never
-resolves at `/isrc/<code>`. Widen the song lookup to the union of both sources. Option (3) — full
-read-path unification — is **deferred** (out of scope, per the issue).
+resolves at `/isrc/<code>`. Widen the song lookup to the union of both sources.
+
+> **Update 2026-08-03 (owner escalation):** option (3) — full read-path unification, making
+> `tblSongExternalIds` the single authority and `tblSongs.Isrc` a synced denorm — is **no longer
+> deferred**. The owner asked for it directly ("do full unifications now also"); it landed in
+> `8f2f3a4f`. See **`.claude/catalogue-1741-1749-unification-plan.md`** for that design and
+> `test-song-external-ids-reconcile.php` for its behavioural guard. The union arm below (Phase-1,
+> `e65b92a4`) is the foundation it builds on.
 
 **Mechanism decision: an `OR … IN (subquery)` on the single existing `tblSongs` scan, not a SQL
 `UNION`.** One pass over `tblSongs` dedupes SongIds by construction, keeps the SELECT columns /
