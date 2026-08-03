@@ -42,10 +42,11 @@ A not-found or removed entity (`song`, `songbook`, `person`, `work`, `tag`) answ
 | `?page=settings` | Settings page |
 | `?page=stats` | Collection statistics |
 | `?page=writer&id=slug` | Writer/composer page |
-| `?page=person&slug=slug` | Credit person page |
+| `?page=musician&slug=slug` | Musician profile (person / group / character / …) — **canonical** since #1741 P2-B; `?page=person&slug=slug` is kept as an alias |
 | `?page=work&slug=slug` | Work (composition grouping) page |
-| `?page=tune&slug=slug` | Songs sharing a tune |
-| `?page=iswc&code=code` | Songs sharing an ISWC code |
+| `?page=tune&slug=slug` | Tune page — songs sharing the tune + registry metadata (metre, credits, external links) |
+| `?page=iswc&code=code` | Songs / work sharing an ISWC code |
+| `?page=ipi` · `isni` · `ccli` · `bowi` · `isrc` (each `&code=…`) | #1741 P3 alias routes — the five siblings of `iswc`. All resolve through **one** normaliser + resolver (`includes/identifier_normalize.php` `IHYMNS_ID_SCHEMES` + `identifier_resolve.php`) into the shared `includes/pages/identifier.php`; separator-insensitive (`T-034.524.680-C` ≡ `T034524680C`). An identifier that maps to several songs renders a **song-list** view rather than picking one. |
 | `?page=help` | Help page |
 | `?page=whats-new` | What's New — renders `data/whats-new.md`, extracted from the CHANGELOG on every deploy (#1583) |
 | `?page=terms` | Terms of use |
@@ -65,6 +66,7 @@ The table below is an orientation map — one row per family, with a couple of r
 | Family | Purpose | Example actions |
 | --- | --- | --- |
 | **Songs** | Search, browse, and read song/songbook data. All list/detail reads are scoped — nothing returns the whole corpus (see [[Architecture]]). | `search`, `songs_index`, `song_detail` (alias `song_data`), `songbooks`, `songs` (400s without `songbook` — the #929 OOM fix) |
+| **Catalogue** (#1741) | Read the catalogue entities (musicians, works, tunes) and resolve industry identifiers to them. Editor-side, the tune typeahead + recording-ID store write through `api2.php`. | `work`, `musician` (alias `person`), `musician_by_identifier` (alias `person_by_identifier`); editor: `tune_search`, `song_tune_set`, `song_external_ids` / `song_external_id_add` / `song_external_id_delete` |
 | **Auth** | Registration, password/email login, bearer-token session management, device-code pairing for limited-input clients (TV, watch). | `auth_login`, `auth_register`, `auth_me`, `auth_device_code_request` |
 | **Setlists** | Setlist CRUD, sharing, scheduling, and collaborator management. | `setlist_share`, `setlist_get`, `setlist_schedule`, `setlist_collab_invite` |
 | **Live Follow** | Any signed-in user broadcasts the song they're viewing to anyone with the code — no venue, no account needed to join. | `live_follow_create`, `live_follow_join`, `live_follow_poll` |

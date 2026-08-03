@@ -146,6 +146,22 @@ MySQL `ihymns` database (single shared DB across all 3 docroots)
 
 Nothing loads the whole ~14,000-song catalogue into PHP memory at once — an earlier unscoped read caused an OOM (#929). If the database is unreachable, the app shows a themed 503 maintenance page; the **only** fallback is whatever a client previously downloaded into its own offline cache (browser Cache Storage for the PWA, GRDB for Apple) — there is no server-side JSON fallback mode.
 
+### Catalogue entities — single-home modules (#1741)
+
+The catalogue expansion (Musicians / Works / Tunes / Song identifiers) is built on a small set of shared, single-home modules — the modularity rule made concrete, so a new caller reuses rather than re-forks:
+
+```
+includes/identifier_normalize.php  — IHYMNS_ID_SCHEMES + one canonicaliser per scheme (iswc/ccli/bowi/isrc/isni/ipi)
+includes/identifier_resolve.php    — ihymns_resolve_identifier() — table/column-gated, bind_param
+includes/pages/identifier.php      — the ONE page the /iswc /ccli /ipi /isni /bowi /isrc alias routes render
+includes/media_identifiers.php     — RECORDING_EXTERNAL_ID_TYPES vocabulary + pure validators (no DB)
+includes/song_external_ids.php     — the tblSongs.Isrc -> tblSongExternalIds dual-write mirror (#1749)
+includes/tune_helpers.php          — tuneFindOrCreateByName() (the ONE tune lookup) + ihymns_meter_normalize()
+includes/partials/external-links-panel.php — shared Work/Tune/Musician external-links editor
+```
+
+In the editor, `manage/editor/api2.php::ed2_songTuneApply()` is the single place `tblSongs.TuneName`/`TuneId` are written — always together, so a tune edit (or a whole-song save, bulk import, or revision restore, all of which funnel through it) can never strand the registry link. See [[Database & Migrations]] for the entity tables and **DEV_NOTES.md → Architecture Decisions** for the reuse contract.
+
 ---
 
 ## Native App Architecture

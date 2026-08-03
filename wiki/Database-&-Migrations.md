@@ -86,6 +86,24 @@ Two separate entitlements gate the two actions, so the recoverable delete can be
 
 Every soft delete, restore, and purge notifies every `purge_songs` holder, fired from inside the write core so no future funnel can forget to. The one lifecycle module is `includes/song_soft_delete.php`. Because `saveEntitlementOverrides()` writes the whole entitlements map on every save, any install where `/manage/entitlements` has ever been saved keeps its own stored `delete_songs` value regardless of the code default — the data-only `migrate-delete-songs-rewiden.php` migration clears a stale admin-only override left over from before deletion was recoverable, without touching an operator's own deliberate choice.
 
+### Catalogue Entity Tables (epic #1741 — Musicians / Works / Tunes / Song identifiers)
+
+The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as first-class entities with industry identifiers, disambiguation and profile pages. Most of the schema pre-existed; #1741 P1 extended it in one additive, dormant pass (rule #20 — never a second migration to add a value; every growable vocabulary is `VARCHAR`, app-validated, not `ENUM`).
+
+| Table | Purpose |
+|---|---|
+| `tblCreditPeople` | Musicians (person / group / character / orchestra / …). `Type` is `VARCHAR`, app-validated. Carries `Biography`, `Disambiguation`. Profile at `/musician/<slug>` (`/person/<slug>` kept as alias). |
+| `tblCreditPersonIdentifiers` | Musician industry IDs — IPI / ISNI / CAE / … (`IdentifierType` `VARCHAR`, new types need no `ALTER`) |
+| `tblCreditPersonExternalLinks` | Per-musician external links (shared chip-list editor) |
+| `tblCreditPersonRelations` | Musician↔musician relations (e.g. a character *Portrayed by* a person, with start/end dates) |
+| `tblWorks` | Works (the original piece). `ParentWorkId` self-FK (nesting), `Iswc`, `MusicBrainzWorkMBID`, `Disambiguation`, `Subtitle`. Page `/work/<slug>`. |
+| `tblWorkSongs` / `tblWorkExternalLinks` | Work↔song membership (`IsCanonical`); per-work external links |
+| `tblTunes` | Tunes, first-class. `Name`, `Slug`, `MeterCode`, `Subtitle`, `Disambiguation`, `MusicBrainzWorkMBID`, `HymnaryTuneId`. Page `/tune/<slug>`. `tblSongs.TuneId` FK links a song to its tune (written in lockstep with `TuneName`). |
+| `tblTuneAliases` / `tblTuneCredits` / `tblTuneExternalLinks` | Tune spelling-variants (typeahead surfaces the canonical); per-tune composer/arranger/harmoniser/source credits; per-tune external links |
+| `tblSongExternalIds` | Comprehensive per-song recording-ID key/value store — `IdType` ∈ MBID / Spotify / Genius / ISRC / … (`VARCHAR`, app-validated), `IdScope` server-derived, `(SongId, IdType, IdValue)` unique. `Source` distinguishes `manual` (curator) / `ihymns-backfill` (#1747 one-time) / `ihymns-mirror` (live ISRC dual-write, #1749). |
+
+`tblSongs` also gained identity/publication columns in the same pass: `Isrc`, `Subtitle`, `Disambiguation`, `FirstPublishedYear`, `CopyrightYears`, `CopyrightHolder` (the last three split the single old `Copyright` field). Alias URLs `/isrc /iswc /ccli /ipi /isni /bowi` resolve an industry identifier to its entity via one shared normaliser + resolver (see [[Architecture]] and [[API Reference]]). All of the above is additive and byte-mirrored into `schema.sql`; each migration has a real completion probe.
+
 ### User & Access Control Tables
 
 | Table | Purpose |

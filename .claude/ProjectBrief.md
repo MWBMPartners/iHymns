@@ -34,11 +34,12 @@ every fresh container (`git config core.hooksPath tools/githooks`).
   `ihymns_meter_normalize()`, with the lockstep also wired into whole-song save, bulk import, AND
   revision-restore (P5c `55bbac84`). `place-search.js` was **generalised, not forked**, to back the
   tune control. Two new mutation-proven guards (`test-tune-lockstep.php`, `test-tune-typeahead-ui.js`).
-- **P6 (docs, this note)** — CHANGELOG + this brief + the handoff updated; `api-docs.yaml` was
-  already kept current through P2-B (person→musician deprecation is documented); per-action api2 docs
-  remain the **deferred #1201** breakout. ⚠️ **Wiki NOT updatable from this environment** —
-  `../iHymns.wiki/` is not checked out here; the wiki API/Architecture/Schema delta for the epic is a
-  **tracked, still-open task** (do it wherever the wiki working copy exists).
+- **P6 (docs, this note)** — CHANGELOG + this brief + the handoff + DEV_NOTES ("reuse these shared
+  modules") + the in-repo **`wiki/`** (Architecture / Database-&-Migrations / API-Reference) all
+  updated; `api-docs.yaml` was already kept current through P2-B (person→musician deprecation is
+  documented); per-action api2 docs remain the **deferred #1201** breakout. (Note: the wiki is the
+  in-repo `wiki/` tree — 18 tracked pages — NOT the external `../iHymns.wiki/` the older CLAUDE.md
+  reference implies; it is editable + committed here directly.) Native surfacing filed as **#1752**.
 
 **Suites now: 100 PHP / 48 node** (re-derived this session; the 07-31 note's "80 / 45" predates the
 #1741 guards). Both runners glob their directories.
