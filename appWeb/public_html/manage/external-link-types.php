@@ -21,6 +21,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'auth.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'db_mysql.php';
+/* #1748 §5.2 — IHYMNS_LINK_ENTITY_TYPES, the central AppliesTo allow-list
+   this page's tick-UI + save handler consume (rule #35 — no page-local
+   provider/entity-type list). */
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'external_link_helpers.php';
 
 if (!isAuthenticated()) {
     header('Location: /manage/login');
@@ -71,6 +75,47 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                    the form ships an `is_active` flag (1/0). */
                 $isActive = !empty($_POST['is_active']) ? 1 : 0;
 
+                /* #1748 §5.2 — AppliesTo tick-UI. Intersect the posted
+                   applies_to[] tokens against the central allow-list
+                   (rule #35's mechanism, not a page-local list) so a
+                   tampered request can't write an arbitrary token, THEN
+                   preserve any token the row already carries that ISN'T
+                   in the const — the legacy 'person' back-compat token
+                   (migrate-musicians-rename.php:76-80) predates this UI
+                   and must survive an edit that doesn't know about it.
+                   An empty resulting set keeps the row's CURRENT value
+                   instead of writing '' — an empty AppliesTo would hide
+                   the type from every editor (§5.2's explicit guard). */
+                $postedApplies = $_POST['applies_to'] ?? [];
+                if (!is_array($postedApplies)) $postedApplies = [];
+                $postedApplies = array_values(array_intersect(
+                    array_map('strval', $postedApplies),
+                    IHYMNS_LINK_ENTITY_TYPES
+                ));
+
+                $stmt = $db->prepare('SELECT AppliesTo FROM tblExternalLinkTypes WHERE Id = ?');
+                $stmt->bind_param('i', $typeId);
+                $stmt->execute();
+                $curRow = $stmt->get_result()->fetch_assoc();
+                $stmt->close();
+                if (!$curRow) { $error = 'Link type not found.'; break; }
+                $existingTokens = array_values(array_filter(array_map(
+                    'trim', explode(',', (string)$curRow['AppliesTo'])
+                ), static fn(string $t): bool => $t !== ''));
+                $legacyTokens = array_values(array_diff($existingTokens, IHYMNS_LINK_ENTITY_TYPES));
+                $newApplies   = array_values(array_unique(array_merge($postedApplies, $legacyTokens)));
+                $appliesToWarning = '';
+                if ($newApplies) {
+                    $appliesToSave = implode(',', $newApplies);
+                } else {
+                    /* Never write an empty AppliesTo — it would hide this
+                       type from every editor. Keep the row's current
+                       value and surface a warning instead of erroring
+                       the whole save (IsActive + patterns still apply). */
+                    $appliesToSave    = (string)$curRow['AppliesTo'];
+                    $appliesToWarning = ' AppliesTo was left unchanged — untick nothing without ticking something else first.';
+                }
+
                 /* Patterns posted as parallel arrays. */
                 $pHosts   = $_POST['pattern_host']     ?? [];
                 $pPaths   = $_POST['pattern_path']     ?? [];
@@ -87,9 +132,10 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
                 $db->begin_transaction();
                 try {
-                    /* Update parent type's IsActive flag. */
-                    $stmt = $db->prepare('UPDATE tblExternalLinkTypes SET IsActive = ? WHERE Id = ?');
-                    $stmt->bind_param('ii', $isActive, $typeId);
+                    /* Update parent type's IsActive flag + AppliesTo
+                       (#1748 §5.2). */
+                    $stmt = $db->prepare('UPDATE tblExternalLinkTypes SET IsActive = ?, AppliesTo = ? WHERE Id = ?');
+                    $stmt->bind_param('isi', $isActive, $appliesToSave, $typeId);
                     $stmt->execute();
                     $stmt->close();
 
@@ -140,9 +186,10 @@ if ($hasPatternsSchema && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                         logActivity('external_link_type.save_patterns', 'external_link_type', (string)$typeId, [
                             'is_active'     => (bool)$isActive,
                             'pattern_count' => $insertCount,
+                            'applies_to'    => $appliesToSave,
                         ]);
                     }
-                    $success = "Saved {$insertCount} pattern" . ($insertCount === 1 ? '' : 's') . '.';
+                    $success = "Saved {$insertCount} pattern" . ($insertCount === 1 ? '' : 's') . '.' . $appliesToWarning;
                 } catch (\Throwable $tx) {
                     $db->rollback();
                     throw $tx;
@@ -317,6 +364,41 @@ $categoryLabels = [
                                         <label class="form-check-label" for="is-active-<?= (int)$t['id'] ?>">
                                             Active — show this provider on public pages and offer it in edit-modal dropdowns
                                         </label>
+                                    </div>
+
+                                    <!-- #1748 §5.2 — AppliesTo tick UI. One checkbox per
+                                         IHYMNS_LINK_ENTITY_TYPES entry (external_link_helpers.php);
+                                         growing the vocabulary is one line there, never a page-local
+                                         list here. Save intersects the posted set against the const
+                                         and preserves any legacy token (e.g. 'person') not in it. -->
+                                    <div class="mb-3">
+                                        <label class="form-label small mb-1">Applies to</label>
+                                        <div class="d-flex flex-wrap gap-3">
+                                            <?php
+                                                $curApplies = array_map('trim', explode(',', $t['appliesTo']));
+                                                foreach (IHYMNS_LINK_ENTITY_TYPES as $entTok):
+                                            ?>
+                                                <div class="form-check">
+                                                    <input class="form-check-input" type="checkbox"
+                                                           name="applies_to[]" value="<?= htmlspecialchars($entTok) ?>"
+                                                           id="applies-<?= (int)$t['id'] ?>-<?= htmlspecialchars($entTok) ?>"
+                                                           <?= in_array($entTok, $curApplies, true) ? 'checked' : '' ?>>
+                                                    <label class="form-check-label small" for="applies-<?= (int)$t['id'] ?>-<?= htmlspecialchars($entTok) ?>">
+                                                        <?= htmlspecialchars(ucfirst($entTok)) ?>
+                                                    </label>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        </div>
+                                        <?php
+                                            $legacyApplies = array_values(array_diff($curApplies, IHYMNS_LINK_ENTITY_TYPES));
+                                            $legacyApplies = array_filter($legacyApplies, static fn(string $t): bool => $t !== '');
+                                        ?>
+                                        <?php if ($legacyApplies): ?>
+                                            <div class="form-text small">
+                                                Also applies to (legacy, untickable here — kept as-is on save):
+                                                <?= htmlspecialchars(implode(', ', $legacyApplies)) ?>
+                                            </div>
+                                        <?php endif; ?>
                                     </div>
 
                                     <h3 class="h6 mb-2"><i class="bi bi-link me-2"></i>URL patterns</h3>

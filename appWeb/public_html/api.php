@@ -270,6 +270,10 @@ require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 
 /* Shared musicians helpers (#719 PR 2d). Link-type catalogue +
    normalisers + flag-columns probe. */
 require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+/* #1748 — the tune admin CRUD shared cores. The admin_tune_* actions below
+   call these SAME functions manage/tunes.php's POST handlers call — one
+   validation/persist/merge/delete core, two thin callers (rule #22/#35). */
+require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'tune_admin.php';
 /* Shared schema-audit helpers (#719 PR 2d). Parser + migration
    scanner + comparer used by admin_schema_audit and
    admin_migrations_status read endpoints. */
@@ -15690,6 +15694,309 @@ if ($action !== null) {
                 logActivityError('api.admin.musician.delete', 'musician', (string)$id, $e);
                 error_log('[admin_musician_delete] ' . $e->getMessage());
                 sendJson(['error' => 'Could not delete person.'], 500);
+            }
+            break;
+        }
+
+        /* =================================================================
+         * TUNES — admin CRUD (#1748)
+         *
+         * Mirrors /manage/tunes.php's POST handlers. Every mutating
+         * endpoint calls the SAME shared cores in includes/tune_admin.php
+         * that page uses (rule #22/#35 — nothing to drift, unlike the
+         * musician family immediately above, which duplicates its logic
+         * between this file and manage/musicians.php — an acknowledged
+         * wart the build spec explicitly says not to copy).
+         *
+         * Gate: userHasEntitlement('manage_tunes') rather than the raw
+         * `in_array($Role, ['admin','global_admin'])` the musician family
+         * above uses — a DELIBERATE deviation (#1748 §4): the codebase is
+         * migrating role gates to userHasEntitlement() (api.php:8215's own
+         * migration note, every #1590-era action), which keeps this API
+         * gate identical to manage/tunes.php's page gate + admin-links.php's
+         * nav entry (#1587's spirit). manage_tunes defaults to exactly
+         * ['admin','global_admin'], so the admitted set is identical at
+         * ship time either way.
+         *
+         * Activity-log verb prefix is `api.admin.tune.*`. HTTP status IS
+         * the contract (rule #35): 400 validation, 403 gate, 404 unknown
+         * id, 409 uniqueness conflict, 200/201 ok.
+         *
+         * External-link editing is PAGE-ONLY for now (manage/tunes.php);
+         * these four actions cover scalar fields + aliases + credits +
+         * merge + delete, documented as such in api-docs.yaml.
+         * ================================================================= */
+
+        /* -----------------------------------------------------------------
+         * Admin: add a new tune registry row
+         * POST body: { name (required), slug?, subtitle?, disambiguation?,
+         *   meter_code?, musicbrainz_work_mbid?, hymnary_tune_id?, notes?,
+         *   aliases?: [string], credits?: [{role,name,musician_id?}] }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_add': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            [$fields, $fieldError] = tuneAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $db = getDbMysqli();
+            $uniqError = tuneAdminCheckUniqueness($db, $fields, null);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $rawAliases = $body['aliases'] ?? [];
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : [];
+            $rawCredits = $body['credits'] ?? [];
+            $creditRows = is_array($rawCredits) ? $rawCredits : [];
+
+            try {
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    /* tuneAdminCreate() pairs THE ONE find-or-create funnel
+                       with the scalar-fields UPDATE — see manage/tunes.php's
+                       `create` action for the identical call, and
+                       tuneAdminCreate()'s own doc-block for why this keeps
+                       test-tune-lockstep.php's derived sweep green. */
+                    $newId = tuneAdminCreate($db, $fields);
+                    if ($gates['hasAliases'] && $aliasNames) {
+                        tuneAdminReplaceAliases($db, $newId, $aliasNames, $fields['name']);
+                    }
+                    if ($gates['hasCredits'] && $creditRows) {
+                        tuneAdminReplaceCredits($db, $newId, $creditRows, $gates);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.add', 'tune', (string)$newId, [
+                    'name'       => $fields['name'],
+                    'meterCode'  => $fields['meterCode'],
+                    'alias_count'  => count($aliasNames),
+                    'credit_count' => count($creditRows),
+                ]);
+
+                sendJson(['ok' => true, 'id' => $newId, 'name' => $fields['name']], 201);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.add', 'tune', '', $e, ['name' => $fields['name'] ?? '']);
+                error_log('[admin_tune_add] ' . $e->getMessage());
+                sendJson(['error' => 'Could not add tune.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: update an existing tune registry row (scalar fields +
+         * replace aliases + replace credits). Renames cascade to
+         * tblSongs/tblWorks.TuneName automatically via the FK — no
+         * separate rename action needed (unlike admin_musician_rename).
+         * POST body: { id (required), name, slug?, subtitle?,
+         *   disambiguation?, meter_code?, musicbrainz_work_mbid?,
+         *   hymnary_tune_id?, notes?, aliases?: [string],
+         *   credits?: [{role,name,musician_id?}] }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_update': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tune id required.'], 400); break; }
+
+            [$fields, $fieldError] = tuneAdminValidateFields($body);
+            if ($fieldError !== null) { sendJson(['error' => $fieldError], 400); break; }
+
+            $db = getDbMysqli();
+            $uniqError = tuneAdminCheckUniqueness($db, $fields, $id);
+            if ($uniqError !== null) { sendJson(['error' => $uniqError], 409); break; }
+
+            $stmt = $db->prepare('SELECT Name FROM tblTunes WHERE Id = ?');
+            $stmt->bind_param('i', $id);
+            $stmt->execute();
+            $before = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if (!$before) { sendJson(['error' => 'Tune not found.'], 404); break; }
+            $oldName = (string)$before['Name'];
+
+            $rawAliases = $body['aliases'] ?? null;
+            $aliasNames = is_array($rawAliases) ? array_map('strval', $rawAliases) : null;
+            $rawCredits = $body['credits'] ?? null;
+            $creditRows = is_array($rawCredits) ? $rawCredits : null;
+
+            try {
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    tuneAdminPersistFields($db, $id, $fields);
+                    tuneAdminRenameCascade($db, $id, $oldName, $fields['name'], $gates);
+                    /* Aliases/credits replace ONLY when the caller posted
+                       the key at all — null means "leave unchanged" (the
+                       API contract differs slightly from the page, which
+                       always posts the full current list; a native-app
+                       caller updating only scalar fields shouldn't have to
+                       resend every alias/credit row just to avoid wiping
+                       them). */
+                    if ($gates['hasAliases'] && $aliasNames !== null) {
+                        tuneAdminReplaceAliases($db, $id, $aliasNames, $fields['name']);
+                    }
+                    if ($gates['hasCredits'] && $creditRows !== null) {
+                        tuneAdminReplaceCredits($db, $id, $creditRows, $gates);
+                    }
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.update', 'tune', (string)$id, [
+                    'name'    => $fields['name'],
+                    'renamed' => $oldName !== $fields['name'],
+                ]);
+
+                sendJson(['ok' => true, 'id' => $id, 'name' => $fields['name']]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.update', 'tune', (string)$id, $e);
+                error_log('[admin_tune_update] ' . $e->getMessage());
+                sendJson(['error' => 'Could not update tune.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: merge two tune registry rows (source -> target)
+         * POST body: { source_id (required), target_id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_merge': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body     = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $sourceId = (int)($body['source_id'] ?? 0);
+            $targetId = (int)($body['target_id'] ?? 0);
+            if ($sourceId <= 0 || $targetId <= 0) {
+                sendJson(['error' => 'source_id and target_id required.'], 400);
+                break;
+            }
+            if ($sourceId === $targetId) {
+                sendJson(['error' => 'Source and target must be different tunes.'], 400);
+                break;
+            }
+
+            try {
+                $db = getDbMysqli();
+                $stmt = $db->prepare('SELECT Id FROM tblTunes WHERE Id IN (?, ?)');
+                $stmt->bind_param('ii', $sourceId, $targetId);
+                $stmt->execute();
+                $foundIds = array_map('intval', array_column($stmt->get_result()->fetch_all(MYSQLI_ASSOC), 'Id'));
+                $stmt->close();
+                if (!in_array($sourceId, $foundIds, true)) { sendJson(['error' => 'Source tune not found.'], 404); break; }
+                if (!in_array($targetId, $foundIds, true)) { sendJson(['error' => 'Target tune not found.'], 404); break; }
+
+                $gates = tuneAdminProbeGates($db);
+                $db->begin_transaction();
+                try {
+                    $result = tuneAdminMerge($db, $sourceId, $targetId, $gates);
+                    $db->commit();
+                } catch (\Throwable $txErr) {
+                    $db->rollback();
+                    throw $txErr;
+                }
+
+                logActivity('api.admin.tune.merge', 'tune', (string)$targetId, [
+                    'source'          => $result['source'],
+                    'target'          => $result['target'],
+                    'songs_repointed' => $result['songsRepointed'],
+                    'works_repointed' => $result['worksRepointed'],
+                ]);
+
+                sendJson([
+                    'ok'              => true,
+                    'source_id'       => $sourceId,
+                    'target_id'       => $targetId,
+                    'songs_repointed' => $result['songsRepointed'],
+                    'works_repointed' => $result['worksRepointed'],
+                    'aliases_moved'   => $result['aliasesMoved'],
+                    'credits_moved'   => $result['creditsMoved'],
+                    'links_moved'     => $result['linksMoved'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.merge', 'tune', (string)$targetId, $e);
+                error_log('[admin_tune_merge] ' . $e->getMessage());
+                sendJson(['error' => 'Could not merge tunes.'], 500);
+            }
+            break;
+        }
+
+        /* -----------------------------------------------------------------
+         * Admin: delete a tune registry row. tblSongs/tblWorks.TuneId are
+         * ON DELETE SET NULL (schema.sql ~3730-3742) — songs/works keep
+         * their free-text TuneName and degrade to the un-curated heuristic
+         * state, which is why this needs no force-gate (unlike
+         * admin_musician_delete's usage-count block on the name-string
+         * credit tables).
+         * POST body: { id (required) }
+         * ----------------------------------------------------------------- */
+        case 'admin_tune_delete': {
+            if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+                sendJson(['error' => 'POST method required.'], 405);
+                break;
+            }
+            $authUser = getAuthenticatedUser();
+            if (!$authUser || !userHasEntitlement('manage_tunes', $authUser['Role'] ?? null)) {
+                sendJson(['error' => 'Admin access required.'], 403);
+                break;
+            }
+
+            $body = json_decode((string)file_get_contents('php://input'), true) ?: [];
+            $id   = (int)($body['id'] ?? 0);
+            if ($id <= 0) { sendJson(['error' => 'Tune id required.'], 400); break; }
+
+            try {
+                $db    = getDbMysqli();
+                $gates = tuneAdminProbeGates($db);
+                $usage = tuneAdminUsageCounts($db, $id, $gates);
+                $name  = tuneAdminDelete($db, $id);
+                if ($name === null) { sendJson(['error' => 'Tune not found.'], 404); break; }
+
+                logActivity('api.admin.tune.delete', 'tune', (string)$id, [
+                    'name'  => $name,
+                    'usage' => $usage,
+                ]);
+
+                sendJson([
+                    'ok'          => true,
+                    'id'          => $id,
+                    'name'        => $name,
+                    'usage_count' => $usage['songCount'] + $usage['workCount'],
+                ]);
+            } catch (\Throwable $e) {
+                logActivityError('api.admin.tune.delete', 'tune', (string)$id, $e);
+                error_log('[admin_tune_delete] ' . $e->getMessage());
+                sendJson(['error' => 'Could not delete tune.'], 500);
             }
             break;
         }

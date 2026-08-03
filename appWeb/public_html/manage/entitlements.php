@@ -86,7 +86,7 @@ $groups = [
        written landed in the catch-all "Other" bucket, so an operator looking for
        "who can manage Works?" had to scan an unsorted list. Grouped here with
        the surfaces they sit beside in the admin nav. */
-    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_external_link_types', 'manage_duplicate_songs'],
+    'Content structure'  => ['manage_songbooks', 'manage_user_groups', 'manage_organisations', 'manage_own_organisation', 'manage_musicians', 'manage_languages', 'manage_tags', 'manage_works', 'manage_tunes', 'manage_external_link_types', 'manage_duplicate_songs'],
     'Content gating'     => ['manage_content_restrictions', 'manage_access_tiers', 'assign_user_tier', 'manage_feature_gating'],
     'Licensing'          => ['manage_org_licences', 'manage_user_licences', 'view_licence_audit', 'view_ccli_report'],
     'API access'         => ['view_api_docs', 'request_api_keys', 'manage_api_keys'],
@@ -179,6 +179,7 @@ $ENTITLEMENT_LABELS = [
      * the global_admin "Technical notes" disclosure above, not in these strings.
      * ------------------------------------------------------------------- */
     'manage_works'              => ['Manage works',                   'Group songs into a composition and edit its details (#840)'],
+    'manage_tunes'               => ['Manage tunes', 'Edit / merge hymn tunes and their credits, aliases and links (#1748)'],
     'manage_external_link_types'=> ['Manage external-link types',     'Curate the providers behind every "Find this elsewhere" panel'],
     'manage_duplicate_songs'    => ['Merge duplicate songs',          'Review suggested duplicates and permanently merge two songs'],
     'manage_own_organisation'   => ['Manage your own organisation',   'Administer an organisation you own or admin, without a site-wide role'],

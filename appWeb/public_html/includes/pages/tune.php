@@ -363,18 +363,30 @@ if ($tuneSlug !== '') {
         $tuneId = (int)$tune['Id'];
 
         /* Credits card — composer/arranger/harmoniser/source, grouped.
-           FIELD() args are hardcoded constants (rule #5), matching
-           tblTuneCredits.Role's own COMMENT vocabulary verbatim
-           (schema.sql ~3673) — kept in lockstep by the guard's rule-#35
-           cross-file check. */
+           #1748 — the FIELD() ordering list is now BUILT from the shared
+           IHYMNS_TUNE_CREDIT_ROLES const (includes/tune_helpers.php)
+           rather than a second hand-typed copy of the four role tokens.
+           The interpolated tokens still come from PHP-source
+           array_keys(), never from request input (rule #5's carve-out) —
+           this is a source of WHERE the literal comes from, not a change
+           to that carve-out. tests/php/test-tune-admin-surface.php's D1
+           asserts the const's keys match tblTuneCredits.Role's own
+           COMMENT vocabulary (schema.sql ~3673) directly, and D2 asserts
+           this file references the const rather than re-inlining the
+           list (rule #35 — a mechanism, not the false "kept in lockstep
+           by the guard" comment this replaces). */
         if (_tuneTableExists($tdb, 'tblTuneCredits')) {
             try {
+                $roleFieldList = implode(', ', array_map(
+                    static fn($r) => "'" . $r . "'",
+                    array_keys(IHYMNS_TUNE_CREDIT_ROLES)
+                ));
                 $stmt = $tdb->prepare(
                     "SELECT c.Role, c.Name, m.Slug AS MusicianSlug
                        FROM tblTuneCredits c
                        LEFT JOIN tblMusicians m ON m.Id = c.MusicianId
                       WHERE c.TuneId = ?
-                      ORDER BY FIELD(c.Role, 'composer', 'arranger', 'harmoniser', 'source'),
+                      ORDER BY FIELD(c.Role, {$roleFieldList}),
                                c.SortOrder, c.Id"
                 );
                 $stmt->bind_param('i', $tuneId);
@@ -449,14 +461,14 @@ if ($tuneSlug !== '') {
     }
 }
 
-/* Role => human label, in the SAME order as the FIELD() clause above —
-   COMMENT vocabulary from tblTuneCredits.Role (schema.sql ~3673). */
-$tuneCreditRoleLabels = [
-    'composer'   => 'Composer',
-    'arranger'   => 'Arranger',
-    'harmoniser' => 'Harmoniser',
-    'source'     => 'Source',
-];
+/* #1748 — Role => human label render map is now the shared
+   IHYMNS_TUNE_CREDIT_ROLES const (includes/tune_helpers.php), in the SAME
+   order as the FIELD() clause above (both come from the same const, so
+   they cannot diverge). The local $tuneCreditRoleLabels copy this
+   replaces was the second of the two hand-typed copies this file's
+   :368-369 comment falsely claimed a guard kept in lockstep — see
+   IHYMNS_TUNE_CREDIT_ROLES's own doc-block for why a central const fixes
+   that for real. */
 
 ?>
 
@@ -563,7 +575,7 @@ $tuneCreditRoleLabels = [
                 <i class="fa-solid fa-pen-nib me-1" aria-hidden="true"></i>
                 Credits
             </h2>
-            <?php foreach ($tuneCreditRoleLabels as $roleKey => $roleLabel): ?>
+            <?php foreach (IHYMNS_TUNE_CREDIT_ROLES as $roleKey => $roleLabel): ?>
                 <?php if (empty($tuneCreditsByRole[$roleKey])) continue; ?>
                 <p class="mb-1 small">
                     <strong><?= htmlspecialchars($roleLabel) ?>:</strong>

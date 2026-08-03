@@ -196,6 +196,11 @@ const ENTITLEMENTS = [
        of the catalogue surfaces; curators creating Works are doing
        editorial work that ripples across multiple songbook surfaces. */
     'manage_works'         => ['admin', 'global_admin'],
+    /* Tunes (#1748) — tblTunes registry CRUD (aliases/credits/external
+       links + merge). Mirrors manage_works/manage_musicians exactly —
+       ELI5: same "who can edit the catalogue" people as Works/Musicians.
+       @see #1748 */
+    'manage_tunes'         => ['admin', 'global_admin'],
     /* External-link types + URL patterns (#845) — controlled-vocabulary
        registry that drives every "Find this … elsewhere" panel and
        the URL auto-detect module. Curator-managed; same gate as the

@@ -379,6 +379,14 @@ tags:
       catalogue, IPI normaliser, flag-columns probe) live in
       `includes/musician_helpers.php` and are shared with
       `/manage/musicians`.
+  - name: Admin — Tunes
+    description: |
+      Tune-registry CRUD (#1748) — `tblTunes` + its aliases/credits/
+      external-links child tables. Mirrors `/manage/tunes` (both surfaces
+      call the SAME shared cores in `includes/tune_admin.php`, so there is
+      nothing for the two to drift on). External-link editing is
+      page-only for now — these four actions cover scalar fields,
+      aliases, credits, merge and delete.
   - name: Analytics
     description: |
       First-party, anonymous, consent-gated client analytics event
@@ -9928,6 +9936,194 @@ paths:
             not set. Response includes `usage_count`, `name`, `hint`.
 
   # ===========================================================================
+  # ADMIN — TUNES  (#1748)
+  # ===========================================================================
+
+  /api.php?action=admin_tune_add:
+    post:
+      operationId: adminTuneAdd
+      tags: [Admin — Tunes]
+      summary: Add a tune registry row (with optional aliases + credits)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tune_add] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AdminTuneInput"
+      responses:
+        "201":
+          description: Tune added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error (missing name, bad slug/MBID shape)
+        "403":
+          description: Admin access required
+        "409":
+          description: Name or MusicBrainz Work MBID already used by another tune
+
+  /api.php?action=admin_tune_update:
+    post:
+      operationId: adminTuneUpdate
+      tags: [Admin — Tunes]
+      summary: Update a tune's scalar fields + optionally replace aliases/credits
+      description: |
+        Renaming cascades to every `tblSongs`/`tblWorks` row citing this
+        tune via `TuneId` (their free-text `TuneName` mirror updates in
+        the same statement) — there is no separate rename action, unlike
+        `admin_musician_rename`; the FK makes the cascade precise.
+        Omitting `aliases`/`credits` from the body leaves the existing
+        list unchanged; posting an empty array clears it.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tune_update] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/AdminTuneInput"
+                - type: object
+                  required: [id]
+                  properties:
+                    id: { type: integer }
+      responses:
+        "200":
+          description: Tune updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:   { type: boolean, example: true }
+                  id:   { type: integer }
+                  name: { type: string }
+        "400":
+          description: Validation error or missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Tune not found
+        "409":
+          description: Name or MusicBrainz Work MBID already used by another tune
+
+  /api.php?action=admin_tune_merge:
+    post:
+      operationId: adminTuneMerge
+      tags: [Admin — Tunes]
+      summary: Collapse two tune registry rows into one
+      description: |
+        Every song/work citing `source_id` re-points to `target_id`
+        (`TuneId` and the free-text `TuneName` mirror update in the same
+        statement); Source's aliases/credits/external links move to
+        Target; Source's own name becomes a new alias of Target so old
+        `/tune/<source-slug>` links keep resolving; Source is then
+        deleted. Transactional.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tune_merge] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [source_id, target_id]
+              properties:
+                source_id: { type: integer, description: Merged away (deleted). }
+                target_id: { type: integer, description: Survives. }
+      responses:
+        "200":
+          description: Merged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:               { type: boolean, example: true }
+                  source_id:        { type: integer }
+                  target_id:        { type: integer }
+                  songs_repointed:  { type: integer }
+                  works_repointed:  { type: integer }
+                  aliases_moved:    { type: integer }
+                  credits_moved:    { type: integer }
+                  links_moved:      { type: integer }
+        "400":
+          description: Missing or identical source_id/target_id
+        "403":
+          description: Admin access required
+        "404":
+          description: Source or target tune not found
+
+  /api.php?action=admin_tune_delete:
+    post:
+      operationId: adminTuneDelete
+      tags: [Admin — Tunes]
+      summary: Delete a tune registry row
+      description: |
+        `tblSongs.TuneId`/`tblWorks.TuneId` are `ON DELETE SET NULL` —
+        songs/works keep their free-text `TuneName` and simply revert to
+        the un-curated heuristic state, so this needs no `force` flag
+        (unlike `admin_musician_delete`'s usage-count block on the
+        name-string credit tables).
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: action
+          in: query
+          required: true
+          schema: { type: string, enum: [admin_tune_delete] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: Tune deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:           { type: boolean, example: true }
+                  id:           { type: integer }
+                  name:         { type: string }
+                  usage_count:  { type: integer, description: Songs + works that were citing this tune at delete time. }
+        "400":
+          description: Missing id
+        "403":
+          description: Admin access required
+        "404":
+          description: Tune not found
+
+  # ===========================================================================
   # ADMIN — ANALYTICS  (#719 PR 2d)
   # ===========================================================================
 
@@ -13542,6 +13738,73 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MusicianIpi"
+
+    AdminTuneCredit:
+      type: object
+      description: One row of a tune's composer/arranger/harmoniser/source credit list.
+      required: [role, name]
+      properties:
+        role:
+          type: string
+          enum: [composer, arranger, harmoniser, source]
+          description: Must be a key of IHYMNS_TUNE_CREDIT_ROLES (includes/tune_helpers.php) — an unrecognised role is silently skipped, not rejected.
+        name:
+          type: string
+          maxLength: 255
+        musician_id:
+          type: integer
+          nullable: true
+          description: Optional tblMusicians.Id to link this credit to a registry row. Ignored (stored NULL) when it doesn't resolve to a real row.
+
+    AdminTuneInput:
+      type: object
+      description: |
+        Shared input for `admin_tune_add` and `admin_tune_update` (#1748).
+        Mirrors `manage/tunes.php`'s POST field names exactly — both
+        surfaces validate via the SAME `tuneAdminValidateFields()`
+        (`includes/tune_admin.php`).
+      required: [name]
+      properties:
+        name:
+          type: string
+          maxLength: 120
+        slug:
+          type: string
+          pattern: '^[a-z0-9-]{1,140}$'
+          description: Optional — auto-derived from `name` when omitted. A colliding slug is auto-suffixed (`-2`, `-3`, …), never rejected.
+        subtitle:
+          type: string
+          maxLength: 255
+          nullable: true
+        disambiguation:
+          type: string
+          maxLength: 255
+          nullable: true
+        meter_code:
+          type: string
+          maxLength: 60
+          nullable: true
+          description: Stored raw as typed (e.g. "87.87 D", "CM") — not normalised on save.
+        musicbrainz_work_mbid:
+          type: string
+          nullable: true
+          description: UUID shape (8-4-4-4-12 hex digits), validated via includes/media_identifiers.php's mediaIdentifierWorkValidate('musicbrainz-work', …).
+        hymnary_tune_id:
+          type: string
+          maxLength: 64
+          nullable: true
+        notes:
+          type: string
+          nullable: true
+        aliases:
+          type: array
+          items: { type: string }
+          description: Full replacement list — an empty array clears all aliases. On admin_tune_update, omitting this key entirely leaves the existing alias list unchanged.
+        credits:
+          type: array
+          items:
+            $ref: "#/components/schemas/AdminTuneCredit"
+          description: Full replacement list, same omit-to-leave-unchanged posture as `aliases`.
 
     AdminDataHealthResponse:
       type: object

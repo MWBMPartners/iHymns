@@ -18,9 +18,29 @@ declare(strict_types=1);
  * references each one, keeps the registry-first `Slug = ?` lookup and the
  * `tune-registry-fallback` heuristic side by side, widens the song-list
  * match to `TuneId OR TuneName`, consumes the shared external-links
- * partial without forking its own category-label map, carries the a11y
- * landmarks, and that no admin page/nav has invented a `manage_tunes`
- * entitlement ahead of the §3.6 follow-up decision.
+ * partial without forking its own category-label map, and carries the a11y
+ * landmarks.
+ *
+ * #1748 UPDATE (tune-admin CRUD landed) — this file's role-ordering check
+ * used to parse a LITERAL `FIELD(c.Role, 'composer', 'arranger', …)` call
+ * out of tune.php's source. #1748 centralised that vocabulary into
+ * `IHYMNS_TUNE_CREDIT_ROLES` (`includes/tune_helpers.php`) and refactored
+ * tune.php to build the FIELD() clause DYNAMICALLY from that const's
+ * `array_keys()` — so no literal quoted role list survives in source to
+ * parse positionally any more (see the assertion below for the fallback
+ * shape this now checks instead). The vocabulary-agreement assertion
+ * itself (schema COMMENT === const) now lives in the BEHAVIOURAL D1 check
+ * in `tests/php/test-tune-admin-surface.php`, which asks `tune_helpers.php`
+ * directly rather than re-deriving order from source text. This file's own
+ * "no admin page/nav has invented a `manage_tunes` entitlement ahead of the
+ * §3.6 follow-up decision" vacuity scan is likewise RETIRED here — #1748
+ * *is* that follow-up landing, so `manage_tunes` now legitimately appears
+ * across `includes/entitlements.php` / `js/modules/entitlements.js` /
+ * `manage/entitlements.php` / `manage/includes/admin-links.php` /
+ * `manage/tunes.php` / `api.php`. That surface's OWN CI coverage
+ * (`test-entitlement-parity.php`, `tests/test-entitlement-parity.js`,
+ * `test-admin-gate-parity.php`, `test-tune-admin-surface.php`) is what
+ * guards it going forward.
  *
  * WHY TREE-DERIVED, NOT HAND-TYPED (rule #34)
  * ----------------------------------------------------------------------------
@@ -418,14 +438,26 @@ foreach (trpgMissing($tunePageCode, $renderedCols) as $missingCol) {
 
 /* ---- tblTuneCredits.Role's COMMENT vocabulary and tune.php's
    FIELD(c.Role, …) ordering name EXACTLY the same set, in the SAME order
-   (rule #35 — cross-file agreement). ---- */
+   (rule #35 — cross-file agreement). #1748 — tune.php's FIELD() clause is
+   now BUILT dynamically from IHYMNS_TUNE_CREDIT_ROLES's array_keys(), so a
+   literal quoted role list no longer exists in source to parse
+   positionally (see the file doc-block's #1748 UPDATE note). Try the
+   legacy literal-list shape first (still exactly checkable when present);
+   otherwise fall back to asserting the dynamic-build marker is present.
+   Either way, the actual schema<->const vocabulary-agreement assertion is
+   D1 in test-tune-admin-surface.php (behavioural, not a source parse). ---- */
 $fieldOrder = trpgFieldRoleOrder($tunePageCode);
-if (!$fieldOrder) {
-    $failures[] = 'includes/pages/tune.php has no ORDER BY FIELD(c.Role, …) clause';
-} elseif ($fieldOrder !== $roleVocab) {
-    $failures[] = 'includes/pages/tune.php\'s FIELD(c.Role, …) ordering ('
-        . implode(', ', $fieldOrder) . ') does not exactly match tblTuneCredits.Role\'s '
-        . 'COMMENT vocabulary (' . implode(', ', $roleVocab) . ')';
+if ($fieldOrder) {
+    if ($fieldOrder !== $roleVocab) {
+        $failures[] = 'includes/pages/tune.php\'s FIELD(c.Role, …) ordering ('
+            . implode(', ', $fieldOrder) . ') does not exactly match tblTuneCredits.Role\'s '
+            . 'COMMENT vocabulary (' . implode(', ', $roleVocab) . ')';
+    }
+} elseif (strpos($tunePageCode, 'FIELD(c.Role') === false
+    || strpos($tunePageCode, 'IHYMNS_TUNE_CREDIT_ROLES') === false
+) {
+    $failures[] = 'includes/pages/tune.php has neither a literal ORDER BY FIELD(c.Role, …) '
+        . 'clause nor a dynamic one built from IHYMNS_TUNE_CREDIT_ROLES (#1748)';
 }
 
 /* ---- Registry-first lookup: FROM tblTunes + a Slug = ? prepare. ---- */
@@ -469,37 +501,12 @@ if (strpos($tunePageSrc, 'role="list"') === false) {
     $failures[] = 'includes/pages/tune.php is missing role="list"';
 }
 
-/* ---- Zero `manage_tunes` occurrences anywhere under appWeb — guards
-   against a phantom entitlement being invented ahead of the §3.6
-   tune-admin-CRUD follow-up decision. Scans .php/.js files (the same
-   idiom test-musician-rename-guard.php uses), with a vacuity floor so a
-   broken scan root/extension filter can't silently pass by finding
-   nothing to look at. ---- */
-$scanRoot = $repoRoot . '/appWeb';
-if (!is_dir($scanRoot)) {
-    fwrite(STDERR, "FATAL: $scanRoot not found\n");
-    exit(1);
-}
-$scannedFiles = 0;
-$manageTunesHits = [];
-$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($scanRoot, FilesystemIterator::SKIP_DOTS));
-foreach ($it as $f) {
-    if (!$f->isFile()) { continue; }
-    $ext = strtolower($f->getExtension());
-    if ($ext !== 'php' && $ext !== 'js') { continue; }
-    $text = file_get_contents($f->getPathname());
-    if ($text === false) { continue; }
-    $scannedFiles++;
-    if (strpos($text, 'manage_tunes') !== false) {
-        $manageTunesHits[] = substr($f->getPathname(), strlen($repoRoot) + 1);
-    }
-}
-if ($scannedFiles < 200) {
-    $failures[] = "vacuity check failed: the manage_tunes scan covered only {$scannedFiles} file(s) under appWeb/ (expected >= 200) — the scan itself is broken, not evidence the tree is clean";
-}
-foreach ($manageTunesHits as $hit) {
-    $failures[] = "found a 'manage_tunes' reference in {$hit} — no tune-admin entitlement exists yet (plan §3.6 files this as a follow-up issue, not built in P4c)";
-}
+/* ---- #1748 RETIRED: this used to be a zero-`manage_tunes`-occurrences
+   scan guarding against a phantom entitlement being invented ahead of the
+   §3.6 tune-admin-CRUD follow-up decision. #1748 *is* that follow-up
+   landing (manage/tunes.php + the manage_tunes entitlement), so the
+   scan's premise no longer holds — see the file doc-block's #1748 UPDATE
+   note for what guards that surface now instead. ---- */
 
 /* =========================================================================
  * REPORT
@@ -525,6 +532,5 @@ echo "PASS: Tune registry page guard — tree-derived tblTunes render columns ("
    . "includes/pages/tune.php; the registry-first Slug lookup, the tune-registry-fallback "
    . "heuristic, and the widened TuneId-OR-TuneName song list are all present; the shared "
    . "external-links partial is required with no local category-label map; Breadcrumb + "
-   . "list a11y landmarks present; zero manage_tunes references across {$scannedFiles} "
-   . "scanned appWeb file(s); all mutation self-tests went red as expected.\n";
+   . "list a11y landmarks present; all mutation self-tests went red as expected.\n";
 exit(0);

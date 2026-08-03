@@ -204,21 +204,14 @@ function tuneFindOrCreateByName(\mysqli $db, string $name): ?int
         $stmt->close();
         if ($row) return (int)$row['Id'];
 
-        /* Miss — create it. Same base-slug + collision-suffix loop as
-           migrate-tunes-entity.php:222-231. */
+        /* Miss — create it. #1748 — the base-slug + collision-suffix loop
+           (originally inline here, itself byte-identical to
+           migrate-tunes-entity.php:222-231) now lives in the shared
+           `tuneSlugEnsureUnique()` above so `manage/tunes.php`'s update
+           path can reuse it without a second copy (rule #22). Behaviour is
+           unchanged — same base slug in, same collision suffix out. */
         $base = ihymns_tune_slugify($name);
-        $slug = $base;
-        $n    = 1;
-        $slugTaken = $db->prepare('SELECT 1 FROM tblTunes WHERE Slug = ? LIMIT 1');
-        while (true) {
-            $slugTaken->bind_param('s', $slug);
-            $slugTaken->execute();
-            $taken = $slugTaken->get_result()->fetch_row() !== null;
-            if (!$taken) break;
-            $n++;
-            $slug = substr($base, 0, 134) . '-' . $n;
-        }
-        $slugTaken->close();
+        $slug = tuneSlugEnsureUnique($db, $base);
 
         $ins = $db->prepare('INSERT INTO tblTunes (Name, Slug) VALUES (?, ?)');
         $ins->bind_param('ss', $name, $slug);
@@ -298,6 +291,103 @@ const IHYMNS_METER_NAMED = [
  * @link .claude/catalogue-1741-P5-plan.md §3.5
  * @link appWeb/public_html/manage/editor/api2.php tune_search's `meter` filter (the one call site today)
  */
+/**
+ * #1748 — tune credit-role vocabulary, THE ONE canonical source.
+ *
+ * ELI5: a tune credit row can say who "wrote" it in one of exactly four
+ * ways — composer, arranger, harmoniser or source. This list is the ONE
+ * place that says which four words are allowed and what to call them on
+ * screen, in display order.
+ *
+ * DETAILED / WHY A CENTRAL CONST (rule #20 — VARCHAR-not-ENUM vocabulary,
+ * app-validated against ONE map; rule #35 — a mechanism, not a comment):
+ * `tblTuneCredits.Role` is `VARCHAR(20)` on purpose (schema.sql ~3673) so
+ * growing the vocabulary is a one-line change here, never an `ALTER`. Before
+ * this constant existed, the same four tokens were typed out TWICE in
+ * `includes/pages/tune.php` — once in a `FIELD(c.Role, …)` ORDER BY clause
+ * (:377) and again in a local `$tuneCreditRoleLabels` display map (:454-459)
+ * — with a comment CLAIMING a CI guard kept them in sync (it did not; see
+ * that file's :368-369 fix). `tests/php/test-tune-admin-surface.php`'s D1
+ * derives the token list straight from THIS constant's `array_keys()` and
+ * asserts it equals the `tblTuneCredits.Role` COMMENT's own pipe-separated
+ * vocabulary in `schema.sql` — two independently-authored lists (a SQL
+ * comment and a PHP array) that must agree with nothing else enforcing it,
+ * which is exactly the failure class rule #35 exists to name. D2 then
+ * asserts BOTH consumers (`includes/pages/tune.php` and the new
+ * `manage/tunes.php`) reference this constant and neither re-inlines the
+ * raw `'composer', 'arranger'` sequence.
+ *
+ * @see #1748
+ * @see appWeb/.sql/schema.sql            tblTuneCredits.Role COMMENT (~3673)
+ * @see appWeb/public_html/includes/pages/tune.php   first consumer, refactored to use this const
+ * @see appWeb/public_html/manage/tunes.php          second consumer (the admin CRUD)
+ * @see tests/php/test-tune-admin-surface.php        D1/D2 guard
+ */
+const IHYMNS_TUNE_CREDIT_ROLES = [
+    'composer'   => 'Composer',
+    'arranger'   => 'Arranger',
+    'harmoniser' => 'Harmoniser',
+    'source'     => 'Source',
+];
+
+/**
+ * #1748 — slug-collision loop, extracted from `tuneFindOrCreateByName()`'s
+ * inline `while(true)` (this file, pre-#1748 :212-221) so `manage/tunes.php`'s
+ * update path can re-derive a unique slug (e.g. when a curator blanks the
+ * Slug field on rename, or explicitly retypes one) WITHOUT re-forking the
+ * collision loop (rule #22 — one funnel, not two copies that drift the
+ * moment either is edited).
+ *
+ * ELI5: "here's a candidate slug — if something's already using it, try
+ * `-2`, `-3`, … until we find one that's free."
+ *
+ * DETAILED: byte-identical logic to the pre-extraction loop —
+ * `tuneFindOrCreateByName()` below is refactored to CALL this function
+ * rather than keep its own copy, so the two can never diverge (behaviour is
+ * unchanged; `tests/php/test-tune-lockstep.php`'s reference-based sweep
+ * only asserts `tuneFindOrCreateByName` is referenced by TuneName writers,
+ * so this refactor doesn't touch what that guard checks).
+ * `$excludeId` lets the UPDATE path skip the row's OWN current slug (a
+ * curator re-saving without changing the name shouldn't collide with
+ * itself) — `tuneFindOrCreateByName()`'s create-only call site passes
+ * `null` (nothing to exclude on a brand-new row).
+ *
+ * @param \mysqli   $db
+ * @param string    $base      Already-slugified candidate (see
+ *                              `ihymns_tune_slugify()`), NOT re-slugified here.
+ * @param int|null  $excludeId `tblTunes.Id` to exclude from the collision
+ *                              check (the row's own id on update), or `null`.
+ * @return string A slug guaranteed free of `uq_Slug` collisions at the
+ *                 moment this function returns (a genuine concurrent-insert
+ *                 race is still possible — same TOCTOU note as
+ *                 `tuneFindOrCreateByName()`'s doc-block).
+ * @see #1748
+ */
+function tuneSlugEnsureUnique(\mysqli $db, string $base, ?int $excludeId = null): string
+{
+    $slug = $base;
+    $n    = 1;
+    if ($excludeId !== null) {
+        $slugTaken = $db->prepare('SELECT 1 FROM tblTunes WHERE Slug = ? AND Id <> ? LIMIT 1');
+    } else {
+        $slugTaken = $db->prepare('SELECT 1 FROM tblTunes WHERE Slug = ? LIMIT 1');
+    }
+    while (true) {
+        if ($excludeId !== null) {
+            $slugTaken->bind_param('si', $slug, $excludeId);
+        } else {
+            $slugTaken->bind_param('s', $slug);
+        }
+        $slugTaken->execute();
+        $taken = $slugTaken->get_result()->fetch_row() !== null;
+        if (!$taken) break;
+        $n++;
+        $slug = substr($base, 0, 134) . '-' . $n;
+    }
+    $slugTaken->close();
+    return $slug;
+}
+
 function ihymns_meter_normalize(string $code): string
 {
     $s = strtoupper(trim($code));
