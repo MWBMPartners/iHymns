@@ -90,12 +90,15 @@ Every soft delete, restore, and purge notifies every `purge_songs` holder, fired
 
 The MusicBrainz-shaped catalogue expansion models musicians, works and tunes as first-class entities with industry identifiers, disambiguation and profile pages. Most of the schema pre-existed; #1741 P1 extended it in one additive, dormant pass (rule #20 — never a second migration to add a value; every growable vocabulary is `VARCHAR`, app-validated, not `ENUM`).
 
+> **Naming note (#1746 / #1741 P2):** the musician family was **renamed** from `tblCreditPeople*` to `tblMusician*`. The base tables are `tblMusician…`; the old `tblCreditPeople` / `tblCreditPerson*` names survive as **compat `VIEW`s** (`schema.sql` ~:2769-2799) so existing code/queries keep resolving. Always write the base-table name in new code.
+
 | Table | Purpose |
 |---|---|
-| `tblCreditPeople` | Musicians (person / group / character / orchestra / …). `Type` is `VARCHAR`, app-validated. Carries `Biography`, `Disambiguation`. Profile at `/musician/<slug>` (`/person/<slug>` kept as alias). |
-| `tblCreditPersonIdentifiers` | Musician industry IDs — IPI / ISNI / CAE / … (`IdentifierType` `VARCHAR`, new types need no `ALTER`) |
-| `tblCreditPersonExternalLinks` | Per-musician external links (shared chip-list editor) |
-| `tblCreditPersonRelations` | Musician↔musician relations (e.g. a character *Portrayed by* a person, with start/end dates) |
+| `tblMusicians` | Musicians (person / group / character / orchestra / …). `Type` is `VARCHAR`, app-validated. Carries `Biography`, `Disambiguation`, `Slug`. Profile at `/musician/<slug>` (`/person/<slug>` kept as alias). Compat view: `tblCreditPeople`. |
+| `tblMusicianIdentifiers` | Musician industry IDs — IPI / ISNI / CAE / … (`IdentifierType` `VARCHAR`, new types need no `ALTER`; the 13-provider `CREDIT_IDENTIFIER_TYPES` registry). Compat view: `tblCreditPersonIdentifiers`. (Plus the dedicated `tblMusicianIPI`.) |
+| `tblMusicianExternalLinks` | Per-musician external links (shared chip-list editor). Compat views: `tblCreditPersonExternalLinks` / `tblCreditPersonLinks` (+ `tblMusicianLinks`). |
+| `tblMusicianRelations` | Musician↔musician relations (e.g. a character *Portrayed by* a person, with start/end dates) |
+| `tblMusicianAliases` | Musician name variants (compat view: `tblCreditPersonAliases`) |
 | `tblWorks` | Works (the original piece). `ParentWorkId` self-FK (nesting), `Iswc`, `MusicBrainzWorkMBID`, `Disambiguation`, `Subtitle`. Page `/work/<slug>`. |
 | `tblWorkSongs` / `tblWorkExternalLinks` | Work↔song membership (`IsCanonical`); per-work external links |
 | `tblTunes` | Tunes, first-class. `Name`, `Slug`, `MeterCode`, `Subtitle`, `Disambiguation`, `MusicBrainzWorkMBID`, `HymnaryTuneId`. Page `/tune/<slug>`. `tblSongs.TuneId` FK links a song to its tune (written in lockstep with `TuneName`). |
