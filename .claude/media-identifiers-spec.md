@@ -122,3 +122,23 @@ authority until that deliberate cutover.
 - **MeedyaManager issue:** consume the registry; converge `mm_*` keys; add an ISWC file-tag to `tags.json5`.
 - **MeedyaConverter issue:** no new modelling — track `SUITE_CORE` bindings adoption; ensure passthrough keeps
   the ID tag families (it does — `copyAll` default).
+
+## 6. Meedya-phase issues FILED 2026-08-03 (verified against live repos before filing)
+All three grounded in a live repo read + the load-bearing claims spot-verified (rule "verify before filing"):
+- **MeedyaSuite-core [#65](https://github.com/MWBMPartners/MeedyaSuite-core/issues/65)** — the `identifier_types`
+  registry artifact (Q2); `#[non_exhaustive]` `CommonTag` (Q3 — confirmed exhaustive at
+  `crates/meedya-metadata/src/common_tags.rs:20`, `tags.toml` + `extra_keys` already exist); MB-Release-Group
+  typed reach (core has Recording+Release only, MM has the group — §1 gap confirmed); Subtitle/Language/roles
+  core-info gaps (§2).
+- **MeedyaManager [#196](https://github.com/MWBMPartners/MeedyaManager/issues/196)** — `mm_iswc`→`iswc`
+  META-key convergence (Q4; drift CONFIRMED: `crates/mm-providers/src/traits.rs:46` `META_ISWC = "mm_iswc"` vs
+  `"iswc"` everywhere else) + read-both shim; consume core's registry; add an ISWC file-tag to
+  `config/tags.json5` (exists).
+- **MeedyaConverter [#478](https://github.com/MWBMPartners/MeedyaConverter/issues/478)** — no new modelling;
+  track `SUITE_CORE` bindings (flag confirmed at `Sources/MeedyaConverter/Views/SettingsView.swift`); guarantee
+  a conversion round-trip preserves the ID tag families (passthrough flags exist in `EncodeCommand.swift`).
+
+**Implementation NEXT** (per repo, Fable→Sonnet): the three repos are attached + cloned in `/workspace/` and their
+roots registered, so each repo's CLAUDE.md/conventions load on the next turn — implementation must respect those
+(don't write Rust/Swift in them before their conventions are in context). Build order: core #65 first (definitional
+home — the registry the other two consume), then MM #196, then MC #478.
