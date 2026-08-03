@@ -399,6 +399,41 @@ try {
                     'name'  => $ogSong['songbookName'],
                 ];
             }
+            /* #1750 — the five #1741 P1 song-identity fields, each gated on
+               non-empty. ELI5: teaches search engines the subtitle,
+               disambiguation, first-published year and copyright holder of
+               a hymn, the same way the header/footer now show them to a
+               human reader. DETAILED: $ogSong comes straight from
+               getSongById() (SongData::_fetchSongRow()), so §1's
+               always-present shape-blind keys land here automatically —
+               no separate query needed. This array is emitted later by the
+               shell's existing nonce'd <script type="application/ld+json">
+               loop (no new <script>, no CSP concern — rule #30 n/a, this
+               is the shell, not a shared-cache fragment). */
+            if (!empty($ogSong['subtitle'])) {
+                $musicComposition['alternativeHeadline'] = (string)$ogSong['subtitle'];
+            }
+            if (!empty($ogSong['disambiguation'])) {
+                $musicComposition['disambiguatingDescription'] = (string)$ogSong['disambiguation'];
+            }
+            if (!empty($ogSong['firstPublishedYear'])) {
+                /* Year-precision ISO-8601 is valid schema.org Date. */
+                $musicComposition['datePublished'] = (string)(int)$ogSong['firstPublishedYear'];
+            }
+            if (!empty($ogSong['copyrightHolder'])) {
+                $musicComposition['copyrightHolder'] = ['@type' => 'Organization', 'name' => (string)$ogSong['copyrightHolder']];
+            }
+            if (!empty($ogSong['copyrightYears']) && preg_match('/^\d{4}$/', trim((string)$ogSong['copyrightYears']))) {
+                /* schema.org copyrightYear is a Number — emit ONLY when the
+                   free-text field is a single plain year; multi-year strings
+                   ("1978, 1987") fold into copyrightNotice below instead. */
+                $musicComposition['copyrightYear'] = (int)trim((string)$ogSong['copyrightYears']);
+            }
+            $ldCopyright = trim(trim((string)($ogSong['copyrightYears'] ?? '')) . ' ' . trim((string)($ogSong['copyrightHolder'] ?? '')));
+            if ($ldCopyright === '') { $ldCopyright = trim((string)($ogSong['copyright'] ?? '')); }
+            if ($ldCopyright !== '') {
+                $musicComposition['copyrightNotice'] = '© ' . $ldCopyright;
+            }
             $jsonLdScripts[] = $musicComposition;
 
             /* Breadcrumb: Home > Songbooks > Songbook Name > #N */

@@ -682,7 +682,9 @@ paths:
             clients. Omitted = the base payload (back-compatible). Unknown blocks
             are ignored; a block is present only when the song actually has that
             data. Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
-            `scriptureRefs`, `vocalParts`, `translations`, `annotations`.
+            `scriptureRefs`, `vocalParts`, `translations`, `annotations`,
+            `externalIds` (#1750 — recording/release external-ID rows;
+            never exposes the internal `SourceRef` idempotency column).
           schema:
             type: string
             example: tune,media,vocalParts,scriptureRefs
@@ -1537,7 +1539,8 @@ paths:
             invisible. Omitted = the base payload (back-compatible); unknown
             blocks are ignored; a block appears only when the song has that data.
             Allow-list: `tune`, `media`, `arrangements`, `royaltyIds`,
-            `scriptureRefs`, `vocalParts`, `translations`, `annotations`.
+            `scriptureRefs`, `vocalParts`, `translations`, `annotations`,
+            `externalIds` (#1750).
           schema: { type: string, example: "tune,media,vocalParts,scriptureRefs" }
       responses:
         "200":

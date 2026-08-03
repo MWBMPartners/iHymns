@@ -2161,6 +2161,7 @@ class SongData
            round-trip surfaces the persisted custom order. Pre-
            migration deploys keep the legacy column list. */
         $arrSelect = $this->_hasArrangementColumn() ? ', s.ArrangementJson AS arrangementJson' : '';
+        $idSelect  = $this->_songIdentitySelect();   /* #1750 — gated, may be '' pre-migration; same fold as _fetchSongRow() */
         /* WS-E (#1013): songbookName from the LIVE tblSongbooks JOIN (b),
            not the denormalised s.SongbookName, so songbook renames
            propagate immediately. (b is LEFT JOINed below.) */
@@ -2171,6 +2172,7 @@ class SongData
                        s.MusicPublicDomain AS musicPublicDomain,
                        s.HasAudio AS hasAudio, s.HasSheetMusic AS hasSheetMusic
                        {$arrSelect}
+                       {$idSelect}
                 FROM tblSongs s
                 LEFT JOIN tblSongbooks b ON b.Abbreviation = s.SongbookAbbr
                 {$whereClause}
@@ -2202,6 +2204,18 @@ class SongData
                text inputs without null-checking every reader. */
             $row['tuneName'] = $row['tuneName'] ?? '';
             $row['iswc']     = $row['iswc']     ?? '';
+            /* #1750 — same always-present, shape-blind defaults as
+               _fetchSongRow() (rule #22, ONE fold conceptually — the two
+               call sites can't literally share a loop body since one is a
+               single row and the other iterates $result, but the five
+               lines are identical by design; see _fetchSongRow() for the
+               full rationale). */
+            $row['subtitle']           = (string)($row['subtitle'] ?? '');
+            $row['disambiguation']     = (string)($row['disambiguation'] ?? '');
+            $row['firstPublishedYear'] = isset($row['firstPublishedYear']) && $row['firstPublishedYear'] !== null
+                ? (int)$row['firstPublishedYear'] : null;
+            $row['copyrightYears']     = (string)($row['copyrightYears'] ?? '');
+            $row['copyrightHolder']    = (string)($row['copyrightHolder'] ?? '');
             /* #892 — decode the JSON int-array column when present.
                Surfaces as `arrangement` to match the shape that the
                Song Editor (`editor.js`) and pages/song.php both read. */
@@ -2543,6 +2557,7 @@ class SongData
         return [
             'tune', 'media', 'arrangements', 'royaltyIds', 'scriptureRefs',
             'vocalParts', 'translations', 'annotations',
+            'externalIds',   /* #1750 / #1741 D5 — recording/release external-ID store, opt-in */
         ];
     }
 
@@ -2672,6 +2687,25 @@ class SongData
                             unset($r);
                             if ($rows) { $out['annotations'] = $rows; }
                         }
+                        break;
+
+                    case 'externalIds':   /* #1750 / #1741 D5 — recording/release external-ID store, opt-in */
+                        /* ELI5: extra "this song is also known as ISRC/Spotify-ID/
+                           MusicBrainz-ID X" rows, only sent when a client explicitly
+                           asks for them.
+                           DETAILED: SourceRef is deliberately NOT selected — it is
+                           an internal idempotency/ownership reference (see
+                           includes/song_external_ids.php's ownership model), never
+                           meant to reach the wire. Same try/catch-per-block +
+                           omit-when-empty pattern as every sibling case above, so an
+                           un-migrated install (tblSongExternalIds absent) degrades to
+                           a clean omission rather than a 500. */
+                        $rows = $this->_extrasRows(
+                            'SELECT IdScope AS idScope, IdType AS idType, IdValue AS idValue, Source AS source '
+                          . 'FROM tblSongExternalIds WHERE SongId = ? ORDER BY IdScope, IdType, IdValue',
+                            's', [$songId]
+                        );
+                        if ($rows) { $out['externalIds'] = $rows; }
                         break;
                 }
             } catch (\Throwable $e) {
@@ -3774,6 +3808,7 @@ class SongData
             ? ', OriginCity AS originCity, OriginCityId AS originCityId'
             : '';
         $pubSelect    = $this->_hasPublicIdColumn() ? ', s.PublicId AS publicId' : '';   /* #1343-B (gated) */
+        $idSelect     = $this->_songIdentitySelect();   /* #1750 — gated, may be '' pre-migration */
         $stmt = $this->db->prepare(
             "SELECT s.SongId AS id, s.Number AS number, s.Title AS title, s.SongbookAbbr AS songbook,
                     sb.Name AS songbookName, s.Language AS language, s.Copyright AS copyright,
@@ -3784,6 +3819,7 @@ class SongData
                     {$arrSelect}
                     {$placeSelect}
                     {$pubSelect}
+                    {$idSelect}
              FROM tblSongs s
              LEFT JOIN tblSongbooks sb ON sb.Abbreviation = s.SongbookAbbr
              WHERE s.SongId = ? AND " . $this->_visible() . "
@@ -3807,6 +3843,18 @@ class SongData
         $row['hasSheetMusic'] = (bool)$row['hasSheetMusic'];
         $row['tuneName'] = $row['tuneName'] ?? '';
         $row['iswc']     = $row['iswc']     ?? '';
+        /* #1750 — always-present, shape-blind defaults for the five #1741 P1
+           identity columns (mirrors getWork()'s absent-column defaults,
+           SongData.php ~5040-5052): keys exist on the returned array
+           whether or not the backing column exists on this install yet, so
+           #1752's strict native decoders get a stable contract on every
+           install. */
+        $row['subtitle']           = (string)($row['subtitle'] ?? '');
+        $row['disambiguation']     = (string)($row['disambiguation'] ?? '');
+        $row['firstPublishedYear'] = isset($row['firstPublishedYear']) && $row['firstPublishedYear'] !== null
+            ? (int)$row['firstPublishedYear'] : null;
+        $row['copyrightYears']     = (string)($row['copyrightYears'] ?? '');
+        $row['copyrightHolder']    = (string)($row['copyrightHolder'] ?? '');
         /* Places adoption — pass-through the FK Id (or null) to the
            editor so the place-search module can populate its hidden
            sidecar input. The display string lives in originCity. */
@@ -4797,6 +4845,117 @@ class SongData
     }
     /** @var array<string,true>|null cached probe result */
     private ?array $_worksExtraColsCache = null;
+
+    /**
+     * #1750 — instance-cached existence probe for the five #1741 P1 "song
+     * identity" columns on `tblSongs` (Subtitle, Disambiguation,
+     * FirstPublishedYear, CopyrightYears, CopyrightHolder).
+     *
+     * ELI5: "of these five optional columns, which ones actually exist on
+     * THIS database right now?" — asked once per request (migrations are
+     * web-run, not guaranteed applied — see
+     * `appWeb/.sql/migrate-song-identity-fields.php`), remembered for every
+     * subsequent `_songIdentitySelect()` call in the same request.
+     *
+     * DETAILED / WHY A SEPARATE PROBE FROM `_worksExtraCols()`, NOT A SHARED
+     * ONE: same clone-the-shape idea as that method (byte-for-byte pattern:
+     * hardcoded IN-list, one INFORMATION_SCHEMA.COLUMNS query, try/catch →
+     * []), but a DIFFERENT table (`tblSongs`, not `tblWorks`) and a
+     * DIFFERENT column set (five, not nine) — so it is its own method, not a
+     * parameterised reuse of `_worksExtraCols()`. Also deliberately NOT
+     * shared with the editor's own probe, `ed2_songIdentityColsPresent()`
+     * (`manage/editor/api2.php`) — that one runs in the `manage/editor`
+     * runtime context (a free function, not a SongData method) and this one
+     * runs in the public `includes/` context; unifying them into a
+     * cross-context `require` would couple two independently-deployable
+     * surfaces for no benefit (mirrors the existing `_worksExtraCols()`-vs-
+     * editor-probe split — the same reasoning applies here, do not
+     * "unify" the two).
+     *
+     * @return array<string,true> present column names as keys (a set, not a
+     *                             list — `isset($cols['Subtitle'])` reads
+     *                             cleanly at every call site).
+     * @see #1750
+     * @link appWeb/.sql/migrate-song-identity-fields.php the migration that adds these columns
+     * @link SongData::_worksExtraCols() the pattern this clones
+     */
+    private function _songIdentityCols(): array
+    {
+        if ($this->_songIdentityColsCache !== null) {
+            return $this->_songIdentityColsCache;
+        }
+        /* Hardcoded constant column names (rule #5's carve-out) — never
+           built from request input. */
+        $cols = ['Subtitle', 'Disambiguation', 'FirstPublishedYear', 'CopyrightYears', 'CopyrightHolder'];
+        $present = [];
+        try {
+            $ph = implode(',', array_fill(0, count($cols), '?'));
+            $stmt = $this->db->prepare(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblSongs'
+                    AND COLUMN_NAME IN ($ph)"
+            );
+            $types = str_repeat('s', count($cols));
+            $stmt->bind_param($types, ...$cols);
+            $stmt->execute();
+            $res = $stmt->get_result();
+            while ($row = $res->fetch_assoc()) {
+                $present[(string)$row['COLUMN_NAME']] = true;
+            }
+            $stmt->close();
+        } catch (\Throwable $_e) {
+            /* mysqli STRICT throws on a query naming a nonexistent
+               column/table; migrations are web-run so an un-migrated
+               install must degrade to "none present", never white-screen. */
+            $present = [];
+        }
+        return $this->_songIdentityColsCache = $present;
+    }
+    /** @var array<string,true>|null cached probe result (#1750) */
+    private ?array $_songIdentityColsCache = null;
+
+    /**
+     * #1750 — the SELECT-fragment half of the `_songIdentityCols()` probe:
+     * folds "which of the five columns exist" into a ready-to-interpolate
+     * `, s.Col AS camelAlias` string, so `_fetchSongRow()` and `getSongs()`
+     * (the two SELECTs that must both carry these columns — rule #22, ONE
+     * fold, two call sites) never duplicate the alias-mapping logic.
+     *
+     * ELI5: builds the extra bit of the SQL SELECT line for whichever of
+     * the five identity columns this database actually has, already
+     * aliased to the camelCase wire names the editor and public API agree
+     * on.
+     *
+     * DETAILED: alias mapping is fixed and matches the editor's
+     * `ED2_META_FIELDS` keys exactly (`manage/editor/api2.php`) — one
+     * vocabulary across editor, public web, and native (rule #35: keeping
+     * two files' key spellings in lockstep needs a mechanism, and here that
+     * mechanism is "there is only one place the mapping is written").
+     * Column names come from `_songIdentityCols()`'s own hardcoded probe
+     * set only — never from caller input (rule #5's carve-out).
+     *
+     * @return string e.g. ', s.Subtitle AS subtitle, s.FirstPublishedYear AS firstPublishedYear'
+     *                for whichever P1 columns exist; '' when none do.
+     * @see #1750
+     */
+    private function _songIdentitySelect(): string
+    {
+        $present = $this->_songIdentityCols();
+        $aliasMap = [
+            'Subtitle'           => 'subtitle',
+            'Disambiguation'     => 'disambiguation',
+            'FirstPublishedYear' => 'firstPublishedYear',
+            'CopyrightYears'     => 'copyrightYears',
+            'CopyrightHolder'    => 'copyrightHolder',
+        ];
+        $parts = [];
+        foreach ($aliasMap as $col => $alias) {
+            if (isset($present[$col])) {
+                $parts[] = "s.{$col} AS {$alias}";
+            }
+        }
+        return $parts ? (', ' . implode(', ', $parts)) : '';
+    }
 
     /**
      * For each songId in $songIds, return a list of Works the song is

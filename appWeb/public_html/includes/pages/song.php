@@ -163,6 +163,44 @@ $hasAudio    = !empty($song['hasAudio']);
 $hasSheet    = !empty($song['hasSheetMusic']);
 $components  = $song['components'] ?? [];
 
+/* #1750 / #1741 P1 — the five song-identity fields (mirrors work.php's
+   $wSubtitle/$wDisambiguation/… variable extraction, §2.2/§2.3 of the
+   #1741 P4b family). Always-present, shape-blind keys on $song (see
+   SongData::_fetchSongRow()'s normalisers) so these reads never need an
+   existence check here — only an emptiness check. */
+$songSubtitle    = trim((string)($song['subtitle'] ?? ''));
+$songDisambig    = trim((string)($song['disambiguation'] ?? ''));
+$firstPubYear    = $song['firstPublishedYear'] ?? null;               /* int|null */
+$copyrightYears  = trim((string)($song['copyrightYears'] ?? ''));
+$copyrightHolder = trim((string)($song['copyrightHolder'] ?? ''));
+/* Split-copyright display line — PREFER the split when either half is
+   present; the legacy free-text Copyright stays the fallback denorm
+   (#1741 P1 contract, mirrors the CopyrightYears schema COMMENT: legacy
+   Copyright is NOT auto-parsed). Web and native must render identically —
+   this precedence rule is part of the #1750/#4 API contract, never
+   concatenate both. */
+$copyrightSplit   = trim($copyrightYears . ' ' . $copyrightHolder);
+$copyrightDisplay = $copyrightSplit !== '' ? $copyrightSplit : trim((string)$copyright);
+
+/* #1750 — prefer the tblTunes registry slug (via the existing scoped
+   include-block reader) over the name-fold, exactly as work.php does
+   (work.php:81-94). One extra gated query, only on pages that actually
+   have a tune name; getSongDetailExtras()'s per-block try/catch makes
+   this STRICT-safe on installs without tblTunes/TuneId
+   (SongData.php ~2567-2578). Computed ONCE here and reused by both the
+   header (§2.6 below) and the footer credits block, replacing the two
+   separate local $_tuneSlug / $_tuneSlugFooter name-folds that used to
+   live at each render site — rule #22, one fold. /tune/<registrySlug>
+   resolves via tune.php:186 (verified rule-#33-safe, spec §0). */
+$tuneSlug = '';
+if ($tuneName !== '') {
+    $tuneExtras = $songData->getSongDetailExtras((string)($song['id'] ?? $songId), ['tune']);
+    $tuneSlug   = (string)($tuneExtras['tune']['slug'] ?? '');
+    if ($tuneSlug === '') {
+        $tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
+    }
+}
+
 /* #1200 — song-language tagging. The page <html lang> stays the UI language;
    song-language content (the TITLE here, and each lyric component below) carries
    its OWN BCP 47 tag + dir for RTL scripts, so screen readers, browser
@@ -553,7 +591,11 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                 </span>
                 <?php endif; ?>
                 <div class="flex-grow-1">
-                    <h1 class="h4 mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?></h1>
+                    <h1 class="h4 mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songTitle) ?><?php if (!empty($song['verified'])): ?><span class="verified-badge" role="img" title="Verified lyrics" aria-label="Verified lyrics"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.15"/><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M7.5 12.5L10.5 15.5L16.5 9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><?php endif; ?><?php /* #1750 — disambiguation parenthetical (mirrors work.php:142-144); short curator string, inherits the h1's song-language lang/dir (accepted, not worth a nested lang reset — see build spec §2.2). */ ?><?php if ($songDisambig !== ''): ?><small class="text-muted fw-normal"> (<?= htmlspecialchars($songDisambig) ?>)</small><?php endif; ?></h1>
+                    <?php /* #1750 — subtitle, muted, directly under the title (mirrors work.php:146-148). Song-content, so it carries the song's own lang/dir like the title does (#1200 convention). */ ?>
+                    <?php if ($songSubtitle !== ''): ?>
+                        <p class="text-muted mb-1"<?php if ($songPrimaryLang !== ''): ?> lang="<?= htmlspecialchars($songPrimaryLang) ?>"<?php if ($songLangDir === 'rtl'): ?> dir="rtl"<?php endif; ?><?php endif; ?>><?= htmlspecialchars($songSubtitle) ?></p>
+                    <?php endif; ?>
                     <?php
                         /* #832 — "Also known as …" line. Hidden when this
                            song has no alt titles (or pre-migration). Per-row
@@ -715,15 +757,16 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                  #940 — tune is now a link to `/tune/<slug>` listing
                  every song that uses that tune; lets a worship leader
                  mix-n-match lyrics across hymns with the same melody. -->
-            <?php if ($tuneName !== ''):
-                $_tuneSlug = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
-                ?>
+            <?php /* #1750 — $tuneSlug is now computed ONCE, up top, preferring the
+                     tblTunes registry slug over the name-fold (see the block near
+                     the top of this file); this render site just consumes it. */ ?>
+            <?php if ($tuneName !== ''): ?>
                 <div class="song-meta mb-3">
                     <p class="mb-0 song-credit-row" data-credit-kind="tune">
                         <i class="fa-solid fa-music me-2 text-muted" aria-hidden="true"></i>
                         <strong>Tune:</strong>
-                        <?php if ($_tuneSlug !== ''): ?>
-                            <a href="/tune/<?= htmlspecialchars($_tuneSlug) ?>"
+                        <?php if ($tuneSlug !== ''): ?>
+                            <a href="/tune/<?= htmlspecialchars($tuneSlug) ?>"
                                class="song-meta-link"
                                data-navigate="tune"
                                title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
@@ -830,12 +873,26 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                  in a flex row that wraps: side-by-side at wide widths,
                  stacked at narrow. Copyright stays on its own line
                  above — it's prose, not a labelled field. -->
-            <?php if (!empty($copyright) || !empty($ccli) || $iswc !== ''): ?>
+            <?php /* #1750 — outer condition now also opens for a first-published
+                     year alone (no legacy copyright string yet), and the
+                     copyright <p> reads $copyrightDisplay (the split-fields-first
+                     precedence fold from the top of this file) rather than the
+                     raw legacy $copyright. */ ?>
+            <?php if ($copyrightDisplay !== '' || $firstPubYear !== null || !empty($ccli) || $iswc !== ''): ?>
                 <div class="song-meta-copyright mb-3">
-                    <?php if (!empty($copyright)): ?>
+                    <?php if ($firstPubYear !== null): ?>
+                        <p class="mb-1 small text-muted" data-credit-kind="first-published">
+                            <i class="fa-regular fa-calendar me-2" aria-hidden="true"></i>
+                            First published <?= (int)$firstPubYear ?>
+                        </p>
+                    <?php endif; ?>
+                    <?php if ($copyrightDisplay !== ''): ?>
                         <p class="mb-1 small text-muted">
+                            <?php /* #1750 — the fa-copyright icon already supplies the
+                                     © glyph; do NOT also prepend a text "©" (work.php:107
+                                     does because it has no icon — this row does). */ ?>
                             <i class="fa-regular fa-copyright me-2" aria-hidden="true"></i>
-                            <?= htmlspecialchars($copyright) ?>
+                            <?= htmlspecialchars($copyrightDisplay) ?>
                         </p>
                     <?php endif; ?>
                     <?php if (!empty($ccli) || $iswc !== ''): ?>
@@ -1228,12 +1285,22 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
          masthead. The .song-credits-footer class is kept distinct from
          the older .song-copyright (used only by print.css) so the
          right-aligned layout doesn't bleed into print rules. */ -->
+    <?php /* #1750 — the copyright leg of this outer condition, and the
+             copyright <div> below, now key off $copyrightDisplay (the
+             split-fields-first precedence fold) instead of the raw legacy
+             $copyright. First-published is deliberately HEADER-ONLY (not
+             mirrored here) — defensible default: the footer is the
+             projection copy, and a publication year isn't a projection
+             credit (build spec §2.5; trivially changeable if the owner
+             wants footer parity later). The $fullyPublicDomain branch stays
+             first — a PD song still says "Public Domain" regardless of
+             $copyrightDisplay. */ ?>
     <?php if (
         !empty($_creditRows) && $_hasAnyCredit
         || $tuneName !== ''
         || !empty($ccli)
         || $iswc !== ''
-        || (!$fullyPublicDomain && !empty($copyright))
+        || (!$fullyPublicDomain && $copyrightDisplay !== '')
         || $fullyPublicDomain
     ): ?>
         <footer class="song-credits-footer text-end small text-muted mt-4 pt-3 border-top" role="contentinfo">
@@ -1255,15 +1322,16 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                     </div>
                 <?php endforeach; ?>
             <?php endif; ?>
-            <?php if ($tuneName !== ''):
-                /* #940 — same link as the header, mirrored in the
-                   after-lyrics credits block for parity. */
-                $_tuneSlugFooter = strtolower(trim(preg_replace('/[^A-Za-z0-9]+/', '-', $tuneName), '-'));
-                ?>
+            <?php if ($tuneName !== ''): ?>
+                <?php /* #940 — same link as the header, mirrored in the
+                         after-lyrics credits block for parity. #1750 — reuses
+                         the SAME $tuneSlug computed once near the top of this
+                         file (registry-slug-preferred); the old separate
+                         $_tuneSlugFooter name-fold is deleted. */ ?>
                 <div data-credit-kind="tune">
                     <strong>Tune:</strong>
-                    <?php if ($_tuneSlugFooter !== ''): ?>
-                        <a href="/tune/<?= htmlspecialchars($_tuneSlugFooter) ?>"
+                    <?php if ($tuneSlug !== ''): ?>
+                        <a href="/tune/<?= htmlspecialchars($tuneSlug) ?>"
                            class="song-meta-link"
                            data-navigate="tune"
                            title="See all songs that use this tune"><?= htmlspecialchars($tuneName) ?></a>
@@ -1303,10 +1371,10 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
                     <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
                     Public Domain
                 </div>
-            <?php elseif (!empty($copyright)): ?>
+            <?php elseif ($copyrightDisplay !== ''): ?>
                 <div class="mt-1" data-credit-kind="copyright">
                     <i class="fa-regular fa-copyright me-1" aria-hidden="true"></i>
-                    <?= htmlspecialchars($copyright) ?>
+                    <?= htmlspecialchars($copyrightDisplay) ?>
                 </div>
             <?php endif; ?>
         </footer>
@@ -1321,7 +1389,11 @@ $hasLineTranslations = !empty($lineTranslationsByLineId);
     $rpMusicPd  = !empty($song['musicPublicDomain']);
     $rpCcli     = trim((string)($song['ccli'] ?? ''));
     $rpIswc     = trim((string)($song['iswc'] ?? ''));
-    $rpCopyright = trim((string)($song['copyright'] ?? ''));
+    /* #1750 — reuses $copyrightDisplay (the split-fields-first precedence
+       fold computed once near the top of this file) so the "Why you can
+       use this" card shows the split when present; it already handles an
+       empty value the same as the legacy $copyright did. */
+    $rpCopyright = $copyrightDisplay;
     if ($rpLyricsPd && $rpMusicPd) {
         $rpClass = 'success'; $rpIcon = 'fa-circle-check';
         $rpTitle = 'Public domain';
