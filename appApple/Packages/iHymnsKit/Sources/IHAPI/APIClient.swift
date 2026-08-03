@@ -294,7 +294,12 @@ public actor APIClient {
     /// call site) so every caller of this method asks for the exact same
     /// set, and so `IHFeatures`/tests can reference the same list if they
     /// ever need to reason about which blocks a song-display screen expects.
-    static let songDetailIncludeBlocks = ["translations", "annotations", "royaltyIds"]
+    // #1752 Slice A — `externalIds` added alongside the other three opt-in
+    // blocks. Harmless when the server predates #1750 (an unrecognised
+    // `include=` name is simply ignored server-side, same as the other
+    // three already documented above) — see `SongDetail.externalIds`'s doc
+    // comment (`IHModels/SongDetail.swift`) for the #1750 §4.3 contract.
+    static let songDetailIncludeBlocks = ["translations", "annotations", "royaltyIds", "externalIds"]
 
     /// `?action=songbooks` — every songbook in the catalogue.
     ///

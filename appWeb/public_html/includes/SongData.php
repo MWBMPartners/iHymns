@@ -5531,6 +5531,16 @@ class SongData
             'discography'   => [],
             'links'         => [],
             'totalSongs'    => 0,
+            /* #1752 Slice D — always-present default so the native Apple
+               client (and any other consumer) can decode this key
+               unconditionally, matching the P4b `getWork()` "shape-blind"
+               convention (rule #9): an un-migrated docroot, a lookup that
+               never resolved a registry row, or a query failure all leave
+               this as the empty array rather than omitting the key. See
+               `.claude/catalogue-1741-1750-plan.md` §4 for the frozen
+               contract this app-side change is scoped OUTSIDE of (this key
+               is new, #1741-adjacent but not part of that frozen five). */
+            'identifiers'   => [],
         ];
 
         /* Discography by role — same six tables + labels musician.php uses,
@@ -5658,6 +5668,58 @@ class SongData
                     ];
                 }
                 $stmt->close();
+            }
+        }
+
+        /* #1752 Slice D — musician identifiers (IPI/ISNI and similar,
+           `tblMusicianIdentifiers`, #1741 P2 rename target). `getMusician()`
+           previously emitted NO P4a musician-enrichment identifiers at all
+           (verified by reading this whole function — only id/slug/name/
+           notes/lifespan/isSpecialCase/isGroup/discography/links/
+           totalSongs) even though the web musician PAGE renders richer
+           data; this closes that native/JSON gap (`.claude/
+           catalogue-1741-1752-plan.md` §4.1). Byte-pattern of the
+           `tblMusicianExternalLinks` existence-probe directly above —
+           existence-gated (rule #9/#19: migrations are web-run, not
+           auto-applied, so an un-migrated docroot must degrade to the
+           already-set `'identifiers' => []` default, never throw) and
+           wrapped in try/catch (rule #9 STRICT-safety: mysqli throws under
+           MYSQLI_REPORT_STRICT, and a query failure here must not blank the
+           whole musician page/JSON response). */
+        if ($row && (int)$row['Id'] > 0) {
+            try {
+                $probe = $this->db->query(
+                    "SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+                      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tblMusicianIdentifiers' LIMIT 1"
+                );
+                $hasIdentifiers = $probe && $probe->fetch_row() !== null;
+                if ($probe) { $probe->close(); }
+            } catch (\Throwable $_e) {
+                $hasIdentifiers = false;
+            }
+            if ($hasIdentifiers) {
+                try {
+                    $pid = (int)$row['Id'];
+                    $stmt = $this->db->prepare(
+                        'SELECT IdentifierType AS type, IdentifierValue AS value
+                           FROM tblMusicianIdentifiers WHERE MusicianId = ? ORDER BY IdentifierType, IdentifierValue'
+                    );
+                    $stmt->bind_param('i', $pid);
+                    $stmt->execute();
+                    $ires = $stmt->get_result();
+                    while ($irow = $ires->fetch_assoc()) {
+                        $person['identifiers'][] = [
+                            'type'  => (string)$irow['type'],
+                            'value' => (string)$irow['value'],
+                        ];
+                    }
+                    $stmt->close();
+                } catch (\Throwable $_e) {
+                    /* Query failed after the probe passed (e.g. a mid-flight
+                       schema change) — degrade to the already-set empty
+                       default rather than throwing (rule #9). */
+                    $person['identifiers'] = [];
+                }
             }
         }
 

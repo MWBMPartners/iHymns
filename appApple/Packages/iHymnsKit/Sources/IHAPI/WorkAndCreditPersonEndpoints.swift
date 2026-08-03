@@ -61,20 +61,31 @@ public enum CreditPersonLookup: Sendable, Equatable {
 }
 
 extension Endpoint {
-    /// `?action=credit_person` — one credit person's bio/lifespan/external
-    /// links plus every song they're credited on, grouped by role (#1443,
-    /// #1444). Public, no auth required.
+    /// `?action=musician` — one musician's bio/lifespan/external links plus
+    /// every song they're credited on, grouped by role (#1443, #1444).
+    /// Public, no auth required.
+    ///
+    /// #1752 Slice D UPDATE (#1741 P2-B) — switched from the legacy
+    /// `credit_person` action (envelope `{"person":{…}}`) to the canonical
+    /// `musician` action (envelope `{"musician":{…}}`) — see
+    /// `WorkAndCreditPersonDecoding.swift`'s matching envelope-key update.
+    /// `action=credit_person` stays live server-side FOREVER as the shipped
+    /// OLD Apple binaries' frozen contract (`api.php`'s own comment: "the
+    /// OLD shape stays byte-identical forever, the shipped Apple binaries
+    /// never change") — this client-side switch is what lets a NEW build
+    /// pick up `musician`-only additions (like `identifiers`, #1752 §4.1)
+    /// without waiting on that legacy action to ever change.
     ///
     /// ELI5: "Give me everything about this one writer/composer, including
     /// every song of theirs we have."
     public static func creditPerson(_ lookup: CreditPersonLookup) -> Endpoint {
         switch lookup {
         case .slug(let slug):
-            Endpoint(action: "credit_person", queryItems: [("slug", slug)])
+            Endpoint(action: "musician", queryItems: [("slug", slug)])
         case .id(let id):
-            Endpoint(action: "credit_person", queryItems: [("id", String(id))])
+            Endpoint(action: "musician", queryItems: [("id", String(id))])
         case .name(let name):
-            Endpoint(action: "credit_person", queryItems: [("name", name)])
+            Endpoint(action: "musician", queryItems: [("name", name)])
         }
     }
 }

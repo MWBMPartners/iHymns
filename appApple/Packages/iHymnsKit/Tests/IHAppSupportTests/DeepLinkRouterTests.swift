@@ -132,6 +132,20 @@ struct DeepLinkRouterTests {
         #expect(DeepLinkRouter.resolve(url) == nil)
     }
 
+    // MARK: - Musician (#1752 Slice B, #1741 P2-B canonical rename)
+
+    @Test("Resolves a valid /musician/ Universal Link to the SAME .person(slug:) case as /person/")
+    func resolvesValidMusicianLink() throws {
+        let url = try #require(URL(string: "https://ihymns.app/musician/some-writer"))
+        #expect(DeepLinkRouter.resolve(url) == .person(slug: "some-writer"))
+    }
+
+    @Test("Rejects an uppercase /musician/ slug — same charset as /person/")
+    func rejectsUppercaseMusicianSlug() throws {
+        let url = try #require(URL(string: "https://ihymns.app/musician/Some-Writer"))
+        #expect(DeepLinkRouter.resolve(url) == nil)
+    }
+
     // MARK: - Compare (#1455) — app-internal only, see DeepLink.swift's header
 
     @Test("Resolves a valid compare Universal Link shape")

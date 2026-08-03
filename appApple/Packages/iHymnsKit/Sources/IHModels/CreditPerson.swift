@@ -139,4 +139,24 @@ public struct CreditPerson: Sendable, Hashable, Codable {
     /// computes this from a de-duplicated `SongId` set, not a naive sum of
     /// each role group's `songs.count` (which would double-count).
     public let totalSongs: Int
+
+    /// IPI/ISNI-style authority identifiers (#1741 P2 `tblMusicianIdentifiers`,
+    /// #1752 Slice D) — `nil` on a server response that predates this key
+    /// (same staggered-deploy tolerance every other #1752 addition uses),
+    /// otherwise an array that's simply empty when this person has none
+    /// curated yet. Distinct from `SongDetail.royaltyIds`/`.externalIds` —
+    /// this is the PERSON's own registry identity, not a per-song/recording
+    /// one.
+    public let identifiers: [MusicianIdentifier]?
+}
+
+/// One authority-registry identifier for a musician, e.g. an IPI Name
+/// Number or an ISNI.
+public struct MusicianIdentifier: Sendable, Hashable, Codable {
+    /// Open vocabulary (app-validated, not a Swift `enum`) — same
+    /// growable-vocabulary reasoning as `ExternalLink.category`: `ipi` |
+    /// `isni` | `cae` | `ipi-base` | a PRO-specific id, and a type this
+    /// client doesn't recognise yet should still decode and render.
+    public let type: String
+    public let value: String
 }

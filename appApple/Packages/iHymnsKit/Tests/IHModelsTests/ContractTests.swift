@@ -83,6 +83,19 @@ struct ContractTests {
         // opt-in blocks are simply absent; must decode to nil, not throw.
         #expect(song.annotations == nil)
         #expect(song.royaltyIds == nil)
+        // #1752 Slice A — the five #1741 P1 identity keys + the opt-in
+        // `include=externalIds` block, hand-added to this fixture (see
+        // `Tests/Fixtures/README.md`/`SongDetail.swift`'s header for why a
+        // real re-record needs a post-#1750 dev pull, tracked as a #1752 §5
+        // deferred follow-up).
+        #expect(song.subtitle == "")
+        #expect(song.disambiguation == "")
+        #expect(song.firstPublishedYear == 1779)
+        #expect(song.copyrightYears == "")
+        #expect(song.copyrightHolder == "")
+        #expect(song.externalIds?.count == 1)
+        #expect(song.externalIds?.first?.idType == "isrc")
+        #expect(song.externalIds?.first?.idValue == "GBAYE7900001")
     }
 
     @Test("song_links.json (MP-0031) decodes the real empty-counterpart-group envelope")

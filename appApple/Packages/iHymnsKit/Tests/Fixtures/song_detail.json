@@ -7,6 +7,11 @@
     "songbookName": "Mission Praise",
     "language": "en",
     "copyright": "",
+    "subtitle": "",
+    "disambiguation": "",
+    "firstPublishedYear": 1779,
+    "copyrightYears": "",
+    "copyrightHolder": "",
     "tuneName": "",
     "ccli": "",
     "iswc": "",
@@ -107,6 +112,14 @@
     "alternativeTitles": [],
     "links": [],
     "works": [],
-    "media": []
+    "media": [],
+    "externalIds": [
+      {
+        "idScope": "recording",
+        "idType": "isrc",
+        "idValue": "GBAYE7900001",
+        "source": "curator"
+      }
+    ]
   }
 }

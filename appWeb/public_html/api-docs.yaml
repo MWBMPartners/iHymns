@@ -14379,6 +14379,31 @@ components:
           type: integer
           description: Count of distinct songs across every role.
           example: 6
+        identifiers:
+          type: array
+          description: |
+            IPI/ISNI-style authority identifiers (#1741 P2 `tblMusicianIdentifiers`,
+            added #1752 Slice D). Always present as an array — empty when no
+            registry row exists, the table isn't migrated on this install, or
+            the row has no identifiers curated yet. Emitted identically on
+            BOTH the canonical `musician` envelope and the legacy
+            `credit_person`/`person` envelope (an additive key on an existing
+            object; the P2-B freeze only promises the legacy envelope's
+            EXISTING fields stay byte-identical).
+          items:
+            $ref: "#/components/schemas/MusicianIdentifierEntry"
+
+    MusicianIdentifierEntry:
+      type: object
+      description: One authority-registry identifier row for a musician.
+      properties:
+        type:
+          type: string
+          description: "Open vocabulary (app-validated, not an enum — rule #20): ipi | isni | cae | ipi-base | <pro-id>."
+          example: ipi
+        value:
+          type: string
+          example: "00123456789"
 
     MusicianDiscographyGroup:
       type: object
