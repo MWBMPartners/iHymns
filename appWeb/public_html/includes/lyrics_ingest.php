@@ -558,7 +558,16 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
     }
     $abbr     = 'Misc';
     $language = trim((string)($payload['language'] ?? 'en')) ?: 'en';
-    $isrc     = trim((string)($payload['isrc'] ?? '')) ?: null;
+    /* #1751 — ELI5: clean up the ISRC the same way the editor already does,
+       so whatever we save here reads identically to a curator-typed one.
+       DETAILED / WHY: ONE fold (rule #22) — the same ihymns_canonical_isrc()
+       the editor funnel uses, so tblSongs.Isrc and the store's IdValue can
+       never diverge by formatting. ihymns_canonical_isrc() cleans, never
+       rejects (identifier_normalize.php:213-216), so no previously-accepted
+       payload starts failing; '' folds to null (nullable column, matches
+       prior shape). @see #1751 */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+    $isrc     = ihymns_canonical_isrc((string)($payload['isrc'] ?? '')) ?: null;
     $upc      = trim((string)($payload['upc'] ?? '')) ?: null;
 
     $db->begin_transaction();
@@ -623,6 +632,22 @@ function lyricsIngest_createSong(\mysqli $db, array $payload, string $lyricsText
         $ins->execute();
         $ins->close();
 
+        /* #1751 — ELI5: tell the external-IDs store about the ISRC we just
+           saved, right after we save it, so the two never fall out of sync.
+           DETAILED / WHY: dual-write mirror, inside the SAME transaction as
+           the tblSongs INSERT above — a throw here propagates to the catch
+           below and rolls back the whole create (the mirror is deliberately
+           UNSWALLOWED — a half-mirrored pair is worse than the ingest
+           failing outright; see song_external_ids.php's own doc-block).
+           'ihymns-ingest' is provenance only; ownership stays
+           SourceRef='tblSongs.Isrc' (song_external_ids.php's ownership
+           model — Source and SourceRef are deliberately different axes).
+           @see #1751 */
+        if ($isrc !== null) {
+            require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+            songExternalIdMirrorIsrc($db, $songId, $isrc, 'ihymns-ingest');
+        }
+
         /* One verse component from the TTML lines, so the provisional song
            renders + is editable in the curator UI. */
         $lines = array_values(array_filter(explode("\n", $lyricsText), static fn($l) => trim($l) !== ''));
@@ -670,8 +695,22 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
 {
     $added = 0;
 
-    /* ISRC / UPC → fill blank columns only (don't clobber a curator's value). */
-    $isrc = trim((string)($payload['isrc'] ?? ''));
+    /* ISRC / UPC → fill blank columns only (don't clobber a curator's value).
+       #1751 — ELI5: no built-in "start a transaction" here, on purpose — this
+       function can be called after its caller has ALREADY committed, and
+       opening a new one here would silently swallow whatever transaction a
+       FUTURE caller has open around it.
+       DETAILED / WHY: api.php:1732 calls this function AFTER
+       lyricsIngest_writeToDb()'s own commit has already happened, so there
+       is no transaction open when we get here — and a begin_transaction()
+       inside a helper silently commits any future caller's outer
+       transaction (the implicit-commit class of bug), so we deliberately do
+       NOT introduce one. This function is documented add-if-absent
+       idempotent, and the re-runnable #1747 backfill card self-heals the
+       crash window between the UPDATE below and the mirror call that
+       follows it. @see #1751 */
+    require_once __DIR__ . DIRECTORY_SEPARATOR . 'identifier_normalize.php';
+    $isrc = ihymns_canonical_isrc((string)($payload['isrc'] ?? ''));   /* #1751 — one fold (rule #22) */
     $upc  = trim((string)($payload['upc'] ?? ''));
     if ($isrc !== '' || $upc !== '') {
         $i = $isrc !== '' ? $isrc : null;
@@ -680,6 +719,39 @@ function lyricsIngest_storeExternalIds(\mysqli $db, string $songId, array $paylo
         $st->bind_param('sss', $i, $u, $songId);
         $st->execute();
         $st->close();
+
+        /* #1751 — ELI5: after saving, go read back what the column ACTUALLY
+           holds now, and mirror THAT value — not the value we were handed.
+           DETAILED / WHY (load-bearing — do not "simplify" this away): the
+           UPDATE above is a COALESCE fill-if-blank. When the column already
+           held a curator's value, the payload value did NOT land — mirroring
+           the payload value would write a store row whose IdValue != the
+           tblSongs.Isrc column, breaking the mirror invariant (store row
+           SourceRef='tblSongs.Isrc' must equal the column byte-for-byte).
+           So: mirror the READ-BACK column value, whatever it now is. This
+           also self-heals a never-mirrored pre-existing column value, and
+           matches the backfill's copy-verbatim semantics for legacy raw
+           values. No transaction here by design — see this function's
+           opening comment / the re-runnable backfill card is the
+           crash-window catch-all. @see #1751 */
+        if ($isrc !== '') {
+            /* @deleted-visible: write-path state read (#1694) — the UPDATE
+               just above wrote into this exact $songId; reading its own
+               column back to learn what to mirror is harmless and
+               restore-preserving (mirrors save_song_core.php's identical
+               "read the row I just targeted" pattern), never a general
+               visibility-filtered listing. */
+            $rb = $db->prepare('SELECT Isrc FROM tblSongs WHERE SongId = ? LIMIT 1');
+            $rb->bind_param('s', $songId);
+            $rb->execute();
+            $rbRow = $rb->get_result()->fetch_row();
+            $rb->close();
+            $storedIsrc = $rbRow !== null ? trim((string)($rbRow[0] ?? '')) : '';
+            if ($storedIsrc !== '') {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'song_external_ids.php';
+                songExternalIdMirrorIsrc($db, $songId, $storedIsrc, 'ihymns-ingest');
+            }
+        }
     }
 
     /* Artists → tblSongArtists add-if-absent. */

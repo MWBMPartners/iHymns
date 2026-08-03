@@ -70,6 +70,8 @@ declare(strict_types=1);
  * @link appWeb/.sql/schema.sql                                                  tblSongExternalIds CREATE TABLE block (uq_Song_Type_Value)
  * @see #1741
  * @see #1749
+ * @see #1751 the optional $source parameter that lets lyrics_ingest.php's two write sites
+ *            call this same mirror under their own 'ihymns-ingest' provenance label
  */
 
 if (basename($_SERVER['SCRIPT_FILENAME'] ?? '') === basename(__FILE__)) {
@@ -173,11 +175,19 @@ const SONG_EXTERNAL_ID_ISRC_MIRROR_SOURCE_REF = 'tblSongs.Isrc';
  * @param \mysqli     $db
  * @param string      $songId        tblSongs.SongId (already validated to exist by the caller).
  * @param string|null $canonicalIsrc Already-canonical (ihymns_canonical_isrc()) value, or null/'' to clear.
+ * @param string      $source        #1751 — provenance label only, written into the INSERT's `Source`
+ *                                     column (`'ihymns-mirror'` for a live editor edit, `'ihymns-ingest'`
+ *                                     for a lyrics-ingest write). NEVER part of the DELETE's ownership
+ *                                     predicate, which stays `SongId + IdType + SourceRef` regardless of
+ *                                     which caller minted the row — SourceRef is the ownership key and is
+ *                                     provenance-independent; Source is provenance only.
  * @return void
  * @link .claude/catalogue-1741-P5-plan.md §4.2
+ * @link .claude/catalogue-1741-followups-small-plan.md §2.1 the #1751 $source parameter this signature adds
  * @link appWeb/.sql/migrate-backfill-song-external-ids.php:167-174 the SourceRef literal + IdScope/IdType this mirrors
+ * @see #1751
  */
-function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonicalIsrc): void
+function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonicalIsrc, string $source = 'ihymns-mirror'): void
 {
     if (!songExternalIdsTableExists($db)) {
         return;   // un-migrated install — the backfill card is the catch-all once it lands
@@ -203,7 +213,9 @@ function songExternalIdMirrorIsrc(\mysqli $db, string $songId, ?string $canonica
     }
 
     $idScope = 'recording';
-    $source  = 'ihymns-mirror';
+    /* #1751 — $source is now the caller-supplied parameter (default
+       'ihymns-mirror', unchanged for the two existing api2.php call sites
+       that pass no 4th argument); the local hardcode this replaced is gone. */
     $ins = $db->prepare(
         'INSERT IGNORE INTO tblSongExternalIds (SongId, IdScope, IdType, IdValue, Source, SourceRef)
          VALUES (?, ?, ?, ?, ?, ?)'

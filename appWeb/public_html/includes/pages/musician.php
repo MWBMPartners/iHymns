@@ -295,18 +295,35 @@ if (!_personPageArtistsTableExists($db)) {
  * spaced, raw slug), CI-deduped.
  *
  * One `Name IN (...)` query SHAPE serves both branches deliberately —
- * a registry hit binds a one-element list, so there is no second SQL
- * string to keep in sync (rule #35: cross-file/cross-branch agreement
- * needs ONE mechanism, not two copies that could drift). Case-fold is
- * free: the credit tables' utf8mb4 collation is already
- * case-insensitive, same property `SongData::getSongsByCreditName()`
- * makes explicit with `LOWER()` for its own (unrelated) caller.
+ * a registry hit binds an N-element list (canonical Name + every alias
+ * name, #1754), so there is no second SQL string to keep in sync (rule
+ * #35: cross-file/cross-branch agreement needs ONE mechanism, not two
+ * copies that could drift). Case-fold is free: the credit tables' utf8mb4
+ * collation is already case-insensitive, same property
+ * `SongData::getSongsByCreditName()` makes explicit with `LOWER()` for its
+ * own (unrelated) caller.
  *
  * @see musicianLegacySlugPlan() musician_helpers.php — the one fold
  * @link .claude/catalogue-1741-P4a3-plan.md §1.3 "The closure"
  */
+/* #1754 — ELI5: when there IS a registry profile, list songs credited under
+   its canonical name AND every alias it has on file (a pen name, a
+   misspelling someone typed into a credit line, …) — not just the one
+   canonical spelling.
+   DETAILED / WHY: the registry branch widens to canonical Name + EVERY
+   alias name (all types, including search-hint/misspelling: they are match
+   keys against how credits were actually typed, not display strings —
+   taken default). Pairs with the ladder's rung 4 (musician_helpers.php): an
+   alias URL now resolves to THIS registry page, so this list must cover at
+   least what the old name-fallback listed for that alias, or the redirect
+   "loses songs". $personAliases is loaded above at :162-172, safely before
+   this point. $totalSongs dedupes by SongId (:334 below) so overlap across
+   names never double-counts. @see #1754 */
 $creditNames = $person !== null
-    ? [$personName]
+    ? array_values(array_unique(array_merge(
+          [$personName],
+          array_map(static fn(array $a): string => (string)$a['Name'], $personAliases)
+      )))
     : musicianLegacySlugPlan($personSlug)['names'];
 
 $discography = [];

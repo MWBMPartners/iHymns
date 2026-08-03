@@ -1007,8 +1007,13 @@ function musicianLegacySlugPlan(string $slug): array
  *      "Smith-Jones" case. `$byName` receives the FULL deduped name list
  *      in one call so the driver can express it as one `Name IN (…)`
  *      query (never N round-trips).
- *   4. Aliases are deliberately NOT a rung here — see decision D-4 in
- *      the build spec; a follow-up issue tracks widening this ladder.
+ *   4. `tblMusicianAliases` name match (#1754) — tried ONLY after every
+ *      registry rung (1-3) misses, so an alias can never outrank the
+ *      registry's own slug/name. Lands only together with the discography
+ *      widening in `includes/pages/musician.php` — see that file's
+ *      `$creditNames` (a redirected alias URL must list at least what the
+ *      old name-fallback listed for that alias, or the redirect "loses
+ *      songs").
  *
  * @param callable(string):?string       $bySlug Exact `tblMusicians.Slug`
  *        lookup for one candidate slug. Returns the canonical slug on a
@@ -1019,12 +1024,18 @@ function musicianLegacySlugPlan(string $slug): array
  *        the matched row's canonical Slug, or null/'' on a miss.
  * @param string $slug ALREADY-URLDECODED slug segment (see
  *        `musicianLegacySlugPlan()`'s doc-block).
+ * @param ?callable(list<string>):?string $byAliasName #1754 rung 4 —
+ *        `tblMusicianAliases.Name IN (…)` lookup across the SAME deduped
+ *        name candidate list `$byName` receives, in one call. Returns the
+ *        owning musician's canonical Slug, or null/'' on a miss. Omit (or
+ *        pass null) to keep the pre-#1754 3-rung ladder — an un-migrated
+ *        install / opted-out caller behaves exactly as before.
  * @return ?string The canonical `tblMusicians.Slug`, or null when every
  *         rung misses (the caller then degrades to the pre-#1741-P4a-3
  *         name-based fallback — never a 404 for a legacy URL that used
  *         to answer, per rule #33).
  */
-function musicianResolveLegacySlug(callable $bySlug, callable $byName, string $slug): ?string
+function musicianResolveLegacySlug(callable $bySlug, callable $byName, string $slug, ?callable $byAliasName = null): ?string
 {
     $plan = musicianLegacySlugPlan($slug);
     foreach ($plan['slugs'] as $cand) {
@@ -1034,6 +1045,17 @@ function musicianResolveLegacySlug(callable $bySlug, callable $byName, string $s
     if ($plan['names'] !== []) {
         $hit = $byName($plan['names']);
         if (is_string($hit) && $hit !== '') { return $hit; }
+        /* #1754 — rung 4: tblMusicianAliases name match, tried ONLY after
+           every registry rung misses (an alias must never outrank the
+           registry's own slug/name). Null = rung absent (un-migrated
+           install / caller opt-out) — ladder behaves exactly as pre-#1754.
+           Placed INSIDE the `if ($plan['names'] !== [])` block: aliases key
+           off the same name-candidate list, and an empty plan has nothing
+           to ask. */
+        if ($byAliasName !== null) {
+            $hit = $byAliasName($plan['names']);
+            if (is_string($hit) && $hit !== '') { return $hit; }
+        }
     }
     return null;
 }
@@ -1072,6 +1094,35 @@ function musicianResolveLegacySlug(callable $bySlug, callable $byName, string $s
 function musicianResolveLegacySlugDb(\mysqli $db, string $slug): ?string
 {
     try {
+        /* #1754 — ELI5: build the 4th rung's real lookup ONLY when the
+           aliases table actually exists on this install; otherwise pass
+           null so the ladder behaves exactly as it did before #1754.
+           DETAILED / WHY: musicianAliasesTableExists($db) (:1461) is
+           already cached + schema-tolerant — reused here rather than a
+           second existence probe (rule #22's "one fold" posture applied to
+           existence gates too). Column names verified against
+           replaceMusicianAliases()/loadMusicianAliases() (:1534/
+           :1541-1544/:1575): tblMusicianAliases(MusicianId, Name, …).
+           Placeholder string from count() — rule #5's sanctioned shape.
+           Deterministic tie-break ORDER BY m.Id, a.Id mirrors the name
+           rung's ORDER BY Id ASC LIMIT 1 posture. @see #1754 */
+        $byAlias = musicianAliasesTableExists($db)
+            ? static function (array $names) use ($db): ?string {
+                $ph = implode(',', array_fill(0, count($names), '?'));
+                $st = $db->prepare(
+                    "SELECT m.Slug FROM tblMusicianAliases a
+                       JOIN tblMusicians m ON m.Id = a.MusicianId
+                      WHERE a.Name IN ($ph) AND m.Slug IS NOT NULL AND m.Slug <> ''
+                      ORDER BY m.Id ASC, a.Id ASC LIMIT 1"
+                );
+                $st->bind_param(str_repeat('s', count($names)), ...$names);
+                $st->execute();
+                $row = $st->get_result()->fetch_row();
+                $st->close();
+                return $row !== null ? (string)$row[0] : null;
+            }
+            : null;
+
         return musicianResolveLegacySlug(
             static function (string $cand) use ($db): ?string {
                 $st = $db->prepare('SELECT Slug FROM tblMusicians WHERE Slug = ? LIMIT 1');
@@ -1098,7 +1149,8 @@ function musicianResolveLegacySlugDb(\mysqli $db, string $slug): ?string
                 $st->close();
                 return $row !== null ? (string)$row[0] : null;
             },
-            $slug
+            $slug,
+            $byAlias
         );
     } catch (\Throwable $_e) {
         return null;

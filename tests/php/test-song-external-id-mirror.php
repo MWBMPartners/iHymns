@@ -100,6 +100,44 @@ function seimSliceCase(string $src, string $caseName): string
 }
 
 /**
+ * Strip PHP comments (`//`, `#`, `/* *​/`, doc-block) from source via the
+ * TOKENIZER, so a CODE assertion below can never be satisfied by a mention of
+ * the symbol/literal inside a comment — the wrong-but-green trap (rule #34).
+ *
+ * ELI5: turn "the code, comments and all" into "just the code", so a stale
+ * comment that still mentions e.g. `'tblSongs.Isrc'` after the real constant
+ * was renamed can't keep this guard green.
+ *
+ * DETAILED / WHY THIS WAS ADDED (#1751): before this, EVERY non-self-test
+ * assertion in this file scanned raw `file_get_contents()` output — an
+ * adversarial audit proved assertions 2/3/4/5/5b + the write-site "calls the
+ * mirror" leg all stayed GREEN when the real code was reverted but a
+ * plausible stale comment survived (e.g. a renamed const with a commented-out
+ * old declaration). `T_COMMENT`/`T_DOC_COMMENT` tokens are replaced by their
+ * own newline count so relative offsets (bounded-window scans) stay faithful.
+ * Same tokenizer approach as `tests/php/test-tune-lockstep.php`'s
+ * `ttlStripComments()`.
+ *
+ * @link https://www.php.net/manual/en/function.token-get-all.php
+ */
+function seimStripComments(string $src): string
+{
+    $out = '';
+    foreach (token_get_all($src) as $tok) {
+        if (is_array($tok)) {
+            if ($tok[0] === T_COMMENT || $tok[0] === T_DOC_COMMENT) {
+                $out .= str_repeat("\n", substr_count($tok[1], "\n"));
+                continue;
+            }
+            $out .= $tok[1];
+        } else {
+            $out .= $tok;
+        }
+    }
+    return $out;
+}
+
+/**
  * Extract the single-quoted string literal assigned to a top-level PHP
  * `const NAME = '...';` declaration. Returns null when not found.
  */
@@ -113,6 +151,38 @@ function seimExtractConstString(string $src, string $constName): ?string
         return null;
     }
     return stripcslashes($m[1]);
+}
+
+/**
+ * #1751 — true when $fnSlice's `songExternalIdMirrorIsrc(` signature defaults
+ * its `$source` parameter to `'ihymns-mirror'`.
+ *
+ * ELI5: "does the mirror function still default to the SAME provenance label
+ * the two existing api2.php call sites (which pass no 4th argument) have
+ * always gotten?" — the #1751 change adds a $source parameter; this proves
+ * its default keeps those two call sites' behaviour byte-identical.
+ *
+ * DETAILED / WHY A NAMED FUNCTION (rule #34 — every regex must be provably
+ * able to fail): wrapping the pattern in a function with its own fixture
+ * pair below is what makes THIS test's own guard mutation-testable in the
+ * same way `seimExtractConstString()` etc. already are, rather than an
+ * inline `preg_match()` nobody has ever watched go red.
+ */
+function seimMirrorDefaultsToIhymnsMirror(string $fnSlice): bool
+{
+    return preg_match('/function\s+songExternalIdMirrorIsrc\s*\([^)]{0,220}\$source\s*=\s*\'ihymns-mirror\'/', $fnSlice) === 1;
+}
+
+/**
+ * #1751 — count how many times $src calls
+ * `songExternalIdMirrorIsrc(...'ihymns-ingest')` — i.e. passes the ingest
+ * provenance literal as (part of) the call's argument list. Bounded window
+ * (rule #34 / #1676's "generous bounded window, never to end of line"
+ * lesson) rather than a greedy match across the whole file.
+ */
+function seimCountIngestMirrorCalls(string $src): int
+{
+    return preg_match_all('/songExternalIdMirrorIsrc\s*\([^;]{0,220}\'ihymns-ingest\'/', $src);
 }
 
 /**
@@ -157,7 +227,9 @@ function seimFindIsrcWriteSites(string $dir): array
     foreach ($rii as $file) {
         if ($file->getExtension() !== 'php') { continue; }
         $path = $file->getPathname();
-        $src  = (string)file_get_contents($path);
+        /* Comment-stripped so a commented-out SQL write is not counted as a
+           write site (rule #34). */
+        $src  = seimStripComments((string)file_get_contents($path));
         $isWrite =
             preg_match('/INSERT\s+INTO\s+tblSongs\b[^;]{0,600}\bIsrc\b/is', $src) === 1
             || preg_match('/UPDATE\s+tblSongs\b[^;]{0,700}\bIsrc\s*=/is', $src) === 1;
@@ -195,6 +267,20 @@ if (strpos($alphaCaseSlice, 'NeedleInBeta') !== false) {
     $mutationFailures[] = "seimSliceCase() FAILS-LOW self-test: 'alpha' case slice bled into 'beta' case";
 }
 
+/* --- seimStripComments() --- */
+$stripFixture = "<?php\n// NeedleInLineComment\n\$x = 'NeedleInCode';\n# NeedleInHashComment\n/* NeedleInBlockComment */\n/** NeedleInDocComment */\n\$y = \"AlsoCode\";\n";
+$stripped = seimStripComments($stripFixture);
+foreach (['NeedleInCode', 'AlsoCode'] as $codeNeedle) {
+    if (strpos($stripped, $codeNeedle) === false) {
+        $mutationFailures[] = "seimStripComments() FAILS-HIGH self-test removed the code string '{$codeNeedle}'";
+    }
+}
+foreach (['NeedleInLineComment', 'NeedleInHashComment', 'NeedleInBlockComment', 'NeedleInDocComment'] as $commentNeedle) {
+    if (strpos($stripped, $commentNeedle) !== false) {
+        $mutationFailures[] = "seimStripComments() FAILS-LOW self-test kept the comment string '{$commentNeedle}'";
+    }
+}
+
 /* --- seimExtractConstString() --- */
 $fixtureConstSrc = "const NEEDLE_CONST = 'the-value';\nconst OTHER = 'unrelated';\n";
 if (seimExtractConstString($fixtureConstSrc, 'NEEDLE_CONST') !== 'the-value') {
@@ -212,6 +298,26 @@ if (seimExtractIsrcBackfillSourceRef($fixtureBackfillSrc) !== 'tblSongs.Isrc') {
 $fixtureBackfillSrcWrongType = "SELECT SongId, 'recording', 'genius', GeniusTrackId, 'ihymns-backfill', 'tblSongIdentityMap.GeniusTrackId'\n FROM tblSongs\n";
 if (seimExtractIsrcBackfillSourceRef($fixtureBackfillSrcWrongType) !== null) {
     $mutationFailures[] = 'seimExtractIsrcBackfillSourceRef() FAILS-LOW self-test wrongly matched a non-isrc backfill INSERT';
+}
+
+/* --- #1751 seimMirrorDefaultsToIhymnsMirror() --- */
+$fixtureMirrorFnDefault = "function songExternalIdMirrorIsrc(\\mysqli \$db, string \$songId, ?string \$canonicalIsrc, string \$source = 'ihymns-mirror'): void\n{\n    /* body */\n}\n";
+if (!seimMirrorDefaultsToIhymnsMirror($fixtureMirrorFnDefault)) {
+    $mutationFailures[] = "seimMirrorDefaultsToIhymnsMirror() FAILS-HIGH self-test did not detect the fixture's \$source = 'ihymns-mirror' default";
+}
+$fixtureMirrorFnWrongDefault = "function songExternalIdMirrorIsrc(\\mysqli \$db, string \$songId, ?string \$canonicalIsrc, string \$source = 'something-else'): void\n{\n    /* body */\n}\n";
+if (seimMirrorDefaultsToIhymnsMirror($fixtureMirrorFnWrongDefault)) {
+    $mutationFailures[] = "seimMirrorDefaultsToIhymnsMirror() FAILS-LOW self-test wrongly matched a fixture whose \$source default is NOT 'ihymns-mirror'";
+}
+
+/* --- #1751 seimCountIngestMirrorCalls() --- */
+$fixtureIngestTwoCalls = "songExternalIdMirrorIsrc(\$db, \$songId, \$isrc, 'ihymns-ingest');\nsongExternalIdMirrorIsrc(\$db, \$songId, \$storedIsrc, 'ihymns-ingest');\n";
+if (seimCountIngestMirrorCalls($fixtureIngestTwoCalls) !== 2) {
+    $mutationFailures[] = 'seimCountIngestMirrorCalls() FAILS-HIGH self-test: expected 2 matches in the two-call fixture, got ' . seimCountIngestMirrorCalls($fixtureIngestTwoCalls);
+}
+$fixtureIngestOneCallOneMirror = "songExternalIdMirrorIsrc(\$db, \$songId, \$isrc, 'ihymns-ingest');\nsongExternalIdMirrorIsrc(\$db, \$songId, \$storedIsrc, 'ihymns-mirror');\n";
+if (seimCountIngestMirrorCalls($fixtureIngestOneCallOneMirror) !== 1) {
+    $mutationFailures[] = "seimCountIngestMirrorCalls() FAILS-LOW self-test: a site whose literal was changed to 'ihymns-mirror' must NOT count, got " . seimCountIngestMirrorCalls($fixtureIngestOneCallOneMirror);
 }
 
 /* --- seimFindIsrcWriteSites() --- */
@@ -267,10 +373,14 @@ foreach ([
     }
 }
 
-$helperSrc   = (string)file_get_contents($helperFile);
-$mediaSrc    = (string)file_get_contents($mediaIdsFile);
-$backfillSrc = (string)file_get_contents($backfillFile);
-$api2Src     = (string)file_get_contents($api2File);
+/* Comment-stripped ONCE here (#1751): every code assertion below slices or
+   regex-scans these strings, and a stale/misleading comment mentioning a
+   symbol or literal must never satisfy a code assertion (rule #34 — proven by
+   hand that a stale const comment kept assertion 3 green). */
+$helperSrc   = seimStripComments((string)file_get_contents($helperFile));
+$mediaSrc    = seimStripComments((string)file_get_contents($mediaIdsFile));
+$backfillSrc = seimStripComments((string)file_get_contents($backfillFile));
+$api2Src     = seimStripComments((string)file_get_contents($api2File));
 
 /* ---- 1. includes/song_external_ids.php exists (already fatal-checked
    above) and declares songExternalIdMirrorIsrc(). ---- */
@@ -334,21 +444,34 @@ if ($snapSlice === '') {
     $failures[] = 'ed2_applySongSnapshot() does not call songExternalIdMirrorIsrc() — a revision restore is an Isrc write funnel too';
 }
 
+/* ---- 5b (#1751). Literal-agreement, mechanism not comment (rule #35):
+   (a) songExternalIdMirrorIsrc()'s $source parameter still defaults to
+   'ihymns-mirror', so the two existing api2.php call sites (which pass no
+   4th argument) keep emitting the SAME provenance label they always have;
+   (b) lyrics_ingest.php calls the mirror with 'ihymns-ingest' from AT LEAST
+   2 sites — both #1751 ingest write sites, not just one. ---- */
+if ($mirrorFnSlice !== '' && !seimMirrorDefaultsToIhymnsMirror($mirrorFnSlice)) {
+    $failures[] = "songExternalIdMirrorIsrc()'s \$source parameter no longer defaults to 'ihymns-mirror' — this would silently change the provenance the two existing api2.php call sites (which pass no 4th argument) write";
+}
+
+$lyricsIngestFile = $repoRoot . '/appWeb/public_html/includes/lyrics_ingest.php';
+if (!is_readable($lyricsIngestFile)) {
+    fwrite(STDERR, "FATAL: could not read includes/lyrics_ingest.php at {$lyricsIngestFile}\n");
+    exit(1);
+}
+$lyricsIngestSrc = seimStripComments((string)file_get_contents($lyricsIngestFile));   /* #1751 — comment-stripped (rule #34) */
+$ingestMirrorCallCount = seimCountIngestMirrorCalls($lyricsIngestSrc);
+if ($ingestMirrorCallCount < 2) {
+    $failures[] = "includes/lyrics_ingest.php calls songExternalIdMirrorIsrc(...'ihymns-ingest') fewer than 2 times (found {$ingestMirrorCallCount}) — both #1751 ingest write sites (lyricsIngest_createSong() and lyricsIngest_storeExternalIds()) must pass the ingest provenance, or a partially-wired ingest silently under-mirrors";
+}
+
 /* ---- 6. Derived write-site sweep: every file that writes tblSongs.Isrc
    must reference the mirror OR be named, WITH an issue number, in the
    exempt list below. An exemption with no issue number is itself a
    failure — "we'll fix it later" is not a mechanism (rule #35). ---- */
-$exempt = [
-    /* lyrics_ingest.php writes tblSongs.Isrc on song create/import (INSERT)
-       and on the idempotent COALESCE-fill (UPDATE) — deliberately NOT wired
-       to the mirror in P5 (plan §4.3-3): ingest carries its own provenance
-       conventions (Source should arguably be the ingest system, not
-       'ihymns-mirror'), the COALESCE-fill only ever touches a blank value,
-       and the re-runnable backfill card covers the gap meanwhile. Tracked
-       follow-up: #1751 ("lyrics_ingest.php writes tblSongs.Isrc without the
-       tblSongExternalIds mirror"), filed under the #1741 epic. */
-    'includes/lyrics_ingest.php' => 'https://github.com/MWBMPartners/iHymns/issues/1751',
-];
+$exempt = [];   /* #1751 — empty. Its last entry, lyrics_ingest.php, self-cleaned
+                   when #1751 wired the ingest sites to the mirror (mirrors the
+                   test-fragment-inline-scripts.php empty-allowlist convention). */
 /* The guard FAILS if an exemption's value doesn't look like it carries an
    issue reference (a '#' followed by digits, or a github.com issue URL) —
    an empty/placeholder exemption is the same regression as no exemption at
@@ -365,7 +488,7 @@ foreach ($writeSites as $rel) {
     if (array_key_exists($relNorm, $exempt)) {
         continue;
     }
-    $fileSrc = (string)file_get_contents($publicHtmlDir . DIRECTORY_SEPARATOR . $rel);
+    $fileSrc = seimStripComments((string)file_get_contents($publicHtmlDir . DIRECTORY_SEPARATOR . $rel));   /* #1751 — a commented-out mirror call must not satisfy this (rule #34) */
     if (strpos($fileSrc, 'songExternalIdMirrorIsrc') === false) {
         $failures[] = "appWeb/public_html/{$relNorm} writes tblSongs.Isrc but never references songExternalIdMirrorIsrc() and is not in this test's exempt list — either wire it to the #1749 mirror or add a REASONED, issue-numbered exemption";
     }

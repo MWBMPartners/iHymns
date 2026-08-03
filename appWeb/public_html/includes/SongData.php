@@ -2280,15 +2280,26 @@ class SongData
      *
      * WHY NAME VARIANTS RATHER THAN AN ID: there is no FK from
      * `tblSongWriters` / `tblSongComposers` to `tblMusicians` today — the
-     * link is a name-string match. So the caller (`includes/pages/writer.php`)
-     * assembles the spellings a person is credited under and passes them all;
-     * see `getMusician()`'s section header, which reads the same tables the
-     * same way and must be changed in step if that FK is ever added.
+     * link is a name-string match. A caller assembles the spellings a
+     * person is credited under and passes them all; see `getMusician()`'s
+     * section header, which reads the same tables the same way and must be
+     * changed in step if that FK is ever added.
+     *
+     * CALLER-LESS SINCE #1741 P4a-3 (#1754 doc-note): the historic caller,
+     * `includes/pages/writer.php`, was retired when P4a-3 consolidated the
+     * writer page into the musician profile — this method has had no caller
+     * since. RETAINED DELIBERATELY (#1754) as the documented scoped-read
+     * exemplar of rule #17 — credit-name → bounded id set → per-record
+     * `getSongById()` hydration, never a corpus materialisation — and as the
+     * ready-made read for a future credits API action. Do not resurrect a
+     * whole-corpus scan instead of reusing this; do not delete without an
+     * issue.
      *
      * @param string[] $nameVariants Candidate names in any case; matched
      *                 case-insensitively against tblSongWriters /
      *                 tblSongComposers `.Name`.
      * @return array<int,array> Full song records (same shape as getSongs()).
+     * @see #1754
      */
     public function getSongsByCreditName(array $nameVariants): array
     {

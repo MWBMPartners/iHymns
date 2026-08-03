@@ -222,6 +222,273 @@ ok('IDEMPOTENCE: a slug the spy maps to ITSELF resolves to itself, on rung 1, in
     $r6 === 'already-canonical' && $asked === ['already-canonical'] && $nameCalls === [],
     'resolved=' . json_encode($r6) . ' asked=' . json_encode($asked) . ' nameCalls=' . json_encode($nameCalls));
 
+/* ========================================================================
+ * 3 — musicianResolveLegacySlug() rung 4 (#1754): the tblMusicianAliases
+ *     name match, tried ONLY after every registry rung (1-3) misses.
+ * ======================================================================== */
+echo "\n3 — musicianResolveLegacySlug() rung 4 (#1754): alias-name match, via recording spies\n";
+
+/**
+ * Build a $byAliasName spy over a fixture map, recording the FULL name list
+ * it was called with into $calls (or leaving $calls empty if never called),
+ * mirroring nameSpy() above. $sequence is a SHARED log (passed by
+ * reference, appended to by both this spy and nameSpy()'s sibling calls
+ * below) so an assertion about ORDER — not just presence — is evidence
+ * about what actually happened.
+ *
+ * @param array<string,string> $rows   candidate name => canonical Slug on a hit
+ * @param list<array>          $calls  this spy's own call log (by reference)
+ * @param list<string>         $sequence shared cross-spy call-order log (by reference)
+ */
+function aliasSpy(array $rows, array &$calls, array &$sequence): callable
+{
+    return static function (array $names) use ($rows, &$calls, &$sequence): ?string {
+        $calls[] = $names;
+        $sequence[] = 'byAliasName';
+        foreach ($names as $n) {
+            if (isset($rows[$n])) { return $rows[$n]; }
+        }
+        return null;
+    };
+}
+
+/**
+ * Same recording shape as nameSpy(), plus an append into the shared
+ * $sequence log — kept as its own local function (rather than reusing
+ * nameSpy() directly) so every rung-4 case below can opt into sequence
+ * tracking without changing nameSpy()'s existing section-2 signature/
+ * call sites.
+ *
+ * @param array<string,string> $rows candidate name => canonical Slug on a hit
+ */
+function nameSpySeq(array $rows, array &$calls, array &$sequence): callable
+{
+    return static function (array $names) use ($rows, &$calls, &$sequence): ?string {
+        $calls[] = $names;
+        $sequence[] = 'byName';
+        foreach ($names as $n) {
+            if (isset($rows[$n])) { return $rows[$n]; }
+        }
+        return null;
+    };
+}
+
+/* ---- (1) rung-4 hit: resolves when rungs 1-3 all miss, called ONCE with
+   the FULL deduped name list ---------------------------------------- */
+$asked = []; $nameCalls = []; $aliasCalls = []; $sequence = [];
+$r7 = musicianResolveLegacySlug(
+    slugSpy([], $asked),                                    /* every slug candidate misses */
+    nameSpySeq([], $nameCalls, $sequence),                  /* registry Name also misses */
+    'john-newton',
+    aliasSpy(['John Newton' => 'john-newton-alias'], $aliasCalls, $sequence)
+);
+ok('when rungs 1-3 all miss, a tblMusicianAliases Name match resolves on RUNG 4',
+    $r7 === 'john-newton-alias', 'got: ' . json_encode($r7));
+ok('…and $byAliasName was called EXACTLY ONCE',
+    count($aliasCalls) === 1, 'alias call log: ' . json_encode($aliasCalls));
+ok('…and $byAliasName received the FULL deduped name candidate list in that one call',
+    $aliasCalls === [['John Newton', 'john-newton']],
+    'alias call log: ' . json_encode($aliasCalls));
+
+/* ---- (2) sequence: $byName is consulted strictly BEFORE $byAliasName -- */
+ok('…and the call ORDER shows $byName consulted strictly before $byAliasName (not just both present)',
+    $sequence === ['byName', 'byAliasName'],
+    'sequence: ' . json_encode($sequence));
+
+/* ---- (3) a $byName HIT never consults $byAliasName --------------------- */
+$asked = []; $nameCalls = []; $aliasCalls = []; $sequence = [];
+$r8 = musicianResolveLegacySlug(
+    slugSpy([], $asked),
+    nameSpySeq(['John Newton' => 'john-newton-registry'], $nameCalls, $sequence),
+    'john-newton',
+    aliasSpy(['John Newton' => 'john-newton-alias'], $aliasCalls, $sequence)
+);
+ok('a registry Name HIT (rung 3) resolves without ever trying rung 4',
+    $r8 === 'john-newton-registry', 'got: ' . json_encode($r8));
+ok('…and $byAliasName was never consulted at all — a rung-3 hit short-circuits rung 4',
+    $aliasCalls === [], 'alias call log: ' . json_encode($aliasCalls));
+ok('…confirmed by the shared sequence log too (only byName appears)',
+    $sequence === ['byName'], 'sequence: ' . json_encode($sequence));
+
+/* ---- (4) back-compat: omitting the 4th arg (3-arg call) still resolves/
+   misses exactly as the existing r1-r6 assertions prove ----------------- */
+$asked = []; $nameCalls = [];
+$r9 = musicianResolveLegacySlug(
+    slugSpy(['john-newton' => 'john-newton'], $asked),
+    nameSpy([], $nameCalls),
+    'john-newton'
+);
+ok('BACK-COMPAT: a 3-arg call (no $byAliasName) still resolves on rung 1, exactly as before #1754',
+    $r9 === 'john-newton', 'got: ' . json_encode($r9));
+
+$asked = []; $nameCalls = [];
+$r10 = musicianResolveLegacySlug(slugSpy([], $asked), nameSpy([], $nameCalls), 'nobody-here');
+ok('BACK-COMPAT: a 3-arg call still misses (returns null) exactly as before #1754 when nothing matches',
+    $r10 === null, 'got: ' . json_encode($r10));
+
+/* ---- (5) an empty-string '' answer from $byAliasName is a MISS, not a
+   hit — overall result is null when every rung including rung 4 misses -- */
+$asked = []; $nameCalls = []; $aliasCalls = [];
+$r11 = musicianResolveLegacySlug(
+    slugSpy([], $asked),
+    nameSpy([], $nameCalls),
+    'john-newton',
+    aliasSpy(['John Newton' => ''], $aliasCalls, $sequence)   /* answers '' — must NOT count as a hit */
+);
+ok("an empty-string '' answer from \$byAliasName is treated as a MISS, not a hit — overall result is null",
+    $r11 === null, 'got: ' . json_encode($r11));
+
+/* ========================================================================
+ * 3(source-scan) — the two public head-of-request entry points that must
+ * consult the DB driver (#1754). Comment-stripped via token_get_all()
+ * (rule #34) so a comment mentioning musicianResolveLegacySlugDb can never
+ * satisfy this assertion. WHY THESE TWO AND NOT A TREE-DERIVED SWEEP:
+ * verified this session that admin/API sites (api2.php, migration-registry.
+ * php, SongData.php …) also do exact-slug `tblMusicians WHERE Slug = ?`
+ * lookups where LADDER resolution would be WRONG (admin lookups must be
+ * exact) — a sweep would flag correct code, the rule-#34 "guard so blunt
+ * it gets weakened" anti-pattern. index.php's /musician/ elseif block and
+ * musician.php's pre-lookup region are structural, public, head-of-request
+ * entry points, not a growing list; scoping to them is the narrow-enough
+ * guard.
+ * ======================================================================== */
+echo "\n3(source-scan) — index.php /musician/ + musician.php pre-lookup both call the DB driver\n";
+
+/**
+ * Strip PHP comments (T_COMMENT/T_DOC_COMMENT) via token_get_all() so a
+ * regex scan can never be satisfied by a mention inside a comment.
+ */
+function musSliceStripComments(string $src): string
+{
+    $out = '';
+    foreach (token_get_all($src) as $token) {
+        if (is_array($token)) {
+            if ($token[0] === T_COMMENT || $token[0] === T_DOC_COMMENT) { continue; }
+            $out .= $token[1];
+        } else {
+            $out .= $token;
+        }
+    }
+    return $out;
+}
+
+/**
+ * Slice from the `preg_match('#^/musician/` needle to the next top-level
+ * `elseif (preg_match` occurrence (or end of file) — bounded, mirroring
+ * seimSliceCase()'s shape in test-song-external-id-mirror.php.
+ */
+function musSliceMusicianElseif(string $src): string
+{
+    $needle = "preg_match('#^/musician/";
+    $start = strpos($src, $needle);
+    if ($start === false) { return ''; }
+    $next = strpos($src, 'elseif (preg_match', $start + strlen($needle));
+    return $next === false ? substr($src, $start) : substr($src, $start, $next - $start);
+}
+
+/**
+ * #1754 — true when $slice both CALLS musicianResolveLegacySlugDb() AND flows
+ * its return value into $personSlug (directly, or via an intermediate var).
+ *
+ * ELI5: not just "is the resolver mentioned?" but "is its ANSWER actually
+ * used?" — a call whose result is discarded (`musicianResolveLegacySlugDb(...);`)
+ * is the exact silent-no-op shape CLAUDE.md rules #30/#33 warn about, and a
+ * mere "is it mentioned" scan stays green on it (an adversarial audit proved
+ * the first-draft §3 assertion did).
+ *
+ * DETAILED: capture the variable the call is assigned to, then require
+ * $personSlug to be assigned FROM that variable (the code does
+ * `$v = musicianResolveLegacySlugDb(...); if ($v !== null) { $personSlug = $v; }`).
+ * The direct form `$personSlug = musicianResolveLegacySlugDb(...)` is also
+ * accepted. Comment-stripping is the caller's responsibility (done before this).
+ */
+function musResolverResultFlowsToPersonSlug(string $slice): bool
+{
+    if ($slice === '') { return false; }
+    /* direct: $personSlug = musicianResolveLegacySlugDb(...) */
+    if (preg_match('/\$personSlug\s*=\s*musicianResolveLegacySlugDb\s*\(/', $slice) === 1) {
+        return true;
+    }
+    /* indirect: capture the assigned var, require $personSlug = <that var> */
+    if (preg_match('/(\$\w+)\s*=\s*musicianResolveLegacySlugDb\s*\(/', $slice, $m) !== 1) {
+        return false;
+    }
+    $var = $m[1];
+    return preg_match('/\$personSlug\s*=\s*' . preg_quote($var, '/') . '\b/', $slice) === 1;
+}
+
+/* --- Mutation self-tests for the two slicer helpers above, in memory,
+   fails-high/fails-low + the comment-only-mention fixture (rule #34). --- */
+$srcScanMutationFailures = [];
+
+/* --- musResolverResultFlowsToPersonSlug() self-test (#1754) --- */
+$fixtureFlowIndirect = "\$_r = musicianResolveLegacySlugDb(\$db, \$personSlug);\nif (\$_r !== null) { \$personSlug = \$_r; }\n";
+if (!musResolverResultFlowsToPersonSlug($fixtureFlowIndirect)) {
+    $srcScanMutationFailures[] = 'musResolverResultFlowsToPersonSlug() FAILS-HIGH: did not recognise the indirect assign-then-apply flow';
+}
+$fixtureDiscarded = "musicianResolveLegacySlugDb(\$db, \$personSlug); // result discarded\n";
+if (musResolverResultFlowsToPersonSlug($fixtureDiscarded)) {
+    $srcScanMutationFailures[] = 'musResolverResultFlowsToPersonSlug() FAILS-LOW: a discarded-return call (silent no-op) wrongly passed';
+}
+
+$fixtureCommentOnly = "<?php\n// musicianResolveLegacySlugDb mentioned ONLY in this comment\n\$real = 'NeedleInCode';\n";
+$fixtureCommentStripped = musSliceStripComments($fixtureCommentOnly);
+if (strpos($fixtureCommentStripped, 'musicianResolveLegacySlugDb') !== false) {
+    $srcScanMutationFailures[] = 'musSliceStripComments() FAILS-LOW self-test: a comment-only mention of musicianResolveLegacySlugDb survived stripping';
+}
+if (strpos($fixtureCommentStripped, 'NeedleInCode') === false) {
+    $srcScanMutationFailures[] = 'musSliceStripComments() FAILS-HIGH self-test: real code was stripped along with the comment';
+}
+
+$fixtureElseifSrc = "    elseif (preg_match('#^/other/([a-z]+)\$#', \$requestPath, \$m)) {\n        NeedleBeforeMusician();\n    }\n    elseif (preg_match('#^/musician/([a-z0-9\\-]+)\$#', \$requestPath, \$matches)) {\n        NeedleInMusicianBlock();\n    }\n    elseif (preg_match('#^/work/([a-z0-9\\-]+)\$#', \$requestPath, \$matches)) {\n        NeedleAfterMusician();\n    }\n";
+$elseifSlice = musSliceMusicianElseif($fixtureElseifSrc);
+if (strpos($elseifSlice, 'NeedleInMusicianBlock') === false) {
+    $srcScanMutationFailures[] = 'musSliceMusicianElseif() FAILS-HIGH self-test did not find the needle inside its own /musician/ fixture block';
+}
+if (strpos($elseifSlice, 'NeedleBeforeMusician') !== false) {
+    $srcScanMutationFailures[] = "musSliceMusicianElseif() FAILS-LOW self-test: the slice bled BACKWARD into the preceding elseif block";
+}
+if (strpos($elseifSlice, 'NeedleAfterMusician') !== false) {
+    $srcScanMutationFailures[] = "musSliceMusicianElseif() FAILS-LOW self-test: the slice bled FORWARD into the following elseif block";
+}
+if (musSliceMusicianElseif("<?php\necho 'no musician route here';\n") !== '') {
+    $srcScanMutationFailures[] = 'musSliceMusicianElseif() FAILS-LOW self-test wrongly matched a fixture with no /musician/ route at all';
+}
+
+if ($srcScanMutationFailures) {
+    foreach ($srcScanMutationFailures as $f) {
+        echo "  FAIL  (mutation self-test) $f\n";
+        $fail++;
+    }
+}
+
+$indexPhpFile = $root . '/appWeb/public_html/index.php';
+$musicianPhpFile = $root . '/appWeb/public_html/includes/pages/musician.php';
+if (!is_readable($indexPhpFile)) {
+    fwrite(STDERR, "FATAL: could not read {$indexPhpFile}\n");
+    exit(1);
+}
+if (!is_readable($musicianPhpFile)) {
+    fwrite(STDERR, "FATAL: could not read {$musicianPhpFile}\n");
+    exit(1);
+}
+
+$indexPhpStripped = musSliceStripComments((string)file_get_contents($indexPhpFile));
+$musicianElseifSlice = musSliceMusicianElseif($indexPhpStripped);
+ok("index.php's (comment-stripped) /musician/ elseif block resolves via musicianResolveLegacySlugDb AND applies the result to \$personSlug (not a discarded no-op)",
+    musResolverResultFlowsToPersonSlug($musicianElseifSlice),
+    'slice length: ' . strlen($musicianElseifSlice));
+
+/* musician.php's "pre-lookup region": file head through the `WHERE Slug = ?`
+   prepare — bounded at the first occurrence of that literal so the window
+   can't run away past it. */
+$musicianPhpStripped = musSliceStripComments((string)file_get_contents($musicianPhpFile));
+$slugWherePos = strpos($musicianPhpStripped, 'WHERE Slug = ?');
+$musicianPreLookupSlice = $slugWherePos === false ? '' : substr($musicianPhpStripped, 0, $slugWherePos);
+ok("musician.php's (comment-stripped) pre-lookup region resolves via musicianResolveLegacySlugDb AND applies the result to \$personSlug (not a discarded no-op)",
+    musResolverResultFlowsToPersonSlug($musicianPreLookupSlice),
+    'slice length: ' . strlen($musicianPreLookupSlice));
+
 echo "\n";
 if ($fail > 0) {
     echo "$fail assertion(s) failed.\n";

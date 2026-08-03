@@ -522,6 +522,32 @@ try {
     elseif (preg_match('#^/musician/([a-z0-9\-]+)$#', $requestPath, $matches)) {
         $pageType = 'other';
         $personSlug = $matches[1];
+        /* #1754 — ELI5: before we look this slug up, first ask "is there a
+           MORE canonical spelling of this slug?" — so a crawler hitting a
+           name-slug or alias URL (e.g. /musician/fanny-crosby when the
+           registry slug is frances-jane-van-alstyne, or any song.php-emitted
+           credit-name slug) still gets real JSON-LD instead of none.
+           DETAILED / WHY: resolve name-slug / legacy-slug input through the
+           ONE ladder (rule #22) BEFORE the exact lookup below. Fail-open: a
+           null answer leaves the slug as arrived and the branch behaves
+           exactly as pre-#1754. No rawurldecode needed — this route's
+           charset is [a-z0-9-] (unlike /writer/'s, :484). NOTE $canonicalUrl
+           is recomputed AFTER resolution so <link rel=canonical> / og:url
+           agree with the fragment's data-musician-canonical marker — both
+           now derive from the same resolver (rule #35). No 301 here
+           (deliberate — leg C of the P4a-3 design: /musician/ soft-
+           canonicalises via the fragment's data-musician-canonical +
+           history.replaceState; only /writer/ hard-301s, :484). The
+           driver itself never throws (musician_helpers.php:1103-1105); the
+           try/catch below guards getDbMysqli() only.
+           @see #1754 */
+        try {
+            if (!function_exists('musicianResolveLegacySlugDb')) {
+                require_once __DIR__ . DIRECTORY_SEPARATOR . 'includes' . DIRECTORY_SEPARATOR . 'musician_helpers.php';
+            }
+            $musicianResolved = musicianResolveLegacySlugDb(getDbMysqli(), $personSlug);
+            if ($musicianResolved !== null) { $personSlug = $musicianResolved; }
+        } catch (\Throwable $_e) { /* getDbMysqli() outage — serve the shell, never a 500 */ }
         $canonicalUrl = getCanonicalUrl('/musician/' . rawurlencode($personSlug));
         try {
             $personDb = getDbMysqli();
