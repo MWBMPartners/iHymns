@@ -80,10 +80,18 @@ node + my own 3 mutations + live probe). Epic follow-ups (non-blocking): #1748/#
   node green. ⚠️ Process note: a backup-timing slip during mutation testing (backed up pre-fix, then
   cp/`git checkout`-restored) transiently wiped the fixes; caught + fully recovered before commit — the
   lesson (back up the FIXED state; never `git checkout` to restore uncommitted work) is reinforced.
-- **STILL QUEUED (drain before Meedya):** #1752 (last item — native Apple+Android; spec written;
-  depends on the #1750 payload shape, now frozen). No Swift/Android toolchain in-sandbox, so its native
-  code is source-review + the node/PHP guards + the §4.1 web change verified live; native compile is a
-  tracked CI step.
+- **#1752 — DONE + CLOSED** (`a35ddcd0`). Apple decodes/renders the P1 song identity keys + externalIds
+  + Work P4b keys + musician IPI/ISNI (Optional/`decodeIfPresent`); one shared copyright fold; `/musician/`
+  deep link now resolves; the only web change (`getMusician()` identifiers, existence-gated) verified live.
+  Android forward-compat only (Phase-2 client = #1756). Guard `test-native-identity-contract.js` (node
+  49→50) — a rule-#34 gap (`WORK_KEYS === 9` → `>= 9`) caught by the adversarial pass + fixed +
+  mutation-proven. ⚠️ Swift/Android NOT compiled (no toolchain) — tracked pre-merge CI step. Deferred:
+  #1756/#1757/#1758/#1759.
+- **✅ iHYMNS FOLLOW-UP QUEUE FULLY DRAINED** (2026-08-03): #1749/#1751/#1754/#1755/#1750/#1748/#1752 all
+  closed on `claude/wave3-fixes`. Every one adversarially verified (workflow lenses) + independently
+  re-verified by me (suites + own mutations + live dev-DB probes). PR to `alpha` still HELD per owner.
+  **NEXT: the 3 Meedya repos** (task #72 — MeedyaSuite-core #65, MeedyaManager #196, MeedyaConverter #478;
+  issues already filed; implement per each repo's CLAUDE.md).
 
 **Remaining on the branch after the queue:** the owner's next major directive, the
 **3 Meedya repos** — issues FILED (core [#65], MM [#196], MC [#478]); implementation next, per repo,
